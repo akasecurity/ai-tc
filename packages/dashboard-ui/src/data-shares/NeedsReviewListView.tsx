@@ -4,6 +4,7 @@ import { Button, cn } from '@akasecurity/ui-kit';
 
 import { AlertIcon } from '../shared/icons.tsx';
 import { ClassTag, DestMark } from './atoms.tsx';
+import { bindId } from './bindings.ts';
 import { flagReason } from './meta.ts';
 
 /**
@@ -41,14 +42,7 @@ export function NeedsReviewListView({ items, onReview }: NeedsReviewListViewProp
           <span className="text-xs text-text-3">
             {d.callSiteCount} call{d.callSiteCount === 1 ? '' : 's'}
           </span>
-          <Button
-            onClick={() => {
-              onReview(d.id);
-            }}
-            variant="ghost"
-            tone="primary"
-            size="sm"
-          >
+          <Button onClick={bindId(onReview, d.id)} variant="ghost" tone="primary" size="sm">
             Review
           </Button>
         </div>

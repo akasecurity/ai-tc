@@ -33,6 +33,7 @@ import {
   TransportTag,
   TrustTag,
 } from './atoms.tsx';
+import { bindId, bindTwoIds } from './bindings.ts';
 import { hasInsecureTransport } from './meta.ts';
 import type { ShareSelection } from './types.ts';
 
@@ -228,12 +229,8 @@ export function DataSharesTableView({
                 d={d}
                 expanded={isExp}
                 selected={groupSel}
-                onToggle={() => {
-                  onToggle(d.id);
-                }}
-                onOpen={() => {
-                  onOpenDest(d.id);
-                }}
+                onToggle={bindId(onToggle, d.id)}
+                onOpen={bindId(onOpenDest, d.id)}
               />
               {isExp &&
                 d.endpoints.map((ep) => (
@@ -243,9 +240,7 @@ export function DataSharesTableView({
                     selected={
                       drawerOpen && selection?.id === d.id && selection.endpointId === ep.id
                     }
-                    onClick={() => {
-                      onOpenEndpoint(d.id, ep.id);
-                    }}
+                    onClick={bindTwoIds(onOpenEndpoint, d.id, ep.id)}
                   />
                 ))}
             </Fragment>

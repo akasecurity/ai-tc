@@ -10,7 +10,6 @@ import {
 } from '@akasecurity/dashboard-ui';
 import type {
   DestinationKind,
-  EgressDecision,
   ReviewDestination,
   ShareDestinationDetail,
   ShareDestinationGroup,
@@ -34,6 +33,19 @@ import { useNavigationTransition } from '../../components/NavigationTransition';
 import { useDebouncedUrlQuery } from '../../lib/useDebouncedUrlQuery';
 import { setEgressDecision } from './actions';
 import { buildDataSharesParams } from './filters';
+import {
+  makeCloseDrawerHandler,
+  makeExpandToggleHandler,
+  makeOnBackHandler,
+  makeOnPickHandler,
+  makeOpenDestHandler,
+  makeOpenEndpointHandler,
+  makeReviewOpenHandler,
+  makeReviewSheetOpenChangeHandler,
+  makeSearchChangeHandler,
+  makeSetDecisionHandler,
+  makeTabsValueChangeHandler,
+} from './interactions.ts';
 
 /**
  * Client shell for the OSS Data Shares page. The grouped register, needs-review
@@ -106,13 +118,8 @@ export function DataSharesClient({
   // Undefined (not just an empty groups[]) whenever there's nothing to tab.
   const activeGroup = groups.find((g) => g.kind === activeKind) ?? groups[0];
 
-  const openDest = (id: string) => {
-    push({ q, dest: id });
-  };
-  const closeDrawer = () => {
-    setDecisionError(null);
-    push({ q });
-  };
+  const openDest = makeOpenDestHandler(push, q);
+  const closeDrawer = makeCloseDrawerHandler(push, q, setDecisionError);
 
   const ql = q.trim();
 
@@ -125,9 +132,7 @@ export function DataSharesClient({
       <SearchIcon aria-hidden focusable={false} className="size-4 shrink-0 text-text-3" />
       <input
         value={query}
-        onChange={(e) => {
-          setQuery(e.target.value);
-        }}
+        onChange={makeSearchChangeHandler(setQuery)}
         placeholder="Search destinations, URLs & call sites…"
         aria-label="Search data shares"
         className="min-w-0 flex-1 bg-transparent text-sm text-text placeholder:text-text-3 focus:outline-none"
@@ -146,12 +151,7 @@ export function DataSharesClient({
         )}
       >
         <div className="shrink-0">
-          <NeedsReviewStripView
-            items={review}
-            onOpen={() => {
-              setReviewOpen(true);
-            }}
-          />
+          <NeedsReviewStripView items={review} onOpen={makeReviewOpenHandler(setReviewOpen)} />
         </div>
         {activeGroup ? (
           // The kind-tab strip has to be a sibling of the Card, outside its
@@ -161,9 +161,7 @@ export function DataSharesClient({
           // ui-kit Tabs ancestor, not a common parent element.
           <Tabs
             value={activeGroup.kind}
-            onValueChange={(kind) => {
-              setActiveKind(kind as DestinationKind);
-            }}
+            onValueChange={makeTabsValueChangeHandler(setActiveKind)}
             className="flex min-h-0 flex-1 flex-col"
           >
             <div className="mb-3 flex shrink-0 flex-wrap items-center gap-2.5">
@@ -181,13 +179,9 @@ export function DataSharesClient({
                   forceExpand={!!ql}
                   selection={selection}
                   drawerOpen={drawerOpen}
-                  onToggle={(id) => {
-                    setExpanded((m) => ({ ...m, [id]: !m[id] }));
-                  }}
+                  onToggle={makeExpandToggleHandler(setExpanded)}
                   onOpenDest={openDest}
-                  onOpenEndpoint={(id, endpointId) => {
-                    push({ q, dest: id, ep: endpointId });
-                  }}
+                  onOpenEndpoint={makeOpenEndpointHandler(push, q)}
                 />
               </TabsContent>
             </Card>
@@ -222,14 +216,7 @@ export function DataSharesClient({
       */}
       <Sheet
         open={reviewOpen || drawerOpen}
-        onOpenChange={(open) => {
-          if (open) return;
-          if (drawerOpen) {
-            closeDrawer();
-          } else {
-            setReviewOpen(false);
-          }
-        }}
+        onOpenChange={makeReviewSheetOpenChangeHandler(drawerOpen, closeDrawer, setReviewOpen)}
       >
         <SheetContent
           className={cn(
@@ -257,30 +244,15 @@ export function DataSharesClient({
                     destination={destination}
                     endpoint={selectedEp}
                     isSettingDecision={isSettingDecision}
-                    onSetDecision={(decision: EgressDecision | null) => {
-                      if (isSettingDecision) return;
-                      setDecisionError(null);
-                      startTransition(async () => {
-                        try {
-                          const ok = await setEgressDecision(destination.id, decision);
-                          if (!ok) {
-                            setDecisionError(
-                              'This destination no longer exists — reload to refresh the list.',
-                            );
-                          }
-                        } catch {
-                          setDecisionError(
-                            'Could not update the egress decision. Please try again.',
-                          );
-                        }
-                      });
-                    }}
-                    onPick={(endpointId) => {
-                      push({ q, dest: destination.id, ep: endpointId });
-                    }}
-                    onBack={() => {
-                      push({ q, dest: destination.id });
-                    }}
+                    onSetDecision={makeSetDecisionHandler({
+                      isSettingDecision,
+                      destinationId: destination.id,
+                      setDecisionError,
+                      startTransition,
+                      setEgressDecision,
+                    })}
+                    onPick={makeOnPickHandler(push, q, destination.id)}
+                    onBack={makeOnBackHandler(push, q, destination.id)}
                   />
                 </>
               ) : (

@@ -1,5 +1,5 @@
 import type { ActionTaken, DetectionCategory } from '@akasecurity/schema';
-import { builtinPolicyToAction, KNOWN_BUILTIN_IDS } from '@akasecurity/schema';
+import { builtinPolicyToAction, CategoryPolicyId, KNOWN_BUILTIN_IDS } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -64,6 +64,22 @@ describe('presentStandingSecretPosture — standing-posture palette', () => {
     // Disjoint as well as covering — an id in both lists would satisfy the sort
     // above only by displacing one that is in neither.
     expect(offered.filter((id) => CATEGORY_INEXPRESSIBLE_POLICIES.includes(id))).toEqual([]);
+  });
+
+  it('the writer will not COMPILE with an archetype this axis cannot store', () => {
+    // The palette excluding 'vault' is a display choice; this is the structural
+    // half. writeStandingSecretPosture takes CategoryPolicyId, so a caller that
+    // hands it a reversible archetype is a type error rather than a silent
+    // downgrade at runtime. Asserted through the schema rather than with a
+    // compiler-error directive, which would pin the compiler's wording — and
+    // which cannot even be NAMED in a comment here without tsc reading it as
+    // the directive itself.
+    for (const id of CATEGORY_INEXPRESSIBLE_POLICIES) {
+      expect(CategoryPolicyId.safeParse(id).success, `${id} must not parse`).toBe(false);
+    }
+    for (const id of presentStandingSecretPosture().options.map((o) => o.level)) {
+      expect(CategoryPolicyId.safeParse(id).success, `${id} must parse`).toBe(true);
+    }
   });
 
   it('does NOT offer Redact & Vault, because this axis cannot store it', () => {

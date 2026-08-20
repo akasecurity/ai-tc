@@ -27,6 +27,7 @@ import {
   BUILTIN_POLICIES,
   type BuiltinPolicyId,
   CATEGORY_INEXPRESSIBLE_IDS,
+  type CategoryPolicyId,
 } from '@akasecurity/schema';
 
 import type { CategoryPolicyWriter } from '../triage/writeback.ts';
@@ -102,7 +103,12 @@ export type StandingPostureResult =
 // replaces any existing row). Fail-open: a store-write throw is caught and
 // reported as a non-persisted result rather than propagated.
 export function writeStandingSecretPosture(
-  level: BuiltinPolicyId,
+  // CategoryPolicyId, not BuiltinPolicyId. This writes a per-CATEGORY row, which
+  // stores a bare ActionTaken — so an archetype carrying reversibility would be
+  // persisted as its plain action while this function still reported the id it
+  // was handed. Narrowing HERE makes the whole chain into it a compile error
+  // rather than a runtime downgrade each caller has to remember to prevent.
+  level: CategoryPolicyId,
   policies: CategoryPolicyWriter,
 ): StandingPostureResult {
   try {

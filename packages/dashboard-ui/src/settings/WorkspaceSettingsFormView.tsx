@@ -601,6 +601,16 @@ export const CONNECTION_UNAVAILABLE_NOTICE =
   'the local store.';
 
 export const DETACH_LABEL = 'Detach';
+
+export const DETACH_EXPLANATION =
+  'Detaching clears the connection and returns this machine to standalone. Findings and history ' +
+  'already in the local store stay where they are.';
+
+// Attached on a surface with no detach handler. The explanation above describes
+// a button, so showing it without one reads as a rendering fault rather than as
+// the deliberate absence it is.
+export const DETACH_UNAVAILABLE_NOTICE =
+  'This machine is registered, and this build offers no way to detach it here.';
 export const ATTACH_LABEL = 'Attach';
 
 // The detach that MDM takes away. A machine an administrator attached is not
@@ -663,25 +673,34 @@ function ConnectionRow({
         <p className="mt-3 text-xs text-text-3" data-slot="connection-managed-notice">
           {managedLabel}. {attached ? DETACH_MANAGED_NOTICE : ''}
         </p>
-      ) : attached ? (
+      ) : attached && onDetach ? (
         <div className="mt-3">
-          {onDetach ? (
-            <Button
-              variant="outline"
-              tone="danger"
-              size="sm"
-              disabled={busy}
-              onClick={onDetach}
-              data-slot="detach-button"
-            >
-              {DETACH_LABEL}
-            </Button>
-          ) : null}
-          <p className="mt-2 text-xs text-text-3">
-            Detaching clears the connection and returns this machine to standalone. Findings and
-            history already in the local store stay where they are.
-          </p>
+          <Button
+            variant="outline"
+            tone="danger"
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              // Clear what was typed BEFORE detaching. The attach form is the
+              // same component instance and keeps its own state, so without
+              // this the endpoint of the deployment just left reappears
+              // pre-filled in the form offering to join a new one.
+              setEndpoint('');
+              setLabel('');
+              onDetach();
+            }}
+            data-slot="detach-button"
+          >
+            {DETACH_LABEL}
+          </Button>
+          <p className="mt-2 text-xs text-text-3">{DETACH_EXPLANATION}</p>
         </div>
+      ) : attached ? (
+        // Attached, but this surface supplies no way to leave. Say so rather
+        // than rendering the explanation for a button that is not there.
+        <p className="mt-3 text-xs text-text-3" data-slot="detach-unavailable">
+          {DETACH_UNAVAILABLE_NOTICE}
+        </p>
       ) : onAttach ? (
         <div className="mt-3 flex flex-col gap-2 sm:flex-row" data-slot="attach-form">
           <Input

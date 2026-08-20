@@ -14,6 +14,7 @@ import {
   CONNECTION_NO_TRANSPORT_NOTICE,
   CONNECTION_STANDALONE_DESCRIPTION,
   CONNECTION_UNAVAILABLE_NOTICE,
+  DETACH_EXPLANATION,
   DETACH_MANAGED_NOTICE,
   HANDLING_SECTION_DESCRIPTION,
   HANDLING_SECTION_LABEL,
@@ -482,6 +483,27 @@ describe('the connection section', () => {
     // With no onAttach the form is replaced by the notice.
     expect(html).toContain('data-slot="connection-unavailable"');
     expect(html).toContain(CONNECTION_UNAVAILABLE_NOTICE);
+  });
+
+  it('does not render the detach explanation when there is no detach button', () => {
+    // The explanation describes a button. Rendered without one it reads as a
+    // rendering fault rather than as this surface deliberately offering no exit.
+    const html = render({ settings: attached, onAttach: () => undefined });
+    expect(html).not.toContain('data-slot="detach-button"');
+    expect(html).not.toContain(DETACH_EXPLANATION);
+    expect(html).toContain('data-slot="detach-unavailable"');
+  });
+
+  it('pairs the explanation WITH the button when detach is available', () => {
+    // The positive control for the case above.
+    const html = render({
+      settings: attached,
+      onAttach: () => undefined,
+      onDetach: () => undefined,
+    });
+    expect(html).toContain('data-slot="detach-button"');
+    expect(html).toContain(DETACH_EXPLANATION);
+    expect(html).not.toContain('data-slot="detach-unavailable"');
   });
 
   it('withholds detach and explains why when the connection is managed', () => {

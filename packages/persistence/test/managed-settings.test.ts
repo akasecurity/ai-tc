@@ -18,7 +18,12 @@ import {
   overlayManagedSettings,
   readManagedSettings,
 } from '../src/managed-settings.ts';
-import { applyOnboarding, ManagedFieldError, readEffectiveSettings } from '../src/settings.ts';
+import {
+  applyOnboarding,
+  ManagedFieldError,
+  readEffectiveSettings,
+  readWorkspaceSettings,
+} from '../src/settings.ts';
 
 // Administrative configuration is a file AKA reads and never writes, so every
 // case here works by putting a file somewhere and asking what the product then
@@ -37,6 +42,10 @@ afterEach(() => {
   rmSync(base, { recursive: true, force: true });
   rmSync(managedDir, { recursive: true, force: true });
 });
+
+function managedFile(): string {
+  return join(managedDir, MANAGED_SETTINGS_FILENAME);
+}
 
 function writeManaged(contents: unknown, dir = managedDir): string {
   mkdirSync(dir, { recursive: true });
@@ -338,6 +347,40 @@ describe('readEffectiveSettings — what is actually in force', () => {
   });
 });
 
+describe('the overlay is read LIVE, never memoized', () => {
+  // tokenize.ts's consent gate calls readWorkspaceSettings on every tokenize
+  // precisely so a revocation applies to the very next call rather than the
+  // next process. A per-process cache of the managed half breaks that for an
+  // ADMINISTRATIVE revocation — the one an operator can least work around,
+  // since they cannot restart a user's dashboard.
+  it('sees an administrator appear between two reads in one process', () => {
+    applyOnboarding({ historicalAccess: 'full' }, base, null);
+    expect(readWorkspaceSettings(base).historicalAccess).toBe('full');
+
+    writeManaged({
+      values: { historicalAccess: 'session-only' },
+      lockedFields: ['historicalAccess'],
+    });
+    // Same process, same module instance, no reset call available or needed.
+    expect(
+      readEffectiveSettings(base, readManagedSettings([managedFile()])).settings.historicalAccess,
+    ).toBe('session-only');
+  });
+
+  it('sees an administrator DISAPPEAR between two reads in one process', () => {
+    // The direction that matters most: a lock lifted must stop applying, or a
+    // user stays governed by a file their administrator already removed.
+    applyOnboarding({ historicalAccess: 'full' }, base, null);
+    const managed: ManagedSettings = {
+      specVersion: 1,
+      values: { historicalAccess: 'session-only' },
+      lockedFields: [],
+    };
+    expect(readEffectiveSettings(base, managed).settings.historicalAccess).toBe('session-only');
+    expect(readEffectiveSettings(base, null).settings.historicalAccess).toBe('full');
+  });
+});
+
 describe('applyOnboarding — refusing an administratively locked write', () => {
   it('writes normally when nothing is locked', () => {
     const out = applyOnboarding({ historicalAccess: 'full' }, base, null);
@@ -459,6 +502,74 @@ describe('applyOnboarding — refusing an administratively locked write', () => 
       applyOnboarding({ runMode: 'standalone', controlPlane: undefined }, base, managed),
     ).toThrow(ManagedFieldError);
     expect(readEffectiveSettings(base, null).settings.runMode).toBe('attached');
+  });
+
+  it('refuses a LABEL-only change to a locked connection', () => {
+    // The two halves of the lock have to agree about what a change is:
+    // withoutLockedKeys strips `controlPlane` wholesale when runMode is locked,
+    // so a field the refusal ignores is one a caller changes without being
+    // refused and then has silently discarded — the write reporting success
+    // while the label it was asked to set went nowhere.
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: {
+          endpoint: 'https://acme.internal',
+          label: 'Old Name',
+          attachedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+      base,
+      null,
+    );
+    const managed: ManagedSettings = { specVersion: 1, values: {}, lockedFields: ['runMode'] };
+    expect(() =>
+      applyOnboarding(
+        {
+          runMode: 'attached',
+          controlPlane: {
+            endpoint: 'https://acme.internal',
+            label: 'New Name',
+            attachedAt: '2026-02-02T00:00:00.000Z',
+          },
+        },
+        base,
+        managed,
+      ),
+    ).toThrow(ManagedFieldError);
+    expect(readEffectiveSettings(base, null).settings.controlPlane?.label).toBe('Old Name');
+  });
+
+  it('does not refuse a re-attach that changes only the server-stamped time', () => {
+    // attachedAt is stamped on every attach, so counting it as a change would
+    // refuse an otherwise-identical re-attach on a locked machine.
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: {
+          endpoint: 'https://acme.internal',
+          label: 'Same',
+          attachedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+      base,
+      null,
+    );
+    const managed: ManagedSettings = { specVersion: 1, values: {}, lockedFields: ['runMode'] };
+    expect(() =>
+      applyOnboarding(
+        {
+          runMode: 'attached',
+          controlPlane: {
+            endpoint: 'https://acme.internal',
+            label: 'Same',
+            attachedAt: '2026-09-09T00:00:00.000Z',
+          },
+        },
+        base,
+        managed,
+      ),
+    ).not.toThrow();
   });
 
   it('treats a controlPlane-only write as touching the locked runMode', () => {

@@ -22,9 +22,20 @@ export function SettingsClient({
   // previous error.
   const run = (action: () => Promise<{ ok: boolean; error?: string }>): void => {
     startTransition(async () => {
-      const result = await action();
-      setError(result.ok ? null : (result.error ?? 'Could not save.'));
-      setSaved(result.ok);
+      try {
+        const result = await action();
+        setError(result.ok ? null : (result.error ?? 'Could not save.'));
+        setSaved(result.ok);
+      } catch {
+        // These actions are written to RETURN a failure rather than throw, but
+        // that only covers what happens inside them. The call itself can still
+        // reject — a dropped connection, a framework-level error — and an
+        // unhandled rejection inside a transition takes the whole page to the
+        // error boundary, losing every unsaved answer on the form for a fault
+        // that a retry would clear.
+        setError('The change could not be sent — check your connection and try again.');
+        setSaved(false);
+      }
     });
   };
 

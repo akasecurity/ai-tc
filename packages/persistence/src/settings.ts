@@ -49,30 +49,17 @@ export function readWorkspaceSettings(base: string = defaultDataDir()): Workspac
   // narrower would change what the dashboard DISPLAYS while changing nothing
   // about what the machine DOES. That is worse than having no managed layer at
   // all: it tells an administrator a control is enforced when it is not.
-  return overlayManagedSettings(readUserSettings(base), cachedManagedSettings());
-}
-
-// Read once per process. Every hook invocation is its own short-lived process,
-// so this is one stat-and-miss per event rather than per call — and a hook that
-// reads settings several times pays for the absent file once. A long-lived
-// reader (the dashboard server) therefore holds an administrator's file from
-// startup; that is the same staleness `settings.json` itself has there, and the
-// alternative is a filesystem hit on a path that does not exist on the
-// overwhelming majority of machines, on the fail-open capture path.
-let managedCache: { value: ManagedSettings | null } | undefined;
-
-function cachedManagedSettings(): ManagedSettings | null {
-  managedCache ??= { value: readManagedSettings() };
-  return managedCache.value;
-}
-
-/**
- * Forget the memoized administrative overlay. Exists for tests and for a
- * long-lived process that wants to pick up an administrator's change without a
- * restart; nothing on the capture path calls it.
- */
-export function resetManagedSettingsCache(): void {
-  managedCache = undefined;
+  //
+  // READ LIVE, deliberately not memoized. A per-process cache was tried and is
+  // wrong for the same reason this reader exists: `tokenize.ts`'s consent gate
+  // calls this on EVERY tokenize precisely "so a revocation applies to the very
+  // next call, not the next process", and caching the managed half breaks that
+  // for an ADMINISTRATIVE revocation — the one an operator is least able to
+  // work around, since they cannot restart a user's dashboard. It also split
+  // the three read paths, leaving this one stale while readEffectiveSettings
+  // and applyOnboarding re-read. The cost is one or two ENOENT stats beside a
+  // settings.json read that is already happening on the same call.
+  return overlayManagedSettings(readUserSettings(base), readManagedSettings());
 }
 
 /**
@@ -201,11 +188,19 @@ function lockableKeysTouched(
   // The connection is one lockable unit: clearing the descriptor detaches just
   // as surely as clearing the mode (isAttached needs both), so either moving
   // counts as touching `runMode`.
-  const connectionChanged =
-    changed('runMode') ||
-    ('controlPlane' in applied &&
-      applied.controlPlane?.endpoint !== current.controlPlane?.endpoint);
-  if (connectionChanged) keys.push('runMode');
+  //
+  // The WHOLE descriptor is compared, not just the endpoint. withoutLockedKeys
+  // strips `controlPlane` entirely when runMode is locked, so a field this
+  // comparison ignores is one a caller can change without being refused and
+  // then have silently discarded — the write reporting success while the label
+  // it was asked to set went nowhere. `attachedAt` is excluded deliberately: it
+  // is stamped server-side on every attach, so including it would make an
+  // otherwise-identical re-attach read as a change.
+  const descriptorChanged =
+    'controlPlane' in applied &&
+    (applied.controlPlane?.endpoint !== current.controlPlane?.endpoint ||
+      applied.controlPlane?.label !== current.controlPlane?.label);
+  if (changed('runMode') || descriptorChanged) keys.push('runMode');
 
   if (changed('historicalAccess')) keys.push('historicalAccess');
   if (changed('vaultKeyCustody')) keys.push('vaultKeyCustody');

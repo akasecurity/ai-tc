@@ -28,7 +28,11 @@
  */
 import { parentPort, workerData } from 'node:worker_threads';
 
-import type { ScanWorkerData, ScanWorkerJob } from '../../src/isolated-scan-protocol.ts';
+import type {
+  ScanWorkerData,
+  ScanWorkerJob,
+  ScanWorkerMessage,
+} from '../../src/isolated-scan-protocol.ts';
 import { COMPLETED, ENTERED, HEARTBEAT } from './spin-counters.ts';
 
 /**
@@ -62,11 +66,20 @@ port.on('message', (job: ScanWorkerJob) => {
   Atomics.add(slots, COMPLETED, 1);
   // The verdict itself is uninteresting — every case here is about whether the
   // thread got this far, not about what it decided.
-  port.postMessage(
+  //
+  // ANNOTATED, and that is not decoration. This is a hand-written stand-in for
+  // the real worker on the far side of a structured clone, so nothing checks it
+  // against the protocol unless something says so here. Untyped, a protocol
+  // change left this posting the old shape and the parent read the missing
+  // field as a failed verdict — which surfaced as `expected [] to deeply equal
+  // [rule]` in a case about thread lifetime, naming nothing to do with the
+  // wire.
+  const reply: ScanWorkerMessage =
     job.kind === 'probe'
-      ? { kind: 'probed', id: job.id, safe: true, worstMs: 0 }
-      : { kind: 'result', id: job.id, findings: [] },
-  );
+      ? { kind: 'probed', id: job.id, verdict: 'safe', worstMs: 0, corroboratedMs: 0 }
+      : { kind: 'result', id: job.id, findings: [] };
+  port.postMessage(reply);
 });
 
-port.postMessage({ kind: 'ready' });
+const ready: ScanWorkerMessage = { kind: 'ready' };
+port.postMessage(ready);

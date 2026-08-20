@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { DataSharesTableView } from '../../src/data-shares/DataSharesTableView.tsx';
 import { destination, endpoint, group } from './fixtures.ts';
@@ -11,9 +11,9 @@ function render(props: Partial<Parameters<typeof DataSharesTableView>[0]> = {}) 
       expanded={{}}
       selection={null}
       drawerOpen={false}
-      onToggle={() => {}}
-      onOpenDest={() => {}}
-      onOpenEndpoint={() => {}}
+      onToggle={vi.fn()}
+      onOpenDest={vi.fn()}
+      onOpenEndpoint={vi.fn()}
       {...props}
     />,
   );

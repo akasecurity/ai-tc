@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { NeedsReviewListView } from '../../src/data-shares/NeedsReviewListView.tsx';
 import { reviewDestination } from './fixtures.ts';
@@ -19,7 +19,7 @@ describe('NeedsReviewListView', () => {
             callSiteCount: 1,
           }),
         ]}
-        onReview={() => {}}
+        onReview={vi.fn()}
       />,
     );
     expect(html).toContain('203.0.113.0');
@@ -31,7 +31,7 @@ describe('NeedsReviewListView', () => {
   });
 
   it('renders nothing for an empty list', () => {
-    const html = renderToStaticMarkup(<NeedsReviewListView items={[]} onReview={() => {}} />);
+    const html = renderToStaticMarkup(<NeedsReviewListView items={[]} onReview={vi.fn()} />);
     expect(html).not.toContain('Review<');
   });
 });

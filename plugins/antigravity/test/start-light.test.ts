@@ -10,7 +10,7 @@
  * independent of whatever the real machine's store happens to hold.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +19,7 @@ import { severityFloorPosture } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId, DetectionCategory } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { fenced, show } from '../src/present.ts';
 import {
   RE_TUNE_HINT,
@@ -52,7 +53,7 @@ function runStartLight(args: string[] = []): Run {
     const e = err as { stdout?: string; stderr?: string; status?: number };
     return { stdout: e.stdout ?? '', stderr: e.stderr ?? '', status: e.status ?? 1 };
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    removeTree(home);
   }
 }
 

@@ -1213,8 +1213,8 @@ describe('runQuery — against a seeded standalone gateway', () => {
   afterEach(() => {
     // removeTree, not a bare rmSync: this block leaves a real SQLite store with
     // its -wal/-shm siblings, and `force` suppresses only ENOENT — not the
-    // sharing violation Windows raises for a file still held open. 37 files in
-    // the repo already take it for exactly this.
+    // sharing violation Windows raises for a file still held open. Plenty of
+    // other files in the repo already take it for exactly this.
     removeTree(dir);
   });
 

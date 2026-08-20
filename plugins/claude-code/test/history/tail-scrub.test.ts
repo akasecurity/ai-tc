@@ -17,7 +17,7 @@ import { createVaultGlue, type VaultGlue } from '@akasecurity/plugin-sdk';
 import { pointerTokenScanner, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { removeTree, removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import { scrubTranscriptTail, type TailScrubDeps } from '../../src/history/tail-scrub.ts';
 import type { RedactionScope } from '../../src/remediation/redact.ts';
 
@@ -62,9 +62,7 @@ describe('scrubTranscriptTail', () => {
   });
 
   afterEach(() => {
-    removeTree(transcriptRoot);
-    removeTree(outsideRoot);
-    removeTree(base);
+    removeTrees([transcriptRoot, outsideRoot, base]);
   });
 
   const transcriptFile = (name: string, content: string): string => {

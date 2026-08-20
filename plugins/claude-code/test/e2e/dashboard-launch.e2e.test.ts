@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { planBareCommand } from '@akasecurity/plugin-sdk/bare-command';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import { INSTALL_HINT } from '../../src/dashboard-launch.ts';
 import {
   assertCommandNotOnPath,
@@ -71,12 +71,12 @@ const tempDir = (): string => {
 // before it exits, and on win32 `cmd.exe` holds the `.cmd` shim open past that
 // point. Windows refuses to unlink a running image, so a bare `rmSync` meets
 // EPERM on a tree POSIX drops without complaint — which is how this teardown
-// failed a CI leg whose every assertion had already passed. `removeTree` retries
+// failed a CI leg whose every assertion had already passed. `removeTrees` retries
 // through that window and, on win32 alone, tolerates the tree being handed to
 // the OS temp sweeper; on POSIX it still throws, where the same code would mean
 // a cleanup that genuinely did not run.
 afterEach(() => {
-  while (dirs.length > 0) removeTree(dirs.pop() ?? '');
+  removeTrees(dirs.splice(0));
 });
 
 interface Spawned {

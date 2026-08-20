@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +9,7 @@ import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import DetectionsPage from '../../app/(app)/detections/page.tsx';
 
 // The Detections page's drift notice: the surface that tells a machine which
@@ -40,7 +41,7 @@ afterEach(() => {
   const globals = globalThis as { __akaDb?: { close: () => void } };
   globals.__akaDb?.close();
   delete globals.__akaDb;
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 function grantVaultConsent(): void {

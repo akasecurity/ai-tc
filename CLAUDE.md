@@ -2061,15 +2061,46 @@ The CLI's `exception` suites bind it **wider than an error** — to their **stdo
 assertions too, because a CLI's terminal output is where a leaked value gets scrolled,
 pasted into a bug report and captured by CI logs. That is safe rather than fragile **for
 the values those suites use**: what they print of a blocked **generic** secret is
-`maskMatch`'s first-and-last preview (`A******E`), two characters, which cannot fill an
-eight-character window. **It does not generalize to every value `maskMatch` handles.** The
+`maskMatch`'s first-and-last preview (`A******E`) — two characters, sitting in two runs of
+**one**. The RUN is the quantity that matters, not the count: the window slides over
+**contiguous** slices, so two characters that are never adjacent cannot fill one of any
+width. **It does not generalize to every value `maskMatch` handles.** The
 email branch reveals the first local character plus the **whole domain**
 (`user@example.com` → `u***@example.com`), and a single-character local part returns the
 input unchanged — both fill the window on purpose. A surface printing a pii/email preview is
 out of scope for the stdout half, not a leak it found; `no-echo.test.ts` pins both branches
-so that boundary is written down rather than re-derived. If the **generic** branch is ever
-widened past two characters, that suite goes red first, which is the correct answer and not
-a reason to loosen the callers back.
+so that boundary is written down rather than re-derived.
+
+**Two different things are pinned there, and only one of them is the margin.** The
+acceptance case (`refuses(maskMatch(VALUE), VALUE)` is `false`) says the preview is safe
+**today**; it cannot say how much room is left, because it fires only once the preview holds
+a contiguous run of `ECHO_RUN` characters. So widening the generic branch to anything from
+two revealed characters up to seven leaves it green — and that band is precisely where a
+usability change lands ("show enough to tell two blocked secrets apart"). In that band the
+only red is `packages/detections/test/mask.test.ts`, whose failure reads as _"you changed the
+mask, update the expectation"_ and gives no signal that a downstream safety argument moved.
+The **margin** is therefore pinned by its own case in `cli/test/helpers/no-echo.test.ts`,
+which derives the longest revealed run from `maskMatch` and holds it at one: that goes red on
+the **first** character of widening, where the reasoning is written down. Widening is a
+deliberate act to be argued against the window — not a reason to loosen the callers back, and
+not something raising `ECHO_RUN` can buy back, since the same file owns both numbers.
+
+`exception.test.ts`'s masked-preview group is **derived from `maskMatch`** for the same reason
+— the seeded ledger `maskedValue`, the grant-shape assertions over it, the stdout positive
+control, and the two approve **selectors** that stand in for a value a user types. A
+hand-written `'A******E'` on both sides of one of those is true by construction and moves with
+nothing, which is the rule two paragraphs above, applied to a group rather than to a single
+control. **That is a claim about that group, not about every preview in the package**: a
+preview the CALLER supplies is a different thing, and `exception-reveal.test.ts`'s **vault**
+seeds assert against its own `MASKED` constant on purpose, because a vault pointer's preview
+is chosen at tokenize time rather than produced by `maskMatch`. **The line is drawn per ROW,
+not per file.** The same file's `recordBlocked` seeds are `blocked_detections` rows, and
+`packages/plugin-sdk/src/runtime.ts` masks the finding with `maskMatch` before recording one
+— the only writer of that table — so those derive from `maskMatch` like any other product
+mask. Derive from `maskMatch` where the product masks; derive from the raw value where the
+caller does, and decide that per table rather than by which suite you are in.
+`packages/detections/test/mask.test.ts` keeps its exact-string cases: they are the right pin
+for the mask's own contract, and deliberately not a pin on the CLI's margin.
 
 **Bind it per assertion, never per file.** `cli/test/commands/vault.test.ts` is the worked
 example: its forged-pointer refusal pins absence like any other, but `aka vault show`'s

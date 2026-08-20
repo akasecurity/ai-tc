@@ -46,9 +46,19 @@ const VALUE: string = exampleValue;
 
 // A second value the SAME rule detects: the ASIA form of the fixture. Distinct
 // from VALUE with identical entropy, derived rather than written out, and it
-// masks to the same `A******E` preview — which is the point wherever a test
-// needs two values one surface must keep apart.
+// masks to the SAME preview — which is the point wherever a test needs two
+// values one surface must keep apart. That identity is a property of the mask
+// rather than of these two strings, so it is asserted rather than left standing
+// in a comment: widen maskMatch's generic branch and the two previews diverge,
+// at which point the refusal below stops being about a value the message could
+// not name usefully even if naming it were safe.
 const SECOND_VALUE = `ASIA${VALUE.slice(4)}`;
+
+// What the product stores and prints of a blocked VALUE. Bound once so the six
+// places that must move together — the ledger seed, the two grant-shape
+// assertions, the stdout positive control and the two approve selectors — are
+// visibly one thing rather than six copies of the same call.
+const MASKED_VALUE = maskMatch(VALUE);
 
 // A value the engine detects under a DIFFERENT rule, for the branch that builds
 // the "did you mean" hint out of the other matches — the one rejection in this
@@ -63,8 +73,12 @@ const OTHER_VALUE: string = otherExample;
 // command has, which is wider than the web-ui original it mirrors: an ERROR,
 // where no part of the value has any business appearing, and STDOUT, where the
 // only thing this command ever prints of a blocked SECRET is maskMatch's
-// first-and-last-character preview (`A******E`) — two characters, so it cannot
-// fill the window. That scoping is load-bearing: maskMatch's email branch
+// first-and-last-character preview — two characters, and they sit in two runs
+// of ONE, which is the number that matters because the window slides over
+// CONTIGUOUS slices. That run is pinned in test/helpers/no-echo.test.ts, which
+// derives it from maskMatch and reddens on the first character of widening;
+// the acceptance case beside it does not, because it fires only at a run of
+// ECHO_RUN. That scoping is load-bearing: maskMatch's email branch
 // reveals the whole domain, so the stdout half does not extend to a surface
 // printing a pii/email preview. Where a path prints nothing at all, assert the
 // emptiness instead — searching empty bytes proves nothing.
@@ -317,7 +331,10 @@ describe('aka exception add → enforcement full loop', () => {
     );
     // The count is what the operator needs; the spans themselves are two live
     // credentials, and they mask identically, so the message could not name one
-    // usefully even if it were safe to.
+    // usefully even if it were safe to. Derived, not asserted in prose — that
+    // last clause is a claim about maskMatch, and it stops holding the moment
+    // its generic branch reveals enough to tell the two apart.
+    expect(maskMatch(SECOND_VALUE)).toBe(MASKED_VALUE);
     expect(err?.message).toMatch(/contains 2 distinct values/);
     expectNoEchoOf(err?.message, VALUE);
     expectNoEchoOf(err?.message, SECOND_VALUE);
@@ -344,7 +361,7 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
         category: 'secret',
         valueFingerprint: fingerprintValue(key, VALUE),
         keyVersion: key.version,
-        maskedValue: 'A******E',
+        maskedValue: MASKED_VALUE,
         sessionId: 'sess-1',
         repo: null,
       });
@@ -369,7 +386,7 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
       const grant = (await db.exceptions.list())[0];
       expect(grant?.ruleId).toBe(RULE_ID);
       expect(grant?.createdVia).toBe('cli-approve');
-      expect(grant?.maskedValue).toBe('A******E');
+      expect(grant?.maskedValue).toBe(MASKED_VALUE);
 
       const runtime = createPluginRuntime(gatewayOver(db, dir), defaultWorkspaceSettings(), {
         dataDir: dir,
@@ -388,7 +405,7 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
   it('accepts the masked value as the selector (what the block message showed)', async () => {
     await seedBlocked('9c04d7');
     await runException(
-      ['approve', 'A******E', '--home', home, '--for', '1h', '--reason', 'mask selector'],
+      ['approve', MASKED_VALUE, '--home', home, '--for', '1h', '--reason', 'mask selector'],
       scriptedIo(),
     );
     const db = openLocalDatabase(dir);
@@ -412,14 +429,14 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
       const grant = (await db.exceptions.list())[0];
       expect(grant?.ruleId).toBe(RULE_ID);
       expect(grant?.createdVia).toBe('cli-approve');
-      expect(grant?.maskedValue).toBe('A******E');
+      expect(grant?.maskedValue).toBe(MASKED_VALUE);
     } finally {
       db.close();
     }
     // Positive control FIRST: this path really does print, and what it prints of
     // the value is the masked preview. Without it the assertion below could not
     // tell a clean confirmation from a capture that stopped receiving anything.
-    expect(io.output()).toContain('A******E');
+    expect(io.output()).toContain(MASKED_VALUE);
     // The raw value must never be echoed back — not even a run of it.
     expectNoEchoOf(io.output(), VALUE);
   });
@@ -693,7 +710,7 @@ describe('aka exception approve — from the blocked-detections ledger', () => {
 
         await expect(
           runException(
-            ['approve', 'A******E', '--home', home, '--for', '1h', '--reason', 'mask selector'],
+            ['approve', MASKED_VALUE, '--home', home, '--for', '1h', '--reason', 'mask selector'],
             scriptedIo(),
           ),
         ).rejects.toThrow(/could never match/);
@@ -961,7 +978,7 @@ describe('aka exception rotate-key — the cost it discloses before committing',
         category: 'secret',
         valueFingerprint: fingerprintValue(key, VALUE),
         keyVersion: key.version,
-        maskedValue: maskMatch(VALUE),
+        maskedValue: MASKED_VALUE,
         sessionId: 'sess-rotate',
         repo: null,
       });

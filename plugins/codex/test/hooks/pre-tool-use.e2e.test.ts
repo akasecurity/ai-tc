@@ -1,11 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { denyPointerMessage } from '../../src/hooks/pre-tool-use-decision.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -81,7 +82,7 @@ describe('pre-tool-use built hook — the pointer deny precedes the store open',
       // store-unavailable warning instead — its absence pins the ordering.
       expect(run.stdout).not.toContain('OFF for this session');
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 
@@ -94,7 +95,7 @@ describe('pre-tool-use built hook — the pointer deny precedes the store open',
       expect(run.stdout).not.toContain('"permissionDecision":"deny"');
       expect(run.stdout).not.toContain('"decision":"block"');
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 });

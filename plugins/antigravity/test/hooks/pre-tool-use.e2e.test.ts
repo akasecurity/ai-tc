@@ -10,13 +10,14 @@
 // invisible to a unit test of the decision module and would block every tool
 // call the user makes.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { denyPointerMessage } from '../../src/hooks/pre-tool-use-decision.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -102,7 +103,7 @@ describe('pre-tool-use built hook — the pointer deny precedes the store open',
       // store-unavailable warning instead — its absence pins the ordering.
       expect(payload.reason).not.toContain('OFF for this session');
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 
@@ -116,7 +117,7 @@ describe('pre-tool-use built hook — the pointer deny precedes the store open',
       corruptStore(home);
       expect(decisionOf(runCommand(home, 'echo hello')).decision).toBe('allow');
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 
@@ -131,7 +132,7 @@ describe('pre-tool-use built hook — the pointer deny precedes the store open',
       });
       expect(decisionOf(run).decision).toBe('allow');
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 
@@ -147,7 +148,7 @@ describe('pre-tool-use built hook — the pointer deny precedes the store open',
       const noCall = runHook(home, { conversationId: 'c', workspacePaths: [] });
       expect(decisionOf(noCall).decision).toBe('allow');
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 });

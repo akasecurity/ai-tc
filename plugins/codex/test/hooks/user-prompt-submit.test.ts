@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,7 @@ import { bundledDetections } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -101,7 +102,7 @@ describe('user-prompt-submit enforcement — redact blocks, it never leaks the r
       // still echoing a live credential's prefix.
       expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 
@@ -117,7 +118,7 @@ describe('user-prompt-submit enforcement — redact blocks, it never leaks the r
       expect(payload.reason).toContain('Remove the flagged content and resubmit');
       expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 
@@ -134,7 +135,7 @@ describe('user-prompt-submit enforcement — redact blocks, it never leaks the r
       // The stale claim that prompts cannot be redacted is gone.
       expect(payload.systemMessage).not.toContain('cannot be redacted');
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 
@@ -152,7 +153,7 @@ describe('user-prompt-submit enforcement — redact blocks, it never leaks the r
       expect(run.stderr).toBe('');
       expect(run.stdout).not.toContain('"decision":"block"');
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 });
@@ -182,7 +183,7 @@ describe('user-prompt-submit first-run nudge — once per session, retired by on
       expect(second.status).toBe(0);
       expect(second.stdout).toBe('');
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 
@@ -199,7 +200,7 @@ describe('user-prompt-submit first-run nudge — once per session, retired by on
       expect(run.status).toBe(0);
       expect(run.stdout).toBe('');
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 });

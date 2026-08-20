@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   EXPECTED_REPOSITORY,
   EXPECTED_WORKFLOW_PATH,
@@ -226,7 +227,7 @@ const withFakeNpmOnPath = <T>(script: string, fn: () => T): T => {
     if (originalPath === undefined) delete process.env.PATH;
     // eslint-disable-next-line n/no-process-env -- restore the host PATH after the test
     else process.env.PATH = originalPath;
-    rmSync(binDir, { recursive: true, force: true });
+    removeTree(binDir);
   }
 };
 

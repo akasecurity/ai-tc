@@ -23,7 +23,7 @@
  * Yes-scan spine — so the built-script posture leg and the multi-transcript
  * shape are proven together rather than only at separate seams.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -31,6 +31,7 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { type BuiltinPolicyId, CalibrationFrame } from '@akasecurity/schema';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { readFrameJsonBlock } from '../../src/setup-frame-json.ts';
 import {
   MULTI_KEY_GITHUB_KEY,
@@ -76,7 +77,7 @@ describe("'Redact + rotation checklist' through the built remediate.js persists 
   }, 120_000);
 
   afterAll(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
+    removeTree(repoRoot);
     journey.cleanup();
   });
 
@@ -207,7 +208,7 @@ describe("'Redact + rotation checklist' through the built remediate.js: the per-
   }, 120_000);
 
   afterAll(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
+    removeTree(repoRoot);
     journey.cleanup();
   });
 

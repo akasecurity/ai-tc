@@ -12,12 +12,14 @@
 // the payload that hook's own "carry on unchanged" is spelled as. Silence fails
 // loudly rather than passing quietly.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
+
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/e2e -> plugins/antigravity
@@ -108,7 +110,7 @@ function withHome<T>(label: string, fn: (home: string) => T): T {
   try {
     return fn(home);
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    removeTree(home);
   }
 }
 

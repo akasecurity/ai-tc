@@ -11,15 +11,7 @@
  * real hook whose own inlined resolver has to find it.
  */
 import { spawnSync } from 'node:child_process';
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-} from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +21,8 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
 import { Rule } from '@akasecurity/schema';
 import { afterAll, describe, expect, it } from 'vitest';
+
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 
 // test/e2e -> plugins/codex
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -88,7 +82,7 @@ function runtimeBearingScripts(): string[] {
 }
 
 afterAll(() => {
-  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+  for (const dir of temps) removeTree(dir);
 });
 
 describe('the built scan worker', () => {

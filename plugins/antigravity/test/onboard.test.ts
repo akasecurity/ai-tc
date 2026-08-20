@@ -15,6 +15,7 @@ import { BuiltinPolicyId, DetectionCategory } from '@akasecurity/schema';
 import { parsePosture } from '@akasecurity/setup-wizard';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { parseSurface } from '../src/setup-show.ts';
 import { isModelJudgeConsentValid, MODEL_JUDGE_PAYLOAD_VERSION } from '../src/triage/consent.ts';
 
@@ -43,7 +44,7 @@ function onboardRun(args: string[] = []): Run {
     const e = err as { stdout?: string; stderr?: string; status?: number };
     return { stdout: e.stdout ?? '', stderr: e.stderr ?? '', status: e.status ?? 1 };
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    removeTree(home);
   }
 }
 
@@ -159,7 +160,7 @@ describe('onboard --model-judge-consent records the distinct model-judge egress 
       const read = readWorkspaceSettings(join(home, '.aka'));
       return JSON.stringify(read);
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   }
 

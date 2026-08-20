@@ -24,7 +24,7 @@
  * empty states).
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,6 +44,7 @@ import type {
 } from '@akasecurity/schema';
 import { presentBatchedRemediation } from '@akasecurity/setup-wizard';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { frameCalibration } from '../../src/calibration.ts';
 import { readRegisteredCommands } from '../../src/command-registry.ts';
 import { transcriptsDir } from '../../src/history/transcripts.ts';
@@ -129,8 +130,8 @@ export class SetupJourney {
   }
 
   cleanup(): void {
-    rmSync(this.home, { recursive: true, force: true });
-    rmSync(this.binDir, { recursive: true, force: true });
+    removeTree(this.home);
+    removeTree(this.binDir);
   }
 
   // Whether the stub `claude` judge was actually executed. The stub touches a
@@ -364,7 +365,7 @@ export class SetupJourney {
   // The bytes are not the "SQLite format 3\0" header, so the first PRAGMA on open
   // fails SQLITE_NOTADB — the exact read failure the fail-open path guards against.
   corruptStore(): void {
-    rmSync(this.storeDir, { recursive: true, force: true });
+    removeTree(this.storeDir);
     mkdirSync(this.storeDir, { recursive: true });
     writeFileSync(
       join(this.storeDir, 'aka.db'),

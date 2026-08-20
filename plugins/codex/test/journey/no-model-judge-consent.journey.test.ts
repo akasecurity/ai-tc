@@ -24,7 +24,7 @@
  * uncalled. Nothing can reach the model API on this path.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +33,7 @@ import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { planBareCommand } from '@akasecurity/plugin-sdk/bare-command';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import {
   assertShimResolves,
   nodeOnlyPathEntries,
@@ -105,8 +106,8 @@ class SetupJourney {
   }
 
   cleanup(): void {
-    rmSync(this.home, { recursive: true, force: true });
-    rmSync(this.binDir, { recursive: true, force: true });
+    removeTree(this.home);
+    removeTree(this.binDir);
   }
 
   // Whether the stub `codex` judge was actually executed. The stub touches a

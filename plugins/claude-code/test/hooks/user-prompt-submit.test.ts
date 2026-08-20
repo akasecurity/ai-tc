@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +10,7 @@ import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { ONBOARDING_NUDGE } from '../../src/hooks/onboarding-nudge.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
@@ -84,7 +85,7 @@ describe('user-prompt-submit hook — driven end-to-end', () => {
       expect(payload.systemMessage).toBe(ONBOARDING_NUDGE);
       expect(run.stdout).not.toContain(STALE_INSTALL_NUDGE);
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 
@@ -100,7 +101,7 @@ describe('user-prompt-submit hook — driven end-to-end', () => {
       expect(run.status).toBe(0);
       expect(run.stdout).not.toContain('"decision":"block"');
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 
@@ -124,7 +125,7 @@ describe('user-prompt-submit hook — driven end-to-end', () => {
       expect(run.stderr).toBe('');
       expect(run.stdout).not.toContain('"decision":"block"');
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 });
@@ -197,7 +198,7 @@ describe('user-prompt-submit enforcement — redact blocks in every consent stat
       // The never-leak assertion: the raw value appears nowhere on stdout.
       expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 
@@ -216,7 +217,7 @@ describe('user-prompt-submit enforcement — redact blocks in every consent stat
       // The raw value appears nowhere in the pointerized output.
       expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 
@@ -233,7 +234,7 @@ describe('user-prompt-submit enforcement — redact blocks in every consent stat
       expect(run.stdout).not.toContain('[[aka:');
       expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 
@@ -249,7 +250,7 @@ describe('user-prompt-submit enforcement — redact blocks in every consent stat
       expect(payload.reason).toContain('[[aka:');
       expectNoEchoOf(run.stdout, SECRET_EXAMPLE);
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 
@@ -266,7 +267,7 @@ describe('user-prompt-submit enforcement — redact blocks in every consent stat
       // The stale claim that prompts cannot be redacted is gone.
       expect(payload.systemMessage).not.toContain('cannot be redacted');
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 });

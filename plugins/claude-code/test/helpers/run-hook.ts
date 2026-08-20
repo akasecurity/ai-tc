@@ -13,10 +13,12 @@
  * `runHook('session-start', JSON.stringify({ session_id: 'x' }))`.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/helpers -> plugins/claude-code
@@ -90,7 +92,7 @@ export function withTempHome<T>(fn: (home: string) => T): T {
   try {
     return fn(home);
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    removeTree(home);
   }
 }
 

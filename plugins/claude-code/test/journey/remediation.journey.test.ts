@@ -25,7 +25,7 @@
  * entry, asserting the rotation-checklist entries and the resolved summary
  * compose from the same checklist-entry model.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -38,6 +38,7 @@ import type {
 import { buildChecklistEntries, renderChecklistMarkdown } from '@akasecurity/setup-wizard';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { selectSecretScanContinuation } from '../../src/command-registry.ts';
 import {
   REMEDIATION_LEAK_RAW_KEYS,
@@ -117,7 +118,7 @@ describe('direct-invocation remediation chain, no wizard state', () => {
   }, 120_000);
 
   afterAll(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
+    removeTree(repoRoot);
     journey.cleanup();
   });
 

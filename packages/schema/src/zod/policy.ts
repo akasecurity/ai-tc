@@ -69,6 +69,14 @@ export const PolicyBundle = z
     // on-disk caches — that omit the field still parse; consumers read
     // `bundle.exceptions ?? []`.
     exceptions: z.array(ExceptionBundleEntry).optional(),
+    // Rule ids whose pack is assigned a REVERSIBLE archetype (Redact & Vault).
+    // A second axis over the same `redact` action, carried beside the policies
+    // rather than on them: nothing writes ruleId-targeted policies to disk, so
+    // widening Policy itself would change a persisted shape to express something
+    // only the in-memory bundle needs. Optional so an older producer — or an
+    // older on-disk cache — still parses; consumers read `?? []` and get the
+    // pre-existing one-way behaviour, which is the safe direction to default.
+    reversibleRuleIds: z.array(z.string()).optional(),
     // Installed pack version, keyed by ruleId, for rules in `rules` that came
     // from a versioned installed pack. Optional so older backends — and older
     // on-disk caches — that omit the field still parse; consumers fall back to
@@ -123,11 +131,11 @@ export const PolicyKind = z.enum(['builtin', 'custom']).meta({ id: 'PolicyKind' 
 export type PolicyKind = z.infer<typeof PolicyKind>;
 
 // Single source of truth for the built-in policy ids, declared in display order
-// (monitor → warn → redact → block, least → most restrictive). This one runtime
+// (monitor → warn → redact → vault → block, least → most restrictive). This one runtime
 // array feeds the Zod enum (BuiltinPolicyId), PATCH membership validation, the
 // catalog display order (BUILTIN_ORDER), and the catalog keys (BUILTIN_POLICIES) —
 // so the literal set is declared exactly once here.
-export const KNOWN_BUILTIN_IDS = ['monitor', 'warn', 'redact', 'block'] as const;
+export const KNOWN_BUILTIN_IDS = ['monitor', 'warn', 'redact', 'vault', 'block'] as const;
 
 export const BuiltinPolicyId = z.enum(KNOWN_BUILTIN_IDS).meta({ id: 'BuiltinPolicyId' });
 export type BuiltinPolicyId = z.infer<typeof BuiltinPolicyId>;
@@ -141,31 +149,71 @@ export const BUILTIN_ORDER: readonly BuiltinPolicyId[] = KNOWN_BUILTIN_IDS;
 // `Record<BuiltinPolicyId, …>` constraint forces this to stay exhaustive with
 // KNOWN_BUILTIN_IDS, so adding a builtin is a single coordinated edit (id set +
 // this spec) rather than three synchronized literals.
-const BUILTIN_POLICY_SPECS: Record<
-  BuiltinPolicyId,
-  { name: string; description: string; action: ActionTaken }
-> = {
+//
+// `reversible` is a SECOND axis over the same enforcement action, not a third
+// action. Two archetypes share `action: 'redact'` and differ only in what
+// happens to the value that was stripped: Redact destroys it one-way, Redact &
+// Vault keeps a recoverable encrypted copy under ~/.aka and leaves a pointer in
+// its place. Modelling it here rather than as a fifth ActionTaken is deliberate
+// — ActionTaken is a stored column and a wire enum switched on by if/else-if
+// chains with no exhaustiveness check, so a new member falls through to allow;
+// a new BuiltinPolicyId is caught by this Record at compile time.
+//
+// Declared with `as const satisfies` rather than a type ANNOTATION. The
+// annotation widened `reversible` to `boolean`, which erased at the type level
+// exactly the fact CategoryPolicyId is derived from — so the narrowing below
+// compiled to the full union and enforced nothing. `satisfies` keeps the
+// exhaustiveness check this comment relies on while preserving the literals.
+const BUILTIN_POLICY_SPECS = {
   monitor: {
     name: 'Monitor',
     action: 'log',
+    reversible: false,
     description: 'Log every match for audit. The request is allowed through untouched.',
   },
   warn: {
     name: 'Warn',
     action: 'warn',
+    reversible: false,
     description: 'Allow the request, but warn the user inline before it is sent.',
   },
   redact: {
     name: 'Redact',
     action: 'redact',
-    description: 'Automatically strip the matched value from the request, then continue.',
+    reversible: false,
+    description:
+      'Strip the matched value from the request and destroy it, then continue. What was ' +
+      'removed cannot be recovered.',
+  },
+  vault: {
+    name: 'Redact & Vault',
+    action: 'redact',
+    reversible: true,
+    description:
+      'Strip the matched value from the request and keep an encrypted, recoverable copy in ' +
+      'the local vault, leaving a pointer in its place. Needs the vault consent granted under ' +
+      'Settings; without it this behaves as Redact.',
   },
   block: {
     name: 'Block',
     action: 'block',
+    reversible: false,
     description: 'Refuse the request entirely whenever any rule in this detection matches.',
   },
-};
+} as const satisfies Record<
+  BuiltinPolicyId,
+  { name: string; description: string; action: ActionTaken; reversible: boolean }
+>;
+
+// The archetypes that carry reversibility, derived AT THE TYPE LEVEL from the
+// specs above. This is what makes CategoryPolicyId a real narrowing rather than
+// an alias for the full union.
+type ReversibleBuiltinId = {
+  [K in BuiltinPolicyId]: (typeof BUILTIN_POLICY_SPECS)[K]['reversible'] extends true ? K : never;
+}[BuiltinPolicyId];
+
+/** A policy id the per-CATEGORY axis can express — every archetype but the reversible ones. */
+export type CategoryExpressibleId = Exclude<BuiltinPolicyId, ReversibleBuiltinId>;
 
 // Maps the palette BuiltinPolicyId (monitor/warn/redact/block) to the ActionTaken
 // enum actually stored on policies.action (warn/redact/block/allow/log).
@@ -173,6 +221,62 @@ const BUILTIN_POLICY_SPECS: Record<
 // BUILTIN_POLICY_SPECS so the mapping can never drift from the catalog.
 export function builtinPolicyToAction(id: BuiltinPolicyId): ActionTaken {
   return BUILTIN_POLICY_SPECS[id].action;
+}
+
+// The archetypes a per-CATEGORY policy row can actually express.
+//
+// That row stores an ActionTaken — the enforcement verb alone — so an archetype
+// whose meaning also depends on the reversibility axis cannot survive the trip:
+// it would be written as its bare action and the other half silently dropped.
+// Derived from the specs rather than listed, so a future reversible archetype is
+// excluded automatically instead of being remembered.
+//
+// The PACK axis (installed_packs.policy_id) stores the BuiltinPolicyId itself and
+// therefore carries every archetype; this narrowing applies only to the category
+// fallback and to anything that feeds it.
+export const CATEGORY_EXPRESSIBLE_IDS = KNOWN_BUILTIN_IDS.filter(
+  (id) => !BUILTIN_POLICY_SPECS[id].reversible,
+) as readonly CategoryExpressibleId[];
+
+// The archetypes that axis CANNOT express — the complement, also derived, so the
+// two together are exhaustive by construction.
+export const CATEGORY_INEXPRESSIBLE_IDS = KNOWN_BUILTIN_IDS.filter(
+  (id) => BUILTIN_POLICY_SPECS[id].reversible,
+) as readonly BuiltinPolicyId[];
+
+/**
+ * A policy id valid on the per-CATEGORY axis. Rejects an archetype that axis
+ * cannot store, rather than accepting it and writing something weaker — which
+ * is the failure this exists to prevent: a caller asking for Redact & Vault and
+ * silently getting plain Redact, with nothing recording that the choice was
+ * downgraded.
+ */
+export const CategoryPolicyId = z
+  // The element type is the DERIVED narrow union, not BuiltinPolicyId. Casting
+  // to the wide one re-declared every member as the whole union, so `z.infer`
+  // gave back the full set and `writeStandingSecretPosture('vault')` compiled
+  // clean while the runtime refused it.
+  .enum(CATEGORY_EXPRESSIBLE_IDS as [CategoryExpressibleId, ...CategoryExpressibleId[]])
+  .meta({ id: 'CategoryPolicyId' });
+export type CategoryPolicyId = z.infer<typeof CategoryPolicyId>;
+
+// Whether a built-in archetype keeps the value it strips. The companion to
+// builtinPolicyToAction on the second axis: `action` says what happens to the
+// REQUEST, this says what happens to the VALUE. Derived from the same specs so
+// the two can never disagree about an id.
+export function builtinPolicyIsReversible(id: BuiltinPolicyId): boolean {
+  return BUILTIN_POLICY_SPECS[id].reversible;
+}
+
+// The reversibility a PACK's assigned built-in policy resolves to — the exact
+// companion of policyIdToAction below, and unknown/unassigned coalesces the same
+// way (to DEFAULT_PACK_POLICY_ID, which is not reversible). Every consumer
+// resolves through this, so a detection's Redact-vs-Redact & Vault choice reads
+// identically on every surface.
+export function policyIdIsReversible(policyId: string | null | undefined): boolean {
+  const parsed = BuiltinPolicyId.safeParse(policyId ?? DEFAULT_PACK_POLICY_ID);
+  const id: BuiltinPolicyId = parsed.success ? parsed.data : DEFAULT_PACK_POLICY_ID;
+  return builtinPolicyIsReversible(id);
 }
 
 // The per-CATEGORY enforcement FALLBACK (axis 1). Used when no more-specific
@@ -196,12 +300,24 @@ export const DEFAULT_ACTIONS: Record<DetectionCategory, ActionTaken> = Object.fr
 // its record key, never re-declared.
 export const BUILTIN_POLICIES: Record<
   BuiltinPolicyId,
-  { id: BuiltinPolicyId; name: string; description: string; action: ActionTaken }
+  {
+    id: BuiltinPolicyId;
+    name: string;
+    description: string;
+    action: ActionTaken;
+    reversible: boolean;
+  }
 > = Object.fromEntries(
   KNOWN_BUILTIN_IDS.map((id) => [id, { id, ...BUILTIN_POLICY_SPECS[id] }]),
 ) as Record<
   BuiltinPolicyId,
-  { id: BuiltinPolicyId; name: string; description: string; action: ActionTaken }
+  {
+    id: BuiltinPolicyId;
+    name: string;
+    description: string;
+    action: ActionTaken;
+    reversible: boolean;
+  }
 >;
 
 // The "Actively redact" onboarding preset: a per-category built-in policy id
@@ -236,6 +352,26 @@ export const DEFAULT_PACK_POLICY_ID: BuiltinPolicyId = 'monitor';
 // monitor-by-default posture (DEFAULT_PACK_POLICY_ID). NOTE: this is the PACK
 // axis; it is deliberately distinct from DEFAULT_ACTIONS, which is the per-CATEGORY
 // fallback. See PolicyTarget / DEFAULT_ACTIONS for how the axes relate.
+/**
+ * A per-pack policy id as a USER reads it — the archetype's NAME from this
+ * catalog. The display sibling of policyIdToAction and policyIdIsReversible,
+ * coalescing identically: an unassigned pack reads as the catalog default, and
+ * an id the catalog does not carry (a custom policy) is returned verbatim
+ * rather than misreported as a built-in — least of all as Monitor, which would
+ * read as log-only for a policy that may block.
+ *
+ * It lives here because four surfaces render this one value — `aka detections`,
+ * and the three plugins' detection tables — and each had its own copy of the
+ * resolver. That is the same defect this catalog exists to prevent, one level
+ * down: a change to the coalescing rule or the custom-id fallback would have to
+ * land in four files, with nothing checking that it did.
+ */
+export function policyDisplayName(policyId: string | null | undefined): string {
+  const id = policyId ?? DEFAULT_PACK_POLICY_ID;
+  const parsed = BuiltinPolicyId.safeParse(id);
+  return parsed.success ? BUILTIN_POLICIES[parsed.data].name : id;
+}
+
 export function policyIdToAction(policyId: string | null | undefined): ActionTaken {
   const parsed = BuiltinPolicyId.safeParse(policyId ?? DEFAULT_PACK_POLICY_ID);
   const id: BuiltinPolicyId = parsed.success ? parsed.data : DEFAULT_PACK_POLICY_ID;

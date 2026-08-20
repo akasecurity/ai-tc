@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { readWorkspaceSettings } from '@akasecurity/persistence';
+import type { SaveSettingsInput } from '@akasecurity/schema';
 import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
@@ -50,8 +51,8 @@ describe('saveSettings — vault-consent grant and revocation', () => {
   it("records a server-stamped grant at the current consent version on 'on'", async () => {
     const before = Date.now();
     const res = await saveSettings({
-      policy: 'redact',
       historicalAccess: 'session-only',
+      modelJudgeConsent: false,
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
     });
@@ -68,8 +69,8 @@ describe('saveSettings — vault-consent grant and revocation', () => {
 
   it("keeps the original acknowledgedAt when 'on' is saved again", async () => {
     await saveSettings({
-      policy: 'redact',
       historicalAccess: 'session-only',
+      modelJudgeConsent: false,
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
     });
@@ -82,30 +83,32 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     // so a re-stamp could not coincide with it.
     await new Promise((resolve) => setTimeout(resolve, 5));
     const res = await saveSettings({
-      policy: 'warn',
       historicalAccess: 'session-only',
+      modelJudgeConsent: false,
       vaultConsent: 'on',
-      vaultInlineReveal: 'masked',
+      // The unrelated edit. It has to be a field that really changes, or the
+      // second save proves nothing about a re-stamp it never had cause to make.
+      vaultInlineReveal: 'off',
     });
     expect(res).toEqual({ ok: true });
 
     const again = readWorkspaceSettings();
-    expect(again.policy).toBe('warn');
+    expect(again.vaultInlineReveal).toBe('off'); // the unrelated edit landed
     expect(again.vaultConsent).toEqual(first);
   });
 
   it("removes the field from the persisted file on 'off'", async () => {
     await saveSettings({
-      policy: 'redact',
       historicalAccess: 'session-only',
+      modelJudgeConsent: false,
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
     });
     expect(rawSettings()).toContain('vaultConsent');
 
     const res = await saveSettings({
-      policy: 'redact',
       historicalAccess: 'session-only',
+      modelJudgeConsent: false,
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
     });
@@ -121,16 +124,16 @@ describe('saveSettings — vault-consent grant and revocation', () => {
 
   it('rejects an unknown consent value and leaves the file untouched', async () => {
     await saveSettings({
-      policy: 'redact',
       historicalAccess: 'session-only',
+      modelJudgeConsent: false,
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
     });
     const before = rawSettings();
 
     const res = await saveSettings({
-      policy: 'redact',
       historicalAccess: 'session-only',
+      modelJudgeConsent: false,
       vaultConsent: 'granted',
       vaultInlineReveal: 'masked',
     });
@@ -144,8 +147,8 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     // type system must still be rejected at runtime, writing nothing.
     const forged = { acknowledgedAt: '2001-01-01T00:00:00.000Z', version: VAULT_CONSENT_VERSION };
     const res = await saveSettings({
-      policy: 'redact',
       historicalAccess: 'session-only',
+      modelJudgeConsent: false,
       vaultConsent: forged as unknown as string,
       vaultInlineReveal: 'masked',
     });
@@ -153,7 +156,11 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     expect(() => rawSettings()).toThrow(); // nothing was ever written
 
     // And the contract itself admits only a string — no object shape exists.
-    expectTypeOf<Parameters<typeof saveSettings>[0]['vaultConsent']>().toEqualTypeOf<string>();
+    // The wire contract admits only a string — no object shape exists. Read off
+    // the SCHEMA type, not the action's parameter: that parameter is `unknown`
+    // by design, precisely so a non-object payload is refused at runtime rather
+    // than throwing on the first field read.
+    expectTypeOf<SaveSettingsInput['vaultConsent']>().toEqualTypeOf<string>();
   });
 });
 
@@ -176,8 +183,8 @@ describe('stale-grant re-consent and inline reveal', () => {
       join(home, '.aka'),
     );
     const result = await saveSettings({
-      policy: 'redact',
       historicalAccess: 'session-only',
+      modelJudgeConsent: false,
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
     });
@@ -189,8 +196,8 @@ describe('stale-grant re-consent and inline reveal', () => {
 
   it('persists a valid inline-reveal mode and rejects junk', async () => {
     const ok = await saveSettings({
-      policy: 'redact',
       historicalAccess: 'session-only',
+      modelJudgeConsent: false,
       vaultConsent: 'off',
       vaultInlineReveal: 'full',
     });
@@ -198,8 +205,8 @@ describe('stale-grant re-consent and inline reveal', () => {
     expect(readWorkspaceSettings(join(home, '.aka')).vaultInlineReveal).toBe('full');
 
     const bad = await saveSettings({
-      policy: 'redact',
       historicalAccess: 'session-only',
+      modelJudgeConsent: false,
       vaultConsent: 'off',
       vaultInlineReveal: 'loud',
     });

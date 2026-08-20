@@ -21,7 +21,12 @@ import type {
   FirstRunCalibration,
   SetupHandoffOffer,
 } from '@akasecurity/schema';
-import { BUILTIN_ORDER, DetectionCategory, toApiAction } from '@akasecurity/schema';
+import {
+  CATEGORY_EXPRESSIBLE_IDS,
+  DetectionCategory,
+  policyDisplayName,
+  toApiAction,
+} from '@akasecurity/schema';
 import { downgradeWarning, isDowngrade } from '@akasecurity/setup-wizard';
 
 import { selectRegisteredCommands } from './command-registry.ts';
@@ -144,12 +149,18 @@ export function renderRecommendedPosture(
 }
 
 // The full 8×4 posture matrix for the start-light branch: every pack laid out
-// against all four levels (monitor/warn/redact/block), the chosen level marked,
-// in canonical category order. This lays the whole choice space out per pack —
-// distinct from renderRecommendedPosture's condensed one-level-per-pack glance.
-// The level columns come from BUILTIN_ORDER (the schema's palette order), so the
-// DB action vocabulary (log/allow) never appears. Pure (no I/O); the caller
-// hands in the posture map (severityFloorPosture() for the recommended defaults).
+// against the four levels a per-CATEGORY policy can hold (monitor/warn/redact/
+// block), the chosen level marked, in canonical category order. This lays the
+// whole choice space out per pack — distinct from renderRecommendedPosture's
+// condensed one-level-per-pack glance.
+//
+// Columns come from CATEGORY_EXPRESSIBLE_IDS, NOT the full catalog. This map is
+// keyed by DetectionCategory, and that axis stores a bare ActionTaken — it
+// cannot express a reversible archetype, which is why parsePosture and
+// TriagePolicy both refuse one. Sourcing the columns from BUILTIN_ORDER shipped
+// a permanently empty VAULT column: a level offered on a grid that can never
+// mark it. The DB action vocabulary (log/allow) never appears either way. Pure
+// (no I/O); the caller hands in the posture map.
 const GRID_MARK = '●';
 export function renderPostureGrid(
   posture: Partial<Record<DetectionCategory, BuiltinPolicyId>>,
@@ -159,9 +170,9 @@ export function renderPostureGrid(
   );
   const rows = packs.map((category) => [
     category,
-    ...BUILTIN_ORDER.map((level) => (posture[category] === level ? GRID_MARK : '')),
+    ...CATEGORY_EXPRESSIBLE_IDS.map((level) => (posture[category] === level ? GRID_MARK : '')),
   ]);
-  return indent(table(['Category', ...BUILTIN_ORDER], rows));
+  return indent(table(['Category', ...CATEGORY_EXPRESSIBLE_IDS], rows));
 }
 
 // The re-tune hint that closes the start-light card and the applied frame,
@@ -1002,12 +1013,6 @@ export function renderExceptions(exceptions: DetectionException[], nowMs = Date.
   ].join('\n');
 }
 
-// /aka:detections — the installed detection packs, read-only: installed
-// version, rule count, enabled state, effective policy, and whether the
-// running plugin ships a newer snapshot. Updates are MANUAL by design (nothing
-// auto-updates an installed pack), and applying one stays in the terminal /
-// dashboard on purpose — a slash command is model-invocable, so this surface
-// only displays and points at the CLI (mirrors renderExceptions).
 export function renderDetections(items: DetectionListItem[]): string {
   if (items.length === 0) {
     return [
@@ -1022,7 +1027,7 @@ export function renderDetections(items: DetectionListItem[]): string {
     i.latestVersion ? `v${i.latestVersion}` : `v${i.version}`,
     String(i.ruleCount),
     i.enabled ? 'yes' : 'no',
-    i.policyId ?? 'monitor',
+    policyDisplayName(i.policyId),
     i.latestVersion ? '⬆ update available' : '✓ up to date',
   ]);
 

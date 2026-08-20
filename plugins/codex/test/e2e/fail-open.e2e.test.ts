@@ -340,6 +340,12 @@ const ENFORCING_HOOKS: readonly EnforcingHook[] = [
     emits: {
       block: '"decision":"block"',
       redact: '"decision":"block"',
+      // Codex has no vault at all, so Redact & Vault can only ever resolve to
+      // the 'redact' ACTION and reach the wire identically to Redact. That
+      // equality is all this row asserts — a REGRESSION guard against the new
+      // archetype arriving as something weaker (an allow, or silence), not a
+      // proof that anything is kept. There is nothing to keep on this host.
+      vault: '"decision":"block"',
       warn: '"systemMessage"',
       monitor: '"systemMessage"',
     },
@@ -360,6 +366,7 @@ const ENFORCING_HOOKS: readonly EnforcingHook[] = [
     emits: {
       block: '"permissionDecision":"deny"',
       redact: '"permissionDecision":"deny"',
+      vault: '"permissionDecision":"deny"',
       warn: '"systemMessage"',
       monitor: null,
     },
@@ -382,13 +389,14 @@ const ENFORCING_HOOKS: readonly EnforcingHook[] = [
     emits: {
       block: '"decision":"block"',
       redact: '"decision":"block"',
+      vault: '"decision":"block"',
       warn: '"systemMessage"',
       monitor: null,
     },
   },
 ];
 
-const POLICIES: readonly BuiltinPolicyId[] = ['block', 'redact', 'warn', 'monitor'];
+const POLICIES: readonly BuiltinPolicyId[] = ['block', 'redact', 'vault', 'warn', 'monitor'];
 
 describe('the wire protocol never carries an action key, at any action level', () => {
   for (const hook of ENFORCING_HOOKS) {

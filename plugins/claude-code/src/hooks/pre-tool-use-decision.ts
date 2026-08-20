@@ -25,6 +25,7 @@ export interface ScannedField {
 export type FieldTokenizer = (
   text: string,
   findings: CaptureResult['findings'],
+  reversible: ReadonlySet<CaptureResult['findings'][number]>,
 ) => Promise<{ text: string; pointers: string[]; degraded: { category: string }[] }>;
 
 // Woven into the deny message when a redact decision was escalated off an
@@ -115,15 +116,21 @@ export async function decidePreToolUse(
       for (const finding of result.findings) blockedRules.add(finding.ruleId);
       if (result.blockedReferences) blockedReferences.push(...result.blockedReferences);
     } else if (action === 'redact') {
-      // The rewrite: reversible (pointers) when a tokenizer is supplied and
-      // the enforced spans are known; otherwise the runtime's one-way text.
-      // The tokenizer covers exactly the ENFORCED spans — warn-level findings
-      // in the same field stay in place, matching what the policy decided.
+      // The rewrite covers exactly the ENFORCED spans — warn-level findings in
+      // the same field stay in place, matching what the policy decided.
+      //
+      // Which of those spans survives as a recoverable pointer is decided PER
+      // FINDING, by the archetype its own detection was assigned: Redact & Vault
+      // keeps it, plain Redact destroys it. Both are handed to the tokenizer in
+      // one call rather than split into two rewrites — the tokenizer replaces
+      // every span it is given, so passing only the reversible subset would
+      // leave the one-way spans standing in the clear.
       let rewritten = result.text;
       const enforced = result.enforcedFindings ?? [];
+      const reversible = new Set(result.reversibleFindings ?? []);
       if (tokenizeField && enforced.length > 0) {
         try {
-          const tokenized = await tokenizeField(text, enforced);
+          const tokenized = await tokenizeField(text, enforced, reversible);
           rewritten = tokenized.text;
           for (const token of tokenized.pointers) {
             realized.pointers.push({ token, category: pointerCategory(token) });

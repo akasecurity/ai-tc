@@ -47,8 +47,8 @@ import { fileURLToPath } from 'node:url';
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { loadConfig } from '@akasecurity/plugin-sdk';
 import {
-  BuiltinPolicyId,
   CalibrationFrame,
+  CategoryPolicyId,
   type MaskedSecretFinding,
   RemediationOption,
 } from '@akasecurity/schema';
@@ -140,7 +140,7 @@ function postureConfirmation(result: StandingPostureResult): string {
 // `writeStandingSecretPosture` already computed and returned — a real persisted
 // write is not a false failure just because closing the connection afterward
 // happened to throw.
-export function writeSecretPosture(level: BuiltinPolicyId): StandingPostureResult {
+export function writeSecretPosture(level: CategoryPolicyId): StandingPostureResult {
   let db: ReturnType<typeof openLocalDatabase>;
   try {
     db = openLocalDatabase(loadConfig().dataDir);
@@ -159,11 +159,19 @@ export function writeSecretPosture(level: BuiltinPolicyId): StandingPostureResul
 }
 
 // Validate the wizard-supplied `--posture` for a redact route via the
-// schema-sourced `BuiltinPolicyId`. A missing or malformed value fails loud (a
+// schema-sourced `CategoryPolicyId`. A missing or malformed value fails loud (a
 // wizard-wiring bug, not a session fault) rather than redacting with no posture
 // recorded.
-function requireRedactPosture(rawPosture: string | undefined): BuiltinPolicyId {
-  const parsedPosture = BuiltinPolicyId.safeParse(rawPosture);
+//
+// CategoryPolicyId, NOT the wider BuiltinPolicyId: this value reaches
+// applyCategoryPosture, which writes a per-CATEGORY row storing a bare
+// ActionTaken. A reversible archetype parses fine against the wider enum and is
+// then written as its plain action, so a caller asking for Redact & Vault gets
+// one-way Redact — and the confirmation line still echoes the id they asked
+// for, reporting a posture the store does not hold. Refusing is the honest
+// answer; that axis has nowhere to put the other half.
+function requireRedactPosture(rawPosture: string | undefined): CategoryPolicyId {
+  const parsedPosture = CategoryPolicyId.safeParse(rawPosture);
   if (!parsedPosture.success) {
     fail(`redact route requires a valid --posture (got ${JSON.stringify(rawPosture)})`);
   }

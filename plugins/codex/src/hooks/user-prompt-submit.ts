@@ -33,6 +33,7 @@ import {
   loadConfig,
   uniqueRuleIds,
 } from '@akasecurity/plugin-sdk';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import { blockMessage, exceptionPointer } from '../exception-guidance.ts';
 import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
@@ -63,7 +64,7 @@ async function main(): Promise<void> {
   try {
     result = await runtime.capture({
       kind: 'prompt',
-      sourceTool: 'codex',
+      sourceTool: SOURCE_TOOL.Codex,
       text: prompt,
       metadata,
     });

@@ -276,8 +276,12 @@ function openWithPragmas(file: string): DatabaseSync {
 //
 // The handle is closed on every path. Returns the backup path.
 function backupLegacyStore(db: DatabaseSync, file: string): string {
-  // A prior open killed mid-snapshot leaves a `.partial` beside the store that
-  // nothing else reaps; clear the abandoned ones before writing a new copy.
+  // Redundant with openLocalDatabase's own sweep — this function is private and
+  // reached only through openAndInitialize, which only openLocalDatabase calls,
+  // so nothing arrives here unswept. Kept anyway because it is cheap and this is
+  // the one moment a SECOND full-size copy is about to land beside the first:
+  // the sweep's contract is local to the snapshot it precedes, not inherited
+  // from whatever ran before it.
   reapStalePartials(file);
   const backup = backupPath(file, 'legacy');
   let snapshotted = false;
@@ -395,6 +399,15 @@ function openAndInitialize(file: string) {
 export function openLocalDatabase(dir: string): LocalDatabase {
   ensureDataDirSync(dir);
   const file = join(dir, DB_FILENAME);
+  // A snapshot killed part-way leaves a staging directory holding a full copy of
+  // the prompt corpus, and nothing else clears one: `discardStore` sweeps only
+  // the store and its sidecars. The two snapshot paths below each sweep before
+  // taking a copy, but both are reached only by a migration or a foreign-lineage
+  // reset — so on an already-migrated store, which is every open after the
+  // first, no sweep ran at all and the leftover stayed indefinitely.
+  // Best-effort and age-bounded: it never touches a copy another opener has in
+  // flight (see reapStalePartials).
+  reapStalePartials(file);
   const {
     db,
     events,

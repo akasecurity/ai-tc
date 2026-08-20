@@ -39,7 +39,7 @@ describe('SecretVault', () => {
   // The package's shared store harness owns the temp tree and every handle it
   // hands out. Re-rolling this by hand is what leaked a migration handle here
   // and broke the suite's teardown on Windows.
-  const store = useTempStore('aka-vault-');
+  const store = useTempStore('aka-vault-', { migrated: true });
   let dir: string;
   let db: DatabaseSync;
   let repo: SqliteSecretVaultRepository;

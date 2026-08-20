@@ -1,6 +1,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -23,6 +24,7 @@ import { maskMatch } from '@akasecurity/detections';
 import {
   BLOCKED_DETECTIONS_RETENTION_MS,
   dataDir,
+  dbSidecars,
   fingerprintValue,
   loadOrCreateFingerprintKey,
   type LocalDatabase,
@@ -47,6 +49,7 @@ import {
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { expectNoRejection } from '../helpers/no-throw.ts';
 import { storeBytes } from '../helpers/store-bytes.ts';
+import { withBundledPacks } from '../helpers/store-templates.ts';
 
 // Every mutating Server Action on the exceptions surface, each covered against a
 // real node:sqlite store and a real fingerprint key file — no mocking of either
@@ -267,18 +270,78 @@ beforeEach(() => {
   dir = dataDir();
   // Seed the installed ruleset the way the plugin/CLI do on open — addException
   // scans against this DB snapshot, not the engine's process-global registry.
-  const db = openLocalDatabase(dir);
-  try {
-    db.installedPacks.recordInventory(bundledDetections());
-  } finally {
-    db.close();
-  }
+  // The schema and the installed ruleset arrive as a file copy: both are
+  // identical every test, and migrating plus re-reading the bundled set per
+  // test is what put this suite's `beforeEach` over the Windows hook ceiling.
+  withBundledPacks.seed(dir);
   resetSingleton();
 });
 
 afterEach(() => {
   resetSingleton();
   removeTree(home);
+});
+
+/**
+ * Make the store unopenable: overwrite `aka.db` with bytes SQLite must refuse,
+ * then remove the sidecars that could roll it back over them.
+ *
+ * The sidecar set is `dbSidecars`, not a hand-spelled `-wal`/`-shm` pair. Those
+ * two are what SQLite keeps in write-ahead logging, which is what a CI temp dir
+ * does — but where WAL is unavailable it writes a `-journal` instead (a DrvFs
+ * `/mnt/c` path under WSL, some network mounts). A live rollback journal left
+ * behind lets SQLite roll the store back over the injected bytes, so the store
+ * OPENS, the action never takes its failure branch, and a case named for the
+ * "local store" error path stops exercising it — while still passing, because
+ * the assertions check the returned error shape rather than that corruption
+ * happened. Deriving the set means a fourth sidecar reaches these sites without
+ * an edit.
+ *
+ * The caller must have closed its handle first (`resetSingleton`).
+ */
+function clearSidecars(file: string): void {
+  for (const sidecar of dbSidecars(file)) rmSync(sidecar, { force: true });
+}
+
+function corruptTheStore(): void {
+  const file = join(dir, 'aka.db');
+  writeFileSync(file, 'not a database\n');
+  clearSidecars(file);
+  // The precondition, asserted rather than assumed: without it every case below
+  // would pass whether or not the injection took, which is the vacuity the
+  // hardcoded pair risked in the first place.
+  expect(() => openLocalDatabase(dir)).toThrow();
+}
+
+/**
+ * The injector's own guard. Every case that uses it asserts a returned error
+ * shape, so a narrowed sidecar set costs nothing there — the store still refuses
+ * to open under WAL, which is what a CI temp dir gives. The defect it is guarding
+ * against is therefore invisible to its callers by construction, and only an
+ * assertion on the injector can see it.
+ *
+ * Planting all three as plain files makes the check deterministic on every
+ * platform: no journal mode has to be coaxed into existence, and narrowing the
+ * set back to the `-wal`/`-shm` pair leaves `-journal` behind and fails here.
+ */
+describe('the corrupt-store injector clears every sidecar SQLite might have left', () => {
+  it('removes each path dbSidecars names, not just the WAL pair', () => {
+    resetSingleton();
+    const file = join(dir, 'aka.db');
+    const sidecars = dbSidecars(file);
+    // More than the pair, or this asserts nothing about the third.
+    expect(sidecars.length).toBeGreaterThan(2);
+    for (const sidecar of sidecars) writeFileSync(sidecar, 'leftover');
+
+    // The removal alone, NOT the whole injector. `corruptTheStore` ends by
+    // opening the store to prove the injection took, and a failed open UNLINKS a
+    // hot journal on its way out — measured: a planted `aka.db-journal` is gone
+    // after `openLocalDatabase` throws. So driving the whole injector here
+    // destroys the evidence, and a narrowed sidecar set stays green through it.
+    clearSidecars(file);
+
+    expect(sidecars.filter((sidecar) => existsSync(sidecar))).toEqual([]);
+  });
 });
 
 describe('addException — the only web code touching a raw secret', () => {
@@ -1218,10 +1281,7 @@ describe('approveBlocked — granting from the ledger, no value in play', () => 
       // store is replaced with bytes SQLite will refuse, which is the shape a
       // truncated or byte-flipped store arrives in.
       resetSingleton(); // close the handle before overwriting the file
-      writeFileSync(join(dir, 'aka.db'), 'not a database\n');
-      for (const sidecar of ['aka.db-wal', 'aka.db-shm']) {
-        rmSync(join(dir, sidecar), { force: true });
-      }
+      corruptTheStore();
 
       const res = await approveBlocked({ reference: REFERENCE, scope: '1h', reason: 'x' });
       expect(res.ok).toBe(false);
@@ -1230,10 +1290,7 @@ describe('approveBlocked — granting from the ledger, no value in play', () => 
 
     it('returns an error instead of rejecting when the ruleset read throws', async () => {
       resetSingleton();
-      writeFileSync(join(dir, 'aka.db'), 'not a database\n');
-      for (const sidecar of ['aka.db-wal', 'aka.db-shm']) {
-        rmSync(join(dir, sidecar), { force: true });
-      }
+      corruptTheStore();
 
       const res = await addException({ ruleId: RULE_ID, value: VALUE, scope: 'once', reason: 'x' });
       expect(res.ok).toBe(false);
@@ -1474,10 +1531,7 @@ describe('revokeException — terminal, audit-retained, and easy to no-op silent
       // returns.
       const grant = await activeGrant();
       resetSingleton(); // close the handle before overwriting the file
-      writeFileSync(join(dir, 'aka.db'), 'not a database\n');
-      for (const sidecar of ['aka.db-wal', 'aka.db-shm']) {
-        rmSync(join(dir, sidecar), { force: true });
-      }
+      corruptTheStore();
 
       const res = await revokeException(grant.id, 'x');
       expect(res.ok).toBe(false);

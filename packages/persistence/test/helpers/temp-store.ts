@@ -24,6 +24,7 @@ import type { LocalDatabase } from '../../src/database.ts';
 import { openLocalDatabase } from '../../src/database.ts';
 import { dataDir, dbPath, settingsDir } from '../../src/local-layout.ts';
 import { ensureDataDirSync } from '../../src/paths.ts';
+import { migratedStore } from './migrated-store.ts';
 
 export interface TempStore {
   /** The mkdtemp root, standing in for `~/.aka`. */
@@ -80,11 +81,31 @@ interface TrackedHandle {
   isOpen: () => boolean;
 }
 
+/** What a caller can vary about the store it gets. */
+export interface TempStoreOptions {
+  /**
+   * Seed `data/` from the pre-migrated template instead of letting the first
+   * `open()` run every migration — the same file each test would have built for
+   * itself, built once per worker and copied. Per-test isolation is unchanged:
+   * the copy is this store's own file, and no handle is shared.
+   *
+   * Leave it off for a suite whose SUBJECT is the open path — migrations, the
+   * lineage reset, the `.bak` a fresh migration leaves behind, or a fault
+   * injected so that `applyMigrations` is the thing that refuses. A seeded
+   * store has nothing left to migrate, so those assertions would hold
+   * vacuously rather than fail.
+   */
+  readonly migrated?: boolean;
+}
+
 /**
  * A temp store the caller destroys by hand. Prefer `withTempStore` (scoped) or
  * `useTempStore` (hook-driven); reach for this only when neither shape fits.
  */
-export function createTempStore(prefix = 'aka-temp-store-'): OwnedTempStore {
+export function createTempStore(
+  prefix = 'aka-temp-store-',
+  options: TempStoreOptions = {},
+): OwnedTempStore {
   const home = mkdtempSync(join(tmpdir(), prefix));
   // Both subdirs up front, through the same helper the product uses: a bare
   // `mkdirSync` mode is umask-masked and is not applied to a directory that
@@ -92,8 +113,27 @@ export function createTempStore(prefix = 'aka-temp-store-'): OwnedTempStore {
   // a guarantee rather than a request. `data/` would otherwise appear only on
   // the first `open()`, and a test seeding the store by hand — a
   // policy-cache.json, a read-only directory — would meet an absent path.
-  ensureDataDirSync(settingsDir(home));
-  ensureDataDirSync(dataDir(home));
+  // Anything that can throw between the mkdtemp and the returned store has to
+  // take the tree with it. Nothing here is reachable by `destroy()` yet — the
+  // caller has no handle to call it on, and under `useTempStore` a throwing
+  // `beforeEach` leaves `current` undefined, so its `afterEach` no-ops and the
+  // tree is stranded once per test in the file rather than once.
+  try {
+    ensureDataDirSync(settingsDir(home));
+    ensureDataDirSync(dataDir(home));
+    // Before any handle exists, so the first `open()` finds a store with every
+    // migration already ledgered and skips the lot.
+    if (options.migrated === true) migratedStore.seed(dataDir(home));
+  } catch (err) {
+    // The setup failure is the one worth reading; a teardown that also fails
+    // must not speak over it.
+    try {
+      removeTree(home);
+    } catch {
+      // Nothing to add — the original error is already on its way out.
+    }
+    throw err;
+  }
 
   const handles: TrackedHandle[] = [];
   const cleanups: (() => void)[] = [];
@@ -256,8 +296,12 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
  * the body would then run against closed handles and a deleted tree — green,
  * and asserting nothing.
  */
-export function withTempStore<T>(fn: (store: TempStore) => T, prefix?: string): T {
-  const store = createTempStore(prefix);
+export function withTempStore<T>(
+  fn: (store: TempStore) => T,
+  prefix?: string,
+  options?: TempStoreOptions,
+): T {
+  const store = createTempStore(prefix, options);
   let result: T;
   try {
     result = fn(store);
@@ -311,11 +355,11 @@ function destroyAfterFailure(store: OwnedTempStore, err: unknown): void {
  * destroyed before a suite's own `afterEach`, and a suite that reads the store
  * in teardown would break with no compile-time signal.
  */
-export function useTempStore(prefix?: string): TempStore {
+export function useTempStore(prefix?: string, options?: TempStoreOptions): TempStore {
   let current: OwnedTempStore | undefined;
 
   beforeEach(() => {
-    current = createTempStore(prefix);
+    current = createTempStore(prefix, options);
   });
 
   afterEach(() => {

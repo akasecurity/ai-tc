@@ -30,6 +30,7 @@ import { homeBase } from '../../src/lib/args.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
 import { main } from '../../src/main.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+import { migratedStore } from '../helpers/store-templates.ts';
 
 // The test value comes from the bundled rule's own `examples` fixture, so no
 // secret-shaped literal lives in this file and the value stays in step with
@@ -193,6 +194,8 @@ let dir: string;
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-cli-ex-'));
   dir = dataDir(homeBase(home));
+  // Schema by file copy rather than a migration this test would only repeat.
+  migratedStore.seed(dir);
 });
 
 afterEach(() => {
@@ -1020,6 +1023,21 @@ describe('aka exception rotate-key — the cost it discloses before committing',
     return readFingerprintKey(dir)?.version;
   }
 
+  // The control the two key-fault cases below lean on. The zero variant is ALSO
+  // what an EMPTY ledger prints, so a fault case asserting it proves nothing
+  // about the count on its own. This reads the same store and the same seeded
+  // rows back through the real command while the key is still healthy: a
+  // declined interactive run makes the disclosure and rotates nothing, so it
+  // can be spent here. It has to report `count` — otherwise the zero those
+  // cases then assert is a ledger that never held anything, rather than a key
+  // that could not be read.
+  async function expectSeededRowsApprovable(count: number): Promise<void> {
+    const control = confirmIo('n');
+    await runException(['rotate-key', '--home', home], control);
+    expect(control.output()).toContain(rotationBlockedLedgerNote(count));
+    expect(keyVersion()).toBe(1);
+  }
+
   it('states the ledger cost under --yes, which skips the prompt but not the preamble', async () => {
     await seedBlocked('a11ce5');
 
@@ -1094,6 +1112,89 @@ describe('aka exception rotate-key — the cost it discloses before committing',
     const unattended = scriptedIo();
     await runException(['rotate-key', '--home', home, '--yes'], unattended);
     expect(unattended.output()).toContain(zero);
+  });
+
+  it('discloses the ledger cost, then says "delete it", when the key file is CORRUPT', async () => {
+    // The count comes from a read of the key file, and that read throws on a key
+    // it cannot parse. Unguarded, the throw escapes from ABOVE the rotate step
+    // that composes the recovery guidance: the preamble has already printed, so
+    // what is lost is the ledger disclosure and then the hint. The command still
+    // exits non-zero either way, so only what it TELLS the user changes.
+    // Truncated rather than garbage: a half-written key is what an interrupted
+    // write leaves, and it is the shape the approve-side case injects for the
+    // same reason.
+    await seedBlocked('a1c0de');
+    await expectSeededRowsApprovable(1);
+
+    const keyPath = join(dir, 'exception.key');
+    truncateSync(keyPath, 10);
+    const onDisk = readFileSync(keyPath);
+
+    const io = scriptedIo();
+    const err = await runException(['rotate-key', '--home', home, '--yes'], io).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+
+    // The count side. A key that cannot be read leaves every ledger row
+    // unmatchable, which is true rather than a degradation — nothing can be
+    // approved right now either way — so the disclosure is still made, at zero.
+    // The first line is what separates that from a run whose disclosure never
+    // happened at all, which contains neither variant. The second is against the
+    // count the control just produced from these same rows, so a fallback that
+    // guessed at a key version instead of reporting none goes red here.
+    const out = io.output();
+    expect(out).toContain(rotationBlockedLedgerNote(0));
+    expect(out).not.toContain(rotationBlockedLedgerNote(1));
+
+    // ...and the failure side, with the one hint that is safe to act on here.
+    expect(err?.message).toMatch(/cannot rotate:/);
+    expect(err?.message).toMatch(/Delete .*exception\.key to start fresh/);
+    expect(err?.message).not.toMatch(/do not delete it/i);
+
+    // Nothing minted over the refusal: a replacement written here would hand
+    // fresh material a version the stored rows already claim.
+    expect(readFileSync(keyPath)).toEqual(onDisk);
+  });
+
+  it('discloses the ledger cost, then refuses to say "delete it", when the key is UNREADABLE', async (ctx) => {
+    // Same path, opposite guidance. Aimed at a permissions failure, "delete it
+    // to start fresh" destroys every grant on the machine to fix a chmod, so
+    // WHICH hint is reached is the property — not that one was printed. rotate
+    // is where getting it wrong costs the most: it is the irreversible verb,
+    // and the one that runs unattended under --yes.
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX mode bits do not gate reads under Windows ACLs');
+    }
+    if (process.getuid?.() === 0) {
+      ctx.skip('root bypasses the mode bits this case depends on');
+    }
+    await seedBlocked('b10ced');
+    await expectSeededRowsApprovable(1);
+
+    const keyPath = join(dir, 'exception.key');
+    chmodSync(keyPath, 0o000);
+    try {
+      const io = scriptedIo();
+      const err = await runException(['rotate-key', '--home', home, '--yes'], io).then(
+        () => undefined,
+        (e: unknown) => e as Error,
+      );
+
+      const out = io.output();
+      expect(out).toContain(rotationBlockedLedgerNote(0));
+      expect(out).not.toContain(rotationBlockedLedgerNote(1));
+
+      expect(err?.message).toMatch(/cannot rotate:/);
+      expect(err?.message).toMatch(/do not delete it/i);
+      expect(err?.message).not.toMatch(/delete .*exception\.key to start fresh/i);
+    } finally {
+      chmodSync(keyPath, 0o600); // so the key can be read back, and the tree removed
+    }
+    // Read back only once the mode is restored — under 0000 this throws rather
+    // than reporting absence. Still v1: rotating over a permissions error is
+    // the outcome the hint above exists to prevent.
+    expect(keyVersion()).toBe(1);
   });
 
   it('lists the permanent grants and the ledger cost together, without the value', async () => {

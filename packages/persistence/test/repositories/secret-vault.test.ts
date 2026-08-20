@@ -13,7 +13,7 @@ const NOW = Date.parse('2026-06-29T12:00:00.000Z');
 
 // The package's shared store harness owns the temp tree and closes every handle
 // it hands out at teardown.
-const store = useTempStore('aka-vault-');
+const store = useTempStore('aka-vault-', { migrated: true });
 let raw: DatabaseSync;
 let vault: SqliteSecretVaultRepository;
 

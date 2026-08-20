@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -76,6 +76,25 @@ describe('storeBytes — the at-rest leak scanner', () => {
     const bytes = storeBytes(dir);
     expect(bytes).toContain('main-db-marker');
     for (const marker of Object.values(planted)) expect(bytes).toContain(marker);
+  });
+
+  // The data dir is not flat, and the one artifact that is nested is the one
+  // most worth reading: a snapshot cut short by a KILL leaves a `.bak.partial`
+  // staging DIRECTORY holding `copy`, a byte-complete image of the whole store,
+  // created at the process umask rather than 0600 (see `snapshotStore`). A
+  // top-level `isFile()` filter skipped it entirely, so a raw value sitting in
+  // that copy satisfied every `not.toContain` in the calling suite.
+  //
+  // Planted rather than produced by a real killed snapshot: nothing here can
+  // kill a process mid-`VACUUM INTO`. What is pinned is that the READER
+  // descends; that the product leaves this shape behind is
+  // `packages/persistence/test/internal/snapshot.test.ts`'s job.
+  it('descends into a staging directory, where a killed snapshot leaves a full copy', () => {
+    const stage = join(dir, 'aka.db.legacy.1.aaaaaaaa.bak.partial');
+    mkdirSync(stage);
+    writeFileSync(join(stage, 'copy'), 'staged-full-copy-marker');
+
+    expect(storeBytes(dir)).toContain('staged-full-copy-marker');
   });
 
   it('throws rather than reporting clean when the store is not where it expects', () => {

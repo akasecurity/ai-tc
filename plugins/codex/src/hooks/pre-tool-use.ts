@@ -21,6 +21,7 @@
  * Fail-open: any error → no output, exit 0.
  */
 import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import type { ScannedField } from './pre-tool-use-decision.ts';
 import {
@@ -88,7 +89,7 @@ async function main(): Promise<void> {
       if (typeof value !== 'string' || value === '') continue;
 
       const result = await runtime.capture(
-        { kind, sourceTool: 'codex', text: value, metadata },
+        { kind, sourceTool: SOURCE_TOOL.Codex, text: value, metadata },
         kind === 'tool_use' ? { persist: 'with-findings' } : {},
       );
       scanned.push({ spec, result });

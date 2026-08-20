@@ -7,7 +7,7 @@ import type { LocalDatabase } from '../../src/database.ts';
 import { SqliteResolutionsRepository } from '../../src/repositories/resolutions.ts';
 import { useTempStore } from '../helpers/temp-store.ts';
 
-const store = useTempStore('aka-resolutions-');
+const store = useTempStore('aka-resolutions-', { migrated: true });
 let db: LocalDatabase;
 
 beforeEach(() => {

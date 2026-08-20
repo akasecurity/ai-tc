@@ -47,6 +47,7 @@ import {
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { expectNoRejection } from '../helpers/no-throw.ts';
 import { storeBytes } from '../helpers/store-bytes.ts';
+import { withBundledPacks } from '../helpers/store-templates.ts';
 
 // Every mutating Server Action on the exceptions surface, each covered against a
 // real node:sqlite store and a real fingerprint key file — no mocking of either
@@ -267,12 +268,10 @@ beforeEach(() => {
   dir = dataDir();
   // Seed the installed ruleset the way the plugin/CLI do on open — addException
   // scans against this DB snapshot, not the engine's process-global registry.
-  const db = openLocalDatabase(dir);
-  try {
-    db.installedPacks.recordInventory(bundledDetections());
-  } finally {
-    db.close();
-  }
+  // The schema and the installed ruleset arrive as a file copy: both are
+  // identical every test, and migrating plus re-reading the bundled set per
+  // test is what put this suite's `beforeEach` over the Windows hook ceiling.
+  withBundledPacks.seed(dir);
   resetSingleton();
 });
 

@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { capWarnEraEnforcementOnce } from '../src/warn-era-cap.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 
-const store = useTempStore('aka-warn-era-cap-');
+const store = useTempStore('aka-warn-era-cap-', { migrated: true });
 
 describe('capWarnEraEnforcementOnce', () => {
   it('is a no-op for a redact-era store, no marker written', () => {

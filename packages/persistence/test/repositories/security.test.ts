@@ -19,7 +19,7 @@ const DAY_MS = 86_400_000;
 // 2026-06-29; windows align to UTC midnight (00:00) of that day.
 const NOW = Date.parse('2026-06-29T12:00:00.000Z');
 
-const store = useTempStore('aka-security-');
+const store = useTempStore('aka-security-', { migrated: true });
 let db: LocalDatabase;
 
 beforeEach(() => {

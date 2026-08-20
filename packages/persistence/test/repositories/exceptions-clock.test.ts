@@ -394,7 +394,7 @@ describe('SqliteExceptionsRepository — default clock', () => {
   // product's normal shape: a frozen clock there stops list() ever expiring a
   // grant and leaves activeRevealGrant authorizing model reveals past expiry.
   // Only a second read at a later instant separates the two.
-  const store = useTempStore('aka-exceptions-clock-');
+  const store = useTempStore('aka-exceptions-clock-', { migrated: true });
 
   // Anchored to real time, not to `clock` — these repositories never see the
   // injected timeline, and a T0-anchored expiry would be months stale.

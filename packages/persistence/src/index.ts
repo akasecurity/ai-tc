@@ -42,6 +42,13 @@ export {
   settingsDir,
 } from './local-layout.ts';
 export {
+  lockedAmong,
+  managedContextOf,
+  managedSettingsPaths,
+  overlayManagedSettings,
+  readManagedSettings,
+} from './managed-settings.ts';
+export {
   DATA_DIR_MODE,
   DATA_FILE_MODE,
   DB_FILENAME,
@@ -112,7 +119,14 @@ export {
 export { SqliteSourceProjectRepository } from './repositories/source-project.ts';
 export { compareBinaryVersions } from './semver.ts';
 export type { OnboardingAnswers } from './settings.ts';
-export { applyOnboarding, readWorkspaceSettings, SETTINGS_FILENAME } from './settings.ts';
+export type { EffectiveSettings } from './settings.ts';
+export {
+  applyOnboarding,
+  ManagedFieldError,
+  readEffectiveSettings,
+  readWorkspaceSettings,
+  SETTINGS_FILENAME,
+} from './settings.ts';
 export {
   base32Decode,
   base32Encode,

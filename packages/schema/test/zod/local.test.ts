@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  controlPlaneName,
   defaultWorkspaceSettings,
+  isAttached,
   isModelJudgeConsentValid,
   MODEL_JUDGE_PAYLOAD_VERSION,
   toEventRow,
@@ -77,13 +79,43 @@ describe('WorkspaceSettings (versioned, default-filled)', () => {
     expect(WorkspaceSettings.safeParse({ historicalAccess: 'partial' }).success).toBe(false);
   });
 
-  it('normalises a superseded runMode value instead of failing the whole object', () => {
-    // The point is the SIBLING field: a settings file holding a value this build
-    // no longer knows must still load, and must keep the user's other choices —
-    // rejecting the object would discard `policy` along with it.
-    const s = WorkspaceSettings.parse({ runMode: 'attached', policy: 'warn' });
-    expect(s.runMode).toBe('standalone');
-    expect(s.policy).toBe('warn');
+  it('accepts both run modes and still rejects an unknown one', () => {
+    expect(WorkspaceSettings.parse({}).runMode).toBe('standalone');
+    expect(WorkspaceSettings.parse({ runMode: 'attached' }).runMode).toBe('attached');
+    // A typo is still an error — the enum was widened, not opened.
+    expect(WorkspaceSettings.safeParse({ runMode: 'atached' }).success).toBe(false);
+  });
+
+  it('attached means nothing without a descriptor', () => {
+    // The mode alone can be set by a hand edit or an interrupted attach.
+    // Reporting that as attached would show a connection that does not exist
+    // and offer a detach that clears nothing.
+    expect(isAttached(WorkspaceSettings.parse({ runMode: 'attached' }))).toBe(false);
+    expect(isAttached(WorkspaceSettings.parse({ runMode: 'standalone' }))).toBe(false);
+    const attached = WorkspaceSettings.parse({
+      runMode: 'attached',
+      controlPlane: { endpoint: 'https://aka.example.internal', attachedAt: ISO },
+    });
+    expect(isAttached(attached)).toBe(true);
+  });
+
+  it('a descriptor without the mode is not attached either', () => {
+    // The reverse half: a stale descriptor left behind by a failed detach must
+    // not resurrect the attachment.
+    const s = WorkspaceSettings.parse({
+      runMode: 'standalone',
+      controlPlane: { endpoint: 'https://aka.example.internal', attachedAt: ISO },
+    });
+    expect(isAttached(s)).toBe(false);
+  });
+
+  it('controlPlaneName prefers the label and falls back to the endpoint', () => {
+    expect(controlPlaneName({ endpoint: 'https://x.internal', attachedAt: ISO })).toBe(
+      'https://x.internal',
+    );
+    expect(
+      controlPlaneName({ endpoint: 'https://x.internal', label: 'Acme Prod', attachedAt: ISO }),
+    ).toBe('Acme Prod');
   });
 });
 

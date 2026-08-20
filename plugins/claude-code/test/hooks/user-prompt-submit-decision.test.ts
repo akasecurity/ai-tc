@@ -46,10 +46,10 @@ const STALE_REDACT_COPY = 'cannot be redacted';
 
 type Finding = CaptureResult['findings'][number];
 
-function finding(rawMatch: string, text: string): Finding {
+function finding(rawMatch: string, text: string, ruleId: string = RULE): Finding {
   const start = text.indexOf(rawMatch);
   return {
-    ruleId: RULE,
+    ruleId,
     category: 'secret',
     severity: 'high',
     span: { start, end: start + rawMatch.length },
@@ -247,9 +247,20 @@ describe('decideUserPromptSubmit — the pointerized resubmit branch', () => {
   });
 });
 
+// The custody set is IGNORED by the fake tokenizers in this block — they return
+// a canned rewrite. These cases are about the never-leak gate (does a rewrite
+// still carrying a raw match get refused?), which is a different property.
+// Custody itself is covered separately below, against the real glue contract.
+const CUSTODY_IGNORED_BY_FAKE: ReadonlySet<never> = new Set();
+
 describe('pointerizedRewrite — the never-leak gate', () => {
   it('returns the rewrite when every span was pointerized', async () => {
-    const rewrite = await pointerizedRewrite(PROMPT, [finding(SECRET, PROMPT)], tokenizerOk);
+    const rewrite = await pointerizedRewrite(
+      PROMPT,
+      [finding(SECRET, PROMPT)],
+      CUSTODY_IGNORED_BY_FAKE,
+      tokenizerOk,
+    );
 
     expect(rewrite).toBe(REWRITTEN);
   });
@@ -259,25 +270,36 @@ describe('pointerizedRewrite — the never-leak gate', () => {
     // so without this check the raw value is printed back to the user under a
     // message saying it never reached the model.
     const leaky = `${PROMPT} (also ${POINTER})`;
-    const rewrite = await pointerizedRewrite(PROMPT, [finding(SECRET, PROMPT)], () =>
-      Promise.resolve({ text: leaky, pointers: [POINTER] }),
+    const rewrite = await pointerizedRewrite(
+      PROMPT,
+      [finding(SECRET, PROMPT)],
+      CUSTODY_IGNORED_BY_FAKE,
+      () => Promise.resolve({ text: leaky, pointers: [POINTER] }),
     );
 
     expect(rewrite).toBeNull();
   });
 
   it('refuses a rewrite that minted no pointer', async () => {
-    const rewrite = await pointerizedRewrite(PROMPT, [finding(SECRET, PROMPT)], () =>
-      Promise.resolve({ text: REWRITTEN, pointers: [] }),
+    const rewrite = await pointerizedRewrite(
+      PROMPT,
+      [finding(SECRET, PROMPT)],
+      CUSTODY_IGNORED_BY_FAKE,
+      () => Promise.resolve({ text: REWRITTEN, pointers: [] }),
     );
 
     expect(rewrite).toBeNull();
   });
 
   it('refuses on a vault fault rather than propagating it', async () => {
-    const rewrite = await pointerizedRewrite(PROMPT, [finding(SECRET, PROMPT)], () => {
-      throw new Error('vault unavailable');
-    });
+    const rewrite = await pointerizedRewrite(
+      PROMPT,
+      [finding(SECRET, PROMPT)],
+      CUSTODY_IGNORED_BY_FAKE,
+      () => {
+        throw new Error('vault unavailable');
+      },
+    );
 
     expect(rewrite).toBeNull();
   });
@@ -286,7 +308,7 @@ describe('pointerizedRewrite — the never-leak gate', () => {
     // An empty rawMatch is `includes('')` === true for every string, so without
     // the `!== ''` guard the gate would refuse every rewrite.
     const blank: Finding = { ...finding(SECRET, PROMPT), rawMatch: '' };
-    const rewrite = await pointerizedRewrite(PROMPT, [blank], tokenizerOk);
+    const rewrite = await pointerizedRewrite(PROMPT, [blank], CUSTODY_IGNORED_BY_FAKE, tokenizerOk);
 
     expect(rewrite).toBe(REWRITTEN);
   });
@@ -429,5 +451,98 @@ describe('decideUserPromptSubmit — the exception-pointer suffix', () => {
     // that is not the resubmit message at all.
     expect(reason).toContain(POINTER);
     expect(reason).not.toContain('aka exception approve');
+  });
+});
+
+// The prompt path was the ONE live tokenizeText caller that never received the
+// custody set. Absent means "keep all", so on a consented machine every finding
+// in a prompt was vaulted regardless of its archetype — including detections
+// assigned plain Redact, whose catalog copy promises the value is destroyed and
+// cannot be recovered. The tool-call paths were all threaded; this sibling was
+// not, and nothing here could see it.
+describe('the prompt rewrite honours each finding’s archetype', () => {
+  const KEEP = 'pii/keeps';
+
+  // A REDACT decision: the archetype has stated what happens to the value, so
+  // custody here must follow it. (A block states nothing about the value, and
+  // is covered by the consent-governed case below.)
+  function mixed(): CaptureResult {
+    const a = finding(SECRET, PROMPT, KEEP);
+    return {
+      action: 'redact',
+      text: PROMPT.replace(SECRET, '[REDACTED:SECRET]'),
+      findings: [a],
+      enforcedFindings: [a],
+      reversibleFindings: [a],
+    };
+  }
+
+  it('passes the reversible subset through to the tokenizer', async () => {
+    let seen: ReadonlySet<unknown> | undefined;
+    await decideUserPromptSubmit(PROMPT, mixed(), {
+      tokenizePrompt: (text, _findings, reversible) => {
+        seen = reversible;
+        return Promise.resolve({ text: REWRITTEN, pointers: ['[[aka:secret:x]]'] });
+      },
+    });
+    expect(seen?.size).toBe(1);
+  });
+
+  it('passes an EMPTY set when no finding’s detection chose to keep', async () => {
+    // A prompt whose detections are all plain Redact must vault nothing — the
+    // bug this covers had it vaulting everything.
+    const result = mixed();
+    const oneWay: CaptureResult = { ...result, reversibleFindings: [] };
+    let seen: ReadonlySet<unknown> | undefined;
+    await decideUserPromptSubmit(PROMPT, oneWay, {
+      tokenizePrompt: (text, _findings, reversible) => {
+        seen = reversible;
+        return Promise.resolve({ text: REWRITTEN, pointers: [] });
+      },
+    });
+    expect(seen).toBeDefined();
+    expect(seen?.size).toBe(0);
+  });
+
+  it('passes an EMPTY set when the runtime reported no custody at all', async () => {
+    // An older runtime, or a decision shape that predates the archetype.
+    // Defaulting to "keep nothing" is the safe direction here: a value
+    // destroyed that could have been kept is recoverable from, a value kept
+    // against its policy is not.
+    const result = mixed();
+    const withoutField: CaptureResult = {
+      action: result.action,
+      text: result.text,
+      findings: result.findings,
+    };
+    let seen: ReadonlySet<unknown> | undefined;
+    await decideUserPromptSubmit(PROMPT, withoutField, {
+      tokenizePrompt: (text, _findings, reversible) => {
+        seen = reversible;
+        return Promise.resolve({ text: REWRITTEN, pointers: [] });
+      },
+    });
+    expect(seen?.size).toBe(0);
+  });
+
+  it('a BLOCK keeps every finding, because a block promises nothing about custody', () => {
+    // The other half of the split. Narrowing custody here would remove the
+    // resubmit affordance from every machine configured by category policy,
+    // which cannot express the reversible archetype at all — a loss with no
+    // promise behind it. What authorizes storing the value is the vault
+    // consent, exactly as before the archetype existed.
+    const blocked: CaptureResult = {
+      action: 'block',
+      text: null,
+      findings: [finding(SECRET, PROMPT, KEEP)],
+    };
+    let seen: ReadonlySet<unknown> | undefined;
+    void decideUserPromptSubmit(PROMPT, blocked, {
+      tokenizePrompt: (text, _findings, reversible) => {
+        seen = reversible;
+        return Promise.resolve({ text: REWRITTEN, pointers: ['[[aka:secret:x]]'] });
+      },
+    });
+    expect(seen?.size).toBe(1);
   });
 });

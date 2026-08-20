@@ -1,13 +1,16 @@
 import { CardSkeleton, PageHeadSkeleton } from '../../components/skeletons';
 
+// Four groups, four skeletons — Connection, Enforcement, Data access, Display.
+// They are short because the rows they stand in for are collapsed: a tall
+// skeleton followed by a compact page is a layout jump, not a loading state.
 export default function Loading() {
   return (
-    <div aria-busy className="flex max-w-4xl flex-col gap-6 px-8 pb-10 pt-7">
+    <div aria-busy className="flex max-w-4xl flex-col gap-7 px-8 pb-10 pt-7">
       <PageHeadSkeleton />
-      <CardSkeleton className="h-50 rounded-xl" />
-      <CardSkeleton className="h-50 rounded-xl" />
-      <CardSkeleton className="h-50 rounded-xl" />
-      <CardSkeleton className="h-50 rounded-xl" />
+      <CardSkeleton className="h-28 rounded-xl" />
+      <CardSkeleton className="h-16 rounded-xl" />
+      <CardSkeleton className="h-36 rounded-xl" />
+      <CardSkeleton className="h-16 rounded-xl" />
     </div>
   );
 }

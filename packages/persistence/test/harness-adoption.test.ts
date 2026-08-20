@@ -181,6 +181,8 @@ const OWN_TEMP_TREE: Readonly<Record<string, string>> = {
     'builds bare DatabaseSync files to snapshot, with no ~/.aka layout around them',
   'test/paths-link-fallback.test.ts':
     'the subject is the symlink fallback in the path helpers themselves — no store',
+  'test/managed-settings.test.ts':
+    'two bare directories — a settings home and a stand-in for the OS administrative path the managed file is read from — and no store either side',
   'test/settings.test.ts': 'settings.json only; the layout the harness creates is not wanted here',
   'test/vault/key-provider.test.ts':
     'key files under a bare directory, ahead of any store that would hold them',

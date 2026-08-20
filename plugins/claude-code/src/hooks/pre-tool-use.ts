@@ -212,9 +212,13 @@ async function main(): Promise<void> {
     effectiveInput,
     scanned,
     vaultGlue
-      ? (text, findings) =>
+      ? (text, findings, reversible) =>
           vaultGlue.tokenizeText(text, {
             findings,
+            // Which of those the assigned archetype said to KEEP. The glue
+            // rewrites every span either way; this decides only which survive
+            // as recoverable pointers and which are destroyed.
+            reversible,
             sighting: filePath
               ? { location: filePath, kind: 'file' }
               : { location: `${toolName} input`, kind: 'tool-input' },

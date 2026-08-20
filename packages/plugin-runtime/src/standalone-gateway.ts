@@ -258,6 +258,7 @@ export class StandaloneDataGateway implements DataGateway, LocalStoreMaintenance
         rules: Rule[];
         ruleActions: Map<string, ActionTaken>;
         ruleVersions: Map<string, string>;
+        reversibleRules: Set<string>;
         complete: true;
       }
     | undefined {
@@ -265,7 +266,13 @@ export class StandaloneDataGateway implements DataGateway, LocalStoreMaintenance
       const snapshot = this.db.installedPacks.installedRuleset();
       if (snapshot.installedPacks === 0) return undefined;
       if (snapshot.enabledPacks === 0) {
-        return { rules: [], ruleActions: new Map(), ruleVersions: new Map(), complete: true };
+        return {
+          rules: [],
+          ruleActions: new Map(),
+          ruleVersions: new Map(),
+          reversibleRules: new Set(),
+          complete: true,
+        };
       }
       if (snapshot.invalidRules > 0) {
         this.warnRulesetDiscarded(snapshot);
@@ -276,6 +283,7 @@ export class StandaloneDataGateway implements DataGateway, LocalStoreMaintenance
         rules: snapshot.rules,
         ruleActions: snapshot.ruleActions,
         ruleVersions: snapshot.ruleVersions,
+        reversibleRules: snapshot.reversibleRules,
         complete: true,
       };
     } catch {
@@ -327,6 +335,11 @@ export class StandaloneDataGateway implements DataGateway, LocalStoreMaintenance
     return {
       version: 'local',
       policies: [...policies, ...rulePolicies],
+      // The reversibility half of each pack's assignment. Emitted only under the
+      // authoritative installed snapshot, exactly like rulePolicies above: the
+      // bundled-packs fallback carries no per-pack assignment, so it carries no
+      // reversibility either and every redaction there stays one-way.
+      reversibleRuleIds: installed ? [...installed.reversibleRules] : [],
       rules: installed ? installed.rules : [],
       ...(installed ? { rulesComplete: true } : {}),
       ...(installed ? { ruleVersions: Object.fromEntries(installed.ruleVersions) } : {}),

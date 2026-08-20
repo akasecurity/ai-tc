@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { DetectionCategory, Severity } from './finding.ts';
-import { BuiltinPolicyId } from './policy.ts';
+import { CategoryPolicyId } from './policy.ts';
 
 // One detected hit as streamed by `backfill --triage`: the raw match plus a
 // surrounding text window, for a downstream judge's FP/severity read.
@@ -36,10 +36,15 @@ export const TriageHit = z.object({
 });
 export type TriageHit = z.infer<typeof TriageHit>;
 
-// The triage palette is exactly the built-in policy id set
-// (monitor/warn/redact/block); allow/log are runtime-internal, never a value a
-// triage judge assigns.
-export const TriagePolicy = BuiltinPolicyId;
+// The triage palette is the built-in policy ids a per-CATEGORY row can express
+// — allow/log are runtime-internal and never a value a triage judge assigns,
+// and a REVERSIBLE archetype is excluded because a category row stores an
+// ActionTaken and would silently persist it as its bare action.
+//
+// Narrowed to CategoryPolicyId rather than BuiltinPolicyId deliberately: a
+// judge's response is untrusted input, and this schema is the gate that stops
+// one naming an archetype the writeback cannot honour.
+export const TriagePolicy = CategoryPolicyId;
 export type TriagePolicy = z.infer<typeof TriagePolicy>;
 
 // No `.meta({ id })` — no API route references this shape yet (see the

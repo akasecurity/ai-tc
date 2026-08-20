@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { FindingStatus } from '../../src/zod/finding.ts';
+import { DetectionCategory, FindingCategory } from '../../src/zod/finding.ts';
 import {
   applyFindingFilters,
   buildFindingGroups,
@@ -50,6 +51,32 @@ describe('category mappers', () => {
     expect(toApiCategory('secret')).toBe('secret');
     expect(toDbCategory('source_code')).toBe('code_context');
     expect(toDbCategory('pii')).toBe('pii');
+  });
+
+  // The mapper is TOTAL. Derived from DetectionCategory rather than a written-out
+  // list: a member added there is covered here without editing this test, which is
+  // what the pass-through cast could not give. An off-enum return is not a wrong
+  // label — every route returning a category Zod-validates its response body, so
+  // one such row fails serialization for the WHOLE page.
+  it('returns a valid FindingCategory for every DetectionCategory member', () => {
+    for (const dbVal of DetectionCategory.options) {
+      const parsed = FindingCategory.safeParse(toApiCategory(dbVal));
+      expect(parsed.success, `${dbVal} → ${toApiCategory(dbVal)}`).toBe(true);
+    }
+  });
+
+  it('round-trips code_flaw, which has its own member', () => {
+    expect(toApiCategory('code_flaw')).toBe('code_flaw');
+    expect(toDbCategory('code_flaw')).toBe('code_flaw');
+  });
+
+  it('falls back to custom for config, the one member with no equivalent', () => {
+    expect(toApiCategory('config')).toBe('custom');
+  });
+
+  it('falls back to custom for an unrecognized value', () => {
+    expect(toApiCategory('not_a_category')).toBe('custom');
+    expect(toApiCategory('')).toBe('custom');
   });
 });
 

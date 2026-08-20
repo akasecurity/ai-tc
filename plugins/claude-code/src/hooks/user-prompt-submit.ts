@@ -85,9 +85,13 @@ async function main(): Promise<void> {
   // structural property instead of a flag the decision could forget to read.
   const decision = await decideUserPromptSubmit(prompt, result, {
     tokenizePrompt: isVaultConsentValid(config.settings.vaultConsent)
-      ? (text, findings) =>
+      ? (text, findings, reversible) =>
           createVaultGlue().tokenizeText(text, {
             findings,
+            // Per-finding custody, exactly as the tool-call paths pass it.
+            // Omitting it means "keep all", which would vault a value whose
+            // detection chose one-way Redact.
+            reversible,
             sighting: { location: 'prompt', kind: 'prompt' },
           })
       : undefined,

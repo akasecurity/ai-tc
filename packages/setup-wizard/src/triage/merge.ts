@@ -31,8 +31,14 @@ import type {
   TriageHit,
   TriageRecommendation,
 } from '@akasecurity/schema';
+import { KNOWN_BUILTIN_IDS } from '@akasecurity/schema';
 
-const RANK: Record<BuiltinPolicyId, number> = { monitor: 0, warn: 1, redact: 2, block: 3 };
+// Restrictiveness rank, derived from the catalog's canonical least-to-most
+// order rather than restated. A hand-written map is one more place a new
+// archetype has to be remembered; KNOWN_BUILTIN_IDS already declares the ladder.
+const RANK: Record<BuiltinPolicyId, number> = Object.fromEntries(
+  KNOWN_BUILTIN_IDS.map((id, i) => [id, i]),
+) as Record<BuiltinPolicyId, number>;
 
 // One chunk's judgment, paired with the ids of the hits that chunk's judge
 // actually saw. The pairing is the point: an `fpId` is only grounded in

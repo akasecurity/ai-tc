@@ -83,6 +83,72 @@ describe('vault glue', () => {
       expect(result.text).not.toContain(OTHER);
     });
 
+    // The per-detection custody split. Both spans are enforced; only the one
+    // whose detection chose Redact & Vault survives as a pointer. This is ONE
+    // rewrite over both, which is the part that has to hold: the tokenizer
+    // replaces every span it is handed, so a caller that passed only the
+    // reversible subset instead would leave the other value standing in the
+    // clear — a leak dressed as a narrower call.
+    describe('mixed custody — reversible spans kept, the rest destroyed', () => {
+      const mixed = (): { text: string; findings: MatchResult[] } => ({
+        text: `key=${SECRET} and other=${OTHER} end`,
+        findings: [
+          finding({ span: { start: 4, end: 4 + SECRET.length } }),
+          finding({
+            span: { start: 4 + SECRET.length + 11, end: 4 + SECRET.length + 11 + OTHER.length },
+            rawMatch: OTHER,
+            ruleId: 'other-rule',
+          }),
+        ],
+      });
+
+      it('vaults only the reversible finding and one-ways the other', async () => {
+        const { text, findings } = mixed();
+        const keep = findings[0];
+        if (keep === undefined) throw new Error('expected a finding');
+        const result = await glue.tokenizeText(text, {
+          findings,
+          reversible: new Set([keep]),
+        });
+        expect(result.pointers).toHaveLength(1);
+        // Both raw values are gone from the output — the one-way span was
+        // destroyed, not skipped.
+        expect(result.text).not.toContain(SECRET);
+        expect(result.text).not.toContain(OTHER);
+      });
+
+      it('destroys every span when NOTHING is reversible', async () => {
+        const { text, findings } = mixed();
+        const result = await glue.tokenizeText(text, { findings, reversible: new Set() });
+        expect(result.pointers).toEqual([]);
+        expect(result.text).not.toContain(SECRET);
+        expect(result.text).not.toContain(OTHER);
+      });
+
+      it('keeps every span when the option is ABSENT (the pre-archetype contract)', async () => {
+        // Callers written before the per-detection archetype pass no set and
+        // mean "all of them"; changing that default would silently stop
+        // vaulting for them.
+        const { text, findings } = mixed();
+        const result = await glue.tokenizeText(text, { findings });
+        expect(result.pointers).toHaveLength(2);
+      });
+
+      it('does not report a policy-directed destruction as a DEGRADED span', async () => {
+        // `degraded` means the vault could not keep something it was asked to.
+        // A span the policy said to destroy was never asked for, and counting it
+        // would make the surface report a fault on a machine working correctly.
+        const { text, findings } = mixed();
+        const keep = findings[0];
+        if (keep === undefined) throw new Error('expected a finding');
+        const result = await glue.tokenizeText(text, {
+          findings,
+          reversible: new Set([keep]),
+        });
+        expect(result.degraded).toEqual([]);
+      });
+    });
+
     it('round-trips through detokenizeText for a human', async () => {
       const text = `deploy with ${SECRET} now`;
       const tokenized = await glue.tokenizeText(text, {

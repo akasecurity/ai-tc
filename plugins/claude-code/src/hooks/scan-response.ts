@@ -73,7 +73,11 @@ export async function scanResponseFields(
       const enforced = result.enforcedFindings ?? [];
       if (tokenizeField && enforced.length > 0) {
         try {
-          const tokenized = await tokenizeField(field.text, enforced);
+          const tokenized = await tokenizeField(
+            field.text,
+            enforced,
+            new Set(result.reversibleFindings ?? []),
+          );
           rewritten = tokenized.text;
           for (const token of tokenized.pointers) {
             realized.pointers.push({ token, category: pointerCategoryOf(token) });

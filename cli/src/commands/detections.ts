@@ -5,7 +5,7 @@ import type { LocalDatabase } from '@akasecurity/persistence';
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections, dataDir } from '@akasecurity/plugin-sdk';
 import type { DetectionListItem } from '@akasecurity/schema';
-import { splitDetectionId } from '@akasecurity/schema';
+import { policyDisplayName, splitDetectionId } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 
@@ -207,8 +207,6 @@ async function runUpdateSub(db: LocalDatabase, ids: string[], all: boolean): Pro
   }
 }
 
-// Width-padded plain-text table (same pattern as lib/update-render.ts — no
-// table/colour dependency). Exported for the unit test.
 export function renderDetectionsTable(items: DetectionListItem[]): string {
   const rows = items.map((i) => ({
     pack: i.id,
@@ -216,7 +214,11 @@ export function renderDetectionsTable(items: DetectionListItem[]): string {
     latest: i.latestVersion ? `v${i.latestVersion}` : `v${i.version}`,
     rules: String(i.ruleCount),
     enabled: i.enabled ? 'yes' : 'no',
-    policy: i.policyId ?? 'monitor',
+    // The archetype's NAME, from the shared catalog — not the raw id. The
+    // dashboard renders "Redact & Vault" for the same row, and a table that
+    // printed `vault` beside it would read as a different setting. A custom
+    // policy the catalog does not know still prints its own id.
+    policy: policyDisplayName(i.policyId),
     status: i.latestVersion ? '⬆ update available' : '✓ up to date',
   }));
   const packW = Math.max(4, ...rows.map((r) => r.pack.length));

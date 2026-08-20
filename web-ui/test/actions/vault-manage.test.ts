@@ -29,6 +29,7 @@ import {
   revokeRevealGrant,
   rotateVaultKey,
 } from '../../app/(app)/vault/actions.ts';
+import { emptyStore } from '../helpers/store-templates.ts';
 
 // The vault manage surface: reveal-by-row-id, grant revocation, the purge, and
 // the key rotation. The suite pins the audit and survival properties — one
@@ -68,6 +69,8 @@ function resetSingleton(): void {
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-web-vault-manage-'));
   osHome.dir = home;
+  // Schema by file copy rather than a migration this test would only repeat.
+  emptyStore.seed(dataDir());
   revalidate.mockClear();
   // Vaulting (tokenize) is consent-gated; grant it for the seeding step.
   applyOnboarding({

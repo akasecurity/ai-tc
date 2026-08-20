@@ -23,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { grantRevealFromPointer } from '../../app/(app)/exceptions/actions.ts';
+import { emptyStore } from '../helpers/store-templates.ts';
 
 // `grantRevealFromPointer` mints the strictly-stronger capability: while the
 // grant is active the model may receive the value's raw form at tool
@@ -62,6 +63,8 @@ function resetSingleton(): void {
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-web-reveal-'));
   osHome.dir = home;
+  // Schema by file copy rather than a migration this test would only repeat.
+  emptyStore.seed(dataDir());
   // Vaulting (tokenize) is consent-gated; grant it for the seeding step.
   applyOnboarding({
     vaultConsent: { acknowledgedAt: new Date().toISOString(), version: VAULT_CONSENT_VERSION },

@@ -657,6 +657,7 @@ const EXPECTED_NON_PACKAGE_FILES = [
   'test/fixtures/adversarial/hostile-repo/index.ts',
   'test/helpers/perf.ts',
   'test/helpers/remove-tree.ts',
+  'test/helpers/store-template.ts',
   'test/setup/no-network.ts',
   'test/vitest/coverage.ts',
   'tools/ci/egress-probe.mjs',

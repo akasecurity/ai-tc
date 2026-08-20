@@ -972,6 +972,17 @@ tools/                repo tooling, never shipped: the installer one-liners and
    test: { setupFiles: [noNetworkGuard], … }
    ```
 
+   A package that also declares `testTimeout`/`hookTimeout` in that config must add
+   itself to `TIMEOUTS` in `packages/eslint-config/test/hook-timeout-ratchet.test.js`,
+   which pins every package's ceilings as an EXACT map. The ratchet holds in BOTH
+   directions on purpose. Raising a timeout is the change that must not pass unnoticed:
+   the per-test SQLite migration above was 'fixed' once by moving this number from
+   vitest's 10s default to 20s, which bought a green run and let the same failure spread
+   from one package to four. Lowering it is a good change — setup is a file copy now, so
+   there is headroom to give back — but a deliberate one. Raising it through the `test`
+   script's CLI flags instead is refused by the same suite, since the pin reads config
+   literals and a flag would bypass it silently.
+
    The runner is not incidental: the guard is a vitest `setupFiles` entry, so a
    package testing through anything else (`node --test`, say) runs with no runtime
    network guard at all. That suite enumerates every package with a `test` script
@@ -1664,6 +1675,25 @@ not reach for a `./testing` export instead.
   `data/`) whose handles are closed and tree removed for you. Use `useTempStore` when the
   suite shares setup across hooks, `withTempStore` when one test body owns the store. An
   async body is awaited before teardown.
+- **`{ migrated: true }`** — the second argument to all three, and the one to reach for by
+  default. `openLocalDatabase` runs every migration in the ledger on a store that has none,
+  so a suite with per-test isolation rebuilds the whole schema on every test; this seeds
+  `data/` from a template built ONCE per worker and copied. Isolation is unchanged — each
+  test still gets its own file, and no handle is shared. Measured at roughly 9-10x cheaper
+  per setup (`packages/persistence/bench/store-template.bench.ts`), which matters because
+  the Windows leg charges about 30x local cost for exactly this work and a `beforeEach`
+  that blows the hook ceiling fails a package the PR never touched.
+
+  **It is opt-IN, and that is load-bearing.** A seeded store has nothing left to migrate,
+  so a suite whose SUBJECT is the open path must not take it: migrations, the lineage
+  reset, the `.bak` a fresh migration leaves beside the store, `aka init` creating the
+  store, a first-run flow, or a fault injected so that `applyMigrations` is the thing that
+  refuses. Those assertions would hold **vacuously** rather than fail — which is worse
+  than losing them, because they go on reporting green. `test/helpers/store-template.ts`
+  is the shared builder (six packages copy from it; `migrated-store.ts` is this package's
+  build step), and it refuses a build that left no store, one that left a live `-wal`, and
+  any seed over a store or a foreign log that is already there.
+
 - `withTwoWriters(fn)` / `withWriters(n, fn)` — N independent `LocalDatabase` handles on
   one file, the shape the product runs in (hooks, CLI and dashboard share `aka.db` with
   only WAL and `busy_timeout` between them).

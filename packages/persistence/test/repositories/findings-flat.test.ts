@@ -18,7 +18,7 @@ import { useTempStore } from '../helpers/temp-store.ts';
 // listFindingLocations (folded by repo → file). Both run against a real store,
 // like every other repository suite here.
 
-const store = useTempStore('aka-findings-flat-');
+const store = useTempStore('aka-findings-flat-', { migrated: true });
 let db: LocalDatabase;
 
 beforeEach(() => {

@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { revealPointer } from '../../app/(app)/vault/actions.ts';
+import { emptyStore } from '../helpers/store-templates.ts';
 
 // `revealPointer` is the dashboard's reveal surface. It must return the raw
 // value ONLY for a pointer this machine minted (auditing the reveal), return
@@ -54,6 +55,8 @@ function resetSingleton(): void {
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-web-vault-'));
   osHome.dir = home;
+  // Schema by file copy rather than a migration this test would only repeat.
+  emptyStore.seed(dataDir());
   // Vaulting (tokenize) is consent-gated; grant it for the seeding step.
   applyOnboarding({
     vaultConsent: { acknowledgedAt: new Date().toISOString(), version: VAULT_CONSENT_VERSION },

@@ -18,7 +18,7 @@ const HOUR_MS = 3_600_000;
 // deterministic: [2026-06-29T00:00Z, 2026-06-30T00:00Z).
 const NOW = Date.parse('2026-06-29T12:00:00.000Z');
 
-const store = useTempStore('aka-activity-');
+const store = useTempStore('aka-activity-', { migrated: true });
 let db: LocalDatabase;
 let raw: DatabaseSync;
 

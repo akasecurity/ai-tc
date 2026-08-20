@@ -638,6 +638,21 @@ describe('recentlyResolved', () => {
 });
 
 describe('scanCoverage', () => {
+  // scanCoverage() builds each row as `{ provider, ...SCAN_COVERAGE[provider] }`,
+  // and spreading `undefined` is legal and adds nothing — so a provider whose
+  // row went missing (a `Partial<Record<...>>` widening, or the old array shape
+  // re-indexed by string) would still show up with only `provider` set. A set
+  // comparison of provider names can't catch that (it's implied by construction
+  // once `providers` is mapped from `Provider.options`); asserting the fields
+  // themselves are present is the part that can actually fail.
+  it('gives every Provider enum member a scan-coverage row with real fields', async () => {
+    const res = await security().scanCoverage('30d');
+    for (const row of res.providers) {
+      expect(row.coverage, `coverage missing for ${row.provider}`).toBeTypeOf('number');
+      expect(row.supported, `supported missing for ${row.provider}`).toBeTypeOf('boolean');
+    }
+  });
+
   it('returns the curated per-provider coverage (claude code supported)', async () => {
     const res = await security().scanCoverage('30d');
     expect(res.range).toBe('30d');

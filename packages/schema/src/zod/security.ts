@@ -217,8 +217,10 @@ export type TopSourcesQuery = z.infer<typeof TopSourcesQuery>;
 // that decides these numbers. A second copy is how this comment went stale.
 // `provider` is its own stable id (note: `claudecode`, distinct from the event
 // SourceTool `claude-code`). Uses the shared `range` query param.
-// Order matches the dashboard display order (and SCAN_COVERAGE) so the generated
-// OpenAPI enum list reads the same as the returned `providers` array.
+// Order matches the dashboard display order so the generated OpenAPI enum
+// list reads the same as the returned `providers` array — scanCoverage()
+// derives that array's order from this enum's declaration order directly,
+// not from SCAN_COVERAGE's own key order, which is otherwise decorative.
 // A subset of the canonical `Harness` vocabulary (harness-map.ts), named by
 // MEMBER so it can carry no id that file does not define.
 export const Provider = Harness.extract([

@@ -1,9 +1,15 @@
-import { type Dirent, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { type Dirent, existsSync, readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
 import type { ProjectFileInput, ProjectFilesScan } from '@akasecurity/schema';
-import ignore, { type Ignore } from 'ignore';
 
+import {
+  childRel,
+  evaluateIgnore,
+  type IgnoreLayer,
+  readIgnoreLayer,
+  withLayer,
+} from './ignore-layers.ts';
 import { resolveHeadRoot, resolveWorktreeRoot } from './repo.ts';
 
 // The real project-file inventory walk: enumerate the session worktree so the
@@ -20,14 +26,51 @@ import { resolveHeadRoot, resolveWorktreeRoot } from './repo.ts';
 // symlinks are skipped (never followed — avoids cycle/escape risks; git
 // tracks them as first-class entries, so recording them un-followed is a
 // possible future upgrade), tracked-but-ignored files (`git add -f`, committed
-// files under SKIP_DIRS) are invisible, `.git/info/exclude` and the global
-// gitignore aren't consulted, and MAX_FILES bounds KEPT files, not traversal.
+// files under SKIP_DIRS) are invisible, and `.git/info/exclude` and the global
+// gitignore aren't consulted.
 //
-// Nothing bounds traversal, and the cost is not flat: an entry is tested against
-// every .gitignore layer above it that has an opinion to give, so a tree whose
-// directories each carry one costs O(entries x depth). A deep enough chain
-// outruns the hosts' 10 s hook timeout, and a deep enough one over a wide leaf
-// exhausts the heap. `bench/project-files.bench.ts` measures the curve.
+// TRAVERSAL IS BOUNDED, AND MAX_FILES IS NOT THE BOUND. MAX_FILES caps what is
+// KEPT; the cost of getting there is `entries x layers`, since an entry is
+// tested against every .gitignore layer above it that has an opinion to give.
+// Measured on an arm64 Mac against `test/fixtures/adversarial/hostile-repo/`:
+// 400 nested directories each carrying a .gitignore, over 5,000 leaf files, took
+// 13.0 s and 645 MB — past the hosts' 10 s hook timeout, on a tree of 5,400
+// files. Claude Code and Codex read a killed hook as "no opinion" and lose the
+// inventory; Antigravity reads it as a DENY and runs this pass from
+// `PreInvocation`, so there the same tree blocks the user's every tool call.
+// A synchronous walk never yields, so no watchdog can preempt it — the bound
+// has to be inside the walk.
+//
+// WHY IT IS TWO NUMBERS RATHER THAN ONE. Neither half bounds the product on its
+// own, and each is easy to mistake for sufficient:
+//
+//   - A DEPTH cap bounds the layer stack, so it bounds the cost of one entry.
+//     It bounds nothing about how many entries there are — 500k files ignored by
+//     a pattern at the SHALLOWEST layer are each tested against the whole stack
+//     before that match is reached, and none of them is a KEPT file, so
+//     MAX_FILES never fires. Measured at the cap: that shape still costs 5.6 s.
+//   - A DEADLINE bounds the total whatever the shape, and is the only bound
+//     stated in the unit the host actually enforces. It cannot replace the depth
+//     cap: a deadline says nothing until it fires, so the deep chain would spend
+//     the whole budget on one subtree and every ordinary repo would pay for the
+//     clock instead of the depth cap answering in one comparison.
+//
+// A work budget was tried in between the two and is not what ships. Charging
+// `1 + layers` per entry bounds the same quantity deterministically, but the
+// number that makes it safe can only be calibrated on one machine: 3,000,000
+// units measured 5.6 s here and would be three times that on a slow runner —
+// which is the hook timeout, reached by the bound meant to prevent it.
+//
+// Both are stated as defaults on {@link PROJECT_WALK_BOUNDS} and overridable per
+// call, and the clock is injectable, so a test drives either with a tree small
+// enough to build and no wall-clock flake.
+//
+// AND A BOUND CHANGES WHAT THE STORED TREE CONTAINS, which is the part that
+// cannot be quiet. A partial walk that is not marked `truncated` PRUNES whatever
+// is already stored down to what this pass could see, so every omission here —
+// a subtree past the depth cap, a walk stopped on the deadline — sets it, the
+// same way an unreadable directory and the MAX_FILES cap already do.
+// `bench/project-files.bench.ts` measures the curve under the bound.
 
 // Hard floor of never-inventoried directories — huge machine-generated trees.
 const SKIP_DIRS = new Set([
@@ -51,60 +94,69 @@ const SKIP_DIRS = new Set([
 // 20k files covers those comfortably while bounding SessionStart cost.
 const MAX_FILES = 20_000;
 
-// One .gitignore's rules, plus how much of the walk's current repo-relative
-// directory path belongs to the directory that contains it (git patterns are
-// relative to their own ignore file, not the repo root).
+/** How far the walk may descend, and how long it may spend. */
+export interface ProjectWalkBounds {
+  /**
+   * Deepest directory below the worktree root the walk enters. Also bounds the
+   * ignore-layer stack and the length of the walk-relative path every layer is
+   * addressed through, since both grow with depth.
+   */
+  maxDepth: number;
+  /** Wall-clock ceiling on the whole walk. Reaching it stops the walk. */
+  budgetMs: number;
+}
+
+/**
+ * The shipped bounds.
+ *
+ * `maxDepth: 64` is about nine times the deepest path this repository tracks
+ * (7), and dependency and build trees are in SKIP_DIRS before depth is
+ * consulted at all — so no project layout reaches it and an attacker-authored
+ * chain stops there.
+ *
+ * `budgetMs: 4_000` sits inside the hosts' 10 s hook timeout with room for
+ * everything else SessionStart does, and above the performance plan's worst
+ * LEGITIMATE case: a monorepo of 500k gitignored files, traversed because the
+ * pattern is what ignores them rather than the directory, measured 852 ms here
+ * (arm64 Mac) and stays whole on a runner several times slower. A repository
+ * that does cross it is truncated rather than lost, which is the trade — the
+ * alternative is the host killing the hook, which on Antigravity denies the
+ * user's tool call and stores nothing at all.
+ */
+export const PROJECT_WALK_BOUNDS: ProjectWalkBounds = { maxDepth: 64, budgetMs: 4_000 };
+
+/**
+ * How often the deadline is read, in entries. A `now()` per entry is a real cost
+ * on the 500k-entry trees this is sized against, and the bound it enforces is
+ * seconds — so reading it every few hundred entries is exact enough while
+ * costing nothing measurable.
+ */
+const DEADLINE_CHECK_INTERVAL = 512;
+
+/** Everything a caller may vary. The clock is injectable so a deadline test needs no wall clock. */
+export interface ProjectWalkOptions {
+  bounds?: ProjectWalkBounds;
+  /** Monotonic milliseconds. Defaults to `performance.now`. */
+  now?: () => number;
+}
+
+// The layer representation and the deepest-first lookup live in
+// ./ignore-layers.ts, shared with the dashboard's folder scan and the standalone
+// scanner — all three walk a tree under accumulated ignore files and asked the
+// same question three different ways until they did not.
 //
-// The walk carries ONE `dirRel` string per directory and every layer keeps an
-// offset into it, so testing a layer is a slice of that string. Holding a
-// per-layer prefix instead would rebuild all of them on every descent — O(depth)
-// strings of O(depth) characters per directory, for prefixes the deepest-first
-// lookup below usually never reads.
-interface IgnoreLayer {
-  matcher: Ignore;
-  /** Length of `dirRel` at the directory holding this .gitignore. */
-  anchorLen: number;
-}
-
-function readIgnoreLayer(dir: string, anchorLen: number): IgnoreLayer | undefined {
-  try {
-    const content = readFileSync(join(dir, '.gitignore'), 'utf8');
-    return { matcher: ignore().add(content), anchorLen };
-  } catch {
-    return undefined;
-  }
-}
-
-/** `name` as the layer's own .gitignore addresses it: posix, anchor-relative. */
-function relToAnchor(dirRel: string, anchorLen: number, name: string): string {
-  if (anchorLen === dirRel.length) return name;
-  // Skip the separator that follows the anchor, unless the anchor is the root
-  // and contributes no leading segment at all.
-  return `${dirRel.slice(anchorLen === 0 ? 0 : anchorLen + 1)}/${name}`;
-}
-
-// Layered gitignore verdict for the entry named `name` in the directory `dirRel`
-// addresses. A deeper .gitignore's verdict (ignore OR `!` re-include) overrides
-// a shallower one's, so the answer is the DEEPEST layer that has one: this walks
-// from the deepest and returns at the first, which reaches that answer without
-// consulting the ancestors behind it. A layer matching neither is silent and the
-// search continues past it — an entry no layer names at all is kept.
-// Directories are tested with a trailing slash so `dir/`-style patterns match.
+// This walk keeps only the mapping onto its own question: an entry is inventoried
+// unless the deepest layer with an opinion says `ignored`. An explicit `!`
+// re-include (`unignored`) and no opinion at all (`unmatched`) both keep the
+// entry — the two are distinct only for callers carrying a default skip floor
+// for a re-include to override, and this walk's SKIP_DIRS floor is absolute.
 function isIgnored(
   layers: readonly IgnoreLayer[],
   dirRel: string,
   name: string,
   isDir: boolean,
 ): boolean {
-  const suffix = isDir ? '/' : '';
-  for (let i = layers.length - 1; i >= 0; i--) {
-    const layer = layers[i];
-    if (layer === undefined) continue;
-    const verdict = layer.matcher.test(relToAnchor(dirRel, layer.anchorLen, name) + suffix);
-    if (verdict.ignored) return true;
-    if (verdict.unignored) return false;
-  }
-  return false;
+  return evaluateIgnore(layers, dirRel, name, isDir) === 'ignored';
 }
 
 // ─── Origin classification ────────────────────────────────────────────────────
@@ -195,7 +247,12 @@ function classifyOrigin(relPath: string, name: string): ProjectFileInput['origin
  * where users adjust). Returns undefined outside a git repo or when the walk
  * yields nothing (a failed walk must drop the scan, never wipe a stored tree).
  */
-export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
+export function resolveProjectFiles(
+  cwd: string,
+  opts: ProjectWalkOptions = {},
+): ProjectFilesScan | undefined {
+  const bounds = opts.bounds ?? PROJECT_WALK_BOUNDS;
+  const now = opts.now ?? (() => performance.now());
   try {
     const worktree = resolveWorktreeRoot(cwd);
     if (!worktree) return undefined;
@@ -213,14 +270,28 @@ export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
     // Held on an object, not a `let`: the flag is only ever set inside the
     // recursive `visit` closure, which control-flow analysis can't see — a
     // property read stays `boolean` where a narrowed `let` would read as `false`.
-    const walk = { lostSubtree: false };
+    //
+    // `omitted` is the same signal reached by a BOUND rather than by a fault: a
+    // subtree refused at the depth cap, or a walk stopped on the deadline, is a
+    // subtree this pass cannot see, and it prunes exactly like a lost one unless
+    // the scan says so. Kept separate from `lostSubtree` because the two are
+    // different facts about the tree and only one of them is a filesystem
+    // problem. `seen` drives how often the deadline is read.
+    const walk = { lostSubtree: false, omitted: false, seen: 0 };
+    const deadline = now() + bounds.budgetMs;
 
-    // Returns true when the file cap was hit — propagated up so the whole walk
-    // stops at the first over-cap file.
+    // Returns true when the walk must STOP — the file cap or the traversal
+    // budget — propagated up so nothing below it is visited.
     // `dirRel` is `dir` as a repo-relative posix path ('' at the root). It is
     // built by appending one component per descent rather than diffed against
     // the root, which is also the path every kept file is recorded under.
-    function visit(dir: string, dirRel: string, layers: IgnoreLayer[]): boolean {
+    // `depth` is how far below the root `dir` sits; the root itself is 0.
+    function visit(
+      dir: string,
+      dirRel: string,
+      layers: readonly IgnoreLayer[],
+      depth: number,
+    ): boolean {
       let dirents: Dirent[];
       try {
         dirents = readdirSync(dir, { withFileTypes: true, encoding: 'utf8' });
@@ -228,12 +299,35 @@ export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
         walk.lostSubtree = true;
         return false;
       }
-      const layer = readIgnoreLayer(dir, dirRel.length);
+      // The deadline is read on TWO schedules, and neither covers the other.
+      //
+      // Per DIRECTORY, here: the entry counter below is global, so a tree with
+      // fewer entries than one interval never reaches a check at all — measured,
+      // a 100-file tree walked against a 1 ms budget and a clock already
+      // 10,000,000 ms past it read the clock exactly once, at the start, and
+      // finished untruncated. That is not a rare shape: a deep chain of small
+      // directories costs a readdir, a `.gitignore` read and an `existsSync` per
+      // level, which is where a slow or networked filesystem spends seconds
+      // without ever producing many entries.
+      if (now() > deadline) {
+        walk.omitted = true;
+        return true;
+      }
       // Copied only when this directory contributes a layer; otherwise the same
       // array descends unchanged, since a layer's anchor offset does not move.
-      const dirLayers = layer ? [...layers, layer] : layers;
+      const dirLayers = withLayer(layers, readIgnoreLayer(dir, '.gitignore', dirRel.length));
 
       for (const entry of dirents) {
+        // And per ENTRY, because the mirror-image shape is one directory holding
+        // half a million of them — checked only on entry to a directory, the
+        // deadline would not be read again until that whole readdir had been
+        // walked. The interval keeps that read off the per-entry hot path.
+        walk.seen++;
+        if (walk.seen % DEADLINE_CHECK_INTERVAL === 0 && now() > deadline) {
+          walk.omitted = true;
+          return true;
+        }
+
         if (entry.isDirectory()) {
           if (SKIP_DIRS.has(entry.name) || isIgnored(dirLayers, dirRel, entry.name, true)) continue;
           const fullPath = join(dir, entry.name);
@@ -241,8 +335,15 @@ export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
           // under .claude/worktrees/, a nested clone, a submodule) — its files
           // belong to THAT project's tree, never this one's.
           if (existsSync(join(fullPath, '.git'))) continue;
-          const childRel = dirRel === '' ? entry.name : `${dirRel}/${entry.name}`;
-          if (visit(fullPath, childRel, dirLayers)) return true;
+          // Refused for DEPTH, after the checks above: a directory the tree
+          // was never going to enter is not an omission, and marking one would
+          // truncate a scan of an ordinary repo whose node_modules happens to
+          // sit deep.
+          if (depth >= bounds.maxDepth) {
+            walk.omitted = true;
+            continue;
+          }
+          if (visit(fullPath, childRel(dirRel, entry.name), dirLayers, depth + 1)) return true;
           continue;
         }
         // Dirent types are lstat-based, so a symlink is neither a file nor a
@@ -253,7 +354,7 @@ export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
         if (isIgnored(dirLayers, dirRel, entry.name, false)) continue;
 
         if (files.length >= MAX_FILES) return true;
-        const relPath = dirRel === '' ? entry.name : `${dirRel}/${entry.name}`;
+        const relPath = childRel(dirRel, entry.name);
         files.push({
           path: relPath,
           name: basename(entry.name),
@@ -264,7 +365,8 @@ export function resolveProjectFiles(cwd: string): ProjectFilesScan | undefined {
       return false;
     }
 
-    const truncated = visit(root, '', []) || walk.lostSubtree || isLinkedCheckout;
+    const truncated =
+      visit(root, '', [], 0) || walk.lostSubtree || walk.omitted || isLinkedCheckout;
     if (files.length === 0) return undefined;
     files.sort((a, b) => a.path.localeCompare(b.path));
     return { files, truncated, scannedAt: new Date().toISOString() };

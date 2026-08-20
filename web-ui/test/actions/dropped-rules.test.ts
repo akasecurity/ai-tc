@@ -57,15 +57,34 @@ describe('describeDropped', () => {
     expect(message).not.toContain(POINTER);
   });
 
-  it('keeps the two unmeasured causes distinguishable', () => {
+  it('keeps the missing-worker cause distinguishable from the rest', () => {
     // Same count, different cause, different next step — otherwise "reinstall
     // the CLI" would be advice given to someone whose install is fine.
     const isolated = describeDropped(dropped({ unmeasured: 1 }), false);
     const notIsolated = describeDropped(dropped({ unmeasured: 1, isolated: false }), false);
-    expect(isolated).toContain('ran out of time');
     expect(isolated).not.toContain(REINSTALL);
     expect(notIsolated).toContain('shipped without its scan worker');
     expect(notIsolated).toContain(REINSTALL);
+  });
+
+  it('covers every cause that lands in the unmeasured bucket, not just the first two', () => {
+    // `DroppedRules.unmeasured` counts THREE things and cannot say which: the
+    // pre-flight's pass budget ran out, there was no worker, or the measurement
+    // ran past the wall budget while burning almost no CPU — a busy machine
+    // rather than a slow pattern, which the pre-flight refuses to make
+    // permanent. The sentence therefore has to be true of all of them.
+    //
+    // It was true of only the pass-budget case: "could not be time-checked
+    // before the check ran out of time" is false twice over for a deferred
+    // rule, which WAS time-checked and whose pass budget did NOT run out.
+    const message = describeDropped(dropped({ unmeasured: 1 }), false);
+    expect(message).not.toContain('before the check ran out of time');
+    expect(message).toContain('could not be time-checked conclusively');
+    // Both in-worker causes named, so neither reads as the whole story.
+    expect(message).toContain('ran out of time');
+    expect(message).toContain('too busy');
+    // Still no next step: nothing was cached, whichever cause it was.
+    expect(message).not.toContain(POINTER);
   });
 
   it('withholds the pointer after a bound that named no culprit', () => {

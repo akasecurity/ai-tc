@@ -11,7 +11,10 @@
  * colleague commits.
  *
  * `MAX_FILES = 20_000` bounds KEPT files, not traversal — which is the whole
- * reason the ignored-tree rows below exist at two very different costs.
+ * reason the ignored-tree rows below exist at two very different costs, and why
+ * traversal carries its own bound (`PROJECT_WALK_BOUNDS`: a depth cap and a
+ * deadline). Every row here runs UNDER that bound, so a row is a measurement of
+ * the bounded walk and not of the shape it refuses.
  *
  * NO ASSERTIONS. A hosted runner varies by a large factor on neighbour load
  * alone, so the numbers are tracked here and the PROPERTIES are asserted in
@@ -184,17 +187,26 @@ describe('many .gitignore files', () => {
   });
 
   // NESTED: layers accumulate, so an entry at depth D is tested against D of
-  // them. This is the shape that misses the budget, and it misses it by a lot —
-  // measured 469 / 1,556 / 5,819 ms at depth 100 / 200 / 400 over 2,000 files.
-  // Those are warm means over three iterations, and a hook only ever runs cold,
-  // so the figure a user pays is the higher one. The trend is what matters here:
-  // the cost grows with depth x entries, so depth alone decides whether a repo of
-  // a few thousand files reaches the 10 s hook timeout.
+  // them. This is the shape that used to miss the budget, and it missed it by a
+  // lot — 469 / 1,556 / 5,819 ms at depth 100 / 200 / 400 over 2,000 files, with
+  // a direct run at depth 400 over 5,000 files measuring 13.0 s and 645 MB, past
+  // the hosts' 10 s hook timeout on a tree of 5,400 files.
+  //
+  // It is now bounded (PROJECT_WALK_BOUNDS), and what these rows track is that
+  // the bound still holds rather than what the shape costs: all three measure
+  // ~7 ms, because the walk stops at maxDepth and the depth below it no longer
+  // reaches the cost. A row here climbing back toward a second is the signal —
+  // the bound was raised, or something started descending past it.
+  //
+  // The rows are kept at three depths for that reason, even though the bound
+  // makes them nearly identical: a single row cannot show that the cost stopped
+  // growing WITH depth, which is the property, and three rows that diverge say
+  // where it started growing again.
   //
   // A 1,000-deep chain is not a row here because it cannot be walked on macOS at
   // all: `PATH_MAX` stops an absolute path at depth 476, measured (see
   // addressableDepth); the same arithmetic over Linux's 4096 puts it near 2,000.
-  // The depths below are what this platform permits, and the trend is the point.
+  // The depths below are what this platform permits.
   for (const depth of [100, 200, 400]) {
     row(
       `${String(depth)} nested directories, one .gitignore each, 2k files`,

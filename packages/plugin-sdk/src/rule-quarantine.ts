@@ -1,9 +1,11 @@
+import type { RuleTimingVerdict } from '@akasecurity/detections';
 import { checkRuleTiming } from '@akasecurity/detections';
 import type { Rule } from '@akasecurity/schema';
 
 import type { DataGateway } from './data-gateway.ts';
 import { contentHashOf } from './events.ts';
 import type { IsolatedProbeOutcome } from './isolated-scan.ts';
+import { workClockMs } from './work-clock.ts';
 
 // Overall wall-clock budget for one filtering pass across all not-yet-cached
 // rules. Protects the hook's timeout against a pack containing many
@@ -49,9 +51,10 @@ export function ruleProbeKey(rule: Rule): string | undefined {
  * Every per-rule line this module writes.
  *
  * `verb` is load-bearing rather than decorative. A rule can leave the pre-flight
- * for three reasons that want three different responses, and only one of them is
- * a statement about the rule at all — so only one is a "quarantine". Collapsing
- * them tells a user to fix a rule when the ruleset is fine.
+ * for four reasons that want four different responses, and only ONE of them is a
+ * statement about the rule at all — so only one is a "quarantine". Collapsing
+ * them tells a user to fix a rule when the ruleset is fine, or to clear a
+ * quarantine row that was never written.
  */
 function warn(rule: Rule, verb: string, detail: string, recoverable: boolean): void {
   const hint = recoverable ? ` (${UNQUARANTINE_HINT})` : '';
@@ -94,6 +97,34 @@ function warnUnmeasured(rule: Rule): void {
     'skipped',
     'the timing pre-flight ran out of time before this rule could be measured; ' +
       'excluded for the rest of this run, and measured again next time.',
+    false,
+  );
+}
+
+/**
+ * Case 4 — the rule blew the wall budget while doing essentially no work.
+ *
+ * The rule is excluded exactly as a measured breach is: the wall bound is what
+ * the hook's harness enforces, and it was genuinely blown. What is different is
+ * that NOTHING is cached, so this line must not carry the unquarantine hint —
+ * there is no row to clear, and sending someone to `aka detections unquarantine`
+ * lands them on a list their rule is not on.
+ *
+ * The wording blames the machine rather than the rule, because that is what the
+ * measurement says. A descheduled thread accrues elapsed time having executed
+ * nothing, and a developer machine under a build or a test run is the normal
+ * case rather than an edge one — quoting a timing budget here would be a false
+ * accusation against a pattern that may be perfectly ordinary. Both numbers are
+ * quoted precisely so the claim can be checked rather than taken on trust.
+ */
+function warnUncorroborated(rule: Rule, worstMs: number, corroboratedMs: number): void {
+  warn(
+    rule,
+    'deferred',
+    `its regex matcher ran past the ReDoS timing budget (${worstMs.toFixed(1)}ms) but spent ` +
+      `only ${corroboratedMs.toFixed(1)}ms of CPU doing it, which is a busy machine rather than ` +
+      'a slow pattern; excluded from this run and measured again next time, with nothing ' +
+      'recorded against it.',
     false,
   );
 }
@@ -228,8 +259,12 @@ export async function filterUnsafeRules(
         continue;
       }
 
-      let isSafe: boolean;
+      let verdict: RuleTimingVerdict;
       let worstMs: number;
+      // The work reading behind the verdict, so the `deferred` line can quote it
+      // rather than assert it. A terminated measurement has none — it never came
+      // back — and that path is `over-budget`, which never reads this.
+      let corroboratedMs = 0;
       if (prober) {
         const outcome = await prober.probe(rule);
         if (outcome.status === 'unavailable') {
@@ -242,23 +277,59 @@ export async function filterUnsafeRules(
           unmeasurable.set(outcome.reason, (unmeasurable.get(outcome.reason) ?? 0) + 1);
           continue;
         }
-        // A measurement that had to be terminated is the strongest unsafe verdict
-        // there is: the pattern did not merely exceed the per-probe budget, it
-        // never came back. Persist it — this one has been measured.
-        isSafe = outcome.status === 'ok' ? outcome.safe : false;
+        // A measurement that had to be TERMINATED is persisted WITHOUT
+        // corroboration. That asymmetry is deliberate, and so is its cost.
+        //
+        // Why it is right: measuring a rule means driving its own pattern into
+        // backtracking, so a pulled rule that hangs the battery is the ordinary
+        // case on this path rather than an exotic one, and this is the only
+        // verdict that converges it. Withhold the row and every later process
+        // pays the same deadline to learn the same thing, for ever.
+        //
+        // Why it is not free, stated because the obvious reading is wrong:
+        // `ISOLATED_PROBE_BUDGET_MS` is itself a WALL deadline, so the parent
+        // cannot tell "never came back" from "was not scheduled for a second".
+        // A severe enough stall therefore writes a permanent quarantine for a
+        // benign rule — the exact defect corroboration exists to remove,
+        // reached through the one door it does not cover. What bounds it is how
+        // far the two clocks must diverge: the slowest bundled rule's whole
+        // battery measures 1.46ms, so blowing the 1000ms deadline takes ~684x,
+        // against the 210x measured under 96 CPU burners on 14 cores. Rare, not
+        // impossible.
+        //
+        // Closing it needs the worker to report its own thread CPU as it walks,
+        // so a terminated probe can be corroborated too. That is a wire change
+        // and is tracked separately — do not "fix" this by dropping the write,
+        // which trades a common correct outcome for a rare wrong one.
+        verdict = outcome.status === 'ok' ? outcome.verdict : 'over-budget';
         worstMs = outcome.status === 'ok' ? outcome.worstMs : outcome.elapsedMs;
+        if (outcome.status === 'ok') corroboratedMs = outcome.corroboratedMs;
       } else {
         try {
-          ({ safe: isSafe, worstMs } = checkRuleTiming(rule));
+          ({ verdict, worstMs, corroboratedMs } = checkRuleTiming(rule, workClockMs));
         } catch {
           // The measurement itself failed (unexpected error inside the probe
           // battery). This IS a real, if failed, measurement attempt — unlike
           // the budget-exhausted case above — so quarantine and persist it,
           // rather than letting the exception escape and skip the whole scan.
-          isSafe = false;
+          verdict = 'over-budget';
           worstMs = Number.POSITIVE_INFINITY;
         }
       }
+
+      if (verdict === 'uncorroborated') {
+        // Over the wall budget while almost nothing executed. That is evidence
+        // about the MACHINE, not about the rule, so the rule is excluded from
+        // this run — the wall bound is what the harness enforces and it was
+        // genuinely blown — and NOTHING is cached. Caching here is the whole
+        // defect: the verdict is permanent, nothing re-measures, and the rule the
+        // user installed is disabled for every later process because one moment
+        // on a busy machine looked like backtracking.
+        warnUncorroborated(rule, worstMs, corroboratedMs);
+        continue;
+      }
+
+      const isSafe = verdict === 'safe';
       let persisted = false;
       try {
         await gateway.setRuleProbeVerdict(key, isSafe ? 'safe' : 'quarantined', worstMs);

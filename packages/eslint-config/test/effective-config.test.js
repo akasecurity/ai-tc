@@ -655,6 +655,7 @@ const EXPECTED_NON_PACKAGE_FILES = [
   'commitlint.config.mjs',
   'eslint.root.config.mjs',
   'test/fixtures/adversarial/hostile-repo/index.ts',
+  'test/helpers/perf.ts',
   'test/helpers/remove-tree.ts',
   'test/setup/no-network.ts',
   'test/vitest/coverage.ts',

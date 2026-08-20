@@ -14,7 +14,7 @@
  * real text (only the scan deadline catches it), the other hangs the battery
  * itself (only a killable measurement catches it).
  */
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -25,8 +25,10 @@ import type { Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
+import type { ScanPathResult } from '../src/fs-scan.ts';
 import { scanPathIntoStore } from '../src/fs-scan.ts';
 import { createGuardedFileScanner } from '../src/guarded-scan.ts';
+import { countWorkerStarts } from './helpers/worker-starts.ts';
 
 // The worker as this repo runs it: Node hands the `.ts` straight to the
 // type-stripper. The BUILT artifact the dashboard ships is a different file and
@@ -61,6 +63,25 @@ const BATTERY_KILLER: Rule = {
   severity: 'low',
   matcher: { type: 'regex', pattern: String.raw`(a|a|a|a)+$`, flags: 'g' },
 };
+
+// A pulled REGEX rule that is perfectly well behaved: no quantified group whose
+// body can match the same text two ways, so it cannot backtrack. It is still
+// `unverified` — no CI gate has ever seen it — so it runs under the bound and is
+// dropped as COLLATERAL when a neighbour hangs and isolation retires.
+//
+// That is what makes it the instrument for the scanner's lifetime. A quarantined
+// rule is gone from every later scan by design, so it can say nothing about
+// whether the next scan got a fresh scanner; a rule dropped only as collateral
+// is supposed to come BACK, and does so only if the next scan builds its own.
+const BENIGN_PULLED: Rule = {
+  specVersion: 1,
+  id: 'pulled/benign',
+  name: 'Benign pulled rule',
+  category: 'custom',
+  severity: 'low',
+  matcher: { type: 'regex', pattern: String.raw`PULLEDMARKER-[A-Z0-9]{8}`, flags: 'g' },
+};
+const BENIGN_PULLED_TEXT = 'PULLEDMARKER-7QW2ZK4M';
 
 // A pulled KEYWORD rule. Its matcher compiles one fully-escaped literal per
 // keyword, so nothing its author writes can make it backtrack: it needs no
@@ -142,6 +163,14 @@ async function foundRuleIds(): Promise<string[]> {
   return findings.map((f) => f.ruleId);
 }
 
+// What ONE walk found, from the walk's own result rather than from the store.
+// The store accumulates across scans, so a case that runs two of them cannot ask
+// it which scan a finding came from — and "the second scan still detects this"
+// is satisfied by the first scan's row if it does.
+function ruleIdsIn(result: ScanPathResult): string[] {
+  return result.files.flatMap((file) => file.findings.map((finding) => finding.ruleId));
+}
+
 // Both gates report on stderr by design — that line is the only place the
 // machine ever mentions a quarantine. Keep the suite's own output readable.
 function silenceStderr(): void {
@@ -161,22 +190,31 @@ afterEach(() => {
   removeTree(store);
 });
 
-// Walk `root` exactly as the dashboard's Scan action does.
+// Walk a tree exactly as the dashboard's Scan action does — one scanner per
+// call, built inside and closed in a `finally`, which is the per-request
+// lifetime the Server Action has. Two calls therefore mean two scanners, and
+// that is what the lifetime case below rests on.
+//
+// `starts` counts the threads THIS scan builds. It is the shape instrument the
+// elapsed ceilings cannot be: a ceiling has to grant START_MS per start, so an
+// extra recovery cycle costs ~1.6s and disappears inside a 63s bound.
 async function guardedScan(
   rules: Rule[],
   workerUrl: URL | undefined,
-  opts: { passBudgetMs?: number } = {},
+  opts: { passBudgetMs?: number; path?: string } = {},
 ) {
+  const starts = countWorkerStarts();
   const guard = await createGuardedFileScanner(db, rules, {
     workerUrl,
     budgetMs: BUDGET_MS,
     probeBudgetMs: BUDGET_MS,
     startBudgetMs: START_MS,
     passBudgetMs: opts.passBudgetMs,
+    onWorkerStart: starts.onWorkerStart,
   });
   try {
-    const result = await scanPathIntoStore(db, root, { scanText: guard.scanText });
-    return { result, dropped: guard.dropped() };
+    const result = await scanPathIntoStore(db, opts.path ?? root, { scanText: guard.scanText });
+    return { result, dropped: guard.dropped(), starts };
   } finally {
     await guard.close();
   }
@@ -206,7 +244,7 @@ describe('a pulled rule that never returns', () => {
       clearedByPreflight(BATTERY_BLIND);
 
       const started = performance.now();
-      const { result, dropped } = await guardedScan([CONTROL.rule, BATTERY_BLIND], WORKER);
+      const { result, dropped, starts } = await guardedScan([CONTROL.rule, BATTERY_BLIND], WORKER);
       const elapsedMs = performance.now() - started;
 
       // The property the whole change exists for. Left in-process these files
@@ -215,6 +253,19 @@ describe('a pulled rule that never returns', () => {
       // is TWO budgets (the scan, then the retry that names the rule) on TWO
       // worker starts, which is what the ceiling has to cover.
       expect(elapsedMs).toBeLessThan(ceilingMs(2, 2));
+
+      // TWO threads, and that is the number rather than a bound on it: the scan
+      // that hung, then the fresh thread the attributing retry runs on so the
+      // rule can be NAMED. The pre-flight builds none, because both verdicts are
+      // pre-seeded above — a third thread here would mean it re-measured a rule
+      // the cache already answered.
+      //
+      // The ceiling above cannot make this check. It has to grant START_MS per
+      // start (see `ceilingMs`), so it sits at 63s while a whole extra recovery
+      // cycle costs about 1.6s — an added cycle hides inside it with room to
+      // spare. That is the same blind spot the hook path had, and the count is
+      // the same instrument that closed it there.
+      expect(starts.count()).toBe(2);
 
       // The walk did not stop at the file that hung.
       expect(result.scanned).toBe(HOSTILE_FILES);
@@ -319,11 +370,15 @@ describe('a ruleset with nothing to isolate', () => {
       // the pre-flight's prober or the scan's own — reports `unavailable`,
       // which shows up as a dropped rule below. A green run here is a run that
       // never went near a thread.
-      const { result, dropped } = await guardedScan(
+      const { result, dropped, starts } = await guardedScan(
         [CONTROL.rule, PULLED_KEYWORD],
         CRASHING_WORKER,
       );
 
+      // The case's own name, asserted rather than inferred. The tripwire above
+      // catches a worker that is constructed AND loads; this catches one that is
+      // constructed at all, which is the thing the name claims.
+      expect(starts.count()).toBe(0);
       expect(dropped).toEqual({ quarantined: 0, unmeasured: 0, bound: 0, isolated: true });
       expect(result.scanned).toBe(1);
       const found = await foundRuleIds();
@@ -358,6 +413,70 @@ describe('a pre-flight that runs out of time before it reaches a rule', () => {
       // …and a build WITH a worker is what makes this distinct from the
       // missing-worker case, which wants a different message entirely.
       expect(dropped.isolated).toBe(true);
+    },
+    CASE_TIMEOUT_MS,
+  );
+});
+
+describe("a scanner's degradation, seen from the next scan", () => {
+  it(
+    'is gone — a scan gets its own scanner, so collateral comes back',
+    async () => {
+      silenceStderr();
+      // Two trees under one root, because the walk is what a scan is: the first
+      // has the rule that hangs, the second has only the collateral's marker, so
+      // what the second scan finds is decided entirely by the ruleset it runs.
+      const hostile = join(root, 'hostile');
+      const later = join(root, 'later');
+      mkdirSync(hostile);
+      mkdirSync(later);
+      for (let i = 0; i < HOSTILE_FILES; i++) {
+        writeFileSync(
+          join(hostile, `app${String(i)}.ts`),
+          `${BATTERY_BLIND_TEXT}\n${CONTROL.text}\n`,
+        );
+      }
+      writeFileSync(join(later, 'app.ts'), `${BENIGN_PULLED_TEXT}\n${CONTROL.text}\n`);
+      clearedByPreflight(BATTERY_BLIND, BENIGN_PULLED);
+
+      const rules = [CONTROL.rule, BATTERY_BLIND, BENIGN_PULLED];
+      const first = await guardedScan(rules, WORKER, { path: hostile });
+
+      // The premise, asserted rather than assumed. BOTH pulled rules were under
+      // the bound when it fired, so both were dropped — the one that hung and
+      // the one that merely happened to be in the same ruleset. Without this the
+      // case below could pass on a first scan that never degraded at all.
+      expect(first.dropped).toEqual({
+        quarantined: 0,
+        unmeasured: 0,
+        bound: 2,
+        isolated: true,
+      });
+      // Only the culprit left a verdict. The collateral is still `safe`, which
+      // is precisely why the next scan is entitled to run it.
+      expect(verdictOf(BATTERY_BLIND)).toBe('quarantined');
+      expect(verdictOf(BENIGN_PULLED)).toBe('safe');
+
+      const second = await guardedScan(rules, WORKER, { path: later });
+
+      // The property. A second scanner was built, so the collateral is back and
+      // detecting; a scanner hoisted out of the request would hand this scan the
+      // retired one, whose unverified rules are gone for good.
+      expect(ruleIdsIn(second.result)).toContain(BENIGN_PULLED.id);
+      // …and the second scan is not itself degraded: it dropped the culprit at
+      // the pre-flight, on the cached verdict, and nothing at the bound.
+      expect(second.dropped).toEqual({
+        quarantined: 1,
+        unmeasured: 0,
+        bound: 0,
+        isolated: true,
+      });
+
+      // The same property read as threads, which is the shape a `toContain` on
+      // findings cannot state. A fresh scanner builds its own worker for the
+      // collateral; a shared one that already retired builds none, because it
+      // has no unverified rule left to bound.
+      expect(second.starts.count()).toBe(1);
     },
     CASE_TIMEOUT_MS,
   );

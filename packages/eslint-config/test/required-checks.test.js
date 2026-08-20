@@ -21,6 +21,7 @@ import {
   workspaceLintScripts,
   workspacePackageDirs,
 } from './helpers/lint-invocations.js';
+import { dropComments, jobBlock } from './helpers/workflow.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WORKFLOWS = join(REPO_ROOT, '.github', 'workflows');
@@ -39,13 +40,9 @@ const readWorkflow = (file) => readText(join(WORKFLOWS, file));
 // A line whose first non-space character is `#` is a YAML comment. Dropping them
 // is load-bearing rather than tidying — see jobBlock and triggerBlock, each of
 // which matches patterns against text whose own comments name the very thing
-// being looked for. Shared by all three block readers so they cannot drift into
-// disagreeing about what a comment is.
-const dropComments = (text) =>
-  text
-    .split('\n')
-    .filter((line) => !line.trimStart().startsWith('#'))
-    .join('\n');
+// being looked for. Both now live in test/helpers/workflow.js, so this file and
+// packaged-cli-egress.test.js cannot drift into disagreeing about what a job
+// block is or what counts as a comment.
 
 /**
  * A top-level block: a column-0 `key:` through to the next column-0 key, or to
@@ -126,21 +123,6 @@ function matrixValues(source, key) {
 // comments, since dropping them changes no flag matched below; it stops being
 // harmless the first time a check wants to see something a `run:` block states
 // on a `#`-leading line.
-function jobBlock(source, key) {
-  // Escaped even though GitHub constrains job ids to [A-Za-z_][A-Za-z0-9_-]*,
-  // where nothing is a metacharacter: the cost is one call, and a caller that
-  // ever passes a step name instead would otherwise get `.` as a wildcard.
-  const pattern = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const block = new RegExp(
-    `^ {2}${pattern}:[^\\S\\n]*$([\\s\\S]*?)(?=^ {2}\\S|\\s*$(?![\\s\\S]))`,
-    'm',
-  ).exec(source);
-  expect(block, `no job \`${key}\` in the workflow`).not.toBeNull();
-  const body = dropComments(block[1]);
-  expect(body, `\`${key}\` captured no runs-on — not a job body`).toMatch(/^ {4}runs-on: /m);
-  expect(body, `\`${key}\` captured no steps — the body was cut short`).toMatch(/^ {6}- /m);
-  return body;
-}
 
 // The windows-lint step, which must be `pnpm lint` and nothing else. The
 // boundary is `(?![\w:])` rather than `\b` because `:` is a NON-word character,
@@ -386,13 +368,13 @@ describe('the required-check table in CONTRIBUTING.md', () => {
   const rows = requiredChecks();
 
   // A table that parsed to nothing would satisfy every per-row assertion below
-  // without checking anything, so pin the count first. The five CI jobs, the
+  // without checking anything, so pin the count first. The six CI jobs, the
   // audit, and CodeQL's two matrix legs.
   it('parses, and covers every gate the table is supposed to list', () => {
-    expect(rows).toHaveLength(8);
+    expect(rows).toHaveLength(9);
     // Every line that LOOKS like a row parsed as one. The length pin above
-    // catches a REFORMATTED row (8 become 7) and cannot catch an ADDED one: a
-    // ninth row whose Enforced cell does not parse leaves 8 here while
+    // catches a REFORMATTED row (9 become 8) and cannot catch an ADDED one: a
+    // tenth row whose Enforced cell does not parse leaves 9 here while
     // `parseGateTable` refuses the table outright, so the gate goes red daily
     // and this file stays green. Measured at 111 passed before this line.
     expect(rows).toHaveLength(rows.rowLike);

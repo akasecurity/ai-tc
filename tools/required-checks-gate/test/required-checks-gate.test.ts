@@ -78,7 +78,7 @@ describe('parseGateTable', () => {
   // The real file, so the shipped table and the reader cannot drift apart.
   it('reads the repository’s own table', () => {
     const rows = parseGateTable(readFileSync(`${REPO_ROOT}/CONTRIBUTING.md`, 'utf8'));
-    expect(rows).toHaveLength(8);
+    expect(rows).toHaveLength(9);
     expect(rows.filter((r) => r.enforced).map((r) => r.check)).toEqual([
       'Lint · Typecheck · Test · Build',
       'Windows · Unit tests (shipped surface)',
@@ -450,7 +450,7 @@ describe('parseGateTable is linear in its input', () => {
   // so a reader that started refusing everything would not satisfy the ratios
   // above by being uniformly fast.
   it('still reads the repository’s own table', () => {
-    expect(parseGateTable(readFileSync(`${REPO_ROOT}/CONTRIBUTING.md`, 'utf8'))).toHaveLength(8);
+    expect(parseGateTable(readFileSync(`${REPO_ROOT}/CONTRIBUTING.md`, 'utf8'))).toHaveLength(9);
   });
 });
 

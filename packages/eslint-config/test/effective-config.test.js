@@ -1500,18 +1500,27 @@ describe("turbo's own hash moves when a lintable file appears at the repo root",
     // wrongest one, and the control fails blaming task selection. A guard whose
     // whole job is to catch a cached green must not be able to go green because
     // it read nothing.
-    for (const [label, task] of [
-      [TASK_ID, test],
-      [BUILD_TASK_ID, build],
-    ]) {
+    //
+    // The check and the RETURN read one expression, through this accessor,
+    // because the obvious spelling of it — validate `task.hash` in a loop, then
+    // return `task.hash` separately — leaves two places naming the field and
+    // nothing tying them together. Point either one at something else and the
+    // guard goes on passing while the value it vouched for is not the value
+    // handed back: the case still fails, but on the control, reporting a
+    // renamed field as "the dry run is being read wrong — most likely by
+    // position". Reading the field once is what makes that impossible rather
+    // than merely unlikely.
+    const hashOf = (label, task) => {
+      const value = task.hash;
       expect(
-        typeof task.hash === 'string' && task.hash.length > 0,
+        typeof value === 'string' && value.length > 0,
         `${label} came back from the dry run with no \`hash\` string (got ` +
-          `${JSON.stringify(task.hash)}). Every comparison in this case is between two of these ` +
+          `${JSON.stringify(value)}). Every comparison in this case is between two of these ` +
           'values, so reading a missing field would make them all compare equal and pass.',
       ).toBe(true);
-    }
-    return { test: test.hash, build: build.hash };
+      return value;
+    };
+    return { test: hashOf(TASK_ID, test), build: hashOf(BUILD_TASK_ID, build) };
   }
 
   it(

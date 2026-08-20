@@ -141,10 +141,17 @@ function inventorySignature(
     .join(',');
 }
 
-// Short content fingerprint of a pack's serialized rules. sha1 is ample for
-// change-detection (not a security boundary) and keeps the signature compact.
+// Content fingerprint of a pack's serialized rules, for change detection only —
+// this is not a security boundary, and nothing authenticates anything with it.
+//
+// sha256 rather than sha1 anyway. The weakness sha1 has is irrelevant to
+// comparing a value against itself, but reaching for it generates a standing
+// static-analysis finding on a line nobody is going to revisit, and the cost of
+// not doing so is nil: the signature is recomputed on BOTH sides of every
+// comparison (see storedSignature) and never persisted, so the algorithm can
+// change without migrating a single store.
 function hashRules(rulesJson: string): string {
-  return createHash('sha1').update(rulesJson).digest('hex');
+  return createHash('sha256').update(rulesJson).digest('hex');
 }
 
 // Parse a plain "major.minor.patch" pack version to a numeric triplet, or null

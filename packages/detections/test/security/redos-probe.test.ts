@@ -2,7 +2,28 @@ import { Rule } from '@akasecurity/schema';
 import { describe, expect, it, vi } from 'vitest';
 
 import { scan } from '../../src/index.ts';
-import { BUDGET_MS, checkRuleTiming, worstProbeMs } from '../../src/security/redos-probe.ts';
+import type { ProbeClock } from '../../src/security/redos-probe.ts';
+import {
+  BUDGET_MS,
+  checkRuleTiming,
+  CORROBORATION_FLOOR_MS,
+  worstProbeMs,
+} from '../../src/security/redos-probe.ts';
+
+// The corroborating clock the PRODUCT supplies, standing in for the per-thread
+// CPU reading `@akasecurity/plugin-sdk` passes in. This package takes no
+// Node-API dependency, so the real one cannot live here — but `process` exists
+// under vitest, and what these cases need is a clock that reads WORK rather
+// than elapsed time.
+const workClock: ProbeClock = () => {
+  const { user, system } = process.cpuUsage();
+  return (user + system) / 1000;
+};
+
+// A corroborating clock that reports no work at all, whatever really ran. This
+// is a scheduler stall expressed at the seam that represents one: the thread
+// accrued wall time having executed nothing.
+const noWork: ProbeClock = () => 0;
 
 function regexRule(pattern: string): Rule {
   return Rule.parse({
@@ -62,14 +83,14 @@ const MAX_CALIBRATION_DRIFT = 1.5;
 
 describe('checkRuleTiming', () => {
   it('flags a catastrophic pattern as unsafe', () => {
-    const result = checkRuleTiming(regexRule('^(a+)+$'));
-    expect(result.safe).toBe(false);
+    const result = checkRuleTiming(regexRule('^(a+)+$'), workClock);
+    expect(result.verdict).toBe('over-budget');
     expect(result.worstMs).toBeGreaterThanOrEqual(BUDGET_MS);
   });
 
   it('passes a benign pattern as safe', () => {
-    const result = checkRuleTiming(regexRule('AKIA[A-Z0-9]{16}'));
-    expect(result.safe).toBe(true);
+    const result = checkRuleTiming(regexRule('AKIA[A-Z0-9]{16}'), workClock);
+    expect(result.verdict).toBe('safe');
     expect(result.worstMs).toBeLessThan(BUDGET_MS);
   });
 
@@ -98,69 +119,171 @@ describe('checkRuleTiming', () => {
     // red. CI runners are generally slower than a dev machine, which is the
     // safe direction, and it did not flake in 9 runs including 4 under full CPU
     // load — but read the failure message before believing a regression.
-    const result = checkRuleTiming(regexRule('^(a+)+bc'));
+    const result = checkRuleTiming(regexRule('^(a+)+bc'), workClock);
     expect(
-      result.safe,
+      result.verdict,
       `expected ^(a+)+bc to be unsafe, got worstMs=${result.worstMs.toFixed(1)} on a ` +
         `${String(result.probe.length)}-char probe (budget ${String(BUDGET_MS)}ms). Check the ` +
         `scale-free test below FIRST: if it still passes, the gate is measuring the interpreted ` +
         `tier correctly and this machine is simply fast enough that ^(a+)+bc no longer clears ` +
         `the budget interpreted — retune the pattern, do not touch the timing loop. Both red ` +
         `means the gate really has started reading V8's native tier.`,
-    ).toBe(false);
+    ).toBe('over-budget');
   });
 
   // `worstProbeMs` takes its clock as a parameter so the bundled-rule CI gate
   // can charge CPU time instead (see security/redos.test.ts, which explains
-  // why). The DEFAULT is the production path and must stay wall time:
-  // `checkRuleTiming` passes no clock, and the verdict it returns is what the
-  // runtime pre-flight caches — permanently — against a pulled rule. What a
-  // quarantined rule would have spent is the hook's harness timeout, and a
-  // harness timeout is wall-clock, so wall time is the resource that decides.
+  // why). What must NOT move is which clock DECIDES: `checkRuleTiming` excludes
+  // a rule on wall time, because what a slow rule would spend is the hook's
+  // harness timeout and a harness timeout is wall-clock.
   //
-  // Nothing else in this workspace pins that. A default flipped to CPU time
-  // changes which rules get disabled on user machines and leaves every OTHER
-  // timing suite here and in plugin-sdk green, because a catastrophic pattern
-  // is over budget on either resource — the two clocks disagree only on a
-  // stalled machine, and no test reproduces one. So this asserts the binding
-  // directly rather than a behaviour both clocks satisfy.
+  // The corroborating clock decides something else and only something else —
+  // whether the breach may be REMEMBERED. Keeping the two apart is the whole
+  // design: swap them and a rule that genuinely stalls the hook stops being
+  // excluded, because a pattern can spend a harness timeout without burning CPU.
   //
-  // Driven through `checkRuleTiming` and not `worstProbeMs`, because the
-  // property belongs to the production entry point: a default left correct
-  // while `checkRuleTiming` started passing a clock of its own is the same
-  // defect with the same consequence.
-  it('reads wall time by default, the resource the runtime pre-flight must charge', () => {
+  // Nothing else in this workspace pins the deciding clock. Flipped to CPU time
+  // it changes which rules get disabled on user machines and leaves every OTHER
+  // timing suite here and in plugin-sdk green, because a catastrophic pattern is
+  // over budget on either resource — the two clocks disagree only on a stalled
+  // machine. So this asserts the binding directly.
+  it('decides exclusion on wall time, the resource the harness timeout is measured in', () => {
     // Benign and unique to this file: the walk finishes in microseconds, and a
     // pattern no other case here compiles cannot disturb their tier-up.
     const rule = regexRule('ZZQ[0-9]{6}');
     const wall = vi.spyOn(performance, 'now');
-    const cpu = vi.spyOn(process, 'cpuUsage');
     try {
-      checkRuleTiming(rule);
+      const reads: number[] = [];
+      checkRuleTiming(rule, () => {
+        reads.push(1);
+        return 0;
+      });
       expect(
         wall,
-        'the default probe clock must read wall time — the pre-flight quarantines a rule for ' +
-          'what it would spend against a wall-clock harness timeout.',
+        'the deciding probe clock must read wall time — the pre-flight excludes a rule for what ' +
+          'it would spend against a wall-clock harness timeout.',
       ).toHaveBeenCalled();
       expect(
-        cpu,
-        'the production pre-flight must not be charged CPU time. The CI gate over the bundled ' +
-          'packs passes a CPU clock deliberately, and that clock must not become the default: a ' +
-          'rule that stalls the hook still spends its harness timeout however little CPU it burns.',
-      ).not.toHaveBeenCalled();
+        reads.length,
+        'the corroborating clock must actually be read, or every breach is uncorroborated and ' +
+          'no rule is ever quarantined again.',
+      ).toBeGreaterThan(0);
     } finally {
       wall.mockRestore();
-      cpu.mockRestore();
     }
+  });
+
+  // The corroborating clock may only ever REMOVE a reason to cache, never add
+  // one. Without this, a clock that over-reports (a process-wide fallback
+  // charging another thread's work, say) could push a rule that is comfortably
+  // inside the budget into a quarantine.
+  it('cannot make an under-budget rule unsafe, however much work it reports', () => {
+    let t = 0;
+    const wildlyOverReporting: ProbeClock = () => (t += 10 * BUDGET_MS);
+    const result = checkRuleTiming(regexRule('AKIA[A-Z0-9]{16}'), wildlyOverReporting);
+    expect(result.verdict).toBe('safe');
+    expect(result.worstMs).toBeLessThan(BUDGET_MS);
+  });
+
+  // The defect this whole split exists for, reproduced at the seam that
+  // represents it. A perfectly ordinary pattern, a wall clock that reports a
+  // stall, and a work clock reporting the truth: the rule is over the wall
+  // budget and it did no work, so it must NOT be cacheable.
+  //
+  // A benign rule rather than a catastrophic one is the point — this is the
+  // false accusation, and it has to be a rule that would have been fine.
+  it('reports a wall breach with no work behind it as uncorroborated, not over budget', () => {
+    const rule = regexRule('ZZQSTALL[0-9]{6}');
+    // Each read jumps a whole budget, so the FIRST probe is over budget however
+    // fast the machine really is. Nothing here depends on this host's speed.
+    let reads = 0;
+    const stalled = vi.spyOn(performance, 'now').mockImplementation(() => reads++ * BUDGET_MS * 2);
+    try {
+      const result = checkRuleTiming(rule, workClock);
+      expect(result.worstMs).toBeGreaterThanOrEqual(BUDGET_MS);
+      expect(
+        result.verdict,
+        'a wall breach that burned no CPU is a busy machine, not a slow pattern. Caching it ' +
+          'disables a rule the user installed, permanently, and nothing ever re-measures.',
+      ).toBe('uncorroborated');
+      expect(result.corroboratedMs).toBeLessThan(CORROBORATION_FLOOR_MS);
+    } finally {
+      stalled.mockRestore();
+    }
+  });
+
+  // …and the other side of the same seam, so the case above is not passing
+  // because corroboration never succeeds. Same stalled wall clock, same
+  // breach — only the work reading differs, and that alone flips the verdict.
+  it('reports the same wall breach as over budget when the work clock corroborates it', () => {
+    const rule = regexRule('ZZQWORK[0-9]{6}');
+    let reads = 0;
+    const stalled = vi.spyOn(performance, 'now').mockImplementation(() => reads++ * BUDGET_MS * 2);
+    try {
+      let work = 0;
+      const busy: ProbeClock = () => (work += CORROBORATION_FLOOR_MS);
+      const result = checkRuleTiming(rule, busy);
+      expect(result.worstMs).toBeGreaterThanOrEqual(BUDGET_MS);
+      expect(result.verdict).toBe('over-budget');
+    } finally {
+      stalled.mockRestore();
+    }
+  });
+
+  // The gate on an entirely UNMOCKED path: a real catastrophic pattern really
+  // does blow the wall budget here, and the only injected thing is a work clock
+  // reporting nothing. The cases above reach `uncorroborated` by mocking
+  // `performance.now`, which is the heavier intervention; this one shows the
+  // corroboration alone decides whether a genuine wall breach may be cached.
+  it('withholds a real wall breach from the cache when no work is reported', () => {
+    const result = checkRuleTiming(regexRule('^(a+)+$'), noWork);
+    expect(result.worstMs).toBeGreaterThanOrEqual(BUDGET_MS);
+    expect(result.verdict).toBe('uncorroborated');
+  });
+
+  // A genuinely catastrophic pattern must still be quarantinable on a real
+  // clock — the control for every case above. If corroboration ever stopped
+  // succeeding on real work, the two stalled-clock cases would still pass and
+  // the product would simply never quarantine anything again.
+  it('corroborates a real catastrophic pattern, which is what keeps quarantine reachable', () => {
+    const result = checkRuleTiming(regexRule('(x+x+)+y'), workClock);
+    expect(result.verdict).toBe('over-budget');
+    expect(
+      result.corroboratedMs,
+      `a catastrophic pattern is CPU-bound by construction; measured ${result.corroboratedMs.toFixed(1)}ms ` +
+        `of work against a ${String(CORROBORATION_FLOOR_MS)}ms floor. Below the floor means the floor ` +
+        `is too high for this machine, not that the pattern is fine.`,
+    ).toBeGreaterThanOrEqual(CORROBORATION_FLOOR_MS);
   });
 });
 
 describe('worstProbeMs attributes a probe to its interpreted tier', () => {
   // The verdict test above buys its directness with a ~1.3x margin. This one
   // carries no absolute millisecond threshold at all: both quantities are
-  // measured on the machine running them, so hardware speed and CPU contention
-  // move them together and cancel — the same reason `backtrackRatio` and
-  // CATASTROPHIC_RATIO exist rather than a fixed ms bound.
+  // measured on the machine running them, so a faster or slower MACHINE scales
+  // the numerator and the denominator alike and cancels out of the ratio — the
+  // same reason `backtrackRatio` and CATASTROPHIC_RATIO exist rather than a
+  // fixed ms bound.
+  //
+  // CPU CONTENTION does not cancel, and this comment used to say it did. Two
+  // quantities cancel only when they are sampled in the same window, and these
+  // are not: the numerator is timed inside `worstProbeMs` and the denominator
+  // ~135ms later. Load spanning both windows is the harmless direction — it
+  // RAISES the ratio, measured below — but load arriving only in the gap
+  // inflates the denominator alone, and the ratio then reports the runner
+  // rather than the tier — down to the 0.84x recorded below, on a gate that was
+  // working perfectly. That is a false failure, not a caught bypass, and it is
+  // why this case reddened runs of the full suite at turbo's default fan-out
+  // while passing the same commit standalone.
+  //
+  // So what makes the pair comparable is sampling shape, not the threshold, and
+  // it is two mechanisms rather than one. The denominator is a min over seven
+  // samples, which recovers the native tier wherever a quiet slot exists inside
+  // the window. And a fixed CPU-bound calibration is timed on either side of the
+  // whole measurement, so the one case `min` cannot rescue — a machine that
+  // changed speed BETWEEN the windows, where there is no quiet slot left to
+  // find — abstains instead of returning a verdict its sampling cannot support.
+  // Both are taken below, beside the reasoning that sizes them.
   it('reports the first probe at its interpreted cost, not its native cost', (ctx) => {
     // Read the machine's speed before anything is measured against it, and again
     // after. Neither reading touches `rule`.

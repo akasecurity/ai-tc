@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { lockStore } from '../helpers/fault-injection.ts';
 import { useTempStore } from '../helpers/temp-store.ts';
 
-const store = useTempStore('aka-rule-probe-');
+const store = useTempStore('aka-rule-probe-', { migrated: true });
 
 describe('SqliteRuleProbeCacheRepository (via LocalDatabase.ruleProbeCache)', () => {
   it('returns undefined for an unseen rule key', () => {

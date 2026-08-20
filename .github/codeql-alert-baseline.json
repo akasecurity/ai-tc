@@ -1,9 +1,9 @@
 {
   "measured": "2026-08-20",
   "note": "Open CodeQL alerts on main. A ratchet in BOTH directions: a rise fails, and so does a fall, because a baseline nobody lowers stops describing the tree. Lower it in the commit that fixes or dismisses the alert. Every count here is untriaged work, not an accepted level.",
-  "predicted": "main MEASURED 25 high on 2026-08-20 (js/path-injection 17, js/polynomial-redos 7, js/weak-cryptographic-algorithm 1). The 24 here is PREDICTED for after the tree-walk change lands, and the arithmetic is one alert: that change hoists the layered ignore evaluation into one shared module, so the two identical readFileSync(join(dir, filename)) sinks main carries at local-ops/src/fs-scan.ts and plugin-sdk/src/project-files.ts become a single one at plugin-sdk/src/ignore-layers.ts. Every other sink in those files relocates line-for-line \u2014 same expression, new line \u2014 so js/path-injection goes 17 -> 16 and the total 25 -> 24. Nothing is fixed or dismissed here: the walk still takes a caller-supplied root by design, which is what that rule flags, and the remaining 16 stay untriaged like the rest. This cannot be observed until main is re-analysed, and this gate runs on cron rather than on push precisely so it reads a settled analysis \u2014 so if the prediction is wrong the first scheduled run says so in one line and the fix is one character here.",
-  "total": 24,
+  "predicted": "Nothing is predicted here: main MEASURED 23 high after this dismissal (js/path-injection 16, js/polynomial-redos 6, js/weak-cryptographic-algorithm 1), read from the settled analysis of 06db4805 rather than reasoned about. The 24 -> 23 is one alert: js/polynomial-redos on packages/detections/src/security/redos-probe.ts, dismissed as `won't fix` and not as a false positive \u2014 it is a genuine quadratic whose input the schema caps at 2000 characters, measured 2.2ms there, reached only inside the killable scan worker. The reasoning is at fuelChars in that file, including why the obvious atomic-group fix does not work. The remaining 22 stay untriaged like the rest.",
+  "total": 23,
   "bySeverity": {
-    "high": 24
+    "high": 23
   }
 }

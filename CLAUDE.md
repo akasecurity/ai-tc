@@ -107,6 +107,64 @@ the failure being guarded against.
 
 **Do not create new types and interfaces — use the ones exported from `@akasecurity/schema` to the maximum extent.** Consumers (web-ui, CLI, plugin) import the schema types directly rather than redefining local "view-model" shapes or adapters. A new type is justified only when there is genuinely no schema equivalent (e.g. pure presentation descriptors like `{ label, icon, color }`). If a shape is missing, add it to `@akasecurity/schema/src/zod/` first, then consume it.
 
+**The agent vocabulary is ONE registry, and outside it an id is spelled through a
+member rather than as a literal.** Unlike §3 and §4, this is a CONVENTION and not a
+gate: no lint rule and no derived audit enforces it, so read it as what review looks
+for rather than as something CI will catch. Two neighbouring id spaces are
+deliberately outside it and are not violations — `AGENT_PLUGINS[].id` in
+`packages/local-ops/src/registry.ts` (the ref `aka plugins install` takes, which
+carries its own `sourceTool` field alongside) and the browser extension's
+content-script provider ids, which name a web app rather than a capture and whose
+files import nothing from schema on purpose.
+`src/zod/harness-map.ts` holds both spellings as named-member const objects —
+`SOURCE_TOOL` (the wire id a plugin stamps on a capture, `'claude-code'`) and `HARNESS` (the
+display id the dashboard renders, `'claudecode'`). Four rules keep them from re-multiplying,
+which they had done into five hand-typed copies:
+
+- **A narrower enum is `Harness.extract([...])` over MEMBER NAMES**, never a fresh
+  `z.enum([...])` of the same strings. `Provider`, `HarnessId` and `FindingProvider` are each
+  that, so a subset structurally cannot carry an id the registry does not define, while each
+  keeps its own member ORDER (`Provider`'s is the dashboard's display order, and
+  `.extract()` preserves the order passed).
+- **Call sites spell `HARNESS.ClaudeCode` / `SOURCE_TOOL.ClaudeCode`, not the literal.** A
+  literal that merely equals a member is invisible to a rename, which is exactly how these
+  drifted. Keyed tables use computed member keys (`[HARNESS.ClaudeCode]: …`), which keeps
+  `satisfies Record<Harness, …>` exhaustiveness — so **a table over a vocabulary is
+  ANNOTATED `Record<ThatVocabulary, …>`**, and that one rule needs no per-table test. It
+  covers the `.extract()` subsets exactly as it covers the whole enum: a table annotated
+  `Record<HarnessId, …>` fails to compile the moment `HarnessId`'s extract list grows
+  (TS2741 — verified, not assumed). What the compile error cannot reach is a collection
+  keyed on NOTHING — an array of rows carrying its id in a field — because adding a member
+  changes no type it mentions. Give it a key, or it owes a TEST.
+- **Adding an id is one edit to the registry PLUS a deliberate decision per subset.**
+  `.extract()` takes explicit member names, so a member added to `HARNESS` joins no subset
+  on its own: it is a compile error at every table keyed on the whole enum (which is what
+  prompts the lettermark and the kind), and silently absent from `Provider`, `HarnessId`
+  and `FindingProvider` until each is extended on purpose. Until then it renders under no
+  scan-coverage row, gets no label, and buckets to the miss path. That is the intended
+  shape — subsets answer different questions and none should widen by accident — but do
+  not read the compile error as telling you the work is finished.
+- **The two vocabularies are joined by MEMBER NAME**, so `TOOL_TO_HARNESS` pairs them without
+  either spelling being retyped, and a member in only one of them is meaningful rather than an
+  omission (`Cli`/`Unknown` capture under no harness; `Windsurf`/`Api` render under no
+  capture). Anything that reads the join BACKWARDS derives it — `toDbProviderFilter` is the
+  inverse of that one table rather than a second map, because the hand-written copy it
+  replaced had to be edited in step with it and nothing checked that it was. Deriving it
+  gives up the exhaustiveness that `Record<FindingProvider, string[]>` carried, and no
+  compile error replaces it, so the agreement is asserted as SETS in
+  `packages/schema/test/zod/harness-map.test.ts` — every provider but the miss bucket must
+  name at least one stored value. That case is the only non-vacuous one: the round-trip
+  iterates the table itself, and the forward check's inner loop does not run on an empty
+  array. It has to be non-vacuous because an empty result is the miss bucket's own contract
+  (`'api'` → `[]`, matching any unknown value in-memory), so a provider with no rows reads
+  as the miss bucket rather than as no findings.
+
+Declared as const objects rather than TypeScript `enum`s deliberately:
+`packages/plugin-sdk/src/scan-worker.ts` is loaded by raw Node under type **stripping** and
+reaches schema through `@akasecurity/detections`, so an `enum` — which emits runtime code
+rather than erasing — fails at load on that path only. The repo has no `enum` declarations,
+and adding one anywhere schema can reach is what would break it.
+
 ### 3. `process.env` is off by default
 
 ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Nine places in shipped source genuinely need the host environment and opt out. Three kinds of file are out of this table's scope and carry inline disables of their own: test harnesses that spawn the real hooks, the real installer scripts, and `tools/` — repo tooling that is never shipped, where a CI gate reads the runner's own output channels. All three are inventoried by `packages/eslint-config/test/inline-disables.test.js` instead, which reads the whole tracked tree rather than only what this table calls shipped:
@@ -333,18 +391,46 @@ only separate "this path got slower" from "this path stopped terminating" — wh
 timeout cannot. Do not fold one into the other, and do not answer a flake here by widening a
 ceiling that was never measuring the property.
 
+**The per-scan cost is the third instrument, and it is a RATIO rather than a ceiling.** What one
+isolated scan costs is what a real payload multiplies — one scan per MCP leaf — so it is worth a
+gate of its own; but it is a sub-millisecond quantity, and an absolute millisecond bound on one of
+those is a statement about the runner. It was `medianMs < 25` and it reddened a Windows leg at
+27.03ms on a branch whose diff could not reach the isolation path; the same commit re-run failed
+completely differently, taking 90% longer and blowing 20s hook timeouts in three other packages
+instead. So `runtime-isolation.test.ts` divides the median isolated round trip by the median of the
+SAME work done in-process — a second runtime with no unverified rule, interleaved one pair per
+iteration in the same loop — and bounds the quotient. Everything the two share cancels, so a runner
+that is uniformly half as fast moves both medians and the ratio not at all: measured 1.07/1.10/1.04
+quiet and 1.01/1.05/1.02 under 96 CPU burners on 14 cores, where both medians roughly doubled.
+
+Three things about that shape are load-bearing. **Both sides must be the same statistic over the
+same number of interleaved samples** — a stall-immune denominator (a min-of-N) against a noisy
+numerator makes a stall EXPLODE the quotient instead of cancelling in it, which is how an earlier
+attempt at a ratio elsewhere failed. **The baseline must be proven not to isolate** (`baselineStarts.count()`
+is 0), or the ratio compares isolation against itself, sits at ~1 forever, and passes every mutation
+it exists to catch. And **a ratio has a sensitivity floor**: against a ~0.17ms in-process median a
+bound of 10 catches an added per-scan cost above ~1.5ms and nothing smaller, which is why it is the
+`starts.count()` assertion beside it — not this — that catches a thread started per scan.
+
 A quarantine verdict is the one detection decision the machine reaches on its own, from a wall-clock measurement, and it is cached forever. So it is **recoverable and visible**: `aka detections unquarantine` forgets every quarantine verdict (keeping the `safe` ones, which are measurements worth keeping), and `aka detections` reports the count. The stderr line the plugin writes names the command, because a hook's stderr is otherwise the only place the machine ever mentions it; the dashboard's folder scan writes the same line to the server's console and additionally returns a notice to the page, since nobody is reading a server log while they click Scan. Anything that adds a new way to quarantine must keep those surfaces true.
 
-**Only a MEASURED rule is quarantined, and only that line may name the command.** A rule leaves the pre-flight three ways, and `rule-quarantine.ts` says which: measured and over budget (`quarantined rule "…"`, with the `unquarantine` hint, since a row exists to clear); never reached because the pass budget ran out (`skipped rule "…"`, no hint, back on the next pass); and never measured because there was nowhere killable to measure it. The third is **not a per-rule line at all** — it is one line for the whole pass, carrying the prober's own `unavailable` reason and naming no rule, because a missing or unstartable worker excludes EVERY pulled/custom regex rule on the machine from every scan until the install is repaired. It is a property of the install, and a fault the ruleset cannot fix. Collapsing any of the three into the timing wording is the defect this replaced: two of them cache nothing, so a user sent to `aka detections unquarantine` reaches a list their rule is not on, and a user told their rule blew a timing budget goes to audit a ruleset that is fine. `packages/plugin-sdk/test/rule-quarantine.test.ts`'s `what the pre-flight says on stderr` holds it, pairwise — a future collapse goes red whatever the new wording is.
+**Only a CORROBORATED breach is quarantined, and only that line may name the command.** A rule leaves the pre-flight four ways, and `rule-quarantine.ts` says which: over budget with the work clock agreeing (`quarantined rule "…"`, with the `unquarantine` hint, since a row exists to clear); never reached because the pass budget ran out (`skipped rule "…"`, no hint, back on the next pass); over budget on the wall while burning almost no CPU (`deferred rule "…"`, no hint — see below); and never measured because there was nowhere killable to measure it. The last is **not a per-rule line at all** — it is one line for the whole pass, carrying the prober's own `unavailable` reason and naming no rule, because a missing or unstartable worker excludes EVERY pulled/custom regex rule on the machine from every scan until the install is repaired. It is a property of the install, and a fault the ruleset cannot fix. Collapsing any of the four into the timing wording is the defect this replaced: three of them cache nothing, so a user sent to `aka detections unquarantine` reaches a list their rule is not on, and a user told their rule blew a timing budget goes to audit a ruleset that is fine. `packages/plugin-sdk/test/rule-quarantine.test.ts`'s `what the pre-flight says on stderr` holds it, pairwise — a future collapse goes red whatever the new wording is.
+
+**Two clocks, and they answer different questions.** Exclusion is decided on WALL time and must stay that way: what a slow rule spends is the hook's harness timeout, and that timeout is wall-clock, so a pattern that stalls the hook has to be excluded however little CPU it burned. But the verdict is cached forever and nothing ever re-measures, so what may be WRITTEN DOWN answers a stricter question — was the elapsed time work? `checkRuleTiming` therefore takes a corroborating clock as a **required** parameter (an optional one is dropped in silence, which is how the dashboard lost `onWorkerStart`), and returns `safe` / `over-budget` / `uncorroborated` rather than a boolean, because a boolean cannot carry the third case and defaulting it to either of the other two is the defect. `@akasecurity/detections` takes no Node-API dependency and part of it is bundled for the browser, so it cannot read CPU itself; `packages/plugin-sdk/src/work-clock.ts` supplies `process.threadCpuUsage()` — **per thread**, because the pre-flight runs inside the scan worker and `process.cpuUsage()` would charge the rule under measurement with the main thread's work and V8's background GC and compiler threads, which errs toward corroborating a stall.
+
+The floor is `CORROBORATION_FLOOR_MS`, 20% of the 100 ms budget, and it sits in a measured gap rather than a chosen one. On an arm64 Mac (14 cores, Node 24.18): a benign rule's whole battery costs 1.2 ms of CPU quiet, and under 96 CPU burners one crossed the wall budget at 104.9 ms having burned **0.5 ms**; a wider fleet run recorded the same shape on five different rules at 0.2–7.7 ms. Genuinely catastrophic patterns burn 163–458 ms quiet and 196–600 ms under the same load — except `(x+x+)+y` at 44.5–49.1 ms, which is the floor to sit under. **Why that one drops so far is what rules out the obvious threshold**: the walk stops at the first probe whose WALL reading crosses the budget, so a stalled machine ends it earlier in CPU terms, and requiring a full `BUDGET_MS` of corroborating CPU would refuse to quarantine a catastrophic rule exactly when the machine is busiest. The two errors are not symmetric, which settles which way to lean: too high and a hostile rule is excluded every run but never cached — enforcement still happens, it just re-measures, and it becomes permanent as soon as the machine is quiet enough; too low and a stall permanently disables a rule the user installed. Only the second needs `aka detections unquarantine` to undo.
+
+One breach needs no corroboration and must keep bypassing it: a measurement the isolated scanner had to **terminate**. That is not "over budget", it is "never came back", and no stall makes a thread refuse to finish.
 
 The worker is a **build entry**, not a source file the loader finds: the published plugin ships `scripts/` only, so `plugins/claude-code/tsup.config.ts` emits `scripts/scan-worker.js` beside the hooks and the SDK resolves it as a sibling. A worker URL resolved against a source path works in the repo and under vitest and fails only once installed — `plugins/claude-code/test/e2e/scan-worker-bundle.e2e.test.ts` is what pins it, by driving a **built** hook against a throwaway home with a pulled rule installed.
 
-**Where else the bound applies, and where it does not.** The capture path is `runtime.evaluate`, and so every hook plus `@akasecurity/scanner`. The dashboard's folder scan is the second caller and reaches the same two gates through `packages/local-ops/src/guarded-scan.ts` — `web-ui/app/(app)/scan/actions.ts` builds a `createGuardedFileScanner` over the installed-pack snapshot and hands `scanPathIntoStore` its `scanText` seam, never the raw `rules`, which is the in-process path. Three things differ there and each is load-bearing:
+**Where else the bound applies, and where it does not.** The capture path is `runtime.evaluate`, and so every hook plus `@akasecurity/scanner`. The dashboard's folder scan is the second caller and reaches the same two gates through `packages/local-ops/src/guarded-scan.ts` — `web-ui/app/(app)/scan/actions.ts` builds a `createGuardedFileScanner` over the installed-pack snapshot and hands `scanPathIntoStore` its `scanText` seam, never the raw `rules`, which is the in-process path. Five things differ there and each is load-bearing:
 
-- **The scanner is per REQUEST, not per process.** The first hang retires isolation for the scanner's whole life; the dashboard server outlives every scan it runs, so a process-wide scanner would cost it its pulled rules until someone restarted it. That is also why `createGuardedScanner` takes a `degradeScope` — the stderr warning must not claim a lifetime it does not have.
+- **The scanner is per REQUEST, not per process.** The first hang retires isolation for the scanner's whole life; the dashboard server outlives every scan it runs, so a process-wide scanner would cost it its pulled rules until someone restarted it. That is also why `createGuardedScanner` takes a `degradeScope` — the stderr warning must not claim a lifetime it does not have. It is held as BEHAVIOUR rather than as that sentence: `packages/local-ops/test/guarded-scan.test.ts` drives two scans over one store and requires the second to detect again with a rule the first dropped. The rule it reads has to be **collateral**, never the culprit — a quarantined rule is gone from every later scan by design, so it would pass whether or not the scanner was shared, while a rule dropped only because a neighbour hung is supposed to come back and does so only if the next scan builds its own scanner.
+- **The isolation options are forwarded by SHAPE, not by listing keys.** Every field of `IsolatedScanOptions` is optional, so a pass-through that names a subset drops the rest by construction and nothing notices — not typecheck, not lint, not a test. That is not hypothetical: `onWorkerStart` was added to the SDK and reached the plugin's isolation and never the dashboard's, with `local-ops` green throughout. `createGuardedFileScanner` annotates its pass-through `CompleteIsolatedScanOptions` — `IsolatedScanOptions` with every key REQUIRED, each still allowed to be `undefined` — so every key must be named and the next field added to the SDK fails the build here until someone decides whether to expose it. Declining is spelled `field: undefined`, which reads as the choice it is rather than as an omission.
 - **The worker location is a caller input** (`GuardedFileScannerOptions.workerUrl`), never the SDK's sibling lookup. A Next build replaces `import.meta.url` with the BUILD MACHINE's absolute source path, so that lookup resolves where the build ran and nowhere else — silently costing an installed dashboard its bound. `web-ui/tsup.config.ts` emits the worker to `web-ui/dist/scan-worker.js`, `next.config.ts` traces it into the standalone build, and `web-ui/app/lib/scan-worker.ts` resolves it against `process.cwd()` (the app dir: Next's standalone `server.js` chdirs to its own directory, and every other launch runs from the package). Those three move together, `web-ui/test/e2e/scan-worker-bundle.e2e.test.ts` pins the first and third, and `cli/scripts/bundle-web-ui.mjs` throws at pack time if the second stopped working. The emit itself is ONE turbo task, `web-ui#build:worker`, and every task that reads or ships the file depends on it — `build`, `test` and `dev` run no `tsup` of their own. That is not tidiness: `turbo run test` schedules `web-ui#build` beside `web-ui#test` (the CLI's test task reaches it through `^build`) with no ordering between them, so a `tsup` inlined into either script is a second writer whose `clean: true` removes and rewrites the worker while a vitest fork is between `existsSync` and `new Worker(…)` — a flake that reads as the action's own wording, not as a build race. `web-ui/test/scan-worker-build.test.ts` pins the single-writer shape, including that `build`'s declared outputs carry no `dist/**` (a cache hit restores outputs, which is a write too).
 - **With no worker, a rule that cannot be bounded is dropped, not run** — including one the pre-flight already cleared, since that verdict is empirical. The scan says what it dropped (`GuardedFileScanner.dropped()` → the Scan page's notice); it does not quietly run a smaller ruleset than the Detections page lists.
-- **A dropped rule is only ever pointed at `aka detections` when a verdict was actually cached.** `DroppedRules` splits on that — `quarantined` was measured and left a row, `unmeasured` was never timed here (no worker, or the pre-flight's pass budget spent) and deliberately leaves none, since caching a verdict for a rule nobody measured would disable it forever. Only the first has anywhere to send someone, and `countQuarantined()` — the value the command itself prints from — is what the notice gates on. Any new way to drop a rule has to say which of the two it is.
+- **A dropped rule is only ever pointed at `aka detections` when a verdict was actually cached.** `DroppedRules` splits on that — `quarantined` was measured and left a row, `unmeasured` was never CONCLUSIVELY timed here (no worker, the pre-flight's pass budget spent, or a wall breach the work clock refused to corroborate) and deliberately leaves none, since caching a verdict for a rule nobody measured would disable it forever. Only the first has anywhere to send someone, and `countQuarantined()` — the value the command itself prints from — is what the notice gates on. Any new way to drop a rule has to say which of the two it is.
 
 Two `scan()` calls inside the SDK are not exposure: `mask.ts` and `tokenize.ts`'s self-scan both pass `getLoadedRules()`, the compiled-in registry the CI battery gates on every commit, so no pulled pattern reaches them. `aka scan` passes no ruleset and falls back to that same registry, so the CLI runs in-process by design and is not exposed — passing it an installed snapshot instead would put an unreviewed regex on an unbounded path.
 
@@ -879,6 +965,18 @@ tools/                repo tooling, never shipped: the installer one-liners and
    enumerates by — a file whose extension it counts as lintable and the glob omits
    is the same cached-green hole one extension wide.
 
+   Those checks read `turbo.json` as TEXT and match its globs with
+   `path.matchesGlob`, which is a MODEL of turbo's hashing rather than turbo's
+   hashing. One case asks turbo instead: it plants a lintable file at the repo
+   root, runs `--dry=json`, and asserts the hash really moves — the only reading
+   that decides whether this suite RUNS. Two things in it are load-bearing. It
+   selects the task by `taskId`, because `tasks[0]` is `#build`, whose inputs are
+   package-local and which no repo-root file ever moves. And it carries a
+   POSITIVE CONTROL that plants under a different input (`tools/ci/**`) first, so
+   a broken measurement is reported as a broken measurement rather than as a
+   missing glob — without it, "the hash did not move" reads the same whether the
+   glob went or the selection did.
+
 6. Add the package name to `EXPECTED_WORKSPACE_PACKAGE_NAMES` in
    `packages/eslint-config/test/effective-config.test.js`. That pinned list only
    forces a human to notice the new package — what actually stops it shipping
@@ -899,6 +997,17 @@ tools/                repo tooling, never shipped: the installer one-liners and
    // …
    test: { setupFiles: [noNetworkGuard], … }
    ```
+
+   A package that also declares `testTimeout`/`hookTimeout` in that config must add
+   itself to `TIMEOUTS` in `packages/eslint-config/test/hook-timeout-ratchet.test.js`,
+   which pins every package's ceilings as an EXACT map. The ratchet holds in BOTH
+   directions on purpose. Raising a timeout is the change that must not pass unnoticed:
+   the per-test SQLite migration above was 'fixed' once by moving this number from
+   vitest's 10s default to 20s, which bought a green run and let the same failure spread
+   from one package to four. Lowering it is a good change — setup is a file copy now, so
+   there is headroom to give back — but a deliberate one. Raising it through the `test`
+   script's CLI flags instead is refused by the same suite, since the pin reads config
+   literals and a flag would bypass it silently.
 
    The runner is not incidental: the guard is a vitest `setupFiles` entry, so a
    package testing through anything else (`node --test`, say) runs with no runtime
@@ -1592,6 +1701,25 @@ not reach for a `./testing` export instead.
   `data/`) whose handles are closed and tree removed for you. Use `useTempStore` when the
   suite shares setup across hooks, `withTempStore` when one test body owns the store. An
   async body is awaited before teardown.
+- **`{ migrated: true }`** — the second argument to all three, and the one to reach for by
+  default. `openLocalDatabase` runs every migration in the ledger on a store that has none,
+  so a suite with per-test isolation rebuilds the whole schema on every test; this seeds
+  `data/` from a template built ONCE per worker and copied. Isolation is unchanged — each
+  test still gets its own file, and no handle is shared. Measured at roughly 9-10x cheaper
+  per setup (`packages/persistence/bench/store-template.bench.ts`), which matters because
+  the Windows leg charges about 30x local cost for exactly this work and a `beforeEach`
+  that blows the hook ceiling fails a package the PR never touched.
+
+  **It is opt-IN, and that is load-bearing.** A seeded store has nothing left to migrate,
+  so a suite whose SUBJECT is the open path must not take it: migrations, the lineage
+  reset, the `.bak` a fresh migration leaves beside the store, `aka init` creating the
+  store, a first-run flow, or a fault injected so that `applyMigrations` is the thing that
+  refuses. Those assertions would hold **vacuously** rather than fail — which is worse
+  than losing them, because they go on reporting green. `test/helpers/store-template.ts`
+  is the shared builder (six packages copy from it; `migrated-store.ts` is this package's
+  build step), and it refuses a build that left no store, one that left a live `-wal`, and
+  any seed over a store or a foreign log that is already there.
+
 - `withTwoWriters(fn)` / `withWriters(n, fn)` — N independent `LocalDatabase` handles on
   one file, the shape the product runs in (hooks, CLI and dashboard share `aka.db` with
   only WAL and `busy_timeout` between them).

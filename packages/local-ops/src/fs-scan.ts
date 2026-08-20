@@ -38,7 +38,7 @@ import type {
   Rule,
   SourceTool,
 } from '@akasecurity/schema';
-import { DEFAULT_ACTIONS } from '@akasecurity/schema';
+import { DEFAULT_ACTIONS, SOURCE_TOOL } from '@akasecurity/schema';
 
 // The filesystem scan pipeline shared by `aka scan` and the web-ui's Scan page:
 // walk a file or directory, run the detection engine over each text file, and
@@ -366,7 +366,7 @@ export async function scanPathIntoStore(
     if (gitignored) metadata.gitignored = true;
     const event: IngestEvent = {
       id: eventId,
-      sourceTool: opts.sourceTool ?? 'cli',
+      sourceTool: opts.sourceTool ?? SOURCE_TOOL.Cli,
       kind: 'code_change',
       occurredAt: new Date().toISOString(),
       contentHash: createHash('sha256').update(text).digest('hex'),

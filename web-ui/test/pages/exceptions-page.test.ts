@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { ExceptionsClient } from '../../app/(app)/exceptions/ExceptionsClient.tsx';
 import ExceptionsPage from '../../app/(app)/exceptions/page.tsx';
+import { withBundledPacks } from '../helpers/store-templates.ts';
 
 // The exceptions route issues TWO reads of the same blocked-detections ledger,
 // over two different windows, and hands both to the client — and which read
@@ -144,12 +145,10 @@ beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-web-exp-'));
   osHome.dir = home;
   dir = dataDir();
-  const db = openLocalDatabase(dir);
-  try {
-    db.installedPacks.recordInventory(bundledDetections());
-  } finally {
-    db.close();
-  }
+  // The schema and the installed ruleset arrive as a file copy: both are
+  // identical every test, and migrating plus re-reading the bundled set per
+  // test is what put this suite's `beforeEach` over the Windows hook ceiling.
+  withBundledPacks.seed(dir);
   resetSingleton();
 });
 

@@ -14,7 +14,7 @@ import { schemaObjectExists } from '../src/db/migrations/introspection.ts';
 import { captureId } from '../src/ids.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 
-const store = useTempStore('aka-record-capture-');
+const store = useTempStore('aka-record-capture-', { migrated: true });
 
 const MASKED = 'AKIA…MPLE';
 

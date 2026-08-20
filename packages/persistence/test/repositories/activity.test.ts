@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
+import { HARNESS } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
@@ -17,7 +18,7 @@ const HOUR_MS = 3_600_000;
 // deterministic: [2026-06-29T00:00Z, 2026-06-30T00:00Z).
 const NOW = Date.parse('2026-06-29T12:00:00.000Z');
 
-const store = useTempStore('aka-activity-');
+const store = useTempStore('aka-activity-', { migrated: true });
 let db: LocalDatabase;
 let raw: DatabaseSync;
 
@@ -378,6 +379,32 @@ describe('listSessions', () => {
 
     const filtered = await activity().listSessions({ limit: 50, harness: ['claudeai'] });
     expect(filtered.items.map((s) => s.id)).toEqual(['W']);
+  });
+
+  // The read side and the filter rescue DIFFERENT things, and this pins the gap
+  // rather than asserting it away. `toHarness` rescues any value the enum
+  // rejects; the filter's `coalesce` rescues only NULL. So a root carrying an
+  // off-enum harness renders as the default and is offered in the facets under
+  // it, then returns nothing when that facet is selected.
+  //
+  // No writer in this repo produces such a value today — every handleSessionStart
+  // caller passes a mapped tool, and `tool` is now typed to the wire vocabulary —
+  // so this documents reachable-by-construction behaviour, not a live bug. It is
+  // here so that closing it (normalising in SQL) is a deliberate edit that has to
+  // come back and change this case.
+  it('renders an off-enum harness as the default but does not match its filter', async () => {
+    // 'cli' is a SOURCE_TOOL member with no harness counterpart, which is exactly
+    // what harnessFromTool would pass through unmapped.
+    insertSession({ id: 'X', startedAt: NOW - HOUR_MS, attributes: { harness: 'cli' } });
+
+    const listed = await activity().listSessions({ limit: 50 });
+    expect(listed.items.find((s) => s.id === 'X')?.harness).toBe(HARNESS.ClaudeCode);
+
+    const filtered = await activity().listSessions({
+      limit: 50,
+      harness: [HARNESS.ClaudeCode],
+    });
+    expect(filtered.items.find((s) => s.id === 'X')).toBeUndefined();
   });
 
   it('matches q against a descendant event detail', async () => {

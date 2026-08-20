@@ -23,9 +23,11 @@ import {
   dbSidecars,
   ensureDataDirSync,
   KeyUnclaimableError,
+  mkdirOwnerOnlySync,
   tightenDir,
   tightenFile,
   tightenPerms,
+  writeExclusiveOwnerOnlySync,
   writeOwnerOnlyFileSync,
 } from '../src/paths.ts';
 import { useTempStore } from './helpers/temp-store.ts';
@@ -328,6 +330,140 @@ describe('tightenFile', () => {
 
     expect(mode(victim)).toBe(0o644); // victim NOT tightened through the link
     expect(lstatSync(link).isSymbolicLink()).toBe(true); // link left as-is
+  });
+});
+
+describe('mkdirOwnerOnlySync', () => {
+  // The directory twin of the case above, and undetectable for the same reason:
+  // every caller follows it with a `tightenDir`, so the finished directory is
+  // 0700 whether or not the create carried a mode. The window it closes is the
+  // one where something is written INTO the directory — a snapshot staging area
+  // takes a full copy of the prompt corpus, and the rotation lock is stamped
+  // straight after the mkdir. Same instrument: under a 0o000 umask the create
+  // keeps exactly what it asked for (0700 with the mode, 0777 without it), where
+  // a runner's own 0o077 would hand back 0700 either way.
+  it('creates the directory owner-only, by the create itself and not a later chmod', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    const dir = join(base, 'staging');
+    const previous = process.umask(0o000);
+    try {
+      mkdirOwnerOnlySync(dir);
+      expect(mode(dir)).toBe(DATA_DIR_MODE);
+    } finally {
+      process.umask(previous);
+    }
+  });
+
+  // Non-recursive by default, because that EEXIST is what the rotation lock uses
+  // to pick exactly one winner — a `recursive: true` default would silently turn
+  // every claim into a success and put two writers in the section.
+  it('refuses an existing directory, so a caller can use EEXIST to claim it', () => {
+    const dir = join(base, 'lock');
+    mkdirOwnerOnlySync(dir);
+
+    expect(() => {
+      mkdirOwnerOnlySync(dir);
+    }).toThrow(expect.objectContaining({ code: 'EEXIST' }));
+  });
+
+  // The recursive create and its idempotency hold on every platform, so this is
+  // a positive conditional rather than a skip: only the mode half is gated. A
+  // `ctx.skip` at the tail would throw away a result that genuinely held and
+  // report the case as uncovered where it was not.
+  it('creates missing parents when asked, and is then idempotent', () => {
+    const dir = join(base, 'a', 'b', 'c');
+    // Under the same 0o000 umask as the case above, and for the same reason: on
+    // a runner whose own umask is 0o077, mkdir's default 0o777 is masked down to
+    // 0o700 — equal to DATA_DIR_MODE — so every assertion below would hold with
+    // the create mode deleted. The idempotency half needs no umask and is left
+    // outside it.
+    const previous = process.umask(0o000);
+    try {
+      mkdirOwnerOnlySync(dir, true);
+      if (process.platform !== 'win32') {
+        // Every level it created, not just the leaf it tightens.
+        expect(mode(join(base, 'a'))).toBe(DATA_DIR_MODE);
+        expect(mode(join(base, 'a', 'b'))).toBe(DATA_DIR_MODE);
+        expect(mode(dir)).toBe(DATA_DIR_MODE);
+      }
+    } finally {
+      process.umask(previous);
+    }
+
+    expect(() => {
+      mkdirOwnerOnlySync(dir, true);
+    }).not.toThrow();
+  });
+});
+
+describe('writeExclusiveOwnerOnlySync', () => {
+  // The one place a store file is created, and the only place its CREATE mode
+  // can be asserted at all: every caller re-tightens what it publishes, so on a
+  // published file the end state is 0600 whether or not the create carried a
+  // mode. Deleting `mode` there leaves a window — the file exists with its
+  // contents already in it, at the umask, until the chmod lands — and no
+  // assertion on the finished file can see it. Asserting the primitive is what
+  // makes that half deletable-with-consequences.
+  //
+  // The umask is the instrument. It only ever CLEARS bits, so under 0o000
+  // nothing is taken off a create: with the mode the file is 0600, without it
+  // 0666. A developer or runner whose umask is already 0o077 would get 0600
+  // either way and the case would pass over the mutant, which is why the umask
+  // is set here rather than inherited. Restored in a `finally` because it is
+  // process-global.
+  it('creates the file owner-only, by the create itself and not a later chmod', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX modes do not apply on Windows');
+      return;
+    }
+    const file = join(base, 'minted');
+    const previous = process.umask(0o000);
+    try {
+      writeExclusiveOwnerOnlySync(file, 'material\n');
+      expect(mode(file)).toBe(DATA_FILE_MODE);
+    } finally {
+      process.umask(previous);
+    }
+    expect(readFileSync(file, 'utf8')).toBe('material\n');
+  });
+
+  // The other half of the contract, and the reason the exclusive create is not
+  // interchangeable with a plain write: an occupied path is refused rather than
+  // replaced, so a planted symlink is never written through.
+  it('refuses an occupied path rather than replacing it', () => {
+    const file = join(base, 'incumbent');
+    writeFileSync(file, 'first');
+
+    // EEXIST specifically, not merely "something threw": a bare toThrow is
+    // satisfied by an ENOENT from a bad parent or an EACCES from the mode, so it
+    // would stay green over a change that never reached the O_EXCL guarantee
+    // this case is named for.
+    expect(() => {
+      writeExclusiveOwnerOnlySync(file, 'second');
+    }).toThrow(expect.objectContaining({ code: 'EEXIST' }));
+    expect(readFileSync(file, 'utf8')).toBe('first');
+  });
+
+  it('never writes THROUGH a symlink planted at the path', (ctx) => {
+    if (process.platform === 'win32') {
+      ctx.skip('unprivileged symlink creation is not available on Windows');
+      return;
+    }
+    const victim = join(base, 'victim');
+    writeFileSync(victim, 'SECRET');
+    const link = join(base, 'planted');
+    symlinkSync(victim, link);
+
+    // O_EXCL reports an existing symlink as EEXIST — pinned, because the victim
+    // assertion below holds for any throw at all and cannot tell a refusal from
+    // an unrelated failure.
+    expect(() => {
+      writeExclusiveOwnerOnlySync(link, 'attacker payload');
+    }).toThrow(expect.objectContaining({ code: 'EEXIST' }));
+    expect(readFileSync(victim, 'utf8')).toBe('SECRET');
   });
 });
 

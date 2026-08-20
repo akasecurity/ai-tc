@@ -1,7 +1,13 @@
 // Activity presentation layer — labels, icons and token-class tones for the
 // audit-log views. Keyed off the semantic @akasecurity/schema enums; no styling lives on
 // the types themselves. All colors resolve to theme.css tokens (no hardcoded hex).
-import type { ActivityLink, AuditEventKind, Harness, SessionStatus } from '@akasecurity/schema';
+import {
+  type ActivityLink,
+  type AuditEventKind,
+  HARNESS,
+  type Harness,
+  type SessionStatus,
+} from '@akasecurity/schema';
 import type { BadgeProps } from '@akasecurity/ui-kit';
 
 import type { IconComponent } from '../lib/icons.ts';
@@ -24,33 +30,28 @@ import {
 
 /** The one bit the shared PROVIDERS lettermark map lacks — how a harness runs. */
 export const HARNESS_KIND: Record<Harness, string> = {
-  claudecode: 'CLI agent',
-  cursor: 'IDE',
-  copilot: 'IDE',
-  codex: 'CLI agent',
+  [HARNESS.ClaudeCode]: 'CLI agent',
+  [HARNESS.Cursor]: 'IDE',
+  [HARNESS.Copilot]: 'IDE',
+  [HARNESS.Codex]: 'CLI agent',
   // Ships as both the `agy` CLI and an IDE; the CLI is the surface this
   // repo's plugin instruments (the IDE fires no plugin hooks).
-  antigravity: 'CLI agent',
-  windsurf: 'IDE',
-  claudedesktop: 'Desktop app',
-  chatgpt: 'Web app',
-  claudeai: 'Web app',
-  api: 'API',
+  [HARNESS.Antigravity]: 'CLI agent',
+  [HARNESS.Windsurf]: 'IDE',
+  [HARNESS.ClaudeDesktop]: 'Desktop app',
+  [HARNESS.ChatGpt]: 'Web app',
+  [HARNESS.ClaudeAi]: 'Web app',
+  [HARNESS.Api]: 'API',
 };
 
-/** The harnesses shown in the filter, in display order. */
-export const HARNESS_IDS: Harness[] = [
-  'claudecode',
-  'cursor',
-  'copilot',
-  'codex',
-  'antigravity',
-  'windsurf',
-  'claudedesktop',
-  'chatgpt',
-  'claudeai',
-  'api',
-];
+// The harnesses shown in the filter, in display order. Derived from the registry
+// rather than listed again, so a harness added there cannot go missing from the
+// filter — but the order is then a SCHEMA file's declaration order, where
+// reordering members does not read as a UI change to anyone. meta.test.ts pins
+// the sequence against an explicit list for exactly that reason: the derivation
+// owns membership, the test owns order, and a reorder there has to be made here
+// too.
+export const HARNESS_IDS: readonly Harness[] = Object.values(HARNESS);
 
 interface EventMeta {
   label: string;

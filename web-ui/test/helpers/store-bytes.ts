@@ -23,10 +23,15 @@ function errnoCode(err: unknown): string | undefined {
  * (`aka.db.legacy.<ts>.<rand>.bak`) leave real copies in the same directory, and
  * a snapshot killed part-way leaves a `.bak.partial` beside them.
  *
- * Files only: `isFile()` skips directories, and nothing writes one under the
- * data dir today (`paths.ts`, `fingerprint.ts` and `warn-era-cap.ts` all write
- * flat). A future subdirectory would need this to recurse — it is not covered
- * for free the way a future sibling file is.
+ * It RECURSES, and that is load-bearing rather than defensive. The data dir is
+ * no longer flat: a snapshot cut short by a kill leaves a `.bak.partial`
+ * staging DIRECTORY holding `copy`, a byte-complete image of the whole store
+ * (see `snapshotStore` in `packages/persistence/src/internal/snapshot.ts`). An
+ * earlier version of this reader filtered to `isFile()` at the top level, so
+ * that copy — the single artifact most likely to hold a raw value at a loose
+ * mode — was the one thing a leak scan could not see, and every
+ * `not.toContain` over it reported clean. Directories are descended into;
+ * only their FILES contribute bytes.
  *
  * Nothing here is lenient, because an empty string contains no secret: any
  * silent shortfall turns every `not.toContain` caller into a no-op that reports
@@ -38,9 +43,18 @@ function errnoCode(err: unknown): string | undefined {
  * that branch must not be pinned only where it is easy to provoke.
  */
 export function storeBytes(dir: string, read: (path: string) => Buffer = readFileSync): string {
-  const names = readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => entry.isFile())
-    .map((entry) => entry.name);
+  // Every FILE at or below `dir`, relative to it. A `Dirent` reports a symlink
+  // as neither a file nor a directory, so a planted link is skipped rather than
+  // followed — which also means this cannot loop on a symlink cycle.
+  const walk = (from: string, prefix = ''): string[] =>
+    readdirSync(from, { withFileTypes: true }).flatMap((entry) =>
+      entry.isDirectory()
+        ? walk(join(from, entry.name), `${prefix}${entry.name}/`)
+        : entry.isFile()
+          ? [`${prefix}${entry.name}`]
+          : [],
+    );
+  const names = walk(dir);
   if (!names.includes(DB_FILENAME)) {
     throw new Error(
       `no ${DB_FILENAME} under ${dir} — the at-rest scan is not reading the real store`,

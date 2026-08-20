@@ -20,7 +20,7 @@
  */
 import type { VaultGlue } from '@akasecurity/plugin-sdk';
 import { createPluginRuntime, createVaultGlue, loadConfig } from '@akasecurity/plugin-sdk';
-import { isVaultConsentValid, pointerTokenScanner } from '@akasecurity/schema';
+import { isVaultConsentValid, pointerTokenScanner, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
@@ -181,7 +181,7 @@ async function main(): Promise<void> {
       if (text === undefined || text === '') continue;
 
       const result = await runtime.capture(
-        { kind, sourceTool: 'claude-code', text, metadata },
+        { kind, sourceTool: SOURCE_TOOL.ClaudeCode, text, metadata },
         // code_change keeps the default 'always': those events are the at-rest
         // trail the re-scan resolver reconciles against, so a benign one still
         // has to exist. tool_use records only what was flagged — this hook sees

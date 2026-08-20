@@ -20,6 +20,7 @@
  */
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import { responseEmitPayload, scanResponseFields } from './scan-response.ts';
 import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
@@ -54,7 +55,7 @@ async function main(): Promise<void> {
   try {
     outcome = await scanResponseFields(toolName, fields, (text) =>
       runtime.capture(
-        { kind: 'response', sourceTool: 'codex', text, metadata },
+        { kind: 'response', sourceTool: SOURCE_TOOL.Codex, text, metadata },
         { persist: 'with-findings' },
       ),
     );

@@ -35,7 +35,7 @@ import type {
   ToolCallInput,
   ToolCallInspection,
 } from '@akasecurity/schema';
-import { harnessFromTool } from '@akasecurity/schema';
+import { harnessFromTool, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { readOffset, readTail, writeOffset } from './tail.ts';
 import {
@@ -95,7 +95,7 @@ export async function reconcileSession(
   if (anchor === undefined) return { llmCalls: 0, skipped: 0, lastPromptId };
   const ctx = resolveInventoryContext({
     cwd: anchor.cwd ?? NO_PROJECT_CWD,
-    tool: 'antigravity',
+    tool: SOURCE_TOOL.Antigravity,
     harnessVersion: anchor.version,
     // Descriptive only (never hashed, never forks the harness dimension) —
     // distinguishes e.g. 'codex_desktop' (Antigravity inside the ChatGPT desktop
@@ -334,7 +334,7 @@ function buildSessionRoot(
   if (anchor.originator !== undefined) attributes.harness_interface = anchor.originator;
   attributes.provider = provider;
 
-  attributes.harness = harnessFromTool('antigravity');
+  attributes.harness = harnessFromTool(SOURCE_TOOL.Antigravity);
   if (anchor.cwd !== undefined) attributes.cwd = anchor.cwd;
   if (anchor.version !== undefined) attributes.version = anchor.version;
   const hostName = ctx.host?.attributes.host_name;

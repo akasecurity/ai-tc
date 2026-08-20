@@ -10,7 +10,6 @@
 // around these primitives.
 import type {
   FindingAction,
-  FindingCategory,
   FindingFacetItem,
   FindingFacets,
   FindingGroup,
@@ -19,7 +18,10 @@ import type {
   FindingStatus,
   Severity,
 } from './finding.ts';
-import { TOOL_TO_HARNESS } from './harness-map.ts';
+// Value import: the fallback below validates against the enum itself, so a member
+// added to FindingCategory is honored here without restating the member list.
+import { FindingCategory } from './finding.ts';
+import { HARNESS, TOOL_TO_HARNESS } from './harness-map.ts';
 
 // ─── Enum translation (DB storage values ↔ API-facing enums) ─────────────────
 
@@ -62,17 +64,25 @@ export function toDbAction(apiVal: FindingAction): string {
 
 /**
  * DB DetectionCategory → API FindingCategory.
- *   code_context → source_code.
- * NOT a clean 1:1: FindingCategory does NOT include every DetectionCategory —
- * `code_flaw` and `config` have no FindingCategory member, so for those the cast
- * below passes an OFF-ENUM string through (a known gap — they don't reach the
- * legacy findings API today; config findings live in inspection_findings and
- * code_flaw findings are not yet surfaced on the findings read model). Every other
- * category is a genuine 1:1 pass-through.
+ *   code_context → source_code · every other member 1:1 · anything else → custom.
+ *
+ * TOTAL, like toApiAction ('allowed') and toApiProvider ('api'): it returns a
+ * FindingCategory for every input rather than casting an unrecognized one.
+ * `config` (tooling posture) is the one DetectionCategory with no member of its
+ * own and lands on 'custom'; `code_flaw` has its own member and round-trips.
+ *
+ * The fallback is load-bearing, not defensive. Every route returning a
+ * FindingGroup / FindingInstanceDetail Zod-validates its response body on the way
+ * out, and an off-enum string fails that validation for the WHOLE payload — so one
+ * unmapped row 500s the entire findings page rather than degrading its own cell.
+ *
+ * toDbCategory inverts every member EXCEPT that fallback: filtering by 'custom'
+ * matches DB 'custom' only, never the `config` rows displayed under it.
  */
 export function toApiCategory(dbVal: string): FindingCategory {
   if (dbVal === 'code_context') return 'source_code';
-  return dbVal as FindingCategory;
+  const parsed = FindingCategory.safeParse(dbVal);
+  return parsed.success ? parsed.data : 'custom';
 }
 
 /**
@@ -96,27 +106,32 @@ export function toApiProvider(sourceTool: string): FindingProvider {
   // `harnessFromTool`. The table's value type is `Harness & FindingProvider`,
   // so every mapped value is a FindingProvider by construction — no cast. An
   // unknown tool falls back to 'api' (whereas harnessFromTool passes it through).
-  return TOOL_TO_HARNESS[sourceTool] ?? 'api';
+  return TOOL_TO_HARNESS[sourceTool] ?? HARNESS.Api;
 }
 
 /**
  * API FindingProvider → DB sourceTool filter values (string[]).
  * claudecode and claudedesktop must never be merged. 'api' → [] (matches any
  * unknown value; the filter is applied in-memory).
+ *
+ * DERIVED as the inverse of the same TOOL_TO_HARNESS table `toApiProvider`
+ * reads forward, so the two directions cannot disagree about which wire ids
+ * belong to a provider — a tool added to that table is carried here with no
+ * second edit.
+ *
+ * What deriving GIVES UP is the one thing a keyed table checks: that every
+ * provider has a row at all. A provider no tool maps onto returns [] rather than
+ * failing to compile, and [] is indistinguishable from 'api''s own contract
+ * below — so it reads as the miss bucket rather than as a filter matching
+ * nothing, which is a silently empty findings page instead of an error. Nothing
+ * in the type system replaces that; the set assertion in harness-map.test.ts is
+ * what covers it. 'api' falls out with no rows of its own, which is correct — it
+ * is the miss bucket and names no single stored value.
  */
 export function toDbProviderFilter(apiProvider: FindingProvider): string[] {
-  const map: Record<FindingProvider, string[]> = {
-    claudecode: ['claude-code'],
-    claudedesktop: ['claude-desktop'],
-    copilot: ['github-copilot'],
-    cursor: ['cursor'],
-    chatgpt: ['chatgpt'],
-    claudeai: ['claude-ai'],
-    codex: ['codex'],
-    antigravity: ['antigravity'],
-    api: [], // 'api' catches unknown tools — applied in-memory (no single DB value)
-  };
-  return map[apiProvider];
+  return Object.entries(TOOL_TO_HARNESS)
+    .filter(([, harness]) => harness === apiProvider)
+    .map(([sourceTool]) => sourceTool);
 }
 
 // ─── Grouping ────────────────────────────────────────────────────────────────

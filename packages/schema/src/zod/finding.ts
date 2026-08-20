@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { Harness } from './harness-map.ts';
+
 // 'config' = configuration-posture rules (hook conflicts/egress — the config
 // inventory surface). Their findings land in inspection_findings, not the
 // legacy findings table, so toApiCategory never sees it today.
@@ -66,21 +68,23 @@ export const FindingAction = z
   .meta({ id: 'FindingAction' });
 export type FindingAction = z.infer<typeof FindingAction>;
 
-// FindingProvider: API-facing provider enum. 'claudedesktop' is a new value
-// (maps from source_tool = 'claude-desktop'). Never merged with 'claudecode'.
-export const FindingProvider = z
-  .enum([
-    'claudecode',
-    'claudedesktop',
-    'cursor',
-    'copilot',
-    'chatgpt',
-    'claudeai',
-    'codex',
-    'antigravity',
-    'api',
-  ])
-  .meta({ id: 'FindingProvider' });
+// FindingProvider: API-facing provider enum. 'claudedesktop' is a distinct
+// value (maps from source_tool = 'claude-desktop') and is never merged with
+// 'claudecode'. A subset of the canonical `Harness` vocabulary (harness-map.ts)
+// named by MEMBER, so it can carry no id that file does not define. Omits
+// 'Windsurf' on purpose: see the `Harness & FindingProvider` intersection on
+// TOOL_TO_HARNESS.
+export const FindingProvider = Harness.extract([
+  'ClaudeCode',
+  'ClaudeDesktop',
+  'Cursor',
+  'Copilot',
+  'ChatGpt',
+  'ClaudeAi',
+  'Codex',
+  'Antigravity',
+  'Api',
+]).meta({ id: 'FindingProvider' });
 export type FindingProvider = z.infer<typeof FindingProvider>;
 
 // FindingCategory: API-facing category enum. 'source_code' maps from DB
@@ -89,11 +93,20 @@ export type FindingProvider = z.infer<typeof FindingProvider>;
 // part of the FE contract and accepted here for forward-compatibility — no
 // detection rules emit them yet, so findings never carry them until those
 // rules exist (separate detection-authoring work).
+//
+// 'code_flaw' is the one member that is NOT a data class: it is a code
+// vulnerability, carried here so the code-flaws pack's findings keep their own
+// identity on the findings read model instead of collapsing into 'custom'.
+// A surface that means "sensitive DATA" must therefore exclude it by an explicit
+// membership test — it is a member like any other, so it can no longer be dropped
+// by failing to map. DB 'config' (tooling posture) has no member and maps to
+// 'custom'.
 export const FindingCategory = z
   .enum([
     'secret',
     'pii',
     'source_code',
+    'code_flaw',
     'external_share',
     'mcp_server',
     'customer_data',

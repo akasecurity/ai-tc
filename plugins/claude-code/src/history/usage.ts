@@ -36,7 +36,7 @@ import type {
   ToolCallInput,
   ToolCallInspection,
 } from '@akasecurity/schema';
-import { harnessFromTool, isVaultConsentValid } from '@akasecurity/schema';
+import { harnessFromTool, isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { platformRedactionScope } from '../remediation/redact.ts';
 import { readOffset, readTail, writeOffset } from './tail.ts';
@@ -139,7 +139,7 @@ export async function reconcileSession(
   // resolution entirely; host + harness still anchor the root for FK-safety.
   const ctx = resolveInventoryContext({
     cwd: anchor.cwd ?? NO_PROJECT_CWD,
-    tool: 'claude-code',
+    tool: SOURCE_TOOL.ClaudeCode,
     harnessVersion: anchor.version,
     harnessInterface: anchor.entrypoint,
   });
@@ -514,7 +514,7 @@ function buildSessionRoot(
   attributes.provider = provider;
 
   // Activity-display attributes (read verbatim by the Activity page).
-  attributes.harness = harnessFromTool('claude-code');
+  attributes.harness = harnessFromTool(SOURCE_TOOL.ClaudeCode);
   if (anchor.cwd !== undefined) attributes.cwd = anchor.cwd;
   if (anchor.version !== undefined) attributes.version = anchor.version;
   const hostName = ctx.host?.attributes.host_name;

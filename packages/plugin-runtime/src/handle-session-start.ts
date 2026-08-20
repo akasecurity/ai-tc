@@ -20,6 +20,7 @@ import type {
   ConfigScanResult,
   InventoryContext,
   ResolvedInventory,
+  SourceTool,
 } from '@akasecurity/schema';
 import { configInventoryInputs, harnessFromTool } from '@akasecurity/schema';
 
@@ -41,7 +42,12 @@ export const EXCEPTION_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 export interface SessionStartInput {
   sessionId: string | undefined;
   cwd: string;
-  tool: string;
+  // The wire id, typed to the registry rather than left open. This one value
+  // becomes the harness row's content-addressed `identityKey` AND its `title`,
+  // which the read side sniffs to resolve a harness card — so an unmapped
+  // string here mints an inventory row nothing can classify. Typing it checks
+  // every adapter at compile time instead.
+  tool: SourceTool;
   harnessVersion?: string | undefined;
   harnessInterface?: string | undefined;
   // Injectable for tests only (keeps the config scan off the test machine's

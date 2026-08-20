@@ -5,10 +5,15 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections, type DataGateway, type PluginConfig } from '@akasecurity/plugin-sdk';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
-import { EXCEPTION_RETENTION_MS, handleSessionStart } from '../src/handle-session-start.ts';
+import {
+  EXCEPTION_RETENTION_MS,
+  handleSessionStart,
+  type SessionStartInput,
+} from '../src/handle-session-start.ts';
 import { setDefaultGatewayFactory } from '../src/resolve.ts';
 import { StandaloneDataGateway } from '../src/standalone-gateway.ts';
 
@@ -40,8 +45,11 @@ afterEach(() => {
 });
 
 // Every session-start below threads the hermetic fake home dir.
-function start(sessionId: string | undefined, extra: Record<string, unknown> = {}) {
-  return { sessionId, cwd, tool: 'claude-code', homeDir: home, ...extra };
+function start(
+  sessionId: string | undefined,
+  extra: Partial<SessionStartInput> = {},
+): SessionStartInput {
+  return { sessionId, cwd, tool: SOURCE_TOOL.ClaudeCode, homeDir: home, ...extra };
 }
 
 function config(dataDir: string): PluginConfig {
@@ -124,11 +132,11 @@ describe('handleSessionStart (standalone)', () => {
     // per-session, the second session's ensureInventory() upsert would
     // silently overwrite what the first session's fact should keep showing.
     await handleSessionStart(
-      start('s-cli', { tool: 'codex', harnessInterface: 'codex_cli_rs' }),
+      start('s-cli', { tool: SOURCE_TOOL.Codex, harnessInterface: 'codex_cli_rs' }),
       config(dir),
     );
     await handleSessionStart(
-      start('s-desktop', { tool: 'codex', harnessInterface: 'codex_desktop' }),
+      start('s-desktop', { tool: SOURCE_TOOL.Codex, harnessInterface: 'codex_desktop' }),
       config(dir),
     );
 
@@ -210,7 +218,7 @@ describe('handleSessionStart (standalone)', () => {
   it('sweeps terminal exception rows past retention, never active grants', async () => {
     // Seed the store, then plant grants straddling the retention boundary
     // before a fresh session starts.
-    await handleSessionStart({ sessionId: 's1', cwd, tool: 'claude-code' }, config(dir));
+    await handleSessionStart({ sessionId: 's1', cwd, tool: SOURCE_TOOL.ClaudeCode }, config(dir));
     const seed = open();
     const insert = seed.prepare(
       `INSERT INTO exceptions (
@@ -237,7 +245,7 @@ describe('handleSessionStart (standalone)', () => {
     insert.run('active-equally-old', 'fp-c', past, past, null, null);
     seed.close();
 
-    await handleSessionStart({ sessionId: 's2', cwd, tool: 'claude-code' }, config(dir));
+    await handleSessionStart({ sessionId: 's2', cwd, tool: SOURCE_TOOL.ClaudeCode }, config(dir));
 
     const db = open();
     const ids = (db.prepare('SELECT id FROM exceptions ORDER BY id').all() as { id: string }[]).map(

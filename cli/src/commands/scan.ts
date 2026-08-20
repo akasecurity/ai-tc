@@ -13,7 +13,7 @@ import {
 } from '@akasecurity/local-ops';
 import { MAX_EGRESS_CALL_SITES_PER_PROJECT, openLocalDatabase } from '@akasecurity/persistence';
 import { dataDir, registerBundledPacks } from '@akasecurity/plugin-sdk';
-import { Severity } from '@akasecurity/schema';
+import { Severity, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 
@@ -153,7 +153,7 @@ export async function runScan(argv: string[]): Promise<void> {
     // createGuardedFileScanner for exactly that reason.
     result = await scanPathIntoStore(db, target, {
       ruleActions,
-      sourceTool: 'cli',
+      sourceTool: SOURCE_TOOL.Cli,
       dataDir: storeDir,
     });
     // Keep the Inventory page's project + file tree fresh for the repo just

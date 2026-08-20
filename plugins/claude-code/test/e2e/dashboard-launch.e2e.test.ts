@@ -66,6 +66,15 @@ const tempDir = (): string => {
   return dir;
 };
 
+// The launcher spawns DETACHED and unrefs, so the stub is still on its way out
+// when the body returns: `readCalls` waits for the RECORD, which the stub writes
+// before it exits, and on win32 `cmd.exe` holds the `.cmd` shim open past that
+// point. Windows refuses to unlink a running image, so a bare `rmSync` meets
+// EPERM on a tree POSIX drops without complaint — which is how this teardown
+// failed a CI leg whose every assertion had already passed. `removeTrees` retries
+// through that window and, on win32 alone, tolerates the tree being handed to
+// the OS temp sweeper; on POSIX it still throws, where the same code would mean
+// a cleanup that genuinely did not run.
 afterEach(() => {
   removeTrees(dirs.splice(0));
 });

@@ -1,4 +1,6 @@
-import type { SourceTool } from '@akasecurity/schema';
+import { SOURCE_TOOL, type SourceTool } from '@akasecurity/schema';
+
+import type { CliPluginBin } from './cli-plugin-manager.ts';
 
 // The plugin registry: the agent plugins the CLI hub knows how to surface. Plugins
 // are INDEPENDENT peers — each self-installs and writes the shared local store,
@@ -25,7 +27,7 @@ export interface AgentPlugin {
   // Which host CLI binary's plugin manager `apply.ts` should shell out to for
   // this agent's install/update coordinates. Only meaningful when the
   // coordinates above are present.
-  cliBin?: 'claude' | 'codex';
+  cliBin?: CliPluginBin;
   // What to tell the user when there are no marketplace coordinates to drive.
   // Without one the CLI can only say "install it from the AKA marketplace",
   // which is wrong for a host that has no marketplace.
@@ -36,7 +38,7 @@ export const AGENT_PLUGINS: readonly AgentPlugin[] = [
   {
     id: 'claude-code',
     name: 'Claude Code',
-    sourceTool: 'claude-code',
+    sourceTool: SOURCE_TOOL.ClaudeCode,
     description:
       'Hooks Claude Code sessions to detect + redact sensitive data in prompts, responses, and file writes.',
     npmPackage: '@akasecurity/ai-tc-claude-code',
@@ -48,7 +50,7 @@ export const AGENT_PLUGINS: readonly AgentPlugin[] = [
   {
     id: 'codex',
     name: 'Codex CLI',
-    sourceTool: 'codex',
+    sourceTool: SOURCE_TOOL.Codex,
     description:
       'Hooks Codex CLI sessions to detect + redact sensitive data in prompts, responses, and Bash tool calls.',
     npmPackage: '@akasecurity/ai-tc-codex',
@@ -67,7 +69,7 @@ export const AGENT_PLUGINS: readonly AgentPlugin[] = [
   {
     id: 'antigravity',
     name: 'Antigravity',
-    sourceTool: 'antigravity',
+    sourceTool: SOURCE_TOOL.Antigravity,
     description:
       'Hooks Antigravity CLI sessions to detect sensitive data in shell commands and file writes.',
     npmPackage: '@akasecurity/ai-tc-antigravity',

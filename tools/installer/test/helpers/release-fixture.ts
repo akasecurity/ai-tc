@@ -19,12 +19,12 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { powershellEnv, powershellExe } from './run-installer.ts';
 
 /** A version no real release carries, so a fixture can never be mistaken for one. */
@@ -216,7 +216,10 @@ export function writeArchive(
     }
     return archivePath;
   } finally {
-    rmSync(stage, { recursive: true, force: true });
+    // tar/Compress-Archive just read from `stage`, and a straggler holding a
+    // file open under it is a Windows sharing violation the removal has to
+    // tolerate rather than fail the fixture on.
+    removeTree(stage);
   }
 }
 

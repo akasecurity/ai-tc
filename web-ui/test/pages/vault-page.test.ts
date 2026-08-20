@@ -19,6 +19,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import VaultPage from '../../app/(app)/vault/page.tsx';
 import { VaultDashboardClient } from '../../app/(app)/vault/VaultDashboardClient.tsx';
+import { db as appDb } from '../../app/lib/db.ts';
 
 // The vault route issues THREE DISTINCT store reads and hands each to its own
 // prop:
@@ -192,7 +193,26 @@ const OLDEST_OCCURRENCES = 5;
 
 // Far more batched render rows than a reader wants to scroll past, and enough
 // model/reveal crossings to overflow a page on their own.
+//
+// BATCHED_DEREFS is NOT a free knob, and the coupling is invisible from here:
+// what makes the row-list assertion below discriminating is that these rows are
+// seeded NEWER than every reveal (see `seedFixture`), so one leads the trail the
+// moment they stop being hidden. Seeded over the reveals' own range instead they
+// land ON the fifty-row cutoff, tied on `at` with a reveal and split from it by a
+// `randomUUID()` tie-break. Measured that way, with the route's read widened so
+// the assertion SHOULD fire: at seven both tied rows still fall inside the page,
+// at six it fired 2 runs in 3, and at three and at one it fired in none of them
+// — below six the guard does not weaken, it stops working altogether. Green,
+// guarding nothing, with no red run to say so. The `two deref reads disagree`
+// control below is what fails instead if this stops straddling.
 const BATCHED_DEREFS = 7;
+// BOTH batched reasons, alternating, so the trail carries each one. Asserting a
+// page excludes `view-render` proves nothing while every batched row seeded is a
+// `display`: the assertion holds for want of a candidate, not because the filter
+// works. Which of the two leads the wide page therefore depends on
+// BATCHED_DEREFS' parity, so the control below asserts membership of this set
+// rather than naming one reason.
+const BATCHED_REASONS = ['display', 'view-render'] as const;
 const SURFACED_DEREFS = DEFAULT_VAULT_DEREFS_LIMIT + 5;
 
 async function seedFixture(): Promise<void> {
@@ -227,7 +247,15 @@ async function seedFixture(): Promise<void> {
         });
       };
       for (let i = 0; i < SURFACED_DEREFS; i += 1) deref(BASE + i * 1_000, 'explicit-reveal');
-      for (let i = 0; i < BATCHED_DEREFS; i += 1) deref(BASE + i * 1_000, 'display');
+      // Newest-first: these sit ABOVE every reveal, not inside their range, so a
+      // read that stops hiding them puts one at the head of the very first page
+      // whatever BATCHED_DEREFS is — no reliance on where the cutoff happens to
+      // fall, and none on the tie-break that decides a row sitting exactly on it.
+      for (let i = 0; i < BATCHED_DEREFS; i += 1)
+        deref(
+          BASE + (SURFACED_DEREFS + i) * 1_000,
+          i % 2 === 0 ? BATCHED_REASONS[0] : BATCHED_REASONS[1],
+        );
     });
   } finally {
     db.close();
@@ -301,6 +329,41 @@ describe('the vault route wires each read to the prop that needs it', () => {
       `vault-${String(SEEDED_VALUES - 2).padStart(2, '0')}`,
     );
     expect(props.reuse.items.map((e) => e.pointerId)).not.toContain(NEWEST_POINTER);
+  });
+
+  it('is a fixture the two deref reads disagree on', () => {
+    // The control for the case below. The route issues only the NARROW read, so
+    // nothing downstream can see whether the wide one would have differed — and
+    // if the batched rows sat below the page cutoff, both reads would return the
+    // same fifty rows and `not.toContain('display')` would hold whichever one the
+    // route used. Pin the disagreement itself, so a fixture that stops straddling
+    // the filter fails here by name rather than quietly emptying the assertion.
+    //
+    // Both reads go through the app's memoised handle — the one the route itself
+    // uses — rather than a second connection of their own. It is not necessarily
+    // already open: `seedFixture` drops it, so whichever case runs first re-opens
+    // it, and under a `-t` filter that is this one. Read-only either way.
+    const vault = appDb().secretVault;
+    const narrow = vault.listDerefs();
+    const wide = vault.listDerefs({ includeBatched: true });
+
+    // The two reads lead with DIFFERENT rows, stated from both sides so each
+    // half can fail on its own. A batched row leads the wide page — the property
+    // that survives any BATCHED_DEREFS, where "appears somewhere in it" would
+    // not — and the narrow one still leads with a reveal, which is what goes red
+    // if the filter itself stops excluding. Asserting the two ID lists merely
+    // differ would be implied by the first line and could never fail alone.
+    expect(BATCHED_REASONS).toContain(wide.items[0]?.reason);
+    expect(narrow.items[0]?.reason).toBe('explicit-reveal');
+    // And they are separated STRICTLY in time, never tied. This is the half the
+    // comments above promise and nothing else states: a batched row that merely
+    // ties with the newest reveal would be ordered by the `randomUUID()`
+    // tie-break, turning the assertion above into a coin flip rather than a
+    // failure. `Date.parse` of a missing row is NaN, which fails rather than
+    // passes.
+    expect(Date.parse(wide.items[0]?.at ?? '')).toBeGreaterThan(
+      Date.parse(narrow.items[0]?.at ?? ''),
+    );
   });
 
   it('hides the batched render reasons from the trail and counts them whole', () => {

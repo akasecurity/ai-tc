@@ -11,14 +11,22 @@ import { Card, cn, Tag } from '@akasecurity/ui-kit';
 
 import { policyMeta, toneColors } from '../detections/meta.ts';
 import { ListIcon, LockIcon, PolicyIcon, ShieldCheckIcon, TerminalIcon } from '../shared/icons.tsx';
-import { StatTile } from '../shared/StatTile.tsx';
+import { type SummaryStatItem, SummaryStripView } from '../shared/SummaryStripView.tsx';
 
 /** Stat value once settled: the number, or an em dash when still unknown. */
 function statValue(n: number | undefined): string {
   return n === undefined ? '—' : String(n);
 }
 
-/** The four-tile stat strip above the Policies master/detail. */
+/**
+ * The four-stat summary strip above the Policies master/detail — the same
+ * compact single-Card form Activity and Detections head their lists with, so
+ * the three pages spend the same band of chrome on their stats.
+ *
+ * While `loading`, the items are withheld rather than rendered as em dashes:
+ * the strip's own placeholder cells are what say "not known yet", where a row
+ * of dashes reads as a settled answer of nothing.
+ */
 export function PolicyStatsView({
   stats,
   loading = false,
@@ -26,41 +34,45 @@ export function PolicyStatsView({
   stats: PolicyStatsResponse | null | undefined;
   loading?: boolean;
 }) {
+  const items: SummaryStatItem[] = [
+    {
+      icon: PolicyIcon,
+      value: statValue(stats?.policies),
+      label: 'Policies',
+      text: 'text-primary',
+      fill: 'bg-primary-tint',
+    },
+    {
+      icon: ShieldCheckIcon,
+      value: statValue(stats?.builtin),
+      label: 'Built-in',
+      text: 'text-text-2',
+      fill: 'bg-surface-2',
+    },
+    {
+      icon: TerminalIcon,
+      value: statValue(stats?.custom),
+      label: 'Custom scripts',
+      text: 'text-violet-ink',
+      fill: 'bg-violet-fill',
+    },
+    {
+      icon: ListIcon,
+      value: statValue(stats?.detectionsGoverned),
+      label: 'Detections governed',
+      text: 'text-ok-ink',
+      fill: 'bg-ok-fill',
+    },
+  ];
+  // Both the withheld items and the placeholder count come off the one array, so
+  // a fifth stat cannot land in the settled row and miss the loading row.
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      <StatTile
-        icon={PolicyIcon}
-        iconBg="var(--color-primary-tint)"
-        iconColor="var(--color-primary)"
-        label="Policies"
-        value={statValue(stats?.policies)}
-        loading={loading}
-      />
-      <StatTile
-        icon={ShieldCheckIcon}
-        iconBg="var(--color-surface-2)"
-        iconColor="var(--color-text-2)"
-        label="Built-in"
-        value={statValue(stats?.builtin)}
-        loading={loading}
-      />
-      <StatTile
-        icon={TerminalIcon}
-        iconBg="var(--color-violet-fill)"
-        iconColor="var(--color-violet-ink)"
-        label="Custom scripts"
-        value={statValue(stats?.custom)}
-        loading={loading}
-      />
-      <StatTile
-        icon={ListIcon}
-        iconBg="var(--color-ok-fill)"
-        iconColor="var(--color-ok-ink)"
-        label="Detections governed"
-        value={statValue(stats?.detectionsGoverned)}
-        loading={loading}
-      />
-    </div>
+    <SummaryStripView
+      items={loading ? [] : items}
+      isLoading={loading}
+      error={null}
+      placeholderCount={items.length}
+    />
   );
 }
 

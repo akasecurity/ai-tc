@@ -33,7 +33,12 @@ export default async function PoliciesPage({
   const detail = selectedId ? await catalog.getPolicyDetail(selectedId) : null;
 
   return (
-    <div className="flex min-h-full flex-col px-8 pb-10 pt-7">
+    // Height-capped from `lg` up, which is where the master/detail below is two
+    // columns: capped, the page never scrolls and each pane scrolls itself, the
+    // way Detections/Activity/Inventory behave. Below `lg` the grid stacks into
+    // one column, and capping there would split the viewport between two
+    // letterboxed panes — so the floor (and the page scroll it implies) stays.
+    <div className="flex min-h-full flex-col px-8 pb-8 pt-7 lg:h-full lg:min-h-0">
       <PageHead title="Policies" sub="Enforcement actions detections take when they match" />
 
       <div className="mb-4">

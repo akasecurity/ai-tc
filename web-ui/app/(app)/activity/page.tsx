@@ -1,10 +1,10 @@
 import {
-  ActivitySummaryStripView,
   ActivityTokenUsageView,
   PageHead,
   rangeLabel,
   rangeToFromIso,
   type SummaryStatItem,
+  SummaryStripView,
 } from '@akasecurity/dashboard-ui';
 import { aggregateTokenUsage } from '@akasecurity/schema';
 
@@ -153,7 +153,7 @@ export default async function ActivityPage({
         }
       />
 
-      <ActivitySummaryStripView items={items} isLoading={false} error={null} />
+      <SummaryStripView items={items} isLoading={false} error={null} className="mb-3" />
 
       <ActivityClient
         sessions={list.items}

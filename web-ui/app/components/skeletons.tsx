@@ -66,7 +66,23 @@ export function TableSkeleton({ rows = 8 }: { rows?: number }) {
   );
 }
 
-/** A row of stat tiles, as the activity/security summary strips render. */
+/**
+ * The compact single-Card summary strip (SummaryStripView), as Activity,
+ * Detections and Policies head their master/detail with. `h-12.5` is that
+ * Card's box exactly — 1px border + py-2.5 + a size-7 icon tile + py-2.5 + 1px
+ * border = 50px — so nothing shifts on reveal. It carries no margin of its own,
+ * matching the strip: the caller passes whatever its page spends there.
+ */
+export function CompactStatStripSkeleton({ className }: { className?: string }) {
+  return <Skeleton className={cn('h-12.5 w-full shrink-0 rounded-xl', className)} />;
+}
+
+/**
+ * A row of stacked stat tiles. Its two remaining callers (security, scan) stand
+ * in for a band their pages do not render — every real stat strip in the
+ * dashboard is the compact form above — so this reserves space for nothing
+ * until those two are reconciled.
+ */
 export function StatStripSkeleton({ tiles = 5 }: { tiles?: number }) {
   return (
     <div className="grid grid-cols-2 gap-3 pb-4 sm:grid-cols-3 lg:grid-cols-5">
@@ -96,10 +112,14 @@ export function CardSkeleton({ className }: { className?: string }) {
 /**
  * Left list column + right detail pane, for the master/detail pages. Fills its
  * parent, which the page's own wrapper constrains (`flex h-full min-h-0`).
+ *
+ * The `mt-4` is what most clients carry on their own root; a page whose client
+ * carries none passes `mt-0` rather than inheriting a gap the real page does
+ * not have.
  */
-export function MasterDetailSkeleton() {
+export function MasterDetailSkeleton({ className }: { className?: string }) {
   return (
-    <div className="mt-4 flex min-h-0 flex-1 gap-4">
+    <div className={cn('mt-4 flex min-h-0 flex-1 gap-4', className)}>
       <div className="flex w-80 shrink-0 flex-col gap-2 rounded-lg border border-border p-3">
         {Array.from({ length: 8 }, (_, i) => (
           <Skeleton key={i} className="h-14" />

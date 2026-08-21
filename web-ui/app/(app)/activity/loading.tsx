@@ -10,7 +10,7 @@ export default function Loading() {
       <PageHeadSkeleton actions />
       {/* Token usage is a chip inside the PageHead actions, not a card of its
           own — so the strip is the only band above the session master/detail. */}
-      <CompactStatStripSkeleton className="mb-3" />
+      <CompactStatStripSkeleton />
       <MasterDetailSkeleton />
     </div>
   );

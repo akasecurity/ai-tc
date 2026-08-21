@@ -2,33 +2,28 @@
 //
 // It lives in shared/ rather than under one feature folder because Activity,
 // Detections and Policies all head their master/detail with it. The strip is
-// chrome above a list, so its whole point is to cost as little vertical space
-// as a row of stats can: a stacked tile card measures 112px, this one 50px, and
-// the difference is height the list underneath gets instead.
+// chrome above a list, so its whole point is to cost as little vertical space as
+// a row of stats can: it measures 50px, and the height it does not spend is
+// height the list underneath gets instead.
 import { Card, cn, Skeleton } from '@akasecurity/ui-kit';
 import { Fragment } from 'react';
 
 import type { IconComponent } from '../lib/icons.ts';
-import { WidgetError } from './widget-state.tsx';
+import { type Tone, TONE_CLASSES } from './tones.ts';
 
 /**
  * A stat's tonal family. Naming the family rather than its two class strings is
  * what stops the halves being crossed: a `-ink` foreground belongs to exactly
  * one `-fill` tint, and spelling both by hand at each call site compiles and
  * renders whichever pair is typed.
+ *
+ * It is a subset of the package's `Tone` rather than a vocabulary of its own —
+ * a second registry for the same families is how `gray` came to mean
+ * `surface-2` here and `surface-3` in the other one. `Extract` is what keeps it
+ * a subset: a family named here that `Tone` does not define is a compile error,
+ * so the strip cannot reintroduce one.
  */
-export type StatTone = 'primary' | 'neutral' | 'violet' | 'ok' | 'critical' | 'teal';
-
-// Annotated `Record<StatTone, …>` so a tone added to the union fails to compile
-// until its pair is chosen here, rather than resolving to undefined at render.
-const STAT_TONES: Record<StatTone, { text: string; fill: string }> = {
-  primary: { text: 'text-primary', fill: 'bg-primary-tint' },
-  neutral: { text: 'text-text-2', fill: 'bg-surface-2' },
-  violet: { text: 'text-violet-ink', fill: 'bg-violet-fill' },
-  ok: { text: 'text-ok-ink', fill: 'bg-ok-fill' },
-  critical: { text: 'text-sev-critical-ink', fill: 'bg-sev-critical-fill' },
-  teal: { text: 'text-teal-ink', fill: 'bg-teal-fill' },
-};
+export type StatTone = Extract<Tone, 'primary' | 'gray' | 'violet' | 'green' | 'red' | 'teal'>;
 
 export interface SummaryStatItem {
   icon: IconComponent;
@@ -52,7 +47,7 @@ function SummaryStat({
   tone,
   isLoading,
 }: SummaryStatItem & { isLoading: boolean }) {
-  const { text, fill } = STAT_TONES[tone];
+  const { text, fill } = TONE_CLASSES[tone];
   return (
     <div data-slot="summary-stat" className="flex min-w-0 flex-1 items-center gap-2 px-4">
       <span
@@ -71,16 +66,22 @@ function SummaryStat({
         {isLoading ? (
           <Skeleton className="h-4 w-10 shrink-0" />
         ) : (
-          /* The value never wraps and never shrinks: a value carrying a space
-             (Detections' "7 / 7") has a one-character min-content width, so flex
-             shrink would break it across lines and grow the whole Card past the
-             one row its height is declared to be. The label beside it absorbs
-             the shrink instead — it is the half with a hover fallback. */
-          <span className="shrink-0 whitespace-nowrap font-display text-lg font-semibold leading-none tabular-nums text-text">
+          /* The value never wraps: one carrying a space (Detections' "7 / 7")
+             has a one-character min-content width, so wrapping would break it
+             across lines and grow the whole Card past the one row its height is
+             declared to be. It ellipsizes rather than clipping, because the two
+             truncations are not equally safe — a cut label ellipsizes and keeps
+             the rest in the `title`, while a cut NUMBER reads as a different,
+             smaller number ("1,284 / 1,3" is a plausible value). The label
+             still gives way first: its shrink weight below is what decides the
+             order, not a refusal to shrink here. */
+          <span className="min-w-0 truncate font-display text-lg font-semibold leading-none tabular-nums text-text">
             {value}
           </span>
         )}
-        <span className="truncate text-xs text-text-3">{label}</span>
+        {/* Absorbs essentially all of the shrink, so the value only ellipsizes
+            once the label has collapsed — it is the half with a hover fallback. */}
+        <span className="shrink-[9999] truncate text-xs text-text-3">{label}</span>
       </div>
     </div>
   );
@@ -89,7 +90,6 @@ function SummaryStat({
 export function SummaryStripView({
   items,
   isLoading,
-  error,
   className,
 }: {
   items: SummaryStatItem[];
@@ -97,29 +97,33 @@ export function SummaryStripView({
    * Withholds each stat's VALUE while the read is in flight. The items are still
    * passed and still rendered, so the strip keeps saying what is loading and
    * cannot change its cell count — or its width-per-cell — on reveal.
+   *
+   * That is a claim about the CELLS, not about what sits inside them: the value
+   * placeholder is a fixed width while settled values are not, so the space left
+   * for the label — and therefore where the label truncates — can still move on
+   * reveal. It is bounded to one cell and cannot affect the strip's height,
+   * which the `size-7` icon tile governs either way.
    */
   isLoading: boolean;
-  error: string | null;
-  /** Caller-owned spacing — the strip carries no margin of its own. */
+  /**
+   * Overrides the default `mb-3`. The gap under the strip is the one thing a
+   * page and its skeleton must agree on exactly — spelling it at both call
+   * sites made that agreement a convention; carrying it here makes it the
+   * default they share. `CompactStatStripSkeleton` carries the same one.
+   */
   className?: string | undefined;
 }) {
   return (
     <Card
-      className={cn('flex shrink-0 items-stretch overflow-hidden py-2.5 shadow-sm', className)}
+      className={cn('mb-3 flex shrink-0 items-stretch overflow-hidden py-2.5 shadow-sm', className)}
       aria-busy={isLoading}
     >
-      {error ? (
-        <div className="px-5">
-          <WidgetError message={error} />
-        </div>
-      ) : (
-        items.map((item, i) => (
-          <Fragment key={item.label}>
-            {i > 0 && <span className="w-px shrink-0 self-stretch bg-text/6" />}
-            <SummaryStat {...item} isLoading={isLoading} />
-          </Fragment>
-        ))
-      )}
+      {items.map((item, i) => (
+        <Fragment key={item.label}>
+          {i > 0 && <span className="w-px shrink-0 self-stretch bg-text/6" />}
+          <SummaryStat {...item} isLoading={isLoading} />
+        </Fragment>
+      ))}
     </Card>
   );
 }

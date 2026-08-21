@@ -99,25 +99,25 @@ export default async function ActivityPage({
       icon: TerminalIcon,
       value: stats.sessionsToday.toLocaleString(),
       label: 'Sessions today',
-      tone: 'neutral',
+      tone: 'gray',
     },
     {
       icon: BoltIcon,
       value: stats.liveNow.toLocaleString(),
       label: 'Live now',
-      tone: 'ok',
+      tone: 'green',
     },
     {
       icon: ListIcon,
       value: stats.toolCallsToday.toLocaleString(),
       label: 'Tool calls',
-      tone: 'neutral',
+      tone: 'gray',
     },
     {
       icon: ShieldCheckIcon,
       value: stats.findingsToday.toLocaleString(),
       label: 'Findings triggered',
-      tone: 'critical',
+      tone: 'red',
     },
     {
       icon: ExternalShareIcon,
@@ -147,7 +147,7 @@ export default async function ActivityPage({
         }
       />
 
-      <SummaryStripView items={items} isLoading={false} error={null} className="mb-3" />
+      <SummaryStripView items={items} isLoading={false} />
 
       <ActivityClient
         sessions={list.items}

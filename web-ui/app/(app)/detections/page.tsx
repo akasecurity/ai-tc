@@ -84,13 +84,13 @@ export default async function DetectionsPage({
       // above render the same number, so they must not disagree about it.
       value: `${stats.active.toLocaleString()} / ${stats.detections.toLocaleString()}`,
       label: 'Active',
-      tone: 'ok',
+      tone: 'green',
     },
     {
       icon: ActivityIcon,
       value: stats.findingsLast30d.toLocaleString(),
       label: 'Findings · 30d',
-      tone: 'neutral',
+      tone: 'gray',
     },
   ];
   return (
@@ -107,10 +107,8 @@ export default async function DetectionsPage({
         </div>
       )}
 
-      {/* stat strip — the compact single-Card form the Activity page uses. It
-          measures 50px against the 112px a row of stacked tiles cost, so the
-          master/detail below starts 62px higher. */}
-      <SummaryStripView items={statItems} isLoading={false} error={null} className="mb-3" />
+      {/* stat strip — the compact single-Card form the Activity page uses. */}
+      <SummaryStripView items={statItems} isLoading={false} />
 
       <DetectionsClient
         list={list}

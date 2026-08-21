@@ -13,9 +13,13 @@ import { policyMeta, toneColors } from '../detections/meta.ts';
 import { ListIcon, LockIcon, PolicyIcon, ShieldCheckIcon, TerminalIcon } from '../shared/icons.tsx';
 import { type SummaryStatItem, SummaryStripView } from '../shared/SummaryStripView.tsx';
 
-/** Stat value once settled: the number, or an em dash when still unknown. */
+/**
+ * Stat value once settled: the number, or an em dash when still unknown.
+ * Locale-grouped like Activity's and Detections' values, so the three strips
+ * the same band of chrome is shared by do not format one quantity three ways.
+ */
 function statValue(n: number | undefined): string {
-  return n === undefined ? '—' : String(n);
+  return n === undefined ? '—' : n.toLocaleString();
 }
 
 /**
@@ -48,7 +52,7 @@ export function PolicyStatsView({
       icon: ShieldCheckIcon,
       value: statValue(stats?.builtin),
       label: 'Built-in',
-      tone: 'neutral',
+      tone: 'gray',
     },
     {
       icon: TerminalIcon,
@@ -60,10 +64,10 @@ export function PolicyStatsView({
       icon: ListIcon,
       value: statValue(stats?.detectionsGoverned),
       label: 'Detections governed',
-      tone: 'ok',
+      tone: 'green',
     },
   ];
-  return <SummaryStripView items={items} isLoading={loading} error={null} className={className} />;
+  return <SummaryStripView items={items} isLoading={loading} className={className} />;
 }
 
 function PolicyRow({

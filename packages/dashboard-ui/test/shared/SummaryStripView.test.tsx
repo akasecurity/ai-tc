@@ -20,7 +20,7 @@ import { type SummaryStatItem, SummaryStripView } from '../../src/shared/Summary
 const SPACED_VALUE = '128 / 256';
 
 const ITEMS: SummaryStatItem[] = [
-  { icon: ListIcon, value: SPACED_VALUE, label: 'Active', tone: 'ok' },
+  { icon: ListIcon, value: SPACED_VALUE, label: 'Active', tone: 'green' },
   { icon: ListIcon, value: 12, label: 'Rules', tone: 'violet' },
 ];
 
@@ -44,26 +44,33 @@ function count(html: string, needle: string): number {
   return html.split(needle).length - 1;
 }
 
+/** A rendered text node, as distinct from the same text inside a `title`. */
+function values(html: string, text: string): number {
+  return count(html, `>${text}<`);
+}
+
 const STAT = 'data-slot="summary-stat"';
 const SKELETON = 'data-slot="skeleton"';
 
 function render(props: Partial<Parameters<typeof SummaryStripView>[0]> = {}): string {
-  return renderToStaticMarkup(
-    <SummaryStripView items={ITEMS} isLoading={false} error={null} {...props} />,
-  );
+  return renderToStaticMarkup(<SummaryStripView items={ITEMS} isLoading={false} {...props} />);
 }
 
 describe('SummaryStripView', () => {
   it('holds a spaced value on one line and lets the label absorb the shrink', () => {
     const html = render();
 
-    // The value is the half that must neither wrap nor shrink...
+    // The value never wraps — `truncate` carries `white-space: nowrap` — and it
+    // ellipsizes rather than being cut mid-number if it ever has to give way.
     const value = tagOf(html, SPACED_VALUE);
-    expect(value).toContain('whitespace-nowrap');
-    expect(value).toContain('shrink-0');
-    // ...and the label is the half that gives way, with the pair's `title`
-    // carrying the full text once it does.
-    expect(tagOf(html, 'Active')).toContain('truncate');
+    expect(value).toContain('truncate');
+    expect(value).toContain('min-w-0');
+    // The label is the half that gives way FIRST, and that order is the shrink
+    // weight rather than a `shrink-0` on the value: without it the two shrink
+    // in proportion and the number ellipsizes while the label still has room.
+    const label = tagOf(html, 'Active');
+    expect(label).toContain('truncate');
+    expect(label).toContain('shrink-[9999]');
     expect(html).toContain(`title="${SPACED_VALUE} Active"`);
   });
 
@@ -87,6 +94,11 @@ describe('SummaryStripView', () => {
     const html = render();
     expect(tagWithAttr(html, 'data-slot="card"')).toContain('py-2.5');
     expect(tagWithAttr(html, 'data-slot="summary-stat-icon"')).toContain('size-7');
+    // Anchoring catches the token MOVING or being retyped; it cannot catch one
+    // being ADDED. Vertical padding on the row inside the Card takes the box to
+    // 1 + 10 + (10 + 28 + 10) + 10 + 1 = 70px against a skeleton still
+    // reserving 50 — the same shift, reached without touching either token.
+    expect(tagWithAttr(html, STAT)).not.toMatch(/\bp[ytb]-/);
   });
 
   it('withholds only the value while loading, keeping every label and icon', () => {
@@ -95,8 +107,11 @@ describe('SummaryStripView', () => {
     // The cells are still there and still say WHAT is loading — the regression
     // is a row of anonymous grey bars that named nothing.
     expect(count(html, STAT)).toBe(ITEMS.length);
-    expect(html).toContain('Active');
-    expect(html).toContain('Rules');
+    // Matched as text nodes: every label is ALSO spelled into the pair's `title`,
+    // so a bare `toContain` is satisfied by the attribute and stays green while
+    // the visible span renders nothing — the regression this test is for.
+    expect(values(html, 'Active')).toBe(1);
+    expect(values(html, 'Rules')).toBe(1);
     expect(html).toContain('aria-busy="true"');
     // One value placeholder per stat, and no settled value anywhere.
     expect(count(html, SKELETON)).toBe(ITEMS.length);
@@ -105,13 +120,9 @@ describe('SummaryStripView', () => {
 
   it('draws the same cell count loading and settled', () => {
     // The two branches render the same items, so the strip cannot change its
-    // cell count — or its width-per-cell — on reveal.
+    // cell count — or its width-per-cell — on reveal. Scoped to the cells: the
+    // fixed-width value placeholder still moves the label's truncation point
+    // inside one.
     expect(count(render({ isLoading: true }), STAT)).toBe(count(render(), STAT));
-  });
-
-  it('renders the error alone, with no cells behind it', () => {
-    const html = render({ error: 'nope' });
-    expect(html).toContain('nope');
-    expect(count(html, STAT)).toBe(0);
   });
 });

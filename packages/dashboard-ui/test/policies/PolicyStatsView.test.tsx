@@ -35,10 +35,20 @@ function count(html: string, needle: string): number {
   return html.split(needle).length - 1;
 }
 
+/** The whole opening tag carrying `attr`. */
+function tagWithAttr(html: string, attr: string): string {
+  const at = html.indexOf(attr);
+  expect(at).toBeGreaterThan(-1);
+  const open = html.lastIndexOf('<', at);
+  return html.slice(open, html.indexOf('>', at) + 1);
+}
+
 /**
- * A rendered VALUE, matched as a text node. Every value is also spelled into
- * the cell's `title` (the hover fallback for a truncated label), so counting
- * raw occurrences double-counts each one.
+ * A rendered text node. Both the values AND the labels are also spelled into the
+ * cell's `title` (the hover fallback for a truncated label), so a bare
+ * `toContain` is satisfied by the attribute alone — it stays green while the
+ * visible span renders nothing, which is the regression these tests exist for.
+ * Matching `>text<` is what distinguishes the rendered text from the attribute.
  */
 function values(html: string, text: string): number {
   return count(html, `>${text}<`);
@@ -51,7 +61,7 @@ describe('PolicyStatsView', () => {
     // The positive control: without it the absence assertions below would hold
     // just as well on markup that rendered nothing at all.
     expect(count(html, STAT)).toBe(4);
-    for (const label of LABELS) expect(html).toContain(label);
+    for (const label of LABELS) expect(values(html, label)).toBe(1);
     // `custom` is 0 — a real answer, and the one a truthiness check would drop.
     expect(values(html, '0')).toBe(1);
     expect(values(html, '7')).toBe(1);
@@ -65,7 +75,7 @@ describe('PolicyStatsView', () => {
     expect(count(html, STAT)).toBe(4);
     expect(values(html, '—')).toBe(4);
     // Settled, not loading: the labels are still there to say WHAT is unknown.
-    expect(html).toContain('Detections governed');
+    expect(values(html, 'Detections governed')).toBe(1);
     expect(count(html, SKELETON)).toBe(0);
   });
 
@@ -79,17 +89,25 @@ describe('PolicyStatsView', () => {
     // ...but the labels and their icons stay, so the strip still says what is
     // loading. Withholding those too leaves four anonymous grey bars.
     expect(count(html, STAT)).toBe(4);
-    for (const label of LABELS) expect(html).toContain(label);
+    for (const label of LABELS) expect(values(html, label)).toBe(1);
     // One value placeholder per stat, derived from the same array the settled
-    // row is built from, so the cells do not change width on reveal.
+    // row is built from, so the CELLS do not change width on reveal — the label's
+    // truncation point inside one still can, since the placeholder is a fixed
+    // width and the value it stands in for is not.
     expect(count(html, SKELETON)).toBe(4);
   });
 
-  it('forwards caller-owned spacing to the strip', () => {
-    // The strip carries no margin of its own; a page that wraps it in a div to
-    // add one is the thing this seam exists to remove.
-    expect(renderToStaticMarkup(<PolicyStatsView stats={STATS} className="mb-3" />)).toContain(
-      'mb-3',
+  it('carries the shared gap by default, and lets a caller replace it', () => {
+    // The gap under the strip is what a page and its skeleton must agree on
+    // exactly, so it is a default they share rather than a literal each spells.
+    // Asserting the default by PASSING it would hold whether or not the prop is
+    // wired at all — so the seam is shown by an override that must win.
+    const card = (html: string) => tagWithAttr(html, 'data-slot="card"');
+    expect(card(renderToStaticMarkup(<PolicyStatsView stats={STATS} />))).toContain('mb-3');
+    const overridden = card(
+      renderToStaticMarkup(<PolicyStatsView stats={STATS} className="mb-0" />),
     );
+    expect(overridden).toContain('mb-0');
+    expect(overridden).not.toContain('mb-3');
   });
 });

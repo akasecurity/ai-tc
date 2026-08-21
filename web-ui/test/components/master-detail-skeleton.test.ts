@@ -106,11 +106,12 @@ describe('MasterDetailSkeleton describes the layout each route actually reveals'
         expect(claim.stacks).toBe(realStacks);
       });
 
-      it('spells the width at the breakpoint the column exists at', () => {
-        // A stacked route's column has no width below `lg` — it stretches. The
-        // prefix is what keeps the token from applying where there is no column,
-        // and Tailwind only emits it because the call site spells it literally.
-        expect(claim.width.startsWith('lg:')).toBe(realStacks);
+      it('names a width the skeleton actually emits a rule for', () => {
+        // `listWidth` is a union, so a typo is a compile error rather than a
+        // column that silently collapses to its content. This is the runtime
+        // half: the token has to be one the component can map, since a stacked
+        // route applies it through LG_LIST_WIDTH rather than directly.
+        expect(['w-80', 'w-85', 'w-88']).toContain(claim.width);
       });
 
       it('reserves the real list column width', () => {

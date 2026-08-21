@@ -55,7 +55,10 @@ function SummaryStat({
   const { text, fill } = STAT_TONES[tone];
   return (
     <div data-slot="summary-stat" className="flex min-w-0 flex-1 items-center gap-2 px-4">
-      <span className={cn('grid size-7 shrink-0 place-items-center rounded-lg', fill, text)}>
+      <span
+        data-slot="summary-stat-icon"
+        className={cn('grid size-7 shrink-0 place-items-center rounded-lg', fill, text)}
+      >
         <Icon aria-hidden focusable={false} className="size-3.5" />
       </span>
       {/* `overflow-hidden` bounds the pair to its own cell. The value below does

@@ -81,9 +81,12 @@ describe('SummaryStripView', () => {
     // size-7 icon tile + py-2.5 + 1px border. Changing either token here moves
     // the real strip and leaves that reservation behind, reintroducing the
     // shift-on-reveal this pair exists to prevent.
+    // Anchored to the elements that carry them, like every other assertion in
+    // this file: unanchored, an unrelated element gaining either token later
+    // keeps this green while the Card it is meant to be measuring has moved.
     const html = render();
-    expect(html).toContain('py-2.5');
-    expect(html).toContain('size-7');
+    expect(tagWithAttr(html, 'data-slot="card"')).toContain('py-2.5');
+    expect(tagWithAttr(html, 'data-slot="summary-stat-icon"')).toContain('size-7');
   });
 
   it('withholds only the value while loading, keeping every label and icon', () => {

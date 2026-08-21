@@ -11,35 +11,72 @@ import { Fragment } from 'react';
 import type { IconComponent } from '../lib/icons.ts';
 import { WidgetError } from './widget-state.tsx';
 
+/**
+ * A stat's tonal family. Naming the family rather than its two class strings is
+ * what stops the halves being crossed: a `-ink` foreground belongs to exactly
+ * one `-fill` tint, and spelling both by hand at each call site compiles and
+ * renders whichever pair is typed.
+ */
+export type StatTone = 'primary' | 'neutral' | 'violet' | 'ok' | 'critical' | 'teal';
+
+// Annotated `Record<StatTone, …>` so a tone added to the union fails to compile
+// until its pair is chosen here, rather than resolving to undefined at render.
+const STAT_TONES: Record<StatTone, { text: string; fill: string }> = {
+  primary: { text: 'text-primary', fill: 'bg-primary-tint' },
+  neutral: { text: 'text-text-2', fill: 'bg-surface-2' },
+  violet: { text: 'text-violet-ink', fill: 'bg-violet-fill' },
+  ok: { text: 'text-ok-ink', fill: 'bg-ok-fill' },
+  critical: { text: 'text-sev-critical-ink', fill: 'bg-sev-critical-fill' },
+  teal: { text: 'text-teal-ink', fill: 'bg-teal-fill' },
+};
+
 export interface SummaryStatItem {
   icon: IconComponent;
   value: string | number;
   label: string;
-  /** icon foreground token class, e.g. `text-ok-ink`. */
-  text: string;
-  /** icon tile fill token class, e.g. `bg-ok-fill`. */
-  fill: string;
+  tone: StatTone;
 }
 
 // One stat. The value and its label sit on a single baseline rather than stacked:
 // the strip is chrome above a list, so its height is space that list does not
 // get, and a label long enough to wrap is truncated with the full text on hover
 // rather than growing the row.
-function SummaryStat({ icon: Icon, value, label, text, fill }: SummaryStatItem) {
+//
+// While loading, the icon and label stay and only the VALUE is withheld. That is
+// the half the read has not answered yet; withholding the label too would leave
+// an anonymous grey bar that no longer says what is loading.
+function SummaryStat({
+  icon: Icon,
+  value,
+  label,
+  tone,
+  isLoading,
+}: SummaryStatItem & { isLoading: boolean }) {
+  const { text, fill } = STAT_TONES[tone];
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-2 px-4">
+    <div data-slot="summary-stat" className="flex min-w-0 flex-1 items-center gap-2 px-4">
       <span className={cn('grid size-7 shrink-0 place-items-center rounded-lg', fill, text)}>
         <Icon aria-hidden focusable={false} className="size-3.5" />
       </span>
-      <div className="flex min-w-0 items-baseline gap-1.5" title={`${String(value)} ${label}`}>
-        {/* The value never wraps: a value carrying a space (Detections' "7 / 7")
-            has a one-character min-content width, so flex shrink would break it
-            across lines and grow the whole Card past the one row its height is
-            declared to be. The label beside it truncates instead — it is the
-            half that has a hover fallback. */}
-        <span className="whitespace-nowrap font-display text-lg font-semibold leading-none tabular-nums text-text">
-          {value}
-        </span>
+      {/* `overflow-hidden` bounds the pair to its own cell. The value below does
+          not wrap and does not shrink, so without a clip here a value wider than
+          its 1/n share would paint over the divider and the next cell's icon. */}
+      <div
+        className="flex min-w-0 items-baseline gap-1.5 overflow-hidden"
+        title={isLoading ? label : `${String(value)} ${label}`}
+      >
+        {isLoading ? (
+          <Skeleton className="h-4 w-10 shrink-0" />
+        ) : (
+          /* The value never wraps and never shrinks: a value carrying a space
+             (Detections' "7 / 7") has a one-character min-content width, so flex
+             shrink would break it across lines and grow the whole Card past the
+             one row its height is declared to be. The label beside it absorbs
+             the shrink instead — it is the half with a hover fallback. */
+          <span className="shrink-0 whitespace-nowrap font-display text-lg font-semibold leading-none tabular-nums text-text">
+            {value}
+          </span>
+        )}
         <span className="truncate text-xs text-text-3">{label}</span>
       </div>
     </div>
@@ -50,45 +87,33 @@ export function SummaryStripView({
   items,
   isLoading,
   error,
-  placeholderCount = 5,
   className,
 }: {
   items: SummaryStatItem[];
+  /**
+   * Withholds each stat's VALUE while the read is in flight. The items are still
+   * passed and still rendered, so the strip keeps saying what is loading and
+   * cannot change its cell count — or its width-per-cell — on reveal.
+   */
   isLoading: boolean;
   error: string | null;
-  /**
-   * How many placeholder cells the loading state draws. Defaults to the five
-   * Activity shows; a caller with a different stat count passes its own, so the
-   * strip does not change width-per-cell on reveal.
-   */
-  placeholderCount?: number;
   /** Caller-owned spacing — the strip carries no margin of its own. */
-  className?: string;
+  className?: string | undefined;
 }) {
   return (
     <Card
-      className={cn('flex shrink-0 items-stretch py-2.5 shadow-sm', className)}
+      className={cn('flex shrink-0 items-stretch overflow-hidden py-2.5 shadow-sm', className)}
       aria-busy={isLoading}
     >
       {error ? (
         <div className="px-5">
           <WidgetError message={error} />
         </div>
-      ) : isLoading && items.length === 0 ? (
-        Array.from({ length: placeholderCount }, (_, i) => (
-          <Fragment key={i}>
-            {i > 0 && <span className="w-px shrink-0 self-stretch bg-text/6" />}
-            <div className="flex flex-1 items-center gap-2 px-4">
-              <Skeleton className="size-7 shrink-0 rounded-lg" />
-              <Skeleton className="h-4 w-24" />
-            </div>
-          </Fragment>
-        ))
       ) : (
         items.map((item, i) => (
           <Fragment key={item.label}>
             {i > 0 && <span className="w-px shrink-0 self-stretch bg-text/6" />}
-            <SummaryStat {...item} />
+            <SummaryStat {...item} isLoading={isLoading} />
           </Fragment>
         ))
       )}

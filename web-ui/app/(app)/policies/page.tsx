@@ -41,9 +41,7 @@ export default async function PoliciesPage({
     <div className="flex min-h-full flex-col px-8 pb-8 pt-7 lg:h-full lg:min-h-0">
       <PageHead title="Policies" sub="Enforcement actions detections take when they match" />
 
-      <div className="mb-4">
-        <PolicyStatsView stats={stats} />
-      </div>
+      <PolicyStatsView stats={stats} className="mb-3" />
 
       <PoliciesClient items={list.items} detail={detail} selectedId={selectedId} />
     </div>

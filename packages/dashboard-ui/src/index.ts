@@ -33,8 +33,11 @@ export {
 export { PageHead } from './shared/PageHead.tsx';
 export { Provider, type ProviderId, type ProviderMeta, PROVIDERS } from './shared/Provider.tsx';
 export { ScrubbedValue } from './shared/ScrubbedValue.tsx';
-export { type StatDelta, StatTile } from './shared/StatTile.tsx';
-export { type SummaryStatItem, SummaryStripView } from './shared/SummaryStripView.tsx';
+export {
+  type StatTone,
+  type SummaryStatItem,
+  SummaryStripView,
+} from './shared/SummaryStripView.tsx';
 export { TimeRangeSelect } from './shared/TimeRangeSelect.tsx';
 export { WidgetEmpty, WidgetError } from './shared/widget-state.tsx';
 

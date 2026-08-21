@@ -97,41 +97,35 @@ export default async function ActivityPage({
   const items: SummaryStatItem[] = [
     {
       icon: TerminalIcon,
-      value: stats.sessionsToday,
+      value: stats.sessionsToday.toLocaleString(),
       label: 'Sessions today',
-      text: 'text-text-2',
-      fill: 'bg-surface-2',
+      tone: 'neutral',
     },
     {
       icon: BoltIcon,
-      value: stats.liveNow,
+      value: stats.liveNow.toLocaleString(),
       label: 'Live now',
-      text: 'text-ok-ink',
-      fill: 'bg-ok-fill',
+      tone: 'ok',
     },
     {
       icon: ListIcon,
       value: stats.toolCallsToday.toLocaleString(),
       label: 'Tool calls',
-      text: 'text-text-2',
-      fill: 'bg-surface-2',
+      tone: 'neutral',
     },
     {
       icon: ShieldCheckIcon,
-      value: stats.findingsToday,
+      value: stats.findingsToday.toLocaleString(),
       label: 'Findings triggered',
-      text: 'text-sev-critical-ink',
-      fill: 'bg-sev-critical-fill',
+      tone: 'critical',
     },
     {
       icon: ExternalShareIcon,
-      value: stats.egressToday,
+      value: stats.egressToday.toLocaleString(),
       label: 'Egress events',
-      text: 'text-teal-ink',
-      fill: 'bg-teal-fill',
+      tone: 'teal',
     },
   ];
-
   return (
     <div className="flex h-full min-h-0 flex-col px-8 pb-8 pt-7">
       {/* Token usage sits in the filter bar beside the range picker rather than

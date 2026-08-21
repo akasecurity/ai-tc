@@ -23,57 +23,47 @@ function statValue(n: number | undefined): string {
  * compact single-Card form Activity and Detections head their lists with, so
  * the three pages spend the same band of chrome on their stats.
  *
- * While `loading`, the items are withheld rather than rendered as em dashes:
- * the strip's own placeholder cells are what say "not known yet", where a row
- * of dashes reads as a settled answer of nothing.
+ * While `loading`, each cell keeps its icon and label and withholds only the
+ * VALUE: the strip's per-value placeholders are what say "not known yet", where
+ * a row of em dashes reads as a settled answer of nothing.
  */
 export function PolicyStatsView({
   stats,
   loading = false,
+  className,
 }: {
   stats: PolicyStatsResponse | null | undefined;
   loading?: boolean;
+  /** Caller-owned spacing, forwarded to the strip, which carries no margin. */
+  className?: string | undefined;
 }) {
   const items: SummaryStatItem[] = [
     {
       icon: PolicyIcon,
       value: statValue(stats?.policies),
       label: 'Policies',
-      text: 'text-primary',
-      fill: 'bg-primary-tint',
+      tone: 'primary',
     },
     {
       icon: ShieldCheckIcon,
       value: statValue(stats?.builtin),
       label: 'Built-in',
-      text: 'text-text-2',
-      fill: 'bg-surface-2',
+      tone: 'neutral',
     },
     {
       icon: TerminalIcon,
       value: statValue(stats?.custom),
       label: 'Custom scripts',
-      text: 'text-violet-ink',
-      fill: 'bg-violet-fill',
+      tone: 'violet',
     },
     {
       icon: ListIcon,
       value: statValue(stats?.detectionsGoverned),
       label: 'Detections governed',
-      text: 'text-ok-ink',
-      fill: 'bg-ok-fill',
+      tone: 'ok',
     },
   ];
-  // Both the withheld items and the placeholder count come off the one array, so
-  // a fifth stat cannot land in the settled row and miss the loading row.
-  return (
-    <SummaryStripView
-      items={loading ? [] : items}
-      isLoading={loading}
-      error={null}
-      placeholderCount={items.length}
-    />
-  );
+  return <SummaryStripView items={items} isLoading={loading} error={null} className={className} />;
 }
 
 function PolicyRow({

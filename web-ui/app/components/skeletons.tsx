@@ -77,22 +77,6 @@ export function CompactStatStripSkeleton({ className }: { className?: string }) 
   return <Skeleton className={cn('h-12.5 w-full shrink-0 rounded-xl', className)} />;
 }
 
-/**
- * A row of stacked stat tiles. Its two remaining callers (security, scan) stand
- * in for a band their pages do not render — every real stat strip in the
- * dashboard is the compact form above — so this reserves space for nothing
- * until those two are reconciled.
- */
-export function StatStripSkeleton({ tiles = 5 }: { tiles?: number }) {
-  return (
-    <div className="grid grid-cols-2 gap-3 pb-4 sm:grid-cols-3 lg:grid-cols-5">
-      {Array.from({ length: tiles }, (_, i) => (
-        <Skeleton key={i} className="h-20" />
-      ))}
-    </div>
-  );
-}
-
 /** Grid of card-shaped blocks. */
 export function CardGridSkeleton({ cards = 3, className }: { cards?: number; className?: string }) {
   return (
@@ -113,14 +97,28 @@ export function CardSkeleton({ className }: { className?: string }) {
  * Left list column + right detail pane, for the master/detail pages. Fills its
  * parent, which the page's own wrapper constrains (`flex h-full min-h-0`).
  *
- * The `mt-4` is what most clients carry on their own root; a page whose client
- * carries none passes `mt-0` rather than inheriting a gap the real page does
- * not have.
+ * `listWidth` is the real list column's width for THIS route — they differ
+ * (activity and inventory `w-85`, detections 352px, policies `w-80`), and a
+ * skeleton one size for all of them slides the detail pane sideways on reveal.
+ *
+ * It carries no top margin: every client root above one of these starts flush,
+ * and the gap over a master/detail comes from the strip's own `mb-3`.
  */
-export function MasterDetailSkeleton({ className }: { className?: string }) {
+export function MasterDetailSkeleton({
+  listWidth = 'w-85',
+  className,
+}: {
+  listWidth?: string;
+  className?: string;
+}) {
   return (
-    <div className={cn('mt-4 flex min-h-0 flex-1 gap-4', className)}>
-      <div className="flex w-80 shrink-0 flex-col gap-2 rounded-lg border border-border p-3">
+    <div className={cn('flex min-h-0 flex-1 gap-4', className)}>
+      <div
+        className={cn(
+          'flex shrink-0 flex-col gap-2 rounded-lg border border-border p-3',
+          listWidth,
+        )}
+      >
         {Array.from({ length: 8 }, (_, i) => (
           <Skeleton key={i} className="h-14" />
         ))}

@@ -68,34 +68,31 @@ export default async function DetectionsPage({
   const statItems: SummaryStatItem[] = [
     {
       icon: ListIcon,
-      value: stats.detections,
+      value: stats.detections.toLocaleString(),
       label: 'Detections',
-      text: 'text-primary',
-      fill: 'bg-primary-tint',
+      tone: 'primary',
     },
     {
       icon: BracesIcon,
-      value: stats.rules,
+      value: stats.rules.toLocaleString(),
       label: 'Rules',
-      text: 'text-violet-ink',
-      fill: 'bg-violet-fill',
+      tone: 'violet',
     },
     {
       icon: ShieldCheckIcon,
-      value: `${String(stats.active)} / ${String(stats.detections)}`,
+      // Both halves formatted the same way: this cell and the Detections cell
+      // above render the same number, so they must not disagree about it.
+      value: `${stats.active.toLocaleString()} / ${stats.detections.toLocaleString()}`,
       label: 'Active',
-      text: 'text-ok-ink',
-      fill: 'bg-ok-fill',
+      tone: 'ok',
     },
     {
       icon: ActivityIcon,
       value: stats.findingsLast30d.toLocaleString(),
       label: 'Findings · 30d',
-      text: 'text-text-2',
-      fill: 'bg-surface-2',
+      tone: 'neutral',
     },
   ];
-
   return (
     <div className="flex h-full min-h-0 flex-col px-8 pb-8 pt-7">
       <PageHead title="Detections" sub="Rules that generate findings from code, prompts & pastes" />
@@ -113,7 +110,7 @@ export default async function DetectionsPage({
       {/* stat strip — the compact single-Card form the Activity page uses. It
           measures 50px against the 112px a row of stacked tiles cost, so the
           master/detail below starts 62px higher. */}
-      <SummaryStripView items={statItems} isLoading={false} error={null} />
+      <SummaryStripView items={statItems} isLoading={false} error={null} className="mb-3" />
 
       <DetectionsClient
         list={list}

@@ -33,7 +33,11 @@ export {
 export { PageHead } from './shared/PageHead.tsx';
 export { Provider, type ProviderId, type ProviderMeta, PROVIDERS } from './shared/Provider.tsx';
 export { ScrubbedValue } from './shared/ScrubbedValue.tsx';
-export { type StatDelta, StatTile } from './shared/StatTile.tsx';
+export {
+  type StatTone,
+  type SummaryStatItem,
+  SummaryStripView,
+} from './shared/SummaryStripView.tsx';
 export { TimeRangeSelect } from './shared/TimeRangeSelect.tsx';
 export { WidgetEmpty, WidgetError } from './shared/widget-state.tsx';
 
@@ -48,10 +52,6 @@ export { MetaItem, SectionLabel } from './shared/DetailFields.tsx';
 // status styling, the harness/kind vocabularies — lives in activity/meta.ts, and
 // the semantic → display derivations (day grouping, time/duration/token labels)
 // in activity/format.ts.
-export {
-  ActivitySummaryStripView,
-  type SummaryStatItem,
-} from './activity/ActivitySummaryStripView.tsx';
 export { ActivityTokenUsageView } from './activity/ActivityTokenUsageView.tsx';
 export { MetaChips, Metric, SessionStatusBadge, StatusDot, ToolChip } from './activity/atoms.tsx';
 export { AuditTimelineView, type BuildActivityLinkHref } from './activity/AuditTimelineView.tsx';

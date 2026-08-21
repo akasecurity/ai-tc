@@ -27,27 +27,15 @@ import {
   SlashCircleIcon,
   UserIcon,
 } from '../shared/icons.tsx';
+import type { Tone } from '../shared/tones.ts';
 
 // The default policy shown when a detection has no policy assigned. Enforcement
 // defaults to monitor (log-only) until the user picks another action.
 export const PLACEHOLDER_POLICY = 'monitor';
 
-export type Tone = 'gray' | 'orange' | 'primary' | 'red' | 'violet' | 'teal' | 'green' | 'blue';
-
-/** Maps a semantic tone to a [foreground, background] pair of theme-token CSS vars. */
-export function toneColors(tone: Tone): [string, string] {
-  const map: Record<Tone, [string, string]> = {
-    primary: ['var(--color-primary)', 'var(--color-primary-tint)'],
-    teal: ['var(--color-teal-ink)', 'var(--color-teal-fill)'],
-    green: ['var(--color-ok-ink)', 'var(--color-ok-fill)'],
-    red: ['var(--color-sev-critical-ink)', 'var(--color-sev-critical-fill)'],
-    orange: ['var(--color-sev-high-ink)', 'var(--color-sev-high-fill)'],
-    gray: ['var(--color-text-2)', 'var(--color-surface-3)'],
-    blue: ['var(--color-sev-low-ink)', 'var(--color-sev-low-fill)'],
-    violet: ['var(--color-violet-ink)', 'var(--color-violet-fill)'],
-  };
-  return map[tone];
-}
+// Re-exported from the package's one tonal registry, which the stat strip reads
+// too — see shared/tones.ts for why the class form is the source of truth.
+export { type Tone, toneColors } from '../shared/tones.ts';
 
 /** A one-line code-ish summary of a matcher, shown on rule cards. */
 export function matcherSummary(m: Matcher): string {

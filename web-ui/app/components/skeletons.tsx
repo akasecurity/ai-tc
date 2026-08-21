@@ -17,11 +17,14 @@ import { cn, Skeleton } from '@akasecurity/ui-kit';
 /** Title + subtitle bar, with an optional right-aligned control block. */
 export function PageHeadSkeleton({ actions = false }: { actions?: boolean }) {
   return (
-    // pb-6 matches the real PageHead exactly, so nothing shifts on reveal.
+    // Each part matches the real PageHead's, not just the padding: its `h1` is
+    // `text-2xl`/32px, its `sub` is `mt-1` + `text-sm`/20px, and `pb-6` is 24 —
+    // 80px in all. Summing to the same total is not enough on its own, but the
+    // parts were 28 + gap-2 + 16 = 76 and every page head reveal moved 4px.
     <div className="flex items-start justify-between gap-4 pb-6">
-      <div className="flex flex-col gap-2">
-        <Skeleton className="h-7 w-44" />
-        <Skeleton className="h-4 w-72" />
+      <div className="flex flex-col gap-1">
+        <Skeleton className="h-8 w-44" />
+        <Skeleton className="h-5 w-72" />
       </div>
       {actions && <Skeleton className="h-8 w-32" />}
     </div>
@@ -66,15 +69,16 @@ export function TableSkeleton({ rows = 8 }: { rows?: number }) {
   );
 }
 
-/** A row of stat tiles, as the activity/security summary strips render. */
-export function StatStripSkeleton({ tiles = 5 }: { tiles?: number }) {
-  return (
-    <div className="grid grid-cols-2 gap-3 pb-4 sm:grid-cols-3 lg:grid-cols-5">
-      {Array.from({ length: tiles }, (_, i) => (
-        <Skeleton key={i} className="h-20" />
-      ))}
-    </div>
-  );
+/**
+ * The compact single-Card summary strip (SummaryStripView), as Activity,
+ * Detections and Policies head their master/detail with. `h-12.5` is that
+ * Card's box exactly — 1px border + py-2.5 + a size-7 icon tile + py-2.5 + 1px
+ * border = 50px — so nothing shifts on reveal. It carries the strip's own
+ * default `mb-3` for the same reason: the gap under the two has to match, and a
+ * default they share cannot drift the way a literal at each call site did.
+ */
+export function CompactStatStripSkeleton({ className }: { className?: string }) {
+  return <Skeleton className={cn('mb-3 h-12.5 w-full shrink-0 rounded-xl', className)} />;
 }
 
 /** Grid of card-shaped blocks. */
@@ -96,11 +100,59 @@ export function CardSkeleton({ className }: { className?: string }) {
 /**
  * Left list column + right detail pane, for the master/detail pages. Fills its
  * parent, which the page's own wrapper constrains (`flex h-full min-h-0`).
+ *
+ * `listWidth` is the real list column's width for THIS route — they differ
+ * (activity and inventory `w-85`, detections `w-88`, policies `w-80`), and a
+ * skeleton one size for all of them slides the detail pane sideways on reveal.
+ * It is a union rather than a `string` because an unrecognised token emits no
+ * width rule at all and the column then collapses to its content — a silent
+ * failure, where a typo should be a compile error. Which token belongs to which
+ * route is checked against the real clients in
+ * `web-ui/test/components/master-detail-skeleton.test.ts`; Tailwind only emits
+ * classes it can read literally, so the two files cannot share one constant and
+ * that test is what stands in for it.
+ *
+ * `stacksBelowLg` mirrors a client that is ONE stacked column until `lg` and two
+ * side by side after — Policies alone, whose root is `grid-cols-1 …
+ * lg:grid-cols-[320px_1fr]`. Without it the skeleton paints a fixed-width list
+ * beside a detail pane at every width, and below 1024px the reveal is a
+ * relayout rather than a slide. The width is then applied only from `lg` up, so
+ * the stacked column stretches full width below the breakpoint.
+ *
+ * It carries no top margin: every client root above one of these starts flush,
+ * and the gap over a master/detail comes from the strip's own `mb-3`.
  */
-export function MasterDetailSkeleton() {
+type ListWidth = 'w-80' | 'w-85' | 'w-88';
+
+// Spelled out rather than built as `lg:${listWidth}`: Tailwind scans source text
+// for complete class names, so an interpolated variant emits no rule.
+const LG_LIST_WIDTH: Record<ListWidth, string> = {
+  'w-80': 'lg:w-80',
+  'w-85': 'lg:w-85',
+  'w-88': 'lg:w-88',
+};
+
+export function MasterDetailSkeleton({
+  listWidth = 'w-85',
+  stacksBelowLg = false,
+}: {
+  listWidth?: ListWidth;
+  stacksBelowLg?: boolean;
+}) {
   return (
-    <div className="mt-4 flex min-h-0 flex-1 gap-4">
-      <div className="flex w-80 shrink-0 flex-col gap-2 rounded-lg border border-border p-3">
+    <div
+      className={cn(
+        'flex flex-1 gap-4',
+        // Mirrors PoliciesClient's own `min-h-128 … lg:min-h-0` cap.
+        stacksBelowLg ? 'min-h-128 flex-col lg:min-h-0 lg:flex-row' : 'min-h-0',
+      )}
+    >
+      <div
+        className={cn(
+          'flex shrink-0 flex-col gap-2 rounded-lg border border-border p-3',
+          stacksBelowLg ? LG_LIST_WIDTH[listWidth] : listWidth,
+        )}
+      >
         {Array.from({ length: 8 }, (_, i) => (
           <Skeleton key={i} className="h-14" />
         ))}

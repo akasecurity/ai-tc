@@ -31,8 +31,9 @@ import { PROJECT_WALK_BOUNDS, resolveProjectFiles } from '../../src/project-file
 // TERMINATE, on every tree an attacker can author" is the property that matters,
 // and every case below asserts termination, shape, or fail-safety rather than a
 // duration. The durations live in `bench/project-files.bench.ts`, which is
-// advisory and run by hand: a wall-clock gate on a hosted runner produces flakes,
-// and a flaky gate is one people re-run until it passes.
+// advisory and gates nothing — run by the nightly `.github/workflows/bench.yml`
+// and by hand: a wall-clock gate on a hosted runner produces flakes, and a flaky
+// gate is one people re-run until it passes.
 //
 // The four budget rows at the bottom are the exception, and they are sized the
 // way the rest of the repo sizes a timing assertion: the estimator is the

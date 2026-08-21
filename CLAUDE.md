@@ -1250,7 +1250,7 @@ measurements: the adversarial-rule bound in `packages/detections/test/security/r
 and the isolation ceilings in `packages/plugin-sdk`. Keep the two apart — a benchmark that
 threw would be a timing gate wearing a different name.
 
-Four properties are load-bearing, and each is enforced by
+Six properties are load-bearing, and each is enforced by
 `packages/eslint-config/test/bench-harness.test.js` rather than remembered:
 
 - **`cache: false` on the `bench` turbo task.** Every other task derives its output from
@@ -1264,6 +1264,22 @@ Four properties are load-bearing, and each is enforced by
   bench file imports product code; outside those, its types are stripped unchecked and the
   network bans never apply to it.
 - **`bench.yml` has no `pull_request` trigger**, still runs nightly, and still uploads.
+- **`bench.yml` actually invokes the task.** An upload step is not a measurement: a
+  workflow that schedules, checks out, installs and uploads — but never runs `pnpm bench` —
+  satisfies every other property here, finds no files, and WARNS rather than failing,
+  because `if-no-files-found: warn` is part of what keeps the job advisory. The Actions UI
+  shows a green nightly run either way while the trend silently stops gaining points.
+- **A claim about how the benchmarks run names the unattended run, wherever it is made.**
+  The turbo comment is not the only place the repo explains this — a perf suite saying why
+  its durations live in `bench/` rather than in an assertion makes the same claim about the
+  same sibling file, with nothing between them. That is not hypothetical: this walk suite's
+  header called the benchmarks "run by hand" in a comment written four hours AFTER
+  `bench.yml` landed, and stayed green through the merge and every run since. So the sites
+  are DERIVED rather than listed — any prose block in the tracked tree that talks about
+  benchmarks and says a human is the only thing that runs them — because a two-entry list
+  would read as exhaustive the day a third site was written. A specimen of the bad phrasing,
+  quoted anywhere, is a real match rather than a false one; describe the shape instead, or
+  name the workflow in the same block.
 
 A benchmark carries no assertions, so anything a bench file would otherwise have checked
 about its own input belongs in a test instead. `generateCaptureCorpus` is the worked

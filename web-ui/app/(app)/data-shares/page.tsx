@@ -29,8 +29,9 @@ export default async function DataSharesPage({
   const [stats, list, review] = await Promise.all([
     shares.stats(),
     shares.listDestinations({ q, groupBy: 'destination', review: false }),
-    // The client only renders the review strip when the search box is empty, so
-    // skip the destination+endpoint scan (and its RSC payload) while searching.
+    // Searching narrows the register, not the review queue, so skip the
+    // needs-review scan (and its RSC payload) entirely while a term is set.
+    // The empty list is what hides the strip and empties the sheet.
     q ? Promise.resolve({ items: [] }) : shares.needsReview(),
   ]);
   const destination = dest ? await shares.getDestination(dest) : null;
@@ -40,11 +41,17 @@ export default async function DataSharesPage({
       <PageHead
         title="Data Shares"
         sub="Outbound data egress detected in your software — grouped by destination"
+        actions={
+          <span className="text-ui text-text-3">
+            <b className="text-text">{stats.destinations}</b> destinations ·{' '}
+            <b className="text-text">{stats.endpoints}</b> endpoints ·{' '}
+            <b className="text-text">{stats.callSites}</b> call sites
+          </span>
+        }
       />
 
       <DataSharesClient
         q={q}
-        stats={stats}
         groups={list.groups}
         review={review.items}
         destination={destination}

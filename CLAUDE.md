@@ -811,8 +811,8 @@ those three packages silently lose §4's dynamic-import ban.
 
 What the ban does **not** see, and what still needs reading: a hue handed over as a CSS
 variable string, since `iconColor="var(--color-ok)"` and `iconBg="var(--color-ok-fill)"`
-are the same node to a selector (`toneColors()` and the `StatTile` `iconColor` prop are
-the live examples); and a class assembled from a non-literal.
+are the same node to a selector (`toneColors()` is the live example); and a class
+assembled from a non-literal.
 
 ## Detection rules
 

@@ -115,7 +115,7 @@ export function DetectionsClient({
       <div
         aria-busy={navPending}
         className={cn(
-          'mt-4 grid min-h-0 flex-1 grid-cols-[352px_1fr] gap-4 transition-shadow duration-150',
+          'grid min-h-0 flex-1 grid-cols-[352px_1fr] gap-4 transition-shadow duration-150',
           navPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
         )}
       >

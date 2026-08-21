@@ -1,10 +1,16 @@
-import { MasterDetailSkeleton, PageHeadSkeleton } from '../../components/skeletons';
+import {
+  CompactStatStripSkeleton,
+  MasterDetailSkeleton,
+  PageHeadSkeleton,
+} from '../../components/skeletons';
 
 export default function Loading() {
   return (
-    <div aria-busy className="flex min-h-full flex-col px-8 pb-10 pt-7">
+    // Mirrors page.tsx's wrapper, including the lg-gated height cap.
+    <div aria-busy className="flex min-h-full flex-col px-8 pb-8 pt-7 lg:h-full lg:min-h-0">
       <PageHeadSkeleton />
-      <MasterDetailSkeleton />
+      <CompactStatStripSkeleton />
+      <MasterDetailSkeleton stacksBelowLg listWidth="w-80" />
     </div>
   );
 }

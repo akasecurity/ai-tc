@@ -30,7 +30,7 @@ export function PoliciesClient({
     <div
       aria-busy={isPending}
       className={cn(
-        'grid min-h-128 flex-1 grid-cols-1 gap-4 transition-shadow duration-150 lg:grid-cols-[320px_1fr] lg:grid-rows-1',
+        'grid min-h-128 flex-1 grid-cols-1 gap-4 transition-shadow duration-150 lg:min-h-0 lg:grid-cols-[320px_1fr] lg:grid-rows-1',
         isPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
       )}
     >
@@ -42,7 +42,10 @@ export function PoliciesClient({
         }}
       />
 
-      <Card className="overflow-y-auto shadow-sm">
+      {/* flex-col so the empty state below can center itself: capped to the
+          viewport at `lg`, a non-flex Card leaves its `flex-1` inert and pins
+          the fallback to the top of an otherwise empty pane. */}
+      <Card className="flex flex-col overflow-y-auto shadow-sm">
         {/* The built-in catalog is always the 4 static archetypes and the server
             defaults the selection to the first, so `detail` is present in
             practice; this single generic fallback only covers the type's null. */}

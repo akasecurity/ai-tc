@@ -1,7 +1,8 @@
 import {
   PageHead,
   showsVaultDrift,
-  StatTile,
+  type SummaryStatItem,
+  SummaryStripView,
   VAULT_DRIFT_BODY,
   VAULT_DRIFT_TITLE,
   type VaultDriftState,
@@ -64,6 +65,34 @@ export default async function DetectionsPage({
       : (list.items[0]?.id ?? '');
   const detail = selectedId ? await detections.getDetectionDetail(selectedId) : null;
 
+  const statItems: SummaryStatItem[] = [
+    {
+      icon: ListIcon,
+      value: stats.detections.toLocaleString(),
+      label: 'Detections',
+      tone: 'primary',
+    },
+    {
+      icon: BracesIcon,
+      value: stats.rules.toLocaleString(),
+      label: 'Rules',
+      tone: 'violet',
+    },
+    {
+      icon: ShieldCheckIcon,
+      // Both halves formatted the same way: this cell and the Detections cell
+      // above render the same number, so they must not disagree about it.
+      value: `${stats.active.toLocaleString()} / ${stats.detections.toLocaleString()}`,
+      label: 'Active',
+      tone: 'green',
+    },
+    {
+      icon: ActivityIcon,
+      value: stats.findingsLast30d.toLocaleString(),
+      label: 'Findings · 30d',
+      tone: 'gray',
+    },
+  ];
   return (
     <div className="flex h-full min-h-0 flex-col px-8 pb-8 pt-7">
       <PageHead title="Detections" sub="Rules that generate findings from code, prompts & pastes" />
@@ -78,37 +107,8 @@ export default async function DetectionsPage({
         </div>
       )}
 
-      {/* stat strip */}
-      <div className="grid grid-cols-4 gap-4">
-        <StatTile
-          icon={ListIcon}
-          iconBg="var(--color-primary-tint)"
-          iconColor="var(--color-primary)"
-          label="Detections"
-          value={String(stats.detections)}
-        />
-        <StatTile
-          icon={BracesIcon}
-          iconBg="var(--color-violet-fill)"
-          iconColor="var(--color-violet-ink)"
-          label="Rules"
-          value={String(stats.rules)}
-        />
-        <StatTile
-          icon={ShieldCheckIcon}
-          iconBg="var(--color-ok-fill)"
-          iconColor="var(--color-ok-ink)"
-          label="Active"
-          value={`${String(stats.active)} / ${String(stats.detections)}`}
-        />
-        <StatTile
-          icon={ActivityIcon}
-          iconBg="var(--color-surface-2)"
-          iconColor="var(--color-text-2)"
-          label="Findings · 30d"
-          value={stats.findingsLast30d.toLocaleString()}
-        />
-      </div>
+      {/* stat strip — the compact single-Card form the Activity page uses. */}
+      <SummaryStripView items={statItems} isLoading={false} />
 
       <DetectionsClient
         list={list}

@@ -339,6 +339,15 @@ const ENFORCING_HOOKS: readonly EnforcingHook[] = [
     emits: {
       block: '"decision":"block"',
       redact: '"decision":"block"',
+      // Redact & Vault resolves to the 'redact' ACTION, so on the wire it is
+      // indistinguishable from Redact here — and that equality is all this row
+      // asserts. It is a REGRESSION guard, not a proof that reversibility
+      // works: what it would catch is the new archetype reaching the protocol
+      // as something weaker (an allow, or silence). Whether a value is actually
+      // kept is decided a layer below and is covered where it is decided —
+      // installed-packs.test.ts, runtime-reversible.test.ts, tokenize.test.ts
+      // and pre-tool-use-decision.test.ts.
+      vault: '"decision":"block"',
       warn: '"systemMessage"',
       monitor: '"systemMessage"',
     },
@@ -359,6 +368,7 @@ const ENFORCING_HOOKS: readonly EnforcingHook[] = [
     emits: {
       block: '"permissionDecision":"deny"',
       redact: '"permissionDecision":"deny"',
+      vault: '"permissionDecision":"deny"',
       warn: '"systemMessage"',
       monitor: null,
     },
@@ -379,13 +389,14 @@ const ENFORCING_HOOKS: readonly EnforcingHook[] = [
     emits: {
       block: '"updatedToolOutput"',
       redact: '"updatedToolOutput"',
+      vault: '"updatedToolOutput"',
       warn: '"systemMessage"',
       monitor: null,
     },
   },
 ];
 
-const POLICIES: readonly BuiltinPolicyId[] = ['block', 'redact', 'warn', 'monitor'];
+const POLICIES: readonly BuiltinPolicyId[] = ['block', 'redact', 'vault', 'warn', 'monitor'];
 
 describe('the wire protocol never carries an action key, at any action level', () => {
   for (const hook of ENFORCING_HOOKS) {

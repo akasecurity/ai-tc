@@ -152,6 +152,7 @@ set stops matching this column.
 | ----------------------------------------- | ------------ | -------- |
 | `Lint · Typecheck · Test · Build`         | `ci.yml`     | ✅       |
 | `No-network · Full suite, egress blocked` | `ci.yml`     | ⛔       |
+| `Packaged artifact · Egress blocked`      | `ci.yml`     | ⛔       |
 | `macOS · Full suite`                      | `ci.yml`     | ⛔       |
 | `Windows · Unit tests (shipped surface)`  | `ci.yml`     | ✅       |
 | `Windows · Lint`                          | `ci.yml`     | ⛔       |
@@ -159,10 +160,10 @@ set stops matching this column.
 | `CodeQL (javascript-typescript)`          | `codeql.yml` | ⛔       |
 | `CodeQL (actions)`                        | `codeql.yml` | ⛔       |
 
-**Two of the eight block a merge. The other six run on every PR and block nothing.** Two
-of those six are asserted as enforced elsewhere in this repository: CLAUDE.md presents
-`No-network · Full suite, egress blocked` as one of the three gates behind the no-local-only
-guarantee — and as the only one that can see a child process — and describes `Dependency
+**Two of the nine block a merge. The other seven run on every PR and block nothing.** Two
+of those seven are asserted as enforced elsewhere in this repository: CLAUDE.md presents
+`No-network · Full suite, egress blocked` as one of the four gates behind the no-local-only
+guarantee — and as the one that covers the whole suite's child processes — and describes `Dependency
 audit` as the reason a high or critical advisory "will not merge". Neither holds until an
 admin marks them required. A PR that reaches the network on a shell-out, or that carries a
 critical advisory, goes red there and stays mergeable.
@@ -183,7 +184,7 @@ ordinary read permission, against any recent PR:
 gh api graphql -f query='{repository(owner:"akasecurity",name:"ai-tc"){pullRequest(number:PR){commits(last:1){nodes{commit{statusCheckRollup{contexts(first:50){nodes{... on CheckRun{name isRequired(pullRequestNumber:PR)}}}}}}}}}}'
 ```
 
-**When an admin marks one of the six required, the daily job goes red.** That is the
+**When an admin marks one of the seven required, the daily job goes red.** That is the
 intended behaviour, not a bug to work around: the pin and the public record are meant to
 move in the same commit. Flip the row's ⛔ to ✅ and the job is green again. The check is
 an exact match in both directions on purpose — a floor would let the enforced set grow

@@ -14,7 +14,7 @@ import type {
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
+import { removeTree, removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { recordProjectEgress } from '../src/egress-record.ts';
 import { scanPathIntoStore } from '../src/fs-scan.ts';
 
@@ -265,9 +265,7 @@ beforeEach(() => {
 
 afterEach(() => {
   db.close();
-  removeTree(root);
-  removeTree(store);
-  removeTree(base);
+  removeTrees([root, store, base]);
 });
 
 describe('egress acceptance corpus — destination ledger', () => {

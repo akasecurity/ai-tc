@@ -22,7 +22,7 @@ import {
   subscribeSystemTheme,
   THEME_PREFERENCES,
   type ThemePreference,
-} from '../lib/theme.ts';
+} from './theme.ts';
 
 const LABELS: Record<ThemePreference, string> = {
   light: 'Light',

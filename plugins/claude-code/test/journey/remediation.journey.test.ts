@@ -25,7 +25,7 @@
  * entry, asserting the rotation-checklist entries and the resolved summary
  * compose from the same checklist-entry model.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -117,8 +117,7 @@ describe('direct-invocation remediation chain, no wizard state', () => {
   }, 120_000);
 
   afterAll(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
-    journey.cleanup();
+    journey.cleanup(repoRoot);
   });
 
   it('reads the secret-leak findings from the seeded backfill frame — three, secret-only, PII excluded', () => {

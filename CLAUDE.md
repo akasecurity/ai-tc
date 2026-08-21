@@ -296,14 +296,15 @@ transitive graph) inside the archive, so `release-binaries.yml` and `build-binar
 both reach the registry — and `pnpm package:sea` does not run offline. Both are repository
 tooling, not product paths; nothing a user installs performs either.
 
-**Three gates enforce this, and they cover different things.** Losing track of which is
+**Four gates enforce this, and they cover different things.** Losing track of which is
 which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
 
-| Gate                                          | Catches                                                                                              | Cannot see                                                                                                                                                                                                                  |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source                                                          | A transitive dependency, a non-literal `import()`; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above) |
-| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time, on this thread and in any **worker** spawned from it | A child process — it has its own copy of `node:net` — and therefore any worker that child starts                                                                                                                            |
-| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included                                                  | A path the suite never executes; it is Linux-only                                                                                                                                                                           |
+| Gate                                          | Catches                                                                                                                                                    | Cannot see                                                                                                                                                                                                                                                                                                         |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source                                                                                                                | A transitive dependency, a non-literal `import()`; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above)                                                                                        |
+| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time, on this thread and in any **worker** spawned from it                                                       | A child process — it has its own copy of `node:net` — and therefore any worker that child starts                                                                                                                                                                                                                   |
+| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included                                                                                                        | A path the suite never executes; it is Linux-only                                                                                                                                                                                                                                                                  |
+| The `Packaged artifact` CI job (`ci.yml`)     | A PUBLISHED-tarball path that DEPENDS on reaching the network — while `npm ci` installs it, and while `aka init`, `aka scan` and the bundled dashboard run | A call the artifact makes and SWALLOWS: a namespace makes the connect fail, and this product fails open by design, so only a path that needs the answer reports here. Also a packaged path those commands never reach; the three PLUGIN tarballs and the extension, which nothing packs here; and it is Linux-only |
 
 The first one is only as wide as the files something points ESLint at, which is why
 coverage is derived and guarded rather than remembered — every package's source dirs and
@@ -315,13 +316,38 @@ egress really is blocked (`tools/ci/egress-probe.mjs` is that proof — it conne
 own loopback listener before trusting a failed connect, so a probe that cannot reach
 anything is never mistaken for an absent network).
 
-**What none of the three sees** is code no test runs. All of them observe either source
-text or an executed call, so an untested path can still reach out — which is why the
-gate table's third row says "a path the suite never executes" rather than "nothing". The
-packaged artifact is the other uncovered surface: nothing here installs the published
-tarball and exercises it under a block. Note also that the three gates scope to the
-**product** and to `ci.yml`: `audit.yml` reaches the registry on purpose, as above, and
-runs in its own workflow rather than inside the `No-network` job's namespace.
+**What none of the four sees** is code nothing runs. All of them observe either source
+text or an executed call, so an unexercised path can still reach out — which is why the
+gate table's third row says "a path the suite never executes" rather than "nothing", and
+its fourth "a packaged path those three commands never reach".
+
+The fourth gate is the newest and the narrowest, and it is worth being precise about what
+it added. The first three all stop at the workspace: lint reads source, the vitest guard
+patches transports inside a worker, and the namespace job covers whatever the SUITE
+starts. A published tarball is none of those — it is a build output, nothing loads it into
+a worker, and no test installs it — so the bundling step, which is exactly where a
+dependency arrives that the workspace source does not carry, was outside every gate.
+`tools/ci/packaged-cli-egress.sh` closes that by installing the packed tarball inside the
+namespace and exercising it there.
+
+Be precise about what that establishes, because it is weaker than the middle gate and in a
+way the row above has to spell out. The runtime guard **records** a refusal and fails the
+run even when a fail-open `catch` swallows it. A namespace records nothing — it just makes
+the connect fail — and this product fails open everywhere, so a packaged path that reaches
+out and shrugs stays green here. What this leg proves is that the published artifact does
+its work with no route off the host, not that it asked for none. It also covers the **CLI**
+tarball only; the three plugin tarballs and the browser extension are still packed by
+nothing that runs under a block.
+
+That leg carries its own control, and it is a different one from the wrapper's. The
+wrapper proves the block is real before anything runs. What the script proves is that the
+run was not vacuous in the other direction: a scan that examined nothing exits 0 and
+reports no findings, which is byte-for-byte a clean run, so it seeds a file from a
+detection rule's own fixture and fails unless that rule fires.
+
+Note also that the four gates scope to the **product** and to `ci.yml`: `audit.yml`
+reaches the registry on purpose, as above, and runs in its own workflow rather than inside
+either job's namespace.
 
 **Checking the first gate has one trap, and it is in the package that defines the ban.**
 Every package's `eslint.config.mjs` imports `@akasecurity/eslint-config`, so ESLint
@@ -408,7 +434,7 @@ The worker is a **build entry**, not a source file the loader finds: the publish
 
 Two `scan()` calls inside the SDK are not exposure: `mask.ts` and `tokenize.ts`'s self-scan both pass `getLoadedRules()`, the compiled-in registry the CI battery gates on every commit, so no pulled pattern reaches them. `aka scan` passes no ruleset and falls back to that same registry, so the CLI runs in-process by design and is not exposed — passing it an installed snapshot instead would put an unreviewed regex on an unbounded path.
 
-What remains uncovered is the packaged artifact: nothing installs the published CLI and drives its dashboard's folder scan under a hostile pack, so the chain above is proven link by link rather than end to end.
+What remains uncovered here is the packaged artifact under a HOSTILE PACK. §4's packaged-artifact leg installs the published CLI and boots its bundled dashboard, but it drives neither a folder scan nor a pulled rule, so the chain above is still proven link by link rather than end to end.
 
 ### 6. Every writer of `settings.json` takes its lock
 
@@ -420,7 +446,7 @@ first one's answers — with both reporting success, because neither ever learns
 
 `withFileLock` (`packages/persistence/src/file-lock.ts`) is the section around that pair. It is the
 existence of a sibling `<file>.lock`, taken with an exclusive create — `flock` has no Windows
-equivalent, and an fd-held lock is lost by any writer that opens the file a second time. Six
+equivalent, and an fd-held lock is lost by any writer that opens the file a second time. Seven
 properties are load-bearing:
 
 - **It is ADVISORY, and it is scoped to one file.** A writer that skips it is not excluded by the
@@ -437,6 +463,20 @@ properties are load-bearing:
   still reads the current version and writes version+1 over it, and the same fix does not reach
   it. Do not read this section as a property the store has; it is a property `settings.json`
   has.
+- **An ADMINISTRATIVE overlay is read, never written, and that is what keeps the writer count at
+  two.** `managed-settings.ts` reads a root-owned file outside `~/.aka` that an MDM or
+  config-management tool owns — `/Library/Application Support/AKASecurity` then
+  `/Library/Managed Preferences` on macOS (FIRST READABLE WINS, so the order is part of the
+  contract, not a detail), `%ProgramData%\AKASecurity` on Windows, `/etc/aka` on Linux. AKA overlays what it finds — `readEffectiveSettings` returns the settings in force
+  plus the locked set — and writes it never. Making AKA a writer of it would be the third
+  `settings.json`-class writer this section exists to prevent, on a file the lock does not cover.
+  Three consequences. A pinned VALUE and a LOCK are separable: a value with no lock is a default
+  the user may still change, a lock with no value freezes whatever they last chose. A locked field
+  is refused inside the lock (`ManagedFieldError`), by THROWING rather than dropping the key and
+  writing the rest — a half-applied save reports success while losing the answer the user cared
+  about, which is this section's whole failure mode. And a damaged managed file leaves the machine
+  UNMANAGED rather than refusing to run, because a typo in an MDM payload must not break every
+  hook on every managed machine at once; that direction is deliberate and stated in the module.
 - **Anything derived from the current file is derived INSIDE it.** `applyOnboarding` takes an
   updater function for exactly this: a caller that reads first and passes a plain object has put
   its read outside the lock and kept the lost update, one frame further out. The dashboard's
@@ -2063,15 +2103,46 @@ The CLI's `exception` suites bind it **wider than an error** — to their **stdo
 assertions too, because a CLI's terminal output is where a leaked value gets scrolled,
 pasted into a bug report and captured by CI logs. That is safe rather than fragile **for
 the values those suites use**: what they print of a blocked **generic** secret is
-`maskMatch`'s first-and-last preview (`A******E`), two characters, which cannot fill an
-eight-character window. **It does not generalize to every value `maskMatch` handles.** The
+`maskMatch`'s first-and-last preview (`A******E`) — two characters, sitting in two runs of
+**one**. The RUN is the quantity that matters, not the count: the window slides over
+**contiguous** slices, so two characters that are never adjacent cannot fill one of any
+width. **It does not generalize to every value `maskMatch` handles.** The
 email branch reveals the first local character plus the **whole domain**
 (`user@example.com` → `u***@example.com`), and a single-character local part returns the
 input unchanged — both fill the window on purpose. A surface printing a pii/email preview is
 out of scope for the stdout half, not a leak it found; `no-echo.test.ts` pins both branches
-so that boundary is written down rather than re-derived. If the **generic** branch is ever
-widened past two characters, that suite goes red first, which is the correct answer and not
-a reason to loosen the callers back.
+so that boundary is written down rather than re-derived.
+
+**Two different things are pinned there, and only one of them is the margin.** The
+acceptance case (`refuses(maskMatch(VALUE), VALUE)` is `false`) says the preview is safe
+**today**; it cannot say how much room is left, because it fires only once the preview holds
+a contiguous run of `ECHO_RUN` characters. So widening the generic branch to anything from
+two revealed characters up to seven leaves it green — and that band is precisely where a
+usability change lands ("show enough to tell two blocked secrets apart"). In that band the
+only red is `packages/detections/test/mask.test.ts`, whose failure reads as _"you changed the
+mask, update the expectation"_ and gives no signal that a downstream safety argument moved.
+The **margin** is therefore pinned by its own case in `cli/test/helpers/no-echo.test.ts`,
+which derives the longest revealed run from `maskMatch` and holds it at one: that goes red on
+the **first** character of widening, where the reasoning is written down. Widening is a
+deliberate act to be argued against the window — not a reason to loosen the callers back, and
+not something raising `ECHO_RUN` can buy back, since the same file owns both numbers.
+
+`exception.test.ts`'s masked-preview group is **derived from `maskMatch`** for the same reason
+— the seeded ledger `maskedValue`, the grant-shape assertions over it, the stdout positive
+control, and the two approve **selectors** that stand in for a value a user types. A
+hand-written `'A******E'` on both sides of one of those is true by construction and moves with
+nothing, which is the rule two paragraphs above, applied to a group rather than to a single
+control. **That is a claim about that group, not about every preview in the package**: a
+preview the CALLER supplies is a different thing, and `exception-reveal.test.ts`'s **vault**
+seeds assert against its own `MASKED` constant on purpose, because a vault pointer's preview
+is chosen at tokenize time rather than produced by `maskMatch`. **The line is drawn per ROW,
+not per file.** The same file's `recordBlocked` seeds are `blocked_detections` rows, and
+`packages/plugin-sdk/src/runtime.ts` masks the finding with `maskMatch` before recording one
+— the only writer of that table — so those derive from `maskMatch` like any other product
+mask. Derive from `maskMatch` where the product masks; derive from the raw value where the
+caller does, and decide that per table rather than by which suite you are in.
+`packages/detections/test/mask.test.ts` keeps its exact-string cases: they are the right pin
+for the mask's own contract, and deliberately not a pin on the CLI's margin.
 
 **Bind it per assertion, never per file.** `cli/test/commands/vault.test.ts` is the worked
 example: its forged-pointer refusal pins absence like any other, but `aka vault show`'s

@@ -13,10 +13,12 @@
  * `runHook('session-start', JSON.stringify({ session_id: 'x' }))`.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/helpers -> plugins/claude-code
@@ -85,12 +87,16 @@ export function runHook(name: string, stdin: string, options: RunHookOptions = {
 // home instead of a developer's real store (same technique as
 // test/journey/harness.ts). Windows resolves the home dir from USERPROFILE
 // instead of HOME, so both are set in lockstep.
-export function withTempHome<T>(fn: (home: string) => T): T {
-  const home = mkdtempSync(join(tmpdir(), 'aka-hook-e2e-'));
+//
+// `prefix` defaults to a generic tag; pass a case-specific one (e.g.
+// `aka-ups-redact-`) so a directory a failed teardown leaves behind on disk
+// still names the case that leaked it.
+export function withTempHome<T>(fn: (home: string) => T, prefix = 'aka-hook-e2e-'): T {
+  const home = mkdtempSync(join(tmpdir(), prefix));
   try {
     return fn(home);
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    removeTree(home);
   }
 }
 

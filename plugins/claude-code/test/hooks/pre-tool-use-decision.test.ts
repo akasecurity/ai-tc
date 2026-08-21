@@ -38,6 +38,7 @@ import type { ScannableField } from '../../src/hooks/pre-tool-use-fields.ts';
 
 const IP = ['45', '79', '142', '6'].join('.');
 const EMAIL = ['user1', 'example.com'].join('@');
+const EMAIL2 = ['user2', 'example.org'].join('@');
 
 const BASH_COMMAND: ScannableField = { path: ['command'], executable: true };
 const WRITE_CONTENT: ScannableField = { path: ['content'], executable: false };
@@ -447,5 +448,93 @@ describe('incident regression — the seed-cleanup DELETE, end to end', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// The hook-level half of the Redact & Vault archetype: the decision module is
+// what turns a CaptureResult's per-finding custody split into the argument the
+// vault glue actually receives. Nothing else can see that hand-off — the runtime
+// tests prove the split is COMPUTED, and the tokenize tests prove the glue
+// HONOURS it, but a decision module that dropped the third argument would leave
+// both green while vaulting every redacted value on the machine.
+describe('decidePreToolUse — passes the custody split to the tokenizer', () => {
+  const TEXT = `contact ${EMAIL} and ${EMAIL2}`;
+
+  function mixedResult(): CaptureResult {
+    const a = finding('pii/email-a', EMAIL, TEXT);
+    const b = finding('pii/email-b', EMAIL2, TEXT);
+    return {
+      action: 'redact',
+      text: TEXT.replace(EMAIL, '[REDACTED:PII]').replace(EMAIL2, '[REDACTED:PII]'),
+      findings: [a, b],
+      enforcedFindings: [a, b],
+      // Only the first detection chose Redact & Vault.
+      reversibleFindings: [a],
+    };
+  }
+
+  it('hands the tokenizer exactly the reversible subset, not every enforced finding', async () => {
+    const seen: { findings: unknown[]; reversible: ReadonlySet<unknown> }[] = [];
+    await decidePreToolUse(
+      'Write',
+      { content: TEXT },
+      [{ spec: WRITE_CONTENT, result: mixedResult(), text: TEXT }],
+      (text, findings, reversible) => {
+        seen.push({ findings: [...findings], reversible });
+        return Promise.resolve({ text, pointers: [], degraded: [] });
+      },
+    );
+
+    expect(seen).toHaveLength(1);
+    const call = seen[0];
+    if (call === undefined) throw new Error('the tokenizer was never called');
+    // Every enforced span is handed over — the tokenizer performs the WHOLE
+    // rewrite, so a narrower list would leave the other value in the clear.
+    expect(call.findings).toHaveLength(2);
+    // …and exactly one of them is marked to keep.
+    expect(call.reversible.size).toBe(1);
+  });
+
+  it('passes an EMPTY reversible set when no detection chose to keep', async () => {
+    // The default posture. A decision module defaulting to "all" here would
+    // vault every redacted value on a machine that never asked for it.
+    const result = mixedResult();
+    const noneReversible: CaptureResult = { ...result, reversibleFindings: [] };
+    let captured: ReadonlySet<unknown> | undefined;
+    await decidePreToolUse(
+      'Write',
+      { content: TEXT },
+      [{ spec: WRITE_CONTENT, result: noneReversible, text: TEXT }],
+      (text, _findings, reversible) => {
+        captured = reversible;
+        return Promise.resolve({ text, pointers: [], degraded: [] });
+      },
+    );
+    expect(captured?.size).toBe(0);
+  });
+
+  it('passes an EMPTY set when the field is absent (an older runtime)', async () => {
+    // Built without the field rather than destructured away, so nothing here
+    // relies on an unused binding to express "absent".
+    const { findings, text, ...rest } = mixedResult();
+    const withoutField: CaptureResult = {
+      action: rest.action,
+      text,
+      findings,
+      enforcedFindings: rest.enforcedFindings ?? [],
+    };
+    let captured: ReadonlySet<unknown> | undefined;
+    await decidePreToolUse(
+      'Write',
+      { content: TEXT },
+      [{ spec: WRITE_CONTENT, result: withoutField, text: TEXT }],
+      (text, _findings, reversible) => {
+        captured = reversible;
+        return Promise.resolve({ text, pointers: [], degraded: [] });
+      },
+    );
+    // Absent must mean "keep nothing": destroying a value that could have been
+    // recovered is recoverable-from; retaining one the policy said to destroy is not.
+    expect(captured?.size).toBe(0);
   });
 });

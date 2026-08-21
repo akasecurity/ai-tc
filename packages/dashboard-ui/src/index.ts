@@ -162,6 +162,12 @@ export {
 export { PolicyPicker } from './detections/PolicyPicker.tsx';
 export { ProvenanceBlock } from './detections/ProvenanceBlock.tsx';
 export { UpdateModal } from './detections/UpdateModal.tsx';
+export {
+  showsVaultDrift,
+  VAULT_DRIFT_BODY,
+  VAULT_DRIFT_TITLE,
+  type VaultDriftState,
+} from './detections/vault-drift.ts';
 
 // Policies views — props-driven built-in enforcement-policy catalog (stat strip +
 // master/detail). Fed by client hooks or @akasecurity/persistence Server
@@ -325,6 +331,10 @@ export {
   type DataShareDetailViewProps,
 } from './data-shares/DataShareDetailView.tsx';
 export {
+  DataSharesKindTabsView,
+  type DataSharesKindTabsViewProps,
+} from './data-shares/DataSharesKindTabsView.tsx';
+export {
   DataSharesTableView,
   type DataSharesTableViewProps,
 } from './data-shares/DataSharesTableView.tsx';
@@ -345,7 +355,45 @@ export {
   type TrustMeta,
 } from './data-shares/meta.ts';
 export {
+  NeedsReviewListView,
+  type NeedsReviewListViewProps,
+} from './data-shares/NeedsReviewListView.tsx';
+export {
   NeedsReviewStripView,
   type NeedsReviewStripViewProps,
 } from './data-shares/NeedsReviewStripView.tsx';
 export type { ShareSelection } from './data-shares/types.ts';
+
+// Theme — the light/dark/system preference store, the topbar picker, and the
+// pre-paint init script. Shared because both dashboards need the identical
+// behaviour and only the script's INJECTION POINT is host-specific (Next root
+// layout vs Vite index.html). No `dark:` variants anywhere: ui-kit's theme.css
+// re-themes by overriding the same CSS variables its utilities read, so applying
+// the class is the whole of what a host has to do.
+//
+// Re-exported here for discoverability, but a host that needs only
+// THEME_INIT_SCRIPT should import the `./theme` SUBPATH instead of this barrel —
+// the same narrowing `./recommendations` already exists for. That import lands
+// in a root layout, whose module graph is the one every page pays for, and this
+// barrel reaches ~80 exports including Radix-backed dialogs and d3-shape charts.
+// A pre-paint constant should not be able to drag a chart library behind it.
+// `./theme/toggle` is the matching door for the component.
+export {
+  applyTheme,
+  DARK_CLASS,
+  DARK_QUERY,
+  DEFAULT_THEME_PREFERENCE,
+  isThemePreference,
+  prefersDark,
+  readStoredPreference,
+  serverPreference,
+  serverPrefersDark,
+  storePreference,
+  subscribePreference,
+  subscribeSystemTheme,
+  THEME_INIT_SCRIPT,
+  THEME_PREFERENCES,
+  THEME_STORAGE_KEY,
+  type ThemePreference,
+} from './theme/theme.ts';
+export { ThemeToggle } from './theme/ThemeToggle.tsx';

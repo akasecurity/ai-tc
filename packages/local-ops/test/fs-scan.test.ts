@@ -13,7 +13,7 @@ import {
 import type { Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
+import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { collectFiles, scanPathIntoStore } from '../src/fs-scan.ts';
 import { migratedStore } from './helpers/store-templates.ts';
 
@@ -93,8 +93,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  removeTree(root);
-  removeTree(store);
+  removeTrees([root, store]);
 });
 
 describe('collectFiles', () => {

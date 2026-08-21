@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,7 @@ import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { SetupHandoffOffer } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   parseLiveKeyCount,
   parseSurfacedCount,
@@ -90,7 +91,7 @@ describe('runFirstRun — emits the handoff-offer payload alongside the card', (
     dir = mkdtempSync(join(tmpdir(), 'aka-firstrun-'));
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
   });
 
   async function seedAndRun(argv: readonly string[]): Promise<string> {

@@ -8,7 +8,7 @@ import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
 import type { Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
+import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { runScan } from '../../app/(app)/scan/actions.ts';
 
 /**
@@ -156,8 +156,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   resetSingleton();
-  removeTree(home);
-  removeTree(target);
+  removeTrees([home, target]);
 });
 
 describe('runScan — a pulled rule that never returns', () => {

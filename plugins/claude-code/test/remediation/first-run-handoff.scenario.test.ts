@@ -14,7 +14,7 @@ import { SetupHandoffOffer as SetupHandoffOfferSchema } from '@akasecurity/schem
 import { presentBatchedRemediation } from '@akasecurity/setup-wizard';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import { frameCalibration } from '../../src/calibration.ts';
 import { runFirstRun } from '../../src/firstrun-core.ts';
 import { readPostureBlock } from '../../src/posture.ts';
@@ -76,7 +76,7 @@ describe('first-run handoff seam: calibration findings trigger (or skip) remedia
     dirs.length = 0;
   });
   afterEach(() => {
-    for (const dir of dirs) removeTree(dir);
+    removeTrees(dirs);
   });
 
   // Frame 0.4: build the calibration frame the wizard emits for a preview + its

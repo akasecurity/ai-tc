@@ -1,10 +1,17 @@
 'use client';
-import type { WorkspaceSettings } from '@akasecurity/schema';
-import { isModelJudgeConsentValid, isVaultConsentValid } from '@akasecurity/schema';
-import { Button, cn } from '@akasecurity/ui-kit';
+import type { ManagedContext, ManagedSettingKey, WorkspaceSettings } from '@akasecurity/schema';
+import {
+  controlPlaneName,
+  isAttached,
+  isFieldManaged,
+  isModelJudgeConsentValid,
+  isVaultConsentValid,
+  managedByLabel,
+  NO_MANAGED_CONTEXT,
+} from '@akasecurity/schema';
+import { Button, cn, Input } from '@akasecurity/ui-kit';
+import type { ReactNode } from 'react';
 import { useState } from 'react';
-
-import { SectionLabel } from '../shared/DetailFields.tsx';
 
 interface Choice<T extends string> {
   value: T;
@@ -12,29 +19,22 @@ interface Choice<T extends string> {
   description: string;
 }
 
-// The global handling preference (settings.policy) no longer drives runtime
-// enforcement — per-category Policies do (see the Policies page). It is kept as
-// a stored default, so this copy describes a leaning, not a guaranteed effect,
-// and points to where enforcement is actually decided.
-export const HANDLING_SECTION_LABEL = 'Sensitive-data handling';
+// Enforcement is NOT configured here, and this section exists to say so rather
+// than to offer a control.
+//
+// A global redact/warn preference used to sit on this page. It had not driven
+// enforcement for some time — per-detection policies do — so it presented a
+// choice with no effect, which is worse than no control at all: a user who set
+// it to Warn believed they had changed what the plugin does. Every handling
+// level now lives on one axis, assigned per detection on the Detections page.
+export const HANDLING_SECTION_LABEL = 'Enforcement';
 
 export const HANDLING_SECTION_DESCRIPTION =
-  'Your default leaning for sensitive detections. What actually happens per detection is ' +
-  'governed by the per-category Policies, not this global default.';
+  'What happens when a detection fires — Monitor, Warn, Redact, Redact & Vault or Block — is ' +
+  'assigned per detection on the Detections page. There is no global handling setting: one ' +
+  'detection can block while another only logs, and this page would not be able to say which.';
 
-export const POLICY_CHOICES: Choice<WorkspaceSettings['policy']>[] = [
-  {
-    value: 'redact',
-    label: 'Redact',
-    description:
-      'Lean toward replacing sensitive values before they reach the model (recommended).',
-  },
-  {
-    value: 'warn',
-    label: 'Warn only',
-    description: 'Lean toward surfacing detections rather than redacting them by default.',
-  },
-];
+export const HANDLING_SECTION_LINK_LABEL = 'Configure detections';
 
 // This is the same grant the /aka:setup wizard collects, and it is what gates the
 // wizard's history sweep — READING local surfaces, nothing more. Sending what that
@@ -100,9 +100,19 @@ export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
 // version) is stamped by the server action, never built client-side.
 export const VAULT_SECTION_LABEL = 'Reversible secret vault';
 
+// A CAPABILITY grant, not an enforcement switch — and the distinction is the
+// whole point of this section's wording. It used to be both: turning it on made
+// every redaction on the machine reversible at once, which meant the same
+// "Redact" assignment did two materially different things depending on a
+// setting three pages away. Which detections keep a recoverable copy is now the
+// Redact & Vault archetype on the Detections page. What survives here is the
+// custody consent that archetype needs — permission to hold recoverable copies
+// at all. Both are required: without this grant, a detection set to Redact &
+// Vault degrades to one-way Redact rather than failing or silently vaulting.
 export const VAULT_SECTION_DESCRIPTION =
-  'Whether redaction keeps a recoverable copy of what it removes. Off destroys detected ' +
-  'values as it redacts them; Vault & redact keeps an encrypted copy on this machine.';
+  'Permission for AKA to keep recoverable copies of what it redacts. This grant does not by ' +
+  'itself vault anything — a detection has to be set to Redact & Vault on the Detections page. ' +
+  'Without the grant, those detections fall back to one-way Redact.';
 
 export type VaultConsentChoice = 'off' | 'on';
 
@@ -110,11 +120,13 @@ export const VAULT_CHOICES: Choice<VaultConsentChoice>[] = [
   {
     value: 'off',
     label: 'Off (default)',
-    description: 'Detected values keep being redacted irreversibly; nothing recoverable is stored.',
+    description:
+      'Nothing recoverable is stored. Detections set to Redact & Vault fall back to one-way ' +
+      'Redact, so values are destroyed as they are redacted.',
   },
   {
     value: 'on',
-    label: 'Vault & redact',
+    label: 'Allow vaulting',
     description:
       'A detected value is replaced by a pointer, and an encrypted, recoverable copy is ' +
       'kept in the local vault under ~/.aka — this machine holds recoverable copies of ' +
@@ -170,37 +182,173 @@ export function vaultConsentStale(vaultConsent: WorkspaceSettings['vaultConsent'
   return vaultConsent !== undefined && !isVaultConsentValid(vaultConsent);
 }
 
+// The one-word form of VAULT_STALE_NOTICE, for the collapsed summary. The row
+// says "Allow vaulting" there, which is the stored answer and NOT what is
+// happening, so the summary has to carry the contradiction itself.
+export const VAULT_STALE_BADGE = 'Paused';
+
 export const VAULT_STALE_NOTICE =
   'Your grant was recorded against an older version of the vault — vaulting is paused ' +
-  'until you re-consent. Saving with "Vault & redact" selected re-consents to the current version.';
+  'until you re-consent. Saving with "Allow vaulting" selected re-consents to the current version.';
 
-function ChoiceGroup<T extends string>({
+// One collapsible settings row: the label and the CURRENT answer are always
+// visible, the options only when opened.
+//
+// This is the shape of the declutter. Five sections rendered every option of
+// every setting at once — twelve radio cards and roughly three thousand
+// characters of prose before the user had made a single decision — so the state
+// actually in force was the one thing the page did not show. Native
+// details/summary rather than a built disclosure: it is keyboard-accessible and
+// screen-reader-announced without a behaviour to get wrong.
+function SettingRow<T extends string>({
+  label,
+  description,
   name,
   choices,
   value,
   onChange,
+  managed,
+  notice,
+  alert,
+  defaultOpen,
+  children,
 }: {
+  label: string;
+  description: string;
   name: string;
   choices: Choice<T>[];
   value: T;
   onChange: (value: T) => void;
+  managed?: string | undefined;
+  notice?: ReactNode;
+  // A short warning shown on the SUMMARY, so a collapsed row can still say that
+  // its stated answer is not the one in force.
+  alert?: string | undefined;
+  defaultOpen?: boolean | undefined;
+  children?: ReactNode;
+}) {
+  const current = choices.find((c) => c.value === value);
+  const headingId = `${name}-label`;
+  return (
+    <details
+      className="group border-b border-border last:border-b-0"
+      data-slot="setting-row"
+      // A row carrying a warning opens itself. Collapsing is for reducing noise,
+      // and a warning is not noise: the vault stale-grant notice was always
+      // visible before this page collapsed, and hiding it would mean a user
+      // reads "Allow vaulting" on a machine where vaulting is paused.
+      open={defaultOpen === true}
+    >
+      <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 hover:bg-surface-2">
+        <ChevronRight />
+        <span className="flex-1">
+          <span id={headingId} className="block text-sm font-medium text-text">
+            {label}
+          </span>
+          <span className="mt-0.5 block text-xs text-text-3">{description}</span>
+        </span>
+        {/* The answer in force, so scanning the page reads the posture without
+            opening anything. Managed rows say who decided instead. */}
+        {alert !== undefined && (
+          <span
+            className="shrink-0 rounded-full bg-sev-high-fill px-2 py-0.5 text-xs font-medium text-sev-high-ink"
+            data-slot="row-alert"
+          >
+            {alert}
+          </span>
+        )}
+        {managed === undefined ? (
+          <span className="shrink-0 text-xs font-medium text-text-2" data-slot="current-value">
+            {current?.label ?? value}
+          </span>
+        ) : (
+          <span
+            className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-xs text-text-3"
+            data-slot="managed-badge"
+            title={managed}
+          >
+            {current?.label ?? value} · locked
+          </span>
+        )}
+      </summary>
+      <div className="px-4 pb-4 pl-11">
+        {notice}
+        {managed !== undefined && (
+          <p className="mb-3 text-xs text-text-3" data-slot="managed-notice">
+            {managed}. This setting cannot be changed here.
+          </p>
+        )}
+        <fieldset disabled={managed !== undefined} className="contents">
+          <ChoiceGroup
+            name={name}
+            labelledBy={headingId}
+            choices={choices}
+            value={value}
+            onChange={onChange}
+            disabled={managed !== undefined}
+          />
+        </fieldset>
+        {children}
+      </div>
+    </details>
+  );
+}
+
+function ChevronRight() {
+  return (
+    <svg
+      className="size-4 shrink-0 text-text-3 transition-transform group-open:rotate-90"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      aria-hidden="true"
+    >
+      <path d="M6 4l4 4-4 4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ChoiceGroup<T extends string>({
+  name,
+  labelledBy,
+  choices,
+  value,
+  onChange,
+  disabled,
+}: {
+  name: string;
+  labelledBy?: string;
+  choices: Choice<T>[];
+  value: T;
+  onChange: (value: T) => void;
+  disabled?: boolean;
 }) {
   return (
-    <div className="flex flex-col gap-2" role="radiogroup" aria-label={name}>
+    <div
+      className="flex flex-col gap-2"
+      role="radiogroup"
+      // Points at the visible heading rather than repeating the field NAME.
+      // This announced "vaultConsent" and "historicalAccess" to a screen reader
+      // — the storage key, which names the setting to nobody but us.
+      aria-labelledby={labelledBy}
+    >
       {choices.map((c) => (
         <label
           key={c.value}
           className={cn(
-            'flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors',
+            'flex items-start gap-3 rounded-lg border p-3 transition-colors',
+            disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
             value === c.value
               ? 'border-primary bg-primary-tint'
-              : 'border-border bg-surface hover:bg-surface-2',
+              : cn('border-border bg-surface', !disabled && 'hover:bg-surface-2'),
           )}
         >
           <input
             type="radio"
             name={name}
             checked={value === c.value}
+            disabled={disabled}
             onChange={() => {
               onChange(c.value);
             }}
@@ -216,17 +364,43 @@ function ChoiceGroup<T extends string>({
   );
 }
 
+/** A titled group of setting rows. Gives the page an outline to skim. */
+function SettingGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section>
+      <h2 className="mb-2 text-label font-semibold uppercase tracking-wider text-text-3">
+        {title}
+      </h2>
+      <div className="overflow-hidden rounded-xl border border-border bg-surface">{children}</div>
+    </section>
+  );
+}
+
 export interface WorkspaceSettingsFormViewProps {
   settings: WorkspaceSettings;
+  // What an administrator has pinned, and which of those the user may not
+  // change. Absent context ⇒ an unmanaged machine, every control editable.
+  managed?: ManagedContext;
   // Both consents are plain answers, not the stored records: acknowledgement
   // timestamps and versions are stamped server-side, so a client-supplied one
   // would only be discarded. modelJudgeConsent: true grants, false revokes.
+  //
+  // `policy` is deliberately absent. Enforcement is per detection now; see
+  // HANDLING_SECTION_DESCRIPTION.
   onSave: (
-    changes: Pick<WorkspaceSettings, 'policy' | 'historicalAccess' | 'vaultInlineReveal'> & {
+    changes: Pick<WorkspaceSettings, 'historicalAccess' | 'vaultInlineReveal'> & {
       modelJudgeConsent: boolean;
       vaultConsent: VaultConsentChoice;
     },
   ) => void;
+  // Register this machine against an organization's deployment, and undo that.
+  // Both optional: a build with no transport plugged in renders the connection
+  // state read-only rather than offering an action that cannot complete.
+  onAttach?: (endpoint: string, label: string) => void;
+  onDetach?: () => void;
+  // Where "Configure detections" points. Injected rather than hardcoded so this
+  // package stays router-agnostic.
+  detectionsHref?: string;
   busy?: boolean;
   error?: string | null;
   saved?: boolean;
@@ -234,16 +408,24 @@ export interface WorkspaceSettingsFormViewProps {
 
 /**
  * The workspace settings editor — the web twin of the `/aka:setup` wizard's
- * policy, historical-access, and vault-consent questions.
+ * consent questions, plus the machine's connection state.
+ *
+ * Grouped rather than flat, and collapsed rather than fully expanded, because
+ * what a user needs from this page most of the time is to READ the posture in
+ * force. Every option of every setting rendered at once put that answer behind
+ * three thousand characters of prose.
  */
 export function WorkspaceSettingsFormView({
   settings,
+  managed = NO_MANAGED_CONTEXT,
   onSave,
+  onAttach,
+  onDetach,
+  detectionsHref = '/detections',
   busy,
   error,
   saved,
 }: WorkspaceSettingsFormViewProps) {
-  const [policy, setPolicy] = useState(settings.policy);
   const [historicalAccess, setHistoricalAccess] = useState(settings.historicalAccess);
   // Validity, not presence: this is the same predicate the judge gate uses, so a
   // consent recorded against an older payload version renders as "Not granted"
@@ -256,8 +438,14 @@ export function WorkspaceSettingsFormView({
   const [modelJudge, setModelJudge] = useState<ModelJudgeChoice>(initialModelJudge);
   const [vaultConsent, setVaultConsent] = useState(vaultChoiceOf(settings.vaultConsent));
   const [inlineReveal, setInlineReveal] = useState(settings.vaultInlineReveal);
+
+  // One helper rather than a check per row: a locked field must render the same
+  // way everywhere, and an inline conditional per section is how one of them
+  // ends up editable.
+  const lockOn = (key: ManagedSettingKey): string | undefined =>
+    isFieldManaged(managed, key) ? managedByLabel(managed) : undefined;
+
   const dirty =
-    policy !== settings.policy ||
     historicalAccess !== settings.historicalAccess ||
     modelJudge !== initialModelJudge ||
     vaultConsent !== vaultChoiceOf(settings.vaultConsent) ||
@@ -268,61 +456,88 @@ export function WorkspaceSettingsFormView({
     (vaultConsent === 'on' && vaultConsentStale(settings.vaultConsent));
 
   return (
-    <div className="flex max-w-4xl flex-col gap-6">
-      <section className="rounded-xl border border-border bg-surface p-5">
-        <SectionLabel>{HANDLING_SECTION_LABEL}</SectionLabel>
-        <p className="mb-3 text-xs text-text-3">{HANDLING_SECTION_DESCRIPTION}</p>
-        <ChoiceGroup name="policy" choices={POLICY_CHOICES} value={policy} onChange={setPolicy} />
-      </section>
+    <div className="flex max-w-4xl flex-col gap-7">
+      <SettingGroup title="Connection">
+        <ConnectionRow
+          settings={settings}
+          managedLabel={lockOn('runMode')}
+          onAttach={onAttach}
+          onDetach={onDetach}
+          busy={busy}
+        />
+      </SettingGroup>
 
-      <section className="rounded-xl border border-border bg-surface p-5">
-        <SectionLabel>{HISTORICAL_SECTION_LABEL}</SectionLabel>
-        <p className="mb-3 text-xs text-text-3">{HISTORICAL_SECTION_DESCRIPTION}</p>
-        <ChoiceGroup
+      <SettingGroup title={HANDLING_SECTION_LABEL}>
+        <div className="flex items-start gap-3 px-4 py-3" data-slot="enforcement-pointer">
+          <span className="flex-1 text-xs text-text-3">{HANDLING_SECTION_DESCRIPTION}</span>
+          <a
+            href={detectionsHref}
+            className="shrink-0 text-xs font-medium text-primary hover:underline"
+          >
+            {HANDLING_SECTION_LINK_LABEL}
+          </a>
+        </div>
+      </SettingGroup>
+
+      <SettingGroup title="Data access">
+        <SettingRow
+          label={HISTORICAL_SECTION_LABEL}
+          description={HISTORICAL_SECTION_DESCRIPTION}
           name="historicalAccess"
           choices={HISTORICAL_CHOICES}
           value={historicalAccess}
           onChange={setHistoricalAccess}
+          managed={lockOn('historicalAccess')}
         />
-      </section>
-
-      <section className="rounded-xl border border-border bg-surface p-5">
-        <SectionLabel>{MODEL_JUDGE_SECTION_LABEL}</SectionLabel>
-        <p className="mb-3 text-xs text-text-3">{MODEL_JUDGE_SECTION_DESCRIPTION}</p>
-        <ChoiceGroup
+        <SettingRow
+          label={MODEL_JUDGE_SECTION_LABEL}
+          // The one-line summary. The FULL disclosure is below, in the expanded
+          // body — it must stay complete (every field that crosses the wire is
+          // named in it, and a test drives that against the payload schema), so
+          // it is placed where it does not crowd the page rather than trimmed.
+          description="Whether the setup scan may send findings to the model API."
           name="modelJudgeConsent"
           choices={MODEL_JUDGE_CHOICES}
           value={modelJudge}
           onChange={setModelJudge}
+          managed={lockOn('modelJudgeConsent')}
+          notice={
+            <p className="mb-3 text-xs text-text-3" data-slot="model-judge-disclosure">
+              {MODEL_JUDGE_SECTION_DESCRIPTION}
+            </p>
+          }
         />
-      </section>
-
-      <section className="rounded-xl border border-border bg-surface p-5">
-        <SectionLabel>{VAULT_SECTION_LABEL}</SectionLabel>
-        <p className="mb-3 text-xs text-text-3">{VAULT_SECTION_DESCRIPTION}</p>
-        {vaultConsentStale(settings.vaultConsent) ? (
-          <p className="mb-3 text-xs text-sev-high-ink" data-slot="vault-stale-notice">
-            {VAULT_STALE_NOTICE}
-          </p>
-        ) : null}
-        <ChoiceGroup
+        <SettingRow
+          label={VAULT_SECTION_LABEL}
+          description={VAULT_SECTION_DESCRIPTION}
           name="vaultConsent"
           choices={VAULT_CHOICES}
           value={vaultConsent}
           onChange={setVaultConsent}
+          managed={lockOn('vaultConsent')}
+          alert={vaultConsentStale(settings.vaultConsent) ? VAULT_STALE_BADGE : undefined}
+          defaultOpen={vaultConsentStale(settings.vaultConsent)}
+          notice={
+            vaultConsentStale(settings.vaultConsent) ? (
+              <p className="mb-3 text-xs text-sev-high-ink" data-slot="vault-stale-notice">
+                {VAULT_STALE_NOTICE}
+              </p>
+            ) : null
+          }
         />
-      </section>
+      </SettingGroup>
 
-      <section className="rounded-xl border border-border bg-surface p-5">
-        <SectionLabel>{INLINE_REVEAL_SECTION_LABEL}</SectionLabel>
-        <p className="mb-3 text-xs text-text-3">{INLINE_REVEAL_SECTION_DESCRIPTION}</p>
-        <ChoiceGroup
+      <SettingGroup title="Display">
+        <SettingRow
+          label={INLINE_REVEAL_SECTION_LABEL}
+          description={INLINE_REVEAL_SECTION_DESCRIPTION}
           name="vaultInlineReveal"
           choices={INLINE_REVEAL_CHOICES}
           value={inlineReveal}
           onChange={setInlineReveal}
+          managed={lockOn('vaultInlineReveal')}
         />
-      </section>
+      </SettingGroup>
 
       <div className="flex items-center gap-3">
         <Button
@@ -332,7 +547,6 @@ export function WorkspaceSettingsFormView({
           disabled={!dirty || busy}
           onClick={() => {
             onSave({
-              policy,
               historicalAccess,
               // Just the answers — the server stamps the acknowledgement times
               // and the versions the grants are recorded against.
@@ -347,6 +561,182 @@ export function WorkspaceSettingsFormView({
         {saved && !dirty && <span className="text-xs text-ok-ink">Saved.</span>}
         {error && <span className="text-xs text-sev-critical-ink">{error}</span>}
       </div>
+    </div>
+  );
+}
+
+// ─── Connection ──────────────────────────────────────────────────────────────
+
+export const CONNECTION_STANDALONE_LABEL = 'Standalone';
+export const CONNECTION_ATTACHED_LABEL = 'Attached';
+
+export const CONNECTION_STANDALONE_DESCRIPTION =
+  'Everything stays on this machine: detection, policy and history all run against the local ' +
+  'store under ~/.aka. Nothing is sent anywhere.';
+
+// Describes the RECORDED STATE, not a live exchange — and the distinction is
+// the whole point of this string.
+//
+// It read "…which supplies policy and receives activity", which is false for
+// every user of this build: `attachToControlPlane` writes settings and dials
+// nothing, `ControlPlaneConnection` carries no status or handshake, and
+// `isAttached` is a pure local predicate over two stored fields. Nothing here
+// can tell whether anything is on the other end, so this copy must not claim
+// there is. A build that supplies a transport can say more, because it will
+// actually know.
+export const CONNECTION_ATTACHED_DESCRIPTION =
+  'This machine is registered against your organization’s deployment. Detection, policy and ' +
+  'history still run against the local store under ~/.aka.';
+
+// Rendered under an attached connection so the recorded state is never read as a
+// live one. Honesty about a capability this build does not have beats a control
+// that accepts an endpoint and then silently does nothing with it.
+export const CONNECTION_NO_TRANSPORT_NOTICE =
+  'This build carries no control-plane transport, so nothing is sent to that deployment and ' +
+  'nothing is fetched from it. The registration is recorded here for a build that does.';
+
+// Shown where attaching is offered but the surface supplies no attach handler.
+export const CONNECTION_UNAVAILABLE_NOTICE =
+  'This build has no control-plane transport, so it cannot attach. It runs standalone against ' +
+  'the local store.';
+
+export const DETACH_LABEL = 'Detach';
+
+export const DETACH_EXPLANATION =
+  'Detaching clears the connection and returns this machine to standalone. Findings and history ' +
+  'already in the local store stay where they are.';
+
+// Attached on a surface with no detach handler. The explanation above describes
+// a button, so showing it without one reads as a rendering fault rather than as
+// the deliberate absence it is.
+export const DETACH_UNAVAILABLE_NOTICE =
+  'This machine is registered, and this build offers no way to detach it here.';
+export const ATTACH_LABEL = 'Attach';
+
+// The detach that MDM takes away. A machine an administrator attached is not
+// one the user may leave, and saying which organization decided that is the
+// difference between a policy and a broken button.
+export const DETACH_MANAGED_NOTICE =
+  'Your organization set this connection, so this machine cannot be detached here.';
+
+function ConnectionRow({
+  settings,
+  managedLabel,
+  onAttach,
+  onDetach,
+  busy,
+}: {
+  settings: WorkspaceSettings;
+  managedLabel?: string | undefined;
+  onAttach?: ((endpoint: string, label: string) => void) | undefined;
+  onDetach?: (() => void) | undefined;
+  busy?: boolean | undefined;
+}) {
+  const [endpoint, setEndpoint] = useState('');
+  const [label, setLabel] = useState('');
+  const attached = isAttached(settings);
+  const locked = managedLabel !== undefined;
+
+  return (
+    <div className="px-4 py-3" data-slot="connection-row">
+      <div className="flex items-start gap-3">
+        <span className="flex-1">
+          <span className="block text-sm font-medium text-text">Run mode</span>
+          <span className="mt-0.5 block text-xs text-text-3">
+            {attached ? CONNECTION_ATTACHED_DESCRIPTION : CONNECTION_STANDALONE_DESCRIPTION}
+          </span>
+          {attached && settings.controlPlane && (
+            <span className="mt-1 block text-xs text-text-2" data-slot="control-plane-name">
+              {controlPlaneName(settings.controlPlane)}
+            </span>
+          )}
+        </span>
+        <span
+          className={cn(
+            'shrink-0 rounded-full px-2 py-0.5 text-xs font-medium',
+            attached ? 'bg-teal-fill text-teal-ink' : 'bg-surface-2 text-text-3',
+          )}
+          data-slot="run-mode-badge"
+        >
+          {attached ? CONNECTION_ATTACHED_LABEL : CONNECTION_STANDALONE_LABEL}
+          {locked && ' · locked'}
+        </span>
+      </div>
+
+      {attached && (
+        <p className="mt-3 text-xs text-text-3" data-slot="connection-no-transport">
+          {CONNECTION_NO_TRANSPORT_NOTICE}
+        </p>
+      )}
+
+      {locked ? (
+        <p className="mt-3 text-xs text-text-3" data-slot="connection-managed-notice">
+          {managedLabel}. {attached ? DETACH_MANAGED_NOTICE : ''}
+        </p>
+      ) : attached && onDetach ? (
+        <div className="mt-3">
+          <Button
+            variant="outline"
+            tone="danger"
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              // Clear what was typed BEFORE detaching. The attach form is the
+              // same component instance and keeps its own state, so without
+              // this the endpoint of the deployment just left reappears
+              // pre-filled in the form offering to join a new one.
+              setEndpoint('');
+              setLabel('');
+              onDetach();
+            }}
+            data-slot="detach-button"
+          >
+            {DETACH_LABEL}
+          </Button>
+          <p className="mt-2 text-xs text-text-3">{DETACH_EXPLANATION}</p>
+        </div>
+      ) : attached ? (
+        // Attached, but this surface supplies no way to leave. Say so rather
+        // than rendering the explanation for a button that is not there.
+        <p className="mt-3 text-xs text-text-3" data-slot="detach-unavailable">
+          {DETACH_UNAVAILABLE_NOTICE}
+        </p>
+      ) : onAttach ? (
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row" data-slot="attach-form">
+          <Input
+            value={endpoint}
+            placeholder="Deployment endpoint"
+            aria-label="Deployment endpoint"
+            onChange={(e) => {
+              setEndpoint(e.target.value);
+            }}
+          />
+          <Input
+            value={label}
+            placeholder="Name (optional)"
+            aria-label="Deployment name"
+            onChange={(e) => {
+              setLabel(e.target.value);
+            }}
+          />
+          <Button
+            variant="solid"
+            tone="primary"
+            size="sm"
+            disabled={busy === true || endpoint.trim() === ''}
+            onClick={() => {
+              onAttach(endpoint.trim(), label.trim());
+            }}
+            data-slot="attach-button"
+          >
+            {ATTACH_LABEL}
+          </Button>
+        </div>
+      ) : (
+        <p className="mt-3 text-xs text-text-3" data-slot="connection-unavailable">
+          {CONNECTION_UNAVAILABLE_NOTICE}
+        </p>
+      )}
     </div>
   );
 }

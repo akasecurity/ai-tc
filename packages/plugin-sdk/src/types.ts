@@ -48,6 +48,20 @@ export interface CaptureResult {
   // spans and only these, or the rewrite diverges from what the policy
   // enforced.
   enforcedFindings?: MatchResult[];
+  // The subset of `enforcedFindings` whose own detection chose the reversible
+  // archetype (Redact & Vault). A caller with a vault available substitutes a
+  // recoverable rewrite for exactly these and destroys the rest one-way; a
+  // caller without one redacts all of `enforcedFindings` one-way, which is the
+  // degradation Redact & Vault promises when no consent is on file.
+  //
+  // Always a SUBSET of enforcedFindings, never a replacement for it: a caller
+  // that rewrites only these leaves every other enforced span in the clear,
+  // which is the failure this pairing exists to make hard to write.
+  //
+  // Set on a 'redact' decision only. A block produces no enforcedFindings and
+  // makes no promise about the value's fate, so custody there is not an
+  // enforcement question — see the prompt surface, which decides it separately.
+  reversibleFindings?: MatchResult[];
   // Blocked-detections ledger rows recorded for this capture (one per unique
   // enforced (rule, value) pair), so adapters can surface them in the block
   // message for the CLI approve flow. Absent when nothing was enforced or no

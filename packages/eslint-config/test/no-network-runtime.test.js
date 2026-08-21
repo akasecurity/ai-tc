@@ -630,6 +630,16 @@ const prints = (text) => `#!/bin/sh\necho '${text}'\n`;
 
 const MARKER = 'the-suite-actually-ran';
 
+// What the stub PRINTS, kept deliberately different from what it is CALLED.
+// Phase 3 announces `running: $*` before it hands over, so that line already
+// carries the command's own name — and an assertion that stdout contains the
+// NAME is satisfied by the announcement whether or not the command ever ran.
+// This block's positive control is the one thing separating "the script handed
+// over" from "the script refused unconditionally and printed a reassuring line",
+// and with the two spellings equal it passed against a script whose `exec "$@"`
+// had been replaced by `exit 0`.
+const RAN = 'the-command-actually-ran';
+
 /**
  * Skip where the harness cannot run at all rather than passing vacuously.
  *
@@ -696,10 +706,29 @@ const blockedStubs = () => ({
   id: prints('1001'),
   getent: exits(1), // no name resolves
   node: exits(0), // the probe reports the target unreachable
-  [MARKER]: prints(MARKER),
+  [MARKER]: prints(RAN),
 });
 
-describe('the CI script refuses to run vacuously', () => {
+// Every case in this block spawns a real shell plus a handful of stubs, so what
+// it costs is dominated by process startup under whatever else the runner is
+// doing rather than by the property it asserts. The package sets no global
+// override (vitest.config.ts says why: the default has to stay tight for the
+// ~1,300 assertions here that run in under a millisecond), so the budget is
+// spelled on the work that needs it — the same treatment, for the same reason,
+// as the sibling block in packaged-cli-egress.test.js.
+//
+// It is loose on purpose and measures nothing. A ceiling wide enough to survive
+// an oversubscribed runner can only separate "this stopped terminating" from
+// "this got slower", and the second is not a defect worth a red PR. Observed at
+// 9.2s and 12.7s against the 5s default once a second subprocess-driven suite
+// joined this package.
+//
+// `the egress probe` below has the same shape — one spawned node per case — and
+// has not been seen to overrun. It is left on the default deliberately: a
+// ceiling nothing has needed is a ceiling nobody has sized.
+const CI_SCRIPT_TIMEOUT_MS = 60_000;
+
+describe('the CI script refuses to run vacuously', { timeout: CI_SCRIPT_TIMEOUT_MS }, () => {
   it('runs the command when egress is genuinely gone', (ctx) => {
     requirePosixShell(ctx);
     // The positive control for this whole block: every case below asserts a
@@ -708,7 +737,9 @@ describe('the CI script refuses to run vacuously', () => {
     const run = runCiScript({ stubs: blockedStubs() });
     expect(run.status).toBe(0);
     expect(run.stdout).toContain('egress is blocked, loopback is up');
-    expect(run.stdout).toContain(MARKER);
+    // RAN, not MARKER: only the stub can produce this, so it separates handing
+    // over from announcing that it was about to. See the constant.
+    expect(run.stdout).toContain(RAN);
   });
 
   it('refuses to start as root, before reaching sudo', (ctx) => {
@@ -745,7 +776,12 @@ describe('the CI script refuses to run vacuously', () => {
     const run = runCiScript({ stubs });
     expect(run.status).toBe(1);
     expect(run.stderr).toContain(`'${missing}' is not installed`);
+    // Both spellings: MARKER proves the `running: $*` announcement was never
+    // printed, RAN proves the command itself never ran. Neither implies the
+    // other on its own — the first is about how far the script got, the second
+    // about whether it handed over.
     expect(run.stdout).not.toContain(MARKER);
+    expect(run.stdout).not.toContain(RAN);
   });
 
   it('fails when DNS still resolves', (ctx) => {
@@ -754,6 +790,7 @@ describe('the CI script refuses to run vacuously', () => {
     expect(run.status).toBe(1);
     expect(run.stderr).toContain('DNS still resolves');
     expect(run.stdout).not.toContain(MARKER);
+    expect(run.stdout).not.toContain(RAN);
   });
 
   it('fails when the TCP probe reports the target answered', (ctx) => {
@@ -762,6 +799,7 @@ describe('the CI script refuses to run vacuously', () => {
     expect(run.status).toBe(1);
     expect(run.stderr).toContain('1.1.1.1:443 succeeded');
     expect(run.stdout).not.toContain(MARKER);
+    expect(run.stdout).not.toContain(RAN);
   });
 
   it('fails when the probe reports itself broken rather than treating it as blocked', (ctx) => {
@@ -772,6 +810,7 @@ describe('the CI script refuses to run vacuously', () => {
     expect(run.status).toBe(1);
     expect(run.stderr).toContain('could not run');
     expect(run.stdout).not.toContain(MARKER);
+    expect(run.stdout).not.toContain(RAN);
   });
 
   it('fails when the probe file is missing', (ctx) => {
@@ -782,6 +821,7 @@ describe('the CI script refuses to run vacuously', () => {
       expect(run.status).toBe(1);
       expect(run.stderr).toContain('egress probe is missing');
       expect(run.stdout).not.toContain(MARKER);
+      expect(run.stdout).not.toContain(RAN);
     } finally {
       rmSync(elsewhere, { recursive: true, force: true });
     }

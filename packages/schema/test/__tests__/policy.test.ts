@@ -1,11 +1,22 @@
 import { describe, expect, it } from 'vitest';
+import type { z } from 'zod';
 
 import { InstalledPack, PatchInstalledPackRequest } from '../../src/zod/installed-pack.ts';
 import {
+  BUILTIN_POLICIES,
   BuiltinPolicyId,
+  builtinPolicyIsReversible,
+  builtinPolicyToAction,
+  CATEGORY_EXPRESSIBLE_IDS,
+  CATEGORY_INEXPRESSIBLE_IDS,
+  CategoryPolicyId,
+  DEFAULT_PACK_POLICY_ID,
   KNOWN_BUILTIN_IDS,
   ListPoliciesResponse,
   PolicyDetail,
+  policyDisplayName,
+  policyIdIsReversible,
+  policyIdToAction,
   PolicyKind,
   PolicyListItem,
   PolicyStatsResponse,
@@ -43,7 +54,126 @@ describe('BuiltinPolicyId', () => {
   });
 
   it('KNOWN_BUILTIN_IDS matches BuiltinPolicyId enum values', () => {
-    expect(KNOWN_BUILTIN_IDS).toEqual(['monitor', 'warn', 'redact', 'block']);
+    expect(KNOWN_BUILTIN_IDS).toEqual(['monitor', 'warn', 'redact', 'vault', 'block']);
+  });
+});
+
+// The reversibility axis. It is the ONLY thing that distinguishes Redact from
+// Redact & Vault — both resolve to the same `redact` ActionTaken — so every
+// consumer that decides whether a stripped value survives reads through these.
+
+describe('builtinPolicyIsReversible', () => {
+  it('is true for exactly the archetypes that keep what they strip', () => {
+    expect(builtinPolicyIsReversible('vault')).toBe(true);
+    for (const id of KNOWN_BUILTIN_IDS.filter((i) => i !== 'vault')) {
+      expect(builtinPolicyIsReversible(id), `${id} must not be reversible`).toBe(false);
+    }
+  });
+
+  it('agrees with the catalog it is derived from', () => {
+    for (const id of KNOWN_BUILTIN_IDS) {
+      expect(builtinPolicyIsReversible(id)).toBe(BUILTIN_POLICIES[id].reversible);
+    }
+  });
+
+  it('never disagrees with the action axis: a reversible archetype still redacts', () => {
+    // The pairing the whole design rests on. A reversible archetype that
+    // resolved to some OTHER action would mean a value kept without being
+    // removed from the request.
+    for (const id of KNOWN_BUILTIN_IDS.filter((i) => builtinPolicyIsReversible(i))) {
+      expect(builtinPolicyToAction(id)).toBe('redact');
+    }
+  });
+});
+
+describe('policyDisplayName — one spelling for four surfaces', () => {
+  it('renders each built-in by its catalog name', () => {
+    for (const id of KNOWN_BUILTIN_IDS) {
+      expect(policyDisplayName(id)).toBe(BUILTIN_POLICIES[id].name);
+    }
+  });
+
+  it('coalesces an unassigned pack exactly as its two siblings do', () => {
+    // The three resolvers must agree about what an unassigned pack IS, or one
+    // surface reads Monitor while another reads blank.
+    for (const absent of [null, undefined]) {
+      expect(policyDisplayName(absent)).toBe(BUILTIN_POLICIES[DEFAULT_PACK_POLICY_ID].name);
+      expect(policyIdToAction(absent)).toBe(builtinPolicyToAction(DEFAULT_PACK_POLICY_ID));
+      expect(policyIdIsReversible(absent)).toBe(builtinPolicyIsReversible(DEFAULT_PACK_POLICY_ID));
+    }
+  });
+
+  it('returns a custom id verbatim rather than as a built-in', () => {
+    // Least of all as Monitor, which would read as log-only for a policy that
+    // may block.
+    for (const custom of ['my-custom-policy', 'VAULT', 'constructor']) {
+      expect(policyDisplayName(custom)).toBe(custom);
+    }
+  });
+});
+
+describe('CategoryPolicyId narrows at the TYPE level, not only at runtime', () => {
+  it('refuses a reversible archetype at runtime', () => {
+    for (const id of CATEGORY_INEXPRESSIBLE_IDS) {
+      expect(CategoryPolicyId.safeParse(id).success, `${id} must not parse`).toBe(false);
+    }
+  });
+
+  it('accepts every archetype the category axis CAN store', () => {
+    for (const id of CATEGORY_EXPRESSIBLE_IDS) {
+      expect(CategoryPolicyId.safeParse(id).success, `${id} must parse`).toBe(true);
+    }
+  });
+
+  it('the two sets partition the catalog', () => {
+    expect([...CATEGORY_EXPRESSIBLE_IDS, ...CATEGORY_INEXPRESSIBLE_IDS].sort()).toEqual(
+      [...KNOWN_BUILTIN_IDS].sort(),
+    );
+  });
+
+  it('the INFERRED type excludes the reversible ids', () => {
+    // The half that was missing. The enum was cast to the WIDE element type, so
+    // z.infer gave back the whole union and every "narrowed" signature accepted
+    // 'vault' — the runtime refused it while the compiler waved it through.
+    //
+    // Asserted as an assignability fact rather than with a compiler-error
+    // directive: this fails to COMPILE if the narrowing regresses, which is the
+    // property, and it does not pin tsc's wording.
+    type Narrow = z.infer<typeof CategoryPolicyId>;
+    type ReversibleIsExcluded = 'vault' extends Narrow ? false : true;
+    const narrowed: ReversibleIsExcluded = true;
+    expect(narrowed).toBe(true);
+
+    // And the companion direction: a non-reversible id IS in the narrow type.
+    type RedactIsIncluded = 'redact' extends Narrow ? true : false;
+    const included: RedactIsIncluded = true;
+    expect(included).toBe(true);
+  });
+});
+
+describe('policyIdIsReversible — the PACK axis', () => {
+  it('reads a real assignment', () => {
+    expect(policyIdIsReversible('vault')).toBe(true);
+    expect(policyIdIsReversible('redact')).toBe(false);
+    expect(policyIdIsReversible('block')).toBe(false);
+  });
+
+  it('coalesces an unassigned pack the same way policyIdToAction does', () => {
+    // Both must land on DEFAULT_PACK_POLICY_ID, or the two axes describe
+    // different policies for one unassigned pack.
+    for (const absent of [null, undefined]) {
+      expect(policyIdIsReversible(absent)).toBe(builtinPolicyIsReversible(DEFAULT_PACK_POLICY_ID));
+      expect(policyIdToAction(absent)).toBe(builtinPolicyToAction(DEFAULT_PACK_POLICY_ID));
+    }
+  });
+
+  it('treats an UNKNOWN id as the default rather than as reversible', () => {
+    // A custom policy, or a row written by a newer build. Defaulting to
+    // not-reversible is the safe direction: destroying a value that could have
+    // been recovered is survivable; keeping one the policy said to destroy is not.
+    for (const unknown of ['my-custom-policy', '', 'VAULT', 'constructor']) {
+      expect(policyIdIsReversible(unknown), `${unknown} must not read as reversible`).toBe(false);
+    }
   });
 });
 

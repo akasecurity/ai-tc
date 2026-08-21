@@ -7,8 +7,20 @@ import { fileURLToPath } from 'node:url';
 import { handleCapture, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { FindingView, HealthSummary, PluginConfig } from '@akasecurity/plugin-sdk';
 import { createPluginRuntime, severityFloorPosture } from '@akasecurity/plugin-sdk';
-import type { BuiltinPolicyId, DetectionCategory, DetectionException } from '@akasecurity/schema';
-import { SetupHandoffOffer } from '@akasecurity/schema';
+import type {
+  BuiltinPolicyId,
+  DetectionCategory,
+  DetectionException,
+  DetectionListItem,
+} from '@akasecurity/schema';
+import {
+  BUILTIN_POLICIES,
+  CATEGORY_EXPRESSIBLE_IDS,
+  CATEGORY_INEXPRESSIBLE_IDS,
+  DEFAULT_PACK_POLICY_ID,
+  KNOWN_BUILTIN_IDS,
+  SetupHandoffOffer,
+} from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
@@ -28,6 +40,7 @@ import {
   renderApplied,
   renderAudit,
   renderCategoriesTuned,
+  renderDetections,
   renderExceptions,
   renderFindings,
   renderFirstRun,
@@ -893,15 +906,20 @@ describe('renderPostureGrid — full 8×4 posture matrix', () => {
       .filter((tok): tok is string => tok !== undefined && CANONICAL.includes(tok));
     expect(packs).toEqual(CANONICAL);
 
-    // All four level labels head the grid — palette vocabulary only, never the
-    // DB action forms 'log'/'allow' (the full grid lays out every level per pack,
-    // unlike renderRecommendedPosture's condensed one-level glance).
-    expect(out).toContain('MONITOR');
-    expect(out).toContain('WARN');
-    expect(out).toContain('REDACT');
-    expect(out).toContain('BLOCK');
+    // Every level this axis can HOLD heads the grid — palette vocabulary only,
+    // never the DB action forms 'log'/'allow'. Derived from
+    // CATEGORY_EXPRESSIBLE_IDS rather than the full catalog: this grid is keyed
+    // by DetectionCategory, and that axis cannot store a reversible archetype,
+    // so sourcing it from BUILTIN_ORDER offered a column that can never be
+    // marked.
+    for (const level of CATEGORY_EXPRESSIBLE_IDS) expect(out).toContain(level.toUpperCase());
     expect(out).not.toMatch(/\blog\b/);
     expect(out).not.toMatch(/\ballow\b/);
+    // And no column this axis cannot mark: an offered level that can never be
+    // chosen is worse than an absent one.
+    for (const absent of CATEGORY_INEXPRESSIBLE_IDS) {
+      expect(out, `${absent} cannot be stored per category`).not.toContain(absent.toUpperCase());
+    }
 
     // The whole 8×4 grid, so a layout regression is caught as a snapshot diff.
     // Feeding the default posture map, the mark sits in monitor for the observe-only
@@ -1195,8 +1213,8 @@ describe('runQuery — against a seeded standalone gateway', () => {
   afterEach(() => {
     // removeTree, not a bare rmSync: this block leaves a real SQLite store with
     // its -wal/-shm siblings, and `force` suppresses only ENOENT — not the
-    // sharing violation Windows raises for a file still held open. 37 files in
-    // the repo already take it for exactly this.
+    // sharing violation Windows raises for a file still held open. Plenty of
+    // other files in the repo already take it for exactly this.
     removeTree(dir);
   });
 
@@ -1356,5 +1374,48 @@ describe('runQuery — against a seeded standalone gateway', () => {
     } finally {
       await gateway.close();
     }
+  });
+});
+
+// `renderDetections` is the plugin's read surface for the installed packs, and
+// the policy column is the one thing on it that is DERIVED rather than echoed.
+// It had no coverage at all, so the archetype name it prints could drift from
+// the catalog — and from `aka detections` and the dashboard, which render the
+// same assignment — without anything failing.
+describe('renderDetections — the policy column', () => {
+  const item = (overrides: Partial<DetectionListItem>): DetectionListItem => ({
+    id: 'aka/secrets',
+    name: 'Secrets',
+    version: '2.0.0',
+    enabled: true,
+    origin: 'library',
+    namespace: 'aka',
+    packId: 'secrets',
+    ruleCount: 21,
+    ...overrides,
+  });
+
+  it('prints each built-in by its CATALOG NAME, not its id', () => {
+    // Derived from the canonical set so a new archetype cannot reach this
+    // surface spelled differently from every other one.
+    for (const id of KNOWN_BUILTIN_IDS) {
+      const out = renderDetections([item({ policyId: id })]);
+      expect(out, `${id} is not rendered by its catalog name`).toContain(BUILTIN_POLICIES[id].name);
+    }
+  });
+
+  it('renders an UNASSIGNED pack as the monitor-by-default posture', () => {
+    // Every enforcement path coalesces an unassigned pack to Monitor; a surface
+    // that showed it blank would read as "no policy" rather than "log only".
+    const out = renderDetections([item({})]);
+    expect(out).toContain(BUILTIN_POLICIES[DEFAULT_PACK_POLICY_ID].name);
+  });
+
+  it('prints a CUSTOM policy id verbatim rather than misreporting it', () => {
+    // An id the catalog does not carry is not a built-in, and least of all
+    // Monitor — which would read as log-only for a policy that may block.
+    const out = renderDetections([item({ policyId: 'my-custom-policy' })]);
+    expect(out).toContain('my-custom-policy');
+    expect(out).not.toContain(BUILTIN_POLICIES[DEFAULT_PACK_POLICY_ID].name);
   });
 });

@@ -23,7 +23,7 @@
  * Yes-scan spine — so the built-script posture leg and the multi-transcript
  * shape are proven together rather than only at separate seams.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -76,8 +76,7 @@ describe("'Redact + rotation checklist' through the built remediate.js persists 
   }, 120_000);
 
   afterAll(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
-    journey.cleanup();
+    journey.cleanup(repoRoot);
   });
 
   it('a redact route with no --posture fails loud — nothing persisted, no checklist, the key untouched', () => {
@@ -207,8 +206,7 @@ describe("'Redact + rotation checklist' through the built remediate.js: the per-
   }, 120_000);
 
   afterAll(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
-    journey.cleanup();
+    journey.cleanup(repoRoot);
   });
 
   it('redacts all three real keys, reports a transcript count distinct from the key count, and persists the posture on a fresh connection', () => {

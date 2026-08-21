@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { readWorkspaceSettings } from '../../src/settings.ts';
 import type { ConcurrentRun, WriterJob } from './settings-writers.ts';
 import { BARRIER_HELD, barrierReport, runConcurrentSettingsWriters } from './settings-writers.ts';
@@ -224,7 +225,9 @@ describe('a writer that is never released', () => {
         // Already gone between the check and the signal: nothing to clean up.
       }
     }
-    rmSync(sync, { recursive: true, force: true });
+    // SIGKILL is not synchronous — the orphan can still be on its way out when
+    // this runs, holding a file the removal then meets on Windows.
+    removeTree(sync);
   });
 
   it('abandons the barrier rather than polling for a release that never comes', async () => {

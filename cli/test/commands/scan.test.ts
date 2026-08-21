@@ -12,7 +12,7 @@ import type { Severity } from '@akasecurity/schema';
 import { DEFAULT_ACTIONS, Severity as SeverityEnum } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
+import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { renderEgressLine, renderInventoryLine, runScan } from '../../src/commands/scan.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
@@ -192,8 +192,7 @@ describe('runScan', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    removeTree(home);
-    removeTree(root);
+    removeTrees([home, root]);
     process.exitCode = undefined;
   });
 

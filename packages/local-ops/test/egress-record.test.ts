@@ -8,7 +8,7 @@ import { DB_FILENAME, type LocalDatabase, openLocalDatabase } from '@akasecurity
 import { resolveNonGitProject, toPosix } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
+import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { recordProjectEgress } from '../src/egress-record.ts';
 import { scanPathIntoStore } from '../src/fs-scan.ts';
 import { migratedStore } from './helpers/store-templates.ts';
@@ -97,9 +97,7 @@ beforeEach(() => {
 
 afterEach(() => {
   db.close();
-  removeTree(root);
-  removeTree(store);
-  removeTree(base);
+  removeTrees([root, store, base]);
 });
 
 describe('recordProjectEgress — git project', () => {

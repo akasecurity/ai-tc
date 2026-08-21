@@ -24,7 +24,7 @@ import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
 import type { Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
+import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import type { ScanPathResult } from '../src/fs-scan.ts';
 import { scanPathIntoStore } from '../src/fs-scan.ts';
 import { createGuardedFileScanner } from '../src/guarded-scan.ts';
@@ -186,8 +186,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   db.close();
-  removeTree(root);
-  removeTree(store);
+  removeTrees([root, store]);
 });
 
 // Walk a tree exactly as the dashboard's Scan action does — one scanner per

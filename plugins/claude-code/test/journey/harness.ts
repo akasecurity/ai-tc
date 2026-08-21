@@ -44,6 +44,7 @@ import type {
 } from '@akasecurity/schema';
 import { presentBatchedRemediation } from '@akasecurity/setup-wizard';
 
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import { frameCalibration } from '../../src/calibration.ts';
 import { readRegisteredCommands } from '../../src/command-registry.ts';
 import { transcriptsDir } from '../../src/history/transcripts.ts';
@@ -128,9 +129,11 @@ export class SetupJourney {
     this.writeFakeJudge();
   }
 
-  cleanup(): void {
-    rmSync(this.home, { recursive: true, force: true });
-    rmSync(this.binDir, { recursive: true, force: true });
+  // Takes any further trees a caller needs removed alongside the journey's own
+  // home + binDir (a scenario's own repoRoot, say), so the aggregation lives
+  // in one place instead of being re-rolled at each call site.
+  cleanup(...extra: readonly string[]): void {
+    removeTrees([...extra, this.home, this.binDir]);
   }
 
   // Whether the stub `claude` judge was actually executed. The stub touches a
@@ -363,6 +366,14 @@ export class SetupJourney {
   // hits the missing/corrupt/locked-store fault the fail-open path must absorb.
   // The bytes are not the "SQLite format 3\0" header, so the first PRAGMA on open
   // fails SQLITE_NOTADB — the exact read failure the fail-open path guards against.
+  //
+  // Deliberately bare rmSync, not removeTree: this removal is a PRECONDITION
+  // for the fixture that follows, not a teardown whose assertions already ran.
+  // Swallowing a win32 EPERM here would leave the previous connection's real
+  // store in place, mkdirSync would no-op on the still-present directory, and
+  // the rest of this method would write its corrupt aka.db beside sidecars a
+  // real store left behind — reporting the fail-open path exercised over a
+  // fixture that was never actually built. A setup failure has to be loud.
   corruptStore(): void {
     rmSync(this.storeDir, { recursive: true, force: true });
     mkdirSync(this.storeDir, { recursive: true });

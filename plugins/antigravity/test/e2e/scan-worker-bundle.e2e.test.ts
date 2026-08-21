@@ -16,15 +16,7 @@
  * `toolCall` payload, and asserts this host's explicit fail-open literal.
  */
 import { spawnSync } from 'node:child_process';
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-} from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +26,8 @@ import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
 import { Rule } from '@akasecurity/schema';
 import { afterAll, describe, expect, it } from 'vitest';
+
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 
 // test/e2e -> plugins/antigravity
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -98,7 +92,7 @@ function runtimeBearingScripts(): string[] {
 }
 
 afterAll(() => {
-  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+  removeTrees(temps);
 });
 
 describe('the built scan worker', () => {

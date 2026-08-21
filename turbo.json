@@ -300,6 +300,35 @@
         "$TURBO_ROOT$/**/*.json",
         "$TURBO_ROOT$/**/*.yml",
         "$TURBO_ROOT$/**/*.yaml",
+        // The exclusions below are part of those three globs, not housekeeping,
+        // and they are stated as deliberately as the inclusions because a glob is
+        // only ever audited by the files somebody thought to test. Measuring that
+        // dependabot.yml and sea-config.json began moving the hash said nothing
+        // about what ELSE `**/*.json` had started sweeping in, and the answer was
+        // turbo's own cache.
+        //
+        // The three guards that read this task's inputs all walk `git ls-files`,
+        // so an UNTRACKED file in the hash is never read by any of them: it can
+        // only cost cache hits, never buy coverage. Re-derive the set rather than
+        // trusting this list — dry-run the task, resolve each input against the
+        // package dir, and difference it with `git ls-files`.
+        //
+        // `.turbo` is the one that was actively breaking. It is turbo's own cache,
+        // rewritten WHILE a run is in progress, so hashing it made this task's
+        // hash move underneath a run that had already started — reddening
+        // effective-config.test.js's hash-stability case whenever another task
+        // wrote a cache entry, and leaving the task unable to hold a stable key at
+        // all, since CI's cache restore perturbs it before the run begins. Being
+        // gitignored does not exclude it: a `$TURBO_ROOT$` glob hashes it anyway.
+        //
+        // The other two only cost cache hits. `bench-results.json` is the artifact
+        // `pnpm bench` writes, so without this a benchmark run invalidates this
+        // task; `.claude/settings*.json` is per-developer local config. Both are
+        // narrow on purpose — a TRACKED file added under `.claude/` should still
+        // be hashed, because the prose scan would read it.
+        "!$TURBO_ROOT$/**/.turbo/**",
+        "!$TURBO_ROOT$/**/bench-results.json",
+        "!$TURBO_ROOT$/.claude/settings*.json",
         "!$TURBO_ROOT$/**/node_modules/**",
         "!$TURBO_ROOT$/**/.next/**",
         "!$TURBO_ROOT$/**/dist/**",

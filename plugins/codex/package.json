@@ -1,6 +1,6 @@
 {
   "name": "@akasecurity/ai-tc-codex",
-  "version": "0.9.6",
+  "version": "0.9.7",
   "description": "AI Traffic Control \u2014 inspect and govern AI prompts in Codex CLI",
   "license": "Apache-2.0",
   "type": "module",

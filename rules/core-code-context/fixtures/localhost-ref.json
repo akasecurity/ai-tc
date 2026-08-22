@@ -99,5 +99,20 @@
     "label": "underscore-joined identifier around the wildcard address",
     "text": "0.0.0.0_default = true",
     "shouldMatch": false
+  },
+  {
+    "label": "compressed IPv6 continuing past ::1, not the loopback address",
+    "text": "route via ::1:2:3:4",
+    "shouldMatch": false
+  },
+  {
+    "label": "IPv4-compatible IPv6, not the loopback address",
+    "text": "Legacy peer ::1.2.3.4 in the allowlist",
+    "shouldMatch": false
+  },
+  {
+    "label": "IPv6 loopback ending a sentence",
+    "text": "Reachable at ::1. Retry if that fails",
+    "shouldMatch": true
   }
 ]

@@ -6,7 +6,7 @@
   "severity": "low",
   "matcher": {
     "type": "regex",
-    "pattern": "(?<![A-Za-z0-9_])(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|::1)(?![A-Za-z0-9_])",
+    "pattern": "(?<![A-Za-z0-9_])(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|::1(?!:|\\.[0-9]))(?![A-Za-z0-9_])",
     "flags": "g"
   },
   "examples": ["localhost", "127.0.0.1", "0.0.0.0", "::1"]

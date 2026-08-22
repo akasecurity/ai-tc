@@ -199,19 +199,27 @@ describe('a sync client copying the store', () => {
 // -------------------------------------------------------------------------
 
 describe('the files a used store leaves in the data directory', () => {
-  it('are the database, its sidecars, and the migration snapshot — nothing else', () => {
+  it('are the database and its sidecars — nothing else', () => {
     // Read off the directory rather than from a list, so a file SQLite or a
     // migration starts writing shows up here rather than shipping untightened.
-    // The `.bak` is a byte-for-byte copy of the pre-migration store and is a
-    // large share of the bytes in this directory, so an audit that reasons only
-    // about `dbSidecars` is looking at less of the store than it thinks.
+    //
+    // No `.bak` exemption, because this fixture produces none: the pre-drop
+    // snapshot is taken only where the legacy drop would destroy rows, and a
+    // store these three writes built has none. The exemption that used to sit
+    // here matched nothing, which is the shape that rots in silence — it would
+    // have gone on passing through a rename of the snapshot, or its removal
+    // altogether. If a copy ever does land beside a store built this way, that
+    // is a change worth failing on rather than waving through.
     withTempStore((store) => {
       record(store, 3);
 
+      const entries = readdirSync(store.dataDir);
+      // Positive control: the filter below is empty over an empty directory, so
+      // on its own it passes just as well against a store nothing wrote.
+      expect(entries).toContain('aka.db');
+
       const named = new Set(['aka.db', ...dbSidecars('aka.db')]);
-      const unexpected = readdirSync(store.dataDir).filter(
-        (name) => !named.has(name) && !/^aka\.db\..*\.bak$/.test(name),
-      );
+      const unexpected = entries.filter((name) => !named.has(name));
       expect(unexpected).toEqual([]);
     });
   });

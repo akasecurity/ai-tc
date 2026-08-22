@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join, relative, sep } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { describe, expect, it } from 'vitest';
 
@@ -62,6 +63,20 @@ async function exerciseStore(): Promise<void> {
   const previous = process.umask(0o000);
   let pending: Promise<unknown>[];
   try {
+    // A tenant-bearing store planted before the first open, so the
+    // foreign-lineage reset fires and leaves a REAL `aka.db.legacy.<ts>.<rand>.bak`
+    // in the walked tree. Without it nothing here writes a `.bak` at all — the
+    // pre-drop snapshot is taken only where the legacy drop would destroy rows,
+    // and a store this open builds has none — which would leave the `/\.bak$/`
+    // exclusion below matching nothing and so exempt from the staleness ratchet
+    // for good. It is planted INSIDE the umask window on purpose: the copy is
+    // made from a world-readable source, so the 0600 the walk then asserts is
+    // the tightening doing the work rather than the umask.
+    const foreign = new DatabaseSync(join(store.dataDir, DB_FILENAME));
+    foreign.exec('CREATE TABLE events (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL)');
+    foreign.exec('PRAGMA user_version = 10');
+    foreign.close();
+
     const db = store.open();
     db.policies.upsertCategoryAction('secret', 'block');
     capWarnEraEnforcementOnce(db, 'warn', store.dataDir);
@@ -120,9 +135,7 @@ const DOCUMENTED_EXCLUSIONS: readonly {
   {
     pattern: /\.bak$/,
     reason:
-      'a snapshot copy of the store; the note covers these in their own paragraph rather than in the file list, because the name carries a timestamp. Not reachable from a fresh store: the pre-drop snapshot is taken only where the legacy drop would destroy rows, and the foreign-lineage reset needs a tenant-bearing store — neither is what exerciseStore builds',
-    coveredBy:
-      "test/legacy-compat-views.test.ts — 'a store carrying legacy rows still gets its snapshot before the drop'",
+      'a snapshot copy of the store; the note covers these in their own paragraph rather than in the file list, because the name carries a timestamp. Durable, and deliberately still observable to the walk: exerciseStore plants a tenant-bearing store so the foreign-lineage reset writes one, which is what keeps this entry inside the staleness ratchet',
   },
   {
     pattern: new RegExp(`\\.bak${escapeRe(SNAPSHOT_STAGING_SUFFIX)}$`),

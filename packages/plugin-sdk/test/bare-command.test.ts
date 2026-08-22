@@ -72,9 +72,11 @@ describe('planBareCommand — Windows, resolved to a real executable', () => {
   });
 
   it('carries an argv cmd.exe could never carry, because cmd.exe is not involved', () => {
-    // This is the whole reason the direct path exists: the Antigravity judge's
-    // prompt rides argv, and an argv handed straight to CreateProcess is never
-    // re-parsed. A plan that routed this through a shell would be an injection.
+    // This is the whole reason the direct path exists: an argv handed straight
+    // to CreateProcess is never re-parsed, so a raw-bearing argument crosses it
+    // intact. A plan that routed this through a shell would be an injection.
+    // The `-p <prompt>` spelling below is a hostile-argv FIXTURE, not a product
+    // call — no judge in this repo puts its prompt on argv any more.
     const plan = planBareCommand('agy', ['-p', RAW_PROMPT, '--output-format', 'json'], {
       platform: 'win32',
       home: HOME,

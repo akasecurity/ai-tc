@@ -17,7 +17,7 @@ a fabricated or demo number. When there isn't enough history to judge, the wizar
 falls back to a conservative severity-derived floor instead of guessing.
 
 The false-positive/severity judgment needs the raw (unmasked) findings to rate
-them accurately, so it **sends them to the model API** through separate `agy -p`
+them accurately, so it **sends them to the model API** through separate `agy`
 subprocesses (a large history is judged in several batches). Two things
 cross for each finding: its **raw value**, and about **120 characters of the
 surrounding transcript text** on either side of it — re-masked first, so any
@@ -27,8 +27,8 @@ file's path, the value's fingerprint, and the fingerprint key version are
 to the model provider like any other Antigravity prompt. You act only on the
 raw-free plan the subprocesses print back.
 
-Three limits of this host are worth knowing before you consent, because they
-are weaker than the Claude Code and Codex plugins' equivalents:
+Two limits of this host are worth knowing before you consent, because they are
+weaker than the Claude Code and Codex plugins' equivalents:
 
 - **The `agy` CLI documents no ephemeral mode.** Every run is written to your
   conversation store under `~/.gemini/antigravity/brain/`, raw values and
@@ -36,9 +36,6 @@ are weaker than the Claude Code and Codex plugins' equivalents:
   own conversation itself** as soon as the run ends. That deletion is best
   effort: if the process is killed between the write and the cleanup, the
   conversation stays on disk until you remove it.
-- **The prompt travels on the command line**, because `agy` documents no way to
-  read a prompt from stdin. For the life of each run the raw values are visible
-  to anything that can list processes (`ps`) on this machine.
 - **Deleting the conversation is not network isolation.** It is a local-write
   cleanup only; it cannot recall what was already sent.
 
@@ -325,7 +322,7 @@ node "${PLUGIN_ROOT}/scripts/backfill.js" --triage | node "${PLUGIN_ROOT}/script
 The backfill sweeps prior Antigravity CLI conversation transcripts (last 30
 days, all conversations) and streams one masked-plus-raw triage hit per line;
 masked findings are recorded to the local store as a side effect. The adapter
-runs the false-positive/severity **judgment in separate `agy -p` subprocesses
+runs the false-positive/severity **judgment in separate `agy` subprocesses
 that send each hit's raw value and masked context window — never its source
 path — to the model API** (a large history is split into several batches; each
 run persists a conversation under `~/.gemini/antigravity/brain/`, which AKA
@@ -926,26 +923,3 @@ pointer inside a shell command is denied rather than executed or substituted.
 If the user asks about recovering a redacted value, point them at the vault
 surfaces that do exist on this machine (`aka vault show`, the dashboard's
 Vault page) rather than implying this plugin can reveal anything.
-
-**The model-judge step needs an `agy` that is a real executable on native
-Windows.** This host takes the judge prompt on the command line, because it
-documents no way to feed one on stdin. Where `agy` is installed as a batch shim
-(`agy.cmd`), reaching it on Windows means going through `cmd.exe` — and a Windows
-command line cannot carry that prompt: it spans multiple lines, it runs to
-several kilobytes against cmd.exe's 8,191-character limit, and it is built from
-scanned transcript text, where a character like `&` or `"` would be read as
-syntax rather than as content. AKA refuses that spawn outright rather than
-mangling or escaping it, so a user in that position gets a clear refusal at the
-model-judge step instead of a rated set of findings. Where `agy` is a real
-executable, the step runs normally.
-
-Everything before it is unaffected either way — the calibration questions, the
-consent-gated historical read, and the local ruleset scan all run, and every
-finding is still detected and redacted locally. What is unavailable is only the
-model pass that rates false positives and severity.
-
-Say this plainly if a Windows user hits it, and do not offer to retry: the same
-prompt fails the same way every time. Two things worth getting right if it comes
-up — running under WSL2 is Linux rather than Windows and is not affected, and
-declining model-judge consent is not a workaround so much as the other supported
-path, since the local scan is what produces the findings in the first place.

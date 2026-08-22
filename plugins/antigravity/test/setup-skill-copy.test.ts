@@ -37,10 +37,15 @@ describe('SKILL.md model-judge egress disclosure', () => {
     expect(question).toBeGreaterThan(restatement);
   });
 
-  // This host is weaker than the other two plugins' judges in three specific,
+  // This host is weaker than the other two plugins' judges in two specific,
   // user-visible ways, and the consent copy is the only place a user learns it.
   // Each is pinned here so a future edit cannot quietly drop the admission and
   // leave the copy claiming the isolation Codex's --ephemeral actually provides.
+  //
+  // It was THREE until the judge prompt moved off argv onto stdin. The third
+  // admission — that the raw values ride the command line and are visible to
+  // `ps` — was removed with the behaviour it described, and its guard is now the
+  // case below, which holds the copy to the new truth instead.
   it('admits there is no ephemeral mode and the judge conversation is persisted', () => {
     expect(skillMd).toMatch(/no ephemeral mode/);
     expect(skillMd).toContain('~/.gemini/antigravity/brain/');
@@ -51,9 +56,56 @@ describe('SKILL.md model-judge egress disclosure', () => {
     expect(skillMd).toMatch(/killed|kills/);
   });
 
-  it('admits the raw values ride the command line and are visible to ps', () => {
-    expect(skillMd).toMatch(/command line/);
-    expect(skillMd).toContain('ps');
+  it('no longer claims the prompt rides the command line — it rides stdin', () => {
+    // The admission this replaced was correct until the prompt moved to stdin,
+    // and a consent surface that overstates the exposure is as wrong as one that
+    // understates it: a user would decline a `ps`-visible egress that no longer
+    // happens.
+    //
+    // Scoped to the limits section rather than the whole document, twice over.
+    // `toContain('ps')` over the whole of SKILL.md is satisfied by "steps" and
+    // was already vacuous, and `/command line/` legitimately appears elsewhere
+    // describing a scanned `run_command` — so an unbounded absence check here
+    // would fail for a reason that has nothing to do with consent copy.
+    const start = skillMd.indexOf('limits of this host are worth knowing');
+    const end = skillMd.indexOf('Reading history is granted in step 1');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const limits = skillMd.slice(start, end);
+
+    // Positive control on the SAME bytes: the section is really the limits
+    // section and really still discloses something, so the absences below are
+    // read off live copy rather than an empty or mis-located slice.
+    expect(limits).toMatch(/no ephemeral mode/);
+    expect(limits).toMatch(/not network isolation/);
+
+    expect(limits).not.toMatch(/command line/);
+    expect(limits).not.toMatch(/\bps\b/);
+    expect(limits).not.toMatch(/list processes/);
+  });
+
+  it('states a limit count that matches the bullets it introduces', () => {
+    // The count is user-facing prose, and prose beside a set is unguarded: this
+    // sentence said "Three limits" until the judge prompt moved off argv, and
+    // nothing but a human reading it would have caught the stale number. Derive
+    // the set instead, so adding or removing a bullet forces the word with it.
+    const start = skillMd.indexOf('limits of this host are worth knowing');
+    const end = skillMd.indexOf('Reading history is granted in step 1');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+
+    // The stated count, read from the sentence's own leading word.
+    const sentenceStart = skillMd.lastIndexOf('\n\n', start) + 2;
+    const stated = /^(One|Two|Three|Four|Five)\b/.exec(skillMd.slice(sentenceStart, start));
+    expect(stated?.[1], 'the limits sentence no longer opens with a count word').toBeDefined();
+    const WORDS: Record<string, number> = { One: 1, Two: 2, Three: 3, Four: 4, Five: 5 };
+
+    // The actual set: top-level `- **…` bullets in the section it introduces.
+    const bullets = skillMd.slice(start, end).match(/^- \*\*/gm) ?? [];
+    // Non-vacuous by construction — a section that stopped using bullets would
+    // otherwise report zero and match no count word anyone would write.
+    expect(bullets.length).toBeGreaterThan(0);
+    expect(WORDS[stated?.[1] ?? '']).toBe(bullets.length);
   });
 
   it('never claims the deletion is network isolation', () => {

@@ -5,32 +5,40 @@
  * hits (rawMatch + surrounding context) — the locked rubric (the shared
  * @akasecurity/setup-wizard asset) requires raw to judge accurately.
  *
- * This host is the weakest of the three for that, and the difference is not
- * cosmetic. The Claude Code and Codex judges each run the model in a mode that
- * persists NO session file (`--ephemeral` on Codex), which is what keeps the
- * raw prompt out of the very store AKA's own backfill scans. Antigravity's CLI
- * documents no such mode, and its headless entrypoint takes the prompt in
- * ARGV rather than on stdin:
+ * This host is still the weakest of the three for that, but for one reason now
+ * rather than two. The Claude Code and Codex judges each run the model in a mode
+ * that persists NO session file (`--ephemeral` on Codex), which is what keeps
+ * the raw prompt out of the very store AKA's own backfill scans. Antigravity's
+ * CLI documents no such mode, so the run persists and this file removes the
+ * conversation after the fact.
  *
- *   agy -p "<prompt>" --output-format json
+ * The prompt itself does NOT ride argv. `agy` documents a streaming stdin
+ * input, which is the same shape the other two judges already use:
  *
- * Two consequences follow. Both are disclosed in the consent copy rather than
- * papered over, because neither can be engineered away here:
+ *   agy --input-format stream-json --output-format stream-json
  *
- *   1. The run PERSISTS. `agy` writes the judge conversation — raw hits and
- *      all — under ~/.gemini/antigravity/brain/<conversationId>/, the same
- *      tree ../history/transcripts.ts sweeps, so a conversation left behind
- *      would be re-ingested as fresh findings on the next scan. This file
- *      therefore removes that conversation itself, in a finally. Removal is
- *      BEST EFFORT: a kill -9 between the transcript write and the cleanup
- *      leaves it on disk.
- *   2. The raw hits ride ARGV, so they are visible to `ps` for the life of the
- *      run and to anything that echoes a failed command line. Nothing here can
- *      fix that — only the host growing a stdin or prompt-file input could.
- *      It also puts the prompt under the OS's ARG_MAX (~1MB typically): the
- *      caller chunks a large history, which is what keeps a sweep under it.
+ * with one JSON object per line written to stdin,
  *
- * The verdict is read from stdout's JSON envelope (`response`); stderr is
+ *   {"event":"user","message":{"content":"<prompt>"}}
+ *
+ * and stdin closed to end the session. The two formats are paired on purpose
+ * rather than by preference: the host documents that a streaming input paired
+ * with a non-streaming output emits its single envelope only as the process
+ * exits, so `stream-json` on both sides is the supported combination. The
+ * consequence for this file is that the verdict arrives as ONE LINE of NDJSON —
+ * the terminal `result` event — rather than as the whole of stdout. See
+ * parseEnvelope.
+ *
+ * One consequence remains, and it is disclosed in the consent copy rather than
+ * papered over, because it cannot be engineered away here: the run PERSISTS.
+ * `agy` writes the judge conversation — raw hits and all — under
+ * ~/.gemini/antigravity/brain/<conversationId>/, the same tree
+ * ../history/transcripts.ts sweeps, so a conversation left behind would be
+ * re-ingested as fresh findings on the next scan. This file therefore removes
+ * that conversation itself, in a finally. Removal is BEST EFFORT: a kill -9
+ * between the transcript write and the cleanup leaves it on disk.
+ *
+ * The verdict is read from the `result` event's `response` field; stderr is
  * captured and discarded, because run logging can echo raw content and must
  * never reach the parent command's stderr, which flows into the wizard
  * conversation.
@@ -65,47 +73,118 @@ const DEFAULT_RUBRIC_PATH = join(
 );
 
 // -------------------------------------------------------------------------
-// Pure parse: stdout envelope -> final message -> verdict
+// Pure parse: stdout event stream -> final message -> verdict
 // -------------------------------------------------------------------------
 
-// What `--output-format json` reports. Only two fields are load-bearing here:
-// the final assistant message, and the id of the conversation the run created
-// (which this module must then delete). Everything else in the envelope
-// (status, usage) is ignored rather than modelled.
+// What the terminal `result` event reports. Only two fields are load-bearing
+// here: the final assistant message, and the id of the conversation the run
+// created (which this module must then delete). Everything else the event
+// carries (status, error, num_turns, usage) is ignored rather than modelled.
 export interface JudgeEnvelope {
   response: string;
   conversationId?: string | undefined;
 }
 
-// Pull the JSON envelope out of stdout. Never echo stdout in an error: it can
-// carry a raw hit the model failed to strip, and these errors propagate to the
-// parent command's stderr, outside the judge subprocess. Every failure reports
-// only raw-free metadata, never the content.
+// A plain JSON object, or undefined for anything else. Array.isArray is
+// load-bearing: `typeof [] === 'object'`, so an array would otherwise reach the
+// field reads and be reported as a missing `response` rather than as the
+// malformed shape it is.
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+// The `conversation_id` off an event or off its own payload object, or
+// undefined when absent or empty. Both placements are read because both appear:
+// `init` carries the id at the top level of the event, while `result` and
+// `step_update` carry it inside the payload object named after the event.
+function conversationIdOf(value: unknown): string | undefined {
+  const record = asRecord(value);
+  if (record === undefined) return undefined;
+  const id = record.conversation_id;
+  return typeof id === 'string' && id !== '' ? id : undefined;
+}
+
+// Pull the verdict-bearing event out of stdout.
+//
+// `--output-format stream-json` is NDJSON: one typed event per line — a single
+// `init`, then a `step_update` per step, then one terminal `result` per turn.
+// So this walks the lines rather than parsing stdout whole, and the verdict is
+// `result.response`.
+//
+// A line that is not JSON is skipped rather than fatal. The verdict rides one
+// specific event, and failing the whole stream over a stray line would turn a
+// cosmetic upstream change into an unreadable verdict — while a stream that
+// carried NO parseable event still fails loud, below.
+//
+// Never echo stdout in an error: it can carry a raw hit the model failed to
+// strip, and these errors propagate to the parent command's stderr, outside the
+// judge subprocess. Every failure reports only raw-free metadata, never the
+// content.
 export function parseEnvelope(stdout: string): JudgeEnvelope {
   if (stdout.trim() === '') {
     throw new Error('agy judge produced no output');
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch {
-    throw new Error('agy judge output was not valid JSON');
+
+  let sawJson = false;
+  let sawObject = false;
+  let sawResultEvent = false;
+  let initConversationId: string | undefined;
+  let resultConversationId: string | undefined;
+  let result: Record<string, unknown> | undefined;
+
+  for (const line of stdout.split('\n')) {
+    if (line.trim() === '') continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    sawJson = true;
+    const event = asRecord(parsed);
+    if (event === undefined) continue;
+    sawObject = true;
+
+    if (event.event === 'init') {
+      initConversationId ??= conversationIdOf(event) ?? conversationIdOf(event.init);
+    }
+    if (event.event === 'result') {
+      sawResultEvent = true;
+      // The LAST USABLE result event wins. One turn is written to stdin, so one
+      // is expected — but a host that emitted a second must not have the first
+      // read as the final word.
+      //
+      // The id is taken in the SAME branch as the payload, never beside it: a
+      // later malformed result event would otherwise clear the id while leaving
+      // the earlier event's response in place, and the run would then be cleaned
+      // up by the ambiguous directory diff — which leaves a raw-bearing judge
+      // conversation on disk whenever it cannot attribute one.
+      const payload = asRecord(event.result);
+      if (payload !== undefined) {
+        result = payload;
+        resultConversationId = conversationIdOf(event) ?? conversationIdOf(event.result);
+      }
+    }
   }
-  // Array.isArray is load-bearing: `typeof [] === 'object'`, so an array
-  // envelope would otherwise reach the field reads and be reported as a
-  // missing `response` rather than as the malformed envelope it is.
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('agy judge output was not a JSON object');
-  }
-  const record = parsed as Record<string, unknown>;
-  const response = record.response;
+
+  if (!sawJson) throw new Error('agy judge output was not valid JSON');
+  if (!sawObject) throw new Error('agy judge output was not a JSON object');
+  if (!sawResultEvent) throw new Error('agy judge output carried no result event');
+  if (result === undefined) throw new Error('agy judge result event carried no result object');
+
+  const response = result.response;
   if (typeof response !== 'string') {
     throw new Error('agy judge output carried no response string');
   }
-  const rawId = record.conversation_id;
   return {
     response,
-    conversationId: typeof rawId === 'string' && rawId !== '' ? rawId : undefined,
+    // The result event's own id first, the init event's as the fallback. The
+    // fallback is what lets a run whose result event was malformed still be
+    // attributed for cleanup rather than dropping to the ambiguous
+    // directory-diff path — and a judge conversation left on disk is a raw
+    // transcript the next backfill would re-ingest.
+    conversationId: resultConversationId ?? initConversationId,
   };
 }
 
@@ -138,26 +217,26 @@ export function judgeEnv(): NodeJS.ProcessEnv {
 
 // Real subprocess spawn used in production wiring. Kept separate from runJudge
 // so unit tests inject a fake and NEVER hit a live model. Returns stdout, which
-// carries the JSON envelope the verdict is read from. stderr is captured (not
-// inherited) because `agy`'s run logging can echo raw content, and execFileSync's
-// default would write it straight through to the parent's stderr — which flows
-// into the wizard conversation this judge exists to keep raw content out of.
-// planBareCommand owns the Windows half, and this host is the one where its
-// refusal branch is reachable rather than theoretical.
+// carries the NDJSON event stream the verdict is read from. stderr is captured
+// (not inherited) because `agy`'s run logging can echo raw content, and
+// execFileSync's default would write it straight through to the parent's stderr
+// — which flows into the wizard conversation this judge exists to keep raw
+// content out of.
 //
-// A bare `agy` is invisible to libuv's own search (which tries `.com` and `.exe`
-// and stops), so a shell-free spawn fails with a bare ENOENT wherever the CLI is
-// installed as a batch shim. Reaching such a shim needs cmd.exe — and the prompt
-// on this host rides ARGV, so it would have to cross cmd.exe's parser. It cannot,
-// three times over: it is multi-line (a Windows command line carries no line
-// break), it is several KiB against cmd.exe's 8,191-character ceiling, and it is
-// scanned transcript text, so a `&` or a `"` in content AKA did not choose would
-// be re-read as syntax. The planner refuses that outright instead of escaping it
-// hopefully, and this file surfaces the refusal raw-free.
+// The prompt rides `stdin`, exactly as it does in the Claude Code and Codex
+// judges. That is what makes this argv fixed flags and nothing else, so it
+// crosses cmd.exe intact and a Windows `agy.cmd` shim is reachable like any
+// other host's. It also keeps the raw hits out of `ps` and out of any failed
+// command line an error message echoes, and off the OS's ARG_MAX entirely.
 //
-// When `agy` resolves to a real executable the planner skips cmd.exe entirely
-// and spawns it by absolute path with no shell, which is the path this judge
-// takes on a Windows host that installs it as one.
+// planBareCommand owns the Windows half. A bare `agy` is invisible to libuv's
+// own executable search (which tries `.com` and `.exe` and stops), so a
+// shell-free spawn fails with a bare ENOENT wherever the CLI is installed as a
+// batch shim; reaching such a shim needs cmd.exe, under a cwd anchored at the
+// user's home so a stray `agy.cmd` in the working directory cannot win. When
+// `agy` resolves to a real executable the planner skips cmd.exe entirely and
+// spawns it by absolute path with no shell.
+//
 // `timeout` MEANS SOMETHING WEAKER ON THE SHELL PATH, and the difference is not
 // cosmetic. Node applies it to the process it started, so where `plan.options`
 // carries `shell: true` the process killed at 180s is `cmd.exe` — `agy` is a
@@ -169,31 +248,31 @@ export function judgeEnv(): NodeJS.ProcessEnv {
 // resolves to a real executable the planner spawns it directly and the timeout
 // bounds the real process. Written down so the next reader does not assume the
 // 180s survives an interpreter it does not.
-export function spawnAgy(argv: readonly string[], env: NodeJS.ProcessEnv): string {
+export function spawnAgy(argv: readonly string[], env: NodeJS.ProcessEnv, stdin: string): string {
   const plan = planBareCommand('agy', argv, { env });
   return execFileSync(plan.file, [...plan.args], {
     env,
+    input: stdin,
     encoding: 'utf8',
     timeout: 180_000,
     maxBuffer: 32 * 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
     ...plan.options,
   });
 }
 
-// Raw-free description of a spawn failure. On this host the prompt DOES ride
-// argv, so an execFileSync error's `.message` (which echoes the command line)
-// can carry the raw hits outright — as can its captured stdout/stderr. None of
-// it may cross back to the parent command, so we surface ONLY non-content
-// metadata (exit status / signal / node error code), never `.message`,
-// `.stdout`, or `.stderr`.
+// Raw-free description of a spawn failure. The prompt rides stdin now, so an
+// execFileSync error's `.message` (which echoes the command line) no longer
+// carries the hits — but its captured `.stdout` and `.stderr` still can, since
+// both are the model's own output and `agy`'s run logging echoes prompt content.
+// None of that may cross back to the parent command, so we surface ONLY
+// non-content metadata (exit status / signal / node error code), never
+// `.message`, `.stdout`, or `.stderr`.
 function spawnFailureMeta(err: unknown): string {
   // planBareCommand's refusal is the one failure here that carries an
   // explanation worth reading, and it is raw-free by construction — it names an
-  // argv index and a character class, never a value. That distinction matters
-  // most on this host, where the refused argument IS the raw-bearing prompt.
-  // Everything below is exit metadata, which is all any other failure may
-  // contribute.
+  // argv index and a character class, never a value. Everything below is exit
+  // metadata, which is all any other failure may contribute.
   if (isBareCommandUnsupported(err)) return err.reason;
   const e = err as { status?: number | null; signal?: string | null; code?: string };
   const parts: string[] = [];
@@ -262,10 +341,11 @@ export function cleanupConversation(
 // -------------------------------------------------------------------------
 
 export interface JudgeDeps {
-  // Injected spawn seam: receives the argv AFTER `agy` and the subprocess env,
-  // and returns the child's stdout. Tests inject a fake that returns a canned
-  // JSON envelope so no real `agy` runs.
-  spawn: (argv: readonly string[], env: NodeJS.ProcessEnv) => string;
+  // Injected spawn seam: receives the argv AFTER `agy`, the subprocess env, and
+  // the prompt (fed on stdin, not argv — see spawnAgy), and returns the child's
+  // stdout. Tests inject a fake that returns a canned NDJSON event stream so no
+  // real `agy` runs.
+  spawn: (argv: readonly string[], env: NodeJS.ProcessEnv, stdin: string) => string;
   // Override the rubric source (defaults to the shared package asset); injectable so
   // tests need not read the real file.
   loadRubric?: () => string;
@@ -294,9 +374,9 @@ export function toJudgePayload(
   return payload;
 }
 
-// Build the judge prompt (rubric + raw hits as JSONL), run it through `agy -p`,
-// and return the parsed verdict — then delete the conversation the run left
-// behind, whatever the outcome.
+// Build the judge prompt (rubric + raw hits as JSONL), feed it to `agy` on
+// stdin as a streaming `user` event, and return the parsed verdict — then
+// delete the conversation the run left behind, whatever the outcome.
 export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRecommendation {
   // No live-spawn fallback: a caller that forgot the seam must fail as the
   // programming error it is rather than be quietly routed to the real `agy`.
@@ -311,7 +391,18 @@ export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRec
   const hitsJsonl = hits.map((h) => JSON.stringify(toJudgePayload(h))).join('\n');
   const fullPrompt = `${rubric}\n\n## Hits\n\n\`\`\`\n${hitsJsonl}\n\`\`\`\n`;
 
-  const argv = ['-p', fullPrompt, '--output-format', 'json'] as const;
+  // Fixed flags and nothing else — every raw-bearing byte rides stdin. That is
+  // what lets this argv cross cmd.exe intact. The two `stream-json` formats are
+  // paired because the host documents that pairing: a streaming input against a
+  // non-streaming output emits its one envelope only as the process exits.
+  const argv = ['--input-format', 'stream-json', '--output-format', 'stream-json'] as const;
+
+  // One NDJSON `user` event, then EOF. JSON.stringify escapes the prompt's own
+  // line breaks into `\n` INSIDE the JSON string, so a multi-line prompt is
+  // still exactly one line on the wire — which is what NDJSON requires, and what
+  // a Windows command line could never have carried. Closing stdin is what ends
+  // the session; execFileSync's `input` closes it after the write.
+  const stdin = `${JSON.stringify({ event: 'user', message: { content: fullPrompt } })}\n`;
 
   // Snapshotted BEFORE the spawn so a run that dies without printing its
   // conversation_id can still be attributed by difference.
@@ -320,13 +411,13 @@ export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRec
   try {
     let stdout: string;
     try {
-      stdout = deps.spawn(argv, judgeEnv());
+      stdout = deps.spawn(argv, judgeEnv(), stdin);
     } catch (err) {
-      // Deliberately NOT chaining `err` as `cause`: on this host the error's
-      // `.message` echoes argv — which carries every raw hit — and its captured
-      // stdout/stderr may too. Attaching it would re-expose exactly what this
-      // throw exists to strip. Only raw-free metadata is surfaced.
-      // eslint-disable-next-line preserve-caught-error -- caught error carries raw argv; see above
+      // Deliberately NOT chaining `err` as `cause`: the error's captured stdout
+      // and stderr carry the model's own output, which can echo raw hits.
+      // Attaching it would re-expose exactly what this throw exists to strip.
+      // Only raw-free metadata is surfaced.
+      // eslint-disable-next-line preserve-caught-error -- caught error carries raw model output; see above
       throw new Error(`agy judge subprocess failed (${spawnFailureMeta(err)})`);
     }
     const envelope = parseEnvelope(stdout);

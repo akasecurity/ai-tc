@@ -1,30 +1,48 @@
 /**
  * The READMEs are product surface: their privacy claims get quoted into security
- * reviews and procurement answers long after anyone reads the footnote. Both make
- * a locality claim about data, and both are qualified by an `[^egress]` footnote
- * because one path — the opt-in `/aka:setup` judge — really does send raw
- * findings to the model API.
+ * reviews and procurement answers long after anyone reads the footnote. Each one
+ * makes a locality claim about data, and each is qualified by an `[^egress]`
+ * footnote because some path really does reach the network.
  *
  * These guards keep the claim and the qualifier from drifting apart: an absolute
  * "nothing leaves" sentence must not stand on its own, and the footnote that
- * carries the correction must keep naming the whole payload.
+ * carries the correction must keep naming what crosses.
  *
- * packages/persistence/test/at-rest-docs.test.ts is the other guard over these
- * same READMEs; it covers the at-rest posture and the SECURITY.md link rather
- * than egress. Editing a README can redden either suite.
+ * Two tiers, because the pages do not make the same claim. Every front door
+ * carries the locality claim and so owes a footnote; only the pages that
+ * describe the `/aka:setup` judge owe the payload disclosure, since the judge is
+ * plugin surface and the CLI ships no judge. Folding the CLI page into one tier
+ * would demand it describe a `TriageHit` it never sends — copy that overstates
+ * what a reader is consenting to is its own kind of wrong answer.
+ *
+ * Which files are covered is DERIVED from the tracked tree rather than listed.
+ * A hand-written list is what let `cli/README.md` carry an unqualified
+ * "nothing leaves your computer" for as long as it did: the page was not
+ * unguarded by decision, it was unguarded because nobody added it. Now a README
+ * that makes a locality claim and is not classified below fails here.
+ *
+ * Two other guards read these same files and can redden on the same edit:
+ * packages/persistence/test/at-rest-docs.test.ts covers the at-rest posture and
+ * the SECURITY.md link, and cli/test/privacy-claims.test.ts covers the CLI
+ * footnote's own disclosures, which derive from the CLI's flags.
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-const READMES = [
-  { name: 'README.md', text: readFileSync(new URL('../../../README.md', import.meta.url), 'utf8') },
-  {
-    name: 'plugins/claude-code/README.md',
-    text: readFileSync(new URL('../README.md', import.meta.url), 'utf8'),
-  },
-] as const;
+const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+
+/**
+ * One repo-relative posix path, read from the repo root. Every file here is
+ * reached this way and by no other route: the coverage guard below compares
+ * these same paths against `git ls-files`, so a second addressing scheme is a
+ * second thing that can disagree with it about which file a row names.
+ */
+const repoFile = (relative: string): string => readFileSync(join(REPO_ROOT, relative), 'utf8');
 
 // A footnote definition line — the place the correction lives. Everything else is
 // body prose a reader (or a quoter) sees first.
@@ -34,11 +52,103 @@ const isFootnoteDefinition = (line: string): boolean => /^\[\^[^\]]+]:/.test(lin
 const LOCALITY_CLAIM =
   /nothing (?:leaves|is sent)|never (?:leaves|send)|not sent to a model|no scanning happens off|scanned off your/i;
 
+// Every footnote definition on a page, whitespace-normalized into one string —
+// the correction, as a reader following the marker would meet it. One helper
+// because three call sites want it; three copies would be free to normalize
+// differently while every assertion still passed.
+const footnoteOf = (text: string): string =>
+  text.split('\n').filter(isFootnoteDefinition).join(' ').replace(/\s+/g, ' ');
+
 const paragraphs = (text: string): string[] =>
   text
     .split(/\n{2,}/)
     .filter((p) => !p.split('\n').every(isFootnoteDefinition))
     .filter((p) => p.trim() !== '');
+
+/**
+ * Every shipped front door, and whether it describes the judge.
+ *
+ * `describesJudge` is the tier split, and it is a property of the page rather
+ * than a convenience: the root README introduces the whole product and the
+ * plugin README documents the harness that runs `/aka:setup`, so both send a
+ * reader into the calibration. The CLI page ships no judge and points at the
+ * plugin page for that payload instead.
+ */
+const CLASSIFIED_READMES = [
+  { name: 'README.md', describesJudge: true },
+  { name: 'cli/README.md', describesJudge: false },
+  { name: 'plugins/claude-code/README.md', describesJudge: true },
+] as const;
+
+// `name` IS the location — there is deliberately no second field holding the
+// path. Carrying both let them drift: a row could name one page and read
+// another, and the coverage case below (which compares names) would keep
+// passing while every assertion ran over the wrong file.
+const READMES = CLASSIFIED_READMES.map((r) => ({ ...r, text: repoFile(r.name) }));
+const JUDGE_READMES = READMES.filter((r) => r.describesJudge);
+
+/**
+ * A fixture corpus other suites feed to a scanner — an input, not a page anyone
+ * reads. Holding one to a copy standard would make the fixture harder to write
+ * rather than the product safer.
+ *
+ * Anchored on a path SEGMENT rather than written as `includes('/test/fixtures/')`,
+ * which needs a leading slash and so misses the repo-root `test/fixtures/` tree
+ * this repository actually has.
+ */
+const isFixture = (path: string): boolean => /(?:^|\/)test\/fixtures\//.test(path);
+
+/**
+ * Every README the working tree holds, whether or not it is staged yet.
+ *
+ * `--cached --others --exclude-standard` rather than a bare `ls-files`: the
+ * index alone cannot see a README a contributor has just written, so this guard
+ * would report green on an unclassified front door until somebody staged it —
+ * deferring the failure to whoever ran `git add`. `--exclude-standard` keeps
+ * ignored trees (node_modules, build output) out.
+ */
+const trackedReadmes = (): string[] => {
+  let out: string;
+  try {
+    out = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      maxBuffer: 64 << 20,
+    });
+  } catch (cause) {
+    throw new Error(
+      'Could not list README files with `git ls-files`. This guard audits the real workspace ' +
+        'layout, so it must run inside a git checkout.',
+      { cause },
+    );
+  }
+  return out
+    .split('\n')
+    .filter(Boolean)
+    .filter((p) => /(?:^|\/)README\.md$/i.test(p))
+    .filter((p) => !isFixture(p));
+};
+
+describe('locality-claim coverage', () => {
+  /**
+   * The list above is a decision; this is what makes it one. A fourth front
+   * door that says "nothing leaves your machine" and is not classified reddens
+   * here rather than shipping unread — which is the defect this suite was
+   * extended to close, stated as a rule instead of as one more entry.
+   */
+  it('classifies every tracked README that makes a locality claim', () => {
+    const claiming = trackedReadmes().filter((p) => LOCALITY_CLAIM.test(repoFile(p)));
+    expect(claiming.sort()).toEqual(CLASSIFIED_READMES.map((r) => r.name).sort());
+  });
+
+  // Both tiers run through `describe.each`, which registers nothing at all for an
+  // empty array — so a mis-set flag that empties a tier would delete its cases
+  // and report green. Neither count is allowed to reach zero.
+  it('leaves neither tier empty', () => {
+    expect(READMES.length).toBeGreaterThan(0);
+    expect(JUDGE_READMES.length).toBeGreaterThan(0);
+  });
+});
 
 describe.each(READMES)('$name privacy claims', ({ text }) => {
   it('attaches the egress footnote to every locality claim in the body', () => {
@@ -58,11 +168,26 @@ describe.each(READMES)('$name privacy claims', ({ text }) => {
     expect(body).toMatch(/\/aka:setup|calibration|scanned/i);
   });
 
-  const footnote = text.split('\n').filter(isFootnoteDefinition).join(' ').replace(/\s+/g, ' ');
+  const footnote = footnoteOf(text);
 
   it('has an egress footnote', () => {
     expect(footnote).toContain('[^egress]:');
   });
+
+  // A lint rule DOES ban `fetch` now (`no-restricted-globals` and friends in
+  // packages/eslint-config, documented in CLAUDE.md §4), so this is no longer the
+  // false claim it once was. The guard stays for a different reason: nothing ties
+  // README prose to that config, so an enforcement claim here would silently
+  // outlive the rule that justified it. The footnote describes what the source
+  // does — "the source uses no `fetch`" — which the reader can check.
+  it('does not claim `fetch` is enforced by tooling', () => {
+    expect(text).not.toMatch(/`?fetch`? is banned/i);
+    expect(text).not.toMatch(/`?fetch`? is blocked/i);
+  });
+});
+
+describe.each(JUDGE_READMES)('$name judge payload disclosure', ({ text }) => {
+  const footnote = footnoteOf(text);
 
   it('says the judge reaches the model API', () => {
     expect(footnote).toMatch(/model API/);
@@ -134,17 +259,6 @@ describe.each(READMES)('$name privacy claims', ({ text }) => {
       expect(footnote).toMatch(pattern);
     },
   );
-
-  // A lint rule DOES ban `fetch` now (`no-restricted-globals` and friends in
-  // packages/eslint-config, documented in CLAUDE.md §4), so this is no longer the
-  // false claim it once was. The guard stays for a different reason: nothing ties
-  // README prose to that config, so an enforcement claim here would silently
-  // outlive the rule that justified it. The footnote describes what the source
-  // does — "the source uses no `fetch`" — which the reader can check.
-  it('does not claim `fetch` is enforced by tooling', () => {
-    expect(text).not.toMatch(/`?fetch`? is banned/i);
-    expect(text).not.toMatch(/`?fetch`? is blocked/i);
-  });
 });
 
 // CLAUDE.md §4 counts the `aka <name>` dispatch as a fourth child-process path,
@@ -155,14 +269,11 @@ describe.each(READMES)('$name privacy claims', ({ text }) => {
 // not. The copy does both halves: it names the dispatch and holds it outside the
 // count. Neither half works alone, so both are pinned here.
 //
-// Root README only — the dispatch is a CLI feature, and the plugin README
-// describes the plugin.
+// Root README only — the CLI page states the same split against its own count,
+// and cli/test/privacy-claims.test.ts pins that one.
 describe('README.md aka-<name> dispatch disclosure', () => {
-  const footnote = READMES[0].text
-    .split('\n')
-    .filter(isFootnoteDefinition)
-    .join(' ')
-    .replace(/\s+/g, ' ');
+  const root = READMES.find((r) => r.name === 'README.md');
+  const footnote = footnoteOf(root?.text ?? '');
 
   it('names the dispatch without folding it into the three-path count', () => {
     expect(footnote).toMatch(/Three narrow paths/);

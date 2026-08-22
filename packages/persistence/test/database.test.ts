@@ -16,6 +16,7 @@ import type { DetectedFinding, IngestEvent } from '@akasecurity/schema';
 import { DEFAULT_ACTIONS } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { schemaObjectExists } from '../src/db/migrations/introspection.ts';
 import { captureId } from '../src/ids.ts';
 import { backupBeforeLegacyDrop } from '../src/migrations.ts';
 import { descriptorProbe } from './helpers/descriptors.ts';
@@ -331,17 +332,37 @@ describe('openLocalDatabase sweeps abandoned snapshot staging', () => {
    * A store that has already been migrated, which is what makes every case here
    * mean anything.
    *
-   * The FIRST open of a fresh store performs the legacy-table drop, and that
-   * path snapshots — so it reaps on its own way past, through the call site that
-   * predates this sweep. Planting a leftover before a first open therefore
-   * passes whether or not `openLocalDatabase` sweeps at all: measured, all three
-   * cases below were green against a `database.ts` with no sweep in it. The
-   * steady state — an already-migrated store, i.e. every open after the first —
-   * is the state in which nothing ran, and it is the one the gap lived in.
+   * The reason the leftover is planted AFTER this rather than before it: the
+   * snapshot path reaps on its own way past, through the call site that predates
+   * this sweep, so a leftover planted before an open that snapshots would be
+   * cleared whether or not `openLocalDatabase` sweeps at all — measured, all
+   * three cases below were green against a `database.ts` with no sweep in it.
+   * The steady state — every open after the first — is the state in which
+   * nothing ran, and it is the one the gap lived in.
+   *
+   * A fresh store no longer snapshots at all (its legacy tables are built empty
+   * and the drop destroys nothing, so no backup is owed), which removes that
+   * confound rather than weakening this: the assertion below is that the store
+   * reached the post-drop steady state AND that no snapshot was taken on the way
+   * there, so nothing the cases below observe can be attributed to the snapshot
+   * path's own reap.
    */
   function migratedStore(): void {
     store.open();
-    expect(readdirSync(store.dataDir).some((name) => name.endsWith('.bak'))).toBe(true); // the first open really did take its pre-drop snapshot
+    // The post-drop state itself, rather than the ledger row recording it:
+    // `events` is a compatibility VIEW only once the legacy drop has run.
+    //
+    // Closed straight away rather than left to teardown: SQLite checkpoints
+    // only when the LAST connection closes, so a probe held open here would
+    // leave `-wal`/`-shm` beside the store for every case below — a difference
+    // none of them reads today, and one that would confuse the first that did.
+    const raw = store.openRaw();
+    try {
+      expect(schemaObjectExists(raw, 'view', 'events')).toBe(true);
+    } finally {
+      raw.close();
+    }
+    expect(readdirSync(store.dataDir).some((name) => name.endsWith('.bak'))).toBe(false);
   }
 
   // A staging area exactly as a killed process leaves one: the directory, and

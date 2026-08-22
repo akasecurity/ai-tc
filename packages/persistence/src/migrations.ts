@@ -230,22 +230,64 @@ export function applyMigrations(db: DatabaseSync, file?: string): void {
   }
 }
 
+// Whether the legacy-table drop has any row to destroy — the only question the
+// pre-drop snapshot exists to answer. Migration 0014 drops two indexes and the
+// `events`/`findings` tables and then creates views; an index carries no data
+// and the views only add, so the rows in those two tables are exactly what the
+// irreversible half can take. Both empty and the copy protects nothing.
+//
+// That is not a rare case, it is EVERY install: the earlier migrations build
+// both tables empty on a store this same open created, the backfill drains them
+// trivially, and the snapshot then wrote a byte-for-byte copy of a
+// freshly-built schema — about half a megabyte, roughly half the bytes in a new
+// data dir, on the first open of every new machine.
+//
+// Read from the STORE, never from an argument: `applyLegacyDropMigration` gains
+// no parameter for this, so nothing outside can talk the drop out of a backup
+// it owes. The backfill COPIES rather than deletes, so a store that genuinely
+// carries pre-cutover history still holds its rows here, at the instant the
+// decision is made.
+//
+// FAILS SAFE in one direction only. A probe that throws — a table already
+// dropped out of band, a locked store, a corrupt page — reports "at risk",
+// because skipping a backup on the strength of a probe that never ran is the
+// outcome the deferral below exists to prevent. `LIMIT 1` visits no row on the
+// empty table this exists for, so the probe costs nothing on the path it
+// protects.
+export function legacyDropWouldDestroyRows(db: DatabaseSync): boolean {
+  for (const table of ['events', 'findings'] as const) {
+    try {
+      if (db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get() !== undefined) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Runs the legacy-drop migration's own DDL (dropping `events`/`findings` and
 // creating their compatibility views) and ledgers its tag — called ONLY once
 // runLegacyHistoryBackfill has reported both legacy tables fully drained.
-// Backs the live file up first (when a real path is known — a `:memory:` or
-// path-less caller, i.e. tests, has nothing durable to protect), mirroring
-// backupLegacyStore's shape in database.ts. A failed backup defers the drop
-// entirely rather than proceeding without one — history is never destroyed
-// on a best-effort basis.
+// Backs the live file up first, mirroring backupLegacyStore's shape in
+// database.ts, whenever there is something for the backup to protect: a real
+// path is known (a `:memory:` or path-less caller, i.e. tests, has nothing
+// durable to protect) AND the drop would destroy rows (see
+// legacyDropWouldDestroyRows — a store created by this same open has none). A
+// failed backup defers the drop entirely rather than proceeding without one —
+// history is never destroyed on a best-effort basis.
 export function applyLegacyDropMigration(db: DatabaseSync, file: string | undefined): void {
   const migration = SQLITE_MIGRATIONS.find((m) => m.tag === LEGACY_DROP_MIGRATION_TAG);
   // Should not happen in a released build (schema and persistence version
   // together), but a missing migration must never crash an open.
   if (!migration) return;
-  if (file) {
+  // Whether a copy was actually published, which the recheck under the write
+  // lock below needs — "we decided none was owed" and "one was taken" are
+  // different states and only the first can go stale.
+  let backedUp = false;
+  if (file && legacyDropWouldDestroyRows(db)) {
     try {
       backupBeforeLegacyDrop(db, file);
+      backedUp = true;
     } catch (error) {
       akaWarn(`legacy events/findings backup failed; deferring the drop: ${String(error)}`);
       return;
@@ -272,6 +314,32 @@ export function applyLegacyDropMigration(db: DatabaseSync, file: string | undefi
           .prepare('SELECT 1 FROM migration_ledger WHERE tag = ?')
           .get(migration.tag);
         if (alreadyDropped) return;
+        // The skip decision was read BEFORE this lock, and the store is shared
+        // with binaries that predate the cutover — copyLegacyEvents' own note
+        // is that one can still write an `events` row after 0013 ran. Such a
+        // write landing between that probe and this BEGIN IMMEDIATE would be
+        // dropped below with no copy anywhere, which is the one outcome the
+        // deferral above exists to prevent. Nothing else can write while this
+        // lock is held, so re-reading here is the point at which the answer
+        // stops being able to go stale. Only a SKIPPED copy is rechecked: one
+        // that was taken already holds whatever stood before it, and re-taking
+        // it every time would put the snapshot back on the fresh-store path.
+        //
+        // This also re-covers the case the `return` in the backup catch above
+        // already handles — a snapshot that was owed and FAILED arrives here
+        // with `backedUp` false and rows still present, so it defers twice
+        // over. Neither is dead: that return declines the write lock instead of
+        // taking one to do nothing, and this is the only guard that sees a row
+        // written after the decision. Removing EITHER alone leaves the suite
+        // green, so read them as one property with two enforcement points
+        // rather than as a guard and a duplicate.
+        if (!backedUp && file !== undefined && legacyDropWouldDestroyRows(db)) {
+          akaWarn(
+            'legacy events/findings rows appeared after the pre-drop snapshot was judged ' +
+              'unnecessary; deferring the drop so the next open can copy them first.',
+          );
+          return;
+        }
         for (const statement of splitStatements(migration.sql)) {
           db.exec(statement);
         }

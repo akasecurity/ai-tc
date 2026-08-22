@@ -28,8 +28,10 @@ import {
   applyLegacyDropMigration,
   backupBeforeLegacyDrop,
   LEGACY_BACKFILL_MAX_ROWS_PER_CALL,
+  legacyDropWouldDestroyRows,
 } from '../src/migrations.ts';
 import { DB_FILENAME } from '../src/paths.ts';
+import { readOnlyStore } from './helpers/fault-injection.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 import { assertNoOpenTransaction } from './helpers/transactions.ts';
 
@@ -50,6 +52,11 @@ const store = useTempStore('aka-legacy-views-');
 // left live across one changes what it does. `openRaw()` holds every handle it
 // hands out until teardown, so it is the wrong tool wherever the close IS the
 // setup.
+//
+// A third kind opens a file that is NOT the store at all — a
+// `aka.db.pre-drop.<ts>.<rand>.bak` snapshot — which `openRaw()` cannot reach,
+// since it only ever opens `<home>/data/aka.db`. Those are read-only probes of
+// a published copy and are closed in a `finally`.
 
 const MIGRATION_0013_TAG = '0013_legacy_history_backfill_support';
 const MIGRATION_0014_TAG = '0014_drop_legacy_events_findings';
@@ -665,6 +672,226 @@ describe('legacy events/findings compatibility views', () => {
       }).not.toThrow();
     } finally {
       db.close();
+    }
+  });
+});
+
+/**
+ * The pre-drop snapshot is owed only where the drop can destroy something.
+ *
+ * Migration 0014 drops two indexes and the `events`/`findings` tables, then
+ * creates views; the rows in those two tables are the whole of what the
+ * irreversible half can take. On a store this same open CREATED they were built
+ * empty by the earlier migrations and never written to, so the snapshot copied a
+ * freshly-built schema — half a megabyte, roughly half the bytes in a new data
+ * dir, once on every new machine — and protected nothing.
+ *
+ * The pair of cases is the point. Dropping the copy on a store carrying real
+ * pre-cutover history destroys that history, so "writes no backup" is only
+ * worth asserting beside "still writes one, and still defers the drop when it
+ * cannot" — which is what the populated cases below hold.
+ */
+describe('the pre-drop snapshot is taken only when the drop would destroy rows', () => {
+  it('a fresh store first open leaves nothing beside aka.db — no pre-drop backup', () => {
+    store.open().close();
+
+    // The whole listing, not a `.pre-drop`-shaped absence check: an artifact
+    // this package writes and nobody named is exactly what went unnoticed here
+    // for as long as it did. Nothing but the store survives a clean close —
+    // SQLite removes `-wal`/`-shm` when the last connection goes, and a
+    // rollback `-journal` is gone at commit — so a sidecar showing up in this
+    // list is a real signal rather than platform noise to filter away.
+    //
+    // Non-vacuous in both directions: the store itself has to BE there, or an
+    // open that wrote nothing at all would satisfy an absence check.
+    expect(readdirSync(store.dataDir).sort()).toEqual([DB_FILENAME]);
+  });
+
+  it('a store carrying legacy rows still gets its snapshot before the drop', () => {
+    const file = seedPreCutoverFile();
+    const seed = new DatabaseSync(file);
+    seed.exec('PRAGMA foreign_keys = ON');
+    insertLegacyEvent(seed, 'ev-1', 1_000, { repo: 'acme/api', filePath: 'src/a.ts' });
+    insertLegacyFinding(seed, 'f-1', 'ev-1', { findingKey: 'key-1', firstDetectedAt: 500 });
+    seed.close();
+
+    store.open().close();
+
+    const backups = readdirSync(store.dataDir).filter((f) => f.includes('.pre-drop.'));
+    expect(backups).toHaveLength(1);
+    const [backupName] = backups;
+    if (!backupName) throw new Error('expected exactly one pre-drop backup file');
+    const snap = new DatabaseSync(join(store.dataDir, backupName));
+    try {
+      // BEFORE the drop, which a row count alone cannot show: after the drop
+      // these names are views over audit_events, and the backfill has already
+      // copied the same row through, so `count(*)` reads 1 on a snapshot taken
+      // from either side. What separates them is the OBJECT — a snapshot that
+      // predates the drop holds real TABLES.
+      expect(schemaObjectExists(snap, 'table', 'events')).toBe(true);
+      expect(schemaObjectExists(snap, 'table', 'findings')).toBe(true);
+      expect(schemaObjectExists(snap, 'view', 'events')).toBe(false);
+      // …and it is a real copy of what stood there, not an empty file that
+      // happens to carry the name.
+      expect((snap.prepare('SELECT count(*) AS n FROM events').get() as { n: number }).n).toBe(1);
+      expect((snap.prepare('SELECT count(*) AS n FROM findings').get() as { n: number }).n).toBe(1);
+    } finally {
+      snap.close();
+    }
+
+    // The live store is on the other side of that line, so the snapshot really
+    // did capture an earlier state rather than a copy of the end state.
+    const live = store.openRaw();
+    expect(schemaObjectExists(live, 'view', 'events')).toBe(true);
+    expect(schemaObjectExists(live, 'table', 'events')).toBe(false);
+  });
+
+  it('a failed snapshot on a store carrying legacy rows still defers the drop', (ctx) => {
+    const file = seedPreCutoverFile();
+    const db = new DatabaseSync(file);
+    // WAL deliberately, and it is what makes this case mean anything. The fault
+    // below is a directory nothing may create a file in — which stops the
+    // snapshot staging a copy, but under the default DELETE journal would stop
+    // the DROP's own rollback journal too, so the drop would defer for its own
+    // reasons and the assertion would hold whether or not the backup is what
+    // deferred it. Measured: with DELETE, removing the deferral entirely left
+    // this case green. In WAL the transaction writes into a `-wal` that already
+    // exists, so the snapshot is the only thing the fault reaches.
+    const journalMode = (db.prepare('PRAGMA journal_mode = WAL').get() as { journal_mode: string })
+      .journal_mode;
+    db.exec('PRAGMA foreign_keys = ON');
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS migration_ledger (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)',
+    );
+    try {
+      insertLegacyEvent(db, 'ev-1', 1_000, { repo: 'acme/api', filePath: 'src/a.ts' });
+      insertLegacyFinding(db, 'f-1', 'ev-1', { findingKey: 'key-1', firstDetectedAt: 500 });
+      // WAL is a filesystem capability, not a setting: it silently no-ops on
+      // DrvFs and some network mounts (see dbSidecars), and there the drop
+      // would need a rollback journal the fault also blocks — so the case
+      // cannot separate the two and is meaningless rather than failing.
+      if (journalMode !== 'wal' || !existsSync(`${file}-wal`)) {
+        ctx.skip(`WAL did not engage on this filesystem (journal_mode=${journalMode})`);
+        return;
+      }
+
+      // A real fault, not a stubbed throw, and the shared injector rather than a
+      // private chmod: `dirOnly` tightens the data dir and leaves the store
+      // writable, which is exactly the asymmetry this case needs — nothing may
+      // CREATE the snapshot's staging directory, while the transaction below
+      // appends to a `-wal` that already exists.
+      const readOnly = readOnlyStore(file, { dirOnly: true, onCleanup: store.onCleanup });
+      if (!readOnly.effective) {
+        ctx.skip('the platform or privilege ignored the read-only directory mode');
+        return;
+      }
+
+      applyLegacyDropMigration(db, file);
+
+      // Nothing was published, and the history is still where it was.
+      expect(readdirSync(store.dataDir).some((f) => f.includes('.pre-drop.'))).toBe(false);
+      expect(schemaObjectExists(db, 'table', 'events')).toBe(true);
+      expect(schemaObjectExists(db, 'table', 'findings')).toBe(true);
+      expect(schemaObjectExists(db, 'view', 'events')).toBe(false);
+      expect(
+        db.prepare('SELECT 1 FROM migration_ledger WHERE tag = ?').get(MIGRATION_0014_TAG),
+      ).toBeUndefined();
+      // A deferral that left the handle inside its BEGIN would make every later
+      // write on it join a transaction nobody started.
+      assertNoOpenTransaction(db);
+
+      // The control, and the half that keeps the deferral above non-vacuous:
+      // with the directory writable again the SAME call completes, so the drop
+      // was blocked by the failed snapshot rather than by a fixture that could
+      // never have dropped at all.
+      readOnly.restore();
+      applyLegacyDropMigration(db, file);
+      expect(readdirSync(store.dataDir).some((f) => f.includes('.pre-drop.'))).toBe(true);
+      expect(schemaObjectExists(db, 'view', 'events')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  /**
+   * The condition is read off the store, so there is nothing for a caller to
+   * lie about — `applyLegacyDropMigration` takes the handle and the path, and
+   * gained no "skip the backup" argument to go with them.
+   */
+  describe('the condition comes from the store, never from the caller', () => {
+    it('answers from the legacy tables themselves, and fails safe when it cannot read them', () => {
+      const file = seedPreCutoverFile();
+      const db = new DatabaseSync(file);
+      db.exec('PRAGMA foreign_keys = ON');
+      try {
+        // Empty as the earlier migrations left them: nothing to protect.
+        expect(legacyDropWouldDestroyRows(db)).toBe(false);
+
+        // One row in EITHER table is enough — a backup owed for `findings`
+        // alone must not be skipped because `events` happens to be empty.
+        insertLegacyEvent(db, 'ev-1', 1_000, null);
+        expect(legacyDropWouldDestroyRows(db)).toBe(true);
+        insertLegacyFinding(db, 'f-1', 'ev-1');
+        // `findings.event_id` references `events.id`, so emptying `events`
+        // under it needs enforcement suspended — the state is what matters:
+        // one legacy table empty, the other still holding a row.
+        db.exec('PRAGMA foreign_keys = OFF');
+        db.exec('DELETE FROM events');
+        db.exec('PRAGMA foreign_keys = ON');
+        expect(legacyDropWouldDestroyRows(db)).toBe(true);
+
+        // A probe that cannot run is not evidence of an empty table. Answering
+        // "false" here is the one wrong answer that loses data, so an
+        // unreadable store is backed up rather than dropped.
+        //
+        // `findings` alone first, and that ordering is the whole point: the
+        // loop probes `events` first and returns on ITS throw, so dropping both
+        // never reaches the second arm at all. With `events` present and empty,
+        // only the findings probe can produce this answer — narrowing the catch
+        // to the events probe goes red here and nowhere else.
+        db.exec('DROP TABLE findings');
+        expect(legacyDropWouldDestroyRows(db)).toBe(true);
+
+        db.exec('DROP TABLE events');
+        expect(legacyDropWouldDestroyRows(db)).toBe(true);
+      } finally {
+        db.close();
+      }
+    });
+
+    // Both polarities, because a third parameter could mean either "skip the
+    // backup" or "keep it" and only one of them is caught by passing `true`.
+    // Driven through a cast rather than a signature check: `Function.length`
+    // stops at the first parameter with a DEFAULT, so `skipBackup = false`
+    // leaves it reading 2 and a signature assertion passes while the flag is
+    // wired up and honoured — measured, that is exactly what happened.
+    for (const extra of [true, false]) {
+      it(`ignores a ${String(extra)} a caller passes beyond the store and the path`, () => {
+        const file = seedPreCutoverFile();
+        const db = new DatabaseSync(file);
+        db.exec('PRAGMA foreign_keys = ON');
+        db.exec(
+          'CREATE TABLE IF NOT EXISTS migration_ledger (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)',
+        );
+        try {
+          insertLegacyEvent(db, 'ev-1', 1_000, null);
+          insertLegacyFinding(db, 'f-1', 'ev-1');
+          // Precondition: a backup IS owed here, or "it was taken anyway" says
+          // nothing about whether the extra argument was ignored.
+          expect(legacyDropWouldDestroyRows(db)).toBe(true);
+
+          // Every shape an opener that "knows" the store is fresh might reach
+          // for, handed in at once.
+          (applyLegacyDropMigration as (...args: unknown[]) => void)(db, file, extra, {
+            skipBackup: extra,
+            fresh: extra,
+          });
+
+          expect(readdirSync(store.dataDir).some((f) => f.includes('.pre-drop.'))).toBe(true);
+        } finally {
+          db.close();
+        }
+      });
     }
   });
 });

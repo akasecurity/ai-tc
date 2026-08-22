@@ -120,7 +120,9 @@ const DOCUMENTED_EXCLUSIONS: readonly {
   {
     pattern: /\.bak$/,
     reason:
-      'a snapshot copy of the store; the note covers these in their own paragraph rather than in the file list, because the name carries a timestamp',
+      'a snapshot copy of the store; the note covers these in their own paragraph rather than in the file list, because the name carries a timestamp. Not reachable from a fresh store: the pre-drop snapshot is taken only where the legacy drop would destroy rows, and the foreign-lineage reset needs a tenant-bearing store — neither is what exerciseStore builds',
+    coveredBy:
+      "test/legacy-compat-views.test.ts — 'a store carrying legacy rows still gets its snapshot before the drop'",
   },
   {
     pattern: new RegExp(`\\.bak${escapeRe(SNAPSHOT_STAGING_SUFFIX)}$`),

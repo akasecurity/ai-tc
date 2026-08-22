@@ -65,32 +65,51 @@ export function claimStoreUnavailableWarning(
   dataDir: string,
   sessionId: string | undefined,
 ): boolean {
-  return claimOncePerSession(dataDir, STORE_WARNING_MARKER, sessionId);
+  if (!sessionId) return true; // no session id → can't dedupe, warn anyway
+  const dirs = markerDirs(dataDir);
+  if (alreadyClaimed(dirs, STORE_WARNING_MARKER, sessionId)) return false;
+  recordClaim(dirs, STORE_WARNING_MARKER, sessionId);
+  return true;
 }
 
-// One session-scoped claim against one marker file. Shared by both warnings so
-// they cannot drift on what "once per session" means, and so a second warning
-// added later inherits the same fail-open-toward-WARNING bias rather than
-// re-deriving it.
-function claimOncePerSession(
-  dataDir: string,
-  marker: string,
-  sessionId: string | undefined,
-): boolean {
-  if (!sessionId) return true; // no session id → can't dedupe, warn anyway
-  const path = join(dataDir, marker);
-  try {
-    if (readFileSync(path, 'utf8') === sessionId) return false;
-  } catch {
-    // No marker yet (or unreadable) → this is the first warning for the session.
+// Where a session marker may live, in preference order.
+//
+// data/ is its natural home, but data/ is exactly what a store path pointing at
+// something unresolvable makes unwritable — and that is a configuration these
+// warnings exist to report. With only data/ to write to, both the mkdir and the
+// write fail, the claim is never recorded, and "once per session" silently
+// becomes "once per hook fire": a fresh warning on every tool call for the rest
+// of the session. Falling back to the base keeps the dedupe wherever the home
+// itself is intact. When nothing under the home can be written there is no
+// cross-process memory to be had, and repeating is the honest failure.
+function markerDirs(dataDir: string): string[] {
+  return [dataDir, dirname(dataDir)];
+}
+
+// Has this session already been warned? Every candidate is consulted, so a
+// marker recorded in the fallback is still found once data/ is writable again.
+function alreadyClaimed(dirs: readonly string[], marker: string, sessionId: string): boolean {
+  return dirs.some((dir) => {
+    try {
+      return readFileSync(join(dir, marker), 'utf8') === sessionId;
+    } catch {
+      return false; // no marker yet, or unreadable → not a claim
+    }
+  });
+}
+
+// Record the claim in the first candidate that accepts it. Best-effort: with
+// none writable the caller has already warned, and the next fire warns again.
+function recordClaim(dirs: readonly string[], marker: string, sessionId: string): void {
+  for (const dir of dirs) {
+    try {
+      mkdirSync(dir, { recursive: true, mode: DATA_DIR_MODE });
+      writeFileSync(join(dir, marker), sessionId, { mode: DATA_FILE_MODE });
+      return;
+    } catch {
+      // This candidate is unusable — try the next.
+    }
   }
-  try {
-    mkdirSync(dataDir, { recursive: true, mode: DATA_DIR_MODE });
-    writeFileSync(path, sessionId, { mode: DATA_FILE_MODE });
-  } catch {
-    // Couldn't record the claim → still warn now (an extra warning beats silence).
-  }
-  return true;
 }
 
 /**
@@ -188,8 +207,19 @@ export function warnIfStoreRedirected(
   try {
     const paths = symlinkedStorePaths(dirname(config.dataDir));
     if (paths.length === 0) return;
-    if (!claimOncePerSession(config.dataDir, STORE_REDIRECT_MARKER, sessionId)) return;
+    if (!sessionId) {
+      write(storeRedirectedMessage(paths)); // no session id → can't dedupe, warn anyway
+      return;
+    }
+    const dirs = markerDirs(config.dataDir);
+    if (alreadyClaimed(dirs, STORE_REDIRECT_MARKER, sessionId)) return;
+    // Write BEFORE recording the claim. The default writer is fire-and-forget
+    // and `process.exit(0)` does not flush a queued pipe write, so consuming the
+    // claim first would let a dropped message mark the session as warned and
+    // leave the user in exactly the exit-0-and-silence state this exists to
+    // remove. Recording second costs a repeat at worst, never a silence.
     write(storeRedirectedMessage(paths));
+    recordClaim(dirs, STORE_REDIRECT_MARKER, sessionId);
   } catch {
     // Never break a hook over a warning — this path is advisory by construction.
   }

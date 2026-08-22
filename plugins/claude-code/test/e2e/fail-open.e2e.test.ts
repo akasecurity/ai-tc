@@ -8,7 +8,14 @@
  * regression pin on the wire protocol itself: no hook shape ever carries an
  * `action` key (that's an internal CaptureResult field, never serialized).
  */
-import { chmodSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
@@ -275,7 +282,13 @@ describe('fail-open: a hostile (symlinked) home never breaks a hook', () => {
     mkdirSync(victim, { recursive: true });
     chmodSync(victim, 0o755);
     symlinkSync(victim, join(home, '.aka'));
-    return victim;
+    // RESOLVED, because that is what the message carries: linkTarget() is a
+    // realpathSync, while withTempHome's mkdtemp path is unresolved. On macOS
+    // the two differ (/var/... vs /private/var/...) and a substring assertion on
+    // the raw path passes only because /private is a pure PREFIX — a tmpdir
+    // whose resolution renames a component instead would red this row for a
+    // reason unrelated to the behaviour under test.
+    return realpathSync(victim);
   }
 
   for (const hook of HOOKS) {

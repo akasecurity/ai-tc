@@ -187,6 +187,21 @@ describe('warnIfStoreRedirected — a symlinked store path is surfaced', () => {
     // user needs told about, and reporting nothing here would read as healthy.
     expect(written).toHaveLength(1);
     expect(written[0] ?? '').toContain('does not exist');
+
+    // …and STILL only once. data/ is unwritable here, so the marker cannot land
+    // in its natural home; without the fallback candidate the claim is never
+    // recorded and every later hook fire in the session warns again — a fresh
+    // multi-line warning on every tool call, in the very configuration this
+    // feature exists to report. Driving it a second and third time is the whole
+    // point: calling once cannot tell a working dedupe from an absent one.
+    warnIfStoreRedirected(configFor(dataDirOf(home)), 's1', (m) => written.push(m));
+    warnIfStoreRedirected(configFor(dataDirOf(home)), 's1', (m) => written.push(m));
+    expect(written).toHaveLength(1);
+
+    // A different session is still told, so the fallback dedupes rather than
+    // silences.
+    warnIfStoreRedirected(configFor(dataDirOf(home)), 's2', (m) => written.push(m));
+    expect(written).toHaveLength(2);
   });
 });
 

@@ -12,8 +12,10 @@
 // import it (hook ENTRY files run main() on import and must never be imported
 // by tests).
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
+import type { SymlinkedStorePath } from '@akasecurity/persistence';
+import { symlinkedStorePaths } from '@akasecurity/persistence';
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { DATA_DIR_MODE, DATA_FILE_MODE } from '@akasecurity/plugin-sdk';
@@ -22,6 +24,12 @@ import { DATA_DIR_MODE, DATA_FILE_MODE } from '@akasecurity/plugin-sdk';
 // each new session so it never accumulates (same scheme as the onboarding
 // nudge marker).
 const STORE_WARNING_MARKER = 'store-warning-last-session';
+
+// The redirect warning's own marker. Separate from the one above rather than
+// shared: the two conditions are independent, and a session that has already
+// been told the store cannot open must still be told WHERE it was being written
+// once it can. One marker would let whichever fired first silence the other.
+const STORE_REDIRECT_MARKER = 'store-redirect-last-session';
 
 /**
  * Open the data gateway, fail-open: any store-open failure (corrupt aka.db,
@@ -57,8 +65,20 @@ export function claimStoreUnavailableWarning(
   dataDir: string,
   sessionId: string | undefined,
 ): boolean {
+  return claimOncePerSession(dataDir, STORE_WARNING_MARKER, sessionId);
+}
+
+// One session-scoped claim against one marker file. Shared by both warnings so
+// they cannot drift on what "once per session" means, and so a second warning
+// added later inherits the same fail-open-toward-WARNING bias rather than
+// re-deriving it.
+function claimOncePerSession(
+  dataDir: string,
+  marker: string,
+  sessionId: string | undefined,
+): boolean {
   if (!sessionId) return true; // no session id → can't dedupe, warn anyway
-  const path = join(dataDir, STORE_WARNING_MARKER);
+  const path = join(dataDir, marker);
   try {
     if (readFileSync(path, 'utf8') === sessionId) return false;
   } catch {
@@ -71,4 +91,106 @@ export function claimStoreUnavailableWarning(
     // Couldn't record the claim → still warn now (an extra warning beats silence).
   }
   return true;
+}
+
+/**
+ * The once-per-session warning shown when a store path is a symlink.
+ *
+ * A symlinked store path is not a failure: the store opens, and everything is
+ * scanned, enforced and recorded exactly as it should be. What is wrong is
+ * WHERE — the store, including the prompt corpus in `aka.db`, is written inside
+ * the link's target, under whatever permissions that target already carries,
+ * because a chmod is never applied through a symlink and `mkdir` does not follow
+ * the final link. Both facts are invisible from the outside, so the only thing
+ * separating a home a user symlinked on purpose (a dotfiles manager, another
+ * volume) from a link someone else planted is being told the path is there.
+ *
+ * One line, naming each redirected path, its target, and the inherited mode when
+ * that mode is not owner-only — the half a reader has to act on.
+ *
+ * The trailing clauses are built from what is actually true of THESE paths, not
+ * fixed, for the same reason `symlinkWarnings` renders three shapes rather than
+ * one: a link resolving NOWHERE has received nothing and inherited nothing, so
+ * saying the store "is written there under the target's own permissions" is
+ * false twice over; and on Windows no mode is ever applied, so claiming the
+ * target's own is kept describes a control that does not exist there. `platform`
+ * is a parameter so both branches are reachable from any host.
+ */
+export function storeRedirectedMessage(
+  paths: readonly SymlinkedStorePath[],
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const where = paths
+    .map(({ path, target, holds, missing, mode }) => {
+      if (missing) return `${path} -> ${target} (which does not exist; ${holds} cannot land there)`;
+      const loose = mode !== undefined && (mode & 0o077) !== 0 ? ', NOT owner-only' : '';
+      const inherited = mode === undefined ? '' : ` (${formatMode(mode)}${loose})`;
+      return `${path} -> ${target}${inherited}, holding ${holds}`;
+    })
+    .join('; ');
+  // Plural only when it is: a reader who is told "a store path" and handed three
+  // may repair the first and stop.
+  const subject =
+    paths.length === 1
+      ? 'a store path is a symlink'
+      : `${String(paths.length)} store paths are symlinks`;
+  // Every path resolving nowhere means nothing has been redirected yet, so the
+  // "writing into the target" framing would be false for all of them.
+  const anyResolves = paths.some(({ missing }) => !missing);
+  const lead = anyResolves
+    ? `${subject}, so AKA is writing into the target instead: ${where}. `
+    : `${subject} resolving nowhere, so AKA cannot write there: ${where}. `;
+  // Only claim the inheritance where a mode is actually applied and something
+  // actually landed.
+  const kept =
+    anyResolves && platform !== 'win32'
+      ? 'Permissions are never changed through a symlink, so the store keeps whatever the target already had. '
+      : '';
+  return (
+    `[aka] ${lead}${kept}` +
+    'If you did not create that link, treat it as untrusted and run `aka init` for the full report.\n'
+  );
+}
+
+function formatMode(mode: number): string {
+  return `0${mode.toString(8).padStart(3, '0')}`;
+}
+
+/**
+ * Say once per session that a store path is redirected through a symlink.
+ *
+ * On stderr rather than through `emit()`: a hook's stdout carries at most one
+ * JSON object, and this warning has to reach hooks that are also emitting a real
+ * decision — a second write there would concatenate into something that does not
+ * parse, which the host reads as no opinion and would cost the very enforcement
+ * this is warning about. stderr has no such contract and is the channel the rule
+ * quarantine already warns on.
+ *
+ * Called from the five hooks the fail-open e2e matrix drives, and deliberately
+ * NOT from `message-display`: that hook opens no store at all, sits behind the
+ * vault-consent gate (so on a default install it would never reach this), and
+ * cannot fire in a session `SessionStart` did not already open. Wiring it there
+ * would add an untested marker write to the one hook that avoids touching the
+ * data dir on purpose, and would buy no session this does not already cover.
+ *
+ * Wholly best-effort: every step is inside the try, so a hostile or unreadable
+ * home makes this a no-op rather than an exception on the hook's entry path.
+ * The store home is derived from `dataDir` — the layout puts `data/` directly
+ * under the base, and `plugin-sdk`'s `PluginConfig` resolves the leaves rather
+ * than carrying the base. `store-health.test.ts` pins that derivation, so a
+ * layout change fails there instead of silently reporting the wrong home.
+ */
+export function warnIfStoreRedirected(
+  config: Pick<PluginConfig, 'dataDir'>,
+  sessionId: string | undefined,
+  write: (message: string) => void = (message) => void process.stderr.write(message),
+): void {
+  try {
+    const paths = symlinkedStorePaths(dirname(config.dataDir));
+    if (paths.length === 0) return;
+    if (!claimOncePerSession(config.dataDir, STORE_REDIRECT_MARKER, sessionId)) return;
+    write(storeRedirectedMessage(paths));
+  } catch {
+    // Never break a hook over a warning — this path is advisory by construction.
+  }
 }

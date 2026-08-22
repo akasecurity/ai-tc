@@ -16,11 +16,15 @@ import { loadConfig } from '@akasecurity/plugin-sdk';
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { parseJson, readStdin } from './shared.ts';
 import { parseStopPayload } from './stop-payload.ts';
+import { warnIfStoreRedirected } from './store-health.ts';
 
 async function main(): Promise<void> {
   const trigger = parseStopPayload(parseJson(await readStdin()));
   if (trigger === undefined) return; // nothing to reconcile
   const config = loadConfig();
+  // A symlinked store path redirects the corpus without failing anything;
+  // say so once per session (stderr, so the stdout contract is untouched).
+  warnIfStoreRedirected(config, trigger.sessionId);
   // Throttled, detached spawn — the hook never waits on the reconcile.
   triggerReconcile(config.dataDir, trigger.sessionId, trigger.transcriptPath);
 }

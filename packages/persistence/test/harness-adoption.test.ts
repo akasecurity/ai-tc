@@ -183,6 +183,8 @@ const OWN_TEMP_TREE: Readonly<Record<string, string>> = {
     'the subject is the symlink fallback in the path helpers themselves — no store',
   'test/managed-settings.test.ts':
     'two bare directories — a settings home and a stand-in for the OS administrative path the managed file is read from — and no store either side',
+  'test/store-symlinks.test.ts':
+    'bare homes whose store paths are replaced by symlinks — the harness would create the very directories the subject needs to be links, and no store is opened',
   'test/settings.test.ts': 'settings.json only; the layout the harness creates is not wanted here',
   'test/vault/key-provider.test.ts':
     'key files under a bare directory, ahead of any store that would hold them',

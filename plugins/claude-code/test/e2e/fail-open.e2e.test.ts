@@ -8,7 +8,7 @@
  * regression pin on the wire protocol itself: no hook shape ever carries an
  * `action` key (that's an internal CaptureResult field, never serialized).
  */
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
@@ -253,6 +253,87 @@ describe('fail-open: an unavailable store never breaks a hook', () => {
           }
         });
       });
+    });
+  }
+});
+
+// A hostile home is the fault class the store-fault rows above cannot reach: the
+// store opens PERFECTLY, so nothing fails and nothing is degraded — the corpus
+// simply lands somewhere the user did not choose. That makes it the one shape
+// where an exit-0-and-silence row would be indistinguishable from health, which
+// is why both rows here assert what the hook SAYS as well as that it survived.
+describe('fail-open: a hostile (symlinked) home never breaks a hook', () => {
+  // ~/.aka is a symlink to a directory someone else owns. mkdir does not follow
+  // the final link and chmod is never applied through one, so the store is
+  // created INSIDE the target under the target's own permissions.
+  // The victim lives INSIDE `home`, not in the tmpdir root: withTempHome tears
+  // `home` down, and a victim outside it is never removed — it holds the
+  // redirected store (aka.db plus the migration's byte-for-byte .bak), so one
+  // per hook per run accumulates on disk for as long as the runner lives.
+  function seedSymlinkedAkaHome(home: string): string {
+    const victim = join(home, 'victim');
+    mkdirSync(victim, { recursive: true });
+    chmodSync(victim, 0o755);
+    symlinkSync(victim, join(home, '.aka'));
+    return victim;
+  }
+
+  for (const hook of HOOKS) {
+    describe(hook.name, () => {
+      it('valid input, symlinked ~/.aka → exit 0 AND the redirection is surfaced', (ctx) => {
+        if (process.platform === 'win32') {
+          ctx.skip('unprivileged symlink creation is not available on Windows');
+          return;
+        }
+        withTempHome((home) => {
+          const victim = seedSymlinkedAkaHome(home);
+          const payload = hook.validPayload(home);
+          const result = runHook(hook.name, payload, { env: tempHomeEnv(home) });
+
+          // Fail-open first: a warning must never cost the user their session.
+          expect(result.status).toBe(0);
+          expectNoActionKey(result.stdout);
+
+          // …and the warning is really there. Without this the row would pass
+          // just as happily against the silence this behaviour replaced, which
+          // is the whole defect: exit 0 and no output IS the broken state here.
+          expect(result.stderr).toContain('is a symlink');
+          expect(result.stderr).toContain(victim);
+          // The mode the store inherits is the half a reader can act on.
+          expect(result.stderr).toContain('NOT owner-only');
+
+          // The harm the warning is about, pinned so the row cannot go quiet
+          // because the redirection stopped rather than because it is now said.
+          // The STORE file, never merely `data/`: warnIfStoreRedirected's own
+          // marker write creates that directory, so a directory check here would
+          // be satisfied by the code under test rather than by the redirection.
+          // `stop` opens no store, so it is the one hook with nothing to land.
+          if (hook.name !== 'stop') {
+            expect(existsSync(join(victim, 'data', 'aka.db'))).toBe(true);
+          }
+        });
+      }, 35_000);
+
+      it('valid input, a DANGLING keys/ link → exit 0', (ctx) => {
+        if (process.platform === 'win32') {
+          ctx.skip('unprivileged symlink creation is not available on Windows');
+          return;
+        }
+        withTempHome((home) => {
+          // keys/ is minted lazily by the vault, so a link resolving nowhere is
+          // a path that fails only when something finally writes through it.
+          const akaDir = join(home, '.aka');
+          mkdirSync(akaDir, { recursive: true });
+          symlinkSync(join(home, 'no-such-volume'), join(akaDir, 'keys'));
+          const payload = hook.validPayload(home);
+          const result = runHook(hook.name, payload, { env: tempHomeEnv(home) });
+          expect(result.status).toBe(0);
+          expectNoActionKey(result.stdout);
+          // Reported rather than swallowed: a link to nothing is exactly the
+          // state where staying quiet reads as a healthy home.
+          expect(result.stderr).toContain('does not exist');
+        });
+      }, 35_000);
     });
   }
 });

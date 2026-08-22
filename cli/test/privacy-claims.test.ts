@@ -19,9 +19,32 @@
  */
 import { readFileSync } from 'node:fs';
 
+import { gatherReport } from '@akasecurity/local-ops';
 import { describe, expect, it } from 'vitest';
 
 import { GLOBAL_FLAGS } from '../src/command-manifest.ts';
+
+/**
+ * Every npm package the passive update check looks up, taken from the real
+ * report builder rather than named here.
+ *
+ * `gatherReport` asks `viewVersion` once for the CLI and once per marketplace
+ * agent that has both a ref and an npm package, so recording that seam is what
+ * the registry actually sees. Derived because the footnote said "this package",
+ * singular, while three lookups crossed — and a hand-written list here would
+ * have been just as wrong, just as invisibly. `installed` is deliberately EMPTY:
+ * the plugin lookups run whether or not the plugin is installed, which is the
+ * reason the copy may not say the registry learns what you have.
+ */
+const LOOKED_UP_PACKAGES: string[] = [];
+gatherReport({
+  viewVersion: (pkg: string) => {
+    LOOKED_UP_PACKAGES.push(pkg);
+    return null;
+  },
+  cliInstalled: null,
+  installed: new Map(),
+});
 
 const README = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 
@@ -36,7 +59,22 @@ const norm = (text: string): string => text.replace(/\s+/g, ' ').trim();
  * then be reading the correction as if it were the headline claim.
  */
 const PARAGRAPHS = README.split(/\n{2,}/).filter((p) => p.trim() !== '');
-const isFootnoteParagraph = (p: string): boolean => p.split('\n').every(isFootnoteDefinition);
+
+/**
+ * `.trim()` before the split is load-bearing. A footnote that sits at the END of
+ * the page keeps the file's trailing newline, so its paragraph splits to
+ * `['[^egress]: …', '']` and a bare `.every(isFootnoteDefinition)` is false —
+ * the footnote is then classified as body prose, `footnote` becomes `''`, and
+ * most of this file fails with messages about missing copy rather than about the
+ * parser, while `body` silently absorbs the correction. Moving the footnote to
+ * the bottom of the page is a pure formatting edit, so nothing would have warned
+ * that it broke the guard.
+ */
+const isFootnoteParagraph = (p: string): boolean =>
+  p
+    .trim()
+    .split('\n')
+    .every((line) => isFootnoteDefinition(line));
 
 const footnote = norm(
   PARAGRAPHS.filter(isFootnoteParagraph)
@@ -108,12 +146,34 @@ describe('cli/README.md CLI-owned egress disclosure', () => {
     expect(footnote).toContain(String(UPDATE_OPT_OUTS[0]));
   });
 
-  // What the registry actually learns. "Reaches the network" understates it —
-  // the disclosure a reader auditing their own egress needs is that the package
-  // name and its presence on this machine are what cross.
-  it('says what the registry learns, not merely that a request happens', () => {
-    expect(footnote).toMatch(/package name/i);
-    expect(footnote).toMatch(/installed here/i);
+  // The seam has to have produced something, or every derived assertion below
+  // holds over an empty list and this whole group goes quietly vacuous.
+  it('records the packages the update check really looks up', () => {
+    expect(LOOKED_UP_PACKAGES.length).toBeGreaterThan(1);
+  });
+
+  /**
+   * Every package the lookup asks for has to be named. The footnote used to say
+   * `npm view` ran on "this package" — singular — while three packages crossed,
+   * and a reader auditing their own egress from that sentence would expect one
+   * request naming one package. Derived from `gatherReport`, so a fourth agent
+   * gaining an npm package reddens the page until the page names it.
+   */
+  it.each(LOOKED_UP_PACKAGES)('names %s among the packages looked up', (pkg) => {
+    expect(footnote).toContain(pkg);
+  });
+
+  /**
+   * And says what that does NOT tell the registry. The plugin lookups run with
+   * an empty `installed` map above, so the registry learns which packages this
+   * machine asked about — not which it has. The previous copy claimed the
+   * opposite ("that it is installed here"), which overstates the disclosure in
+   * the one direction a privacy footnote must not.
+   */
+  it('does not claim the registry learns what is installed', () => {
+    expect(footnote).toMatch(/whether or not you have them installed/i);
+    expect(footnote).toMatch(/asked about, not which it runs/i);
+    expect(footnote).not.toMatch(/installed here/i);
   });
 
   it('names the package-manager shell-outs as the second path', () => {
@@ -122,6 +182,18 @@ describe('cli/README.md CLI-owned egress disclosure', () => {
     expect(footnote).toMatch(/aka check-updates/);
     expect(footnote).toMatch(/`npm`/);
     expect(footnote).toMatch(/`claude`/);
+    // `aka plugins install codex` spawns the `codex` CLI, not npm or claude
+    // (cli-plugin-manager.ts's CliPluginBin is 'claude' | 'codex'). A page whose
+    // claim is that the paths are enumerated cannot omit one of the binaries.
+    expect(footnote).toMatch(/`codex`/);
+  });
+
+  // `aka check-updates` reaches the registry but installs nothing, so grouping
+  // it under "commands that install software" misdescribes it in the other
+  // direction — the reader cannot tell a read-only lookup from a mutation.
+  it('separates the read-only lookup from the installing commands', () => {
+    expect(footnote).toMatch(/look up or install/i);
+    expect(footnote).toMatch(/only reads/i);
   });
 
   /**
@@ -185,7 +257,14 @@ describe('cli/README.md CLI-owned egress disclosure', () => {
    */
   it('names the exceptions in the claim itself, not only in the footnote', () => {
     expect(CLAIM).toMatch(/version check/i);
+    // Every command that reaches the registry, not just the one that installs.
+    // The claim named `aka plugins` alone while the footnote below it also named
+    // `aka update` and `aka check-updates` — so the sentence a reader quotes was
+    // narrower than the correction underneath it, and someone running
+    // `aka check-updates` would believe it stayed on the machine.
     expect(CLAIM).toMatch(/aka plugins/);
+    expect(CLAIM).toMatch(/aka update/);
+    expect(CLAIM).toMatch(/aka check-updates/);
   });
 
   /**

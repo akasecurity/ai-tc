@@ -15,18 +15,24 @@
  * would demand it describe a `TriageHit` it never sends — copy that overstates
  * what a reader is consenting to is its own kind of wrong answer.
  *
- * Which files are covered is DERIVED from the tracked tree rather than listed.
- * A hand-written list is what let `cli/README.md` carry an unqualified
+ * Which files are covered is DERIVED from the tree rather than listed. A
+ * hand-written list is what let `cli/README.md` carry an unqualified
  * "nothing leaves your computer" for as long as it did: the page was not
- * unguarded by decision, it was unguarded because nobody added it. Now a README
- * that makes a locality claim and is not classified below fails here.
+ * unguarded by decision, it was unguarded because nobody added it.
+ *
+ * That derivation lives in packages/eslint-config/test/privacy-claim-coverage.test.js,
+ * NOT here, and the reason is turbo's cache rather than tidiness: this task's
+ * `inputs` hash only two READMEs, so a new front door elsewhere in the tree
+ * left this package's hash byte-identical and CI replayed a cached pass. Only
+ * that task's inputs hash the whole workspace. The list below stays here
+ * because the TIER split is this suite's own business; the guard over there
+ * reads it.
  *
  * Two other guards read these same files and can redden on the same edit:
  * packages/persistence/test/at-rest-docs.test.ts covers the at-rest posture and
  * the SECURITY.md link, and cli/test/privacy-claims.test.ts covers the CLI
  * footnote's own disclosures, which derive from the CLI's flags.
  */
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,10 +43,10 @@ import { describe, expect, it } from 'vitest';
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
 /**
- * One repo-relative posix path, read from the repo root. Every file here is
- * reached this way and by no other route: the coverage guard below compares
- * these same paths against `git ls-files`, so a second addressing scheme is a
- * second thing that can disagree with it about which file a row names.
+ * One repo-relative posix path, read from the repo root. Rows are addressed by
+ * that path and by no other route, so `name` can serve as both the label and
+ * the location — a second field holding the path would be free to name one page
+ * and read another.
  */
 const repoFile = (relative: string): string => readFileSync(join(REPO_ROOT, relative), 'utf8');
 
@@ -87,60 +93,7 @@ const CLASSIFIED_READMES = [
 const READMES = CLASSIFIED_READMES.map((r) => ({ ...r, text: repoFile(r.name) }));
 const JUDGE_READMES = READMES.filter((r) => r.describesJudge);
 
-/**
- * A fixture corpus other suites feed to a scanner — an input, not a page anyone
- * reads. Holding one to a copy standard would make the fixture harder to write
- * rather than the product safer.
- *
- * Anchored on a path SEGMENT rather than written as `includes('/test/fixtures/')`,
- * which needs a leading slash and so misses the repo-root `test/fixtures/` tree
- * this repository actually has.
- */
-const isFixture = (path: string): boolean => /(?:^|\/)test\/fixtures\//.test(path);
-
-/**
- * Every README the working tree holds, whether or not it is staged yet.
- *
- * `--cached --others --exclude-standard` rather than a bare `ls-files`: the
- * index alone cannot see a README a contributor has just written, so this guard
- * would report green on an unclassified front door until somebody staged it —
- * deferring the failure to whoever ran `git add`. `--exclude-standard` keeps
- * ignored trees (node_modules, build output) out.
- */
-const trackedReadmes = (): string[] => {
-  let out: string;
-  try {
-    out = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      maxBuffer: 64 << 20,
-    });
-  } catch (cause) {
-    throw new Error(
-      'Could not list README files with `git ls-files`. This guard audits the real workspace ' +
-        'layout, so it must run inside a git checkout.',
-      { cause },
-    );
-  }
-  return out
-    .split('\n')
-    .filter(Boolean)
-    .filter((p) => /(?:^|\/)README\.md$/i.test(p))
-    .filter((p) => !isFixture(p));
-};
-
 describe('locality-claim coverage', () => {
-  /**
-   * The list above is a decision; this is what makes it one. A fourth front
-   * door that says "nothing leaves your machine" and is not classified reddens
-   * here rather than shipping unread — which is the defect this suite was
-   * extended to close, stated as a rule instead of as one more entry.
-   */
-  it('classifies every tracked README that makes a locality claim', () => {
-    const claiming = trackedReadmes().filter((p) => LOCALITY_CLAIM.test(repoFile(p)));
-    expect(claiming.sort()).toEqual(CLASSIFIED_READMES.map((r) => r.name).sort());
-  });
-
   // Both tiers run through `describe.each`, which registers nothing at all for an
   // empty array — so a mis-set flag that empties a tier would delete its cases
   // and report green. Neither count is allowed to reach zero.

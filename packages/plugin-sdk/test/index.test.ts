@@ -5,11 +5,12 @@ import * as barrel from '../src/index.ts';
 /**
  * The barrel's exported symbol set is the package's public API and must not
  * change during internal restructuring. It is the workspace's highest-stakes
- * barrel to leave unpinned: `cli` and all three plugin bundles set
- * `noExternal: [/^@akasecurity\//]`, so this package is inlined into each of
- * them, and an export dropped in a refactor reaches Claude Code, Codex and
- * Antigravity in one release. (The browser extension bundles the `./browser`
- * subpath only, which this file does not cover — see the limits below.)
+ * barrel to leave unpinned: `cli`, all three plugin bundles and the browser
+ * extension's native host each set `noExternal: [/^@akasecurity\//]`, so this
+ * package is inlined into five shipped artifacts, and an export dropped in a
+ * refactor reaches Claude Code, Codex and Antigravity in one release. (It is the
+ * extension's CONTENT SCRIPT that takes the `./browser` subpath instead; that
+ * subpath is out of scope here — see the limits below.)
  *
  * Before this file, nothing in the package saw such a drop. Its own suites each
  * reach their subject through that module's own path (`../src/data-dir.ts`,
@@ -40,11 +41,15 @@ import * as barrel from '../src/index.ts';
  *   records the same limit; the second case below pins it here rather than
  *   leaving it as prose.
  * - **A rebind under an existing name is invisible.** The comparison is over key
- *   sets, so `export { maskText as scanText }` changes nothing it can see. Note
- *   that nothing else catches that either — the owning module's suite imports
- *   `../src/mask.ts` directly and never observes what the barrel binds, and no
- *   file imports `scanText` from the package root. Do not read a green run here
- *   as identity.
+ *   sets, so `export { dataDir as settingsDir }` changes nothing it can see —
+ *   and nothing else catches that one either: both are `(base?: string) =>
+ *   string`, so the whole workspace typechecks clean while `aka init` creates
+ *   and chmods the wrong directory under the owner-only contract. How far that
+ *   reaches depends on the pair. A rebind between DIFFERENTLY typed exports is
+ *   caught, just not here: `export { maskText as scanText }` reds `tsc` at the
+ *   three plugins' `src/history/usage.ts`, which destructure `scanText`'s object
+ *   result. Do not read a green run here as identity, and do not read it as the
+ *   only gate either.
  * - **The subpath entries are out of scope.** `package.json` also publishes
  *   `./scan-worker`, `./bare-command` and `./browser`; this covers `.` alone,
  *   the entry plugin authors import.

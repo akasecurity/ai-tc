@@ -121,6 +121,13 @@ const DOCUMENTED_EXCLUSIONS: readonly {
     pattern: /\.bak$/,
     reason:
       'a snapshot copy of the store; the note covers these in their own paragraph rather than in the file list, because the name carries a timestamp',
+    // Unobservable to the walk below, and deliberately so: the only snapshot an
+    // ordinary store ever took was the pre-drop one on its very first open, and
+    // a brand-new store no longer takes it (legacyDropNeedsBackup — there is
+    // nothing in a store this open just built to protect). The copy is still
+    // written, on a store that carries legacy history, and is still owner-only.
+    coveredBy:
+      "test/database.test.ts — 'writes the pre-drop VACUUM INTO backup owner-only (0600), not the umask default'",
   },
   {
     pattern: new RegExp(`\\.bak${escapeRe(SNAPSHOT_STAGING_SUFFIX)}$`),

@@ -4,12 +4,14 @@ import type { EventKind, EventMetadata, SourceTool } from '@akasecurity/schema';
 import { SQLITE_MIGRATIONS, toCaptureAttributes } from '@akasecurity/schema';
 
 import {
+  anyTableHasRows,
   columnNames,
   evidenceExists,
   type EvidenceObject,
   evidenceObjects,
   indexExists,
   schemaObjectExists,
+  tableNames,
 } from './db/migrations/introspection.ts';
 import { inspectionDefinitionId, sourceProjectId } from './ids.ts';
 import { bindParams } from './internal/rows.ts';
@@ -233,17 +235,18 @@ export function applyMigrations(db: DatabaseSync, file?: string): void {
 // Runs the legacy-drop migration's own DDL (dropping `events`/`findings` and
 // creating their compatibility views) and ledgers its tag — called ONLY once
 // runLegacyHistoryBackfill has reported both legacy tables fully drained.
-// Backs the live file up first (when a real path is known — a `:memory:` or
-// path-less caller, i.e. tests, has nothing durable to protect), mirroring
-// backupLegacyStore's shape in database.ts. A failed backup defers the drop
-// entirely rather than proceeding without one — history is never destroyed
-// on a best-effort basis.
+// Backs the live file up first — when a real path is known (a `:memory:` or
+// path-less caller, i.e. tests, has nothing durable to protect) AND the store
+// has something to protect (legacyDropNeedsBackup; a store this open just built
+// does not), mirroring backupLegacyStore's shape in database.ts. A failed
+// backup defers the drop entirely rather than proceeding without one — history
+// is never destroyed on a best-effort basis.
 export function applyLegacyDropMigration(db: DatabaseSync, file: string | undefined): void {
   const migration = SQLITE_MIGRATIONS.find((m) => m.tag === LEGACY_DROP_MIGRATION_TAG);
   // Should not happen in a released build (schema and persistence version
   // together), but a missing migration must never crash an open.
   if (!migration) return;
-  if (file) {
+  if (file && legacyDropNeedsBackup(db)) {
     try {
       backupBeforeLegacyDrop(db, file);
     } catch (error) {
@@ -284,6 +287,67 @@ export function applyLegacyDropMigration(db: DatabaseSync, file: string | undefi
     );
   } catch (error) {
     akaWarn(`legacy events/findings drop failed; deferring: ${String(error)}`);
+  }
+}
+
+// Tables whose rows a migration writes ITSELF, so rows in them say nothing
+// about whether the store carries user history. Both are written by
+// applyMigrations before the drop is reached: the ledger it keeps its own state
+// in, and the installed_packs write gate's single control row
+// (ensureWriteGateTrigger).
+//
+// The list is deliberately as short as the probe point requires, and it is
+// pinned as an EXACT set by legacy-compat-views.test.ts. An entry here is a table whose
+// contents STOP BEING EVIDENCE, so a wrong one skips a backup that was owed —
+// and nothing else in the suite notices, because every other case reaches its
+// verdict through some other table. `policies` is the worked example of what
+// does NOT belong: it looks seeded, but seedDefaults() runs in openLocalDatabase
+// AFTER applyMigrations, so the table is empty here and listing it would only
+// have hidden a user's customized rows from a later caller.
+export const MIGRATION_SEEDED_TABLES: ReadonlySet<string> = new Set([
+  'migration_ledger',
+  '_pack_write_gate',
+]);
+
+// Whether the pre-drop snapshot is owed, read ENTIRELY out of the open store.
+//
+// The snapshot exists so the irreversible `events`/`findings` drop can never
+// destroy history on a best-effort basis, and on a store that carries any it
+// always runs. But the drop is also reached on the FIRST open of a brand-new
+// store: the earlier migrations have just created the legacy pair empty, the
+// backfill drains nothing, and the snapshot copies a freshly built schema —
+// a second full copy of the store file, on every install, protecting nothing.
+//
+// One rule separates the two: every table the store holds must be empty, bar
+// the seeded pair. The table list is read from sqlite_master rather than
+// written down here, so a table a later migration adds counts as evidence by
+// default — the case nobody has thought about falls on the side that takes the
+// backup, and only an explicit entry in MIGRATION_SEEDED_TABLES can take a
+// table out of the reckoning.
+//
+// That general rule is also what covers the case worth naming: a store part-way
+// through — or just finished with — the legacy drain. `legacy_copy_watermark`
+// is a plain table, written inside the same transaction that copies each page
+// of legacy rows (see drainLegacyTable), so a store that ever drained a legacy
+// row carries a row there and is snapshotted here whatever else it now holds.
+// It needs no special case, but it does mean adding that table to the seeded
+// set above would quietly cost a genuinely-upgraded store its snapshot.
+//
+// Nothing here is threaded in from the caller. `applyLegacyDropMigration` is
+// exported and callable directly, so a parameter would be a way for a caller to
+// skip a backup that was owed; the question is asked of the store instead, and
+// a store cannot lie about its own rows.
+export function legacyDropNeedsBackup(db: DatabaseSync): boolean {
+  try {
+    const candidates = tableNames(db).filter((name) => !MIGRATION_SEEDED_TABLES.has(name));
+    return anyTableHasRows(db, candidates);
+  } catch (error) {
+    // A probe that could not run leaves the question unanswered, and the
+    // unanswered case is the one that takes the backup.
+    akaWarn(
+      `could not rule out legacy history before the drop; backing up anyway: ${String(error)}`,
+    );
+    return true;
   }
 }
 

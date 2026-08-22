@@ -87,9 +87,13 @@ afterEach(() => {
 });
 
 // Every path under `home`, the home itself included. A hardcoded list of the
-// paths init writes cannot cover what a later change adds — the migration's
-// `aka.db.pre-drop.<ts>.bak`, a byte-for-byte copy of the store, is already one
-// such file and no list here names it.
+// paths init writes rots in BOTH directions, and the legacy-drop migration's
+// `aka.db.pre-drop.<ts>.bak` — a byte-for-byte copy of the store — has now done
+// each in turn: it once landed on every fresh init while no list here named it,
+// and it no longer lands here at all (legacyDropNeedsBackup skips the snapshot
+// on a store that holds nothing the drop could destroy), so a list updated to
+// name it would now name a file that never appears. A walk is right whichever
+// way the next change goes.
 //
 // Deliberately its own walk rather than a call into looseStorePaths: a test that
 // reuses the implementation it is checking cannot catch a bug in that walk.

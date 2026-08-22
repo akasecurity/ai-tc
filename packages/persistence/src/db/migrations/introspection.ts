@@ -74,6 +74,41 @@ export function columnNames(
   return columns.map((c) => c.name);
 }
 
+/**
+ * Every table the store carries, in sqlite_master order, excluding SQLite's own
+ * internal `sqlite_*` bookkeeping tables. Views are excluded too — the `type`
+ * filter is what keeps a dropped-then-viewed name (the legacy `events`/
+ * `findings` pair) out of the list once the compatibility views replace it.
+ */
+export function tableNames(db: DatabaseSync): string[] {
+  const rows = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+    )
+    .all() as { name: string }[];
+  return rows.map((r) => r.name);
+}
+
+/**
+ * True when any of `names` holds at least one row.
+ *
+ * ONE prepared statement for the whole set rather than one per table: each
+ * probe is an `EXISTS`, which stops at the first row, and `OR` short-circuits,
+ * so a store with history answers without reading past its first non-empty
+ * table. An empty list is false — no table can hold a row.
+ *
+ * Names come from sqlite_master and cannot be bound as parameters; doubling any
+ * embedded quote keeps each identifier a single token.
+ */
+export function anyTableHasRows(db: DatabaseSync, names: readonly string[]): boolean {
+  if (names.length === 0) return false;
+  const probes = names
+    .map((name) => `EXISTS(SELECT 1 FROM "${name.replaceAll('"', '""')}")`)
+    .join(' OR ');
+  const row = db.prepare(`SELECT (${probes}) AS present`).get() as { present: number };
+  return Boolean(row.present);
+}
+
 export function evidenceExists(db: DatabaseSync, object: EvidenceObject): boolean {
   if (object.kind === 'column') {
     // table_xinfo, NOT table_info: generated columns are invisible to table_info,

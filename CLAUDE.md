@@ -1995,12 +1995,21 @@ straddle the two windows and **pin the straddle itself** — with rows that all 
 both, the assertions pass whichever read the page used, and the suite proves nothing.
 
 An at-rest leak scan must read **every file in the data dir**, not `aka.db` plus a
-hardcoded `-wal`/`-shm` pair. This is not a corner case: a migration leaves an
-`aka.db.pre-drop.<ts>.<rand>.bak` — a byte-for-byte copy of the pre-migration store — in that
-directory on **every** run, and it is around 47% of the bytes there, so a name-list reader
-misses more of the store than a `-wal` pair ever covered. On top of that SQLite writes an
+hardcoded `-wal`/`-shm` pair. This is not a corner case: the legacy-drop migration leaves an
+`aka.db.pre-drop.<ts>.<rand>.bak` — a byte-for-byte copy of the pre-migration store, so
+roughly as many bytes again as the store itself — beside it, and a name-list reader misses
+more of the store there than a `-wal` pair ever covered. On top of that SQLite writes an
 `aka.db-journal` instead of the WAL pair wherever WAL silently no-ops (see `dbSidecars` in
 `packages/persistence/src/paths.ts`), and the foreign-lineage reset leaves its own `.bak`.
+
+**That `.bak` no longer appears on every run, and the change makes a name-list reader MORE
+dangerous rather than less.** `legacyDropNeedsBackup` in
+`packages/persistence/src/migrations.ts` skips the snapshot when the store
+demonstrably holds nothing the drop could destroy, which is every brand-new store — so a
+fresh-store fixture now produces no `.bak` at all. A hardcoded reader exercised only against
+one therefore looks complete while the single case that still writes the copy — a store
+carrying real legacy history, i.e. the one whose backup holds a real prompt corpus — is
+exactly the case it cannot see. Read the directory.
 `web-ui/test/helpers/store-bytes.ts` is that reader; import it rather than re-rolling one.
 Bind one call and assert against it — the positive control and the absence check must
 describe the same bytes, not two independent reads. Two rules keep it honest, because an

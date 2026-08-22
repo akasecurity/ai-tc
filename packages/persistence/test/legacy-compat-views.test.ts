@@ -28,8 +28,11 @@ import {
   applyLegacyDropMigration,
   backupBeforeLegacyDrop,
   LEGACY_BACKFILL_MAX_ROWS_PER_CALL,
+  legacyDropNeedsBackup,
+  MIGRATION_SEEDED_TABLES,
 } from '../src/migrations.ts';
-import { DB_FILENAME } from '../src/paths.ts';
+import { DB_FILENAME, dbSidecars } from '../src/paths.ts';
+import { corruptStore } from './helpers/fault-injection.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 import { assertNoOpenTransaction } from './helpers/transactions.ts';
 
@@ -80,6 +83,29 @@ function seedPreCutoverFile(): string {
     raw.exec(migration.sql);
   }
   raw.close();
+  return file;
+}
+
+// The state the drop is really reached in: every migration applied EXCEPT the
+// drop itself, so `legacy_copy_watermark` (0013) exists and the legacy pair is
+// still a pair of real tables. seedPreCutoverFile() freezes one migration
+// earlier, which is the right fixture for the drain but the wrong one for any
+// question about the store's own upgrade record.
+function seedPreDropFile(): string {
+  const file = seedPreCutoverFile();
+  const raw = new DatabaseSync(file);
+  // Same reasoning as seedPreCutoverFile's own pragmas: fixture durability is
+  // irrelevant, and the default DELETE journal's per-statement fsync is what
+  // pushes this file past its timeout on the Windows runner.
+  raw.exec('PRAGMA journal_mode = MEMORY');
+  raw.exec('PRAGMA synchronous = OFF');
+  try {
+    const sql = SQLITE_MIGRATIONS.find((m) => m.tag === MIGRATION_0013_TAG)?.sql;
+    if (sql === undefined) throw new Error(`missing migration ${MIGRATION_0013_TAG}`);
+    raw.exec(sql);
+  } finally {
+    raw.close();
+  }
   return file;
 }
 
@@ -630,6 +656,202 @@ describe('legacy events/findings compatibility views', () => {
     } finally {
       db.close();
     }
+  });
+
+  // --- the pre-drop snapshot is owed, or it is not -------------------------
+  // The drop is reached on the FIRST open of every brand-new store, where the
+  // legacy pair was created empty milliseconds earlier by this same open. The
+  // snapshot there copies a freshly built schema and nothing else — a second
+  // full copy of the store file on every install. legacyDropNeedsBackup is what
+  // separates that from a store carrying history; these pin both sides of it.
+
+  it('a brand-new store takes no pre-drop backup — there is nothing in it to protect', () => {
+    const db = store.open();
+    db.close();
+
+    // The drop really did run on this open (otherwise "no backup" would hold
+    // for the wrong reason — a deferred drop needs no backup either).
+    const raw = store.openRaw();
+    try {
+      expect(schemaObjectExists(raw, 'view', 'events')).toBe(true);
+      expect(schemaObjectExists(raw, 'table', 'events')).toBe(false);
+    } finally {
+      raw.close();
+    }
+
+    const entries = readdirSync(store.dataDir).sort();
+    // Positive control FIRST. The absence check below is a filter, and a filter
+    // over an empty directory is empty — so on its own it passes just as well
+    // against a store that was never written at all.
+    expect(entries).toContain(DB_FILENAME);
+    // Only the store itself and its own sidecars are on disk: no `.pre-drop.`
+    // copy, and no staging directory left behind by one either. Measured on
+    // arm64 macOS / Node 24 the list is exactly ['aka.db'] — every sidecar is
+    // checkpointed away by the close above — but the sidecars are part of the
+    // store rather than a copy of it, so they are allowed rather than pinned.
+    const allowed = new Set([DB_FILENAME, ...dbSidecars(DB_FILENAME)]);
+    expect(entries.filter((f) => !allowed.has(f))).toEqual([]);
+  });
+
+  it('a store carrying legacy rows is still snapshotted before the drop', () => {
+    const file = seedPreCutoverFile();
+    const raw = new DatabaseSync(file);
+    raw.exec('PRAGMA foreign_keys = ON');
+    insertLegacyEvent(raw, 'ev-keep', 1_000, null);
+    raw.close();
+
+    const db = store.open();
+    db.close();
+
+    expect(readdirSync(store.dataDir).filter((f) => f.includes('.pre-drop.'))).toHaveLength(1);
+
+    // And the snapshot was taken on the way THROUGH the drop, not because the
+    // drop deferred — a deferral leaves a backup behind too, so the count above
+    // does not distinguish them on its own.
+    const after = store.openRaw();
+    try {
+      expect(schemaObjectExists(after, 'view', 'events')).toBe(true);
+      expect(schemaObjectExists(after, 'table', 'events')).toBe(false);
+    } finally {
+      after.close();
+    }
+  });
+
+  it('a failed snapshot still defers the drop on a store carrying legacy rows', () => {
+    const file = seedPreDropFile();
+    const db = new DatabaseSync(file);
+    db.exec('PRAGMA foreign_keys = ON');
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS migration_ledger (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)',
+    );
+    // Real legacy history, so the snapshot is unambiguously owed.
+    insertLegacyEvent(db, 'ev-doomed', 1_000, null);
+    try {
+      expect(legacyDropNeedsBackup(db)).toBe(true);
+
+      // Point the snapshot at a data dir that does not exist: staging the copy
+      // throws, on every platform and without needing a chmod or a privilege.
+      const unreachable = join(store.dataDir, 'no-such-dir', DB_FILENAME);
+      expect(() => {
+        applyLegacyDropMigration(db, unreachable);
+      }).not.toThrow();
+
+      // Deferred, not proceeded-without-one: the legacy pair is untouched, no
+      // view was created, and the tag is not ledgered — the next open retries.
+      expect(schemaObjectExists(db, 'table', 'events')).toBe(true);
+      expect(schemaObjectExists(db, 'view', 'events')).toBe(false);
+      expect(
+        db.prepare('SELECT 1 FROM migration_ledger WHERE tag = ?').get(MIGRATION_0014_TAG),
+      ).toBeUndefined();
+      expect((db.prepare('SELECT count(*) AS n FROM events').get() as { n: number }).n).toBe(1);
+      // A deferred drop must not leave its own transaction open behind it.
+      assertNoOpenTransaction(db);
+
+      // Positive control on the SAME store and the same call: the only thing
+      // that changes is whether the snapshot can be written. With a reachable
+      // path the drop completes and the copy lands — so the deferral above is
+      // attributable to the failed snapshot rather than to anything else about
+      // this fixture.
+      applyLegacyDropMigration(db, file);
+      expect(schemaObjectExists(db, 'view', 'events')).toBe(true);
+      expect(schemaObjectExists(db, 'table', 'events')).toBe(false);
+      expect(readdirSync(store.dataDir).filter((f) => f.includes('.pre-drop.'))).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('a row anywhere outside the legacy pair still owes the backup — a mid-upgrade store', () => {
+    const file = seedPreDropFile();
+    const db = new DatabaseSync(file);
+    db.exec('PRAGMA foreign_keys = ON');
+    try {
+      // The legacy pair is empty, exactly as on a brand-new store...
+      expect((db.prepare('SELECT count(*) AS n FROM events').get() as { n: number }).n).toBe(0);
+      expect(legacyDropNeedsBackup(db)).toBe(false);
+
+      // ...but a store part-way through the upgrade carries its drained history
+      // in audit_events, and that is evidence the snapshot is owed.
+      db.prepare(
+        "INSERT INTO audit_events (id, event_type, started_at) VALUES ('sess-1', 'session', 1000)",
+      ).run();
+      expect(legacyDropNeedsBackup(db)).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('a drained watermark owes the backup — the case the general rule has to cover', () => {
+    // The watermark is the store's own record that legacy rows were once copied
+    // out of it, and it is written atomically with those rows (drainLegacyTable).
+    // It gets no special case in legacyDropNeedsBackup: `legacy_copy_watermark`
+    // is a plain table, so a row in it is evidence under the general rule like
+    // any other. This is what would go red if it were ever added to
+    // MIGRATION_SEEDED_TABLES — which would cost a genuinely-upgraded store its
+    // snapshot the day `audit_events` gains a retention sweep and such a store
+    // can present as otherwise empty.
+    const file = seedPreDropFile();
+    const db = new DatabaseSync(file);
+    db.exec('PRAGMA foreign_keys = ON');
+    try {
+      expect(legacyDropNeedsBackup(db)).toBe(false);
+      db.prepare(
+        "INSERT INTO legacy_copy_watermark (source, last_rowid) VALUES ('events', 42)",
+      ).run();
+      expect(legacyDropNeedsBackup(db)).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('an unanswerable probe backs up rather than assuming there is nothing to protect', () => {
+    // A store whose schema cannot be read at all answers neither way, and the
+    // unanswered case has to take the backup. Without the guard the throw would
+    // escape applyMigrations and fail the whole open, where today a store this
+    // damaged merely defers the drop.
+    // The store is left in the state the PRODUCTION caller probes: mid-open,
+    // before openLocalDatabase seeds the default policies. A fully-opened store
+    // is the wrong control here — its seeded `policies` rows are real evidence,
+    // so the probe rightly says "back up" and the assertion below would have to
+    // be bought with an allowlist entry the production path never needs.
+    const file = seedPreDropFile();
+
+    // Positive control on the very same store: healthy and carrying nothing,
+    // the probe says there is nothing to protect. Only the damage below can
+    // flip it, so the assertion after it cannot hold for the boring reason.
+    const healthy = new DatabaseSync(file);
+    try {
+      expect(legacyDropNeedsBackup(healthy)).toBe(false);
+    } finally {
+      healthy.close();
+    }
+
+    corruptStore(file, 'header', { store });
+    const damaged = new DatabaseSync(file);
+    try {
+      expect(legacyDropNeedsBackup(damaged)).toBe(true);
+    } finally {
+      damaged.close();
+    }
+  });
+
+  it('MIGRATION_SEEDED_TABLES is pinned exactly — widening it hides real evidence', () => {
+    // The ONE hand-maintained input to legacyDropNeedsBackup, and the only way
+    // to skip a backup that was owed. A table listed there stops counting as
+    // evidence, so adding one that holds user data — `exceptions`,
+    // `secret_vault`, `inspection_findings` — makes a store holding only that
+    // read as "nothing to protect". Measured: with those three added, every
+    // other test in this package still passed, so nothing but an exact set
+    // makes the widening loud.
+    //
+    // Both entries are written by applyMigrations itself, BEFORE the drop is
+    // reached: the ledger it records its own progress in, and the
+    // installed_packs write gate's single control row (ensureWriteGateTrigger).
+    // `policies` is the near miss and is deliberately absent — seedDefaults()
+    // runs in openLocalDatabase AFTER applyMigrations, so the table is empty at
+    // the probe point and listing it would only have hidden a user's
+    // customized rows.
+    expect([...MIGRATION_SEEDED_TABLES].sort()).toEqual(['_pack_write_gate', 'migration_ledger']);
   });
 
   it('pre-drop backup is a sidecar-free snapshot that includes WAL-resident committed rows', () => {

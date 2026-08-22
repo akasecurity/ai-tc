@@ -16,6 +16,7 @@ import type { DetectedFinding, IngestEvent } from '@akasecurity/schema';
 import { DEFAULT_ACTIONS } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { schemaObjectExists } from '../src/db/migrations/introspection.ts';
 import { captureId } from '../src/ids.ts';
 import { backupBeforeLegacyDrop } from '../src/migrations.ts';
 import { descriptorProbe } from './helpers/descriptors.ts';
@@ -341,7 +342,14 @@ describe('openLocalDatabase sweeps abandoned snapshot staging', () => {
    */
   function migratedStore(): void {
     store.open();
-    expect(readdirSync(store.dataDir).some((name) => name.endsWith('.bak'))).toBe(true); // the first open really did take its pre-drop snapshot
+    // The first open really did run the legacy drop: `events` is a view now,
+    // not a table. That used to be evidenced by the pre-drop `.bak` the open
+    // left behind, but a brand-new store no longer takes one — it holds nothing
+    // the drop could destroy (see legacyDropNeedsBackup). The drop itself is
+    // what these cases need to have happened, so assert that directly.
+    const raw = store.openRaw();
+    expect(schemaObjectExists(raw, 'view', 'events')).toBe(true);
+    expect(schemaObjectExists(raw, 'table', 'events')).toBe(false);
   }
 
   // A staging area exactly as a killed process leaves one: the directory, and

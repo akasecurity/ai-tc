@@ -1995,10 +1995,16 @@ straddle the two windows and **pin the straddle itself** — with rows that all 
 both, the assertions pass whichever read the page used, and the suite proves nothing.
 
 An at-rest leak scan must read **every file in the data dir**, not `aka.db` plus a
-hardcoded `-wal`/`-shm` pair. This is not a corner case: a migration leaves an
-`aka.db.pre-drop.<ts>.<rand>.bak` — a byte-for-byte copy of the pre-migration store — in that
-directory on **every** run, and it is around 47% of the bytes there, so a name-list reader
-misses more of the store than a `-wal` pair ever covered. On top of that SQLite writes an
+hardcoded `-wal`/`-shm` pair. This is not a corner case: a migration carrying pre-cutover
+history forward leaves an `aka.db.pre-drop.<ts>.<rand>.bak` — a byte-for-byte copy of the
+pre-migration store, as large again as `aka.db` itself — in that directory, so a name-list
+reader misses more of the store than a `-wal` pair ever covered. **Which of those copies
+exist is a property of the store's HISTORY, not a list anyone can write here**, which is the
+argument for walking the directory and is why it survived that copy ceasing to be
+unconditional: the pre-drop snapshot is taken only where the drop would destroy rows
+(`legacyDropWouldDestroyRows` in `packages/persistence/src/migrations.ts`), so a store this
+same open created writes none — it used to write one on **every** first open, half the bytes
+in a new data dir, protecting a freshly-built schema that held nothing. On top of that SQLite writes an
 `aka.db-journal` instead of the WAL pair wherever WAL silently no-ops (see `dbSidecars` in
 `packages/persistence/src/paths.ts`), and the foreign-lineage reset leaves its own `.bak`.
 `web-ui/test/helpers/store-bytes.ts` is that reader; import it rather than re-rolling one.

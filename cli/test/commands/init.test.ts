@@ -89,7 +89,9 @@ afterEach(() => {
 // Every path under `home`, the home itself included. A hardcoded list of the
 // paths init writes cannot cover what a later change adds — the migration's
 // `aka.db.pre-drop.<ts>.bak`, a byte-for-byte copy of the store, is already one
-// such file and no list here names it.
+// such file and no list here names it. (A first `aka init` no longer produces
+// one — the legacy drop snapshots only where it would destroy rows — so the
+// cases below plant it by hand rather than depending on a run to write it.)
 //
 // Deliberately its own walk rather than a call into looseStorePaths: a test that
 // reuses the implementation it is checking cannot catch a bug in that walk.
@@ -236,7 +238,9 @@ describe('runInit contract', () => {
       expect(tree).toContain(dbPath(dir));
       expect(tree).toContain(join(settingsDir(dir), 'settings.json'));
       // Everything ELSE it found is owner-only too — the part a five-path list
-      // cannot cover, and where the pre-drop backup is caught.
+      // cannot cover, and where a snapshot copy would be caught. Nothing here
+      // depends on one existing: a first init writes no pre-drop backup, and
+      // the case that pins the walk against one plants it explicitly.
       expect(tree.filter(looseInTree)).toEqual([]);
 
       // The user-facing signal has to agree with the disk. It can: looseStorePaths
@@ -638,7 +642,9 @@ describe('looseStorePaths', () => {
     }
     // The layout is a fixed list; what sits beside the store is not. The legacy
     // drop leaves an `aka.db.pre-drop.<ts>.<rand>.bak` — a byte-for-byte copy of
-    // the prompt corpus — on every run, and the SQLite sidecars appear with
+    // the prompt corpus — on any run carrying pre-cutover history forward
+    // (planted here, since a fresh store's drop destroys nothing and so takes no
+    // snapshot), and the SQLite sidecars appear with
     // whichever journal mode is active. tightenFile/tightenPerms hold all of
     // them at 0600, so one left group-readable is a rejected chmod, which is
     // exactly what this warning exists to surface. Before this walk the store's

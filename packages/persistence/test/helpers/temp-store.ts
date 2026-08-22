@@ -90,10 +90,15 @@ export interface TempStoreOptions {
    * the copy is this store's own file, and no handle is shared.
    *
    * Leave it off for a suite whose SUBJECT is the open path — migrations, the
-   * lineage reset, the `.bak` a fresh migration leaves behind, or a fault
-   * injected so that `applyMigrations` is the thing that refuses. A seeded
-   * store has nothing left to migrate, so those assertions would hold
-   * vacuously rather than fail.
+   * lineage reset, the pre-drop snapshot, or a fault injected so that
+   * `applyMigrations` is the thing that refuses. A seeded store has nothing
+   * left to migrate, so those assertions would hold vacuously rather than fail.
+   *
+   * The snapshot case still belongs on that list, but it no longer arrives on
+   * its own: a fresh migration leaves a `.bak` only where the legacy drop would
+   * destroy rows, so such a suite has to seed legacy history for one to exist
+   * at all — and a templated store, whose drop has already run, would never
+   * take one however it was seeded.
    */
   readonly migrated?: boolean;
 }

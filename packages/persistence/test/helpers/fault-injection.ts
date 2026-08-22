@@ -243,6 +243,20 @@ export interface ReadOnlyStoreOptions {
   /** Tighten the containing directory too — see below. */
   includeDir?: boolean;
   /**
+   * Tighten the containing directory and NOTHING else, leaving the store and
+   * its sidecars writable. Implies `includeDir`.
+   *
+   * The narrow fault: nothing may CREATE a file here, while a handle opened
+   * before the tighten writes on undisturbed. That separates a path which has
+   * to stage a new file (a snapshot's `.bak.partial`, a DELETE-mode rollback
+   * journal) from one that only appends to a sidecar that already exists (a
+   * WAL-mode transaction) — so a test can fail the first while leaving the
+   * second working, and attribute what it observes to the right one. Tightening
+   * the file as well would stop both, and the assertion could no longer tell
+   * which had deferred.
+   */
+  dirOnly?: boolean;
+  /**
    * Register `restore()` for teardown, most conveniently the temp store's own
    * `onCleanup`. Without it the caller owns the restore, and a body that
    * throws leaves a tree that cannot be deleted.
@@ -267,6 +281,15 @@ const READ_ONLY_DIR_MODE = 0o500;
  * so it fails at open with SQLITE_READONLY_DIRECTORY rather than at the first
  * write. Without it, reads keep working and only writes raise SQLITE_READONLY.
  *
+ * With `dirOnly`, the directory alone goes to 0500 and the store keeps its own
+ * mode. A handle opened before that still writes through — a descriptor carries
+ * the permission it was opened with — so the fault reaches only what has to
+ * CREATE a file: a snapshot staging its `.bak.partial`, or a DELETE-mode
+ * rollback journal. A WAL-mode transaction appending to a `-wal` that already
+ * exists is untouched. That asymmetry is the point: it lets a test fail one
+ * path while the other keeps working, instead of stopping both and being unable
+ * to say which one deferred.
+ *
  * `includeDir` reaches a raw handle, not `openLocalDatabase`: that path calls
  * `ensureDataDirSync` first, which chmods the data dir back to 0700 — an owner
  * can always widen their own directory again — so only the file mode is left
@@ -283,7 +306,9 @@ export function readOnlyStore(file: string, opts: ReadOnlyStoreOptions = {}): Re
   if (!existsSync(file)) {
     throw new Error(`readOnlyStore(): no store at ${file}`);
   }
-  const targets = [file, ...dbSidecars(file)].filter((path) => existsSync(path));
+  const includeDir = opts.includeDir === true || opts.dirOnly === true;
+  const targets =
+    opts.dirOnly === true ? [] : [file, ...dbSidecars(file)].filter((path) => existsSync(path));
   const dir = dirname(file);
   const original = new Map<string, number>();
 
@@ -297,7 +322,7 @@ export function readOnlyStore(file: string, opts: ReadOnlyStoreOptions = {}): Re
   };
 
   for (const path of targets) tighten(path, READ_ONLY_FILE_MODE);
-  if (opts.includeDir) tighten(dir, READ_ONLY_DIR_MODE);
+  if (includeDir) tighten(dir, READ_ONLY_DIR_MODE);
 
   // A mode that still permits writing protects nothing; report that rather
   // than let a caller assert against a store it can freely write.
@@ -309,7 +334,11 @@ export function readOnlyStore(file: string, opts: ReadOnlyStoreOptions = {}): Re
       return true;
     }
   };
-  const effective = [...original.keys()].every(denied);
+  // `.every()` on an empty list is `true`, which would report a fault that
+  // touched nothing as effective — the same vacuous pass the absent-store
+  // guard above exists to prevent, reached by a different route.
+  const tightened = [...original.keys()];
+  const effective = tightened.length > 0 && tightened.every(denied);
 
   let restored = false;
   const readOnly: ReadOnlyStore = {
@@ -318,7 +347,7 @@ export function readOnlyStore(file: string, opts: ReadOnlyStoreOptions = {}): Re
       if (restored) return;
       restored = true;
       // The directory first: everything else lives inside it.
-      if (opts.includeDir) {
+      if (includeDir) {
         const mode = original.get(dir);
         try {
           if (mode !== undefined) chmodSync(dir, mode);

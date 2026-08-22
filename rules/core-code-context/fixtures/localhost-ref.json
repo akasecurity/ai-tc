@@ -15,6 +15,32 @@
     "shouldMatch": true
   },
   {
+    "label": "IPv6 loopback in surrounding prose",
+    "text": "Bind to ::1 port 8080",
+    "shouldMatch": true
+  },
+  {
+    "label": "IPv6 loopback, bracketed URL authority",
+    "text": "http://[::1]:3000",
+    "shouldMatch": true,
+    "expectedSpans": [
+      {
+        "start": 8,
+        "end": 11
+      }
+    ]
+  },
+  {
+    "label": "IPv6 loopback as a config value",
+    "text": "host=::1",
+    "shouldMatch": true
+  },
+  {
+    "label": "IPv6 loopback alone, against both string boundaries",
+    "text": "::1",
+    "shouldMatch": true
+  },
+  {
     "label": "not localhost",
     "text": "hostname: server.internal",
     "shouldMatch": false
@@ -27,6 +53,51 @@
   {
     "label": "identifier containing the word, not a loopback reference",
     "text": "localhostname = socket.gethostname()",
+    "shouldMatch": false
+  },
+  {
+    "label": "underscore-joined identifier, leading side",
+    "text": "cache_localhost = get_client()",
+    "shouldMatch": false
+  },
+  {
+    "label": "underscore-joined identifier, trailing side",
+    "text": "localhost_url = config.read()",
+    "shouldMatch": false
+  },
+  {
+    "label": "longer final octet, not the loopback address",
+    "text": "Reachable at 127.0.0.10",
+    "shouldMatch": false
+  },
+  {
+    "label": "scope-resolution token, not an IPv6 loopback",
+    "text": "worker::1 started",
+    "shouldMatch": false
+  },
+  {
+    "label": "bracketed scope-resolution token in a log line",
+    "text": "[cache::1] evicted",
+    "shouldMatch": false
+  },
+  {
+    "label": "minimal scope-resolution token",
+    "text": "a::1",
+    "shouldMatch": false
+  },
+  {
+    "label": "longer IPv6 group, not the loopback address",
+    "text": "Bind to ::1234 in the pool",
+    "shouldMatch": false
+  },
+  {
+    "label": "underscore-joined identifier around the loopback IPv4",
+    "text": "proxy_127.0.0.1 = upstream",
+    "shouldMatch": false
+  },
+  {
+    "label": "underscore-joined identifier around the wildcard address",
+    "text": "0.0.0.0_default = true",
     "shouldMatch": false
   }
 ]

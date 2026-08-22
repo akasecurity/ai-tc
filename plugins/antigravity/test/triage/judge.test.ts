@@ -438,6 +438,33 @@ describe('runJudge', () => {
     expectNoEchoOf(err?.message, hit.rawMatch);
   });
 
+  it.each([
+    ['single-line', false],
+    ['pretty-printed', true],
+  ])('still reads a %s whole-stdout envelope — the pre-streaming shape (P4)', (_label, pretty) => {
+    // The shape `--output-format json` printed, and what this module read until
+    // the prompt moved to stdin. Line-by-line parsing cannot see it: a
+    // pretty-printed one fails every line ("was not valid JSON") and a
+    // single-line one parses to an event with no `event` key ("carried no
+    // result event"). Both were readable before this change, so both stay
+    // readable — the fallback widens what parses and narrows nothing.
+    const home = tempHome();
+    const dir = seedConversation(home, 'conv-legacy');
+    const envelope = {
+      conversation_id: 'conv-legacy',
+      status: 'ok',
+      response: VERDICT_FENCE,
+    };
+    const rec = runJudge([hit], {
+      spawn: () => (pretty ? JSON.stringify(envelope, null, 2) : JSON.stringify(envelope)),
+      loadRubric: () => 'RUBRIC',
+      home,
+    });
+    expect(rec.perCategory[0]?.action).toBe('block');
+    // ...and the id came off the legacy envelope too, so cleanup still runs.
+    expect(existsSync(dir)).toBe(false);
+  });
+
   it('re-throws a spawn failure as raw-free metadata (its captured streams echo raw)', () => {
     // The prompt rides stdin now, so execFileSync's own message no longer
     // carries the hits — but the child's captured .stdout/.stderr still can,
@@ -715,6 +742,71 @@ describe('runJudge', () => {
       expect(rec.perCategory[0]?.action).toBe('block');
       expect(existsSync(mine)).toBe(false);
       // ...and it was attributed, not swept by "remove whatever appeared".
+      expect(existsSync(theirs)).toBe(true);
+    });
+
+    it('removes the conversation named by init even when the stream never parses', () => {
+      // P1. The id is taken from a scan that cannot throw, so a stream too
+      // malformed to yield a verdict is still ATTRIBUTED. Fold the scan back
+      // into the throwing `parseEnvelope` call and this leaks: `runJudge` skips
+      // the assignment, cleanup drops to the directory diff, and the diff
+      // declines to act because two conversations appeared at once.
+      const home = tempHome();
+      let mine = '';
+      let theirs = '';
+      const err = errorFrom(() =>
+        runJudge([hit], {
+          spawn: () => {
+            // Created DURING the run, as a real `agy` would, and alongside a
+            // session the user started in another terminal — which is what makes
+            // the diff ambiguous and the init id the only thing that can attribute.
+            mine = seedConversation(home, 'conv-from-init');
+            theirs = seedConversation(home, 'conv-user-work');
+            return [
+              JSON.stringify({ event: 'init', conversation_id: 'conv-from-init' }),
+              JSON.stringify({ event: 'result', result: 'not-an-object' }),
+              '',
+            ].join('\n');
+          },
+          loadRubric: () => 'RUBRIC',
+          home,
+        }),
+      );
+      // Positive control: the stream really was rejected, so this is the
+      // throwing path and not a quiet success.
+      expect(err?.message).toContain('carried no result object');
+      expect(existsSync(mine)).toBe(false);
+      // ...and the user's own concurrent session was left alone.
+      expect(existsSync(theirs)).toBe(true);
+    });
+
+    it('keeps an id already seen when a later event carries none', () => {
+      // P2. A second result event with a well-formed payload but no id must not
+      // clear the id taken from the first: every turn of a streaming session is
+      // one conversation, so an id seen anywhere stays valid for cleanup.
+      const home = tempHome();
+      let mine = '';
+      let theirs = '';
+      const rec = runJudge([hit], {
+        spawn: () => {
+          mine = seedConversation(home, 'conv-A');
+          theirs = seedConversation(home, 'conv-user-work');
+          return [
+            JSON.stringify({
+              event: 'result',
+              result: { conversation_id: 'conv-A', response: VERDICT_FENCE },
+            }),
+            JSON.stringify({ event: 'result', result: { response: VERDICT_FENCE } }),
+            '',
+          ].join('\n');
+        },
+        loadRubric: () => 'RUBRIC',
+        home,
+      });
+      // Positive control: this path SUCCEEDS — it is not the throwing case above,
+      // which is what makes it a distinct guard rather than a restatement.
+      expect(rec.perCategory[0]?.action).toBe('block');
+      expect(existsSync(mine)).toBe(false);
       expect(existsSync(theirs)).toBe(true);
     });
 

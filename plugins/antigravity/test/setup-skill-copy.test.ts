@@ -177,6 +177,27 @@ describe('SKILL.md known-limitation disclosure', () => {
     expect(skillMd).toMatch(/Do not tell the user\s+their token spend is being tracked/i);
   });
 
+  it('discloses that the model-judge step needs an agy with the stdin interface', () => {
+    // The prompt moved off the command line onto stdin, so the step now depends
+    // on a CLI interface an older `agy` does not have — and the failure it
+    // produces is deliberately detail-free (the subprocess's output can echo raw
+    // findings), so nothing else tells the user where to look.
+    expect(skillMd).toMatch(/needs an `agy` with the streaming stdin interface/i);
+    expect(skillMd).toContain('--input-format stream-json');
+    expect(skillMd).toMatch(/first thing to check is the `agy`\s+version/i);
+  });
+
+  it('discloses that a stalled model call may not be bounded on Windows', () => {
+    // The replacement for the deleted Windows entry. That one described a
+    // REFUSAL, which no longer happens; this describes what can happen instead
+    // now that the batch-shim path is reachable — and says plainly that it is
+    // not specific to this plugin, which the refusal genuinely was.
+    expect(skillMd).toMatch(/stalled model call may not be bounded/i);
+    expect(skillMd).toMatch(/agy\.cmd/);
+    expect(skillMd).toMatch(/applies to `cmd\.exe`, not to the `agy` process/i);
+    expect(skillMd).toMatch(/not specific to this plugin/i);
+  });
+
   it('discloses that the historical scan does not read tool-call arguments', () => {
     expect(skillMd).toMatch(/Tool-call arguments are not scan input/i);
     // …and says which side of the live/historical line the gap falls on, so the

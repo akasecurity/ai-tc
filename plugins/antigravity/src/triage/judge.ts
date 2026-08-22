@@ -105,87 +105,129 @@ function conversationIdOf(value: unknown): string | undefined {
   return typeof id === 'string' && id !== '' ? id : undefined;
 }
 
-// Pull the verdict-bearing event out of stdout.
+// What one walk of the event stream found. Split from the validation below on
+// purpose, and the split is load-bearing rather than tidy: the conversation id
+// is what `cleanupConversation` needs to delete the raw-bearing judge
+// transcript, and it is present in stdout even when the stream is too malformed
+// to yield a verdict. Validating first discards it on every throwing path,
+// which left a conversation on disk whose id had been sitting in stdout the
+// whole time.
+interface EventScan {
+  empty: boolean;
+  sawJson: boolean;
+  sawObject: boolean;
+  sawResultEvent: boolean;
+  result: Record<string, unknown> | undefined;
+  conversationId: string | undefined;
+}
+
+// JSON.parse, or undefined for anything that does not parse.
+function safeParse(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+// Walk the NDJSON event stream. NEVER throws — every malformation is recorded
+// as a flag for `envelopeFrom` to rule on, so the caller can take the
+// conversation id first and fail second.
 //
 // `--output-format stream-json` is NDJSON: one typed event per line — a single
 // `init`, then a `step_update` per step, then one terminal `result` per turn.
-// So this walks the lines rather than parsing stdout whole, and the verdict is
-// `result.response`.
+// So this walks the lines rather than parsing stdout whole.
 //
 // A line that is not JSON is skipped rather than fatal. The verdict rides one
 // specific event, and failing the whole stream over a stray line would turn a
 // cosmetic upstream change into an unreadable verdict — while a stream that
-// carried NO parseable event still fails loud, below.
-//
-// Never echo stdout in an error: it can carry a raw hit the model failed to
-// strip, and these errors propagate to the parent command's stderr, outside the
-// judge subprocess. Every failure reports only raw-free metadata, never the
-// content.
-export function parseEnvelope(stdout: string): JudgeEnvelope {
-  if (stdout.trim() === '') {
-    throw new Error('agy judge produced no output');
-  }
-
-  let sawJson = false;
-  let sawObject = false;
-  let sawResultEvent = false;
-  let initConversationId: string | undefined;
-  let resultConversationId: string | undefined;
-  let result: Record<string, unknown> | undefined;
+// carried NO parseable event still fails loud, in `envelopeFrom`.
+function scanEventStream(stdout: string): EventScan {
+  const scan: EventScan = {
+    empty: stdout.trim() === '',
+    sawJson: false,
+    sawObject: false,
+    sawResultEvent: false,
+    result: undefined,
+    conversationId: undefined,
+  };
 
   for (const line of stdout.split('\n')) {
     if (line.trim() === '') continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    sawJson = true;
+    const parsed = safeParse(line);
+    if (parsed === undefined) continue;
+    scan.sawJson = true;
     const event = asRecord(parsed);
     if (event === undefined) continue;
-    sawObject = true;
+    scan.sawObject = true;
 
-    if (event.event === 'init') {
-      initConversationId ??= conversationIdOf(event) ?? conversationIdOf(event.init);
-    }
+    // The id is only ever ADOPTED, never cleared, and it is read off ANY event
+    // rather than only the terminal one. A streaming session is a single
+    // continuous conversation, so an id seen on any event stays valid for
+    // cleanup — while a later event carrying none must not take it away, or the
+    // transcript it names is the one left behind. The payload object is named
+    // after its own event (`init.conversation_id`, `result.conversation_id`),
+    // so the key is derived rather than enumerated.
+    const payloadKey = typeof event.event === 'string' ? event.event : '';
+    scan.conversationId ??= conversationIdOf(event) ?? conversationIdOf(event[payloadKey]);
+
     if (event.event === 'result') {
-      sawResultEvent = true;
+      scan.sawResultEvent = true;
       // The LAST USABLE result event wins. One turn is written to stdin, so one
       // is expected — but a host that emitted a second must not have the first
       // read as the final word.
-      //
-      // The id is taken in the SAME branch as the payload, never beside it: a
-      // later malformed result event would otherwise clear the id while leaving
-      // the earlier event's response in place, and the run would then be cleaned
-      // up by the ambiguous directory diff — which leaves a raw-bearing judge
-      // conversation on disk whenever it cannot attribute one.
       const payload = asRecord(event.result);
-      if (payload !== undefined) {
-        result = payload;
-        resultConversationId = conversationIdOf(event) ?? conversationIdOf(event.result);
-      }
+      if (payload !== undefined) scan.result = payload;
     }
   }
 
-  if (!sawJson) throw new Error('agy judge output was not valid JSON');
-  if (!sawObject) throw new Error('agy judge output was not a JSON object');
-  if (!sawResultEvent) throw new Error('agy judge output carried no result event');
-  if (result === undefined) throw new Error('agy judge result event carried no result object');
+  // The pre-streaming shape, kept readable as a safety net: a single
+  // whole-stdout envelope carrying `response` at the top level, which is what
+  // `--output-format json` printed and what this module read until the prompt
+  // moved to stdin. Line-by-line parsing cannot read it — a pretty-printed one
+  // fails every line, and a single-line one parses to an event with no
+  // `event` key — so without this a host that answered in the old shape would
+  // be reported as malformed output.
+  //
+  // Reached only when no `result` event was found, so it can never override a
+  // stream that parsed: it widens what is readable and narrows nothing.
+  if (!scan.sawResultEvent) {
+    const whole = asRecord(safeParse(stdout));
+    if (whole !== undefined && typeof whole.response === 'string') {
+      scan.sawJson = true;
+      scan.sawObject = true;
+      scan.sawResultEvent = true;
+      scan.result = whole;
+      scan.conversationId ??= conversationIdOf(whole);
+    }
+  }
 
-  const response = result.response;
+  return scan;
+}
+
+// Rule on a scan. Every failure reports only raw-free metadata, never the
+// content: stdout can carry a raw hit the model failed to strip, and these
+// errors propagate to the parent command's stderr, outside the judge
+// subprocess.
+function envelopeFrom(scan: EventScan): JudgeEnvelope {
+  if (scan.empty) throw new Error('agy judge produced no output');
+  if (!scan.sawJson) throw new Error('agy judge output was not valid JSON');
+  if (!scan.sawObject) throw new Error('agy judge output was not a JSON object');
+  if (!scan.sawResultEvent) throw new Error('agy judge output carried no result event');
+  if (scan.result === undefined) {
+    throw new Error('agy judge result event carried no result object');
+  }
+  const response = scan.result.response;
   if (typeof response !== 'string') {
     throw new Error('agy judge output carried no response string');
   }
-  return {
-    response,
-    // The result event's own id first, the init event's as the fallback. The
-    // fallback is what lets a run whose result event was malformed still be
-    // attributed for cleanup rather than dropping to the ambiguous
-    // directory-diff path — and a judge conversation left on disk is a raw
-    // transcript the next backfill would re-ingest.
-    conversationId: resultConversationId ?? initConversationId,
-  };
+  return { response, conversationId: scan.conversationId };
+}
+
+// Pull the verdict-bearing event out of stdout. The scan-then-rule pair as one
+// call, for callers that have nothing to do with a conversation id.
+export function parseEnvelope(stdout: string): JudgeEnvelope {
+  return envelopeFrom(scanEventStream(stdout));
 }
 
 // Extract + validate the fenced TriageRecommendation from the model's final
@@ -244,10 +286,21 @@ export function judgeEnv(): NodeJS.ProcessEnv {
 // so the synchronous read here waits for that pipe to close rather than for the
 // kill, and can outlast the timeout it looks bounded by.
 //
-// Not repaired here, because the repair is to not need the shell: whenever `agy`
-// resolves to a real executable the planner spawns it directly and the timeout
-// bounds the real process. Written down so the next reader does not assume the
-// 180s survives an interpreter it does not.
+// That gap used to be unreachable for THIS judge and is not any more, which is a
+// direct consequence of moving the prompt to stdin. While the prompt rode argv
+// the planner refused the shell path outright, so only the direct-executable
+// branch could ever run a judge and the timeout always bounded the real process.
+// It now runs on the most common Windows install shape (`npm i -g` writes
+// `agy.cmd`), so on that shape a stalled model call is NOT reliably bounded by
+// the 180s: the wizard step can block past it rather than failing with the
+// raw-free metadata below.
+//
+// Still not repaired here, and deliberately not: `plugins/claude-code` and
+// `plugins/codex` spawn through the same planner with the same 180s and carry
+// the identical gap, so the fix belongs in the shared spawn planner rather than
+// in one host's judge. Tracked separately. Written down so the next reader does
+// not read the direct-executable path as a mitigation — it is only a mitigation
+// where it is the path actually taken.
 export function spawnAgy(argv: readonly string[], env: NodeJS.ProcessEnv, stdin: string): string {
   const plan = planBareCommand('agy', argv, { env });
   return execFileSync(plan.file, [...plan.args], {
@@ -420,9 +473,16 @@ export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRec
       // eslint-disable-next-line preserve-caught-error -- caught error carries raw model output; see above
       throw new Error(`agy judge subprocess failed (${spawnFailureMeta(err)})`);
     }
-    const envelope = parseEnvelope(stdout);
-    conversationId = envelope.conversationId;
-    return parseVerdict(envelope.response);
+    // ATTRIBUTE FIRST, RULE SECOND. The scan cannot throw, so the conversation
+    // id is taken before anything can reject the stream — and the id is what the
+    // `finally` needs to delete a transcript full of raw hits. Folding these two
+    // back into one `parseEnvelope(stdout)` call re-opens the leak: every
+    // malformed-stream throw would again skip the assignment, and cleanup would
+    // fall to the directory diff, which declines to act whenever it cannot
+    // attribute unambiguously.
+    const scan = scanEventStream(stdout);
+    conversationId = scan.conversationId;
+    return parseVerdict(envelopeFrom(scan).response);
   } finally {
     cleanupConversation(conversationId, before, deps.home);
   }

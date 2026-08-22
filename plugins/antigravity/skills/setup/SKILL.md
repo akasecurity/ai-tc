@@ -923,3 +923,24 @@ pointer inside a shell command is denied rather than executed or substituted.
 If the user asks about recovering a redacted value, point them at the vault
 surfaces that do exist on this machine (`aka vault show`, the dashboard's
 Vault page) rather than implying this plugin can reveal anything.
+
+**The model-judge step needs an `agy` with the streaming stdin interface.** It
+runs `agy --input-format stream-json --output-format stream-json` and writes the
+prompt to the CLI's standard input, rather than putting it on the command line.
+An older `agy` that does not accept those flags exits non-zero and the step
+reports `agy judge subprocess failed`, with no detail beyond the exit status —
+the subprocess's own output is deliberately discarded, because it can echo the
+raw findings. If a user hits that, the first thing to check is the `agy`
+version. Everything before the model pass is unaffected: the calibration
+questions, the consent-gated historical read and the local ruleset scan all run,
+and every finding is still detected and redacted locally.
+
+**On Windows, a stalled model call may not be bounded.** Where `agy` is a batch
+shim (`agy.cmd`, what `npm i -g` writes), AKA has to reach it through
+`cmd.exe`. The 180-second limit applies to `cmd.exe`, not to the `agy` process
+it starts, so a model call that hangs can hold the step open past that limit
+instead of failing cleanly. If the step appears stuck with no output, that is
+what it looks like; interrupting it is safe, and nothing is written until the
+plan is confirmed. This is not specific to this plugin — the Claude Code and
+Codex wizards reach their own CLIs the same way — and it does not arise where
+`agy` is installed as a real executable, which AKA then runs directly.

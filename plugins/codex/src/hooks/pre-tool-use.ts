@@ -34,6 +34,7 @@ import {
   claimStoreUnavailableWarning,
   openGatewayOrNull,
   storeUnavailableMessage,
+  warnIfStoreRedirected,
 } from './store-health.ts';
 
 async function main(): Promise<void> {
@@ -61,6 +62,9 @@ async function main(): Promise<void> {
   }
 
   const config = loadConfig();
+  // A symlinked store path redirects the corpus without failing anything;
+  // say so once per session (stderr, so the stdout contract is untouched).
+  warnIfStoreRedirected(config, getString(input, 'session_id'));
   const gateway = openGatewayOrNull(config);
   if (gateway === null) {
     if (claimStoreUnavailableWarning(config.dataDir, getString(input, 'session_id'))) {

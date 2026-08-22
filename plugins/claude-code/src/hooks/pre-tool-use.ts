@@ -39,6 +39,7 @@ import {
   claimStoreUnavailableWarning,
   openGatewayOrNull,
   storeUnavailableMessage,
+  warnIfStoreRedirected,
 } from './store-health.ts';
 
 async function main(): Promise<void> {
@@ -58,6 +59,9 @@ async function main(): Promise<void> {
 
   const config = loadConfig();
   const sessionId = getString(input, 'session_id');
+  // A symlinked store path redirects the corpus without failing anything;
+  // say so once per session (stderr, so the stdout contract is untouched).
+  warnIfStoreRedirected(config, sessionId);
   // Vaulting (and everything narrated about it) is consent-gated; without the
   // grant this hook behaves exactly as it did before the vault existed.
   const consented = isVaultConsentValid(config.settings.vaultConsent);

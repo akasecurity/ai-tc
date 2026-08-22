@@ -24,6 +24,7 @@ import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import { responseEmitPayload, scanResponseFields } from './scan-response.ts';
 import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
+import { warnIfStoreRedirected } from './store-health.ts';
 import { scannableResponseFields } from './tool-response.ts';
 
 async function main(): Promise<void> {
@@ -48,6 +49,9 @@ async function main(): Promise<void> {
   if (filePath) metadata.filePath = filePath;
 
   const config = loadConfig();
+  // A symlinked store path redirects the corpus without failing anything;
+  // say so once per session (stderr, so the stdout contract is untouched).
+  warnIfStoreRedirected(config, getString(input, 'session_id'));
   const gateway = resolveDataGateway(config);
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
 

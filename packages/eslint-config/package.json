@@ -23,7 +23,7 @@
     "typescript-eslint": "^8.67.0"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3",
+    "@types/node": "^25.9.5",
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.39.5",
     "vitest": "^4.1.10"

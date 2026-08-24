@@ -36,7 +36,7 @@
     "@akasecurity/scanner": "workspace:*",
     "@akasecurity/schema": "workspace:*",
     "@akasecurity/setup-wizard": "workspace:*",
-    "@types/node": "^24.13.3",
+    "@types/node": "^25.9.5",
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.39.5",
     "tsup": "^8.0.0",

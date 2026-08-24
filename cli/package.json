@@ -58,7 +58,7 @@
     "@akasecurity/plugin-sdk": "workspace:*",
     "@akasecurity/schema": "workspace:*",
     "@akasecurity/web-ui": "workspace:*",
-    "@types/node": "^24.13.3",
+    "@types/node": "^25.9.5",
     "@types/react": "^19.2.18",
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.39.5",

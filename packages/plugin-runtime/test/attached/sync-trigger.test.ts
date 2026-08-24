@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   applyOnboarding,
@@ -40,7 +41,11 @@ const configFor = (base: string): PluginConfig => ({
 });
 
 const deps = (throttledResult = false) => ({
-  scriptUrl: new URL('file:///nowhere/sync.js'),
+  // Built from a path rather than written as a `file:///` literal: a
+  // hand-written absolute-path URL is POSIX-only, and this one is turned back
+  // into a path by the code under test, so on Windows the literal form would
+  // produce something no platform can resolve.
+  scriptUrl: pathToFileURL(join(tmpdir(), 'aka-sync-fixture', 'sync.js')),
   spawnChild: (path: string) => spawned.push(path),
   isThrottled: () => throttledResult,
 });

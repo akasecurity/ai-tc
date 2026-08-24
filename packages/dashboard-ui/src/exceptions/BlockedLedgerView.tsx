@@ -1,12 +1,11 @@
 'use client';
-import type { BlockedDetectionDescriptor, FingerprintKeyState } from '@akasecurity/schema';
+import type { BlockedDetectionDescriptor } from '@akasecurity/schema';
 import { Button, cn } from '@akasecurity/ui-kit';
 
 import { relativeTime } from '../lib/relativeTime.ts';
 import { BLOCKED_WINDOW_PHRASE, type BlockedWindow } from '../lib/timeRanges.ts';
 import { SlashCircleIcon } from '../shared/icons.tsx';
 import { BlockedWindowSelect } from './BlockedWindowSelect.tsx';
-import { blockedRowBlockReason } from './meta.ts';
 
 export interface BlockedLedgerViewProps {
   items: BlockedDetectionDescriptor[];
@@ -14,12 +13,28 @@ export interface BlockedLedgerViewProps {
   blockedWindow: BlockedWindow;
   onBlockedWindowChange: (window: BlockedWindow) => void;
   /**
-   * What the fingerprint key file amounts to right now. A row recorded under
-   * anything other than the current version can no longer be matched, so its
-   * Approve is disabled rather than left to fail server-side — and the three
-   * states are kept apart because each is a different problem to the reader.
+   * Why this row cannot be approved, or null when it can — asked PER ROW, and
+   * answered by the host rather than derived here.
+   *
+   * Approvability is a property of the machine that recorded the block: a row
+   * can only be matched under the fingerprint key it was written with, and that
+   * key lives on that machine. A host serving ONE machine answers from its own
+   * key state, and `blockedRowBlockReason` is exactly that answer — pass
+   * `(row) => blockedRowBlockReason(row, keyState)`.
+   *
+   * It is a callback rather than a `FingerprintKeyState` prop because a host
+   * that aggregates SEVERAL machines has no single key state to give: rows in
+   * one list were recorded under different keys on different machines, so one
+   * value would be wrong for most of them, and the remediation copy that
+   * follows from it ("check the permissions on ~/.aka/data") names a file such
+   * a host does not have. Returning the reason per row lets each host say
+   * something true, and keeps this view from assuming it is running beside the
+   * store it is describing.
+   *
+   * The string is shown to the reader and used as the disabled Approve's title,
+   * so it should say what happened and what to do about it.
    */
-  keyState: FingerprintKeyState;
+  blockReason: (row: BlockedDetectionDescriptor) => string | null;
 }
 
 /**
@@ -32,14 +47,16 @@ export interface BlockedLedgerViewProps {
  * The ledger is retained for a day, so it outlives a key rotation and keeps
  * listing rows fingerprinted under the old key. Those rows are shown — they are
  * still an accurate record of what was blocked — but marked unapprovable, since
- * a grant built from one could never match at enforcement time.
+ * a grant built from one could never match at enforcement time. WHICH rows
+ * those are is the host's to say (see `blockReason`): this view renders the
+ * answer, it does not work it out.
  */
 export function BlockedLedgerView({
   items,
   onApprove,
   blockedWindow,
   onBlockedWindowChange,
-  keyState,
+  blockReason,
 }: BlockedLedgerViewProps) {
   return (
     <div className="mb-3.5 overflow-hidden rounded-xl border border-sev-high-fill bg-sev-high-fill">
@@ -64,7 +81,7 @@ export function BlockedLedgerView({
       ) : (
         <div className="flex flex-col gap-1.5 px-3 pb-3">
           {items.map((b) => {
-            const blocked = blockedRowBlockReason(b, keyState);
+            const blocked = blockReason(b);
             return (
               <div
                 key={b.reference}

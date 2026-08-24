@@ -128,7 +128,9 @@ describe('exceptions views never render the valueFingerprint', () => {
         onApprove={vi.fn()}
         blockedWindow="30m"
         onBlockedWindowChange={vi.fn()}
-        keyState={{ status: 'present', version: blockedRow.keyVersion }}
+        // Approvable, so the row renders its full content — which is what
+        // makes the fingerprint-absence assertion below meaningful.
+        blockReason={() => null}
       />,
     );
     expect(markup).toContain(blockedRow.reference);

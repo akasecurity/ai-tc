@@ -100,7 +100,7 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   // mapping, and nothing could reach it there.
   '@akasecurity/required-checks-gate': 85, //       86.61
   '@akasecurity/codeql-alerts-gate': 81, //         82.40
-  '@akasecurity/plugin-runtime': 76, //             77.25
+  '@akasecurity/plugin-runtime': 89, //             90.59
   '@akasecurity/ai-tc-claude-code': 71, //          72.84
   '@akasecurity/local-ops': 65, //                  66.75
   '@akasecurity/audit-gate': 61, //                 62.88

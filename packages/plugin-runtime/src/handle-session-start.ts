@@ -24,6 +24,7 @@ import type {
 } from '@akasecurity/schema';
 import { configInventoryInputs, harnessFromTool } from '@akasecurity/schema';
 
+import { triggerPolicySync } from './attached/sync-trigger.ts';
 import { pluginRecordedBy } from './recorder.ts';
 import { resolveDataGateway } from './resolve.ts';
 
@@ -169,6 +170,13 @@ export async function handleSessionStart(
           // Fail-open: ghosts linger until the next session, nothing breaks.
         }
       }
+      // The organization's policy, refreshed in a detached child. Placed here
+      // rather than in each harness's entry because every harness reaches
+      // SessionStart — Antigravity through its first PreInvocation, the browser
+      // host through its own handler — so one call covers all of them, and a
+      // harness added later gets it without a second edit. Never throws, never
+      // awaited: see triggerPolicySync.
+      triggerPolicySync(config);
       // The stale-session check (P2): only meaningful when this session
       // knows its own version; a failing check here falls through to the
       // outer fail-open.

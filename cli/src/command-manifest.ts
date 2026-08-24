@@ -54,6 +54,13 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
     args: ['show'],
   },
   {
+    name: 'attach',
+    argHint: '--url <url>',
+    summary: "Register this machine against your organization's AKA deployment",
+  },
+  { name: 'detach', summary: 'Stop reporting to a deployment; record locally only' },
+  { name: 'status', summary: 'Show what this machine is attached to, and whether policy is current' },
+  {
     name: 'tui',
     argHint: '[view]',
     summary: 'Interactive colour dashboard — health|findings|recommend|audit (needs a TTY)',

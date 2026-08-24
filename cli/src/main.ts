@@ -1,6 +1,7 @@
 import { cliVersion, notifyFromCache, refreshCache } from '@akasecurity/local-ops';
 
 import { commandsHelp } from './command-manifest.ts';
+import { runAttach, runDetach, runStatus } from './commands/attach.ts';
 import { runCheckUpdates } from './commands/check-updates.ts';
 import { runCompletion } from './commands/completion.ts';
 import { runDashboard, runDashboardServer } from './commands/dashboard.ts';
@@ -34,6 +35,13 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   extension: runExtension,
   exception: (argv) => runException(argv),
   vault: (argv) => runVault(argv),
+  attach: (argv) => runAttach(argv),
+  detach: (argv) => {
+    runDetach(argv);
+  },
+  status: (argv) => {
+    runStatus(argv);
+  },
   tui: runTui,
   update: runUpdate,
   'check-updates': runCheckUpdates,

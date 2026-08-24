@@ -25,12 +25,12 @@
     "@akasecurity/schema": "workspace:*",
     "@types/chrome": "^0.2.6",
     "@types/node": "^24.13.3",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^4.1.11",
     "esbuild": "^0.28.1",
     "eslint": "^9.39.5",
     "jsdom": "^30.0.1",
     "tsup": "^8.0.0",
     "typescript": "^5.8.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }

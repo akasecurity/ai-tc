@@ -60,12 +60,12 @@
     "@akasecurity/web-ui": "workspace:*",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9.39.5",
     "postject": "^1.0.0-alpha.6",
     "tsup": "^8.0.0",
     "tsx": "^4.23.12",
     "typescript": "^5.8.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }

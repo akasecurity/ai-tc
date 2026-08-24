@@ -366,8 +366,8 @@ describe('renderAttachedStatus — redaction', () => {
       fileURLToPath(new URL('../../src/attached/status.ts', import.meta.url)),
       'utf8',
     );
-    expect(source, 'status must not import the backend client').not.toContain(
-      '@akasecurity/client',
+    expect(source, 'status must not import the transport').not.toContain(
+      '@akasecurity/remote',
     );
     expect(source, 'status must not fetch').not.toMatch(/\bfetch\s*\(/);
 

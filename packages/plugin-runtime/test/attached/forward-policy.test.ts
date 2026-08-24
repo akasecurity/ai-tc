@@ -36,8 +36,8 @@ const failed = (reason: ForwardFailureReason): { ok: false; reason: ForwardFailu
 });
 
 /**
- * An error shaped the way @akasecurity/client raises one for an answered
- * non-2xx: the STATUS as a structured field, no message parsing involved.
+ * An error shaped the way the transport raises one for an answered non-2xx:
+ * the STATUS as a structured field, no message parsing involved.
  */
 function refusal(status: number): Error & { status: number } {
   return Object.assign(new Error(`backend request failed with status ${String(status)}`), {

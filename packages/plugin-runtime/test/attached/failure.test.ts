@@ -43,8 +43,8 @@ describe('classifyFailure', () => {
 
   describe('the status is read STRUCTURALLY, and only when it is a status', () => {
     it('accepts a plain object carrying the field — never `instanceof`', () => {
-      // This package is bundled into the plugin while @akasecurity/client is a
-      // workspace dependency. A prototype identity that survives one bundler
+      // This code is bundled into every hook script while the transport is a
+      // separate package. A prototype identity that survives one bundler
       // configuration is not something to hang a security-visible verdict on,
       // so the check is on the shape (same contract as the backend's own
       // `errorStatus`).

@@ -23,8 +23,10 @@ import {
   shouldDispatchExternal,
 } from './lib/external-dispatch.ts';
 
-// The local-first AKA CLI. Every command reads/writes the local SQLite store
-// directly via @akasecurity/persistence — no HTTP, no backend.
+// The local-first AKA CLI. Every command reads and writes the local SQLite
+// store directly via @akasecurity/persistence. The attach verbs are the only
+// ones that reach a network, and only against a deployment this machine's own
+// settings name.
 const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   init: runInit,
   scan: runScan,
@@ -68,7 +70,7 @@ const SKIP_NOTICE = new Set([
   'completion',
 ]);
 
-const USAGE = `aka — AI Traffic Control (local-first, everything stays on your machine)
+const USAGE = `aka — AI Traffic Control (local-first; nothing leaves your machine unless you attach it)
 
 Usage: aka <command> [options]
 

@@ -199,7 +199,9 @@ the file, so both exempt code nobody has written yet.
 
 ### 4. No network calls
 
-The OSS product is **local-only**: it runs on Node + the SQLite store under `~/.aka` and talks to **no AKA service** — no account, no backend, no HTTP hop to anything AKA runs. A direct `fetch()` must never appear in OSS source.
+The product is **standalone by default**: it runs on Node + the SQLite store under `~/.aka` and talks to no AKA service — no account, no backend, no HTTP hop to anything — unless a user attaches the machine to a deployment their own organization runs (`aka attach`). That is opt-in, off until both an endpoint and an access key are on disk, and reversible with `aka detach`.
+
+**`@akasecurity/remote` is the one package permitted to open a socket, and `src/http.ts` is the one module inside it that does.** Everywhere else the ban below is absolute and unchanged. Keeping the exception to a single module — rather than relaxing the ban for a package — is what keeps it reviewable: everything else in that package builds requests and parses answers, and only that file sends. It uses `node:https` rather than `fetch` for two reasons: Node's client follows no redirects, so a credential can never be replayed to whatever a `Location` header names, and the module bans (unlike the globals ban) take an `allow`, so the exception is a config artifact the opt-out audits below enumerate instead of an inline directive only a directive inventory can see.
 
 ESLint enforces that across the workspace — a violation is a CI failure, not a warning. Four rules carry it (`no-restricted-globals`, `no-restricted-properties`, `no-restricted-imports`, `no-restricted-syntax` — all defined in `packages/eslint-config/src/index.js`), banning:
 

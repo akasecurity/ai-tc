@@ -164,10 +164,24 @@ describe('README.md aka-<name> dispatch disclosure', () => {
     .join(' ')
     .replace(/\s+/g, ' ');
 
-  it('names the dispatch without folding it into the three-path count', () => {
-    expect(footnote).toMatch(/Three narrow paths/);
+  it('names the dispatch without folding it into the enumerated count', () => {
+    // The count moved from three to four when attaching to a deployment became
+    // a path the source itself can take. What this case actually holds is the
+    // SEPARATION: the dispatched program is named and excluded from the count,
+    // because its behaviour is the one thing on this list nothing here chose.
+    expect(footnote).toMatch(/Four narrow paths/);
     expect(footnote).toMatch(/aka-<name>/);
-    expect(footnote).toMatch(/not one of the three/i);
+    expect(footnote).toMatch(/not one of the four/i);
+  });
+
+  it('says the attached path is opt-in, and names where its client lives', () => {
+    // The footnote used to be able to say the source contains no network client
+    // at all. It cannot any more, so what replaces that claim has to be exact:
+    // one named package may open a socket, and only after a machine has been
+    // attached on purpose.
+    expect(footnote).toMatch(/aka attach/);
+    expect(footnote).toMatch(/@akasecurity\/remote/);
+    expect(footnote).toMatch(/opt-in/i);
   });
 
   // The whole point of naming it is that its behaviour is undescribable from

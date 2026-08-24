@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
+import { ATTACHED_CREDENTIAL_FILENAME } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { EXCEPTION_KEY_FILENAME } from '../src/fingerprint.ts';
@@ -67,6 +68,7 @@ const STORE_DIRS = [defaultDataDir(), dataDir(), settingsDir(), keysDir()].map(t
 // Every file the store writes under those directories, each taken from the
 // module that writes it.
 const STORE_FILES = [
+  ATTACHED_CREDENTIAL_FILENAME,
   DB_FILENAME,
   EXCEPTION_KEY_FILENAME,
   SETTINGS_FILENAME,

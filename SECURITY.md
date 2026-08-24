@@ -40,7 +40,8 @@ accumulates a full local prompt corpus. It is protected by **filesystem
 permissions, not encryption**. On macOS and Linux the store directories (`~/.aka`,
 `~/.aka/data`, `~/.aka/settings`, `~/.aka/keys`) are created owner-only (`0700`)
 and the files — `aka.db` and its `-wal`/`-shm`/`-journal` sidecars,
-`exception.key`, `settings.json`, and `vault.key` — are written `0600`, so only
+`control-plane-credential.json`, `exception.key`, `settings.json`, and
+`vault.key` — are written `0600`, so only
 your user account can read them. These modes are the only at-rest control, so
 treat a copy of the store (a backup, a synced folder, a stolen disk image) as
 sensitive.

@@ -1,0 +1,26 @@
+{
+  "name": "@akasecurity/remote",
+  "version": "0.9.7",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint src test *.config.*",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@akasecurity/schema": "workspace:*",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@akasecurity/eslint-config": "workspace:*",
+    "@types/node": "^24.13.3",
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^9.39.5",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.10"
+  }
+}

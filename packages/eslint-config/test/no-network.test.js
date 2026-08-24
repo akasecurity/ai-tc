@@ -507,6 +507,11 @@ const DOCUMENTED_OPT_OUTS = {
   // network-only coverage; it opts out no-network-runtime.test.js, which imports
   // the three transports it drives at runtime. File-scoped; see CLAUDE.md §4.
   'packages/eslint-config/eslint.guard.config.mjs': ['node:dgram', 'node:dns', 'node:net'],
+  // The control-plane transport, and the loopback server its suite drives it
+  // against. Two file-scoped entries under one config: `src/http.ts` is the one
+  // module in this workspace that sends anything, and `test/helpers/loopback.ts`
+  // is what proves it. See CLAUDE.md §4.
+  'packages/remote/eslint.config.mjs': ['node:http', 'node:https'],
   // The installer suite stands a loopback HTTP server so the shipped
   // install.sh / install.ps1 can be driven against a local base. File-scoped
   // to the one helper that binds it; see CLAUDE.md §4.

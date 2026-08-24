@@ -44,6 +44,11 @@ const WALLED_PACKAGES = [
   { name: '@akasecurity/plugin-sdk', dir: 'packages/plugin-sdk', file: 'src/config-inventory.ts' },
   { name: '@akasecurity/plugin-runtime', dir: 'packages/plugin-runtime', file: 'src/index.ts' },
   { name: '@akasecurity/scanner', dir: 'packages/scanner', file: 'src/index.ts' },
+  // The control-plane transport. Probed at its BARREL rather than at
+  // src/http.ts, which carries the one file-scoped network allowance in the
+  // package — probing the exception would report the exception rather than
+  // the wall, and the wall is what this list is about.
+  { name: '@akasecurity/remote', dir: 'packages/remote', file: 'src/index.ts' },
   // The self-contained bundles. `noExternal: [/^@akasecurity\//]` inlines every
   // workspace package they use, so a Drizzle import in any of these ships to
   // users in a published artifact — which is why they matter MORE here than the
@@ -87,6 +92,12 @@ const RELAXED_FILES = [
     dir: 'cli',
     file: 'src/commands/dashboard.ts',
     allowed: 'node:net',
+  },
+  {
+    name: '@akasecurity/remote src/http.ts',
+    dir: 'packages/remote',
+    file: 'src/http.ts',
+    allowed: 'node:https',
   },
 ];
 

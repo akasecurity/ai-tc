@@ -1,0 +1,182 @@
+import { randomUUID } from 'node:crypto';
+import { readFile, rename, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+import { DATA_FILE_MODE, ensureDataDir, settingsDir } from '@akasecurity/plugin-sdk';
+
+export interface PostureState {
+  deviceId: string;
+  /**
+   * When the last report was ATTEMPTED, not when one last succeeded. The
+   * distinction is load-bearing: this stamp gates a blocking, un-preemptible
+   * SQLite read (see readStorePosture), so tying it to success meant an
+   * unreachable control plane re-paid that read on every SessionStart — the exact
+   * scenario the "at most once an hour" reassurance was defending.
+   */
+  lastAttemptedAtMs: number;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Device identity + report throttle.
+ *
+ * `dir` defaults to ~/.aka/settings, NOT ~/.aka/data — deliberately OUTSIDE the
+ * directory this feature measures. The adversary the regression detector exists
+ * to catch removes ~/.aka/data to destroy local findings; with the identity
+ * stored in there, that same removal took the key continuity is judged by. The
+ * next report arrived under a fresh deviceId, `getByDeviceId` returned null, and
+ * `isRegression(null, …)` scored the wipe as a first-ever report — so the one
+ * event the channel is built to detect was the one event it could not see.
+ * settings/ is a sibling of data/, so it survives the wipe and the new report
+ * lands on the existing row with its preserved baseline.
+ *
+ * `legacyDir` is the pre-move location, and is OPT-IN rather than defaulted:
+ * only a caller that knows the real on-disk layout (the factory, which has
+ * config.dataDir) should reach outside `dir` at all. Defaulting it to dataDir()
+ * would make a single-argument call — every test, every embedder passing a temp
+ * dir — silently read the developer's real ~/.aka/data.
+ *
+ * When supplied it is consulted only if no current file exists, so a device
+ * enrolled before this change keeps its deviceId and its server-side history
+ * instead of silently re-enrolling as new (which would look exactly like the
+ * wipe above). The old file is left in place rather than deleted: adoption is a
+ * read, and a failed unlink must not be able to break the fail-open path.
+ */
+export function createPostureStore(dir: string = settingsDir(), legacyDir?: string) {
+  const file = join(dir, 'posture-state.json');
+  const legacyFile = legacyDir === undefined ? null : join(legacyDir, 'posture-state.json');
+
+  async function persist(state: PostureState): Promise<void> {
+    await ensureDataDir(dir);
+    // Per-write suffix, not a fixed `${file}.tmp`. Two SessionStart hooks can
+    // run concurrently; with one shared temp name both write it and the second
+    // rename hits ENOENT because the first already moved it away. Fail-open
+    // swallows that, but it silently loses a throttle advance — and the throttle
+    // now gates the blocking store read, so losing it costs a re-scan.
+    const tmp = `${file}.${randomUUID()}.tmp`;
+    await writeFile(tmp, JSON.stringify(state), { encoding: 'utf8', mode: DATA_FILE_MODE });
+    // Atomic swap so a concurrent hook never sees a torn file
+    await rename(tmp, file);
+  }
+
+  async function readFrom(path: string): Promise<PostureState | null> {
+    // Split the read from the parse, the same way readStorePosture splits
+    // "could not measure" from "not there": ENOENT/ENOTDIR are the only
+    // errors that mean this file genuinely doesn't exist. Any other error —
+    // EACCES, EMFILE, EIO, a transient lock — means the identity might well
+    // still be sitting there, so it must NOT be treated as "no identity yet".
+    // Collapsing both into null used to make a one-off permission hiccup mint
+    // a fresh deviceId and overwrite the intact file, destroying the very
+    // continuity this store exists to preserve. Thrown here, it propagates out
+    // of read() untouched and prepare()'s fail-open catch turns it into "no
+    // report this attempt" — the file is never touched.
+    let raw: string;
+    try {
+      raw = await readFile(path, 'utf8');
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+      throw err;
+    }
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === 'object' && parsed !== null) {
+        const record = parsed as {
+          deviceId?: unknown;
+          lastAttemptedAtMs?: unknown;
+          lastReportedAtMs?: unknown;
+        };
+        if (typeof record.deviceId === 'string' && UUID_RE.test(record.deviceId)) {
+          // `lastReportedAtMs` is the pre-rename spelling. Read it as a fallback
+          // so an upgrading fleet doesn't all reset to 0 and report at once; the
+          // two mean close enough for a throttle stamp that carrying it over is
+          // better than a synchronized burst.
+          const stamp =
+            typeof record.lastAttemptedAtMs === 'number'
+              ? record.lastAttemptedAtMs
+              : typeof record.lastReportedAtMs === 'number'
+                ? record.lastReportedAtMs
+                : 0;
+          return { deviceId: record.deviceId, lastAttemptedAtMs: stamp };
+        }
+      }
+    } catch {
+      // Fail-open: content that READ fine but is corrupt/malformed (truncated
+      // write, garbage bytes) behaves like a fresh install — unlike an I/O
+      // error, there is no intact identity here to protect.
+    }
+    return null;
+  }
+
+  async function read(): Promise<PostureState | null> {
+    const current = await readFrom(file);
+    if (current) return current;
+    // One-time adoption of the pre-move identity (see the legacyDir note above).
+    // Skipped when unsupplied, or when it resolves to the file just read.
+    //
+    // readFrom's non-ENOENT throw is right for `file` above — that's the
+    // identity worth protecting from a silent overwrite. It is wrong here:
+    // an EACCES/EIO on the LEGACY location (e.g. a root-owned pre-move
+    // ~/.aka/data on a machine that never re-owned it) would otherwise
+    // propagate out of read() on every single call, permanently — never
+    // reaching the fresh-mint path below even once, for as long as that
+    // legacy path stays unreadable. Adoption is opt-in and best-effort by
+    // design (see the class doc: "adoption is a read … must not break the
+    // fail-open path"); a legacy read failure is just "nothing to adopt".
+    const legacy =
+      legacyFile === null || legacyFile === file
+        ? null
+        : await readFrom(legacyFile).catch(() => null);
+    if (legacy) {
+      // Persisting is best-effort here: the legacy identity was just
+      // successfully READ, so failing the rewrite must not discard it. An
+      // unpersisted adoption still reports this session under the RIGHT id;
+      // the cost is a re-adoption next session while the legacy file survives
+      // (it is deliberately left in place — see the class doc).
+      try {
+        await persist(legacy);
+      } catch {
+        // fail-open: an unpersisted adoption still reports this session
+      }
+      return legacy;
+    }
+    // Fresh mint is NOT best-effort the same way. There is no prior identity
+    // to fall back to here — if persist() fails, this id is unrecoverable, and
+    // returning it anyway means every SessionStart mints ANOTHER fresh id
+    // (nothing was ever saved to find next time): one orphan remote row per
+    // session, isRegression permanently blind on this host (previous is
+    // always null), and the throttled scan re-paid every session (the
+    // throttle for this id was never persisted either). Refusing to mint and
+    // returning null instead costs one skipped report — fail-open the same
+    // way an unwritable settings dir fails open everywhere else in this
+    // reporter, rather than manufacturing fleet noise.
+    const fresh: PostureState = { deviceId: randomUUID(), lastAttemptedAtMs: 0 };
+    try {
+      await persist(fresh);
+    } catch {
+      return null;
+    }
+    return fresh;
+  }
+
+  /**
+   * Advances the throttle for the device the caller is about to report on.
+   * `deviceId` is passed in rather than re-read: read() mints a FRESH deviceId
+   * whenever the state file is missing or unparseable, so re-reading here would
+   * advance the throttle for a device that never reported and strand the row the
+   * control plane actually holds — it would age into a permanent silent/unmanaged
+   * entry while the new id sits throttled for a full interval.
+   *
+   * Called BEFORE the send, not after: the throttle's job is to bound the
+   * blocking store read, and a stamp that only moves on success does not bound
+   * it against an unreachable control plane.
+   */
+  async function markAttempted(deviceId: string, atMs: number): Promise<void> {
+    await persist({ deviceId, lastAttemptedAtMs: atMs });
+  }
+
+  return { read, markAttempted, file };
+}
+
+export type PostureStore = ReturnType<typeof createPostureStore>;

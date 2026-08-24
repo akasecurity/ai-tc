@@ -324,6 +324,9 @@ importers:
       '@akasecurity/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
+      '@akasecurity/remote':
+        specifier: workspace:*
+        version: link:../remote
       '@akasecurity/schema':
         specifier: workspace:*
         version: link:../schema

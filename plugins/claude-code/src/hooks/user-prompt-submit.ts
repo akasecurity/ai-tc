@@ -42,6 +42,7 @@ import {
   claimStoreUnavailableWarning,
   openGatewayOrNull,
   storeUnavailableMessage,
+  warnIfStoreRedirected,
 } from './store-health.ts';
 import { decideUserPromptSubmit } from './user-prompt-submit-decision.ts';
 
@@ -54,6 +55,9 @@ async function main(): Promise<void> {
   // adapter can also key the onboarding nudge off `onboarded`.
   const config = loadConfig();
   const sessionId = input ? getString(input, 'session_id') : undefined;
+  // A symlinked store path redirects the corpus without failing anything;
+  // say so once per session (stderr, so the stdout contract is untouched).
+  warnIfStoreRedirected(config, sessionId);
   const metadata = input ? baseMetadata(input) : undefined;
 
   // The gateway is opened HERE (not behind a catch-all) so a store-open

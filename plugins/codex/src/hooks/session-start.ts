@@ -23,6 +23,7 @@ import { SOURCE_TOOL } from '@akasecurity/schema';
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { peekSessionOriginator } from '../history/transcripts.ts';
 import { getString, parseJson, readStdin } from './shared.ts';
+import { warnIfStoreRedirected } from './store-health.ts';
 
 // The plugin's own version, read from the manifest the hook command passes as
 // argv[2] (same source as the intro card). Best-effort: an unreadable/old
@@ -58,6 +59,9 @@ async function main(): Promise<void> {
   // config.provider), but SessionStart is the one place that snapshots it
   // onto the session root, so it must pass the Codex resolver explicitly.
   const config = loadConfig(undefined, resolveCodexProvider);
+  // A symlinked store path redirects the corpus without failing anything;
+  // say so once per session (stderr, so the stdout contract is untouched).
+  warnIfStoreRedirected(config, sessionId);
   const result = await handleSessionStart(
     {
       sessionId,

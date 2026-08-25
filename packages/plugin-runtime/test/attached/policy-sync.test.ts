@@ -47,6 +47,18 @@ function bundle(version: string): PolicyBundle {
 
 let dataDir: string;
 
+/**
+ * What the transport raises for a 2xx body it cannot read. Built by NAME rather
+ * than imported, so this suite proves the structural recognition the classifier
+ * actually performs instead of relying on a shared prototype — which is the
+ * property that replaced a regex over the error's wording.
+ */
+function invalidResponse(): Error {
+  const err = new Error('control plane answered /v1/policy-bundle with a body this client cannot read');
+  err.name = 'RemoteResponseInvalid';
+  return err;
+}
+
 /** Both halves of an attachment in a real ~/.aka layout. */
 function attach(base: string): void {
   applyOnboarding({ runMode: 'attached', controlPlane: CONNECTION }, base);
@@ -130,37 +142,31 @@ describe('pullPolicyBundle', () => {
   });
 
   it('REFUSES to cache a 200 whose body is not a PolicyBundle', async () => {
-    // The client sets no responseValidator, so `res.data` is raw parsed JSON
-    // that codegen merely TYPES as a bundle. Caching it unchecked poisons the
-    // cache permanently: read() runs PolicyBundle.parse and returns null
-    // forever, so the device has no tenant policy while sync keeps saying `ok`.
-    // Realistic producers: backend version skew, or a captive-portal/SSO
-    // interstitial answering 200 with HTML wrapped in JSON.
-    getPolicyBundle.mockResolvedValue({
-      changed: true,
-      bundle: { nonsense: true },
-      etag: 'W/"bad"',
-    });
+    // The transport parses every 2xx body with `PolicyBundle` and raises
+    // `RemoteResponseInvalid` when it cannot, so THAT is what this path sees —
+    // driven here as a rejection rather than as a garbage resolve, because a
+    // resolve is a state the real client cannot produce. Caching an unreadable
+    // bundle would poison the cache permanently: read() returns null forever,
+    // so the machine has no organization policy while sync keeps saying `ok`.
+    // Realistic producers: version skew, or a captive-portal/SSO interstitial
+    // answering 200 with HTML wrapped in JSON.
+    getPolicyBundle.mockRejectedValue(invalidResponse());
     const store = createPolicyStore(dataDir);
 
-    await expect(pullPolicyBundle({ connection: CONNECTION, credential: CREDENTIAL, store })).resolves.toBe(
-      'invalid-bundle',
-    );
+    await expect(
+      pullPolicyBundle({ connection: CONNECTION, credential: CREDENTIAL, store }),
+    ).rejects.toMatchObject({ name: 'RemoteResponseInvalid' });
     expect(await store.read(), 'nothing may be cached').toBeNull();
   });
 
-  it('leaves a GOOD cache intact when the backend starts sending garbage', async () => {
+  it('leaves a GOOD cache intact when the plane starts sending garbage', async () => {
     const store = createPolicyStore(dataDir);
     await store.write(bundle('v1'), 'W/"good"');
-    getPolicyBundle.mockResolvedValue({
-      changed: true,
-      bundle: { nonsense: true },
-      etag: 'W/"bad"',
-    });
+    getPolicyBundle.mockRejectedValue(invalidResponse());
 
-    await expect(pullPolicyBundle({ connection: CONNECTION, credential: CREDENTIAL, store })).resolves.toBe(
-      'invalid-bundle',
-    );
+    await expect(
+      pullPolicyBundle({ connection: CONNECTION, credential: CREDENTIAL, store }),
+    ).rejects.toMatchObject({ name: 'RemoteResponseInvalid' });
     const cached = await store.read();
     expect(cached?.bundle.version, 'the last good bundle survives').toBe('v1');
     expect(cached?.etag, 'and so does the validator that fetched it').toBe('W/"good"');
@@ -278,6 +284,16 @@ describe('the refusal arms read the client STATUS, not its wording', () => {
     await expect(
       withConnection(new Error('connect ECONNREFUSED while fetching; not a 403')),
     ).resolves.toMatchObject({ outcome: 'unreachable' });
+  });
+
+  it('an unreadable body is `invalid-bundle`, not `unreachable`', async () => {
+    // The distinction a user acts on: a plane that answered promptly and
+    // correctly at the HTTP layer, running a version this build cannot read,
+    // must not be reported as a network problem. This is the production
+    // classifier, so it fails if the recognition regresses to matching wording.
+    await expect(withConnection(invalidResponse())).resolves.toMatchObject({
+      outcome: 'invalid-bundle',
+    });
   });
 
   it('a 500 is `unreachable`, not a refusal', async () => {

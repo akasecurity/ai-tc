@@ -43,6 +43,11 @@ export default defineConfig({
     // starts it by path as a sibling of the running script, so it has to land
     // in this same outDir beside host.js. See src/native-host/scan-worker.ts.
     'scan-worker': 'src/native-host/scan-worker.ts',
+    // The detached policy-sync child. This host calls handleSessionStart like
+    // every other harness, so it triggers a policy pull on an attached machine
+    // — and the trigger resolves the script as a sibling of the running one, so
+    // it lands here beside host.js for the same reason scan-worker does.
+    sync: 'src/native-host/sync.ts',
   },
   format: ['esm'],
   platform: 'node',

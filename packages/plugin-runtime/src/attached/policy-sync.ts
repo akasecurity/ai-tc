@@ -1,7 +1,7 @@
 import { readControlPlaneCredentialState, readWorkspaceSettings } from '@akasecurity/persistence';
 import { createRemoteClient } from '@akasecurity/remote';
 import type { AttachedCredential, ControlPlaneConnection } from '@akasecurity/schema';
-import { isAttached, PolicyBundle } from '@akasecurity/schema';
+import { isAttached } from '@akasecurity/schema';
 
 import { classifyFailure } from './failure.ts';
 import { createPolicyStore, type PolicyStore } from './policy-store.ts';
@@ -76,13 +76,24 @@ export interface PolicySyncResult {
 }
 
 /**
- * A parse failure names the shape. Reached only AFTER the status check above, so
- * a refusal never lands here; what remains is the store's own Zod errors and
- * anything else the client raises without a status.
+ * Whether the plane answered with something this build cannot read.
+ *
+ * Read STRUCTURALLY off the error's `name`, never by matching its message. The
+ * regex this replaced (`/invalid|parse|expected/i`) matched NONE of the strings
+ * the transport actually raises, so every version skew rendered as
+ * `unreachable` — pointing a user at their network for a plane that answered
+ * promptly and correctly at the HTTP layer. Matching on wording is the coupling
+ * ./failure.ts refuses for the status path, and it fails the same way here.
+ *
+ * `instanceof` is avoided for the reason given there too: this code is bundled
+ * into every hook script while the transport is a separate package.
  */
 function isInvalidBundle(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  return /invalid|parse|expected/i.test(message);
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { name?: unknown }).name === 'RemoteResponseInvalid'
+  );
 }
 
 export interface PullPolicyBundleDeps {
@@ -113,6 +124,11 @@ export async function pullPolicyBundle(deps: PullPolicyBundleDeps): Promise<Poli
   const client = createRemoteClient({
     endpoint: deps.connection.endpoint,
     apiKey: deps.credential.apiKey,
+    // The transport's own default is 10s, which would fire 20s before the race
+    // below and make SYNC_REQUEST_TIMEOUT_MS unreachable — the bound this
+    // module argues for at length would never have been in force. See that
+    // constant for why a pull needs the longer one.
+    timeoutMs: SYNC_REQUEST_TIMEOUT_MS,
   });
 
   const cached = await deps.store.read();
@@ -129,17 +145,21 @@ export async function pullPolicyBundle(deps: PullPolicyBundleDeps): Promise<Poli
     return 'not-modified';
   }
 
-  // RE-VALIDATED HERE, even though the transport already parsed it, because
-  // this is the only layer that can turn a bad bundle into the `invalid-bundle`
-  // OUTCOME a human sees in status rather than a rejected promise. Writing an
-  // unreadable bundle would poison the cache permanently: `policy-store.read()`
-  // runs `PolicyBundle.parse` and returns null on failure, so the device would
-  // read as having no organization policy FOREVER while this kept reporting
-  // `ok`, and the 304 arm would replay the etag that produced it.
-  const validated = PolicyBundle.safeParse(result.bundle);
-  if (!validated.success) return 'invalid-bundle';
-
-  await deps.store.write(validated.data, result.etag);
+  // NOT re-validated here. `result.bundle` is `PolicyBundle.safeParse` OUTPUT
+  // — the transport parses every 2xx body with this exact schema — so a second
+  // `safeParse` over it always succeeds and its failure arm was unreachable
+  // code standing in for a check that had already happened.
+  //
+  // What that arm was FOR is still needed and is now real: a bundle this build
+  // cannot read must become the `invalid-bundle` OUTCOME a human sees in
+  // status, not a bare rejection. The transport raises `RemoteResponseInvalid`
+  // for exactly that, `isInvalidBundle` recognises it structurally, and the
+  // catch in `runPolicySync` maps it. Writing an unreadable bundle would poison
+  // the cache permanently — `policy-store.read()` returns null on a parse
+  // failure, so the machine would read as having no organization policy FOREVER
+  // while this reported `ok`, and the 304 arm would replay the etag that
+  // produced it — and it is the transport's parse that now prevents that.
+  await deps.store.write(result.bundle, result.etag);
   return 'ok';
 }
 

@@ -7,7 +7,9 @@
 
 The `aka` command-line tool for **[AI Traffic Control](https://github.com/akasecurity/ai-tc)** (`ai-tc`) — an open-source, local-first control plane for coding agents. It inspects and governs the traffic of an agent session (prompts, tool calls, responses, file reads), scans each event against your rule packs, and records everything to a local SQLite store at `~/.aka/data/aka.db`.
 
-Everything runs on your machine. There's no account, no backend, and nothing leaves your computer to be scanned.
+Standalone by default: everything runs on your machine, and nothing leaves your computer to be scanned.
+
+If your organization runs its own AKA deployment, `aka attach --url <https-url>` registers this machine against it — after which activity that deployment is entitled to see is forwarded, and the policy it sets is enforced (it can raise enforcement beyond your own settings, never lower it). That is opt-in and off until you run it: `aka status` says what a machine is attached to, and `aka detach` ends it. Nothing else in the CLI reaches a network.
 
 The local store keeps your prompts and tool calls verbatim apart from the spans a rule masks, and file permissions — not encryption — are all that protect it. See [Data at rest](https://github.com/akasecurity/ai-tc/blob/main/SECURITY.md#data-at-rest) for which files it spans and what holds on Windows.
 

@@ -18,7 +18,12 @@ import {
 import type { z } from 'zod';
 
 import type { RemoteResponse } from './http.ts';
-import { RemoteRequestError, send } from './http.ts';
+import {
+  RemoteRequestError,
+  RemoteRequestInvalid,
+  RemoteResponseInvalid,
+  send,
+} from './http.ts';
 
 // The six routes an attached machine may call, and nothing else.
 //
@@ -103,11 +108,11 @@ function parsed<T>(schema: z.ZodType<T>, body: string, route: string): T {
   try {
     json = JSON.parse(body);
   } catch {
-    throw new Error(`control-plane answered ${route} with a body that is not JSON`);
+    throw new RemoteResponseInvalid(route, 'a body that is not JSON');
   }
   const result = schema.safeParse(json);
   if (!result.success) {
-    throw new Error(`control-plane answered ${route} with a body this client cannot read`);
+    throw new RemoteResponseInvalid(route, 'a body this client cannot read');
   }
   return result.data;
 }
@@ -139,12 +144,20 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
     },
 
     async recordAuditEvent(event) {
-      // Validated on the way OUT, not merely typed. This body is assembled from
-      // several call sites and carries the one field a deployment refuses on
-      // (`inspections[].ruleVersion` may not claim the capture namespace), so
-      // catching it here names the defect instead of turning it into a 400 that
-      // a fail-open forwarder swallows.
-      const submission = RecordAuditEventRequest.parse(event);
+      // Validated on the way OUT, not merely typed. This body is assembled
+      // from several call sites and carries the one field a deployment refuses
+      // on (`inspections[].ruleVersion` may not claim the capture namespace),
+      // so catching it here names the defect instead of turning it into a 400
+      // that a fail-open forwarder swallows.
+      //
+      // Raised as `RemoteRequestInvalid` rather than letting the ZodError
+      // escape: a caller that counts failures toward a circuit breaker cannot
+      // tell a raw ZodError from a transport fault, so a deterministic local
+      // shape bug would open the breaker, suppress every unrelated forward, and
+      // be reported as an outage the control plane never had.
+      const validated = RecordAuditEventRequest.safeParse(event);
+      if (!validated.success) throw new RemoteRequestInvalid(ROUTES.auditEvents, validated.error);
+      const submission = validated.data;
       const response = await send({
         ...common,
         method: 'POST',

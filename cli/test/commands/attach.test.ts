@@ -219,10 +219,31 @@ describe('detach', () => {
 });
 
 describe('status', () => {
-  it('reports standalone on a machine that has never attached', () => {
+  it('reports standalone on a machine that has never attached', async () => {
     const io = scriptedPrompter({ interactive: true });
-    runStatus([], deps(io));
+    await runStatus([], deps(io));
     expect(io.output()).toContain('not attached');
+  });
+
+  it('answers "whether policy is current", which the command summary promises', async () => {
+    // The policy line is a second renderer because reading the cached bundle is
+    // async while the connection block is sync and total. Without it the
+    // command advertises an answer it never prints.
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', ENDPOINT], deps(io));
+
+    const out = scriptedPrompter({ interactive: true });
+    await runStatus([], deps(out));
+    expect(out.output()).toContain('policy');
+    expect(out.output()).toContain('none cached');
+  });
+
+  it('says nothing about policy on a machine with no attachment', async () => {
+    // A standalone machine has no policy to be current, so the line would be
+    // answering a question nobody asked.
+    const io = scriptedPrompter({ interactive: true });
+    await runStatus([], deps(io));
+    expect(io.output()).not.toContain('policy');
   });
 
   it('names the deployment once attached, and never the key', async () => {
@@ -230,7 +251,7 @@ describe('status', () => {
     await runAttach(['--url', ENDPOINT], deps(io));
 
     const out = scriptedPrompter({ interactive: true });
-    runStatus([], deps(out));
+    await runStatus([], deps(out));
     expect(out.output()).toContain(ENDPOINT);
     expectNoEchoOf(out.output(), KEY);
   });

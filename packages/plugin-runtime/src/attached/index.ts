@@ -12,6 +12,7 @@ export {
   createForwardPolicy,
   DECISION_PATH_BUDGET_MS,
   FORWARD_BUDGET_MS,
+  FORWARD_STATE_FILENAME,
   readForwardHealth,
 } from './forward-policy.ts';
 export type { AttachedClient, AttachedDataGatewayDeps } from './gateway.ts';

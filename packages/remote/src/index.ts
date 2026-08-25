@@ -13,6 +13,8 @@ export {
   DEFAULT_TIMEOUT_MS,
   MAX_RESPONSE_BYTES,
   RemoteRequestError,
+  RemoteRequestInvalid,
+  RemoteResponseInvalid,
   RemoteTransportError,
   send,
 } from './http.ts';

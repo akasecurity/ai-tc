@@ -41,9 +41,7 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   detach: (argv) => {
     runDetach(argv);
   },
-  status: (argv) => {
-    runStatus(argv);
-  },
+  status: (argv) => runStatus(argv),
   tui: runTui,
   update: runUpdate,
   'check-updates': runCheckUpdates,

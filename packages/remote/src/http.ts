@@ -51,6 +51,42 @@ export class RemoteRequestError extends Error {
   }
 }
 
+/**
+ * A request this client refused to SEND, because the body it was handed does
+ * not satisfy the contract the route publishes.
+ *
+ * Kept apart from the two errors above, and that separation is the whole point
+ * of the class. Those describe what a control plane did; this describes a
+ * defect on this machine, before anything reached a socket. A caller that
+ * counts failures toward a circuit breaker must not count this one — a
+ * deterministic local shape bug would otherwise open the breaker and suppress
+ * every unrelated forward, while a status surface reported an outage that never
+ * happened.
+ */
+export class RemoteRequestInvalid extends Error {
+  constructor(route: string, override readonly cause: unknown) {
+    super(`refusing to send a malformed body to ${route}`);
+    this.name = 'RemoteRequestInvalid';
+  }
+}
+
+/**
+ * An answered request whose 2xx BODY is not what the route publishes.
+ *
+ * Its own class for the same reason `RemoteRequestInvalid` is: a caller has to
+ * tell "the deployment is running a version this build cannot read" from "the
+ * deployment could not be reached", and those point a user at completely
+ * different things. Recovering that from an error's WORDING joins the two
+ * packages by nothing but a string — the defect ./failure.ts's `statusOf`
+ * comment describes for the status path, reintroduced on the body path.
+ */
+export class RemoteResponseInvalid extends Error {
+  constructor(route: string, detail: string) {
+    super(`control plane answered ${route} with ${detail}`);
+    this.name = 'RemoteResponseInvalid';
+  }
+}
+
 /** A request that never got an answer: DNS, connect, TLS, timeout, socket. */
 export class RemoteTransportError extends Error {
   constructor(reason: string) {
@@ -98,6 +134,15 @@ export async function send(options: SendOptions): Promise<RemoteResponse> {
   const requestOptions: RequestOptions = {
     method: options.method,
     headers: {
+      // CALLER HEADERS FIRST, so this module's own are not overridable. Spread
+      // last they win, and two of the values below are ones no caller may
+      // replace: `x-api-key` is the credential, and `content-length` is the
+      // byte count that stops a multi-byte body being truncated by the
+      // receiver. `SendOptions.headers` is a free-form record on an exported
+      // function, so "no caller does that today" is not the guarantee to rely
+      // on. The one header any caller actually passes — `if-none-match` on the
+      // conditional GET — is untouched by this order.
+      ...options.headers,
       // The credential. One header, matching what the deployment authenticates
       // on; a second copy in an `Authorization` header would be one more place
       // it can be logged by an intermediary for no gain.
@@ -111,7 +156,6 @@ export async function send(options: SendOptions): Promise<RemoteResponse> {
             // character count is truncated by the receiver.
             'content-length': String(Buffer.byteLength(options.body)),
           }),
-      ...options.headers,
     },
   };
 

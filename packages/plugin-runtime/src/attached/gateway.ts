@@ -385,6 +385,22 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     // it writes are what the device's own /health, /audit and exception flows
     // read, and what the posture channel measures.
     await this.deps.local.recordCapture(record);
+    // ONLY the event crosses; `record.findings` stays on this machine. There is
+    // no field on `IngestBatch`/`Event` that could carry them, and that is the
+    // contract rather than an oversight: the plane re-derives its own findings
+    // from `Event.content`, so the two sides agree on what was detected without
+    // this machine's finding rows having to be trusted or transported.
+    //
+    // The asymmetry with `recordToolCalls` — which goes out of its way to carry
+    // `inspections` — is real and follows from the same rule: a tool call's
+    // detected secrets are already MASKED and its target is not re-scannable
+    // from the audit event, so there the finding row is the only way the
+    // information survives. Here the content itself travels.
+    //
+    // The consequence to know rather than discover: the posture channel's
+    // `findingsTotal` is measured from the LOCAL store, so it counts what this
+    // machine detected, not what the plane derived. Those numbers are allowed
+    // to differ and are not a reconciliation signal.
     // Decision path: a hook is blocked on this, so it takes the tighter budget.
     await this.deps.forward.run(
       () =>
@@ -514,18 +530,39 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     );
   }
 
+  /**
+   * Forward one batch, item by item, under ONE aggregate deadline.
+   *
+   * Per-item budgets bound each request and nothing bounded their sum — see
+   * BATCH_FORWARD_BUDGET_MS. When the deadline passes the remainder is dropped
+   * rather than sent: the local write has already succeeded, so every caller
+   * has a correct result to return, and a drop is the outcome this path is
+   * built to accept (G8) where a blown hook timeout is not.
+   *
+   * Serial rather than concurrent on purpose. These are ingest writes from a
+   * hook process, and firing N requests at once would trade a latency problem
+   * for a burst the plane's own per-key rate limiting would answer with the
+   * refusals the breaker then counts.
+   */
+  private async forwardBatch<T>(
+    inputs: readonly T[],
+    toEvent: (input: T) => AuditEventInput & { inspections?: ToolCallInspection[] },
+  ): Promise<void> {
+    const deadline = Date.now() + BATCH_FORWARD_BUDGET_MS;
+    for (const input of inputs) {
+      if (Date.now() >= deadline) return;
+      await this.deps.forward.run(() =>
+        this.deps.client.recordAuditEvent(reKeyForForward(toEvent(input), this.remoteInventory)),
+      );
+    }
+  }
+
   // Delegated as a BATCH rather than looped over recordLlmCall: the inner
   // gateway may write the whole batch in one local transaction, and looping
   // here would replace that with N separate local writes.
   async recordLlmCalls(inputs: readonly LlmCallInput[]): Promise<void> {
     await this.deps.local.recordLlmCalls(inputs);
-    for (const input of inputs) {
-      await this.deps.forward.run(() =>
-        this.deps.client.recordAuditEvent(
-          reKeyForForward(llmAuditEvent(input), this.remoteInventory),
-        ),
-      );
-    }
+    await this.forwardBatch(inputs, (input) => llmAuditEvent(input));
   }
 
   // `input.inspections` (secrets detected client-side in the tool's masked
@@ -536,13 +573,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   // way — this only stops the FINDING row itself from being dropped.
   async recordToolCalls(inputs: readonly ToolCallInput[]): Promise<void> {
     await this.deps.local.recordToolCalls(inputs);
-    for (const input of inputs) {
-      await this.deps.forward.run(() =>
-        this.deps.client.recordAuditEvent(
-          reKeyForForward(toolAuditEvent(input), this.remoteInventory),
-        ),
-      );
-    }
+    await this.forwardBatch(inputs, (input) => toolAuditEvent(input));
   }
 
   // Forwarded as a `config_scan` audit event: there is no dedicated
@@ -694,6 +725,31 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
       // compiled-in bundled packs: `{ rulesComplete: true, rules: [] }` would
       // zero local detection. Spread from `local` above, and deliberately not
       // re-read from `cached` here.
+      //
+      // THREE MORE OF THE CACHED BUNDLE'S FIELDS ARE DROPPED, each on purpose,
+      // and each named here so a reader can tell a decision from an omission:
+      //
+      //   `exceptions`        — an exception SUPPRESSES a detection, so honoring
+      //                         one from an unsigned on-disk cache would let
+      //                         anything able to write that file turn rules off.
+      //                         Every other field this merge accepts can only
+      //                         RAISE enforcement; this is the one that cannot,
+      //                         so it stays local-only until the bundle is
+      //                         signed. Exceptions remain a device-local ledger.
+      //   `reversibleRuleIds` — the Redact & Vault archetype makes a redaction
+      //                         recoverable, which is a CUSTODY change: it puts
+      //                         the detected value in the local vault instead of
+      //                         destroying it. Taking that instruction from the
+      //                         cache would let a remote party turn one-way
+      //                         redaction into retention. Dropping it keeps the
+      //                         one-way behaviour, which the schema itself calls
+      //                         "the safe direction to default".
+      //   `ruleVersions`      — remote rules fall back to their own spec version.
+      //                         Cosmetic rather than protective: it only affects
+      //                         how a finding is version-attributed, and the two
+      //                         sides may therefore attribute org rules
+      //                         differently. Worth carrying once there is a
+      //                         reader that needs it; nothing reads it today.
     };
   }
 
@@ -767,13 +823,41 @@ function reKeyForForward<T extends AuditEventInput>(event: T, remote: ResolvedIn
     delete stripped.sourceProjectId;
     return stripped;
   }
-  return {
-    ...event,
-    ...(remote.hostId === undefined ? {} : { hostId: remote.hostId }),
-    ...(remote.harnessId === undefined ? {} : { harnessId: remote.harnessId }),
-    ...(remote.sourceProjectId === undefined ? {} : { sourceProjectId: remote.sourceProjectId }),
-  };
+  // OMIT, then substitute — never override in place. Every member of
+  // `ResolvedInventory` is optional, so a PARTIAL answer is representable and
+  // valid: a plane that resolves only the host returns `{ hostId }`, and a
+  // spread of `...event` would carry this machine's `harnessId` and
+  // `sourceProjectId` through in ids the plane has no rows for. In the limit an
+  // answer of `{}` is schema-valid and would forward every local id — precisely
+  // the outcome the null branch above deletes them to avoid, reached by the
+  // path that looks like it succeeded.
+  const rekeyed = { ...event };
+  delete rekeyed.hostId;
+  delete rekeyed.harnessId;
+  delete rekeyed.sourceProjectId;
+  if (remote.hostId !== undefined) rekeyed.hostId = remote.hostId;
+  if (remote.harnessId !== undefined) rekeyed.harnessId = remote.harnessId;
+  if (remote.sourceProjectId !== undefined) rekeyed.sourceProjectId = remote.sourceProjectId;
+  return rekeyed;
 }
+
+/**
+ * How long a BATCH of per-item forwards may take in total.
+ *
+ * Each `forward.run` is bounded on its own, but a loop of them is not: N items
+ * against a slow-but-answering plane costs N budgets, and the breaker never
+ * helps because it only trips on failures — a plane answering successfully in
+ * 600ms produces none. Forty tool calls is ~24s that way, well past the 10s
+ * every harness gives a hook, and on a host that reads a timed-out hook as a
+ * DENY that is a blocked tool call rather than a slow one.
+ *
+ * So the batch gets one ceiling and the remainder is dropped when it is spent.
+ * That is the same trade the whole forward path already makes (G8: local write
+ * first, drops accepted and surfaced in status) applied to the axis that was
+ * still unbounded. It is deliberately larger than one item's budget — a batch
+ * that fits should complete — and far inside the harness timeout.
+ */
+const BATCH_FORWARD_BUDGET_MS = 3_000;
 
 function llmAuditEvent(input: LlmCallInput): AuditEventInput {
   return {

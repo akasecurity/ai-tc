@@ -667,7 +667,8 @@ web-ui            → @akasecurity/persistence, @akasecurity/dashboard-ui, @akas
                      @akasecurity/schema, @akasecurity/detections, @akasecurity/local-ops
                      (Next.js dashboard; reads the local store in Server Components,
                      mutates via Server Actions — no HTTP client, no auth)
-cli               → @akasecurity/schema, persistence, local-ops, detections (the `aka` command;
+cli               → @akasecurity/schema, persistence, local-ops, detections,
+                     plugin-runtime + remote (the attach verbs only) (the `aka` command;
                      ships the web-ui as a spawned Next server)
 
 # Plugin
@@ -678,7 +679,18 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      host only — Node side); the browser-side content script bundles just
                      `@akasecurity/plugin-sdk/browser` (mask.ts's Node-API-free slice) and
                      must never import anything Node-only
-@akasecurity/plugin-runtime → @akasecurity/plugin-sdk, persistence, schema
+@akasecurity/plugin-runtime → @akasecurity/plugin-sdk, persistence, schema, remote
+                     (the attached-mode gateway under src/attached/ — inert on a
+                     machine that has not attached, which is why `remote` is a
+                     runtime edge here and still costs a standalone machine
+                     nothing: the client is constructed only once both halves of
+                     an attachment are present and agree)
+@akasecurity/remote         → @akasecurity/schema, zod
+                     (the control-plane transport: the six routes an attached
+                     machine is scoped to, and the ONLY package in this
+                     workspace permitted to open a socket — see §4. `src/http.ts`
+                     is the one module inside it that sends; everything else
+                     builds requests and parses answers)
 @akasecurity/plugin-sdk     → @akasecurity/detections, persistence, schema
                      (provider resolution for the session-root snapshot reads the host env
                      directly at SessionStart — `provider.ts` for Claude Code,
@@ -741,7 +753,7 @@ changes. The gaps that exist today:
 **Cross-cutting rules:**
 
 - No `process.env` reads except the sites that explicitly opt out of `n/no-process-env` — §3 tables them, and deliberately is not restated here: a second copy of that list is how the count drifted last time.
-- No `fetch()` anywhere in the OSS surface — it makes no network calls. Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly.
+- No `fetch()` and no transport module anywhere except `@akasecurity/remote`, which reaches only the deployment a machine's own settings name and only once it has been attached on purpose (§4). Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly — none of them acquires data over a network.
 - Drizzle is imported **only** by `@akasecurity/schema`, which uses it to _define_ the local-store and registry schemas. Packages that read the store do so via `node:sqlite` through `@akasecurity/persistence` — they must not import Drizzle.
 - The graph above lists **runtime** edges. Test suites may additionally take `@akasecurity/plugin-sdk` as a **dev-only** dependency for fixture seeding — the bundled detection packs (`bundledDetections()` / `registerBundledPacks`) live only there, so a test that must seed `installed_packs` or the engine registry needs it. Both `cli` and `web-ui` do this in their exception tests. A dev-only test dependency is not a runtime package-wall crossing.
 
@@ -843,6 +855,7 @@ plugins/browser-extension/  the Chrome extension for ChatGPT + Claude.ai web cha
                       content scripts + a native-messaging host; private — bundled into
                       the CLI by `bundle:extension`, installed via `aka extension install`)
 packages/             the workspace libraries (schema · persistence · local-ops · detections ·
+                      remote ·
                       extract · dashboard-ui · ui-kit · plugin-runtime · plugin-sdk · scanner …)
 rules/                the built-in detection packs (rule JSON + fixtures)
 skills/               agent skills (e.g. write-detection-rule)

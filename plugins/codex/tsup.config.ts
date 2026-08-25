@@ -57,11 +57,8 @@ export default defineConfig({
     // Detached token-usage reconcile worker, spawned by the Stop hook (off the hot path)
     reconcile: 'src/reconcile.ts',
     // The detached policy-sync child, spawned by SessionStart when a machine is
-
     // attached. Lands flat in scripts/ like every other entry, because that is
-
     // where triggerPolicySync resolves it from.
-
     sync: 'src/sync.ts',
     // Read surface (aka:health · aka:findings · aka:recommend · aka:audit) + onboarding (aka:setup)
     query: 'src/query.ts',

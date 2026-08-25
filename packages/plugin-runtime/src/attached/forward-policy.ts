@@ -9,6 +9,24 @@ import { classifyFailure,type ControlPlaneFailure } from './failure.ts';
 import { withTimeout } from './with-timeout.ts';
 
 /**
+ * Whether an error is this machine refusing to SEND, rather than a control
+ * plane refusing to accept.
+ *
+ * Read STRUCTURALLY off the error's `name`, never with `instanceof`, for the
+ * reason `statusOf` gives in ./failure.ts: this code is bundled into every hook
+ * script while the transport is a separate package, and a prototype identity
+ * that survives one bundler configuration is not a thing to hang a breaker
+ * decision on.
+ */
+function isInvalidRequest(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { name?: unknown }).name === 'RemoteRequestInvalid'
+  );
+}
+
+/**
  * The general forward budget. Looser than the decision-path bound below
  * because these forwards sit behind a local write that has already succeeded —
  * the caller's result is in hand, and this is the organization's copy catching up.
@@ -82,7 +100,17 @@ const FAILURES: ReadonlySet<string> = new Set<ControlPlaneFailure>([
 ]);
 
 /** The file's name, shared by the policy and the read-only status view. */
-const STATE_FILENAME = 'attached-state.json';
+/**
+ * The breaker's state file, in `dataDir`.
+ *
+ * EXPORTED because it is derived from an attachment and a detach has to remove
+ * it. Left behind, a re-attach against a healthy plane opens on the previous
+ * one's verdict: status prints a terminal-sounding refusal about a deployment
+ * this machine no longer talks to, and — worse than cosmetic — `run` reads the
+ * stale `openedAtMs` and skips the network entirely until the cooldown elapses.
+ */
+export const FORWARD_STATE_FILENAME = 'attached-state.json';
+const STATE_FILENAME = FORWARD_STATE_FILENAME;
 
 /**
  * Parse the state file's contents, or `null` when it says nothing usable.
@@ -192,13 +220,21 @@ export interface ForwardPolicyDeps {
 /**
  * Why a forward produced no value.
  *
- * `breaker-open` is not one of the control plane's verdicts and is kept apart from
- * them deliberately: NO ATTEMPT WAS MADE. The breaker skipped the network
- * entirely, so there is nothing new to learn from this call and nothing new to
- * record — the same distinction `runPolicySync` draws by returning `null` for a
- * sync it never performed, rather than reporting a control plane it never called.
+ * TWO of these are not verdicts of the control plane at all, and both are kept
+ * apart from the rest deliberately, for the same reason: NO ATTEMPT WAS MADE.
+ *
+ *   `breaker-open`    the breaker skipped the network entirely.
+ *   `invalid-request` this machine refused to send a body that does not satisfy
+ *                     the route's published contract.
+ *
+ * Neither says anything about the plane, so neither may be counted toward the
+ * breaker or written down as its last verdict — the same distinction
+ * `runPolicySync` draws by returning `null` for a sync it never performed.
+ * `invalid-request` is the sharper of the two: it is DETERMINISTIC, so counting
+ * it would let one local shape bug open the breaker and suppress every
+ * unrelated forward while status reported an outage that never happened.
  */
-export type ForwardFailureReason = ControlPlaneFailure | 'breaker-open';
+export type ForwardFailureReason = ControlPlaneFailure | 'breaker-open' | 'invalid-request';
 
 /**
  * What one forward did. A DISCRIMINATED UNION rather than `T | null`, because
@@ -371,6 +407,11 @@ export function createForwardPolicy(deps: ForwardPolicyDeps): ForwardPolicy {
         // independent of anything the network claims; the classification is
         // used only to EXPLAIN the outage, never to change what the breaker
         // does. Explaining it was the part that was missing.
+        // A body this machine refused to SEND is a defect here, not a verdict
+        // there. Recording it would move the breaker on evidence the control
+        // plane never supplied; see ForwardFailureReason.
+        if (isInvalidRequest(err)) return { ok: false, reason: 'invalid-request' };
+
         const reason = classifyFailure(err);
         const failures = current.consecutiveFailures + 1;
         const shouldOpen = current.openedAtMs !== null || failures >= BREAKER_FAILURE_THRESHOLD;

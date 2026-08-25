@@ -7,11 +7,17 @@ import {
   defaultDataDir,
   isSafeEndpoint,
   ManagedFieldError,
+  readControlPlaneCredentialState,
   removeControlPlaneCredential,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
-import { renderAttachedStatus, SYNC_STATE_FILENAME } from '@akasecurity/plugin-runtime';
+import {
+  FORWARD_STATE_FILENAME,
+  renderAttachedStatus,
+  renderPolicyLine,
+  SYNC_STATE_FILENAME,
+} from '@akasecurity/plugin-runtime';
 import { createRemoteClient } from '@akasecurity/remote';
 
 import type { Prompter } from '../lib/prompter.ts';
@@ -159,6 +165,13 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     return;
   }
 
+  // What was there before, so a failed write can be put back. Re-attaching is
+  // how a key is ROTATED, so this path routinely runs on a machine that is
+  // already attached and working — and an unconditional rollback would take
+  // that machine from "attached and forwarding" to "attached, no usable
+  // credential" while printing that nothing was changed.
+  const previous = readControlPlaneCredentialState(settingsDirOf(base));
+
   try {
     // The credential FIRST, then the descriptor. In the other order a machine
     // that fails on the second write is left claiming an attachment it has no
@@ -191,13 +204,23 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
       base,
     );
   } catch (err) {
+    // Put back exactly what was there, rather than removing unconditionally.
+    // On a first attach that is "no credential"; on a rotation it is the key
+    // the machine was working with, and restoring it is what makes the message
+    // below true.
+    try {
+      if (previous.usable) writeControlPlaneCredential(settingsDirOf(base), previous.credential);
+      else removeControlPlaneCredential(settingsDirOf(base));
+    } catch {
+      // The rollback itself failed. Nothing further to try, and the message
+      // below is deliberately the weaker of the two — see its wording.
+    }
     // An administrator can freeze `runMode`, and a machine they froze to
     // standalone is one this command must not talk around.
-    removeControlPlaneCredential(settingsDirOf(base));
     io.err(
       err instanceof ManagedFieldError
         ? 'your organization manages this setting on this machine, so it cannot be attached here.'
-        : 'could not save the attachment; nothing was changed.',
+        : 'could not save the attachment; this machine is left as it was.',
     );
     exit(1);
     return;
@@ -239,18 +262,26 @@ export function runDetach(_argv: string[], deps: AttachDeps = {}): void {
   const io = deps.prompter ?? terminalPrompter();
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
-  const had = removeControlPlaneCredential(settingsDirOf(base));
+  // THE DESCRIPTOR FIRST, and the credential only once it has actually gone.
+  // The other order lets a refused detach still take effect in the way that
+  // matters: an administrator can freeze `runMode`, so `applyOnboarding` throws
+  // — but the credential is already deleted, settings still say `attached`, and
+  // the machine silently stops forwarding while being told nothing happened.
+  // That would let any user end reporting on a machine their organization
+  // manages, by running a command that claims it did nothing.
+  const had = readControlPlaneCredentialState(settingsDirOf(base)).usable;
   try {
     applyOnboarding({ runMode: 'standalone', controlPlane: undefined }, base);
   } catch (err) {
     io.err(
       err instanceof ManagedFieldError
         ? 'your organization manages this setting on this machine, so it cannot be detached here.'
-        : 'could not clear the attachment.',
+        : 'could not clear the attachment; this machine is left as it was.',
     );
     exit(1);
     return;
   }
+  removeControlPlaneCredential(settingsDirOf(base));
   clearDerived(dataDirOf(base));
 
   io.out(
@@ -261,29 +292,44 @@ export function runDetach(_argv: string[], deps: AttachDeps = {}): void {
 }
 
 /**
- * The cached bundle and the recorded sync outcome — both derived from an
- * attachment, and both meaningless without one.
+ * Everything derived from an attachment: the cached bundle, the recorded sync
+ * outcome, and the forward breaker's state. All three are meaningless without
+ * one, and all three MISLEAD if they survive it.
+ *
+ * The breaker file is the one whose survival is more than cosmetic. Left
+ * behind, a re-attach against a healthy plane opens with a stale `openedAtMs`,
+ * so `forward.run` takes its early return and skips the network until the
+ * cooldown elapses — while status renders a terminal-sounding refusal about a
+ * deployment this machine no longer talks to.
  *
  * `force` swallows a missing file and still throws on a real failure, which is
  * the behaviour to want here: a detach that silently left the organization's
  * policy in place is the one outcome this function exists to prevent.
  */
 function clearDerived(dir: string): void {
-  for (const name of [POLICY_CACHE_FILENAME, SYNC_STATE_FILENAME]) {
+  for (const name of [POLICY_CACHE_FILENAME, SYNC_STATE_FILENAME, FORWARD_STATE_FILENAME]) {
     rmSync(join(dir, name), { force: true });
   }
 }
 
-/** `aka status` — what this machine is attached to, read entirely from disk. */
-export function runStatus(_argv: string[], deps: AttachDeps = {}): void {
+/**
+ * `aka status` — what this machine is attached to, read entirely from disk.
+ *
+ * Two renderers, because they have different shapes and the split is why the
+ * policy line existed unused: `renderAttachedStatus` is synchronous and total,
+ * and reading the cached bundle is neither. This command's own summary promises
+ * "whether policy is current", and `renderPolicyLine` is the line that answers
+ * it — the version in force and how old it is.
+ *
+ * Still no network, on either half.
+ */
+export async function runStatus(_argv: string[], deps: AttachDeps = {}): Promise<void> {
   const base = deps.base ?? defaultDataDir();
   const io = deps.prompter ?? terminalPrompter();
+  const dataDir = dataDirOf(base);
 
-  io.out(
-    renderAttachedStatus({
-      base,
-      settingsDir: settingsDirOf(base),
-      dataDir: dataDirOf(base),
-    }),
-  );
+  const block = renderAttachedStatus({ base, settingsDir: settingsDirOf(base), dataDir });
+  // Only for an attached machine: a standalone one has no policy to be current.
+  const attached = !block.startsWith('AKA: standalone');
+  io.out(attached ? `${block}\n${await renderPolicyLine(dataDir)}` : block);
 }

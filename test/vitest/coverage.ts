@@ -83,7 +83,7 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   // Everything but the CLI entry, which is I/O wiring and decides nothing —
   // every decision sits in lib.ts, where the suite drives it.
   '@akasecurity/coverage-gate': 93, //              94.80
-  '@akasecurity/plugin-sdk': 91, //                 92.37
+  '@akasecurity/plugin-sdk': 91, //                 92.62
   '@akasecurity/setup-wizard': 89, //               90.38
   '@akasecurity/schema': 84, //                     85.59
   '@akasecurity/portability-gate': 84, //           85.58

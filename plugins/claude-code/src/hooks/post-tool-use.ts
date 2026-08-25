@@ -26,6 +26,7 @@ import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import type { ResponseScanOutcome } from './scan-response.ts';
 import { responseEmitPayload, scanResponseFields } from './scan-response.ts';
 import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
+import { warnIfStoreRedirected } from './store-health.ts';
 import { scannableResponseFields } from './tool-response.ts';
 
 async function main(): Promise<void> {
@@ -66,6 +67,9 @@ async function main(): Promise<void> {
   // re-trigger sync per field — and could even evaluate two fields of one
   // response under different policy snapshots.
   const config = loadConfig();
+  // A symlinked store path redirects the corpus without failing anything;
+  // say so once per session (stderr, so the stdout contract is untouched).
+  warnIfStoreRedirected(config, getString(input, 'session_id'));
   const gateway = resolveDataGateway(config);
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
   // Vaulting (and everything narrated about it) is consent-gated; without the

@@ -94,10 +94,53 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value as Record<string, unknown>;
 }
 
+// Whether an id names a SINGLE DIRECTORY under the brain root and nothing else.
+//
+// This is the guard between a value `agy` printed and a recursive, forced
+// delete: `conversationDir` is `join(brainRoot, id)`, `join` NORMALIZES, and
+// `cleanupConversation` removes the result with `{ recursive: true, force: true }`.
+// So an id that walks upward is an unrecoverable delete outside the store —
+// measured, `'../../..'` resolves to the user's HOME and `'../../../..'` to the
+// filesystem root, and the `catch` around the remove reports the run as a
+// success either way.
+//
+// Checked as a segment rather than with `basename(id) === id`, which looks
+// equivalent and is not: `basename('..')` is `'..'` and `basename('.')` is
+// `'.'`, so both pass it — deleting the whole Antigravity directory and the
+// whole brain root respectively. And `basename` is platform-scoped, so on POSIX
+// it returns `'..\\..'` unchanged while `win32.join` resolves that to a
+// grandparent; this plugin runs on Windows, so a POSIX-only check is not enough.
+//
+// Rejecting is SAFE by construction: the id is DROPPED rather than returned on,
+// so attribution falls through to the directory diff, which already declines
+// whenever it cannot attribute unambiguously. The worst case of the guard is a
+// transcript left on disk — which is the ambiguous case's existing behaviour —
+// against deleting the user's home without it.
+//
+// Enforced at the REMOVE and nowhere else, deliberately. Rejecting at adoption
+// as well reads like defence in depth and is worse than one guard: both sites
+// fall through to the same diff, so neither changes anything the other does not,
+// and a test cannot tell them apart — measured, deleting the adoption check left
+// all 50 cases green because this one absorbed it. One guard, at the operation
+// that does the damage, is the version that can be proven to fire.
+function isConversationSegment(id: string): boolean {
+  return (
+    id !== '' &&
+    id !== '.' &&
+    id !== '..' &&
+    !id.includes('/') &&
+    !id.includes('\\') &&
+    !id.includes(':') &&
+    !id.includes('\0')
+  );
+}
+
 // The `conversation_id` off an event or off its own payload object, or
-// undefined when absent or empty. Both placements are read because both appear:
-// `init` carries the id at the top level of the event, while `result` and
-// `step_update` carry it inside the payload object named after the event.
+// undefined when absent or empty. Whether it is USABLE as a path is decided at
+// the remove (see isConversationSegment), not here. Both placements
+// are read because both appear: `init` carries the id at the top level of the
+// event, while `result` and `step_update` carry it inside the payload object
+// named after the event.
 function conversationIdOf(value: unknown): string | undefined {
   const record = asRecord(value);
   if (record === undefined) return undefined;
@@ -117,6 +160,7 @@ interface EventScan {
   sawJson: boolean;
   sawObject: boolean;
   sawResultEvent: boolean;
+  sawResultObject: boolean;
   result: Record<string, unknown> | undefined;
   conversationId: string | undefined;
 }
@@ -148,6 +192,7 @@ function scanEventStream(stdout: string): EventScan {
     sawJson: false,
     sawObject: false,
     sawResultEvent: false,
+    sawResultObject: false,
     result: undefined,
     conversationId: undefined,
   };
@@ -173,11 +218,23 @@ function scanEventStream(stdout: string): EventScan {
 
     if (event.event === 'result') {
       scan.sawResultEvent = true;
-      // The LAST USABLE result event wins. One turn is written to stdin, so one
-      // is expected — but a host that emitted a second must not have the first
-      // read as the final word.
       const payload = asRecord(event.result);
-      if (payload !== undefined) scan.result = payload;
+      if (payload !== undefined) scan.sawResultObject = true;
+      // The LAST USABLE result event wins, and USABLE means it carries a
+      // response — not merely that it is an object. A second result event with
+      // no `response` (`{"status":"error"}`, say) must not displace a verdict
+      // that was already read: doing so throws away a perfectly readable answer
+      // and fails the whole history chunk.
+      if (payload !== undefined && typeof payload.response === 'string') {
+        scan.result = payload;
+        // ...and the id follows the payload. `??=` above adopts the first id
+        // seen, which is right for `init` and `step_update`; but when a result
+        // event supplies the verdict being used, ITS conversation is the one
+        // that produced it and the one to clean up. Never cleared — an event
+        // carrying no id leaves whatever was already adopted in place.
+        scan.conversationId =
+          conversationIdOf(event) ?? conversationIdOf(event.result) ?? scan.conversationId;
+      }
     }
   }
 
@@ -197,6 +254,7 @@ function scanEventStream(stdout: string): EventScan {
       scan.sawJson = true;
       scan.sawObject = true;
       scan.sawResultEvent = true;
+      scan.sawResultObject = true;
       scan.result = whole;
       scan.conversationId ??= conversationIdOf(whole);
     }
@@ -214,8 +272,14 @@ function envelopeFrom(scan: EventScan): JudgeEnvelope {
   if (!scan.sawJson) throw new Error('agy judge output was not valid JSON');
   if (!scan.sawObject) throw new Error('agy judge output was not a JSON object');
   if (!scan.sawResultEvent) throw new Error('agy judge output carried no result event');
-  if (scan.result === undefined) {
+  if (!scan.sawResultObject) {
     throw new Error('agy judge result event carried no result object');
+  }
+  // Reached when every result event carried an object that had no `response`.
+  // Split from the check above so each failure still names what was actually
+  // wrong: a payload that is not an object, versus one that is and says nothing.
+  if (scan.result === undefined) {
+    throw new Error('agy judge output carried no response string');
   }
   const response = scan.result.response;
   if (typeof response !== 'string') {
@@ -371,7 +435,15 @@ export function cleanupConversation(
   before: ReadonlySet<string>,
   home?: string,
 ): void {
-  let target = conversationId;
+  // The same segment rule at the site that performs the delete, because this
+  // function is exported and its `conversationId` argument is a caller's to
+  // choose. An unusable id is DROPPED rather than returned on, so attribution
+  // still falls through to the diff below — the two guards therefore differ in
+  // observable behaviour and neither can stand in for the other.
+  let target =
+    conversationId !== undefined && isConversationSegment(conversationId)
+      ? conversationId
+      : undefined;
   if (target === undefined) {
     const added = [...brainConversationIds(home)].filter((id) => !before.has(id));
     // Exactly one, or nothing is safe to attribute — and the index read is
@@ -466,6 +538,19 @@ export function runJudge(hits: readonly TriageHit[], deps: JudgeDeps): TriageRec
     try {
       stdout = deps.spawn(argv, judgeEnv(), stdin);
     } catch (err) {
+      // ATTRIBUTE FIRST applies to the FAILING path too, and this is the branch
+      // above the split rather than below it. A run that printed its `init` line
+      // and then died has already created the conversation on disk, and the id
+      // is sitting in the error's captured stdout — so read it, or the raw-
+      // bearing transcript survives whenever the directory diff is ambiguous.
+      //
+      // Only `conversation_id` is taken. The captured stdout itself is model
+      // output and can echo raw hits, so it never reaches the thrown error, and
+      // `scanEventStream` cannot throw.
+      const captured = (err as { stdout?: unknown }).stdout;
+      if (typeof captured === 'string') {
+        conversationId = scanEventStream(captured).conversationId;
+      }
       // Deliberately NOT chaining `err` as `cause`: the error's captured stdout
       // and stderr carry the model's own output, which can echo raw hits.
       // Attaching it would re-expose exactly what this throw exists to strip.

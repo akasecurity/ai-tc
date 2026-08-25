@@ -17,7 +17,13 @@ import { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { JudgeDeps } from '../../src/triage/judge.ts';
-import { judgeEnv, parseVerdict, runJudge, toJudgePayload } from '../../src/triage/judge.ts';
+import {
+  cleanupConversation,
+  judgeEnv,
+  parseVerdict,
+  runJudge,
+  toJudgePayload,
+} from '../../src/triage/judge.ts';
 import { errorFrom, expectNoEchoOf } from '../helpers/no-echo.ts';
 
 const VERDICT_FENCE = [
@@ -465,6 +471,31 @@ describe('runJudge', () => {
     expect(existsSync(dir)).toBe(false);
   });
 
+  it('keeps a verdict a later result event could not improve on (Q2)', () => {
+    // "Last USABLE result event wins" means usable, not merely an object. A
+    // second result event carrying `{status:'error'}` used to overwrite the
+    // verdict and throw `carried no response string`, failing a whole history
+    // chunk on output that contained a readable answer.
+    const home = tempHome();
+    const dir = seedConversation(home, 'conv-A');
+    const rec = runJudge([hit], {
+      spawn: () =>
+        [
+          JSON.stringify({
+            event: 'result',
+            result: { conversation_id: 'conv-A', response: VERDICT_FENCE },
+          }),
+          JSON.stringify({ event: 'result', result: { status: 'error' } }),
+          '',
+        ].join('\n'),
+      loadRubric: () => 'RUBRIC',
+      home,
+    });
+    expect(rec.perCategory[0]?.action).toBe('block');
+    // ...and the id survived with it, so the conversation is still cleaned up.
+    expect(existsSync(dir)).toBe(false);
+  });
+
   it('re-throws a spawn failure as raw-free metadata (its captured streams echo raw)', () => {
     // The prompt rides stdin now, so execFileSync's own message no longer
     // carries the hits — but the child's captured .stdout/.stderr still can,
@@ -806,6 +837,134 @@ describe('runJudge', () => {
       // Positive control: this path SUCCEEDS — it is not the throwing case above,
       // which is what makes it a distinct guard rather than a restatement.
       expect(rec.perCategory[0]?.action).toBe('block');
+      expect(existsSync(mine)).toBe(false);
+      expect(existsSync(theirs)).toBe(true);
+    });
+
+    // Q1. `conversationDir` is `join(brainRoot, id)` and `join` normalizes, so an
+    // id that walks upward escapes the store and is then removed recursively and
+    // forcibly. Measured before the guard: `'../../..'` deleted the whole temp
+    // HOME — creds and user documents included — and `runJudge` still RETURNED,
+    // because the remove's catch reports nothing.
+    //
+    // The first two rows are the ones a `basename(id) === id` check lets
+    // through, which is why the guard is a segment test instead: `basename('.')`
+    // is `'.'` and `basename('..')` is `'..'`, so both satisfy it. The backslash
+    // row is the platform half — POSIX `basename` returns it unchanged while
+    // `win32.join` resolves it to a grandparent, and this plugin runs on Windows.
+    it.each([
+      ['.', 'the brain root itself — every conversation the user has'],
+      ['..', 'the whole Antigravity directory'],
+      ['../../..', 'the user’s HOME'],
+      ['../../../..', 'the filesystem root'],
+      ['..\\..', 'a grandparent, on Windows only'],
+      ['/etc', 'an absolute path'],
+      ['a/b', 'a nested path'],
+    ])('refuses to attribute a conversation id that is not a path segment: %s', (id) => {
+      const home = tempHome();
+      // One sentinel per level a traversing id reaches, because an assertion
+      // that only watches the OUTERMOST level is satisfied by a guard that stops
+      // `../../..` and lets `.` through — measured: with a `basename(id) === id`
+      // check in place this whole case stayed green, because `.` removes the
+      // brain root and `..` the Antigravity directory, and neither is outside
+      // `.gemini`. Each row below has to be caught at the level it actually hits.
+      const sibling = seedConversation(home, 'conv-someone-elses'); //   .
+      const antigravity = join(home, '.gemini', 'antigravity', 'usage.json'); //  ..
+      const precious = join(home, '.gemini', 'precious.json'); //       ../..
+      writeFileSync(antigravity, 'USAGE');
+      writeFileSync(precious, 'CREDS');
+
+      const rec = runJudge([hit], {
+        spawn: () =>
+          `${JSON.stringify({
+            event: 'result',
+            result: { conversation_id: id, response: VERDICT_FENCE },
+          })}\n`,
+        loadRubric: () => 'RUBRIC',
+        home,
+      });
+
+      // Positive control: the run really did complete, so cleanup really did run
+      // with this id rather than the case passing because nothing happened.
+      expect(rec.perCategory[0]?.action).toBe('block');
+      expect(existsSync(sibling)).toBe(true);
+      expect(existsSync(antigravity)).toBe(true);
+      expect(existsSync(precious)).toBe(true);
+      expect(existsSync(home)).toBe(true);
+    });
+
+    it('rejects an unusable id at the delete site too, and still tries the diff', () => {
+      // Q1, second site. `cleanupConversation` is exported, so its id argument is
+      // a caller's to choose. Rejecting there DROPS the id rather than returning,
+      // so the diff still runs — which is what makes this guard observably
+      // different from the adoption one and keeps each testable on its own.
+      const home = tempHome();
+      const precious = join(home, '.gemini', 'precious.json');
+      mkdirSync(join(home, '.gemini'), { recursive: true });
+      writeFileSync(precious, 'CREDS');
+      const appeared = seedConversation(home, 'conv-new');
+
+      cleanupConversation('../../..', new Set(), home);
+
+      expect(existsSync(precious)).toBe(true);
+      // ...and the diff attributed the one conversation that did appear.
+      expect(existsSync(appeared)).toBe(false);
+    });
+
+    it('adopts the id of the result event that supplied the verdict', () => {
+      // Q2-b. `??=` is right for init/step_update but must not outrank a result
+      // event that carries the verdict actually used: that event names the
+      // conversation which produced it, and cleaning up the other one leaves the
+      // raw-bearing transcript behind.
+      const home = tempHome();
+      let used = '';
+      let stale = '';
+      runJudge([hit], {
+        spawn: () => {
+          stale = seedConversation(home, 'conv-first');
+          used = seedConversation(home, 'conv-that-answered');
+          return [
+            JSON.stringify({ event: 'init', conversation_id: 'conv-first' }),
+            JSON.stringify({
+              event: 'result',
+              result: { conversation_id: 'conv-that-answered', response: VERDICT_FENCE },
+            }),
+            '',
+          ].join('\n');
+        },
+        loadRubric: () => 'RUBRIC',
+        home,
+      });
+      expect(existsSync(used)).toBe(false);
+      expect(existsSync(stale)).toBe(true);
+    });
+
+    it('recovers the id from a failed spawn’s captured stdout', () => {
+      // Q3. `agy` printed its init line — so the conversation exists — and then
+      // died. The id is in the error's stdout; without reading it, attribution
+      // falls to the diff, which declines here because a second conversation
+      // appeared, and the raw-bearing transcript survives.
+      const home = tempHome();
+      let mine = '';
+      let theirs = '';
+      const err = errorFrom(() =>
+        runJudge([hit], {
+          spawn: () => {
+            mine = seedConversation(home, 'conv-init');
+            theirs = seedConversation(home, 'conv-user-work');
+            throw Object.assign(new Error(`Command failed: agy ... ${hit.rawMatch}`), {
+              status: 1,
+              stdout: `${JSON.stringify({ event: 'init', conversation_id: 'conv-init' })}\n`,
+              stderr: `run logging ${hit.rawMatch}`,
+            });
+          },
+          loadRubric: () => 'RUBRIC',
+          home,
+        }),
+      );
+      // Positive control: this is the failing path, reported raw-free.
+      expect(err?.message).toBe('agy judge subprocess failed (exit 1)');
+      expectNoEchoOf(err?.message, hit.rawMatch);
       expect(existsSync(mine)).toBe(false);
       expect(existsSync(theirs)).toBe(true);
     });

@@ -114,5 +114,20 @@
     "label": "IPv6 loopback ending a sentence",
     "text": "Reachable at ::1. Retry if that fails",
     "shouldMatch": true
+  },
+  {
+    "label": "Python step slice, not a bracketed IPv6 authority",
+    "text": "view = arr[::1]",
+    "shouldMatch": false
+  },
+  {
+    "label": "step slice after an attribute access",
+    "text": "df.iloc[::1]",
+    "shouldMatch": false
+  },
+  {
+    "label": "step slice on an identifier ending in a digit",
+    "text": "stack_2[::1] = frames",
+    "shouldMatch": false
   }
 ]

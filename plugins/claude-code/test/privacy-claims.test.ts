@@ -65,10 +65,21 @@ const LOCALITY_CLAIM =
 const footnoteOf = (text: string): string =>
   text.split('\n').filter(isFootnoteDefinition).join(' ').replace(/\s+/g, ' ');
 
+/**
+ * Body paragraphs — everything a reader (or a quoter) meets before the footnote.
+ *
+ * `.trim()` before the split is load-bearing, and is the same fix the CLI copy
+ * carries: a footnote paragraph at the END of a page keeps the file's trailing
+ * newline, so it splits to `['[^egress]: …', '']`, `.every()` is false, the
+ * negation keeps it, and the correction is classified as body prose. Moving a
+ * footnote to the bottom of a page is a pure formatting edit, so nothing would
+ * warn that it had turned `names the exception inline` into a case the footnote
+ * satisfies by itself.
+ */
 const paragraphs = (text: string): string[] =>
   text
     .split(/\n{2,}/)
-    .filter((p) => !p.split('\n').every(isFootnoteDefinition))
+    .filter((p) => !p.trim().split('\n').every(isFootnoteDefinition))
     .filter((p) => p.trim() !== '');
 
 /**
@@ -228,10 +239,10 @@ describe('README.md aka-<name> dispatch disclosure', () => {
   const root = READMES.find((r) => r.name === 'README.md');
   const footnote = footnoteOf(root?.text ?? '');
 
-  it('names the dispatch without folding it into the three-path count', () => {
-    expect(footnote).toMatch(/Three narrow paths/);
+  it('names the dispatch without folding it into the four-path count', () => {
+    expect(footnote).toMatch(/Four narrow paths/);
     expect(footnote).toMatch(/aka-<name>/);
-    expect(footnote).toMatch(/not one of the three/i);
+    expect(footnote).toMatch(/not one of the four/i);
   });
 
   // The whole point of naming it is that its behaviour is undescribable from
@@ -239,5 +250,26 @@ describe('README.md aka-<name> dispatch disclosure', () => {
   // repo cannot check.
   it('disclaims knowledge of what the dispatched program does', () => {
     expect(footnote).toMatch(/does not bundle, pin or verify it/i);
+  });
+
+  /**
+   * The one path a reader cannot discover by reading the commands they type.
+   *
+   * This page enumerates and commits to a COUNT, and the count word alone is a
+   * weak thing to pin: the enumeration was `npm`/`claude` installs, the plugin's
+   * supply-chain check, and the opt-in calibration — every one of them gated
+   * behind either a typed command or a granted consent. The passive notice is
+   * neither. `main.ts`'s SKIP_NOTICE covers only the update commands themselves,
+   * so a bare `aka stats` on a terminal can reach the registry, and this page
+   * said nothing about it while cli/README.md described it in full.
+   *
+   * Pinned here rather than in a general "enumeration is complete" tier, because
+   * only the pages that commit to a count owe this, and there are two of them.
+   */
+  it('discloses the default-on update notice and its opt-out', () => {
+    expect(footnote).toMatch(/update notice/i);
+    expect(footnote).toMatch(/on by default/i);
+    expect(footnote).toMatch(/needs no command/i);
+    expect(footnote).toContain('--no-update-check');
   });
 });

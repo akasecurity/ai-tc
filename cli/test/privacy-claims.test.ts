@@ -164,6 +164,23 @@ describe('cli/README.md CLI-owned egress disclosure', () => {
   });
 
   /**
+   * And the numeral in front of them, which was the one hand-written token left
+   * in a sentence whose names are derived.
+   *
+   * Antigravity already declares an `npmPackage` and withholds only
+   * `pluginName`/`marketplace`, so the day it gains a marketplace ref there are
+   * four lookups: the `it.each` above reds on the missing NAME, someone adds the
+   * name, and "three" silently understates the disclosure on a privacy page.
+   * Spelling it from the same list is what makes both move together.
+   */
+  it('spells a lookup count that matches what the report actually asks for', () => {
+    const words = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven'];
+    const spelled = words[LOOKED_UP_PACKAGES.length];
+    expect(spelled).toBeDefined();
+    expect(footnote).toContain(`${String(spelled)} \`npm view\` lookups`);
+  });
+
+  /**
    * And says what that does NOT tell the registry. The plugin lookups run with
    * an empty `installed` map above, so the registry learns which packages this
    * machine asked about — not which it has. The previous copy claimed the
@@ -241,6 +258,23 @@ describe('cli/README.md CLI-owned egress disclosure', () => {
     expect(footnote).toMatch(/\/aka:setup/);
     expect(footnote).toMatch(/plugin rather than to this CLI/i);
     expect(footnote).toContain('plugins/claude-code/README.md');
+  });
+
+  /**
+   * The page hands the PAYLOAD off to the plugin README, but it still makes two
+   * substantive claims of its own — that the calibration reaches the model API,
+   * and that it sits behind two separate opt-ins. Those are consent claims, and
+   * the tier split put every judge assertion in JUDGE_READMES, which excludes
+   * this page: a product collapsing to a single gate would redden the two judge
+   * pages while this one went on promising two, with nothing to catch it.
+   *
+   * So they are pinned here. This is not the payload table returning — the
+   * TriageHit field list deliberately stays off this page — it is the narrower
+   * rule that a page may not make a consent claim no guard holds.
+   */
+  it('pins the consent claims it makes about the judge', () => {
+    expect(footnote).toMatch(/model API/);
+    expect(footnote).toMatch(/two separate opt-ins/i);
   });
 
   /**

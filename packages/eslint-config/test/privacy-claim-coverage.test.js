@@ -106,13 +106,21 @@ describe('locality-claim coverage', () => {
     expect(treeReadmes()).toContain('README.md');
   });
 
-  // The two regexes are copies across a package wall (this suite is plain JS and
-  // cannot import the TS one). A copy that drifted narrower would let exactly the
-  // claim it stopped matching go unclassified, so the source's own literal is
-  // read back and compared.
+  /**
+   * The two regexes are copies across a package wall (this suite is plain JS and
+   * cannot import the TS one), so they are compared as WHOLE literals, flags
+   * included — not by containment.
+   *
+   * Containment is asymmetric and leaks in both directions. Append an
+   * alternative to the TS pattern and its source still CONTAINS the narrow copy
+   * as a prefix, so this passes while the walk below keeps using the narrow one
+   * and a README matching only the new alternative is never classified. Drop a
+   * trailing alternative from this copy and it becomes a prefix of the TS one,
+   * which also passes. Only a change in the middle would have reddened.
+   */
   it('uses the same locality-claim pattern as the suite it guards', () => {
     const source = repoFile(CLASSIFIER);
-    expect(source).toContain(LOCALITY_CLAIM.source);
+    expect(source).toContain(`/${LOCALITY_CLAIM.source}/i`);
   });
 
   /**

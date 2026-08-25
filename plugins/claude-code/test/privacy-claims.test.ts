@@ -157,6 +157,48 @@ describe.each(READMES)('$name privacy claims', ({ text }) => {
 //
 // Root README only — the dispatch is a CLI feature, and the plugin README
 // describes the plugin.
+/**
+ * Every path by which the shipped product can reach a network, and the marker
+ * that proves the root README's footnote names it.
+ *
+ * An EXACT set, and the source the count word below is derived from. Anything
+ * that adds an outbound path adds a row here, which is what makes the count
+ * sentence move with the list instead of drifting behind it.
+ */
+const EGRESS_PATHS = [
+  { name: 'package-manager install', marker: /package-manager installs/, childProcess: true },
+  { name: 'supply-chain check', marker: /npm audit signatures/, childProcess: true },
+  { name: 'setup calibration', marker: /\/aka:setup/, childProcess: true },
+  // The first and only path the source itself opens a connection on. Its
+  // `childProcess: false` is what makes the sub-count below mean something:
+  // every other row is a spawn, and the footnote has to keep saying so.
+  { name: 'attached control plane', marker: /aka attach/, childProcess: false },
+] as const;
+
+/**
+ * Spelled numerals, because the footnote is prose and says "Four" rather than
+ * "4".
+ *
+ * A count with no word here THROWS rather than resolving to `undefined`. That
+ * matters: an undefined interpolated into a regex produces `/undefined narrow
+ * paths/`, which no footnote matches — so the case would still go red, but for
+ * a reason that reads like the prose is wrong when the table is what ran out.
+ * On a guard whose whole job is telling somebody which of the two to move, that
+ * is the wrong message.
+ */
+const COUNT_WORDS = ['Zero', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven'] as const;
+
+function countWord(n: number): string {
+  const word = COUNT_WORDS[n];
+  if (word === undefined) {
+    throw new Error(
+      `no spelled numeral for ${String(n)} — extend COUNT_WORDS. The footnote counts its egress ` +
+        'paths in prose, so this table has to reach as far as EGRESS_PATHS does.',
+    );
+  }
+  return word;
+}
+
 describe('README.md aka-<name> dispatch disclosure', () => {
   const footnote = READMES[0].text
     .split('\n')
@@ -165,13 +207,66 @@ describe('README.md aka-<name> dispatch disclosure', () => {
     .replace(/\s+/g, ' ');
 
   it('names the dispatch without folding it into the enumerated count', () => {
-    // The count moved from three to four when attaching to a deployment became
-    // a path the source itself can take. What this case actually holds is the
-    // SEPARATION: the dispatched program is named and excluded from the count,
-    // because its behaviour is the one thing on this list nothing here chose.
-    expect(footnote).toMatch(/Four narrow paths/);
+    // The SEPARATION is the property: the dispatched program is named and
+    // excluded from the count, because its behaviour is the one thing on this
+    // list nothing in this repo chose.
     expect(footnote).toMatch(/aka-<name>/);
-    expect(footnote).toMatch(/not one of the four/i);
+    expect(footnote).toMatch(new RegExp(`not one of the ${countWord(EGRESS_PATHS.length)}`, 'i'));
+  });
+
+  // The count word and the paths it counts, checked against EACH OTHER rather
+  // than against a literal.
+  //
+  // `toMatch(/Four narrow paths/)` was what stood here, and a pin like that is
+  // WORSE than no guard on a page like this: it goes green whether or not the
+  // number describes the list, so the green asserts that somebody checked. The
+  // way it breaks is not hypothetical — two branches can each add a fourth path
+  // from opposite sides, and whichever merges second keeps a sentence saying
+  // "Four" above an enumeration of five. Both suites pass.
+  //
+  // So the numeral is DERIVED from the enumeration. Adding a path means adding
+  // it to EGRESS_PATHS, and the count sentence then has to move with it or this
+  // fails — which is the forcing function a merge resolution needs.
+  it('states a count that matches the number of paths it enumerates', () => {
+    const word = countWord(EGRESS_PATHS.length);
+    expect(
+      footnote,
+      `the footnote must open by counting the ${String(EGRESS_PATHS.length)} paths in ` +
+        'EGRESS_PATHS. If you added or removed one, move the count sentence with it.',
+    ).toMatch(new RegExp(`${word} narrow paths`, 'i'));
+  });
+
+  it.each(EGRESS_PATHS)('enumerates the $name path', ({ marker }) => {
+    // The other half: a count that agrees with a list nobody checked is only
+    // half a guarantee. Each path has to be NAMED, so the count cannot be
+    // satisfied by a list that quietly lost one.
+    expect(footnote).toMatch(marker);
+  });
+
+  it('does not claim every path is a child process', () => {
+    // True until attached mode, and the sentence that carried it is the one a
+    // merge is most likely to keep: `@akasecurity/remote` reaches the network
+    // from the source itself, without spawning anything.
+    expect(footnote).not.toMatch(/all through child processes/i);
+  });
+
+  // The SUB-count, derived the same way, and it closes the direction the total
+  // cannot see.
+  //
+  // A merge that brings in another party's text can add a path to the PROSE
+  // without adding a row here, and the total then still agrees with a table
+  // that has quietly fallen behind. But every path added so far except attach
+  // is a spawn, so text carrying one also carries a claim about how many of
+  // them are — and that sentence is checked here against the rows marked
+  // `childProcess`. Between the two numerals, prose and table cannot drift
+  // apart in either direction without something going red.
+  it('states how many of those paths are child processes, and counts them right', () => {
+    const spawned = EGRESS_PATHS.filter((p) => p.childProcess).length;
+    expect(
+      footnote,
+      `the footnote must say ${countWord(spawned)} of the paths are child processes — the rows ` +
+        'in EGRESS_PATHS marked childProcess. The remainder reach the network from the source.',
+    ).toMatch(new RegExp(`${countWord(spawned)} of them are child processes`, 'i'));
   });
 
   it('says the attached path is opt-in, and names where its client lives', () => {

@@ -151,8 +151,9 @@ describe('ensureDataDirSync', () => {
     }
     // The pinned decision for a symlinked store path is skip-and-surface, not
     // refuse: a home a user deliberately symlinked (a dotfiles manager, another
-    // volume) must keep working, and a hook must never break on one. `aka init`
-    // is what names the link — see symlinkedStorePaths in the CLI.
+    // volume) must keep working, and a hook must never break on one. Naming the
+    // link is the callers' job — see symlinkedStorePaths in ./store-symlinks.ts,
+    // which both `aka init` and the plugin hooks report from.
     const victim = join(base, 'victim-shared');
     mkdirSync(victim);
     chmodSync(victim, 0o755);

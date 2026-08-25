@@ -43,6 +43,7 @@ import {
   readStdin,
   runHookFailOpen,
 } from './shared.ts';
+import { warnIfStoreRedirected } from './store-health.ts';
 
 const CARRY_ON = {};
 
@@ -79,6 +80,9 @@ async function main(): Promise<unknown> {
   // this is the one place that snapshots it onto the session root, so it must
   // pass the Antigravity resolver explicitly.
   const config = loadConfig(undefined, resolveAntigravityProvider);
+  // A symlinked store path redirects the corpus without failing anything;
+  // say so once per session (stderr, so the stdout contract is untouched).
+  warnIfStoreRedirected(config, sessionId);
   const result = await handleSessionStart(
     {
       sessionId,

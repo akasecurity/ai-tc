@@ -6,8 +6,8 @@
   "severity": "low",
   "matcher": {
     "type": "regex",
-    "pattern": "\\b(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|::1)\\b",
+    "pattern": "(?<![A-Za-z0-9_])(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|(?<![A-Za-z0-9_]\\[)::1(?!:|\\.[0-9]))(?![A-Za-z0-9_])",
     "flags": "g"
   },
-  "examples": ["localhost", "127.0.0.1"]
+  "examples": ["localhost", "127.0.0.1", "0.0.0.0", "::1"]
 }

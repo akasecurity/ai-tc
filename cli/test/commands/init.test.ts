@@ -22,16 +22,11 @@ import { cachePath, writeCache } from '@akasecurity/local-ops';
 import { keysDir, openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections, dataDir, dbPath, settingsDir } from '@akasecurity/plugin-sdk';
 import type { DetectionDetail } from '@akasecurity/schema';
-import { defaultWorkspaceSettings } from '@akasecurity/schema';
+import { DEFAULT_ACTIONS, defaultWorkspaceSettings } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
-import {
-  looseStorePaths,
-  runInit,
-  symlinkedStorePaths,
-  symlinkWarnings,
-} from '../../src/commands/init.ts';
+import { looseStorePaths, runInit, symlinkWarnings } from '../../src/commands/init.ts';
 import { runPlugins } from '../../src/commands/plugins.ts';
 import { cliStderr } from '../helpers/cli-stderr.ts';
 
@@ -89,7 +84,9 @@ afterEach(() => {
 // Every path under `home`, the home itself included. A hardcoded list of the
 // paths init writes cannot cover what a later change adds — the migration's
 // `aka.db.pre-drop.<ts>.bak`, a byte-for-byte copy of the store, is already one
-// such file and no list here names it.
+// such file and no list here names it. (A first `aka init` no longer produces
+// one — the legacy drop snapshots only where it would destroy rows — so the
+// cases below plant it by hand rather than depending on a run to write it.)
 //
 // Deliberately its own walk rather than a call into looseStorePaths: a test that
 // reuses the implementation it is checking cannot catch a bug in that walk.
@@ -236,7 +233,9 @@ describe('runInit contract', () => {
       expect(tree).toContain(dbPath(dir));
       expect(tree).toContain(join(settingsDir(dir), 'settings.json'));
       // Everything ELSE it found is owner-only too — the part a five-path list
-      // cannot cover, and where the pre-drop backup is caught.
+      // cannot cover, and where a snapshot copy would be caught. Nothing here
+      // depends on one existing: a first init writes no pre-drop backup, and
+      // the case that pins the walk against one plants it explicitly.
       expect(tree.filter(looseInTree)).toEqual([]);
 
       // The user-facing signal has to agree with the disk. It can: looseStorePaths
@@ -457,6 +456,45 @@ describe('runInit and the bundled detection inventory', () => {
     expect(out).not.toContain('update(s) available');
   });
 
+  it('seeds one default policy per category, and reports that same count', async () => {
+    // The post-install claim has two halves and only the packs half was pinned:
+    // a store whose `policies` table stayed empty still installs every pack, so
+    // every assertion above holds while the detection-type config — what each
+    // category actually DOES on a finding — was never written.
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    // Derived from the same table `seedDefaults` iterates, so adding a category
+    // moves this expectation with it rather than dating it.
+    const categories = Object.keys(DEFAULT_ACTIONS);
+    expect(categories.length).toBeGreaterThan(0); // precondition: there is something to seed
+
+    await runInit(['--home', dir]);
+
+    const db = openLocalDatabase(dataDir(dir));
+    try {
+      const policies = await db.policies.readPolicies();
+      expect(policies).toHaveLength(categories.length);
+      // Every seeded row carries the action the catalog defines for its
+      // category — a table filled with the wrong action is not "seeded".
+      for (const [category, action] of Object.entries(DEFAULT_ACTIONS)) {
+        const row = policies.find(
+          // The target is a union — a seeded default is the CATEGORY arm, and a
+          // rule-targeted row must not satisfy this lookup by accident.
+          (p) => p.scope === 'global' && 'category' in p.target && p.target.category === category,
+        );
+        expect(row, `no seeded policy for category ${category}`).toBeDefined();
+        expect(row?.action).toBe(action);
+        expect(row?.enabled).toBe(true);
+      }
+    } finally {
+      db.close();
+    }
+
+    // …and the number the command PRINTS is the number that landed, so the
+    // reassurance a user reads cannot drift from the store behind it.
+    const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+    expect(out).toContain(`seeded ${String(categories.length)} default policies`);
+  });
+
   it('never modifies a pack the user already has — it offers an update instead', async () => {
     // The user's ACTIVE snapshot is theirs. `recordInventory` is install-if-absent
     // (ON CONFLICT DO NOTHING), so a pack already in installed_packs keeps its
@@ -638,7 +676,9 @@ describe('looseStorePaths', () => {
     }
     // The layout is a fixed list; what sits beside the store is not. The legacy
     // drop leaves an `aka.db.pre-drop.<ts>.<rand>.bak` — a byte-for-byte copy of
-    // the prompt corpus — on every run, and the SQLite sidecars appear with
+    // the prompt corpus — on any run carrying pre-cutover history forward
+    // (planted here, since a fresh store's drop destroys nothing and so takes no
+    // snapshot), and the SQLite sidecars appear with
     // whichever journal mode is active. tightenFile/tightenPerms hold all of
     // them at 0600, so one left group-readable is a rejected chmod, which is
     // exactly what this warning exists to surface. Before this walk the store's
@@ -801,113 +841,6 @@ describe('looseStorePaths', () => {
   });
 });
 
-describe('symlinkedStorePaths', () => {
-  it('reports each symlinked store path with what it resolves to, and none when all are real', (ctx) => {
-    if (process.platform === 'win32') {
-      ctx.skip('unprivileged symlink creation is not available on Windows');
-      return;
-    }
-    // A real home reports nothing.
-    mkdirSync(settingsDir(dir), { recursive: true });
-    mkdirSync(dataDir(dir), { recursive: true });
-    expect(symlinkedStorePaths(dir)).toEqual([]);
-
-    // Each store directory a symlink can stand in for — ~/.aka is covered by the
-    // runInit case below; here the two layout leaves plus keys/, at a second
-    // home. Each is named with the directory the store actually lands in, fully
-    // resolved, so a chain of links still names the real destination (on macOS
-    // the tmpdir is itself reached through /var -> /private/var).
-    const home = join(dir, 'home2');
-    mkdirSync(home);
-    const elsewhereSettings = join(dir, 'elsewhere-settings');
-    const elsewhereData = join(dir, 'elsewhere-data');
-    const elsewhereKeys = join(dir, 'elsewhere-keys');
-    for (const victim of [elsewhereSettings, elsewhereData, elsewhereKeys]) mkdirSync(victim);
-    // Distinct modes, none of them 0700: the inherited permission is reported
-    // per path, so a shared literal would not show it is read from the target.
-    chmodSync(elsewhereSettings, 0o755);
-    chmodSync(elsewhereData, 0o777);
-    chmodSync(elsewhereKeys, 0o700);
-    symlinkSync(elsewhereSettings, settingsDir(home));
-    symlinkSync(elsewhereData, dataDir(home));
-    symlinkSync(elsewhereKeys, join(home, 'keys'));
-
-    // Reported in store-layout order: settings/, data/, keys/ — each with the
-    // mode the store inherits from that target, which is what init warns about.
-    expect(symlinkedStorePaths(home)).toEqual([
-      {
-        path: settingsDir(home),
-        target: realpathSync(elsewhereSettings),
-        holds: 'your settings file',
-        missing: false,
-        mode: 0o755,
-      },
-      {
-        path: dataDir(home),
-        target: realpathSync(elsewhereData),
-        holds: 'the store database (including the prompt corpus)',
-        missing: false,
-        mode: 0o777,
-      },
-      {
-        path: join(home, 'keys'),
-        target: realpathSync(elsewhereKeys),
-        holds: 'the vault key',
-        missing: false,
-        mode: 0o700,
-      },
-    ]);
-  });
-
-  it('still reports a link that resolves nowhere, naming an absolute target', (ctx) => {
-    if (process.platform === 'win32') {
-      ctx.skip('unprivileged symlink creation is not available on Windows');
-      return;
-    }
-    // realpath has nothing to resolve on a dangling link; falling through to
-    // readlink keeps the report rather than dropping it as absent. There is
-    // nothing to stat either, so the mode reads as unknown rather than as
-    // owner-only — an absent mode must not be reported as a safe one.
-    const home = join(dir, 'home3');
-    mkdirSync(home);
-    const missing = join(dir, 'unmounted-volume');
-    symlinkSync(missing, join(home, 'keys'));
-
-    expect(symlinkedStorePaths(home)).toEqual([
-      {
-        path: join(home, 'keys'),
-        target: missing,
-        holds: 'the vault key',
-        missing: true,
-        mode: undefined,
-      },
-    ]);
-  });
-
-  it('resolves a RELATIVE dangling target against the link, not the cwd', (ctx) => {
-    if (process.platform === 'win32') {
-      ctx.skip('unprivileged symlink creation is not available on Windows');
-      return;
-    }
-    // readlink returns whatever was stored, so a relative link reports a path
-    // that names nothing on its own — the reader cannot tell where the corpus
-    // would land. Resolve it against the link's own directory.
-    const home = join(dir, 'home4');
-    mkdirSync(home);
-    symlinkSync('../unmounted-volume', join(home, 'keys'));
-
-    expect(symlinkedStorePaths(home)).toEqual([
-      {
-        path: join(home, 'keys'),
-        target: join(dir, 'unmounted-volume'),
-        holds: 'the vault key',
-        missing: true,
-        mode: undefined,
-      },
-    ]);
-  });
-});
-
 describe('symlinkWarnings', () => {
   // The redirection is the whole warning on Windows: no mode is ever applied
   // there, so there is no inherited permission to describe — but the prompt
@@ -982,39 +915,6 @@ describe('symlinkWarnings', () => {
     // The two claims that are wrong for a target that is not there.
     expect(out).not.toContain("under that target's own permissions");
     expect(out).not.toContain('is written there');
-  });
-
-  it('reports no mode on Windows even where one is readable', (ctx) => {
-    if (process.platform === 'win32') {
-      ctx.skip('unprivileged symlink creation is not available on Windows');
-      return;
-    }
-    // statSync would happily return a mode on this host — the win32 branch must
-    // decline to read it rather than report a permission Windows never applies.
-    const victim = join(dir, 'victim-shared');
-    mkdirSync(victim);
-    chmodSync(victim, 0o755);
-    const home = join(dir, 'linkhome');
-    symlinkSync(victim, home);
-
-    expect(symlinkedStorePaths(home, 'win32')).toEqual([
-      {
-        path: home,
-        target: realpathSync(victim),
-        holds: 'the store (including the prompt corpus in aka.db)',
-        missing: false,
-        mode: undefined,
-      },
-    ]);
-    expect(symlinkedStorePaths(home, 'linux')).toEqual([
-      {
-        path: home,
-        target: realpathSync(victim),
-        holds: 'the store (including the prompt corpus in aka.db)',
-        missing: false,
-        mode: 0o755,
-      },
-    ]);
   });
 });
 

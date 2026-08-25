@@ -3,7 +3,7 @@
  * built script chain (the scripts/*.js the skill actually shells out to).
  *
  * The distinct model-judge consent (step 3 of skills/setup/SKILL.md) is what
- * authorizes the only egress in the product: apply-suppressions' `agy -p`
+ * authorizes the only egress in the product: apply-suppressions' `agy`
  * judge. The adapter's unit tests inject the gate as a plain boolean, so the
  * wiring that reads the real settings.json
  * (apply-suppressions.ts: `loadConfig().settings.modelJudgeConsent`) is never
@@ -30,21 +30,19 @@ import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { bundledDetections } from '@akasecurity/plugin-sdk';
+import { planBareCommand } from '@akasecurity/plugin-sdk/bare-command';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
-import { judgeArgvUnsupported } from '../helpers/judge-argv-unsupported.ts';
 import {
   assertShimResolves,
   nodeOnlyPathEntries,
+  SHIM_PROBE_ARG,
   shimmedPath,
+  WINDOWS_SYSTEM_DIRS,
+  WINDOWS_SYSTEM_ENV,
   writeCommandShim,
 } from '../helpers/path-shim.ts';
-
-// See judge-argv-unsupported.ts: this host takes the judge prompt in ARGV, which
-// cannot cross cmd.exe — so the stub, which can only be a .cmd on Windows, is
-// unreachable there and `judgeWasInvoked()` cannot be driven either way.
-const describeJudgeArgv = describe.skipIf(judgeArgvUnsupported);
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // test/journey -> plugins/antigravity
@@ -116,6 +114,27 @@ class SetupJourney {
   // went uncalled.
   judgeWasInvoked(): boolean {
     return existsSync(this.judgeSentinelPath);
+  }
+
+  // Raw-free metadata about the prompt the stub judge actually READ off its
+  // stdin, or undefined when it never ran.
+  //
+  // `judgeWasInvoked()` alone cannot see this: the stub touches its sentinel
+  // before reading anything, so a chain that spawned the judge and delivered it
+  // NOTHING still reports an invocation, still parses a (hit-free) verdict, and
+  // still saves a plan. Measured — deleting `input: stdin` from spawnAgy left
+  // every case in this file green. Prompt delivery is exactly what the stdin
+  // move put at risk, and the Windows leg (a `.cmd` launcher forwarding argv
+  // with `%*`, stdin passing through it untouched) is the one this suite was
+  // skipped on until that move, so it is the leg with no other coverage at all.
+  //
+  // Metadata rather than the prompt itself: the prompt carries the seeded raw
+  // key, and a sentinel is not a place to write one.
+  judgePromptShape(): { bytes: number; lines: number; hits: number } | undefined {
+    if (!existsSync(this.judgeSentinelPath)) return undefined;
+    const recorded = readFileSync(this.judgeSentinelPath, 'utf8');
+    if (recorded === '') return undefined;
+    return JSON.parse(recorded) as { bytes: number; lines: number; hits: number };
   }
 
   private get judgeSentinelPath(): string {
@@ -193,18 +212,36 @@ class SetupJourney {
       // `#!/usr/bin/env node` shebang resolves — that shebang is the POSIX
       // branch of writeCommandShim. On Windows the stub is a .cmd naming an
       // absolute node, so there is no shebang to serve and the list is empty;
-      // shimmedPath then yields the stub dir alone. Nothing else from the host
-      // environment reaches the chain.
-      PATH: shimmedPath(this.binDir, this.nodeDirs.join(delimiter)),
+      // shimmedPath then yields the stub dir alone.
+      //
+      // Nothing else from the host environment reaches the chain — except the
+      // Windows OS plumbing below, which is not "else" so much as the platform:
+      // cmd.exe and where.exe live under System32, and Node reads the
+      // interpreter's own location out of COMSPEC, so without them the chain
+      // cannot spawn even its OWN stub and this suite would report "the judge
+      // never ran" for a reason that is not the consent gate. Both are empty off
+      // win32, and no `agy` lives in System32, so the stub stays the only
+      // resolvable one.
+      PATH: shimmedPath(this.binDir, [...this.nodeDirs, ...WINDOWS_SYSTEM_DIRS].join(delimiter)),
+      ...WINDOWS_SYSTEM_ENV,
     };
     // Proven once per journey, before the first script runs. A shim that does
     // not land does NOT fail closed: resolution keeps walking PATH and finds a
     // real installed `agy`, so the chain would reach a live model and this
     // suite's load-bearing `judgeWasInvoked()` assertion would pass for the
-    // wrong reason — nothing ran because nothing COULD run. spawnAgy uses no
-    // `shell`, so the probe must not either.
+    // wrong reason — nothing ran because nothing COULD run.
+    //
+    // spawnAgy builds its spawn with planBareCommand, so the probe READS that
+    // plan's decisions rather than re-deriving them: on Windows `shell` is the
+    // difference between resolving a .cmd and skipping it, and the plan also
+    // anchors the spawn at the user's home, which is where `agy` is resolved
+    // from there. On POSIX the plan sets neither and this is a no-op.
     if (!this.shimProven) {
-      assertShimResolves('agy', env);
+      const plan = planBareCommand('agy', [SHIM_PROBE_ARG], { env });
+      assertShimResolves('agy', env, {
+        shell: plan.viaShell,
+        ...(plan.options.cwd === undefined ? {} : { cwd: plan.options.cwd }),
+      });
       this.shimProven = true;
     }
     // spawnSync (not execFileSync) so BOTH streams are captured on the success
@@ -224,19 +261,30 @@ class SetupJourney {
   }
 
   // A controlled `agy` on PATH: apply-suppressions' judge spawns
-  // `agy -p <prompt> --output-format json`, with the prompt in ARGV (this host
-  // documents no stdin input — see triage/judge.ts's spawnAgy). This stub reads
-  // the prompt off argv, parses the hits out of its trailing fenced block, and
-  // prints a deterministic, raw-free TriageRecommendation inside the JSON
-  // envelope on stdout — the first hit per (category, rule) surfaced (genuine),
-  // the rest marked routine false positives. No live model is ever hit.
+  // `agy --input-format stream-json --output-format stream-json` and writes the
+  // prompt to the child's stdin as one NDJSON `user` event (see triage/judge.ts's
+  // spawnAgy). This stub reads that event off stdin, parses the hits out of the
+  // prompt's trailing fenced block, and prints a deterministic, raw-free
+  // TriageRecommendation inside a stream-json `result` event on stdout — the
+  // first hit per (category, rule) surfaced (genuine), the rest marked routine
+  // false positives. No live model is ever hit.
   private writeFakeJudge(): void {
     const body = `// Record that the judge actually ran, so a test can prove the consent gate
 // stopped the egress at the process boundary (see judgeWasInvoked).
-require('node:fs').writeFileSync(${JSON.stringify(this.judgeSentinelPath)}, '');
-const args = process.argv.slice(2);
-const promptIndex = args.indexOf('-p');
-const prompt = promptIndex >= 0 ? args[promptIndex + 1] ?? '' : '';
+const SENTINEL = ${JSON.stringify(this.judgeSentinelPath)};
+require('node:fs').writeFileSync(SENTINEL, '');
+// fd 0 read synchronously: the parent writes the whole event and closes stdin,
+// which is what ends an --input-format stream-json session.
+const stdinRaw = require('node:fs').readFileSync(0, 'utf8');
+let prompt = '';
+for (const line of stdinRaw.split('\\n')) {
+  if (!line.trim()) continue;
+  let event;
+  try { event = JSON.parse(line); } catch { continue; }
+  if (event && event.event === 'user' && event.message && typeof event.message.content === 'string') {
+    prompt = event.message.content;
+  }
+}
 // Simulate agy's run logging on stderr, prompt content included. The parent's
 // spawnAgy must swallow this stream entirely: the parent command's stderr flows
 // into the wizard conversation, whose transcripts the backfill later scans.
@@ -244,18 +292,33 @@ process.stderr.write('JUDGE-STDERR-RUN-LOGGING ' + prompt);
 const fences = [...String(prompt).matchAll(/\`\`\`[a-z]*\\n([\\s\\S]*?)\`\`\`/g)];
 const block = fences.length ? fences[fences.length - 1][1] : '';
 const byCategory = new Map();
+let hitCount = 0;
 for (const line of block.split('\\n')) {
   const trimmed = line.trim();
   if (!trimmed) continue;
   let hit;
   try { hit = JSON.parse(trimmed); } catch { continue; }
   if (!hit || typeof hit.category !== 'string' || typeof hit.id !== 'string' || typeof hit.ruleId !== 'string') continue;
+  hitCount += 1;
   const byRule = byCategory.get(hit.category) ?? new Map();
   const ids = byRule.get(hit.ruleId) ?? [];
   ids.push(hit.id);
   byRule.set(hit.ruleId, ids);
   byCategory.set(hit.category, byRule);
 }
+// Record what actually ARRIVED, so a test can prove the prompt crossed the
+// process boundary rather than only that the process started. Metadata only —
+// the prompt carries the seeded raw key.
+//
+// \`hits\` counts the hit lines PARSED OUT OF THE FENCED BLOCK, never matches
+// over the whole prompt: the rubric itself carries a \`"ruleId"\` in its shape
+// example, so a whole-prompt match is >= 1 with no hits delivered at all and
+// the assertion that reads it would prove nothing.
+require('node:fs').writeFileSync(SENTINEL, JSON.stringify({
+  bytes: Buffer.byteLength(prompt, 'utf8'),
+  lines: prompt.split('\\n').length,
+  hits: hitCount,
+}));
 const perCategory = [];
 for (const [category, byRule] of byCategory) {
   let genuineCount = 0;
@@ -275,13 +338,23 @@ for (const [category, byRule] of byCategory) {
   });
 }
 const verdict = { perCategory, notes: 'looks routine' };
-// --output-format json: a single envelope on stdout carrying the final
-// assistant message, which is where the parent reads the verdict from.
+// --output-format stream-json: NDJSON, one typed event per line. The parent
+// reads the verdict off the terminal \`result\` event's \`response\` field, and
+// takes the conversation id it must then delete from either event.
 process.stdout.write(JSON.stringify({
+  event: 'init',
   conversation_id: 'conv-fake-judge',
-  status: 'ok',
-  response: '\`\`\`json\\n' + JSON.stringify(verdict) + '\\n\`\`\`',
-}));
+  init: { cwd: process.cwd() },
+}) + '\\n');
+process.stdout.write(JSON.stringify({
+  event: 'result',
+  result: {
+    conversation_id: 'conv-fake-judge',
+    status: 'ok',
+    num_turns: 1,
+    response: '\`\`\`json\\n' + JSON.stringify(verdict) + '\\n\`\`\`',
+  },
+}) + '\\n');
 `;
     // writeCommandShim owns the shebang, the mode bits and — on Windows — the
     // .cmd launcher that makes a bare `agy` resolvable at all.
@@ -289,7 +362,7 @@ process.stdout.write(JSON.stringify({
   }
 }
 
-describeJudgeArgv('aka-setup journey — model-judge consent declined', () => {
+describe('aka-setup journey — model-judge consent declined', () => {
   const journey = new SetupJourney();
   let triageStream = '';
   let preview: StepResult;
@@ -358,7 +431,7 @@ describeJudgeArgv('aka-setup journey — model-judge consent declined', () => {
 // drive the identical chain WITH consent and assert the spawn is detected.
 // Without this, a broken sentinel would make the no-consent assertion
 // vacuously green.
-describeJudgeArgv('aka-setup journey — model-judge consent granted (control)', () => {
+describe('aka-setup journey — model-judge consent granted (control)', () => {
   const journey = new SetupJourney();
   // Captured mid-chain: the sentinel's state after the historical grant but
   // BEFORE the model-judge consent, which is the moment that distinguishes the
@@ -389,6 +462,28 @@ describeJudgeArgv('aka-setup journey — model-judge consent granted (control)',
   it('calibrates a plan from the judged verdict — the consented path completes', () => {
     expect(preview.status).toBe(0);
     expect(preview.stdout).toContain('Plan saved to:');
+  });
+
+  it('delivers the whole prompt to the judge on stdin, not merely spawning it', () => {
+    // The control the assertion above cannot be: a plan is still saved when the
+    // judge receives NOTHING, because a hit-free verdict parses fine. So read
+    // what actually crossed the process boundary.
+    //
+    // This is the only case here that fails if stdin delivery breaks, and it is
+    // the reason the whole file can run on Windows now: the prompt is multi-line
+    // and several KiB — the two properties that made it uncarriable on a Windows
+    // command line — so it exercises exactly what moving it to stdin bought.
+    const shape = journey.judgePromptShape();
+    expect(shape).toBeDefined();
+    // The rubric plus the fenced hit block: several KiB, not a truncated
+    // fragment and not an empty read.
+    expect(shape?.bytes ?? 0).toBeGreaterThan(1_000);
+    // Multi-line, which a Windows command line cannot carry at all — so this
+    // also pins that the NDJSON escaping round-tripped rather than splitting the
+    // prompt across events.
+    expect(shape?.lines ?? 0).toBeGreaterThan(10);
+    // ...and the hits themselves arrived, not just the rubric.
+    expect(shape?.hits ?? 0).toBeGreaterThan(0);
   });
 
   it("swallows the judge subprocess's stderr — run logging never reaches the transcript", () => {

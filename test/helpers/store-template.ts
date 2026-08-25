@@ -97,11 +97,13 @@ export interface StoreTemplate {
  * The build is lazy, so a module that is loaded but whose tests are all
  * filtered out pays nothing.
  *
- * What the copy does NOT carry is the `aka.db.pre-drop.<ts>.<rand>.bak` a fresh
- * migration leaves beside the store — only `aka.db` is copied. Nothing is lost
- * by that: the backup is snapshotted during the open, so it always predates
- * every write a test makes, and an at-rest scan over it can contain no test
- * value. A suite whose subject IS that backup must not use a template.
+ * What the copy does NOT carry is an `aka.db.pre-drop.<ts>.<rand>.bak` — only
+ * `aka.db` is copied. A store built here writes none anyway (the legacy drop
+ * snapshots only where it would destroy rows, and a store this build created has
+ * none), but nothing would be lost either way: such a backup is snapshotted
+ * during the open, so it always predates every write a test makes, and an
+ * at-rest scan over it can contain no test value. A suite whose subject IS that
+ * backup must not use a template.
  */
 export function createStoreTemplate(build: (dataDir: string) => void): StoreTemplate {
   let bytes: Buffer | undefined;

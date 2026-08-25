@@ -24,6 +24,7 @@ import { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { standingBrief } from '../protocol/notes.ts';
 import { emit, getString, parseJson, readStdin } from './shared.ts';
+import { warnIfStoreRedirected } from './store-health.ts';
 
 // The plugin's own version, read from the manifest the hook command passes as
 // argv[2] (same source as the intro card). Best-effort: an unreadable/old
@@ -68,6 +69,9 @@ async function main(): Promise<void> {
   // best-effort — a missing path or any error just skips it, the Stop path covers it.
   const transcriptPath = input ? getString(input, 'transcript_path') : undefined;
   const config = loadConfig();
+  // A symlinked store path redirects the corpus without failing anything;
+  // say so once per session (stderr, so the stdout contract is untouched).
+  warnIfStoreRedirected(config, sessionId);
   if (sessionId !== undefined && transcriptPath !== undefined) {
     triggerReconcile(config.dataDir, sessionId, transcriptPath);
   }

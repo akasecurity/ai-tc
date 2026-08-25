@@ -58,9 +58,13 @@ export function keysDir(base: string = defaultDataDir()): string {
 // e.g. Windows) and must never break the fail-open hook path.
 export async function ensureDataDir(dir: string = defaultDataDir()): Promise<void> {
   await mkdir(dir, { recursive: true, mode: DATA_DIR_MODE });
-  // Delegate the tighten to the one shared helper so the "benign vs surfaced"
-  // policy (and its once-per-path warn) lives in exactly one place — the sync
-  // and async dir paths can't drift on what a failed chmod means.
+  // Delegate the tighten to the one shared helper so the sync and async dir
+  // paths can't drift on what a failed chmod means. `tightenDir` is silent by
+  // design: it declines to chmod through a symlink and swallows every other
+  // failure. Deciding whether that silence is worth surfacing belongs to the
+  // callers that can actually address a user — `aka init` prints the full
+  // symlink report, and the hooks warn once per session — not to this helper,
+  // which runs on every hook fire and must never break one.
   tightenDir(dir);
 }
 

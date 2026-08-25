@@ -60,11 +60,14 @@ store without the means to open what is vaulted — that separation is the whole
 what encryption at rest buys here. The file appears only once vaulting is granted;
 without that consent there is no key and no recoverable copy.
 
-`ai-tc` also leaves copies of the store beside it: before a migration rewrites the
-schema, or a recovery resets a store it cannot open, it snapshots `aka.db` to a
-sibling `.bak` file. Where the store cannot be copied at all — a corrupt page, or
-no room for a second copy — it moves the whole set aside instead, so that backup
-carries its own `-wal`/`-shm`/`-journal` sidecars. Those copies hold the same
+`ai-tc` also leaves copies of the store beside it: before a migration that would
+destroy rows, or on a recovery reset of a store it cannot open, it snapshots
+`aka.db` to a sibling `.bak` file. Neither is routine, so a healthy store may
+carry no `.bak` at all — a new install writes none, because the only migration
+that destroys anything has nothing to destroy on a store it just created. Where
+the store cannot be copied at all — a corrupt page, or no room for a second
+copy — it moves the whole set aside instead, so that backup carries its own
+`-wal`/`-shm`/`-journal` sidecars. Those copies hold the same
 prompt corpus and are held at `0600` too.
 
 A snapshot cut short part-way — a plugin hook killed at its timeout — leaves a
@@ -91,8 +94,10 @@ A mode is never applied **through a symlink**. If a store path — `~/.aka` itse
 `~/.aka/data`, `~/.aka/settings`, `~/.aka/keys`, or any store file — is a symlink,
 `ai-tc` leaves the target alone rather than changing the permissions of a directory
 you may be sharing on purpose. Two consequences follow, and neither is obvious from
-the outside, so `aka init` prints the link, what it resolves to, and the mode that
-target currently carries:
+the outside, so both surfaces report it: `aka init` prints the link, what it resolves
+to, and the mode that target currently carries, and the plugin hooks warn once per
+session on stderr — a store that is merely redirected still opens, so the hooks
+would otherwise run a whole session without ever mentioning it:
 
 - **The store keeps the target's own permissions**, which may be looser than `0700` —
   `aka init` says so explicitly when they are. Directories and files `ai-tc` creates
@@ -104,8 +109,11 @@ target currently carries:
 
 A store directory that is a symlink resolving **nowhere** is refused rather than
 created through: `aka init` names the broken link and its missing target instead of
-failing with a bare `ENOENT`. Plugin hooks are unaffected — they fall back to
-unonboarded defaults, as they do for any home they cannot read.
+failing with a bare `ENOENT`. A store path occupied by a regular file — or by a link
+to one — is refused the same way rather than failing with a bare `EEXIST`. Plugin
+hooks stay fail-open throughout: they fall back to unonboarded defaults, as they do
+for any home they cannot read, and report the link on stderr without ever failing a
+tool call over it.
 
 ## Supported versions
 

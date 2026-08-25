@@ -127,6 +127,8 @@ export {
   readWorkspaceSettings,
   SETTINGS_FILENAME,
 } from './settings.ts';
+export type { SymlinkedStorePath } from './store-symlinks.ts';
+export { linkTarget, storeTargets, symlinkedStorePaths } from './store-symlinks.ts';
 export {
   base32Decode,
   base32Encode,

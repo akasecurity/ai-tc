@@ -44,7 +44,9 @@ export const PLUGIN_OFFER_IDENTITY = `${PRODUCT_NAME} — ${PRODUCT_TAGLINE}`;
 // instead. SQLite's `-wal`/`-shm`/`-journal`
 // appear with whichever journal mode is active, and the legacy drop leaves an
 // `aka.db.pre-drop.<ts>.<rand>.bak` — a byte-for-byte copy of the prompt corpus
-// — on every run, including a first one. `tightenPerms`/`tightenFile` already
+// — on any run that carries pre-cutover history forward (never a first one: the
+// drop takes no snapshot where it would destroy no row).
+// `tightenPerms`/`tightenFile` already
 // hold all of them at 0600, so each is a path a rejected chmod can strand; a
 // hardcoded list here would never name one, and could not name whatever the
 // next migration adds.

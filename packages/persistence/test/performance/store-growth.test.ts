@@ -16,10 +16,12 @@
  * page granularity. The measured naive figure falls from 895 B/event at 10k to
  * 826 B at 1M purely as that constant is amortised away.
  *
- * (The `aka.db.pre-drop.<ts>.<rand>.bak` a migration leaves in the data dir —
- * about half a megabyte, once per store — is NOT part of this. `settledDbBytes`
- * stats `aka.db` alone, so the backup is a sibling file outside every number
- * here. It matters for an at-rest scan of the directory, not for growth.)
+ * (An `aka.db.pre-drop.<ts>.<rand>.bak` — the snapshot a migration takes when
+ * the legacy drop would destroy rows, about half a megabyte — is NOT part of
+ * this. `settledDbBytes` stats `aka.db` alone, so such a backup is a sibling
+ * file outside every number here, and a store built by these fixtures writes
+ * none at all. It matters for an at-rest scan of the directory, not for
+ * growth.)
  *
  * So the property asserted is the SLOPE — `(bytes(2N) − bytes(N)) / N` — which
  * cancels the constant and is the number that answers "what does another year

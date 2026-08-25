@@ -60,11 +60,14 @@ store without the means to open what is vaulted — that separation is the whole
 what encryption at rest buys here. The file appears only once vaulting is granted;
 without that consent there is no key and no recoverable copy.
 
-`ai-tc` also leaves copies of the store beside it: before a migration rewrites the
-schema, or a recovery resets a store it cannot open, it snapshots `aka.db` to a
-sibling `.bak` file. Where the store cannot be copied at all — a corrupt page, or
-no room for a second copy — it moves the whole set aside instead, so that backup
-carries its own `-wal`/`-shm`/`-journal` sidecars. Those copies hold the same
+`ai-tc` also leaves copies of the store beside it: before a migration that would
+destroy rows, or on a recovery reset of a store it cannot open, it snapshots
+`aka.db` to a sibling `.bak` file. Neither is routine, so a healthy store may
+carry no `.bak` at all — a new install writes none, because the only migration
+that destroys anything has nothing to destroy on a store it just created. Where
+the store cannot be copied at all — a corrupt page, or no room for a second
+copy — it moves the whole set aside instead, so that backup carries its own
+`-wal`/`-shm`/`-journal` sidecars. Those copies hold the same
 prompt corpus and are held at `0600` too.
 
 A snapshot cut short part-way — a plugin hook killed at its timeout — leaves a

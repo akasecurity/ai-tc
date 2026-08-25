@@ -18,10 +18,13 @@ function errnoCode(err: unknown): string | undefined {
  * cover more than the `-wal`/`-shm` pair. SQLite writes an `aka.db-journal`
  * instead wherever WAL silently no-ops — DrvFs `/mnt/c` and some network mounts,
  * per `dbSidecars` in `packages/persistence/src/paths.ts` — so a WAL-only scan
- * reads files the data did not go to and reports clean. A migration
- * (`aka.db.pre-drop.<ts>.<rand>.bak`) and the foreign-lineage reset
- * (`aka.db.legacy.<ts>.<rand>.bak`) leave real copies in the same directory, and
- * a snapshot killed part-way leaves a `.bak.partial` beside them.
+ * reads files the data did not go to and reports clean. A migration carrying
+ * pre-cutover history forward (`aka.db.pre-drop.<ts>.<rand>.bak`) and the
+ * foreign-lineage reset (`aka.db.legacy.<ts>.<rand>.bak`) leave real copies in
+ * the same directory, and a snapshot killed part-way leaves a `.bak.partial`
+ * beside them. Neither copy is written by a fresh store's own first open, which
+ * is a reason to walk the directory rather than to stop expecting them: what
+ * lands there depends on the store's history, not on a list written here.
  *
  * It RECURSES, and that is load-bearing rather than defensive. The data dir is
  * no longer flat: a snapshot cut short by a kill leaves a `.bak.partial`

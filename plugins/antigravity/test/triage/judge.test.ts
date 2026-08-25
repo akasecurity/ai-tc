@@ -17,7 +17,13 @@ import { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { JudgeDeps } from '../../src/triage/judge.ts';
-import { judgeEnv, parseVerdict, runJudge, toJudgePayload } from '../../src/triage/judge.ts';
+import {
+  cleanupConversation,
+  judgeEnv,
+  parseVerdict,
+  runJudge,
+  toJudgePayload,
+} from '../../src/triage/judge.ts';
 import { errorFrom, expectNoEchoOf } from '../helpers/no-echo.ts';
 
 const VERDICT_FENCE = [
@@ -26,35 +32,105 @@ const VERDICT_FENCE = [
   '```',
 ].join('\n');
 
-// The prompt `agy` is run with — argv position right after -p. On this host the
-// prompt rides argv rather than stdin, because the CLI documents no stdin input.
-const promptOf = (argv: readonly string[]): string => {
-  const i = argv.indexOf('-p');
-  const prompt = i >= 0 ? argv[i + 1] : undefined;
-  if (prompt === undefined) throw new Error('no -p prompt on argv');
-  return prompt;
+// The prompt `agy` is run with — the `content` of the single NDJSON `user`
+// event written to the child's stdin. On this host the prompt rides stdin, the
+// same shape the Claude Code and Codex judges use; nothing raw-bearing is on
+// argv, which is what this reader would notice if it moved back.
+// The lenient reader the fixture uses: the `user` event's content, or undefined
+// for anything else. Kept separate from the strict `promptOf` below because
+// fakeSpawn runs INSIDE runJudge's own try/catch — a throw from there is
+// re-thrown as `agy judge subprocess failed (unknown error)`, so a fixture
+// precondition that fired would be reported as a spawn fault rather than as the
+// NDJSON regression it is.
+const contentOf = (stdin: string): string | undefined => {
+  for (const line of stdin.split('\n')) {
+    if (line.trim() === '') continue;
+    let event: { event?: unknown; message?: { content?: unknown } };
+    try {
+      event = JSON.parse(line) as typeof event;
+    } catch {
+      continue;
+    }
+    if (event.event === 'user' && typeof event.message?.content === 'string') {
+      return event.message.content;
+    }
+  }
+  return undefined;
 };
 
+// The strict reader, called by tests DIRECTLY (never through the spawn seam) so
+// its diagnostics survive: exactly one NDJSON line, a `user` event, string
+// content. The single-line check is the wire property that a Windows command
+// line could never have carried, so it is asserted rather than assumed.
+const promptOf = (stdin: string): string => {
+  const lines = stdin.split('\n').filter((line) => line.trim() !== '');
+  // Exactly one: NDJSON is one object per line, and a prompt that leaked its own
+  // line breaks out of the JSON string would arrive here as several.
+  if (lines.length !== 1) {
+    throw new Error(`expected one NDJSON event on stdin, saw ${String(lines.length)}`);
+  }
+  const [line] = lines;
+  if (line === undefined) throw new Error('no NDJSON event on stdin');
+  const event = JSON.parse(line) as { event?: unknown; message?: { content?: unknown } };
+  if (event.event !== 'user') throw new Error('stdin event was not a `user` event');
+  const content = event.message?.content;
+  if (typeof content !== 'string') throw new Error('stdin user event carried no string content');
+  return content;
+};
+
+// The NDJSON stream a real `agy --output-format stream-json` prints: an `init`
+// event, then the terminal `result` event carrying the final assistant message.
+const streamJson = (lastMessage: string, conversationId = 'conv-judge'): string =>
+  [
+    JSON.stringify({ event: 'init', conversation_id: conversationId, init: { cwd: '/w' } }),
+    JSON.stringify({
+      event: 'step_update',
+      step_update: { conversation_id: conversationId, step_index: 0, state: 'done' },
+    }),
+    JSON.stringify({
+      event: 'result',
+      result: {
+        conversation_id: conversationId,
+        status: 'ok',
+        response: lastMessage,
+        num_turns: 1,
+      },
+    }),
+    '',
+  ].join('\n');
+
+// A minimal stream carrying ONLY the terminal result event and no conversation
+// id anywhere — neither a result id nor an init one to fall back to — which is
+// the shape that forces cleanup onto its directory-diff fallback.
+const streamJsonWithoutId = (lastMessage: string): string =>
+  `${JSON.stringify({ event: 'result', result: { status: 'ok', response: lastMessage } })}\n`;
+
 // A fake spawn that plays the subprocess's one observable role: printing the
-// `--output-format json` envelope on stdout. `conversationId` controls what the
-// run claims to have created, so cleanup can be driven from a test.
+// `--output-format stream-json` event stream on stdout. `conversationId`
+// controls what the run claims to have created, so cleanup can be driven from a
+// test.
 const fakeSpawn =
   (
     lastMessage: string,
-    seen?: { argv?: readonly string[]; env?: NodeJS.ProcessEnv; prompt?: string },
+    seen?: {
+      argv?: readonly string[];
+      env?: NodeJS.ProcessEnv;
+      // `string | undefined`, not `string`: contentOf is the LENIENT reader, so
+      // a stdin that carried no `user` event records as undefined here and the
+      // reading test fails on its own assertion rather than on a fixture throw.
+      prompt?: string | undefined;
+      stdin?: string;
+    },
     conversationId = 'conv-judge',
   ) =>
-  (argv: readonly string[], env: NodeJS.ProcessEnv): string => {
+  (argv: readonly string[], env: NodeJS.ProcessEnv, stdin: string): string => {
     if (seen) {
       seen.argv = argv;
       seen.env = env;
-      seen.prompt = promptOf(argv);
+      seen.stdin = stdin;
+      seen.prompt = contentOf(stdin);
     }
-    return JSON.stringify({
-      conversation_id: conversationId,
-      status: 'ok',
-      response: lastMessage,
-    });
+    return streamJson(lastMessage, conversationId);
   };
 
 // Every runJudge call must be pointed at a throwaway home. The judge deletes
@@ -136,8 +212,13 @@ describe('runJudge', () => {
     confidence: 0.9,
   };
 
-  it('runs `agy -p <prompt> --output-format json` and reads the verdict from the envelope', () => {
-    const seen: { argv?: readonly string[]; env?: NodeJS.ProcessEnv; prompt?: string } = {};
+  it('runs `agy --input-format stream-json --output-format stream-json` and reads the verdict from the result event', () => {
+    const seen: {
+      argv?: readonly string[];
+      env?: NodeJS.ProcessEnv;
+      prompt?: string;
+      stdin?: string;
+    } = {};
     const rec = runJudge([hit], {
       spawn: fakeSpawn(VERDICT_FENCE, seen),
       loadRubric: () => 'RUBRIC BODY',
@@ -145,13 +226,26 @@ describe('runJudge', () => {
     });
 
     const argv = seen.argv ?? [];
-    // -p is the documented headless entrypoint; there is no `exec` subcommand
-    // on this host and no --ephemeral/--output-last-message to pass.
-    expect(argv[0]).toBe('-p');
+    // The streaming stdin input is what takes the prompt off argv. The two
+    // formats are paired because the host documents that pairing — a streaming
+    // input against a non-streaming output emits its one envelope only as the
+    // process exits.
+    expect(argv).toContain('--input-format');
+    expect(argv[argv.indexOf('--input-format') + 1]).toBe('stream-json');
     expect(argv).toContain('--output-format');
-    expect(argv[argv.indexOf('--output-format') + 1]).toBe('json');
+    expect(argv[argv.indexOf('--output-format') + 1]).toBe('stream-json');
+    // `-p` is the argv-borne entrypoint and is mutually exclusive with the
+    // streaming input: the host documents passing both as an error.
+    expect(argv).not.toContain('-p');
+    // There is no `exec` subcommand on this host and no --ephemeral to pass.
     expect(argv).not.toContain('exec');
     expect(argv).not.toContain('--ephemeral');
+
+    // The strict wire shape, read here rather than inside the spawn seam: exactly
+    // one NDJSON line carrying a `user` event. A prompt that leaked its own line
+    // breaks out of the JSON string would arrive as several, and this is where
+    // that is reported as itself instead of as a spawn failure.
+    expect(promptOf(seen.stdin ?? '')).toBe(seen.prompt);
 
     // rawMatch rides in the prompt — the rubric judges the actual value.
     // filePath is dropped and context is masked before it crosses (covered
@@ -165,14 +259,13 @@ describe('runJudge', () => {
     expect(rec.perCategory[0]?.action).toBe('block');
   });
 
-  it('carries the raw hits in ARGV — the documented regression this host forces', () => {
-    // The Codex/Claude judges keep raw off argv by feeding the prompt on stdin.
-    // `agy` documents no stdin input, so raw DOES ride argv here and is visible
-    // to `ps` for the life of the run. Pin it as a deliberate, disclosed
-    // property rather than letting it flip silently: if the host ever grows a
-    // stdin or prompt-file input, this test is what says the consent copy and
-    // the module header have to be revisited too.
-    const seen: { argv?: readonly string[]; prompt?: string } = {};
+  it('keeps the raw hits OFF argv — they ride stdin, as on the other two hosts', () => {
+    // The property that makes a Windows `agy.cmd` shim reachable at all, and
+    // that keeps the raw hits out of `ps` and out of any failed command line an
+    // error message echoes. It is asserted from BOTH sides on purpose: a spawn
+    // seam that stopped being handed the prompt would leave the absence check
+    // passing over an argv that never carried it.
+    const seen: { argv?: readonly string[]; prompt?: string; stdin?: string } = {};
     const rec = runJudge(
       [
         {
@@ -194,8 +287,12 @@ describe('runJudge', () => {
         home: mkdtempSync(join(tmpdir(), 'aka-judge-home-')),
       },
     );
-    expect((seen.argv ?? []).join(' ')).toContain('AKIAREALKEY');
+    // Positive control first, on the bytes the absence check then reads: the
+    // prompt really did carry the raw value, and it really did travel on stdin.
     expect(seen.prompt).toContain('AKIAREALKEY');
+    expect(seen.stdin).toContain('AKIAREALKEY');
+    // ...and none of it reached argv.
+    expectNoEchoOf((seen.argv ?? []).join(' '), 'AKIAREALKEY');
     expect(rec.notes).toBe('ok');
   });
 
@@ -238,7 +335,8 @@ describe('runJudge', () => {
       home: tempHome(),
     });
 
-    // The hits ride as JSONL inside the prompt's last fenced block.
+    // The hits ride as JSONL inside the prompt's last fenced block, and the
+    // prompt itself rides stdin.
     const fenced = /```\n([\s\S]*?)\n```\n?$/.exec(seen.prompt ?? '');
     if (fenced?.[1] === undefined) throw new Error('no fenced hit block on stdin');
     const lines = fenced[1].split('\n').filter((l) => l !== '');
@@ -332,8 +430,12 @@ describe('runJudge', () => {
   it.each([
     ['not JSON at all', 'was not valid JSON'],
     ['[1,2,3]', 'was not a JSON object'],
-    ['{"conversation_id":"c"}', 'carried no response string'],
-  ])('fails loud (and raw-free) on a malformed envelope: %s', (stdout, expected) => {
+    // Parseable events, but none of them terminal — a stream that stopped at
+    // `init` must not be read as a verdict-free pass.
+    ['{"event":"init","conversation_id":"c"}', 'carried no result event'],
+    ['{"event":"result","result":"not-an-object"}', 'result event carried no result object'],
+    ['{"event":"result","result":{"status":"ok"}}', 'carried no response string'],
+  ])('fails loud (and raw-free) on a malformed event stream: %s', (stdout, expected) => {
     const err = errorFrom(() =>
       runJudge([hit], { spawn: () => stdout, loadRubric: () => 'RUBRIC', home: tempHome() }),
     );
@@ -342,18 +444,72 @@ describe('runJudge', () => {
     expectNoEchoOf(err?.message, hit.rawMatch);
   });
 
-  it('re-throws a spawn failure as raw-free metadata (the error echoes raw-bearing argv)', () => {
-    // On this host the prompt rides ARGV, so execFileSync's own error message
-    // ("Command failed: agy -p <the whole prompt>") carries every raw hit
-    // outright — as can its captured .stdout/.stderr. Simulate that shape and
-    // assert none of it rides the re-thrown error out to the parent stderr.
+  it.each([
+    ['single-line', false],
+    ['pretty-printed', true],
+  ])('still reads a %s whole-stdout envelope — the pre-streaming shape (P4)', (_label, pretty) => {
+    // The shape `--output-format json` printed, and what this module read until
+    // the prompt moved to stdin. Line-by-line parsing cannot see it: a
+    // pretty-printed one fails every line ("was not valid JSON") and a
+    // single-line one parses to an event with no `event` key ("carried no
+    // result event"). Both were readable before this change, so both stay
+    // readable — the fallback widens what parses and narrows nothing.
+    const home = tempHome();
+    const dir = seedConversation(home, 'conv-legacy');
+    const envelope = {
+      conversation_id: 'conv-legacy',
+      status: 'ok',
+      response: VERDICT_FENCE,
+    };
+    const rec = runJudge([hit], {
+      spawn: () => (pretty ? JSON.stringify(envelope, null, 2) : JSON.stringify(envelope)),
+      loadRubric: () => 'RUBRIC',
+      home,
+    });
+    expect(rec.perCategory[0]?.action).toBe('block');
+    // ...and the id came off the legacy envelope too, so cleanup still runs.
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it('keeps a verdict a later result event could not improve on (Q2)', () => {
+    // "Last USABLE result event wins" means usable, not merely an object. A
+    // second result event carrying `{status:'error'}` used to overwrite the
+    // verdict and throw `carried no response string`, failing a whole history
+    // chunk on output that contained a readable answer.
+    const home = tempHome();
+    const dir = seedConversation(home, 'conv-A');
+    const rec = runJudge([hit], {
+      spawn: () =>
+        [
+          JSON.stringify({
+            event: 'result',
+            result: { conversation_id: 'conv-A', response: VERDICT_FENCE },
+          }),
+          JSON.stringify({ event: 'result', result: { status: 'error' } }),
+          '',
+        ].join('\n'),
+      loadRubric: () => 'RUBRIC',
+      home,
+    });
+    expect(rec.perCategory[0]?.action).toBe('block');
+    // ...and the id survived with it, so the conversation is still cleaned up.
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it('re-throws a spawn failure as raw-free metadata (its captured streams echo raw)', () => {
+    // The prompt rides stdin now, so execFileSync's own message no longer
+    // carries the hits — but the child's captured .stdout/.stderr still can,
+    // since both are the model's own output and `agy`'s run logging echoes
+    // prompt content. Simulate a failure whose every field leaks, including a
+    // message shaped like the old argv-bearing one, and assert that none of it
+    // rides the re-thrown error out to the parent stderr.
     const spawn = (): string => {
       const err = new Error(
-        `Command failed: agy -p RUBRIC ... ${hit.rawMatch} ... --output-format json`,
+        `Command failed: agy --input-format stream-json ... ${hit.rawMatch} ...`,
       ) as Error & { status?: number; stdout?: string; stderr?: string };
       err.status = 1;
       err.stdout = `partial output leaking ${hit.rawMatch}`;
-      err.stderr = 'boom';
+      err.stderr = `run logging leaking ${hit.context}`;
       throw err;
     };
     const err = errorFrom(() =>
@@ -375,17 +531,11 @@ describe('runJudge', () => {
     expect(err?.cause).toBeUndefined();
   });
 
-  it('runs on Windows unchanged when `agy` resolves to a real executable', () => {
-    // The other half of the refusal above, and the reason this plugin's judge is
-    // NOT simply "broken on Windows": a bare name that resolves to a real
-    // executable is spawned by absolute path with no interpreter in the middle,
-    // so the prompt crosses on argv exactly as it does on POSIX — no re-parse, no
-    // 8,191-character ceiling, nothing to refuse. Only a batch shim forces
-    // cmd.exe, and only then does the refusal apply.
-    //
-    // Driven against the REAL argv this judge builds, so it cannot drift from
-    // what the product actually spawns.
-    const seen: { argv?: readonly string[] } = {};
+  it('runs on Windows when `agy` resolves to a real executable', () => {
+    // A bare name that resolves to a real executable is spawned by absolute path
+    // with no interpreter in the middle. Driven against the REAL argv this judge
+    // builds, so it cannot drift from what the product actually spawns.
+    const seen: { argv?: readonly string[]; stdin?: string } = {};
     runJudge([hit], {
       spawn: fakeSpawn(VERDICT_FENCE, seen),
       loadRubric: () => 'RUBRIC',
@@ -401,41 +551,91 @@ describe('runJudge', () => {
 
     expect(plan.viaShell).toBe(false);
     expect(plan.file).toBe(String.raw`C:\Program Files\Antigravity\agy.exe`);
-    // The prompt survives as ONE argv element, raw hit and all — the property
-    // cmd.exe could not have preserved.
     expect(plan.args).toEqual(argv);
-    expect(plan.args[plan.args.indexOf('-p') + 1]).toContain(hit.rawMatch);
+    // The direct path re-parses nothing, so it would carry a raw-bearing argv
+    // just as happily — which is exactly why the assertion has to be made rather
+    // than inferred from the branch. Positive control first, on the bytes the
+    // absence check then reads.
+    expect(seen.stdin ?? '').toContain(hit.rawMatch);
+    expectNoEchoOf([plan.file, ...plan.args].join(' '), hit.rawMatch);
     // Still anchored: Windows searches the working directory before PATH for
     // libuv's own lookup too, so the direct path needs the anchor as much as the
     // shelled one does.
     expect(plan.options.cwd).toBe('/anchor/home');
   });
 
-  it('surfaces a Windows argv refusal as its own raw-free reason, not as bare metadata', () => {
-    // This host is the one where planBareCommand's refusal branch is REACHABLE
-    // rather than theoretical: the prompt rides argv, and reaching an `agy`
-    // installed as a batch shim means crossing cmd.exe — which cannot carry a
-    // multi-line, multi-KiB, transcript-derived string.
+  it('reaches a Windows `agy.cmd` shim through cmd.exe rather than refusing it', () => {
+    // The property that replaced this plugin's Windows judge gate. While the
+    // prompt rode argv, the planner REFUSED this plan outright — a multi-line,
+    // multi-KiB, transcript-derived argument cannot cross cmd.exe's parser — and
+    // the wizard-journey suite, whose stub can only ever BE a `.cmd`, was skipped
+    // on the Windows leg because of it.
     //
-    // The refusal is taken from the REAL planner against the REAL argv this
-    // judge builds. A hand-written reason would prove only that this test can
-    // write a raw-free string, not that the one a user sees is one.
-    const seen: { argv?: readonly string[] } = {};
+    // Driven against the REAL planner and the REAL argv `runJudge` builds, so it
+    // fails the day anything raw-bearing moves back onto argv rather than
+    // restating a rule in prose.
+    const seen: { argv?: readonly string[]; stdin?: string } = {};
     runJudge([hit], {
       spawn: fakeSpawn(VERDICT_FENCE, seen),
       loadRubric: () => 'RUBRIC',
       home: tempHome(),
     });
+    const argv = seen.argv ?? [];
+
+    // The positive control, on the same bytes: the prompt is genuinely large,
+    // multi-line and raw-bearing — it is just not on argv. Without this, an argv
+    // that crosses cmd.exe proves nothing, since an EMPTY prompt would cross too.
+    expect(seen.stdin ?? '').toContain(hit.rawMatch);
+    expect(promptOf(seen.stdin ?? '')).toContain('\n');
+
     const refusal = errorFrom(() =>
-      planBareCommand('agy', seen.argv ?? [], {
+      planBareCommand('agy', argv, {
         platform: 'win32',
         home: '/anchor/home',
         resolve: () => String.raw`C:\Users\dev\AppData\Roaming\npm\agy.cmd`,
       }),
     );
-    // The positive control for everything below: a planner that stopped
-    // refusing leaves `refusal` undefined, and the absence checks would then
-    // hold over an error that never carried a prompt in the first place.
+    expect(
+      isBareCommandUnsupported(refusal),
+      'the judge argv can no longer cross cmd.exe, so an `agy.cmd` shim is out of ' +
+        'reach on Windows again — the wizard-journey suite will fail there rather ' +
+        'than skip. Put every raw-bearing byte back on stdin.',
+    ).toBe(false);
+    expect(refusal).toBeUndefined();
+
+    const plan = planBareCommand('agy', argv, {
+      platform: 'win32',
+      home: '/anchor/home',
+      resolve: () => String.raw`C:\Users\dev\AppData\Roaming\npm\agy.cmd`,
+    });
+    // A `.cmd` is unreachable without an interpreter, so the plan takes one —
+    // anchored at the user's home, or a stray `agy.cmd` in the working directory
+    // would win the search.
+    expect(plan.viaShell).toBe(true);
+    expect(plan.options.cwd).toBe('/anchor/home');
+    // Not-refused is only half the property, and on its own it is satisfiable by
+    // a raw value SHORT and metachar-free enough for the planner to accept — at
+    // which point the secret crosses cmd.exe and lands in the Windows process
+    // list with every assertion above still green. So read the line cmd.exe is
+    // actually handed, and require the raw value to be absent from it.
+    expectNoEchoOf([plan.file, ...plan.args].join(' '), hit.rawMatch);
+  });
+
+  it('surfaces a planner refusal as its own raw-free reason, not as bare metadata', () => {
+    // The judge's own argv is fixed flags and cannot be refused (above), but the
+    // branch that reports a refusal is still what a user would read if anything
+    // ever put a hostile argument back on it — so it stays covered, driven by a
+    // refusal the REAL planner produced rather than a hand-written string.
+    const refusal = errorFrom(() =>
+      planBareCommand('agy', ['--flag', `carries a "quote" and a ${hit.rawMatch}`], {
+        platform: 'win32',
+        home: '/anchor/home',
+        resolve: () => String.raw`C:\Users\dev\AppData\Roaming\npm\agy.cmd`,
+      }),
+    );
+    // The positive control for everything below: a planner that stopped refusing
+    // leaves `refusal` undefined, and the absence checks would then hold over an
+    // error that never carried a value in the first place.
     expect(isBareCommandUnsupported(refusal)).toBe(true);
     const reason = (refusal as BareCommandUnsupportedError).reason;
 
@@ -450,14 +650,14 @@ describe('runJudge', () => {
       }),
     );
 
-    // A Windows refusal is the one spawn failure here that is actionable, so it
+    // A planner refusal is the one spawn failure here that is actionable, so it
     // reaches the user as its reason rather than flattened to "unknown error".
     expect(err?.message).toBe(`agy judge subprocess failed (${reason})`);
     expect(reason).toContain('cmd.exe');
     // And that reason names an argv index and a character class, never the
-    // value — the argument it refused is the one carrying every raw hit.
+    // value — even though the argument it refused carried one.
     expectNoEchoOf(err?.message, hit.rawMatch);
-    expectNoEchoOf(err?.message, hit.context);
+    expectNoEchoOf(reason, hit.rawMatch);
   });
 
   describe('judge-conversation cleanup', () => {
@@ -491,11 +691,11 @@ describe('runJudge', () => {
       seedConversation(home, 'conv-pre-existing');
       let created = '';
       runJudge([hit], {
-        // No conversation_id in the envelope, and the run creates its
+        // No conversation_id anywhere in the stream, and the run creates its
         // conversation as a real `agy` would — attribution falls back to the diff.
         spawn: () => {
           created = seedConversation(home, 'conv-new');
-          return JSON.stringify({ status: 'ok', response: VERDICT_FENCE });
+          return streamJsonWithoutId(VERDICT_FENCE);
         },
         loadRubric: () => 'RUBRIC',
         home,
@@ -514,13 +714,259 @@ describe('runJudge', () => {
         spawn: () => {
           a = seedConversation(home, 'conv-a');
           b = seedConversation(home, 'conv-b');
-          return JSON.stringify({ status: 'ok', response: VERDICT_FENCE });
+          return streamJsonWithoutId(VERDICT_FENCE);
         },
         loadRubric: () => 'RUBRIC',
         home,
       });
       expect(existsSync(a)).toBe(true);
       expect(existsSync(b)).toBe(true);
+    });
+
+    it('falls back to the init event’s id when the result event carries none', () => {
+      // The streaming output announces the conversation up front, so a result
+      // event that dropped the id is still attributable — which matters because
+      // the alternative is the directory diff, and an ambiguous diff leaves a
+      // raw-bearing judge transcript on disk for the next backfill to re-ingest.
+      const home = tempHome();
+      const mine = seedConversation(home, 'conv-from-init');
+      const theirs = seedConversation(home, 'conv-user-work');
+      runJudge([hit], {
+        spawn: () =>
+          [
+            JSON.stringify({ event: 'init', conversation_id: 'conv-from-init', init: {} }),
+            JSON.stringify({ event: 'result', result: { status: 'ok', response: VERDICT_FENCE } }),
+            '',
+          ].join('\n'),
+        loadRubric: () => 'RUBRIC',
+        home,
+      });
+      expect(existsSync(mine)).toBe(false);
+      // The control: attribution was the init id, not "remove whatever is here".
+      expect(existsSync(theirs)).toBe(true);
+    });
+
+    it('keeps the id of the result event whose payload it actually used', () => {
+      // A second, malformed result event must not clear the id taken from the
+      // first. The response is still read off event #1, so attribution has to
+      // stay bound to event #1 too — otherwise cleanup drops to the ambiguous
+      // directory diff and leaves a raw-bearing judge transcript on disk for the
+      // next backfill to re-ingest.
+      const home = tempHome();
+      const mine = seedConversation(home, 'conv-A');
+      const theirs = seedConversation(home, 'conv-user-work');
+      const rec = runJudge([hit], {
+        spawn: () =>
+          [
+            JSON.stringify({
+              event: 'result',
+              result: { conversation_id: 'conv-A', status: 'ok', response: VERDICT_FENCE },
+            }),
+            JSON.stringify({ event: 'result', result: 'not-an-object' }),
+            '',
+          ].join('\n'),
+        loadRubric: () => 'RUBRIC',
+        home,
+      });
+      // Positive control: the verdict really did come from event #1, so the
+      // attribution assertion below is about a run that produced a result.
+      expect(rec.perCategory[0]?.action).toBe('block');
+      expect(existsSync(mine)).toBe(false);
+      // ...and it was attributed, not swept by "remove whatever appeared".
+      expect(existsSync(theirs)).toBe(true);
+    });
+
+    it('removes the conversation named by init even when the stream never parses', () => {
+      // P1. The id is taken from a scan that cannot throw, so a stream too
+      // malformed to yield a verdict is still ATTRIBUTED. Fold the scan back
+      // into the throwing `parseEnvelope` call and this leaks: `runJudge` skips
+      // the assignment, cleanup drops to the directory diff, and the diff
+      // declines to act because two conversations appeared at once.
+      const home = tempHome();
+      let mine = '';
+      let theirs = '';
+      const err = errorFrom(() =>
+        runJudge([hit], {
+          spawn: () => {
+            // Created DURING the run, as a real `agy` would, and alongside a
+            // session the user started in another terminal — which is what makes
+            // the diff ambiguous and the init id the only thing that can attribute.
+            mine = seedConversation(home, 'conv-from-init');
+            theirs = seedConversation(home, 'conv-user-work');
+            return [
+              JSON.stringify({ event: 'init', conversation_id: 'conv-from-init' }),
+              JSON.stringify({ event: 'result', result: 'not-an-object' }),
+              '',
+            ].join('\n');
+          },
+          loadRubric: () => 'RUBRIC',
+          home,
+        }),
+      );
+      // Positive control: the stream really was rejected, so this is the
+      // throwing path and not a quiet success.
+      expect(err?.message).toContain('carried no result object');
+      expect(existsSync(mine)).toBe(false);
+      // ...and the user's own concurrent session was left alone.
+      expect(existsSync(theirs)).toBe(true);
+    });
+
+    it('keeps an id already seen when a later event carries none', () => {
+      // P2. A second result event with a well-formed payload but no id must not
+      // clear the id taken from the first: every turn of a streaming session is
+      // one conversation, so an id seen anywhere stays valid for cleanup.
+      const home = tempHome();
+      let mine = '';
+      let theirs = '';
+      const rec = runJudge([hit], {
+        spawn: () => {
+          mine = seedConversation(home, 'conv-A');
+          theirs = seedConversation(home, 'conv-user-work');
+          return [
+            JSON.stringify({
+              event: 'result',
+              result: { conversation_id: 'conv-A', response: VERDICT_FENCE },
+            }),
+            JSON.stringify({ event: 'result', result: { response: VERDICT_FENCE } }),
+            '',
+          ].join('\n');
+        },
+        loadRubric: () => 'RUBRIC',
+        home,
+      });
+      // Positive control: this path SUCCEEDS — it is not the throwing case above,
+      // which is what makes it a distinct guard rather than a restatement.
+      expect(rec.perCategory[0]?.action).toBe('block');
+      expect(existsSync(mine)).toBe(false);
+      expect(existsSync(theirs)).toBe(true);
+    });
+
+    // Q1. `conversationDir` is `join(brainRoot, id)` and `join` normalizes, so an
+    // id that walks upward escapes the store and is then removed recursively and
+    // forcibly. Measured before the guard: `'../../..'` deleted the whole temp
+    // HOME — creds and user documents included — and `runJudge` still RETURNED,
+    // because the remove's catch reports nothing.
+    //
+    // The first two rows are the ones a `basename(id) === id` check lets
+    // through, which is why the guard is a segment test instead: `basename('.')`
+    // is `'.'` and `basename('..')` is `'..'`, so both satisfy it. The backslash
+    // row is the platform half — POSIX `basename` returns it unchanged while
+    // `win32.join` resolves it to a grandparent, and this plugin runs on Windows.
+    it.each([
+      ['.', 'the brain root itself — every conversation the user has'],
+      ['..', 'the whole Antigravity directory'],
+      ['../../..', 'the user’s HOME'],
+      ['../../../..', 'the filesystem root'],
+      ['..\\..', 'a grandparent, on Windows only'],
+      ['/etc', 'an absolute path'],
+      ['a/b', 'a nested path'],
+    ])('refuses to attribute a conversation id that is not a path segment: %s', (id) => {
+      const home = tempHome();
+      // One sentinel per level a traversing id reaches, because an assertion
+      // that only watches the OUTERMOST level is satisfied by a guard that stops
+      // `../../..` and lets `.` through — measured: with a `basename(id) === id`
+      // check in place this whole case stayed green, because `.` removes the
+      // brain root and `..` the Antigravity directory, and neither is outside
+      // `.gemini`. Each row below has to be caught at the level it actually hits.
+      const sibling = seedConversation(home, 'conv-someone-elses'); //   .
+      const antigravity = join(home, '.gemini', 'antigravity', 'usage.json'); //  ..
+      const precious = join(home, '.gemini', 'precious.json'); //       ../..
+      writeFileSync(antigravity, 'USAGE');
+      writeFileSync(precious, 'CREDS');
+
+      const rec = runJudge([hit], {
+        spawn: () =>
+          `${JSON.stringify({
+            event: 'result',
+            result: { conversation_id: id, response: VERDICT_FENCE },
+          })}\n`,
+        loadRubric: () => 'RUBRIC',
+        home,
+      });
+
+      // Positive control: the run really did complete, so cleanup really did run
+      // with this id rather than the case passing because nothing happened.
+      expect(rec.perCategory[0]?.action).toBe('block');
+      expect(existsSync(sibling)).toBe(true);
+      expect(existsSync(antigravity)).toBe(true);
+      expect(existsSync(precious)).toBe(true);
+      expect(existsSync(home)).toBe(true);
+    });
+
+    it('rejects an unusable id at the delete site too, and still tries the diff', () => {
+      // Q1, second site. `cleanupConversation` is exported, so its id argument is
+      // a caller's to choose. Rejecting there DROPS the id rather than returning,
+      // so the diff still runs — which is what makes this guard observably
+      // different from the adoption one and keeps each testable on its own.
+      const home = tempHome();
+      const precious = join(home, '.gemini', 'precious.json');
+      mkdirSync(join(home, '.gemini'), { recursive: true });
+      writeFileSync(precious, 'CREDS');
+      const appeared = seedConversation(home, 'conv-new');
+
+      cleanupConversation('../../..', new Set(), home);
+
+      expect(existsSync(precious)).toBe(true);
+      // ...and the diff attributed the one conversation that did appear.
+      expect(existsSync(appeared)).toBe(false);
+    });
+
+    it('adopts the id of the result event that supplied the verdict', () => {
+      // Q2-b. `??=` is right for init/step_update but must not outrank a result
+      // event that carries the verdict actually used: that event names the
+      // conversation which produced it, and cleaning up the other one leaves the
+      // raw-bearing transcript behind.
+      const home = tempHome();
+      let used = '';
+      let stale = '';
+      runJudge([hit], {
+        spawn: () => {
+          stale = seedConversation(home, 'conv-first');
+          used = seedConversation(home, 'conv-that-answered');
+          return [
+            JSON.stringify({ event: 'init', conversation_id: 'conv-first' }),
+            JSON.stringify({
+              event: 'result',
+              result: { conversation_id: 'conv-that-answered', response: VERDICT_FENCE },
+            }),
+            '',
+          ].join('\n');
+        },
+        loadRubric: () => 'RUBRIC',
+        home,
+      });
+      expect(existsSync(used)).toBe(false);
+      expect(existsSync(stale)).toBe(true);
+    });
+
+    it('recovers the id from a failed spawn’s captured stdout', () => {
+      // Q3. `agy` printed its init line — so the conversation exists — and then
+      // died. The id is in the error's stdout; without reading it, attribution
+      // falls to the diff, which declines here because a second conversation
+      // appeared, and the raw-bearing transcript survives.
+      const home = tempHome();
+      let mine = '';
+      let theirs = '';
+      const err = errorFrom(() =>
+        runJudge([hit], {
+          spawn: () => {
+            mine = seedConversation(home, 'conv-init');
+            theirs = seedConversation(home, 'conv-user-work');
+            throw Object.assign(new Error(`Command failed: agy ... ${hit.rawMatch}`), {
+              status: 1,
+              stdout: `${JSON.stringify({ event: 'init', conversation_id: 'conv-init' })}\n`,
+              stderr: `run logging ${hit.rawMatch}`,
+            });
+          },
+          loadRubric: () => 'RUBRIC',
+          home,
+        }),
+      );
+      // Positive control: this is the failing path, reported raw-free.
+      expect(err?.message).toBe('agy judge subprocess failed (exit 1)');
+      expectNoEchoOf(err?.message, hit.rawMatch);
+      expect(existsSync(mine)).toBe(false);
+      expect(existsSync(theirs)).toBe(true);
     });
 
     it('still removes the conversation when the verdict itself fails to parse', () => {
@@ -598,7 +1044,7 @@ describe('runJudge', () => {
     const threw = errorFrom(() =>
       runJudge([hit], {
         spawn: () => {
-          throw Object.assign(new Error(`Command failed: agy -p ... ${hit.rawMatch}`), {
+          throw Object.assign(new Error(`Command failed: agy ... ${hit.rawMatch}`), {
             status: 7,
           });
         },
@@ -648,6 +1094,20 @@ describe('the judge spawn is planned, not hand-built', () => {
     'judge.ts no longer builds its spawn from planBareCommand, so a Windows `.cmd` ' +
     'shim is unreachable again and/or the home-directory anchor is gone. Restore it, ' +
     'or re-gate the wizard-journey suites on Windows and rewrite this case to say why.';
+
+  it('feeds the prompt on stdin rather than argv', () => {
+    // The source fact behind every raw-off-argv assertion above: `input` is what
+    // execFileSync writes to the child's stdin and then closes, and closing stdin
+    // is what ends an `--input-format stream-json` session. A spawn that dropped
+    // it would hang the child rather than fail, and no in-process fake can see
+    // that — the seam takes the string either way.
+    expect(
+      /input:\s*stdin/.test(source),
+      'spawnAgy no longer writes the prompt to the child’s stdin. Restore it: the ' +
+        'prompt back on argv is a `ps`-visible raw exposure and puts an `agy.cmd` ' +
+        'shim out of reach on Windows.',
+    ).toBe(true);
+  });
 
   it('calls the planner rather than merely importing it', () => {
     expect(/\bplanBareCommand\(/.test(source), stale).toBe(true);

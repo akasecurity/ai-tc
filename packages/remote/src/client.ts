@@ -18,12 +18,7 @@ import {
 import type { z } from 'zod';
 
 import type { RemoteResponse } from './http.ts';
-import {
-  RemoteRequestError,
-  RemoteRequestInvalid,
-  RemoteResponseInvalid,
-  send,
-} from './http.ts';
+import { RemoteRequestError, RemoteRequestInvalid, RemoteResponseInvalid, send } from './http.ts';
 
 // The six routes an attached machine may call, and nothing else.
 //

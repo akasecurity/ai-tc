@@ -129,7 +129,10 @@ describe('what attach writes', () => {
 
     const settings = readWorkspaceSettings(base);
     expect(settings.runMode).toBe('attached');
-    expect(settings.controlPlane).toMatchObject({ endpoint: ENDPOINT, label: 'Example Org production' });
+    expect(settings.controlPlane).toMatchObject({
+      endpoint: ENDPOINT,
+      label: 'Example Org production',
+    });
     // settings.json is rendered by the dashboard and pinned by administrators;
     // the key must not be in it.
     expectNoEchoOf(readFileSync(join(settingsDirOf(base), 'settings.json'), 'utf8'), KEY);
@@ -182,6 +185,55 @@ describe('what attach refuses', () => {
     const io = scriptedPrompter({ interactive: true, answers: ['   '] });
     await runAttach(['--url', ENDPOINT], deps(io));
     expect(exits).toEqual([2]);
+  });
+});
+
+describe('the --home flag every other command honours', () => {
+  it('attach, detach and status all target the home they are given', async () => {
+    // These three read the real ~/.aka regardless of argv until now, and on
+    // detach that is the sharp one: `aka detach --home /tmp/scratch` would have
+    // cleared the user's ACTUAL machine while appearing to touch a throwaway.
+    // `deps.base` is not passed here on purpose — the flag has to be what
+    // resolves the home.
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', ENDPOINT, '--home', base], {
+      prompter: io,
+      verify,
+      exit: () => undefined,
+    });
+    expect(readWorkspaceSettings(base).runMode).toBe('attached');
+
+    const out = scriptedPrompter({ interactive: true });
+    await runStatus(['--home', base], { prompter: out, exit: () => undefined });
+    expect(out.output()).toContain(ENDPOINT);
+
+    const off = scriptedPrompter({ interactive: true });
+    runDetach(['--home', base], { prompter: off, exit: () => undefined });
+    expect(readWorkspaceSettings(base).runMode).toBe('standalone');
+  });
+
+  it('detach and status refuse an unknown flag rather than ignoring it', () => {
+    const io = scriptedPrompter({ interactive: true });
+    runDetach(['--hoem', base], deps(io));
+    expect(exits).toEqual([2]);
+    // …and nothing was cleared on the way to refusing.
+    expect(io.output()).toBe('');
+  });
+});
+
+describe('output', () => {
+  it('ends every verb with a newline, like every other command', async () => {
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', ENDPOINT], deps(io));
+    expect(io.output().endsWith('\n')).toBe(true);
+
+    const st = scriptedPrompter({ interactive: true });
+    await runStatus([], deps(st));
+    expect(st.output().endsWith('\n')).toBe(true);
+
+    const off = scriptedPrompter({ interactive: true });
+    runDetach([], deps(off));
+    expect(off.output().endsWith('\n')).toBe(true);
   });
 });
 

@@ -1,5 +1,10 @@
 // @ts-check
-import { base, drizzleWallRules, noDrizzleImports, rootConfigFiles } from '@akasecurity/eslint-config';
+import {
+  base,
+  drizzleWallRules,
+  noDrizzleImports,
+  rootConfigFiles,
+} from '@akasecurity/eslint-config';
 
 export default [
   ...base,

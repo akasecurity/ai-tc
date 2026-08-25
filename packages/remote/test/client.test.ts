@@ -2,7 +2,7 @@ import type { StorePostureSnapshot } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { createRemoteClient } from '../src/client.ts';
-import { MAX_RESPONSE_BYTES, RemoteRequestError, RemoteTransportError } from '../src/http.ts';
+import { MAX_RESPONSE_BYTES, RemoteRequestError, RemoteTransportError, send } from '../src/http.ts';
 import { useLoopbackServer } from './helpers/loopback.ts';
 
 const API_KEY = 'not-a-real-key-9d3f7b2c4e81';
@@ -51,6 +51,31 @@ describe('the credential on the wire', () => {
     // One credential header, not two. A second copy is one more place an
     // intermediary can log it for no gain.
     expect(seen?.headers.authorization).toBeUndefined();
+  });
+
+  it('does not let a caller override the credential or the computed length', async () => {
+    // `SendOptions.headers` is a free-form record on an exported function, so
+    // "no caller does that today" is not the guarantee. This is what makes the
+    // spread ORDER in http.ts fail-red: inverting it leaves every other case
+    // green while a caller can blank the credential or restate the length —
+    // re-creating the truncation the byte-count exists to prevent.
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ ok: true }));
+    });
+
+    await send({
+      method: 'POST',
+      url: `${server.origin}/v1/store-posture`,
+      apiKey: API_KEY,
+      body: JSON.stringify({ hello: 'wörld' }),
+      headers: { 'x-api-key': 'attacker-supplied', 'content-length': '1', accept: 'text/html' },
+    });
+
+    const seen = server.received.at(-1);
+    expect(seen?.headers['x-api-key']).toBe(API_KEY);
+    expect(seen?.headers['content-length']).toBe(String(Buffer.byteLength(seen?.body ?? '')));
+    expect(seen?.headers.accept).toBe('application/json');
   });
 
   it('sends a byte-length content-length, so a multi-byte body is not truncated', async () => {

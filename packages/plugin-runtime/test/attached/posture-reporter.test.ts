@@ -2,7 +2,10 @@ import { StorePostureSnapshot } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { PostureReporter, PostureReporterDeps } from '../../src/attached/posture-reporter.ts';
-import { createPostureReporter, POSTURE_REPORT_INTERVAL_MS } from '../../src/attached/posture-reporter.ts';
+import {
+  createPostureReporter,
+  POSTURE_REPORT_INTERVAL_MS,
+} from '../../src/attached/posture-reporter.ts';
 import { REQUEST_TIMEOUT_MS } from '../../src/attached/with-timeout.ts';
 
 // Drive both phases the way the attached gateway does: prepare, then send

@@ -64,7 +64,10 @@ export class RemoteRequestError extends Error {
  * happened.
  */
 export class RemoteRequestInvalid extends Error {
-  constructor(route: string, override readonly cause: unknown) {
+  constructor(
+    route: string,
+    override readonly cause: unknown,
+  ) {
     super(`refusing to send a malformed body to ${route}`);
     this.name = 'RemoteRequestInvalid';
   }

@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import {
   applyOnboarding,
   dataDir as dataDirOf,
-  defaultDataDir,
   isSafeEndpoint,
   ManagedFieldError,
   readControlPlaneCredentialState,
@@ -20,6 +19,7 @@ import {
 } from '@akasecurity/plugin-runtime';
 import { createRemoteClient } from '@akasecurity/remote';
 
+import { homeBase } from '../lib/args.ts';
 import type { Prompter } from '../lib/prompter.ts';
 import { terminalPrompter } from '../lib/prompter.ts';
 
@@ -43,6 +43,7 @@ Registers this machine against your organization's AKA deployment.
   --url <url>     Where the deployment lives. https, or http on loopback.
   --label <name>  What to call it on screen. Defaults to the URL.
   --key-stdin     Read the access key from stdin instead of prompting.
+  --home <dir>    Use an alternate AKA home instead of ~/.aka.
 
 The key is never accepted as a command-line argument — it would be visible to
 every process on this machine and recorded in your shell history.`;
@@ -58,6 +59,7 @@ export interface AttachDeps {
 interface ParsedArgs {
   url?: string | undefined;
   label?: string | undefined;
+  home?: string | undefined;
   keyStdin: boolean;
 }
 
@@ -91,6 +93,10 @@ export function parseAttachArgs(argv: readonly string[]): ParsedArgs | { error: 
       parsed.label = argv[++i];
     } else if (arg?.startsWith('--label=')) {
       parsed.label = arg.slice('--label='.length);
+    } else if (arg === '--home') {
+      parsed.home = argv[++i];
+    } else if (arg?.startsWith('--home=')) {
+      parsed.home = arg.slice('--home='.length);
     } else {
       return { error: `unknown option ${String(arg)}` };
     }
@@ -111,7 +117,6 @@ const isError = (v: ParsedArgs | { error: string }): v is { error: string } => '
  * of the install, since every later failure is deliberately swallowed.
  */
 export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<void> {
-  const base = deps.base ?? defaultDataDir();
   const io = deps.prompter ?? terminalPrompter();
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
@@ -121,6 +126,11 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     exit(2);
     return;
   }
+  // `--home` is a global every other command honours, and these three were
+  // reading the real `~/.aka` regardless of it. On `detach` that is the sharp
+  // one: `aka detach --home /tmp/scratch` would have detached the user's actual
+  // machine while appearing to touch a throwaway.
+  const base = deps.base ?? homeBase(args.home);
   const endpoint = args.url;
   if (endpoint === undefined || endpoint === '') {
     io.err(USAGE);
@@ -233,6 +243,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
       `  you           ${identity.userEmail}`,
       '',
       'Policy arrives on the next session. Run `aka status` to see it.',
+      '',
     ].join('\n'),
   );
 }
@@ -257,10 +268,17 @@ async function verifyWithControlPlane(
  * describes a deployment this machine is no longer talking to, and leaving it
  * would have status report a stale refusal after a later re-attach.
  */
-export function runDetach(_argv: string[], deps: AttachDeps = {}): void {
-  const base = deps.base ?? defaultDataDir();
+export function runDetach(argv: string[], deps: AttachDeps = {}): void {
   const io = deps.prompter ?? terminalPrompter();
   const exit = deps.exit ?? ((code: number) => process.exit(code));
+
+  const args = parseAttachArgs(argv);
+  if (isError(args)) {
+    io.err(args.error);
+    exit(2);
+    return;
+  }
+  const base = deps.base ?? homeBase(args.home);
 
   // THE DESCRIPTOR FIRST, and the credential only once it has actually gone.
   // The other order lets a refused detach still take effect in the way that
@@ -286,8 +304,8 @@ export function runDetach(_argv: string[], deps: AttachDeps = {}): void {
 
   io.out(
     had
-      ? 'Detached. This machine records locally only; nothing is sent anywhere.'
-      : 'This machine was not attached; nothing to do.',
+      ? 'Detached. This machine records locally only; nothing is sent anywhere.\n'
+      : 'This machine was not attached; nothing to do.\n',
   );
 }
 
@@ -323,13 +341,20 @@ function clearDerived(dir: string): void {
  *
  * Still no network, on either half.
  */
-export async function runStatus(_argv: string[], deps: AttachDeps = {}): Promise<void> {
-  const base = deps.base ?? defaultDataDir();
+export async function runStatus(argv: string[], deps: AttachDeps = {}): Promise<void> {
   const io = deps.prompter ?? terminalPrompter();
+
+  const args = parseAttachArgs(argv);
+  if (isError(args)) {
+    io.err(args.error);
+    (deps.exit ?? ((code: number) => process.exit(code)))(2);
+    return;
+  }
+  const base = deps.base ?? homeBase(args.home);
   const dataDir = dataDirOf(base);
 
   const block = renderAttachedStatus({ base, settingsDir: settingsDirOf(base), dataDir });
   // Only for an attached machine: a standalone one has no policy to be current.
   const attached = !block.startsWith('AKA: standalone');
-  io.out(attached ? `${block}\n${await renderPolicyLine(dataDir)}` : block);
+  io.out(attached ? `${block}\n${await renderPolicyLine(dataDir)}\n` : `${block}\n`);
 }

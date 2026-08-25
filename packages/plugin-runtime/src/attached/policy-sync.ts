@@ -132,10 +132,7 @@ export async function pullPolicyBundle(deps: PullPolicyBundleDeps): Promise<Poli
   });
 
   const cached = await deps.store.read();
-  const result = await withTimeout(
-    client.getPolicyBundle(cached?.etag),
-    SYNC_REQUEST_TIMEOUT_MS,
-  );
+  const result = await withTimeout(client.getPolicyBundle(cached?.etag), SYNC_REQUEST_TIMEOUT_MS);
 
   if (!result.changed) {
     // Nothing to re-parse — the cached bundle IS the current one. With no cache

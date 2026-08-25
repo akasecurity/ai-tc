@@ -15,6 +15,17 @@ import { isAttached } from '@akasecurity/schema';
  */
 export const SYNC_MARKER_NAME = 'sync-last-attempt';
 
+/**
+ * The filename this module resolves as a sibling of the running script.
+ *
+ * EXPORTED so the one place that emits it and the one place that probes for it
+ * read the same string. A build test declaring its own copy proves the two
+ * copies agree and nothing else: rename the constant here and the resolver
+ * looks for a file the build never emits, while a test holding the old literal
+ * stays green — which is the drift that test exists to catch.
+ */
+export const SYNC_SCRIPT_NAME = 'sync.js';
+
 /** How long one attempt suppresses the next. */
 export const SYNC_THROTTLE_MS = 15 * 60 * 1000;
 
@@ -67,7 +78,7 @@ export function triggerPolicySync(config: PluginConfig, deps: SyncTriggerDeps = 
       deps.isThrottled ?? ((dir: string) => throttled(dir, SYNC_MARKER_NAME, SYNC_THROTTLE_MS));
     if (isThrottled(config.dataDir)) return;
 
-    const scriptPath = fileURLToPath(deps.scriptUrl ?? new URL('sync.js', import.meta.url));
+    const scriptPath = fileURLToPath(deps.scriptUrl ?? new URL(SYNC_SCRIPT_NAME, import.meta.url));
     (deps.spawnChild ?? spawnDetached)(scriptPath);
   } catch {
     // A policy refresh that cannot be started is a stale policy, not a broken

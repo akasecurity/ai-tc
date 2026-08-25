@@ -1,7 +1,4 @@
-import {
-  readControlPlaneCredentialState,
-  readWorkspaceSettings,
-} from '@akasecurity/persistence';
+import { readControlPlaneCredentialState, readWorkspaceSettings } from '@akasecurity/persistence';
 import { controlPlaneName, isAttached } from '@akasecurity/schema';
 
 import { readForwardHealth } from './forward-policy.ts';
@@ -240,11 +237,26 @@ function forwardLines(dataDir: string, nowMs: number): string[] {
  * total: a slash-command entry can render the connection block with no awaits at
  * all, and only pay for the cache read when it wants the version line.
  */
+/**
+ * A control-plane-supplied string, made safe to print.
+ *
+ * `PolicyBundle.version` is a bare `z.string()` shared with the local
+ * standalone bundle, so it cannot be tightened here the way `PluginWhoami`'s
+ * members are — but it is rendered into a terminal all the same, and a hostile
+ * or compromised plane supplying an ANSI escape could repaint the status block
+ * or hide a line. Control characters are stripped and the result bounded, so
+ * the worst a plane can do to this surface is occupy its own field.
+ */
+function printable(value: string, max = 80): string {
+  const stripped = value.replace(/[\p{Cc}\p{Cf}]/gu, '');
+  return stripped.length > max ? `${stripped.slice(0, max)}…` : stripped;
+}
+
 export async function renderPolicyLine(dataDir: string, nowMs = Date.now()): Promise<string> {
   try {
     const cached = await createPolicyStore(dataDir).read();
     if (!cached) return '  policy     none cached';
-    return `  policy     ${cached.bundle.version} (fetched ${ageLine(cached.fetchedAtMs, nowMs)})`;
+    return `  policy     ${printable(cached.bundle.version)} (fetched ${ageLine(cached.fetchedAtMs, nowMs)})`;
   } catch {
     return '  policy     unreadable';
   }

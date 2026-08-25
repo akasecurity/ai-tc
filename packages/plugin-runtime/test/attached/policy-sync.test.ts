@@ -12,7 +12,11 @@ import type { AttachedCredential, ControlPlaneConnection, PolicyBundle } from '@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createPolicyStore } from '../../src/attached/policy-store.ts';
-import { pullPolicyBundle, runPolicySync, SYNC_REQUEST_TIMEOUT_MS } from '../../src/attached/policy-sync.ts';
+import {
+  pullPolicyBundle,
+  runPolicySync,
+  SYNC_REQUEST_TIMEOUT_MS,
+} from '../../src/attached/policy-sync.ts';
 import { REQUEST_TIMEOUT_MS } from '../../src/attached/with-timeout.ts';
 
 const getPolicyBundle = vi.fn();
@@ -20,9 +24,17 @@ const getPolicyBundle = vi.fn();
 // Partial mock: only the client FACTORY is replaced, so `RemoteRequestError`
 // below is the REAL error type this module classifies in production. Mocking
 // the module wholesale would have the contract test assert against a stand-in.
+// The factory's ARGUMENTS are captured, not just its return: the sync path's
+// whole timeout argument is that it overrides the transport's 10s default, and
+// nothing observed whether it was passed. Comparing the two constants only
+// proved they differ.
+const clientOptions: unknown[] = [];
 vi.mock('@akasecurity/remote', async (importOriginal) => ({
   ...(await importOriginal<typeof RemoteModule>()),
-  createRemoteClient: () => ({ getPolicyBundle }),
+  createRemoteClient: (opts: unknown) => {
+    clientOptions.push(opts);
+    return { getPolicyBundle };
+  },
 }));
 
 const CONNECTION: ControlPlaneConnection = {
@@ -54,7 +66,9 @@ let dataDir: string;
  * property that replaced a regex over the error's wording.
  */
 function invalidResponse(): Error {
-  const err = new Error('control plane answered /v1/policy-bundle with a body this client cannot read');
+  const err = new Error(
+    'control plane answered /v1/policy-bundle with a body this client cannot read',
+  );
   err.name = 'RemoteResponseInvalid';
   return err;
 }
@@ -67,6 +81,7 @@ function attach(base: string): void {
 
 beforeEach(() => {
   getPolicyBundle.mockReset();
+  clientOptions.length = 0;
   dataDir = mkdtempSync(join(tmpdir(), 'aka-sync-'));
 });
 
@@ -83,7 +98,9 @@ describe('pullPolicyBundle', () => {
     });
     const store = createPolicyStore(dataDir);
 
-    await expect(pullPolicyBundle({ connection: CONNECTION, credential: CREDENTIAL, store })).resolves.toBe('ok');
+    await expect(
+      pullPolicyBundle({ connection: CONNECTION, credential: CREDENTIAL, store }),
+    ).resolves.toBe('ok');
 
     const cached = await store.read();
     expect(cached?.bundle.version).toBe('v1');
@@ -107,7 +124,11 @@ describe('pullPolicyBundle', () => {
       etag: 'W/"aaa"',
     });
 
-    await pullPolicyBundle({ connection: CONNECTION, credential: CREDENTIAL, store: createPolicyStore(dataDir) });
+    await pullPolicyBundle({
+      connection: CONNECTION,
+      credential: CREDENTIAL,
+      store: createPolicyStore(dataDir),
+    });
 
     expect(getPolicyBundle).toHaveBeenCalledWith(undefined);
   });
@@ -123,7 +144,9 @@ describe('pullPolicyBundle', () => {
 
     getPolicyBundle.mockResolvedValue({ changed: false, etag: 'W/"new"' });
     await new Promise((r) => setTimeout(r, 2));
-    await expect(pullPolicyBundle({ connection: CONNECTION, credential: CREDENTIAL, store })).resolves.toBe('not-modified');
+    await expect(
+      pullPolicyBundle({ connection: CONNECTION, credential: CREDENTIAL, store }),
+    ).resolves.toBe('not-modified');
 
     const after = await store.read();
     expect(after?.etag).toBe('W/"new"');
@@ -137,7 +160,9 @@ describe('pullPolicyBundle', () => {
     getPolicyBundle.mockResolvedValue({ changed: false, etag: 'W/"x"' });
     const store = createPolicyStore(dataDir);
 
-    await expect(pullPolicyBundle({ connection: CONNECTION, credential: CREDENTIAL, store })).resolves.toBe('not-modified');
+    await expect(
+      pullPolicyBundle({ connection: CONNECTION, credential: CREDENTIAL, store }),
+    ).resolves.toBe('not-modified');
     expect(await store.read()).toBeNull();
   });
 
@@ -179,10 +204,30 @@ describe('pullPolicyBundle', () => {
     expect(SYNC_REQUEST_TIMEOUT_MS).toBeGreaterThan(REQUEST_TIMEOUT_MS);
   });
 
+  it('actually HANDS that budget to the transport, whose own default is shorter', async () => {
+    // The case above compares two constants and would pass with the option
+    // never passed — which is exactly the state this path was in: the client
+    // was built with no `timeoutMs`, so the transport's 10s default fired 20s
+    // before the 30s bound this module argues for, and nothing observed it.
+    getPolicyBundle.mockResolvedValue({ changed: false, etag: undefined });
+    await pullPolicyBundle({
+      connection: CONNECTION,
+      credential: CREDENTIAL,
+      store: createPolicyStore(dataDir),
+    });
+
+    expect(clientOptions).toHaveLength(1);
+    expect(clientOptions[0]).toMatchObject({ timeoutMs: SYNC_REQUEST_TIMEOUT_MS });
+  });
+
   it('propagates a transport failure for the caller to classify', async () => {
     getPolicyBundle.mockRejectedValue(new Error('connect ECONNREFUSED'));
     await expect(
-      pullPolicyBundle({ connection: CONNECTION, credential: CREDENTIAL, store: createPolicyStore(dataDir) }),
+      pullPolicyBundle({
+        connection: CONNECTION,
+        credential: CREDENTIAL,
+        store: createPolicyStore(dataDir),
+      }),
     ).rejects.toThrow(/ECONNREFUSED/);
   });
 
@@ -191,7 +236,9 @@ describe('pullPolicyBundle', () => {
     await store.write(bundle('v1'), 'W/"aaa"');
     getPolicyBundle.mockRejectedValue(new Error('403 Forbidden'));
 
-    await expect(pullPolicyBundle({ connection: CONNECTION, credential: CREDENTIAL, store })).rejects.toThrow();
+    await expect(
+      pullPolicyBundle({ connection: CONNECTION, credential: CREDENTIAL, store }),
+    ).rejects.toThrow();
 
     const cached = await store.read();
     expect(cached?.bundle.version).toBe('v1');

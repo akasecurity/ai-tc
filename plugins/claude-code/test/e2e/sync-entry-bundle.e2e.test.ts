@@ -31,11 +31,13 @@ import { describe, expect, it } from 'vitest';
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCRIPTS_DIR = join(PLUGIN_ROOT, 'scripts');
 
-// The filename `triggerPolicySync` probes for. tsup's entry key is what
-// produces it, so the two have to change together or the child becomes
-// unreachable at runtime — which is the whole point of asserting the name here
-// rather than trusting the config.
-const SYNC_SCRIPT = 'sync.js';
+// IMPORTED from the resolver rather than re-declared, and that is the whole
+// point of the case below. A local copy of the literal proves the two copies
+// agree and nothing else: rename the constant in sync-trigger.ts and the
+// resolver starts probing for a file the build never emits, while a test
+// holding the old string stays green. Importing it means a rename on either
+// side moves this assertion with it.
+import { SYNC_SCRIPT_NAME as SYNC_SCRIPT } from '@akasecurity/plugin-runtime';
 
 const built = (name: string): string => join(SCRIPTS_DIR, name);
 

@@ -213,11 +213,30 @@ describe('response parsers', () => {
     expect(PluginWhoami.parse(whoami).role).toBe('a-role-this-client-has-never-heard-of');
   });
 
+  it('PluginWhoami refuses control characters, which reach a terminal verbatim', () => {
+    // `aka attach` prints every one of these into the user's terminal. A plane
+    // is authenticated, not trusted: an escape sequence could repaint the line
+    // or hide what just happened, and a bare newline forges an extra field in
+    // the block. Refusing at the shape means no render site has to remember.
+    const ok = {
+      tenantName: 'Example Org',
+      userEmail: 'dev@example.com',
+      role: 'member',
+      keyKind: 'plugin',
+      serverTime: '2026-08-24T10:00:00.000Z',
+    };
+    expect(PluginWhoami.safeParse(ok).success).toBe(true);
+    expect(PluginWhoami.safeParse({ ...ok, tenantName: 'Evil\u001b[2KOrg' }).success).toBe(false);
+    expect(PluginWhoami.safeParse({ ...ok, tenantName: 'line one\nline two' }).success).toBe(false);
+    // …and it is bounded, so a plane cannot flood the terminal either.
+    expect(PluginWhoami.safeParse({ ...ok, tenantName: 'x'.repeat(201) }).success).toBe(false);
+  });
+
   it('ControlPlaneErrorBody accepts an empty object — the status code is the contract', () => {
     expect(ControlPlaneErrorBody.parse({})).toEqual({});
-    expect(
-      ControlPlaneErrorBody.parse({ error: { code: 'forbidden' } }).error?.code,
-    ).toBe('forbidden');
+    expect(ControlPlaneErrorBody.parse({ error: { code: 'forbidden' } }).error?.code).toBe(
+      'forbidden',
+    );
   });
 
   it('registers none of the response parsers', () => {

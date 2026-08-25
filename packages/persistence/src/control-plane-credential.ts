@@ -102,8 +102,13 @@ export type CredentialState =
  * anywhere at all, and following one would read a credential out of a location
  * this module never chose.
  *
- * Windows has no POSIX modes, so the mode half is a no-op there; the ownership
- * check still applies.
+ * ON WINDOWS NEITHER HALF RUNS, and the docblock used to claim the ownership
+ * check still did. It does not: `process.getuid` is undefined there, so the uid
+ * comparison is skipped along with the mode repair, and the only refusal left
+ * is the symlink test. What actually protects the credential on that platform
+ * is the ACL on the user profile directory, which this module does not read —
+ * a real check would need an owner-SID lookup rather than a uid, and is not
+ * something a POSIX comparison can stand in for.
  */
 function repairOrRefuseMode(file: string): boolean {
   const link = lstatSync(file, { throwIfNoEntry: false });

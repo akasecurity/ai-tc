@@ -59,7 +59,10 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
     summary: "Register this machine against your organization's AKA deployment",
   },
   { name: 'detach', summary: 'Stop reporting to a deployment; record locally only' },
-  { name: 'status', summary: 'Show what this machine is attached to, and whether policy is current' },
+  {
+    name: 'status',
+    summary: 'Show what this machine is attached to, and whether policy is current',
+  },
   {
     name: 'tui',
     argHint: '[view]',

@@ -116,9 +116,12 @@ describe('readStorePosture', () => {
     expect(missing.storePresent).toBe(false);
   });
 
-  // Root bypasses directory permission checks entirely, which would make this
-  // assert the opposite of what it's testing.
-  it.skipIf(process.getuid?.() === 0)(
+  // Root bypasses directory permission checks entirely, and Windows does not
+  // gate reads on POSIX mode bits at all — a 0o000 chmod on a DIRECTORY is
+  // inert there, so the open succeeds and this asserts the opposite of what it
+  // means to. `process.getuid` is undefined on that platform, so the uid test
+  // alone lets the case run.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
     'a permission-denied parent directory is a read error, not a false "absent"',
     async () => {
       // existsSync (the old check) returns false for ANY failure to look, not

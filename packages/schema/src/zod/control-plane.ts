@@ -241,12 +241,23 @@ export type IngestAck = z.infer<typeof IngestAck>;
 // organization-wide rides this shape. Members a control plane types more
 // narrowly (role and credential-kind enums) are plain strings here: the client
 // displays them, it does not branch on them.
+// BOUNDED AND CHARSET-CONSTRAINED, because every member is rendered straight
+// into a terminal by `aka attach`. A control plane is authenticated, not
+// trusted: a compromised or hostile one answering with an ANSI escape sequence
+// could repaint the line, hide what it just did, or move the cursor over
+// output the user is relying on — and a newline alone is enough to forge an
+// extra field in the block. Constraining the SHAPE rather than each render site
+// means a future consumer inherits the protection instead of having to know.
+const PRINTABLE = /^[^\p{Cc}\p{Cf}]*$/u;
+const printable = (max: number) =>
+  z.string().max(max).regex(PRINTABLE, 'must not contain control characters');
+
 export const PluginWhoami = z.object({
-  tenantName: z.string(),
-  userEmail: z.string(),
-  role: z.string(),
-  keyKind: z.string(),
-  serverTime: z.string(),
+  tenantName: printable(200),
+  userEmail: printable(320),
+  role: printable(64),
+  keyKind: printable(64),
+  serverTime: printable(64),
 });
 export type PluginWhoami = z.infer<typeof PluginWhoami>;
 

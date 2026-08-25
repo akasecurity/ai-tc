@@ -12,6 +12,7 @@ import {
 } from '@akasecurity/persistence';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { createPolicyStore } from '../../src/attached/policy-store.ts';
 import { renderAttachedStatus, renderPolicyLine } from '../../src/attached/status.ts';
 import { syncStatePath, writeSyncState } from '../../src/attached/sync-state.ts';
 
@@ -128,7 +129,9 @@ describe('renderAttachedStatus — the attached block', () => {
 
   it('says so when no sync has been attempted yet', () => {
     attach();
-    expect(renderAttachedStatus({ base: root, settingsDir, dataDir })).toContain('no attempt recorded');
+    expect(renderAttachedStatus({ base: root, settingsDir, dataDir })).toContain(
+      'no attempt recorded',
+    );
   });
 });
 
@@ -199,9 +202,9 @@ describe('renderAttachedStatus — the forward half', () => {
   it('reports health only when a success actually cleared the failures', () => {
     attach();
     writeBreaker(0, null);
-    expect(renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 })).toContain(
-      'reporting normally',
-    );
+    expect(
+      renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 }),
+    ).toContain('reporting normally');
   });
 
   it('a hostile FUTURE stamp cannot fake an open breaker in the output', () => {
@@ -366,9 +369,7 @@ describe('renderAttachedStatus — redaction', () => {
       fileURLToPath(new URL('../../src/attached/status.ts', import.meta.url)),
       'utf8',
     );
-    expect(source, 'status must not import the transport').not.toContain(
-      '@akasecurity/remote',
-    );
+    expect(source, 'status must not import the transport').not.toContain('@akasecurity/remote');
     expect(source, 'status must not fetch').not.toMatch(/\bfetch\s*\(/);
 
     // A synchronous return is the other half: an async renderer is one await
@@ -380,6 +381,30 @@ describe('renderAttachedStatus — redaction', () => {
 });
 
 describe('renderPolicyLine', () => {
+  it('strips control characters a control plane put in the bundle version', async () => {
+    // `PolicyBundle.version` is a bare string shared with the local bundle, so
+    // it cannot be constrained at the shape the way PluginWhoami's members are.
+    // It is still printed into a terminal, and a plane supplying an escape
+    // sequence could repaint the block or hide a line above it.
+    const store = createPolicyStore(dataDir);
+    await store.write(
+      {
+        version: 'v1\u001b[2K\u0007',
+        policies: [],
+        customKeywords: [],
+        fetchedAt: '2026-08-19T10:00:00.000Z',
+      },
+      undefined,
+    );
+
+    const line = await renderPolicyLine(dataDir);
+    // Positive control first, so the absence check below cannot pass on an
+    // empty or errored line.
+    expect(line).toContain('v1');
+    expect(line).not.toContain('\u001b');
+    expect(line).not.toContain('\u0007');
+  });
+
   it('says none cached before the first sync', async () => {
     await expect(renderPolicyLine(dataDir)).resolves.toContain('none cached');
   });

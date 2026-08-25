@@ -34,6 +34,7 @@ export { readSyncState, SYNC_STATE_FILENAME, syncStatePath, writeSyncState } fro
 export type { SyncTriggerDeps } from './sync-trigger.ts';
 export {
   SYNC_MARKER_NAME,
+  SYNC_SCRIPT_NAME,
   SYNC_THROTTLE_MS,
   triggerPolicySync,
 } from './sync-trigger.ts';

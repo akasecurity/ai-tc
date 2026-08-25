@@ -1,7 +1,4 @@
-export type {
-  CredentialState,
-  CredentialUnusableReason,
-} from './control-plane-credential.ts';
+export type { CredentialState, CredentialUnusableReason } from './control-plane-credential.ts';
 export {
   controlPlaneCredentialPath,
   isSafeEndpoint,

@@ -416,9 +416,7 @@ describe('ensureInventory and the two id spaces', () => {
     });
     const { gateway } = build({ local, client });
     await gateway.ensureInventory({});
-    await gateway.recordAuditEvent(
-      auditEvent({ id: 'root', hostId: 'local-host' }),
-    );
+    await gateway.recordAuditEvent(auditEvent({ id: 'root', hostId: 'local-host' }));
 
     // The forwarded copy must reference the tenant's inventory row, or it is
     // orphaned against an inventory the backend never minted.
@@ -438,9 +436,7 @@ describe('ensureInventory and the two id spaces', () => {
     const client = makeClient(calls, { recordAuditEvent });
     const { gateway } = build({ client, forward: deadForward(calls) });
     await gateway.ensureInventory({});
-    await gateway.recordAuditEvent(
-      auditEvent({ id: 'r', hostId: 'local-host' }),
-    );
+    await gateway.recordAuditEvent(auditEvent({ id: 'r', hostId: 'local-host' }));
     expect(recordAuditEvent).not.toHaveBeenCalled();
   });
 
@@ -463,7 +459,12 @@ describe('ensureInventory and the two id spaces', () => {
     const { gateway } = build({ client });
     await gateway.ensureInventory({});
     await gateway.recordAuditEvent(
-      auditEvent({ id: 'r', hostId: 'local-host', harnessId: 'local-harness', sourceProjectId: 'local-project' }),
+      auditEvent({
+        id: 'r',
+        hostId: 'local-host',
+        harnessId: 'local-harness',
+        sourceProjectId: 'local-project',
+      }),
     );
 
     const forwarded = recordAuditEvent.mock.calls[0]?.[0];
@@ -500,9 +501,7 @@ describe('ensureInventory and the two id spaces', () => {
 
     await gateway.ensureInventory({}); // session A — resolves
     await gateway.ensureInventory({}); // session B — fails
-    await gateway.recordAuditEvent(
-      auditEvent({ id: 'b-root', hostId: 'local-host-B' }),
-    );
+    await gateway.recordAuditEvent(auditEvent({ id: 'b-root', hostId: 'local-host-B' }));
 
     const forwarded = recordAuditEvent.mock.calls[0]?.[0];
     expect(forwarded).toBeDefined();

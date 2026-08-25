@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { DATA_FILE_MODE, ensureDataDir } from '@akasecurity/plugin-sdk';
 
-import { classifyFailure,type ControlPlaneFailure } from './failure.ts';
+import { classifyFailure, type ControlPlaneFailure } from './failure.ts';
 import { withTimeout } from './with-timeout.ts';
 
 /**

@@ -16,10 +16,7 @@
 import { statSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
-import type {
-  StorePosturePack,
-  StorePosturePolicyCounts,
-} from '@akasecurity/schema';
+import type { StorePosturePack, StorePosturePolicyCounts } from '@akasecurity/schema';
 
 import { emptyActionCounts, isActionTaken } from './action-counts.ts';
 

@@ -4,7 +4,11 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createPostureStore, type PostureState, type PostureStore } from '../../src/attached/posture-store';
+import {
+  createPostureStore,
+  type PostureState,
+  type PostureStore,
+} from '../../src/attached/posture-store';
 
 // read() is nullable — null means "no identity could be established this
 // attempt" (see posture-store.ts). Every success-path test in this file
@@ -71,9 +75,14 @@ describe('createPostureStore', () => {
     expect(reread.lastAttemptedAtMs).toBe(1_780_000_000_000);
   });
 
-  // Root bypasses file permission checks entirely, which would make this
-  // assert the opposite of what it's testing.
-  it.skipIf(process.getuid?.() === 0)(
+  // Root bypasses file permission checks entirely, which would make this assert
+  // the opposite of what it's testing — and so does WINDOWS, for a different
+  // reason that the uid test cannot see: `process.getuid` is undefined there,
+  // so `undefined === 0` is false and the case RUNS, while `chmod` only toggles
+  // FILE_ATTRIBUTE_READONLY and leaves the file fully readable. The fault
+  // injects nothing, the read succeeds, and `rejects.toThrow()` fails on a
+  // promise that resolved. Both conditions have to be named.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
     'a transient permission error on an EXISTING file refuses to mint, and never overwrites it',
     async () => {
       // existsSync/plain-catch used to collapse EVERY readFile failure into
@@ -126,8 +135,15 @@ describe('createPostureStore', () => {
     await mustRead(store);
     const entries = await readdir(dir);
     expect(entries.filter((f) => f.includes('.tmp'))).toEqual([]);
-    const mode = (await stat(store.file)).mode & 0o777;
-    expect(mode).toBe(0o600);
+    // A positive conditional rather than a skip: the .tmp-absence check above
+    // is real on every platform, so ending the body early would discard a
+    // result that genuinely held. Windows derives st_mode from a single
+    // read-only attribute — a file written writable reads back 0o666 — so only
+    // the mode half is scoped.
+    if (process.platform !== 'win32') {
+      const mode = (await stat(store.file)).mode & 0o777;
+      expect(mode).toBe(0o600);
+    }
   });
 
   it('a forced rename failure leaves the randomized tmp file behind — a known, accepted leak', async () => {
@@ -229,9 +245,13 @@ describe('createPostureStore', () => {
       }
     });
 
-    // Root uid bypasses file permission checks entirely, which would make
-    // this assert the opposite of what it's testing.
-    it.skipIf(process.getuid?.() === 0)(
+    // Root uid bypasses file permission checks entirely, and so does Windows,
+    // where `chmod` only toggles a read-only attribute and leaves the file
+    // readable. Both make this measure nothing: the fall-through it asserts is
+    // what an intact fixture produces anyway, so it would report a pass having
+    // injected no fault at all. See the case above for why the uid test alone
+    // does not cover win32.
+    it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
       'an unreadable legacy file falls through to fresh-mint, rather than blocking read() forever',
       async () => {
         // A permission error on `file` (the current location) is right to

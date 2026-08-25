@@ -70,7 +70,9 @@ export function useLoopbackServer(): LoopbackServer {
     // holds `close` forever, and a hung teardown reads as a hung suite.
     server.closeAllConnections();
     await new Promise<void>((resolve) => {
-      server.close(() => { resolve(); });
+      server.close(() => {
+        resolve();
+      });
     });
   });
 

@@ -213,11 +213,17 @@ export function warnIfStoreRedirected(
     }
     const dirs = markerDirs(config.dataDir);
     if (alreadyClaimed(dirs, STORE_REDIRECT_MARKER, sessionId)) return;
-    // Write BEFORE recording the claim. The default writer is fire-and-forget
-    // and `process.exit(0)` does not flush a queued pipe write, so consuming the
-    // claim first would let a dropped message mark the session as warned and
-    // leave the user in exactly the exit-0-and-silence state this exists to
-    // remove. Recording second costs a repeat at worst, never a silence.
+    // Write BEFORE recording the claim, so a writer that THROWS does not consume
+    // it: the throw reaches the catch below, `recordClaim` never runs, and the
+    // next hook fire warns again. That is the whole of what the ordering buys,
+    // and it is worth stating narrowly rather than as flush-safety. The default
+    // writer discards `process.stderr.write`'s return, so a write that is merely
+    // QUEUED and then dropped by `process.exit(0)` still consumes the claim.
+    // Measured on a pipe, that begins only above the buffer: 65,000 bytes
+    // returns true and arrives whole, while 200,000 returns FALSE and delivers
+    // 65,536. This message tops out near 3 KB across the six store paths, so the
+    // queued case is unreachable — if it ever stops being, that false return is
+    // the signal to gate on.
     write(storeRedirectedMessage(paths));
     recordClaim(dirs, STORE_REDIRECT_MARKER, sessionId);
   } catch {

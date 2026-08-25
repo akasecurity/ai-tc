@@ -189,10 +189,13 @@ function formatMode(mode: number): string {
  * this is warning about. stderr has no such contract and is the channel the rule
  * quarantine already warns on.
  *
- * Called from every hook that loads config: `user-prompt-submit`, `pre-tool-use`,
- * `post-tool-use` and `stop`. `session-start` reaches its config through
- * `handleSessionStart`'s own default and is covered by whichever hook fires
- * first in the session.
+ * Called from all FIVE hooks that load config: `session-start`,
+ * `user-prompt-submit`, `pre-tool-use`, `post-tool-use` and `stop`.
+ * `session-start` is on that list rather than excluded from it, and it is the
+ * earliest point a redirect can be reported. It loads config EXPLICITLY
+ * (`loadConfig(undefined, resolveCodexProvider)`) rather than through
+ * `handleSessionStart`'s default, which resolves the wrong provider shape for
+ * this host — see the comment at that call site.
  *
  * Wholly best-effort: every step is inside the try, so a hostile or unreadable
  * home makes this a no-op rather than an exception on the hook's entry path.
@@ -215,11 +218,17 @@ export function warnIfStoreRedirected(
     }
     const dirs = markerDirs(config.dataDir);
     if (alreadyClaimed(dirs, STORE_REDIRECT_MARKER, sessionId)) return;
-    // Write BEFORE recording the claim. The default writer is fire-and-forget
-    // and `process.exit(0)` does not flush a queued pipe write, so consuming the
-    // claim first would let a dropped message mark the session as warned and
-    // leave the user in exactly the exit-0-and-silence state this exists to
-    // remove. Recording second costs a repeat at worst, never a silence.
+    // Write BEFORE recording the claim, so a writer that THROWS does not consume
+    // it: the throw reaches the catch below, `recordClaim` never runs, and the
+    // next hook fire warns again. That is the whole of what the ordering buys,
+    // and it is worth stating narrowly rather than as flush-safety. The default
+    // writer discards `process.stderr.write`'s return, so a write that is merely
+    // QUEUED and then dropped by `process.exit(0)` still consumes the claim.
+    // Measured on a pipe, that begins only above the buffer: 65,000 bytes
+    // returns true and arrives whole, while 200,000 returns FALSE and delivers
+    // 65,536. This message tops out near 3 KB across the six store paths, so the
+    // queued case is unreachable — if it ever stops being, that false return is
+    // the signal to gate on.
     write(storeRedirectedMessage(paths));
     recordClaim(dirs, STORE_REDIRECT_MARKER, sessionId);
   } catch {

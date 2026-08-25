@@ -38,6 +38,7 @@ import {
   claimStoreUnavailableWarning,
   openGatewayOrNull,
   storeUnavailableMessage,
+  warnIfStoreRedirected,
 } from './store-health.ts';
 
 async function main(): Promise<unknown> {
@@ -63,6 +64,9 @@ async function main(): Promise<unknown> {
   if (pointerDeny) return pointerDeny;
 
   const config = loadConfig();
+  // A symlinked store path redirects the corpus without failing anything;
+  // say so once per session (stderr, so the stdout contract is untouched).
+  warnIfStoreRedirected(config, getString(input, 'conversationId'));
   const gateway = openGatewayOrNull(config);
   if (gateway === null) {
     // Nothing is scanned or recorded with no store. PreToolUse has no message

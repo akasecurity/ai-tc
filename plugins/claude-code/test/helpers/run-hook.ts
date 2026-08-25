@@ -12,7 +12,7 @@
  * never produce. Callers who want valid input build it themselves, e.g.
  * `runHook('session-start', JSON.stringify({ session_id: 'x' }))`.
  */
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -59,26 +59,38 @@ export function runHook(name: string, stdin: string, options: RunHookOptions = {
     );
   }
 
-  try {
-    const stdout = execFileSync(process.execPath, [scriptPath, ...(options.args ?? [])], {
-      input: stdin,
-      encoding: 'utf8',
-      timeout: options.timeoutMs ?? 15_000,
-      env: { ...HOST_ENV, ...options.env },
-      maxBuffer: 64 * 1024 * 1024,
-    });
-    return { status: 0, stdout, stderr: '' };
-  } catch (err) {
-    // A non-zero exit (or a killed/timed-out process) still carries the
-    // captured streams; surface them so a test can assert against the real
-    // output instead of a bare throw.
-    const e = err as { stdout?: string; stderr?: string; status?: number | null };
-    return {
-      status: e.status ?? 1,
-      stdout: e.stdout ?? '',
-      stderr: e.stderr ?? '',
-    };
+  // spawnSync rather than execFileSync: execFileSync returns stdout ALONE and
+  // lets the child's stderr through to the parent, so a hook that exits 0 while
+  // writing a warning read as having written nothing. Every absence assertion
+  // over `stderr` on a success path was therefore vacuous, and the once-per-
+  // session store-redirect warning could not be asserted at all. spawnSync
+  // captures both streams on every path and never throws on a non-zero exit.
+  const result = spawnSync(process.execPath, [scriptPath, ...(options.args ?? [])], {
+    input: stdin,
+    encoding: 'utf8',
+    timeout: options.timeoutMs ?? 15_000,
+    env: { ...HOST_ENV, ...options.env },
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  // `encoding` types both streams as string, but a child that never STARTED
+  // fills neither, so the runtime shape is wider than the declared one.
+  const { error, status, stdout, stderr } = result as unknown as {
+    error?: Error;
+    status: number | null;
+    stdout: string | null;
+    stderr: string | null;
+  };
+  // A timeout or a maxBuffer overrun sets `error` while still carrying
+  // everything captured before the kill — surface it, the way the execFileSync
+  // catch this replaced did, so a test asserts against the hook's real partial
+  // output instead of ''. Only a child that produced NOTHING reports the error
+  // text itself, which is the absent-hook case.
+  if (error && stdout === null && stderr === null) {
+    return { status: 1, stdout: '', stderr: error.message };
   }
+  // A killed or timed-out child reports status null with a signal; treat that as
+  // a failure rather than as a silent 0, which is what `?? 1` is doing here.
+  return { status: status ?? 1, stdout: stdout ?? '', stderr: stderr ?? '' };
 }
 
 // An isolated ~/.aka + ~/.claude for one runHook() call: os.homedir() — which

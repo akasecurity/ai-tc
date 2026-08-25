@@ -222,10 +222,40 @@ export async function send(options: SendOptions): Promise<RemoteResponse> {
     // timer whose only job is to bound a request already being awaited.
     deadline.unref();
 
-    const clearDeadline = (): void => {
+    // A response that is not a RESPONSE. Node routes a 101 to 'upgrade', so the
+    // response callback above never runs — and an upgrade is not something this
+    // client asked for or could read. Refused explicitly, and the detached
+    // socket destroyed, because nothing else owns it once it has left the
+    // request.
+    //
+    // There is deliberately no 'connect' sibling. Node dispatches that event
+    // only when the REQUEST method was CONNECT, and the six routes are GET and
+    // POST — so a handler for it could never run, and an unreachable line reads
+    // as a covered case while proving nothing. The 'close' backstop below is
+    // the general answer, and it covers that shape too.
+    req.on('upgrade', (_res, socket: { destroy: () => void }) => {
+      fail('the deployment answered with a protocol upgrade');
+      socket.destroy();
+    });
+
+    req.on('close', () => {
+      // SETTLE FIRST, THEN clear. Clearing unconditionally is what made the
+      // upgrade case hang forever rather than merely fail: the deadline was the
+      // last thing that would have rejected this promise, and 'close' removed
+      // it. A request that closed without settling has failed by definition.
+      //
+      // Read this as a BACKSTOP, not as a proven path. The suite does not
+      // exercise it on its own — every close it reaches has already settled via
+      // the response callback, the 'error' handler or the upgrade refusal, so
+      // this `fail` is a no-op in all of them and removing it reds nothing.
+      // It is kept because the alternative is not "one uncovered line" but the
+      // original defect: with the clear unconditional, ANY path that reaches
+      // neither the response callback nor an 'error' takes the deadline away
+      // and hangs for ever. Converting that class into a rejection costs a line
+      // and needs no advance knowledge of which path it was.
+      fail('the connection closed before a response was read');
       clearTimeout(deadline);
-    };
-    req.on('close', clearDeadline);
+    });
     req.on('error', (err: Error) => {
       fail(err.message);
     });

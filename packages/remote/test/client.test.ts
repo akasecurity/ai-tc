@@ -34,6 +34,28 @@ const bundle = {
 
 const json = (payload: unknown) => JSON.stringify(payload);
 
+/**
+ * Fail rather than hang when a promise that should settle does not.
+ *
+ * A bare `await` on a never-settling promise is reported by vitest as a test
+ * timeout, which reads as a slow runner rather than as the property that broke.
+ */
+async function withDeadline(promise: Promise<void>, ms: number, message: string): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(message));
+        }, ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 describe('the credential on the wire', () => {
   const server = useLoopbackServer();
 
@@ -185,6 +207,63 @@ describe('bounds', () => {
 
     expect(error).toBeInstanceOf(RemoteTransportError);
     expect(error?.message).toContain('150ms');
+  });
+
+  it('gives up on a protocol upgrade, and drops the socket it detached', async () => {
+    // A response that is not a RESPONSE. Node routes a 101 to 'upgrade', so the
+    // response callback never runs — and the request then emits 'close', which
+    // used to CLEAR the deadline. The deadline was the last thing that would
+    // have rejected this promise, so the result was not a slow request but a
+    // permanently pending one, inside a hook process the host will eventually
+    // kill.
+    //
+    // Two mechanisms answer that now and they are NOT interchangeable, which is
+    // why both halves are asserted below. The 'close' backstop settles the
+    // promise and would do so here on its own — so a test reading only "it
+    // rejected" passes with the upgrade handler deleted. What only the upgrade
+    // handler does is name the cause and DESTROY the detached socket: once the
+    // socket has left the request, nothing else owns it, and settling the
+    // promise does not close it.
+    const client = createRemoteClient({
+      endpoint: server.origin,
+      apiKey: API_KEY,
+      timeoutMs: 30_000,
+    });
+    // Assigned synchronously by the executor below, before any handler runs.
+    let socketClosed!: () => void;
+    const serverSawClose = new Promise<void>((resolve) => {
+      socketClosed = resolve;
+    });
+    server.reply((_req, res) => {
+      res.socket?.on('close', socketClosed);
+      // Written on the raw socket: `writeHead` cannot express the upgrade
+      // semantics Node's client dispatches on.
+      res.socket?.write(
+        'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n',
+      );
+    });
+
+    const started = process.hrtime.bigint();
+    const error = await client.whoami().then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+
+    expect(error).toBeInstanceOf(RemoteTransportError);
+    // The CAUSE, not merely a rejection: this is what separates the upgrade
+    // handler from the generic backstop, which would otherwise cover for its
+    // deletion.
+    expect(error?.message).toContain('upgrade');
+    // Settled by refusing, NOT by waiting out the 30s deadline — the difference
+    // between refusing and merely surviving. Three orders of magnitude apart,
+    // so this reads the property rather than the runner's speed.
+    expect(elapsedMs).toBeLessThan(5_000);
+
+    // And the socket really is gone. Without the explicit destroy this hangs
+    // until the suite's own teardown calls closeAllConnections, which is the
+    // leak the handler exists to prevent.
+    await withDeadline(serverSawClose, 5_000, 'the upgraded socket was never closed');
   });
 
   it('refuses a response larger than the cap instead of buffering it', async () => {

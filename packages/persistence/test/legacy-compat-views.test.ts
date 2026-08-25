@@ -29,6 +29,7 @@ import {
   backupBeforeLegacyDrop,
   LEGACY_BACKFILL_MAX_ROWS_PER_CALL,
   legacyDropWouldDestroyRows,
+  legacyRowMark,
 } from '../src/migrations.ts';
 import { DB_FILENAME } from '../src/paths.ts';
 import { readOnlyStore } from './helpers/fault-injection.ts';
@@ -853,6 +854,58 @@ describe('the pre-drop snapshot is taken only when the drop would destroy rows',
         expect(legacyDropWouldDestroyRows(db)).toBe(true);
 
         db.exec('DROP TABLE events');
+        expect(legacyDropWouldDestroyRows(db)).toBe(true);
+      } finally {
+        db.close();
+      }
+    });
+
+    /**
+     * The MARK half of that same read, which is what the recheck under the
+     * write lock compares. A row arriving after the decision has to move it —
+     * including on a store that was already non-empty, which is the window a
+     * "does it hold rows" re-read cannot see, since the backfill copies without
+     * deleting and such a store reads non-empty either way.
+     */
+    it('moves when a legacy row arrives, and holds still when nothing changes', () => {
+      const file = seedPreCutoverFile();
+      const db = new DatabaseSync(file);
+      db.exec('PRAGMA foreign_keys = ON');
+      try {
+        const empty = legacyRowMark(db);
+        expect(legacyRowMark(db)).toBe(empty); // stable across a re-read
+
+        insertLegacyEvent(db, 'ev-1', 1_000, null);
+        const oneEvent = legacyRowMark(db);
+        expect(oneEvent).not.toBe(empty);
+
+        // The case the mark exists for: already non-empty, and one more row
+        // still moves it. `legacyDropWouldDestroyRows` reads true on both sides
+        // here, so only the mark can tell them apart.
+        insertLegacyEvent(db, 'ev-2', 2_000, null);
+        expect(legacyRowMark(db)).not.toBe(oneEvent);
+        expect(legacyDropWouldDestroyRows(db)).toBe(true);
+
+        // …and the other table counts too.
+        const beforeFinding = legacyRowMark(db);
+        insertLegacyFinding(db, 'f-1', 'ev-1');
+        expect(legacyRowMark(db)).not.toBe(beforeFinding);
+      } finally {
+        db.close();
+      }
+    });
+
+    it('marks an unreadable table as equal to itself, never as a value that cannot match', () => {
+      const file = seedPreCutoverFile();
+      const db = new DatabaseSync(file);
+      db.exec('PRAGMA foreign_keys = ON');
+      try {
+        db.exec('DROP TABLE findings');
+        db.exec('DROP TABLE events');
+        // A sentinel that never compares equal would defer the drop for ever on
+        // a store in this shape — the failure the fail-safe must not create
+        // while preventing the other one.
+        expect(legacyRowMark(db)).toBe(legacyRowMark(db));
         expect(legacyDropWouldDestroyRows(db)).toBe(true);
       } finally {
         db.close();

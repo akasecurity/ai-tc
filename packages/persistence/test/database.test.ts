@@ -19,6 +19,7 @@ import { describe, expect, it } from 'vitest';
 import { schemaObjectExists } from '../src/db/migrations/introspection.ts';
 import { captureId } from '../src/ids.ts';
 import { backupBeforeLegacyDrop } from '../src/migrations.ts';
+import { DB_FILENAME } from '../src/paths.ts';
 import { descriptorProbe } from './helpers/descriptors.ts';
 import { corruptStore } from './helpers/fault-injection.ts';
 import { useTempStore } from './helpers/temp-store.ts';
@@ -348,21 +349,23 @@ describe('openLocalDatabase sweeps abandoned snapshot staging', () => {
    * path's own reap.
    */
   function migratedStore(): void {
-    store.open();
+    // BOTH handles are closed, and that is the whole reason the close is here.
+    // SQLite removes `-wal`/`-shm` only when the LAST connection goes, so
+    // leaving either open puts the sidecars in the tree for every case below —
+    // closing only the probe while `open()` stayed live changed nothing at all
+    // and the comment that claimed otherwise was simply false. With both shut
+    // the data dir really does settle to `aka.db`, which is what lets a case
+    // here read the listing without a sidecar it cannot explain.
+    store.open().close();
     // The post-drop state itself, rather than the ledger row recording it:
     // `events` is a compatibility VIEW only once the legacy drop has run.
-    //
-    // Closed straight away rather than left to teardown: SQLite checkpoints
-    // only when the LAST connection closes, so a probe held open here would
-    // leave `-wal`/`-shm` beside the store for every case below — a difference
-    // none of them reads today, and one that would confuse the first that did.
     const raw = store.openRaw();
     try {
       expect(schemaObjectExists(raw, 'view', 'events')).toBe(true);
     } finally {
       raw.close();
     }
-    expect(readdirSync(store.dataDir).some((name) => name.endsWith('.bak'))).toBe(false);
+    expect(readdirSync(store.dataDir).sort()).toEqual([DB_FILENAME]);
   }
 
   // A staging area exactly as a killed process leaves one: the directory, and

@@ -375,7 +375,13 @@ export function readOnlyStore(file: string, opts: ReadOnlyStoreOptions = {}): Re
       // 0600, and a 0640 db would otherwise mint sidecars at a mode
       // `tightenPerms` can never produce while the self-test asserts the
       // constant.
-      for (const sidecar of dbSidecars(file)) {
+      // Not under `dirOnly`: that mode tightens nothing but the directory, so
+      // the store keeps its own permission throughout and SQLite never mints a
+      // sidecar at 0400 — the only state this loop exists for. Without the
+      // guard `original` holds no sidecar, the skip below never fires, and
+      // every PRE-EXISTING sidecar is chmod'd to a mode the injector never set,
+      // which is the opposite of what `dirOnly` promises.
+      for (const sidecar of opts.dirOnly === true ? [] : dbSidecars(file)) {
         if (original.has(sidecar) || !existsSync(sidecar)) continue;
         try {
           chmodSync(sidecar, DATA_FILE_MODE);

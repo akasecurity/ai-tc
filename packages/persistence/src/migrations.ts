@@ -230,39 +230,80 @@ export function applyMigrations(db: DatabaseSync, file?: string): void {
   }
 }
 
-// Whether the legacy-table drop has any row to destroy — the only question the
-// pre-drop snapshot exists to answer. Migration 0014 drops two indexes and the
-// `events`/`findings` tables and then creates views; an index carries no data
-// and the views only add, so the rows in those two tables are exactly what the
-// irreversible half can take. Both empty and the copy protects nothing.
+// What the legacy tables hold right now: whether the drop would destroy a row,
+// and a MARK identifying the state that answer was read from.
 //
-// That is not a rare case, it is EVERY install: the earlier migrations build
-// both tables empty on a store this same open created, the backfill drains them
-// trivially, and the snapshot then wrote a byte-for-byte copy of a
-// freshly-built schema — about half a megabyte, roughly half the bytes in a new
+// Migration 0014 drops two indexes and the `events`/`findings` tables and then
+// creates views; an index carries no data and the views only add, so the rows in
+// those two tables are exactly what the irreversible half can take. Both empty
+// and the copy protects nothing — which is not a rare case but EVERY install:
+// the earlier migrations build both tables empty on a store this same open
+// created, the backfill drains them trivially, and the snapshot then wrote a
+// byte-for-byte copy of a freshly-built schema, about half the bytes in a new
 // data dir, on the first open of every new machine.
 //
-// Read from the STORE, never from an argument: `applyLegacyDropMigration` gains
-// no parameter for this, so nothing outside can talk the drop out of a backup
-// it owes. The backfill COPIES rather than deletes, so a store that genuinely
-// carries pre-cutover history still holds its rows here, at the instant the
-// decision is made.
+// The two come back TOGETHER because a decision and the state it was made
+// against must not be separately re-read: `applyLegacyDropMigration` keeps the
+// mark it decided on and compares it under the write lock, and two independent
+// reads could disagree about what was seen.
 //
-// FAILS SAFE in one direction only. A probe that throws — a table already
-// dropped out of band, a locked store, a corrupt page — reports "at risk",
-// because skipping a backup on the strength of a probe that never ran is the
-// outcome the deferral below exists to prevent. `LIMIT 1` visits no row on the
-// empty table this exists for, so the probe costs nothing on the path it
-// protects.
-export function legacyDropWouldDestroyRows(db: DatabaseSync): boolean {
+// The mark pairs a COUNT with the highest rowid, per table. A count alone cannot
+// see an insert that follows a delete; a max alone cannot see the same rowid
+// reused. Neither table is WITHOUT ROWID, so both are always available.
+//
+// Read from the STORE, never from an argument: `applyLegacyDropMigration` gains
+// no parameter for this, so nothing outside can talk the drop out of a backup it
+// owes. The backfill COPIES rather than deletes, so a store that genuinely
+// carries pre-cutover history still reads non-empty here.
+//
+// FAILS SAFE in one direction only. A table that cannot be read reports "at
+// risk", because skipping a backup on the strength of a probe that never ran is
+// the outcome the deferral exists to prevent. It marks as `unreadable` rather
+// than as a sentinel that never matches, so an unreadable table compares EQUAL
+// to itself and cannot wedge the drop for ever. (That path is unreachable from
+// the product today: `runLegacyHistoryBackfill` prepares against both tables
+// first and reports not-drained on a throw, so the drop is never attempted. It
+// is kept because the guarantee should not rest on that ordering.)
+interface LegacyTableState {
+  /** Whether either legacy table holds a row the drop would destroy. */
+  readonly holdsRows: boolean;
+  /** Identifies the state above, for comparison under the write lock. */
+  readonly mark: string;
+}
+
+function readLegacyTables(db: DatabaseSync): LegacyTableState {
+  let holdsRows = false;
+  const marks: string[] = [];
   for (const table of ['events', 'findings'] as const) {
     try {
-      if (db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get() !== undefined) return true;
+      const row = db
+        .prepare(`SELECT count(*) AS n, ifnull(max(rowid), -1) AS hi FROM ${table}`)
+        .get() as { n: number; hi: number } | undefined;
+      // An aggregate always returns exactly one row, so `undefined` is a store
+      // shape nothing here understands — treated as unreadable, not as empty.
+      if (row === undefined) {
+        holdsRows = true;
+        marks.push(`${table}:unreadable`);
+        continue;
+      }
+      if (row.n > 0) holdsRows = true;
+      marks.push(`${table}:${String(row.n)}:${String(row.hi)}`);
     } catch {
-      return true;
+      holdsRows = true;
+      marks.push(`${table}:unreadable`);
     }
   }
-  return false;
+  return { holdsRows, mark: marks.join('|') };
+}
+
+/** Whether dropping the legacy tables would destroy a row. */
+export function legacyDropWouldDestroyRows(db: DatabaseSync): boolean {
+  return readLegacyTables(db).holdsRows;
+}
+
+/** The mark half of the same read — see readLegacyTables. */
+export function legacyRowMark(db: DatabaseSync): string {
+  return readLegacyTables(db).mark;
 }
 
 // Runs the legacy-drop migration's own DDL (dropping `events`/`findings` and
@@ -280,14 +321,15 @@ export function applyLegacyDropMigration(db: DatabaseSync, file: string | undefi
   // Should not happen in a released build (schema and persistence version
   // together), but a missing migration must never crash an open.
   if (!migration) return;
-  // Whether a copy was actually published, which the recheck under the write
-  // lock below needs — "we decided none was owed" and "one was taken" are
-  // different states and only the first can go stale.
-  let backedUp = false;
-  if (file && legacyDropWouldDestroyRows(db)) {
+  // Read ONCE, before the snapshot, and kept: this is both the backup decision
+  // and the baseline the recheck under the write lock compares against. Reading
+  // it before rather than after the copy is deliberate and conservative — a row
+  // written during the copy is not in it, so it reads as a change and defers,
+  // where reading afterwards would count that row as already captured.
+  const before = file === undefined ? undefined : readLegacyTables(db);
+  if (file !== undefined && before?.holdsRows === true) {
     try {
       backupBeforeLegacyDrop(db, file);
-      backedUp = true;
     } catch (error) {
       akaWarn(`legacy events/findings backup failed; deferring the drop: ${String(error)}`);
       return;
@@ -314,29 +356,29 @@ export function applyLegacyDropMigration(db: DatabaseSync, file: string | undefi
           .prepare('SELECT 1 FROM migration_ledger WHERE tag = ?')
           .get(migration.tag);
         if (alreadyDropped) return;
-        // The skip decision was read BEFORE this lock, and the store is shared
-        // with binaries that predate the cutover — copyLegacyEvents' own note
-        // is that one can still write an `events` row after 0013 ran. Such a
-        // write landing between that probe and this BEGIN IMMEDIATE would be
-        // dropped below with no copy anywhere, which is the one outcome the
-        // deferral above exists to prevent. Nothing else can write while this
-        // lock is held, so re-reading here is the point at which the answer
-        // stops being able to go stale. Only a SKIPPED copy is rechecked: one
-        // that was taken already holds whatever stood before it, and re-taking
-        // it every time would put the snapshot back on the fresh-store path.
+        // The decision above was read BEFORE this lock, and the store is shared
+        // with binaries that predate the cutover — copyLegacyEvents' own note is
+        // that one can still write an `events` row after 0013 ran. Nothing else
+        // can write while this lock is held, so comparing here is the point at
+        // which the answer stops being able to go stale.
         //
-        // This also re-covers the case the `return` in the backup catch above
-        // already handles — a snapshot that was owed and FAILED arrives here
-        // with `backedUp` false and rows still present, so it defers twice
-        // over. Neither is dead: that return declines the write lock instead of
-        // taking one to do nothing, and this is the only guard that sees a row
-        // written after the decision. Removing EITHER alone leaves the suite
-        // green, so read them as one property with two enforcement points
-        // rather than as a guard and a duplicate.
-        if (!backedUp && file !== undefined && legacyDropWouldDestroyRows(db)) {
+        // It compares the MARK rather than re-asking whether rows exist, and
+        // that is what makes one predicate cover both polarities. A store that
+        // skipped the copy defers if a row appeared. A store that TOOK one
+        // defers if a row appeared during the copy — the longer window of the
+        // two, since `VACUUM INTO` over real history is seconds of wall clock,
+        // and such a row is in neither the snapshot (which predates it) nor
+        // `audit_events` (the backfill already ran), so the drop would destroy
+        // it outright. Re-asking "does it hold rows" instead would defer every
+        // populated store for ever, because the backfill copies without deleting
+        // and they still read non-empty here.
+        //
+        // Deferring is always safe: the drop stays pending, and the next open
+        // backfills whatever arrived and re-decides from there.
+        if (before !== undefined && readLegacyTables(db).mark !== before.mark) {
           akaWarn(
-            'legacy events/findings rows appeared after the pre-drop snapshot was judged ' +
-              'unnecessary; deferring the drop so the next open can copy them first.',
+            'legacy events/findings rows changed after the pre-drop snapshot decision; ' +
+              'deferring the drop so the next open can copy them first.',
           );
           return;
         }

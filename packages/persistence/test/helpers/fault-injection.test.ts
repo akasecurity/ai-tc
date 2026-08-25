@@ -1,4 +1,4 @@
-import { existsSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -375,6 +375,47 @@ describe('readOnlyStore', () => {
       expect(() => {
         openLocalDatabase(store.dataDir).close();
       }).not.toThrow();
+    });
+  });
+
+  /**
+   * The other side of that rescue loop, and the reason it needs a bound.
+   *
+   * It skips a sidecar only when `original` already holds one, and `dirOnly`
+   * records nothing but the directory — so unbounded it chmods every
+   * PRE-EXISTING sidecar to DATA_FILE_MODE, a change the injector never made and
+   * the option's own doc says it does not make. The loop exists for sidecars
+   * SQLite minted at 0400 WHILE the store was read-only, which is a state
+   * `dirOnly` cannot produce: the store keeps its own mode throughout.
+   *
+   * The cost is not the mode itself (0600 is still owner-writable) but that a
+   * later `dirOnly` case reading a sidecar mode would be reading one the
+   * injector set, and would pass whatever the product did.
+   */
+  it('dirOnly leaves a pre-existing sidecar mode exactly as it found it', (ctx) => {
+    if (process.platform === 'win32') ctx.skip('chmod is a no-op for the sidecars on Windows');
+    withTempStore((store) => {
+      seedStore(store);
+      // A sidecar the injector never touches, at a mode it would otherwise
+      // overwrite — 0644 is what a WAL store's sidecars land at under a default
+      // umask, and it is distinct from DATA_FILE_MODE so the rewrite is visible.
+      const sidecar = `${store.dbFile}-wal`;
+      writeFileSync(sidecar, '');
+      chmodSync(sidecar, 0o644);
+      const before = statSync(sidecar).mode & 0o777;
+      const storeModeBefore = statSync(store.dbFile).mode & 0o777;
+      // The positive control: a mode already equal to DATA_FILE_MODE would make
+      // the assertion below hold whether or not the loop ran.
+      expect(before).not.toBe(DATA_FILE_MODE);
+
+      const readOnly = readOnlyStore(store.dbFile, { dirOnly: true, onCleanup: store.onCleanup });
+      if (!readOnly.effective) ctx.skip(MODES_IGNORED);
+      // dirOnly's contract: the store itself is not tightened at all.
+      expect(statSync(store.dbFile).mode & 0o777).toBe(storeModeBefore);
+
+      readOnly.restore();
+
+      expect(statSync(sidecar).mode & 0o777).toBe(before);
     });
   });
 });

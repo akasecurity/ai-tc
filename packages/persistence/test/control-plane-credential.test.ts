@@ -1,4 +1,12 @@
-import { chmodSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 import type { AttachedCredential, ControlPlaneConnection } from '@akasecurity/schema';
@@ -14,6 +22,7 @@ import {
   writeControlPlaneCredential,
 } from '../src/control-plane-credential.ts';
 import { DATA_FILE_MODE } from '../src/paths.ts';
+import { applyOnboarding } from '../src/settings.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 
 const ENDPOINT = 'https://aka.example-org.internal';
@@ -260,12 +269,28 @@ describe('the file on disk', () => {
     const raw = readFileSync(controlPlaneCredentialPath(store.settingsDir), 'utf8');
     expect(raw).toContain(API_KEY);
 
-    // …and in no other file the attach path touches. settings.json is the one
-    // that matters: it is rendered by the dashboard and pinned by administrators.
-    const settingsFile = join(store.settingsDir, 'settings.json');
-    const settings = statSync(settingsFile, { throwIfNoEntry: false })
-      ? readFileSync(settingsFile, 'utf8')
-      : '';
-    expect(settings).not.toContain(API_KEY);
+    // …and in no OTHER file the settings dir holds.
+    //
+    // Every sibling is read rather than one named file. The named-file form is
+    // what stood here and it measured nothing: no test in this suite writes
+    // settings.json, so the read fell to its `''` fallback and `not.toContain`
+    // passed against an empty string — green whatever the writer did. Reading
+    // the directory also covers a file a future writer adds without anyone
+    // remembering to name it here.
+    // The positive control: settings.json really is there to be scanned, so an
+    // empty directory cannot satisfy the loop below vacuously.
+    applyOnboarding({ policy: 'warn' }, store.home);
+    const after = readdirSync(store.settingsDir).filter(
+      (name) => name !== ATTACHED_CREDENTIAL_FILENAME,
+    );
+    expect(after).toContain('settings.json');
+
+    for (const name of after) {
+      const file = join(store.settingsDir, name);
+      if (!statSync(file).isFile()) continue;
+      expect(readFileSync(file, 'utf8'), `${name} must not hold the credential`).not.toContain(
+        API_KEY,
+      );
+    }
   });
 });

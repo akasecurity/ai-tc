@@ -4,6 +4,7 @@ import type { ApproveSubmission, BlockedWindow } from '@akasecurity/dashboard-ui
 import {
   ApproveExceptionDialog,
   BlockedLedgerView,
+  blockedRowBlockReason,
   ExceptionsTableView,
   PageHead,
   RotateKeyDialog,
@@ -162,7 +163,11 @@ export function ExceptionsClient({
           }}
           blockedWindow={blockedWindow}
           onBlockedWindowChange={setBlockedWindow}
-          keyState={keyState}
+          // This dashboard serves exactly one store, so its own key state IS
+          // every row's — `blockedRowBlockReason` is that derivation, and it
+          // keeps the machine-local remediation copy on the one host that can
+          // act on it.
+          blockReason={(row) => blockedRowBlockReason(row, keyState)}
         />
       </div>
 

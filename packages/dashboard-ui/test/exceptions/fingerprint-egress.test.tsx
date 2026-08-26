@@ -128,11 +128,33 @@ describe('exceptions views never render the valueFingerprint', () => {
         onApprove={vi.fn()}
         blockedWindow="30m"
         onBlockedWindowChange={vi.fn()}
-        keyState={{ status: 'present', version: blockedRow.keyVersion }}
+        // Approvable, so the row renders its full content — which is what
+        // makes the fingerprint-absence assertion below meaningful.
+        blockReason={() => null}
       />,
     );
     expect(markup).toContain(blockedRow.reference);
     expect(markup).toContain(blockedRow.maskedValue);
+    expectNoFingerprintEcho(markup);
+  });
+
+  it('BlockedLedgerView renders a host-supplied block reason without any fingerprint fragment', () => {
+    // `blockReason` is the one new way arbitrary text reaches this view, and
+    // the case above short-circuits it: `() => null` renders neither the reason
+    // line nor the Approve description tied to it. A host composing that
+    // wording from the store row is precisely how the fingerprint would get
+    // here, so the guard has to see the path rendered rather than beside it.
+    const markup = renderToStaticMarkup(
+      <BlockedLedgerView
+        items={[asBlockedDescriptor(blockedRow)]}
+        onApprove={vi.fn()}
+        blockedWindow="30m"
+        onBlockedWindowChange={vi.fn()}
+        blockReason={() => 'Recorded under an older key.'}
+      />,
+    );
+    expect(markup).toContain(blockedRow.reference);
+    expect(markup).toContain('Recorded under an older key.');
     expectNoFingerprintEcho(markup);
   });
 

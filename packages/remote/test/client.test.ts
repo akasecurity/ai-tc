@@ -396,8 +396,13 @@ describe('the audit-event submission', () => {
 describe('routes', () => {
   const server = useLoopbackServer();
 
-  it('addresses each of the six, and tolerates a trailing slash on the endpoint', async () => {
-    const client = createRemoteClient({ endpoint: `${server.origin}/`, apiKey: API_KEY });
+  it('addresses each of the six, and tolerates trailing slashes on the endpoint', async () => {
+    // SEVERAL slashes, not one. The normalization is a scan rather than a
+    // `replace(/\/+$/, '')` — that regex is quadratic on an all-slash string,
+    // since the engine retries from every position and each attempt walks to the
+    // end — and a single-slash fixture cannot tell the two implementations
+    // apart, so it would go green on a scan that stripped only the last one.
+    const client = createRemoteClient({ endpoint: `${server.origin}///`, apiKey: API_KEY });
     server.reply((req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(

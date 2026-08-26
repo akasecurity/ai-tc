@@ -112,8 +112,26 @@ function parsed<T>(schema: z.ZodType<T>, body: string, route: string): T {
   return result.data;
 }
 
+/**
+ * Drop trailing slashes so a route can be appended without doubling one.
+ *
+ * A scan rather than `replace(/\/+$/, '')`, which is quadratic on a string that
+ * is all slashes: the engine retries `\/+$` from each position and every attempt
+ * walks to the end. The endpoint is not attacker-supplied in the ordinary case —
+ * it comes from `settings.json` or an administrator's managed overlay — but it
+ * crosses a trust boundary this module does not own, and a linear scan costs
+ * nothing to prefer over reasoning about who can write that file.
+ */
+function withoutTrailingSlashes(endpoint: string): string {
+  let end = endpoint.length;
+  while (end > 0 && endpoint.charCodeAt(end - 1) === SLASH) end -= 1;
+  return endpoint.slice(0, end);
+}
+
+const SLASH = '/'.charCodeAt(0);
+
 export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
-  const base = options.endpoint.replace(/\/+$/, '');
+  const base = withoutTrailingSlashes(options.endpoint);
   const url = (route: string): string => `${base}${route}`;
   const common = { apiKey: options.apiKey, timeoutMs: options.timeoutMs };
 

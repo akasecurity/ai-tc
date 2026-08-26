@@ -82,9 +82,15 @@ importers:
       '@akasecurity/plugin-browser-extension':
         specifier: workspace:*
         version: link:../plugins/browser-extension
+      '@akasecurity/plugin-runtime':
+        specifier: workspace:*
+        version: link:../packages/plugin-runtime
       '@akasecurity/plugin-sdk':
         specifier: workspace:*
         version: link:../packages/plugin-sdk
+      '@akasecurity/remote':
+        specifier: workspace:*
+        version: link:../packages/remote
       '@akasecurity/schema':
         specifier: workspace:*
         version: link:../packages/schema

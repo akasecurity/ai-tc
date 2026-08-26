@@ -1582,9 +1582,17 @@ covering child processes, and its whole value is a positive control that refuses
 vacuously — which is worthless if nothing exercises it. The same suite drives
 `tools/ci/no-network-test.sh` with a `PATH` of hand-written stubs and pins every
 outcome: probe tooling missing, DNS still resolving, the target still answering, the
-probe reporting itself broken, the probe file gone, started as root, and the one green
-path where the command actually runs. Change a probe and a case fails; delete one and
-the case that covered it fails.
+probe reporting itself broken, the probe file gone, started as root, the privilege
+drop-back not having landed, and the one green path where the command actually runs.
+Change a probe and a case fails; delete one and the case that covered it fails.
+
+The last of those guards the only **silent** outcome on that path, which is why it is
+a control rather than a comment. The script drops back to the unprivileged caller
+because root ignores the 0444 mode `fault-injection.ts` builds a read-only store with,
+so as root the read-only cases in `packages/persistence` report `effective: false` and
+**skip** — a green run that quietly lost them. Refusing to START as root guards only the
+front door; nothing checked that the drop-back actually landed, so a broken `setpriv`
+was invisible. Phase 3 now asserts it.
 
 ### The PATH shim, and why it fails OPEN
 

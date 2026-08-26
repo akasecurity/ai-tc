@@ -96,6 +96,25 @@ fi
 
 # Phase 3: inside the namespace, unprivileged.
 #
+# THE PRIVILEGE CONTROL, which is the other half of the positive control below
+# and guards a quieter failure. Phase 2 drops back to the caller because root
+# ignores the 0444 mode `fault-injection.ts` builds a read-only store with, so
+# the read-only cases in packages/persistence would report `effective: false`
+# and SKIP. A skip is not a failure: the suite would still report green, with
+# those cases silently uncovered. That hazard is why this script refuses to
+# START as root — but the refusal only guards the front door. Nothing checked
+# that the drop-back actually landed, so a `setpriv` that stopped working, or a
+# future edit to phase 2, would be invisible: green run, quieter suite, no
+# signal anywhere. Assert it instead of assuming it. Cheap, and it converts the
+# one silent failure on this path into a loud one.
+if [ "$(id -u)" -eq 0 ]; then
+  echo "no-network: FAILED — still root at the point the command runs, so the" >&2
+  echo "no-network: privilege drop-back did not happen. The read-only-store cases" >&2
+  echo "no-network: in packages/persistence would report 'effective: false' and" >&2
+  echo "no-network: skip, and the run would report green having quietly lost them." >&2
+  exit 1
+fi
+
 # The positive control. An empty network stack and a broken command look
 # identical from a green run, so prove the block is real before trusting the
 # result — the same reason the fault injectors in packages/persistence refuse to

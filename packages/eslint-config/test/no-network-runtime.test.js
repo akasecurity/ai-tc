@@ -757,6 +757,33 @@ describe('the CI script refuses to run vacuously', { timeout: CI_SCRIPT_TIMEOUT_
     expect(run.status).not.toBe(127);
   });
 
+  it('refuses when the privilege drop-back did not land', (ctx) => {
+    requirePosixShell(ctx);
+    // The sibling of the case above, and the half that was missing. That one
+    // covers the FRONT door — started as root, there is no unprivileged
+    // identity to drop back to. This one covers the drop-back having silently
+    // failed to happen: phase 2's `setpriv` broke, or a future edit skipped it,
+    // and the command is about to run as root anyway.
+    //
+    // Why it matters more than it looks. Root ignores the 0444 mode
+    // `fault-injection.ts` builds a read-only store with, so the read-only
+    // cases in packages/persistence report `effective: false` and SKIP. A skip
+    // is not a failure — the job stays GREEN while quietly losing them. That is
+    // the one silent outcome on this path, and nothing asserted against it.
+    //
+    // The phase markers stay SET, which is what distinguishes this from the
+    // front-door case: both phases are already behind us, so the script is at
+    // the point of handing over. Exit 1 (a control failed) rather than 2 (bad
+    // invocation) for the same reason.
+    const run = runCiScript({ stubs: { ...blockedStubs(), id: prints('0') } });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('privilege drop-back did not happen');
+    // It must refuse BEFORE handing over, or the suite runs as root anyway and
+    // the message is just a log line. Both spellings, per the constants above.
+    expect(run.stdout).not.toContain(MARKER);
+    expect(run.stdout).not.toContain(RAN);
+  });
+
   it('refuses with no command to run', (ctx) => {
     requirePosixShell(ctx);
     const run = runCiScript({ stubs: blockedStubs(), args: [] });

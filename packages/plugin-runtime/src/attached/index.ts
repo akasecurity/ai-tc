@@ -7,6 +7,8 @@
 // of it and behaves exactly as it did before this existed.
 export type { ControlPlaneFailure } from './failure.ts';
 export { classifyFailure } from './failure.ts';
+export type { ForwardDrops } from './forward-drops.ts';
+export { FORWARD_DROPS_FILENAME, readForwardDrops, recordForwardDrops } from './forward-drops.ts';
 export type { ForwardPolicy, ForwardResult } from './forward-policy.ts';
 export {
   createForwardPolicy,

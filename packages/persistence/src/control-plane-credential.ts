@@ -102,6 +102,23 @@ export type CredentialState =
  * anywhere at all, and following one would read a credential out of a location
  * this module never chose.
  *
+ * THAT SYMLINK REFUSAL IS POINT-IN-TIME, and the docblock used to imply
+ * otherwise. Two syscalls after it follow links — the `chmodSync` below and the
+ * `readFileSync` at the call site — so a symlink swapped in after this returns
+ * is followed by both. Closing it properly needs an `openSync(O_NOFOLLOW)` whose
+ * fd carries every later operation, which POSIX supports and Windows does not,
+ * so the module would hold two shapes for one file. It is not closed because the
+ * precondition is already stronger than the race: the credential sits in a 0700
+ * settings dir, so an attacker who can win this window can also just replace the
+ * file outright and skip the symlink. `paths.ts` states the same limit about the
+ * same shape; keep the two sayings in step.
+ *
+ * ABSENCE IS ONE OF THE ANSWERS, not a refusal. The caller used to `lstat` the
+ * path itself and then call this, which decided existence TWICE — and a
+ * concurrent `aka detach` landing between the two made this return "refuse",
+ * reported to the user as `untrusted-file`: a planted-credential accusation for
+ * an ordinary, legitimate detach. One stat, three answers.
+ *
  * ON WINDOWS NEITHER HALF RUNS, and the docblock used to claim the ownership
  * check still did. It does not: `process.getuid` is undefined there, so the uid
  * comparison is skipped along with the mode repair, and the only refusal left
@@ -110,17 +127,20 @@ export type CredentialState =
  * a real check would need an owner-SID lookup rather than a uid, and is not
  * something a POSIX comparison can stand in for.
  */
-function repairOrRefuseMode(file: string): boolean {
+type CredentialGate = 'ok' | 'absent' | 'untrusted';
+
+function repairOrRefuseMode(file: string): CredentialGate {
   const link = lstatSync(file, { throwIfNoEntry: false });
-  if (link === undefined) return false;
-  if (link.isSymbolicLink()) return false;
+  if (link === undefined) return 'absent';
+  if (link.isSymbolicLink()) return 'untrusted';
 
   const stat = statSync(file, { throwIfNoEntry: false });
-  if (stat === undefined) return false;
+  // Gone between the two stats — a detach landing mid-read, not a refusal.
+  if (stat === undefined) return 'absent';
 
   // `process.getuid` is absent on Windows; there is nothing to compare there.
   const uid = process.getuid?.();
-  if (uid !== undefined && stat.uid !== uid) return false;
+  if (uid !== undefined && stat.uid !== uid) return 'untrusted';
 
   if (process.platform !== 'win32' && (stat.mode & 0o777) !== DATA_FILE_MODE) {
     try {
@@ -128,10 +148,10 @@ function repairOrRefuseMode(file: string): boolean {
     } catch {
       // Could not tighten a file this user owns — refuse rather than read a
       // world-readable credential and treat it as private.
-      return false;
+      return 'untrusted';
     }
   }
-  return true;
+  return 'ok';
 }
 
 /**
@@ -163,14 +183,17 @@ export function readControlPlaneCredentialState(
   const file = controlPlaneCredentialPath(settingsDir);
 
   let raw: string;
+  const gate = repairOrRefuseMode(file);
+  if (gate === 'absent') return { usable: false, reason: 'absent' };
+  if (gate === 'untrusted') return { usable: false, reason: 'untrusted-file' };
   try {
-    if (lstatSync(file, { throwIfNoEntry: false }) === undefined) {
-      return { usable: false, reason: 'absent' };
-    }
-    if (!repairOrRefuseMode(file)) return { usable: false, reason: 'untrusted-file' };
     raw = readFileSync(file, 'utf8');
-  } catch {
-    return { usable: false, reason: 'unreadable' };
+  } catch (err) {
+    // ENOENT is the same detach race one syscall later: the file passed the gate
+    // and was gone by the read. "Unreadable" would put the machine in a state
+    // that reads as damaged rather than unattached.
+    const code = (err as NodeJS.ErrnoException).code;
+    return { usable: false, reason: code === 'ENOENT' ? 'absent' : 'unreadable' };
   }
 
   let parsed: unknown;

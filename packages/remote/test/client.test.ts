@@ -291,6 +291,64 @@ describe('bounds', () => {
     expect(error?.message).toContain(String(MAX_RESPONSE_BYTES));
   });
 
+  it('keeps the status when it refuses an oversized NON-2xx body', async () => {
+    // The existing oversized case answers 200, so it stays green under a fix
+    // that drops the status entirely — which is exactly the defect. A verbose
+    // 401 is the shape that matters: reported as a bare transport failure it
+    // sends the reader to look at their network instead of their credential.
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      const chunk = 'x'.repeat(64 * 1024);
+      const pump = (): void => {
+        while (res.write(chunk)) {
+          /* until backpressure, then wait for drain */
+        }
+      };
+      res.on('drain', pump);
+      pump();
+    });
+
+    const error = await client.whoami().then(
+      () => undefined,
+      (e: unknown) => e as RemoteTransportError,
+    );
+
+    expect(error).toBeInstanceOf(RemoteTransportError);
+    // Positive control on the reason, so the status assertion cannot pass on
+    // some other rejection that happens to carry one.
+    expect(error?.message).toContain(String(MAX_RESPONSE_BYTES));
+    expect(error?.status).toBe(401);
+  });
+
+  it('picks the TLS transport for an https endpoint, not the plain one', async () => {
+    // Every other case in this file drives the loopback server over plain HTTP,
+    // so `httpsRequest` — the branch EVERY production deployment takes, since
+    // `isSafeEndpoint` restricts `http:` to loopback — was exercised by nothing.
+    //
+    // Pinned at the wire rather than by standing up a TLS server with a
+    // self-signed certificate. The cap, the deadline and the upgrade refusal are
+    // transport-agnostic (they live above the switch), so duplicating them over
+    // TLS would be suite weight rather than coverage; what is NOT proven
+    // elsewhere is the switch itself. A port nothing listens on tells us which
+    // module dialled: node:https fails connecting or negotiating TLS, promptly,
+    // rather than waiting out the deadline.
+    const client = createRemoteClient({
+      endpoint: 'https://127.0.0.1:1',
+      apiKey: API_KEY,
+      timeoutMs: 2_000,
+    });
+
+    const error = await client.whoami().then(
+      () => undefined,
+      (e: unknown) => e as RemoteTransportError,
+    );
+
+    expect(error).toBeInstanceOf(RemoteTransportError);
+    // Not a timeout: the switch resolved and the socket was refused promptly.
+    expect(error?.message).not.toContain('2000ms');
+  });
+
   it('reports a deployment that is not listening', async () => {
     // Port 1 on loopback: reachable by the guard, refused by the kernel.
     const client = createRemoteClient({ endpoint: 'http://127.0.0.1:1', apiKey: API_KEY });

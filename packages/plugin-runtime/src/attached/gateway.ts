@@ -38,6 +38,7 @@ import type {
 } from '@akasecurity/schema';
 import { DEFAULT_ACTIONS } from '@akasecurity/schema';
 
+import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
 import { REQUEST_TIMEOUT_MS, withTimeout } from './with-timeout.ts';
 
@@ -85,6 +86,17 @@ export interface AttachedDataGatewayDeps {
   readCachedBundle: () => Promise<PolicyBundle | null>;
   /** Budgets + the two-level circuit breaker guarding every forward. */
   forward: ForwardPolicy;
+  /**
+   * Where the sibling state files live — the same `~/.aka/data` the breaker and
+   * the sync marker use.
+   *
+   * REQUIRED rather than optional, for the reason the `local` member above is:
+   * an optional one would let a construction site omit it and silently stop
+   * recording batch drops, which is the exact invisibility `forward-drops.ts`
+   * exists to end. A missing dataDir is a compile error at the construction
+   * site instead of a machine that quietly loses events.
+   */
+  dataDir: string;
   // The throttled posture self-report, split into its two phases
   // (posture-reporter.ts). `prepare` is everything LOCAL — throttle, attempt
   // stamp, and the blocking store read; `send` is the bounded network post.
@@ -539,18 +551,30 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
    * has a correct result to return, and a drop is the outcome this path is
    * built to accept (G8) where a blown hook timeout is not.
    *
-   * Serial rather than concurrent on purpose. These are ingest writes from a
-   * hook process, and firing N requests at once would trade a latency problem
-   * for a burst the plane's own per-key rate limiting would answer with the
-   * refusals the breaker then counts.
+   * Serial rather than concurrent on purpose. Firing N requests at once would
+   * trade a latency problem for a burst the plane's own per-key rate limiting
+   * would answer with the refusals the breaker then counts.
+   *
+   * WHAT IS DROPPED IS COUNTED. Every other forward failure ends in
+   * `ForwardPolicy.run`'s catch and moves the breaker's file, which is what
+   * lets status call the forward unhealthy; this path returns BEFORE `run` is
+   * reached, so without the tally in `forward-drops.ts` a slow-but-answering
+   * plane produces no failures, keeps the breaker closed, renders a healthy
+   * block, and discards the tail of every batch indefinitely.
    */
   private async forwardBatch<T>(
     inputs: readonly T[],
     toEvent: (input: T) => AuditEventInput & { inspections?: ToolCallInspection[] },
   ): Promise<void> {
     const deadline = Date.now() + BATCH_FORWARD_BUDGET_MS;
-    for (const input of inputs) {
-      if (Date.now() >= deadline) return;
+    for (let i = 0; i < inputs.length; i += 1) {
+      const now = Date.now();
+      if (now >= deadline) {
+        // The remainder, not one item: everything from here on is discarded.
+        recordForwardDrops(this.deps.dataDir, inputs.length - i, now);
+        return;
+      }
+      const input = inputs[i] as T;
       await this.deps.forward.run(() =>
         this.deps.client.recordAuditEvent(reKeyForForward(toEvent(input), this.remoteInventory)),
       );
@@ -579,6 +603,24 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   // Forwarded as a `config_scan` audit event: there is no dedicated
   // config-scan ingest endpoint, and the audit-event door is the one the
   // control plane already opens for client-minted, idempotent records.
+  //
+  // ONLY `scanEvent` CROSSES, and unlike `recordCapture` the plane cannot
+  // re-derive the rest. A `ConfigScanRecord` is four things committed together
+  // locally — the inventory `items`, this audit event, and the posture
+  // `definitions`/`findings` that reference it — and three of them stay on the
+  // device. Say that plainly rather than let the asymmetry with `recordCapture`
+  // read as the same argument: there, findings are omitted BECAUSE the plane
+  // re-derives them from `Event.content`; here there is no content to re-derive
+  // from, so what is omitted is simply not sent.
+  //
+  // That is the wire contract as it stands rather than an oversight to patch
+  // here. `items` has no route at all, and `RecordAuditEventRequest.inspections`
+  // is documented as tool-call findings — widening it to carry config-scan
+  // findings is an egress change (a posture finding's `maskedMatch` holds the
+  // matched command) and a decision about what an attached deployment is
+  // entitled to, not a bug fix. An attached machine's config posture therefore
+  // reaches the plane as the event only; the dashboard's own view of it is the
+  // local store.
   async recordConfigScan(record: ConfigScanRecord): Promise<void> {
     await this.deps.local.recordConfigScan(record);
     await this.deps.forward.run(() =>
@@ -706,7 +748,30 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     })();
     if (cached === null) return local;
 
-    const rules = [...(local.rules ?? []), ...(cached.rules ?? [])];
+    // ONE RULE PER ID, and LOCAL WINS.
+    //
+    // The two sides can name the same rule — an organization's bundle
+    // re-shipping a pack the machine already installed is ordinary, not an
+    // error — and the concat that stood here kept both copies. What that costs
+    // is not a duplicate finding: `recordCapture` already refuses a second
+    // finding with the same rule, span and masked value, so the ledger is
+    // unaffected. It costs a VAULTED value its recoverability. Two copies of one
+    // rule produce two identical spans on every match, `groupSpans` reads any
+    // overlap as one group and drops the finding from it, and the region is then
+    // destroyed with a one-way `[REDACTED:…]` placeholder instead of being
+    // tokenized into a pointer the user can reveal later. Fail-safe in
+    // direction, silent, and not what Redact & Vault promises.
+    //
+    // Local first is the load-bearing half. With the cache winning, a bundle
+    // naming a known rule id with a matcher that never matches would REPLACE the
+    // detection rather than sit beside it — a remote kill switch for any rule an
+    // organization can name. `mergeRaiseOnly` and the `rulesComplete` path
+    // already refuse that shape; this keeps the third site consistent with them.
+    const byRuleId = new Map<string, NonNullable<PolicyBundle['rules']>[number]>();
+    for (const rule of [...(local.rules ?? []), ...(cached.rules ?? [])]) {
+      if (!byRuleId.has(rule.id)) byRuleId.set(rule.id, rule);
+    }
+    const rules = [...byRuleId.values()];
     return {
       ...local,
       // The remote version identifies the composed bundle for the poller.
@@ -847,15 +912,24 @@ function reKeyForForward<T extends AuditEventInput>(event: T, remote: ResolvedIn
  * Each `forward.run` is bounded on its own, but a loop of them is not: N items
  * against a slow-but-answering plane costs N budgets, and the breaker never
  * helps because it only trips on failures — a plane answering successfully in
- * 600ms produces none. Forty tool calls is ~24s that way, well past the 10s
- * every harness gives a hook, and on a host that reads a timed-out hook as a
- * DENY that is a blocked tool call rather than a slow one.
+ * 600ms produces none. Forty tool calls is ~24s that way.
+ *
+ * NOT a hook deadline, though an earlier version of this comment said so. The
+ * batch path is reached only from the transcript reconcilers, which run in the
+ * DETACHED reconcile child and in `aka backfill` — nothing is blocking on
+ * either. What the ceiling buys is that a slow plane cannot keep a detached
+ * worker alive indefinitely, or hang a backfill; it is not standing between a
+ * user and a tool call.
  *
  * So the batch gets one ceiling and the remainder is dropped when it is spent.
  * That is the same trade the whole forward path already makes (G8: local write
- * first, drops accepted and surfaced in status) applied to the axis that was
- * still unbounded. It is deliberately larger than one item's budget — a batch
- * that fits should complete — and far inside the harness timeout.
+ * first, drops accepted and surfaced in status) — and it is surfaced HERE only
+ * because `forward-drops.ts` counts it; the breaker's file cannot, since this
+ * path never reaches `run`.
+ *
+ * The real ceiling is this plus one item's budget, not this alone: the deadline
+ * is checked BEFORE the await, so the last item admitted can start at
+ * `deadline - 1ms` and run its own `FORWARD_BUDGET_MS`. 3,000 + 1,500 = ~4.5s.
  */
 const BATCH_FORWARD_BUDGET_MS = 3_000;
 

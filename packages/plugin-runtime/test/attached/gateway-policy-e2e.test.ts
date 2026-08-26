@@ -177,6 +177,7 @@ afterEach(() => {
 
 function buildRuntime(localPolicies: Policy[], remotePolicies: Policy[]) {
   const gateway = new AttachedDataGateway({
+    dataDir: dir,
     local: makeLocalStore(bundleOf(localPolicies, 'local', [MARKER_RULE])),
     client: noopClient(),
     readCachedBundle: () => Promise.resolve(bundleOf(remotePolicies, 'tenant')),

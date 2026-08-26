@@ -12,6 +12,7 @@ import {
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import {
+  FORWARD_DROPS_FILENAME,
   FORWARD_STATE_FILENAME,
   renderAttachedStatus,
   renderPolicyLine,
@@ -101,8 +102,30 @@ export function parseAttachArgs(argv: readonly string[]): ParsedArgs | { error: 
       return { error: `unknown option ${String(arg)}` };
     }
   }
+  if (parsed.label !== undefined && CONTROL_CHARS.test(parsed.label)) {
+    return {
+      error:
+        'aka attach does not take a --label containing control characters. The label is printed ' +
+        'into `aka status`, which a user reads to decide whether their machine is managed, and an ' +
+        'escape sequence there can repaint or hide lines of that block.',
+    };
+  }
   return parsed;
 }
+
+/**
+ * Control and format characters, which have no place in a label.
+ *
+ * REFUSED here rather than stripped, because the person who typed it is the
+ * person who can fix it — silently mangling their label would leave them
+ * wondering why `aka status` disagrees with what they wrote. The renderer
+ * strips instead, and that difference is deliberate: a label can also arrive
+ * from an administrator's managed overlay, which the user reading the status
+ * block cannot correct, so the render-time strip is the layer that has to hold
+ * unconditionally. This one keeps the bad value out of `settings.json` at all,
+ * which protects every other reader of that file.
+ */
+const CONTROL_CHARS = /[\p{Cc}\p{Cf}]/u;
 
 const isError = (v: ParsedArgs | { error: string }): v is { error: string } => 'error' in v;
 
@@ -304,15 +327,18 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
 
   io.out(
     had
-      ? 'Detached. This machine records locally only; nothing is sent anywhere.\n'
+      ? 'Detached. This machine records locally only; that deployment is sent nothing.\n'
       : 'This machine was not attached; nothing to do.\n',
   );
 }
 
 /**
  * Everything derived from an attachment: the cached bundle, the recorded sync
- * outcome, and the forward breaker's state. All three are meaningless without
- * one, and all three MISLEAD if they survive it.
+ * outcome, the forward breaker's state, and the count of events the batch budget
+ * discarded. All four are meaningless without one, and all four MISLEAD if they
+ * survive it — the drop tally most legibly, since a freshly attached machine
+ * would otherwise open by reporting events it lost to a deployment it no longer
+ * talks to.
  *
  * The breaker file is the one whose survival is more than cosmetic. Left
  * behind, a re-attach against a healthy plane opens with a stale `openedAtMs`,
@@ -325,7 +351,12 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
  * policy in place is the one outcome this function exists to prevent.
  */
 function clearDerived(dir: string): void {
-  for (const name of [POLICY_CACHE_FILENAME, SYNC_STATE_FILENAME, FORWARD_STATE_FILENAME]) {
+  for (const name of [
+    POLICY_CACHE_FILENAME,
+    SYNC_STATE_FILENAME,
+    FORWARD_STATE_FILENAME,
+    FORWARD_DROPS_FILENAME,
+  ]) {
     rmSync(join(dir, name), { force: true });
   }
 }

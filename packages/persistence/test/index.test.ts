@@ -60,6 +60,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'computeFindingKey',
   'controlPlaneCredentialPath',
   'createKeyProvider',
+  'createOwnerOnlyFileSync',
   'dataDir',
   'dbPath',
   'dbSidecars',

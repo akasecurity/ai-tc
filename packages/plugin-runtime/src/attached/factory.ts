@@ -61,13 +61,31 @@ export function resolveGatewayForConfig(
     // and the one signal that detects a wipe would be the thing it destroys.
     const postureStore = createPostureStore(config.settingsDir, config.dataDir);
 
+    // Held in a local so the posture reporter can share the SAME breaker the
+    // gateway's writes use. Two policies over one dataDir would each keep their
+    // own view of a plane that is either up or down for both.
+    const forward = createForwardPolicy({ dir: config.dataDir });
+
     return new AttachedDataGateway({
       local,
       client,
+      dataDir: config.dataDir,
       readCachedBundle: () => store.read().then((cached) => cached?.bundle ?? null),
-      forward: createForwardPolicy({ dir: config.dataDir }),
+      forward,
       posture: createPostureReporter({
-        report: (snapshot) => client.reportStorePosture(snapshot),
+        // THROUGH THE BREAKER, and wrapped HERE rather than around
+        // `PostureReporter.send`. The reporter swallows every error by
+        // contract, so a wrap outside it would hand `forward.run` a resolved
+        // promise for a send that failed — recording a SUCCESS, clearing
+        // `consecutiveFailures` and `lastFailure`, and telling `aka status` the
+        // forward recovered when nothing did. Wrapping the raw client call puts
+        // the breaker above the swallow, where it can see the truth.
+        //
+        // What it buys: once the breaker is open — the plane already confirmed
+        // down by the gateway's own writes — this stops paying a request
+        // timeout per throttle interval to re-learn it.
+        report: (snapshot) =>
+          forward.run(() => client.reportStorePosture(snapshot)).then(() => undefined),
         store: postureStore,
         readStore: () => readStorePosture(config.dbPath),
         hostname: () => hostname(),

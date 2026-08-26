@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import type { DataGateway, LocalStoreMaintenance } from '@akasecurity/plugin-sdk';
 import { hasLocalStoreMaintenance } from '@akasecurity/plugin-sdk';
 import type {
@@ -7,9 +11,11 @@ import type {
   Policy,
   PolicyBundle,
   RecordProjectEgressInput,
+  ToolCallInput,
 } from '@akasecurity/schema';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { readForwardDrops } from '../../src/attached/forward-drops.ts';
 import type { ForwardPolicy, ForwardResult } from '../../src/attached/forward-policy.ts';
 import type { AttachedClient, AttachedDataGatewayDeps } from '../../src/attached/gateway.ts';
 import { AttachedDataGateway } from '../../src/attached/gateway.ts';
@@ -218,18 +224,32 @@ const egressInput = (): RecordProjectEgressInput => ({
   hits: [],
 });
 
+/**
+ * A real directory per test, because the gateway now WRITES here: the batch
+ * budget records what it discarded, and a shared or absent dir would let one
+ * test read another's tally.
+ */
+let dataDir: string;
+beforeEach(() => {
+  dataDir = mkdtempSync(join(tmpdir(), 'aka-gateway-'));
+});
+afterEach(() => {
+  rmSync(dataDir, { recursive: true, force: true });
+});
+
 function build(overrides: Partial<AttachedDataGatewayDeps> = {}) {
   const calls: Calls = { order: [] };
   const local = overrides.local ?? makeLocal(calls);
   const client = overrides.client ?? makeClient(calls);
   const gateway = new AttachedDataGateway({
+    dataDir,
     local,
     client,
     readCachedBundle: overrides.readCachedBundle ?? (() => Promise.resolve(null)),
     forward: overrides.forward ?? passthroughForward(calls),
     ...(overrides.posture ? { posture: overrides.posture } : {}),
   });
-  return { gateway, local, client, calls };
+  return { gateway, local, client, calls, dataDir };
 }
 
 const policy = (target: Policy['target'], action: Policy['action'], enabled = true): Policy => ({
@@ -515,6 +535,77 @@ describe('ensureInventory and the two id spaces', () => {
 
 // ── the policy merge ────────────────────────────────────────────────────────
 
+/** A minimal ToolCallInput; only its identity has to vary per item. */
+const toolCallInput = (id: string): ToolCallInput => ({
+  sessionId: 's',
+  toolUseId: id,
+  parentId: 'p',
+  rootSessionId: 'r',
+  startedAt: '2026-01-01T00:00:00.000Z',
+  attributes: { tool_name: 'Bash', tool_use_id: id },
+  inspections: [],
+});
+
+describe('the batch budget records what it discards', () => {
+  /**
+   * There was no coverage of the batch deadline at all, and the shape it guards
+   * is the one that hides best: a plane that answers every request SUCCESSFULLY
+   * but slowly produces no failures, so the breaker never opens and every other
+   * line of `aka status` reads healthy while the tail of each batch is thrown
+   * away. Without the tally this asserts, that machine is indistinguishable from
+   * a working one.
+   */
+  it('drops the tail of a slow batch and writes down how many', async () => {
+    let clock = 1_000;
+    const forward: ForwardPolicy = {
+      run: async (op: () => Promise<unknown>) => {
+        // Every call SUCCEEDS, and each one costs 600ms of the budget. That is
+        // the case the breaker cannot see: it only counts failures.
+        clock += 600;
+        await op();
+        return { ok: true } as ForwardResult<unknown>;
+      },
+    } as unknown as ForwardPolicy;
+
+    const seen: unknown[] = [];
+    const client = {
+      ...makeClient({ order: [] }),
+      recordAuditEvent: vi.fn((e: unknown) => {
+        seen.push(e);
+        return Promise.resolve();
+      }),
+    } as unknown as AttachedClient;
+
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      const { gateway } = build({ client, forward });
+      // 40 tool calls at 600ms each is 24s of work against a 3s budget.
+      await gateway.recordToolCalls(
+        Array.from({ length: 40 }, (_, i) => toolCallInput(`call-${String(i)}`)),
+      );
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    // Some were forwarded and some were not — the positive control on both
+    // sides. An assertion on the tally alone passes if NOTHING was forwarded,
+    // which is a different bug wearing the same number.
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.length).toBeLessThan(40);
+
+    const drops = readForwardDrops(dataDir);
+    expect(drops?.droppedForwards).toBe(40 - seen.length);
+  });
+
+  it('writes nothing when the whole batch fits', async () => {
+    // The other half: a tally that appears on a healthy run would make the
+    // status row permanent noise and the assertion above meaningless.
+    const { gateway, dataDir: dir } = build();
+    await gateway.recordToolCalls([toolCallInput('only-one')]);
+    expect(readForwardDrops(dir)).toBeNull();
+  });
+});
+
 describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   it('returns the local bundle untouched when the tenant cache is cold', async () => {
     const { gateway } = build({ readCachedBundle: () => Promise.resolve(null) });
@@ -542,6 +633,66 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     const merged = await gateway.getPolicyBundle();
     expect(merged.policies.filter((p) => 'category' in p.target)).toHaveLength(1);
     expect(merged.policies[0]?.action).toBe('block');
+  });
+
+  /**
+   * ONE RULE PER ID, and the LOCAL copy is the one that survives.
+   *
+   * A bundle re-shipping a rule the machine already installed is ordinary. What
+   * two copies cost is not a duplicate finding — `recordCapture` refuses a
+   * second finding with the same rule, span and masked value — it is a VAULTED
+   * value's recoverability: two identical spans read as an overlap group, the
+   * finding is dropped from it, and the region is destroyed one-way instead of
+   * being tokenized into a pointer the user can reveal.
+   *
+   * The ORDER assertion is the half that matters more. With the cache winning,
+   * a bundle naming a known rule id with a matcher that never matches would
+   * REPLACE the detection instead of sitting beside it — a remote kill switch
+   * for any rule an organization can name. So the surviving object is asserted
+   * to be the local one, not merely that one survived.
+   */
+  it('keeps one rule per id, and the local copy is the one that survives', async () => {
+    const CONTESTED = 'marketplace/installed-secret';
+    const calls: Calls = { order: [] };
+    const localRule = wireRule(CONTESTED, 'secret');
+    const remoteRule = { ...wireRule(CONTESTED, 'secret'), name: 'from-the-plane' };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() =>
+        Promise.resolve(bundle([], { version: 'local', rules: [localRule] })),
+      ),
+    });
+    const { gateway } = build({
+      local,
+      readCachedBundle: () => Promise.resolve(bundle([], { rules: [remoteRule] })),
+    });
+
+    const merged = await gateway.getPolicyBundle();
+    const contested = (merged.rules ?? []).filter((r) => r.id === CONTESTED);
+    expect(contested).toHaveLength(1);
+    // Reds if anyone flips the concat order or lets the cache win.
+    expect(contested[0]?.name).toBe(CONTESTED);
+  });
+
+  it('still carries a rule only one side declares', async () => {
+    // The positive control: dedup must not become "drop whatever the plane
+    // adds", which would pass the case above while disabling the whole feature.
+    const calls: Calls = { order: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() =>
+        Promise.resolve(
+          bundle([], { version: 'local', rules: [wireRule('local/only', 'secret')] }),
+        ),
+      ),
+    });
+    const { gateway } = build({
+      local,
+      readCachedBundle: () =>
+        Promise.resolve(bundle([], { rules: [wireRule('plane/only', 'secret')] })),
+    });
+
+    const ids = ((await gateway.getPolicyBundle()).rules ?? []).map((r) => r.id);
+    expect(ids).toContain('local/only');
+    expect(ids).toContain('plane/only');
   });
 
   // ⚠ THE FIRST-WRITE-WINS TEST. The runtime indexes policies first-write-wins,

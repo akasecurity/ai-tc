@@ -189,8 +189,13 @@ export const StorePostureSnapshot = z
     storePresent: z.boolean(),
     schemaVersion: z.number().int().min(0).max(MAX_INT4).nullable(), // PRAGMA user_version
     findingsTotal: z.number().int().min(0).max(MAX_INT4),
-    findingsFirstAt: z.number().int().min(0).nullable(), // epoch millis
-    findingsLastAt: z.number().int().min(0).nullable(),
+    // Epoch millis, bounded like `capturedAt`. Read from the local store's own
+    // rows rather than from this machine's clock, so a row a damaged or
+    // hand-edited store left out of range would otherwise parse clean here and
+    // fail inside the receiving deployment, where the reason is far harder to
+    // see.
+    findingsFirstAt: z.number().int().min(0).max(MAX_DATE_MS).nullable(),
+    findingsLastAt: z.number().int().min(0).max(MAX_DATE_MS).nullable(),
     packs: z.array(StorePosturePack).max(500),
     policyCounts: StorePosturePolicyCounts,
     // OPTIONAL, not nullable: a reporter that predates this member keeps

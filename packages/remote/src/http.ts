@@ -92,7 +92,21 @@ export class RemoteResponseInvalid extends Error {
 
 /** A request that never got an answer: DNS, connect, TLS, timeout, socket. */
 export class RemoteTransportError extends Error {
-  constructor(reason: string) {
+  /**
+   * The status the peer sent, when headers arrived and only the BODY was
+   * refused.
+   *
+   * Undefined for the ordinary case this class was written for — no answer at
+   * all. It exists because two paths reject after a status has already been
+   * delivered: an oversized body and an aborted response. Discarding it there
+   * reported a deployment answering 401 with a verbose body as a network
+   * outage, which sends the reader to look at their network instead of their
+   * credential.
+   */
+  constructor(
+    reason: string,
+    readonly status?: number,
+  ) {
     super(`control-plane request did not complete: ${reason}`);
     this.name = 'RemoteTransportError';
   }
@@ -122,8 +136,13 @@ export interface SendOptions {
  *
  * Resolves for ANY answered status, including 4xx and 5xx — mapping a status to
  * an error is the caller's job, because 304 and 404 are ordinary answers on
- * some of these routes and failures on others. Rejects only when no answer
- * arrived at all (`RemoteTransportError`).
+ * some of these routes and failures on others.
+ *
+ * Rejects with `RemoteTransportError` when the response could not be READ —
+ * usually because no answer arrived at all, but also when an answer's body was
+ * oversized or aborted. Those last two carry `status`, since their headers did
+ * arrive; the plain no-answer case leaves it undefined. The docstring used to
+ * say "only when no answer arrived at all", which was false on both.
  */
 export async function send(options: SendOptions): Promise<RemoteResponse> {
   const url = new URL(options.url);
@@ -167,10 +186,10 @@ export async function send(options: SendOptions): Promise<RemoteResponse> {
     // after a timeout has already fired (the abort surfaces as one), and a
     // second settle on a promise is a silent no-op that hides which cause won.
     let settled = false;
-    const fail = (reason: string): void => {
+    const fail = (reason: string, status?: number): void => {
       if (settled) return;
       settled = true;
-      reject(new RemoteTransportError(reason));
+      reject(new RemoteTransportError(reason, status));
     };
 
     const req = send_(url, requestOptions, (res) => {
@@ -184,7 +203,9 @@ export async function send(options: SendOptions): Promise<RemoteResponse> {
           // reports "the response was aborted" and loses the only reason a
           // caller could act on. The `settled` guard makes the first call win,
           // which is why the order here is the whole fix.
-          fail(`response exceeded ${String(MAX_RESPONSE_BYTES)} bytes`);
+          // The status is already in hand — headers precede body chunks — so it
+          // rides along rather than being thrown away with the body.
+          fail(`response exceeded ${String(MAX_RESPONSE_BYTES)} bytes`, res.statusCode);
           // Destroy rather than merely stop reading: leaving the socket open
           // lets the sender keep pushing at a process that has already given up.
           res.destroy();
@@ -194,7 +215,9 @@ export async function send(options: SendOptions): Promise<RemoteResponse> {
         chunks.push(chunk);
       });
       res.on('aborted', () => {
-        fail('the response was aborted');
+        // Same reasoning as the size cap: an aborted response still delivered
+        // its headers, and the status is the actionable half.
+        fail('the response was aborted', res.statusCode);
       });
       res.on('end', () => {
         if (settled) return;

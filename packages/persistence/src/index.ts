@@ -58,6 +58,7 @@ export {
   readManagedSettings,
 } from './managed-settings.ts';
 export {
+  createOwnerOnlyFileSync,
   DATA_DIR_MODE,
   DATA_FILE_MODE,
   DB_FILENAME,

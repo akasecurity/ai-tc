@@ -182,6 +182,7 @@ function buildRuntime(consumeException: (id: string) => Promise<boolean>) {
   const consume = vi.fn(consumeException);
   const local = makeLocalStore({ bundle, consumeException: consume });
   const gateway = new AttachedDataGateway({
+    dataDir: dir,
     local,
     client: noopClient(),
     readCachedBundle: () => Promise.resolve(null),

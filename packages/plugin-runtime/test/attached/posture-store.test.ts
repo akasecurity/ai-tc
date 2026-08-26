@@ -279,3 +279,35 @@ describe('createPostureStore', () => {
     );
   });
 });
+
+describe('two hooks minting at once', () => {
+  /**
+   * The loser must ADOPT, not walk away with an id nothing persisted.
+   *
+   * With a tmp+rename publish both callers mint their own uuid, the last rename
+   * wins the file, and the loser still RETURNS its own — so that session reports
+   * to the control plane under an identity that appears exactly once and never
+   * again. One orphan device per race, from ordinary hook concurrency, and
+   * `isRegression` blind on it forever. An exclusive create is what makes the
+   * question "who won" answerable at all.
+   */
+  it('agree on ONE deviceId, and it is the one on disk', async () => {
+    const stores = [createPostureStore(dir), createPostureStore(dir), createPostureStore(dir)];
+
+    // Released together rather than sequentially: awaited one at a time, the
+    // first would persist and the rest would simply read it, which is the happy
+    // path and proves nothing about the race.
+    const states = await Promise.all(stores.map((s) => s.read()));
+    const ids = states.map((s) => s?.deviceId);
+
+    // Positive control: everyone got SOMETHING. A store that returned null for
+    // all three would satisfy a bare "all equal" assertion.
+    for (const id of ids) expect(id).toBeTruthy();
+    expect(new Set(ids).size).toBe(1);
+
+    // And the agreed id is the persisted one — the property that fails when a
+    // loser returns its own mint.
+    const onDisk = await createPostureStore(dir).read();
+    expect(onDisk?.deviceId).toBe(ids[0]);
+  });
+});

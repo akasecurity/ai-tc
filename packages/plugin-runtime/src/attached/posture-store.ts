@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { createOwnerOnlyFileSync } from '@akasecurity/persistence';
 import { DATA_FILE_MODE, ensureDataDir, settingsDir } from '@akasecurity/plugin-sdk';
 
 export interface PostureState {
@@ -151,7 +152,40 @@ export function createPostureStore(dir: string = settingsDir(), legacyDir?: stri
     // returning null instead costs one skipped report — fail-open the same
     // way an unwritable settings dir fails open everywhere else in this
     // reporter, rather than manufacturing fleet noise.
+    //
+    // PUBLISHED WITH AN EXCLUSIVE CREATE, not the tmp+rename `persist` uses, and
+    // that difference is the whole point. Two SessionStart hooks reaching this
+    // line together each mint their own uuid; with a rename the last writer wins
+    // the FILE while the loser still returns the id it minted — an id nothing
+    // ever persisted, so that session reports under an identity the control
+    // plane sees exactly once and never again. One orphan device per race, from
+    // ordinary hook concurrency, with none of the wipe the class doc blames for
+    // the same symptom.
+    //
+    // An exclusive create answers who won. The loser re-reads and ADOPTS, which
+    // is sound here for the reason the fingerprint's first mint is: a fresh
+    // identity has nothing to preserve, so taking the winner's is not a loss.
+    // `persist`'s rename stays right everywhere else in this file, where there
+    // IS a prior value and overwriting is the intent.
     const fresh: PostureState = { deviceId: randomUUID(), lastAttemptedAtMs: 0 };
+    try {
+      await ensureDataDir(dir);
+      if (createOwnerOnlyFileSync(file, JSON.stringify(fresh))) return fresh;
+    } catch {
+      return null;
+    }
+    // The create was refused, which means the path is occupied — but by which of
+    // two very different things. A concurrent hook that won the race left a
+    // VALID state, and its id is the machine's id. A corrupt or truncated file
+    // left by an earlier crash is also "occupied", and adopting nothing from it
+    // would strand the machine with no identity for as long as those bytes sit
+    // there — the exact fresh-install case the corrupt-file path exists to
+    // recover, which is why this cannot simply return null.
+    const winner = await readFrom(file).catch(() => null);
+    if (winner) return winner;
+    // Nothing adoptable there: overwrite it, which is what the tmp+rename
+    // publish is for. Single-writer in practice, since a concurrent mint would
+    // have left a readable file above.
     try {
       await persist(fresh);
     } catch {

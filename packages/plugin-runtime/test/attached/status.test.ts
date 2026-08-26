@@ -12,6 +12,7 @@ import {
 } from '@akasecurity/persistence';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { recordForwardDrops } from '../../src/attached/forward-drops.ts';
 import { createPolicyStore } from '../../src/attached/policy-store.ts';
 import { renderAttachedStatus, renderPolicyLine } from '../../src/attached/status.ts';
 import { syncStatePath, writeSyncState } from '../../src/attached/sync-state.ts';
@@ -90,6 +91,23 @@ describe('renderAttachedStatus — the attached block', () => {
     expect(out).toContain('attached');
     expect(out).toContain(ENDPOINT);
     expect(out).toContain('2026-08-19T10:00:00.000Z');
+  });
+
+  it('strips control characters from an administrator-supplied label', () => {
+    // The render-time half of the label defence, and the one that has to hold
+    // unconditionally. `aka attach` REFUSES a label carrying these, so a user
+    // who typed one is told rather than silently corrected — but §6's managed
+    // overlay can pin `controlPlane` fleet-wide, and then the person who wrote
+    // the label and the person reading `aka status` are not the same person.
+    // That reader cannot fix the settings file, so the block they are reading
+    // to decide whether their machine is managed has to defend itself.
+    attach({ label: 'Acme\u001b[2K\u001b[A Prod' });
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir });
+    // Positive control first: an errored or empty render satisfies every
+    // absence check below on its own.
+    expect(out).toContain('Acme');
+    expect(out).toContain('Prod');
+    expect(out).not.toContain('\u001b');
   });
 
   it("prefers the administrator's label over the raw endpoint", () => {
@@ -197,6 +215,37 @@ describe('renderAttachedStatus — the forward half', () => {
     const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
     expect(out).toContain('no failures recorded');
     expect(out).not.toContain('reporting normally');
+  });
+
+  /**
+   * The whole reason `forward-drops.ts` exists: the machine losing events is the
+   * one whose breaker is CLOSED. A plane that answers every request successfully
+   * but slowly produces no failures at all, so every other line here reads
+   * healthy. The drop row has to appear beside "reporting normally", not instead
+   * of it — a row that only rendered under an open breaker would be absent in
+   * exactly the case it was written for.
+   */
+  it('shows batch drops even while the breaker reads healthy', () => {
+    attach();
+    writeBreaker(0, null);
+    recordForwardDrops(dataDir, 17, 900_000);
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
+    // Both, in the same block. The positive control is that the healthy line is
+    // still there — a drop row that suppressed it would be a different defect.
+    expect(out).toContain('reporting normally');
+    expect(out).toContain('17 events dropped');
+    // "at least", because concurrent workers increment without a lock.
+    expect(out).toContain('at least');
+  });
+
+  it('shows no drop row when nothing was dropped', () => {
+    // Otherwise the row is permanent furniture and the assertion above proves
+    // nothing about when it appears.
+    attach();
+    writeBreaker(0, null);
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
+    expect(out).toContain('reporting normally');
+    expect(out).not.toContain('dropped past the batch budget');
   });
 
   it('reports health only when a success actually cleared the failures', () => {

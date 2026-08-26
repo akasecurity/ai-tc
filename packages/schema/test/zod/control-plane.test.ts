@@ -114,6 +114,32 @@ describe('StorePostureSnapshot', () => {
     ).toBe(false);
   });
 
+  /**
+   * The findings window carries epoch millis too, and until recently carried
+   * only `.min(0)`.
+   *
+   * Worth its own case rather than folding into the `capturedAt` one above,
+   * because these two are read from the local store's ROWS rather than from
+   * this machine's clock — so a damaged or hand-edited store is enough to
+   * produce an out-of-range value with no clock skew involved.
+   */
+  it.each(['findingsFirstAt', 'findingsLastAt'] as const)(
+    'bounds %s at the largest round-trippable timestamp',
+    (field) => {
+      // Positive control first: the bound admits the largest legal value, so a
+      // schema that rejected everything would not pass this by accident.
+      expect(StorePostureSnapshot.safeParse({ ...snapshot, [field]: MAX_DATE_MS }).success).toBe(
+        true,
+      );
+      expect(
+        StorePostureSnapshot.safeParse({ ...snapshot, [field]: MAX_DATE_MS + 1 }).success,
+      ).toBe(false);
+      // And null stays legal — the field is nullable, and a bound that broke
+      // that would be a different regression this case would otherwise hide.
+      expect(StorePostureSnapshot.safeParse({ ...snapshot, [field]: null }).success).toBe(true);
+    },
+  );
+
   it('bounds the int4 members', () => {
     expect(
       StorePostureSnapshot.safeParse({ ...snapshot, findingsTotal: MAX_INT4 + 1 }).success,

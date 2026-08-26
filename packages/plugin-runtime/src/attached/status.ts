@@ -1,6 +1,7 @@
 import { readControlPlaneCredentialState, readWorkspaceSettings } from '@akasecurity/persistence';
 import { controlPlaneName, isAttached } from '@akasecurity/schema';
 
+import { readForwardDrops } from './forward-drops.ts';
 import { readForwardHealth } from './forward-policy.ts';
 import { createPolicyStore } from './policy-store.ts';
 import type { PolicySyncOutcome } from './policy-sync.ts';
@@ -117,14 +118,27 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
           : 'AKA: attached — no usable credential, re-attach',
       // ALLOW-LISTED, field by field. The credential itself is deliberately
       // absent and must stay that way; `keyPrefix` is the non-secret half.
-      `  plane      ${controlPlaneName(connection)}`,
-      `  attached   ${connection.attachedAt}`,
+      //
+      // And every one of them goes through `printable`, which is about the
+      // field's CONTENT rather than which fields appear. The allow-list above
+      // decides what is rendered; it says nothing about what those strings
+      // hold. None of these is authored by this machine — `label` comes from
+      // `aka attach --label` or from a `settings.json` an administrator can pin
+      // fleet-wide, and the endpoint and `keyPrefix` come off the credential
+      // file — and all of them land in a status block a user reads to decide
+      // whether their machine is managed. An ANSI escape in any of them can
+      // repaint that block or hide a line, which is the same argument
+      // `printable` was written for one field over.
+      `  plane      ${printable(controlPlaneName(connection))}`,
+      `  attached   ${printable(connection.attachedAt, 40)}`,
     ];
     if (state.usable && state.credential.keyPrefix !== undefined) {
-      lines.push(`  key        ${state.credential.keyPrefix}…`);
+      // `max` matches the schema's own bound, so a conforming prefix is never
+      // truncated and a longer one cannot outrun it.
+      lines.push(`  key        ${printable(state.credential.keyPrefix, 16)}…`);
     }
     if (!state.usable && state.reason === 'endpoint-mismatch') {
-      lines.push(`  credential ${state.credentialEndpoint}`);
+      lines.push(`  credential ${printable(state.credentialEndpoint, 200)}`);
     }
 
     return [
@@ -190,12 +204,37 @@ function policyLines(dataDir: string, nowMs: number): string[] {
  * stamp are facts, and a cause guessed from them would be the same kind of
  * overstatement as the clean block this whole surface replaced.
  */
+/**
+ * What the batch budget threw away, if anything.
+ *
+ * Rendered INDEPENDENTLY of breaker state, and that is the whole reason it
+ * exists: the machine this happens on is the one whose breaker is closed. A
+ * plane that answers every request successfully but slowly produces no
+ * failures, so every other line in this block reads healthy while the tail of
+ * each batch is discarded. Appended to all three of `forwardLines`' outcomes
+ * rather than to one.
+ *
+ * "at least" is accuracy, not hedging. Concurrent detached workers increment the
+ * tally with an unlocked read-modify-write, so a simultaneous pair can lose one
+ * — the same imprecision the breaker's own file carries, and the honest word for
+ * a floor.
+ */
+function dropLines(dataDir: string, nowMs: number): string[] {
+  const drops = readForwardDrops(dataDir);
+  if (!drops) return [];
+  return [
+    `             at least ${String(drops.droppedForwards)} events dropped past the ` +
+      `batch budget, last ${ageLine(drops.lastDropAtMs, nowMs)}`,
+  ];
+}
+
 function forwardLines(dataDir: string, nowMs: number): string[] {
+  const drops = dropLines(dataDir, nowMs);
   const health = readForwardHealth(dataDir, nowMs);
   // No file is the HAPPY path, not a gap: `run()` writes nothing at all unless
   // something fails. Still phrased as what is known rather than as health —
   // "no failures recorded" is also true of a device that has never forwarded.
-  if (!health) return ['  forward    no failures recorded'];
+  if (!health) return ['  forward    no failures recorded', ...drops];
 
   const { consecutiveFailures, openedAtMs, lastFailure } = health;
   // Closed at zero means a forward SUCCEEDED and cleared a previous run of
@@ -203,7 +242,7 @@ function forwardLines(dataDir: string, nowMs: number): string[] {
   // early because it is also the one state with no cause to name: a success
   // clears `lastFailure` with the count.
   if (openedAtMs === null && consecutiveFailures === 0) {
-    return ['  forward    reporting normally'];
+    return ['  forward    reporting normally', ...drops];
   }
 
   const lines =
@@ -227,7 +266,7 @@ function forwardLines(dataDir: string, nowMs: number): string[] {
   if (lastFailure === 'unauthorized' || lastFailure === 'forbidden') {
     lines.push(`             ${REFUSAL_LINES[lastFailure]}`);
   }
-  return lines;
+  return [...lines, ...drops];
 }
 
 /**

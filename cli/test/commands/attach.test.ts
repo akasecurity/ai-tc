@@ -150,6 +150,39 @@ describe('what attach writes', () => {
 });
 
 describe('what attach refuses', () => {
+  /**
+   * A label is printed into `aka status`, which is the block a user reads to
+   * decide whether their machine is managed. An escape sequence in it can
+   * repaint that block or hide a line — and unlike the endpoint, nothing about
+   * a label's shape is otherwise constrained.
+   *
+   * REFUSED here rather than stripped, because the person who typed it can fix
+   * it. The renderer strips instead, since a label can also arrive from an
+   * administrator's managed overlay that the reader cannot correct; both layers
+   * are tested, in their own packages, and neither substitutes for the other.
+   */
+  it('a --label carrying an escape sequence, since status renders it', () => {
+    const result = parseAttachArgs(['--url', ENDPOINT, '--label', 'Acme\u001b[2K\u001b[A']);
+    expect('error' in result && result.error).toContain('control characters');
+    // Names the consequence, not just the rule: the reader has to know why a
+    // label they typed is being turned down.
+    expect('error' in result && result.error).toContain('aka status');
+  });
+
+  it('a --label carrying a zero-width character, not only an escape', () => {
+    // \p{Cf} as well as \p{Cc}: a zero-width joiner cannot repaint a terminal
+    // but can make two different deployments render identically, which is the
+    // same deception one layer down.
+    const result = parseAttachArgs(['--url', ENDPOINT, '--label', 'Acme\u200bProd']);
+    expect('error' in result && result.error).toContain('control characters');
+  });
+
+  it('but accepts an ordinary label, so the refusal is not a ban on labels', () => {
+    const result = parseAttachArgs(['--url', ENDPOINT, '--label', 'Acme Prod (eu-west)']);
+    expect('error' in result).toBe(false);
+    expect('label' in result && result.label).toBe('Acme Prod (eu-west)');
+  });
+
   it('a plaintext endpoint, before the key is ever put on a wire', async () => {
     let verified = false;
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });

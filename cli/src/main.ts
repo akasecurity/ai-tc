@@ -68,7 +68,7 @@ const SKIP_NOTICE = new Set([
   'completion',
 ]);
 
-const USAGE = `aka — AI Traffic Control (local-first; nothing leaves your machine unless you attach it)
+const USAGE = `aka — AI Traffic Control (local-first; see the egress footnote in the README)
 
 Usage: aka <command> [options]
 

@@ -243,13 +243,18 @@ describe.each(JUDGE_READMES)('$name judge payload disclosure', ({ text }) => {
   );
 });
 
-// CLAUDE.md §4 counts the `aka <name>` dispatch as a fourth child-process path,
-// and it is one — but it is not a fourth path AKA takes. The CLI execs a program
-// the user installed and named, so folding it into the footnote's count would
-// imply ai-tc sends something it does not, while omitting it entirely leaves the
-// footnote's "all through child processes" reading as a complete list when it is
-// not. The copy does both halves: it names the dispatch and holds it outside the
-// count. Neither half works alone, so both are pinned here.
+// CLAUDE.md §4 lists the `aka <name>` dispatch among its child-process paths,
+// and it is one — but it is not a path AKA takes. The CLI execs a program the
+// user installed and named, so folding it into the footnote's count would imply
+// ai-tc sends something it does not, while omitting it entirely leaves that
+// count reading as a complete list of what an `aka` invocation can reach when it
+// is not. The copy does both halves: it names the dispatch and holds it outside
+// the count. Neither half works alone, so both are pinned here.
+//
+// This used to quote the footnote's "all through child processes". That sentence
+// is gone — attached mode reaches the network from the source — and a case below
+// now asserts its ABSENCE, so quoting it in the present tense left this comment
+// describing the opposite of what the file enforces.
 //
 // Root README only — the dispatch is a CLI feature, and the plugin README
 // describes the plugin. The CLI page states the same split against its own
@@ -273,14 +278,29 @@ const EGRESS_PATHS = [
   // Passive and default-on: no command, no consent. `npm view` rather than
   // `update notice` as the marker, because the mechanism is what a reader
   // needs — the dedicated case below pins the disclosure words themselves.
-  { name: 'update notice', marker: /npm view/, childProcess: true },
-  { name: 'package-manager install', marker: /package-manager installs/, childProcess: true },
-  { name: 'supply-chain check', marker: /npm audit signatures/, childProcess: true },
-  { name: 'setup calibration', marker: /\/aka:setup/, childProcess: true },
+  { name: 'update notice', marker: /npm view/, childProcess: true, carriesUserData: false },
+  {
+    name: 'package-manager install',
+    marker: /package-manager installs/,
+    childProcess: true,
+    carriesUserData: false,
+  },
+  {
+    name: 'supply-chain check',
+    marker: /npm audit signatures/,
+    childProcess: true,
+    carriesUserData: false,
+  },
+  { name: 'setup calibration', marker: /\/aka:setup/, childProcess: true, carriesUserData: true },
   // The first and only path the source itself opens a connection on. Its
   // `childProcess: false` is what makes the sub-count below mean something:
   // every other row is a spawn, and the footnote has to keep saying so.
-  { name: 'attached control plane', marker: /aka attach/, childProcess: false },
+  {
+    name: 'attached control plane',
+    marker: /aka attach/,
+    childProcess: false,
+    carriesUserData: true,
+  },
 ] as const;
 
 /**
@@ -374,6 +394,37 @@ describe('README.md aka-<name> dispatch disclosure', () => {
       `the footnote must say ${countWord(spawned)} of the paths are child processes — the rows ` +
         'in EGRESS_PATHS marked childProcess. The remainder reach the network from the source.',
     ).toMatch(new RegExp(`${countWord(spawned)} of them are child processes`, 'i'));
+  });
+
+  /**
+   * "only" is a COUNT of one, so it is derived like every other count here.
+   *
+   * This is the defect the merge actually shipped, and the reason a third flag
+   * exists. The sentence "That last one is the only path that carries your data"
+   * was TRUE on the branch that wrote it — four paths, all child processes, and
+   * only the calibration carried anything. Appending a fifth path that forwards
+   * captures left the word "only" standing over a list of two, on the sentence a
+   * procurement reviewer quotes. Both suites were green: the total matched, the
+   * sub-count matched, every marker matched. Nothing counted the exclusive.
+   *
+   * So an unqualified exclusive is refused outright the moment a second row
+   * carries data, and the footnote must instead state the count — which forces
+   * the claim to be scoped to a number the table can check.
+   */
+  it('does not claim one path exclusively carries user data when two of them do', () => {
+    const carrying = EGRESS_PATHS.filter((p) => p.carriesUserData).length;
+    expect(carrying, 'the table must mark which paths carry user data').toBeGreaterThan(0);
+    if (carrying > 1) {
+      expect(
+        footnote,
+        `${String(carrying)} rows in EGRESS_PATHS carry user data, so no path may be called the ` +
+          'only one that does. Scope the claim (e.g. "the only one of those four") or say which.',
+      ).not.toMatch(/the only path that carries your data/i);
+    }
+    // And the scoped form has to name the right subset: the data-carrying paths
+    // that are child processes, which is what "those N" refers to.
+    const spawnedTotal = EGRESS_PATHS.filter((p) => p.childProcess).length;
+    expect(footnote).toMatch(new RegExp(`only one of those ${countWord(spawnedTotal)}`, 'i'));
   });
 
   it('says the attached path is opt-in, and names where its client lives', () => {

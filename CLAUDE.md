@@ -9,9 +9,12 @@ plugin, the Codex CLI plugin, the Antigravity plugin, the browser extension (Cha
 Claude.ai web chat, bridged over Chrome native messaging — no port, no listener), and the
 `aka` CLI capture agent activity into a local SQLite store at `~/.aka/data/aka.db`, and the
 web dashboard reads that same store directly. There is no
-account and no AKA backend — nothing is sent to a service AKA runs. (A few narrow outbound
-paths do exist — package-manager installs and the opt-in `/aka:setup` calibration, which
-sends raw findings to the model API via the `claude` CLI — enumerated in §4.)
+account and no AKA backend — nothing is sent to a service AKA runs. (Narrow outbound paths
+do exist — the default-on update notice's `npm view` lookups, package-manager installs, the
+opt-in `/aka:setup` calibration, which sends raw findings to the model API via the `claude`
+CLI, and an attached machine's forwarding to a control plane the USER's organization runs —
+enumerated in §4. "No AKA backend" stays true across all of them: `aka attach` names a
+deployment the customer operates, not one AKA does.)
 
 ## Tech stack
 

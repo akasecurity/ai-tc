@@ -20,6 +20,8 @@ import { Linter } from 'eslint';
 import tseslint from 'typescript-eslint';
 import { describe, expect, it } from 'vitest';
 
+import { CONVENTIONS_DOC, readConventions, sectionOf } from './helpers/claude-md.js';
+
 import { spawnViaNamedImport, spawnViaNamespace } from './helpers/product-worker.js';
 import { networkGuard } from '../src/index.js';
 import {
@@ -759,21 +761,16 @@ describe('the CI script refuses to run vacuously', { timeout: CI_SCRIPT_TIMEOUT_
 
   it('refuses when the privilege drop-back did not land', (ctx) => {
     requirePosixShell(ctx);
-    // The sibling of the case above, and the half that was missing. That one
-    // covers the FRONT door — started as root, there is no unprivileged
-    // identity to drop back to. This one covers the drop-back having silently
-    // failed to happen: phase 2's `setpriv` broke, or a future edit skipped it,
-    // and the command is about to run as root anyway.
+    // The sibling of the case above: that one covers the FRONT door (started as
+    // root, so there is no unprivileged identity to drop back to), this one
+    // covers the drop-back having silently failed to happen. Why a root run is
+    // the one SILENT outcome on this path is argued in the script's phase-3
+    // comment and not repeated here.
     //
-    // Why it matters more than it looks. Root ignores the 0444 mode
-    // `fault-injection.ts` builds a read-only store with, so the read-only
-    // cases in packages/persistence report `effective: false` and SKIP. A skip
-    // is not a failure — the job stays GREEN while quietly losing them. That is
-    // the one silent outcome on this path, and nothing asserted against it.
-    //
-    // The phase markers stay SET, which is what distinguishes this from the
-    // front-door case: both phases are already behind us, so the script is at
-    // the point of handing over. Exit 1 (a control failed) rather than 2 (bad
+    // What is specific to this case is how it is distinguished from the
+    // front-door one, since both turn on the same uid: the phase markers stay
+    // SET, so both earlier phases are already behind us and the script is at the
+    // point of handing over. Exit 1 (a control failed) rather than 2 (bad
     // invocation) for the same reason.
     const run = runCiScript({ stubs: { ...blockedStubs(), id: prints('0') } });
     expect(run.status).toBe(1);
@@ -782,6 +779,12 @@ describe('the CI script refuses to run vacuously', { timeout: CI_SCRIPT_TIMEOUT_
     // the message is just a log line. Both spellings, per the constants above.
     expect(run.stdout).not.toContain(MARKER);
     expect(run.stdout).not.toContain(RAN);
+    // …and before the egress probes, which is a separate claim the two
+    // assertions above cannot make: `blockedStubs` makes the probes PASS, so
+    // moving this control below them leaves every assertion here green while a
+    // root run does DNS and TCP work before refusing. This line is the only
+    // thing pinning the order the comment claims.
+    expect(run.stdout).not.toContain('verifying egress is actually blocked');
   });
 
   it('refuses with no command to run', (ctx) => {
@@ -793,11 +796,20 @@ describe('the CI script refuses to run vacuously', { timeout: CI_SCRIPT_TIMEOUT_
 
   // `it.for`, not `it.each`: only `for` passes the TestContext these cases skip
   // through. See requirePosixShell.
-  it.for(['getent', 'node'])('fails when the probe tool %s is missing', (missing, ctx) => {
+  it.for(['getent', 'node', 'id'])('fails when the tool %s is missing', (missing, ctx) => {
     requirePosixShell(ctx);
     // A probe whose own tooling is absent reports "not blocked = false" and the
     // control passes having probed nothing. This is the exact vacuous pass the
     // tool check exists to prevent, so each tool is pinned by name.
+    //
+    // `id` is here for the same reason and was the case that was missing. It is
+    // not a probe tool — it is what every privilege check reads — and its
+    // absence fails in the worse direction: `[ "$(id -u)" -eq 0 ]` with no `id`
+    // substitutes the empty string, and `[ "" -eq 0 ]` is an ERROR (exit 2),
+    // which `if` reads as FALSE. `set -e` does not fire inside an `if`
+    // condition, so the start-as-root refusal stops refusing and the phase-3
+    // drop-back control waves a root run through. Measured before the fix: the
+    // script ran the command and exited 0.
     const stubs = blockedStubs();
     delete stubs[missing];
     const run = runCiScript({ stubs });
@@ -897,6 +909,104 @@ function closeServer(server) {
     });
   });
 }
+
+// CLAUDE.md enumerates the outcomes this block pins, and prose is guarded by
+// nothing on its own. That file makes the point against itself in §1 — the
+// `emit()` sentence "claimed four shapes while six were reaching stdout", and
+// the fix it names is `hook-output-shapes.test.ts`, which reads the prose and
+// drives it against the thing it describes. This is that, for this sentence.
+//
+// The MAP is the hand-written half, because pairing a phrase with a case is a
+// judgement no derivation carries. Both SIDES are derived: the phrases are
+// checked against the real document, and the titles against the real cases
+// parsed out of this file. So a case added without a phrase fails, a phrase
+// without a case fails, and the count word fails with either.
+//
+// It found one on the first run: the enumeration had never listed the
+// no-command outcome, so it claimed to pin every outcome while omitting one of
+// nine.
+const PINNED_OUTCOMES = [
+  ['probe tooling missing', 'fails when the tool'],
+  ['DNS still resolving', 'fails when DNS still resolves'],
+  ['the target still answering', 'reports the target answered'],
+  ['probe reporting itself broken', 'reports itself broken'],
+  ['the probe file gone', 'fails when the probe file is missing'],
+  ['no command to run', 'refuses with no command to run'],
+  ['started as root', 'refuses to start as root'],
+  [
+    'the privilege drop-back not having landed',
+    'refuses when the privilege drop-back did not land',
+  ],
+  [
+    'the one green path where the command actually runs',
+    'runs the command when egress is genuinely gone',
+  ],
+];
+
+const VACUITY_BLOCK = "describe('the CI script refuses to run vacuously'";
+
+/**
+ * The case titles declared in that block, read from this file's own source.
+ *
+ * Derived rather than listed: a listed copy is a second thing to update, which
+ * is the drift being guarded against one level down. The slice ends at the next
+ * top-level `describe(` so a case added to a LATER block is not miscounted here.
+ */
+function pinnedCaseTitles() {
+  const src = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+  const start = src.indexOf(VACUITY_BLOCK);
+  if (start === -1) {
+    throw new Error(
+      `this file no longer contains ${VACUITY_BLOCK}, so the enumeration guard would ` +
+        'compare against nothing and pass. Update the anchor.',
+    );
+  }
+  const after = src.slice(start + VACUITY_BLOCK.length);
+  const end = after.indexOf('\ndescribe(');
+  const block = end === -1 ? after : after.slice(0, end);
+  // `it('…'` and `it.for([…])('…'` alike; the title is the first string literal
+  // of the call that declares the case.
+  return [...block.matchAll(/\n {2}it(?:\.for\([^)]*\))?\(\s*'([^']+)'/g)].map((m) => m[1]);
+}
+
+describe("CLAUDE.md's enumeration of what this suite pins", () => {
+  // Whitespace-normalised, because the doc is prose wrapped at a column and a
+  // phrase spans the wrap wherever it happens to fall. Matching the raw text
+  // makes this guard fail on a REFLOW — which it did, on the first run, for the
+  // one phrase the wrap landed inside. A guard that reddens when a paragraph is
+  // rewrapped is one people learn to edit around.
+  const section = sectionOf(readConventions(), '### The no-network guard').replace(/\s+/g, ' ');
+
+  it.for(PINNED_OUTCOMES)('names the %s outcome', ([phrase], ctx) => {
+    if (typeof ctx?.skip !== 'function') throw new TypeError('needs a TestContext');
+    expect(section).toContain(phrase.replace(/\s+/g, ' '));
+  });
+
+  it('names every outcome the block actually pins, and no others', () => {
+    const titles = pinnedCaseTitles();
+    // Non-vacuity: an empty parse agrees with an empty map, and both would be
+    // the failure this guard exists to catch rather than a clean run.
+    expect(titles.length).toBeGreaterThan(0);
+    expect(titles).toHaveLength(PINNED_OUTCOMES.length);
+
+    const unmatched = titles.filter(
+      (t) => !PINNED_OUTCOMES.some(([, needle]) => t.includes(needle)),
+    );
+    expect(
+      unmatched,
+      `${CONVENTIONS_DOC} claims this block pins every outcome, but these cases are in no ` +
+        'entry of PINNED_OUTCOMES. Add the phrase to the doc and the pair here.',
+    ).toEqual([]);
+
+    const uncovered = PINNED_OUTCOMES.filter(
+      ([, needle]) => !titles.some((t) => t.includes(needle)),
+    ).map(([phrase]) => phrase);
+    expect(
+      uncovered,
+      `${CONVENTIONS_DOC} names these outcomes but no case in this block pins them.`,
+    ).toEqual([]);
+  });
+});
 
 describe('the egress probe', () => {
   it('reports a reachable target as NOT blocked', async () => {

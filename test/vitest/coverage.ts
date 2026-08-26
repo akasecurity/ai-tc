@@ -80,6 +80,11 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/scanner': 95, //                    96.80
   '@akasecurity/extract': 95, //                    96.61
   '@akasecurity/persistence': 94, //                95.97
+  // The transport is small and driven end to end against a real loopback
+  // server, so there is no seam left uncovered — the floor is high because the
+  // package is one module of sending and one of routes, not because the bar was
+  // set leniently.
+  '@akasecurity/remote': 99, //                     100.00
   // Everything but the CLI entry, which is I/O wiring and decides nothing —
   // every decision sits in lib.ts, where the suite drives it.
   '@akasecurity/coverage-gate': 93, //              94.80
@@ -95,7 +100,7 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   // mapping, and nothing could reach it there.
   '@akasecurity/required-checks-gate': 85, //       86.61
   '@akasecurity/codeql-alerts-gate': 81, //         82.40
-  '@akasecurity/plugin-runtime': 76, //             77.25
+  '@akasecurity/plugin-runtime': 89, //             90.59
   '@akasecurity/ai-tc-claude-code': 71, //          72.84
   '@akasecurity/local-ops': 65, //                  66.75
   '@akasecurity/audit-gate': 61, //                 62.88

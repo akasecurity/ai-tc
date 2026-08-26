@@ -82,9 +82,15 @@ importers:
       '@akasecurity/plugin-browser-extension':
         specifier: workspace:*
         version: link:../plugins/browser-extension
+      '@akasecurity/plugin-runtime':
+        specifier: workspace:*
+        version: link:../packages/plugin-runtime
       '@akasecurity/plugin-sdk':
         specifier: workspace:*
         version: link:../packages/plugin-sdk
+      '@akasecurity/remote':
+        specifier: workspace:*
+        version: link:../packages/remote
       '@akasecurity/schema':
         specifier: workspace:*
         version: link:../packages/schema
@@ -324,6 +330,9 @@ importers:
       '@akasecurity/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
+      '@akasecurity/remote':
+        specifier: workspace:*
+        version: link:../remote
       '@akasecurity/schema':
         specifier: workspace:*
         version: link:../schema
@@ -361,6 +370,34 @@ importers:
       ignore:
         specifier: ^7.0.6
         version: 7.0.6
+      zod:
+        specifier: ^4.0.0
+        version: 4.4.3
+    devDependencies:
+      '@akasecurity/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@types/node':
+        specifier: ^24.13.3
+        version: 24.13.3
+      '@vitest/coverage-v8':
+        specifier: ^4.1.10
+        version: 4.1.10(vitest@4.1.10)
+      eslint:
+        specifier: ^9.39.5
+        version: 9.39.5(jiti@2.7.0)
+      typescript:
+        specifier: ^5.8.0
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.10
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(@vitest/coverage-v8@4.1.10)(jsdom@30.0.1)(vite@8.0.16(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
+
+  packages/remote:
+    dependencies:
+      '@akasecurity/schema':
+        specifier: workspace:*
+        version: link:../schema
       zod:
         specifier: ^4.0.0
         version: 4.4.3

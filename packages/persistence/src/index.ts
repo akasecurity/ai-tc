@@ -1,3 +1,12 @@
+export type { CredentialState, CredentialUnusableReason } from './control-plane-credential.ts';
+export {
+  controlPlaneCredentialPath,
+  isSafeEndpoint,
+  readControlPlaneCredential,
+  readControlPlaneCredentialState,
+  removeControlPlaneCredential,
+  writeControlPlaneCredential,
+} from './control-plane-credential.ts';
 export type { InventoryContext, LocalDatabase, ResolvedInventory } from './database.ts';
 export { openLocalDatabase } from './database.ts';
 export type { ExceptionPolicyProvider, RevealDecision } from './exception-policy.ts';
@@ -49,6 +58,7 @@ export {
   readManagedSettings,
 } from './managed-settings.ts';
 export {
+  createOwnerOnlyFileSync,
   DATA_DIR_MODE,
   DATA_FILE_MODE,
   DB_FILENAME,

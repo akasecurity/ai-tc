@@ -11,7 +11,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import {
   CONNECTION_ATTACHED_DESCRIPTION,
-  CONNECTION_NO_TRANSPORT_NOTICE,
+  CONNECTION_FORWARDING_NOTICE,
   CONNECTION_STANDALONE_DESCRIPTION,
   CONNECTION_UNAVAILABLE_NOTICE,
   DETACH_EXPLANATION,
@@ -63,7 +63,7 @@ const FORM_COPY: Record<string, string> = {
   // attached description shipped claiming an exchange this build never performs.
   CONNECTION_STANDALONE_DESCRIPTION,
   CONNECTION_ATTACHED_DESCRIPTION,
-  CONNECTION_NO_TRANSPORT_NOTICE,
+  CONNECTION_FORWARDING_NOTICE,
   CONNECTION_UNAVAILABLE_NOTICE,
   DETACH_MANAGED_NOTICE,
   HISTORICAL_SECTION_LABEL,
@@ -466,12 +466,14 @@ describe('the connection section', () => {
     expect(html).toContain('Acme Prod');
   });
 
-  it('says plainly that nothing is sent, on an attached machine', () => {
-    // The honesty requirement. This build has no transport, so an attached
-    // machine must not be left implying an exchange is happening.
+  it('says plainly that the plugin forwards, on an attached machine', () => {
+    // The honesty requirement, and it inverted when attached mode shipped. This
+    // notice used to say the build carried no transport and sent nothing; it
+    // renders on `attached &&` with no capability check, so it went on saying so
+    // after the transport landed. An attached machine must be told it sends.
     expect(
       render({ settings: attached, onAttach: () => undefined, onDetach: () => undefined }),
-    ).toContain('data-slot="connection-no-transport"');
+    ).toContain('data-slot="connection-forwarding"');
   });
 
   it('states the unavailable notice when no attach handler is supplied', () => {

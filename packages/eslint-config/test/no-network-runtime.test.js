@@ -200,6 +200,7 @@ const EXPECTED_VITEST_PACKAGES = [
   '@akasecurity/plugin-runtime',
   '@akasecurity/plugin-sdk',
   '@akasecurity/portability-gate',
+  '@akasecurity/remote',
   '@akasecurity/required-checks-gate',
   '@akasecurity/scanner',
   '@akasecurity/schema',

@@ -1,11 +1,14 @@
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 
+import { resolveGatewayForConfig } from './attached/factory.ts';
 import { StandaloneDataGateway } from './standalone-gateway.ts';
 
 /**
- * Build a data gateway from the plugin config. The local-first surface always
- * records into the on-disk SQLite store via the StandaloneDataGateway.
+ * Build a data gateway from the plugin config. Every surface records into the
+ * on-disk SQLite store; a machine whose settings name a control plane, and
+ * which holds a credential for that plane, additionally forwards what the
+ * organization is entitled to see.
  *
  * The gateway is resolved through a factory so an embedder or a test can
  * substitute its own implementation of `DataGateway` without this package
@@ -34,7 +37,22 @@ export type DataGatewayFactory = (
 export const standaloneGatewayFactory: DataGatewayFactory = (config, meta) =>
   new StandaloneDataGateway(config.dataDir, bundledDetections(), meta);
 
-let defaultGatewayFactory: DataGatewayFactory = standaloneGatewayFactory;
+/**
+ * The default: read the machine's own configuration and build what it asks for.
+ *
+ * A standalone machine — every machine that has never attached — gets exactly
+ * `standaloneGatewayFactory`'s answer, built the same way from the same
+ * arguments. The check that separates them is a `statSync` and a small JSON
+ * parse, and it happens once per resolve rather than once per write.
+ *
+ * `standaloneGatewayFactory` stays exported and stays the reset target for
+ * `setDefaultGatewayFactory`: a test that wants the local gateway unconditionally
+ * asks for it by name rather than by arranging for a file to be absent.
+ */
+export const configuredGatewayFactory: DataGatewayFactory = (config, meta) =>
+  resolveGatewayForConfig(config, meta);
+
+let defaultGatewayFactory: DataGatewayFactory = configuredGatewayFactory;
 
 /**
  * Set the factory `resolveDataGateway` falls back to for the rest of this
@@ -50,12 +68,14 @@ let defaultGatewayFactory: DataGatewayFactory = standaloneGatewayFactory;
  * it has no call site left to notice the takeover from. The thunk restores the
  * previous factory, so nested substitutions unwind exactly.
  *
- * Passing nothing still resets to the standalone default: that is what a
- * top-level test teardown wants, and the reason the parameter is optional.
+ * Passing nothing still resets to the CONFIGURED default — what the machine's
+ * own settings ask for — which is what a top-level test teardown wants, and the
+ * reason the parameter is optional. A caller that specifically wants the local
+ * gateway regardless of configuration passes `standaloneGatewayFactory`.
  */
 export function setDefaultGatewayFactory(factory?: DataGatewayFactory): () => void {
   const previous = defaultGatewayFactory;
-  defaultGatewayFactory = factory ?? standaloneGatewayFactory;
+  defaultGatewayFactory = factory ?? configuredGatewayFactory;
   return () => {
     defaultGatewayFactory = previous;
   };

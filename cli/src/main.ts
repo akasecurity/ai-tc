@@ -1,6 +1,7 @@
 import { cliVersion, notifyFromCache, refreshCache } from '@akasecurity/local-ops';
 
 import { commandsHelp } from './command-manifest.ts';
+import { runAttach, runDetach, runStatus } from './commands/attach.ts';
 import { runCheckUpdates } from './commands/check-updates.ts';
 import { runCompletion } from './commands/completion.ts';
 import { runDashboard, runDashboardServer } from './commands/dashboard.ts';
@@ -22,8 +23,10 @@ import {
   shouldDispatchExternal,
 } from './lib/external-dispatch.ts';
 
-// The local-first AKA CLI. Every command reads/writes the local SQLite store
-// directly via @akasecurity/persistence — no HTTP, no backend.
+// The local-first AKA CLI. Every command reads and writes the local SQLite
+// store directly via @akasecurity/persistence. The attach verbs are the only
+// ones that reach a network, and only against a deployment this machine's own
+// settings name.
 const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   init: runInit,
   scan: runScan,
@@ -34,6 +37,11 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   extension: runExtension,
   exception: (argv) => runException(argv),
   vault: (argv) => runVault(argv),
+  attach: (argv) => runAttach(argv),
+  detach: (argv) => {
+    runDetach(argv);
+  },
+  status: (argv) => runStatus(argv),
   tui: runTui,
   update: runUpdate,
   'check-updates': runCheckUpdates,
@@ -60,7 +68,7 @@ const SKIP_NOTICE = new Set([
   'completion',
 ]);
 
-const USAGE = `aka — AI Traffic Control (local-first, everything stays on your machine)
+const USAGE = `aka — AI Traffic Control (local-first; see the egress footnote in the README)
 
 Usage: aka <command> [options]
 

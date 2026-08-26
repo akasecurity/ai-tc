@@ -10,6 +10,7 @@
 
 export * from './activity.ts';
 export * from './config-inventory.ts';
+export * from './control-plane.ts';
 export * from './detection.ts';
 export * from './detection-build.ts';
 export * from './egress-extraction.ts';

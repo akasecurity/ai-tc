@@ -752,6 +752,11 @@ jobs:
         # installer each run in their own invocation below, and each for a
         # measured reason given at its step; both are the same shape of
         # reason, which is why they are stated once each and not here.
+        #
+        # @akasecurity/remote IS in the list, and belongs there more than most:
+        # it is the only package that opens a socket, its suite stands a real
+        # loopback server, and socket and path semantics are exactly what this
+        # leg exists to check. It is small and fast, so it costs the leg little.
         run: >
           pnpm turbo run test
           --continue
@@ -766,6 +771,7 @@ jobs:
           --filter=@akasecurity/persistence
           --filter=@akasecurity/plugin-sdk
           --filter=@akasecurity/plugin-runtime
+          --filter=@akasecurity/remote
           --filter=@akasecurity/setup-wizard
           --filter=@akasecurity/scanner
           --filter=@akasecurity/local-ops

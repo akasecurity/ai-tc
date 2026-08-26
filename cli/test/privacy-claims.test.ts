@@ -111,6 +111,51 @@ const CLAIM = norm(
  */
 const UPDATE_OPT_OUTS = GLOBAL_FLAGS.filter((flag) => flag.includes('update'));
 
+/**
+ * Every path by which the `aka` CLI itself can reach a network, and the marker
+ * that proves this page's footnote names it.
+ *
+ * An EXACT set, and the source of the count word below. The root README carries
+ * the same table over the whole product; this one is smaller because the CLI
+ * ships no judge, and the two must be allowed to differ — folding them into one
+ * list is what would make this page describe a payload it never sends.
+ *
+ * It exists because the literal that stood here — `toMatch(/Two narrow paths/)`
+ * — is worse than no guard at all: it goes green whether or not the number
+ * describes the list, so the green asserts somebody checked. That is not a
+ * hypothesis. Two branches each added a path from opposite sides, both said
+ * "Two", and the union is three; the literal would have passed on a resolution
+ * that kept either sentence.
+ */
+const CLI_EGRESS_PATHS = [
+  { name: 'update notice', marker: /npm view/, childProcess: true },
+  { name: 'package-manager shell-outs', marker: /aka plugins install/, childProcess: true },
+  // The one path where this CLI's own source opens a connection. Its
+  // `childProcess: false` is what gives the sub-count below meaning.
+  { name: 'attached control plane', marker: /aka attach/, childProcess: false },
+] as const;
+
+/**
+ * Spelled numerals, because the footnote is prose and counts in words.
+ *
+ * A count with no word here THROWS rather than resolving to `undefined`: an
+ * undefined interpolated into a regex yields `/undefined narrow paths/`, which
+ * matches nothing — so the case still reds, but for a reason that reads like the
+ * prose is wrong when the table is what ran out.
+ */
+const COUNT_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven'] as const;
+
+function countWord(n: number): string {
+  const word = COUNT_WORDS[n];
+  if (word === undefined) {
+    throw new Error(
+      `no spelled numeral for ${String(n)} — extend COUNT_WORDS. This page counts in prose, so ` +
+        'the table has to reach as far as the thing it counts.',
+    );
+  }
+  return word;
+}
+
 describe('cli/README.md CLI-owned egress disclosure', () => {
   it('has the footnote the rest of these assertions read', () => {
     expect(footnote).toContain('[^egress]:');
@@ -174,10 +219,10 @@ describe('cli/README.md CLI-owned egress disclosure', () => {
    * Spelling it from the same list is what makes both move together.
    */
   it('spells a lookup count that matches what the report actually asks for', () => {
-    const words = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven'];
-    const spelled = words[LOOKED_UP_PACKAGES.length];
-    expect(spelled).toBeDefined();
-    expect(footnote).toContain(`${String(spelled)} \`npm view\` lookups`);
+    // Shares `countWord` with the path count below rather than carrying its own
+    // copy of the numeral list — a second copy is free to run out at a different
+    // length, and then one of the two counts silently stops being checked.
+    expect(footnote).toContain(`${countWord(LOOKED_UP_PACKAGES.length)} \`npm view\` lookups`);
   });
 
   /**
@@ -233,13 +278,64 @@ describe('cli/README.md CLI-owned egress disclosure', () => {
    * The same split the root README makes, against this page's own count: the
    * `aka-<name>` dispatch is named, and held OUTSIDE the count, because folding
    * it in would imply `ai-tc` sends something it does not while dropping it
-   * would leave "two narrow paths" reading as a complete list of what can reach
-   * the network from an `aka` invocation. Neither half works alone.
+   * would leave the count reading as a complete list of what can reach the
+   * network from an `aka` invocation. Neither half works alone.
    */
   it('names the aka-<name> dispatch without folding it into the count', () => {
-    expect(footnote).toMatch(/Two narrow paths/);
     expect(footnote).toMatch(/aka-<name>/);
-    expect(footnote).toMatch(/not one of the two/i);
+    expect(footnote).toMatch(
+      new RegExp(`not one of the ${countWord(CLI_EGRESS_PATHS.length)}`, 'i'),
+    );
+  });
+
+  // The count word and the paths it counts, checked against EACH OTHER rather
+  // than against a literal.
+  it('states a count that matches the number of paths it enumerates', () => {
+    expect(
+      footnote,
+      `the footnote must open by counting the ${String(CLI_EGRESS_PATHS.length)} paths in ` +
+        'CLI_EGRESS_PATHS. If you added or removed one, move the count sentence with it.',
+    ).toMatch(new RegExp(`${countWord(CLI_EGRESS_PATHS.length)} narrow paths`, 'i'));
+  });
+
+  it.each(CLI_EGRESS_PATHS)('enumerates the $name path', ({ marker }) => {
+    // A count that agrees with a list nobody checked is half a guarantee. Each
+    // path is NAMED, so the count cannot be satisfied by a list that lost one.
+    expect(footnote).toMatch(marker);
+  });
+
+  /**
+   * The sub-count, which closes the direction the total cannot see: a merge can
+   * add a path to the PROSE without adding a row, and the total then agrees with
+   * a table that has quietly fallen behind. Every path here but attach is a
+   * spawn, so text carrying one also carries a claim about how many are.
+   */
+  it('states how many of those paths are child processes, and counts them right', () => {
+    const spawned = CLI_EGRESS_PATHS.filter((p) => p.childProcess).length;
+    expect(
+      footnote,
+      `the footnote must say ${countWord(spawned)} of the paths are child processes — the rows ` +
+        'in CLI_EGRESS_PATHS marked childProcess. The remainder open a socket from the source.',
+    ).toMatch(new RegExp(`${countWord(spawned)} are child processes`, 'i'));
+  });
+
+  /**
+   * Two claims this page carried that attached mode retires. Both are the kind a
+   * merge keeps verbatim, because they read as settled background rather than as
+   * a fact about the current tree.
+   *
+   * The second one is banned even though it is still LITERALLY TRUE, and that is
+   * the point worth writing down. `@akasecurity/remote` uses `node:https`, so
+   * "the source uses no `fetch`" remains accurate — but on this page it sat in
+   * the opening reassurance as the evidence for "no built-in network client",
+   * which is now false. A true sentence doing false work is the worst failure a
+   * privacy footnote has, because it survives every fact-check and still leaves
+   * the reader believing nothing opens a socket. Name the client instead.
+   */
+  it('no longer claims every path is a child process, or that the source has no client', () => {
+    expect(footnote).not.toMatch(/both through child processes/i);
+    expect(footnote).not.toMatch(/no built-in network client/i);
+    expect(footnote).not.toMatch(/the source uses no `?fetch`?/i);
   });
 
   it('disclaims knowledge of what the dispatched program does', () => {

@@ -588,12 +588,23 @@ export const CONNECTION_ATTACHED_DESCRIPTION =
   'This machine is registered against your organization’s deployment. Detection, policy and ' +
   'history still run against the local store under ~/.aka.';
 
-// Rendered under an attached connection so the recorded state is never read as a
-// live one. Honesty about a capability this build does not have beats a control
-// that accepts an endpoint and then silently does nothing with it.
-export const CONNECTION_NO_TRANSPORT_NOTICE =
-  'This build carries no control-plane transport, so nothing is sent to that deployment and ' +
-  'nothing is fetched from it. The registration is recorded here for a build that does.';
+// Rendered under an attached connection, because an attached machine is one that
+// SENDS and the user is owed that in plain words on the surface that records it.
+//
+// This said the opposite until attached mode shipped — "this build carries no
+// control-plane transport, so nothing is sent to that deployment" — which was
+// true when written and became a falsehood on a consent surface the moment the
+// transport landed. It renders on `attached &&` with no capability check, so
+// nothing about the build could ever have corrected it.
+//
+// What it must NOT do is describe a live exchange it cannot observe. Forwarding
+// is the plugin's, not this dashboard's: the page reads the local store, so it
+// knows a registration is recorded and knows nothing about whether the other end
+// answered. The copy is scoped to exactly that.
+export const CONNECTION_FORWARDING_NOTICE =
+  'While this machine is attached, the plugin forwards the activity that deployment is entitled ' +
+  'to see and pulls the policy it sets. This page reads only your local store, so it cannot ' +
+  'report what the deployment received. Detach to stop sending.';
 
 // Shown where attaching is offered but the surface supplies no attach handler.
 export const CONNECTION_UNAVAILABLE_NOTICE =
@@ -664,8 +675,8 @@ function ConnectionRow({
       </div>
 
       {attached && (
-        <p className="mt-3 text-xs text-text-3" data-slot="connection-no-transport">
-          {CONNECTION_NO_TRANSPORT_NOTICE}
+        <p className="mt-3 text-xs text-text-3" data-slot="connection-forwarding">
+          {CONNECTION_FORWARDING_NOTICE}
         </p>
       )}
 

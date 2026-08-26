@@ -142,11 +142,29 @@ describe.each(READMES)('$name privacy claims', ({ text }) => {
   // packages/eslint-config, documented in CLAUDE.md §4), so this is no longer the
   // false claim it once was. The guard stays for a different reason: nothing ties
   // README prose to that config, so an enforcement claim here would silently
-  // outlive the rule that justified it. The footnote describes what the source
-  // does — "the source uses no `fetch`" — which the reader can check.
+  // outlive the rule that justified it.
   it('does not claim `fetch` is enforced by tooling', () => {
     expect(text).not.toMatch(/`?fetch`? is banned/i);
     expect(text).not.toMatch(/`?fetch`? is blocked/i);
+  });
+
+  /**
+   * Every front door once opened by promising the source contained no network
+   * client at all. Attached mode retires that product-wide, so it is guarded
+   * product-wide rather than per page — the claim's whole failure mode is being
+   * carried across a merge on a page nobody thought to re-read.
+   *
+   * The `fetch` half is banned though it is still LITERALLY TRUE:
+   * `@akasecurity/remote` uses `node:https`, so "the source uses no `fetch`"
+   * remains accurate — but it sat in these footnotes as the EVIDENCE for "no
+   * built-in network client", which is false now. A true sentence doing false
+   * work is the worst failure a privacy page has: it survives every fact-check
+   * and still leaves the reader believing nothing opens a socket. Name the
+   * client instead, as the root footnote does.
+   */
+  it('does not claim the source contains no network client', () => {
+    expect(text).not.toMatch(/no built-in network client/i);
+    expect(text).not.toMatch(/the source uses no `?fetch`?/i);
   });
 });
 
@@ -225,24 +243,198 @@ describe.each(JUDGE_READMES)('$name judge payload disclosure', ({ text }) => {
   );
 });
 
-// CLAUDE.md §4 counts the `aka <name>` dispatch as a fourth child-process path,
-// and it is one — but it is not a fourth path AKA takes. The CLI execs a program
-// the user installed and named, so folding it into the footnote's count would
-// imply ai-tc sends something it does not, while omitting it entirely leaves the
-// footnote's "all through child processes" reading as a complete list when it is
-// not. The copy does both halves: it names the dispatch and holds it outside the
-// count. Neither half works alone, so both are pinned here.
+// CLAUDE.md §4 lists the `aka <name>` dispatch among its child-process paths,
+// and it is one — but it is not a path AKA takes. The CLI execs a program the
+// user installed and named, so folding it into the footnote's count would imply
+// ai-tc sends something it does not, while omitting it entirely leaves that
+// count reading as a complete list of what an `aka` invocation can reach when it
+// is not. The copy does both halves: it names the dispatch and holds it outside
+// the count. Neither half works alone, so both are pinned here.
 //
-// Root README only — the CLI page states the same split against its own count,
-// and cli/test/privacy-claims.test.ts pins that one.
+// This used to quote the footnote's "all through child processes". That sentence
+// is gone — attached mode reaches the network from the source — and a case below
+// now asserts its ABSENCE, so quoting it in the present tense left this comment
+// describing the opposite of what the file enforces.
+//
+// Root README only — the dispatch is a CLI feature, and the plugin README
+// describes the plugin. The CLI page states the same split against its own
+// (smaller) count, and cli/test/privacy-claims.test.ts pins that one.
+/**
+ * Every path by which the shipped product can reach a network, and the marker
+ * that proves the root README's footnote names it.
+ *
+ * An EXACT set, and the source the count word below is derived from. Anything
+ * that adds an outbound path adds a row here, which is what makes the count
+ * sentence move with the list instead of drifting behind it.
+ *
+ * This table is why the merge that produced it was survivable. Two branches
+ * each added a fourth path from opposite sides — the update notice and the
+ * attached control plane — and each shipped a footnote opening "Four narrow
+ * paths" that was true of its own branch alone. The union is five. Every
+ * literal pin either branch carried would have gone green on a resolution that
+ * kept one sentence verbatim above an enumeration of five.
+ */
+const EGRESS_PATHS = [
+  // Passive and default-on: no command, no consent. `npm view` rather than
+  // `update notice` as the marker, because the mechanism is what a reader
+  // needs — the dedicated case below pins the disclosure words themselves.
+  { name: 'update notice', marker: /npm view/, childProcess: true, carriesUserData: false },
+  {
+    name: 'package-manager install',
+    marker: /package-manager installs/,
+    childProcess: true,
+    carriesUserData: false,
+  },
+  {
+    name: 'supply-chain check',
+    marker: /npm audit signatures/,
+    childProcess: true,
+    carriesUserData: false,
+  },
+  { name: 'setup calibration', marker: /\/aka:setup/, childProcess: true, carriesUserData: true },
+  // The first and only path the source itself opens a connection on. Its
+  // `childProcess: false` is what makes the sub-count below mean something:
+  // every other row is a spawn, and the footnote has to keep saying so.
+  {
+    name: 'attached control plane',
+    marker: /aka attach/,
+    childProcess: false,
+    carriesUserData: true,
+  },
+] as const;
+
+/**
+ * Spelled numerals, because the footnote is prose and says "Four" rather than
+ * "4".
+ *
+ * A count with no word here THROWS rather than resolving to `undefined`. That
+ * matters: an undefined interpolated into a regex produces `/undefined narrow
+ * paths/`, which no footnote matches — so the case would still go red, but for
+ * a reason that reads like the prose is wrong when the table is what ran out.
+ * On a guard whose whole job is telling somebody which of the two to move, that
+ * is the wrong message.
+ */
+const COUNT_WORDS = ['Zero', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven'] as const;
+
+function countWord(n: number): string {
+  const word = COUNT_WORDS[n];
+  if (word === undefined) {
+    throw new Error(
+      `no spelled numeral for ${String(n)} — extend COUNT_WORDS. The footnote counts its egress ` +
+        'paths in prose, so this table has to reach as far as EGRESS_PATHS does.',
+    );
+  }
+  return word;
+}
+
 describe('README.md aka-<name> dispatch disclosure', () => {
   const root = READMES.find((r) => r.name === 'README.md');
   const footnote = footnoteOf(root?.text ?? '');
 
-  it('names the dispatch without folding it into the four-path count', () => {
-    expect(footnote).toMatch(/Four narrow paths/);
+  it('names the dispatch without folding it into the enumerated count', () => {
+    // The SEPARATION is the property: the dispatched program is named and
+    // excluded from the count, because its behaviour is the one thing on this
+    // list nothing in this repo chose.
     expect(footnote).toMatch(/aka-<name>/);
-    expect(footnote).toMatch(/not one of the four/i);
+    expect(footnote).toMatch(new RegExp(`not one of the ${countWord(EGRESS_PATHS.length)}`, 'i'));
+  });
+
+  // The count word and the paths it counts, checked against EACH OTHER rather
+  // than against a literal.
+  //
+  // `toMatch(/Four narrow paths/)` was what stood here, and a pin like that is
+  // WORSE than no guard on a page like this: it goes green whether or not the
+  // number describes the list, so the green asserts that somebody checked. The
+  // way it breaks is not hypothetical — it is what this file was merged through:
+  // two branches each added a fourth path from opposite sides, both shipped a
+  // footnote opening "Four narrow paths", and the union is five. A resolution
+  // that kept either sentence verbatim would have left the page counting one
+  // short with both branches' suites green.
+  //
+  // So the numeral is DERIVED from the enumeration. Adding a path means adding
+  // it to EGRESS_PATHS, and the count sentence then has to move with it or this
+  // fails — which is the forcing function a merge resolution needs.
+  it('states a count that matches the number of paths it enumerates', () => {
+    const word = countWord(EGRESS_PATHS.length);
+    expect(
+      footnote,
+      `the footnote must open by counting the ${String(EGRESS_PATHS.length)} paths in ` +
+        'EGRESS_PATHS. If you added or removed one, move the count sentence with it.',
+    ).toMatch(new RegExp(`${word} narrow paths`, 'i'));
+  });
+
+  it.each(EGRESS_PATHS)('enumerates the $name path', ({ marker }) => {
+    // The other half: a count that agrees with a list nobody checked is only
+    // half a guarantee. Each path has to be NAMED, so the count cannot be
+    // satisfied by a list that quietly lost one.
+    expect(footnote).toMatch(marker);
+  });
+
+  it('does not claim every path is a child process', () => {
+    // True until attached mode, and the sentence that carried it is the one a
+    // merge is most likely to keep: `@akasecurity/remote` reaches the network
+    // from the source itself, without spawning anything.
+    expect(footnote).not.toMatch(/all through child processes/i);
+  });
+
+  // The SUB-count, derived the same way, and it closes the direction the total
+  // cannot see.
+  //
+  // A merge that brings in another party's text can add a path to the PROSE
+  // without adding a row here, and the total then still agrees with a table
+  // that has quietly fallen behind. But every path added so far except attach
+  // is a spawn, so text carrying one also carries a claim about how many of
+  // them are — and that sentence is checked here against the rows marked
+  // `childProcess`. Between the two numerals, prose and table cannot drift
+  // apart in either direction without something going red.
+  it('states how many of those paths are child processes, and counts them right', () => {
+    const spawned = EGRESS_PATHS.filter((p) => p.childProcess).length;
+    expect(
+      footnote,
+      `the footnote must say ${countWord(spawned)} of the paths are child processes — the rows ` +
+        'in EGRESS_PATHS marked childProcess. The remainder reach the network from the source.',
+    ).toMatch(new RegExp(`${countWord(spawned)} of them are child processes`, 'i'));
+  });
+
+  /**
+   * "only" is a COUNT of one, so it is derived like every other count here.
+   *
+   * This is the defect the merge actually shipped, and the reason a third flag
+   * exists. The sentence "That last one is the only path that carries your data"
+   * was TRUE on the branch that wrote it — four paths, all child processes, and
+   * only the calibration carried anything. Appending a fifth path that forwards
+   * captures left the word "only" standing over a list of two, on the sentence a
+   * procurement reviewer quotes. Both suites were green: the total matched, the
+   * sub-count matched, every marker matched. Nothing counted the exclusive.
+   *
+   * So an unqualified exclusive is refused outright the moment a second row
+   * carries data, and the footnote must instead state the count — which forces
+   * the claim to be scoped to a number the table can check.
+   */
+  it('does not claim one path exclusively carries user data when two of them do', () => {
+    const carrying = EGRESS_PATHS.filter((p) => p.carriesUserData).length;
+    expect(carrying, 'the table must mark which paths carry user data').toBeGreaterThan(0);
+    if (carrying > 1) {
+      expect(
+        footnote,
+        `${String(carrying)} rows in EGRESS_PATHS carry user data, so no path may be called the ` +
+          'only one that does. Scope the claim (e.g. "the only one of those four") or say which.',
+      ).not.toMatch(/the only path that carries your data/i);
+    }
+    // And the scoped form has to name the right subset: the data-carrying paths
+    // that are child processes, which is what "those N" refers to.
+    const spawnedTotal = EGRESS_PATHS.filter((p) => p.childProcess).length;
+    expect(footnote).toMatch(new RegExp(`only one of those ${countWord(spawnedTotal)}`, 'i'));
+  });
+
+  it('says the attached path is opt-in, and names where its client lives', () => {
+    // The footnote used to be able to say the source contains no network client
+    // at all. It cannot any more, so what replaces that claim has to be exact:
+    // one named package may open a socket, and only after a machine has been
+    // attached on purpose.
+    expect(footnote).toMatch(/aka attach/);
+    expect(footnote).toMatch(/@akasecurity\/remote/);
+    expect(footnote).toMatch(/opt-in/i);
   });
 
   // The whole point of naming it is that its behaviour is undescribable from

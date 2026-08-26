@@ -298,6 +298,7 @@ const EXPECTED_WORKSPACE_PACKAGE_NAMES = [
   '@akasecurity/plugin-runtime',
   '@akasecurity/plugin-sdk',
   '@akasecurity/portability-gate',
+  '@akasecurity/remote',
   '@akasecurity/required-checks-gate',
   '@akasecurity/scanner',
   '@akasecurity/schema',

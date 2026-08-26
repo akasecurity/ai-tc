@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { createOwnerOnlyFileSync } from '@akasecurity/persistence';
 import { DATA_FILE_MODE, ensureDataDir, settingsDir } from '@akasecurity/plugin-sdk';
+
+import { publishByRename } from './atomic-publish.ts';
 
 export interface PostureState {
   deviceId: string;
@@ -57,8 +59,10 @@ export function createPostureStore(dir: string = settingsDir(), legacyDir?: stri
     // now gates the blocking store read, so losing it costs a re-scan.
     const tmp = `${file}.${randomUUID()}.tmp`;
     await writeFile(tmp, JSON.stringify(state), { encoding: 'utf8', mode: DATA_FILE_MODE });
-    // Atomic swap so a concurrent hook never sees a torn file
-    await rename(tmp, file);
+    // Atomic swap so a concurrent hook never sees a torn file. Same Windows
+    // caveat as the policy cache: a rename whose destination another handle has
+    // open is refused there, transiently, so it goes through the shared retry.
+    await publishByRename(tmp, file);
   }
 
   async function readFrom(path: string): Promise<PostureState | null> {

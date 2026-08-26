@@ -9,7 +9,7 @@ import {
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
-import type { PluginConfig } from '@akasecurity/plugin-sdk';
+import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { dbPath as dbPathOf } from '@akasecurity/plugin-sdk';
 import { ATTACHED_CREDENTIAL_FILENAME } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -53,17 +53,44 @@ const attach = (base: string, endpoint = ENDPOINT): void => {
   });
 };
 
+/**
+ * Every gateway this file resolves, so teardown can close them.
+ *
+ * A resolved gateway is a StandaloneDataGateway, which OPENS the SQLite store.
+ * POSIX unlinks an open file happily, so leaving them open cost nothing here and
+ * the omission was invisible — on Windows the open handle makes `rm` fail with
+ * EPERM and takes the whole suite down in teardown, which is where this first
+ * showed up once the Windows leg could get past its install step.
+ */
+const opened: DataGateway[] = [];
+
+const resolve = (): DataGateway => {
+  const gateway = configuredGatewayFactory(configFor(home));
+  opened.push(gateway);
+  return gateway;
+};
+
+const resolveStandalone = (): DataGateway => {
+  const gateway = standaloneGatewayFactory(configFor(home));
+  opened.push(gateway);
+  return gateway;
+};
+
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-resolve-attached-'));
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Close BEFORE removing the tree, and tolerate a close that fails — a gateway
+  // that never opened cleanly must not mask the assertion that already ran.
+  await Promise.all(opened.map((gateway) => gateway.close().catch(() => undefined)));
+  opened.length = 0;
   rmSync(home, { recursive: true, force: true });
 });
 
 describe('a machine that has not attached', () => {
   it('gets the local gateway, exactly as before attached mode existed', () => {
-    const gateway = configuredGatewayFactory(configFor(home));
+    const gateway = resolve();
     expect(gateway).toBeInstanceOf(StandaloneDataGateway);
   });
 
@@ -71,7 +98,7 @@ describe('a machine that has not attached', () => {
     // The runtime guard records a refusal even when a caller swallows it, so
     // draining it is how this asserts on the absence rather than on a throw
     // nobody would have seen.
-    configuredGatewayFactory(configFor(home));
+    resolve();
     expect(takeBlockedAttempts()).toEqual([]);
   });
 });
@@ -85,7 +112,7 @@ describe('a machine with only half an attachment', () => {
       },
       home,
     );
-    expect(configuredGatewayFactory(configFor(home))).toBeInstanceOf(StandaloneDataGateway);
+    expect(resolve()).toBeInstanceOf(StandaloneDataGateway);
   });
 
   it('stays local when a credential is present but settings name no plane', () => {
@@ -94,7 +121,7 @@ describe('a machine with only half an attachment', () => {
       endpoint: ENDPOINT,
       apiKey: 'not-a-real-key-2b7d4f9a1c63',
     });
-    expect(configuredGatewayFactory(configFor(home))).toBeInstanceOf(StandaloneDataGateway);
+    expect(resolve()).toBeInstanceOf(StandaloneDataGateway);
   });
 
   it('stays local when the credential belongs to another deployment', () => {
@@ -112,7 +139,7 @@ describe('a machine with only half an attachment', () => {
       },
       home,
     );
-    expect(configuredGatewayFactory(configFor(home))).toBeInstanceOf(StandaloneDataGateway);
+    expect(resolve()).toBeInstanceOf(StandaloneDataGateway);
   });
 
   it('stays local when the credential names an endpoint it would never send to', () => {
@@ -132,14 +159,14 @@ describe('a machine with only half an attachment', () => {
       { mode: 0o600 },
     );
 
-    expect(configuredGatewayFactory(configFor(home))).toBeInstanceOf(StandaloneDataGateway);
+    expect(resolve()).toBeInstanceOf(StandaloneDataGateway);
   });
 });
 
 describe('a fully attached machine', () => {
   it('gets the forwarding decorator over the same local gateway', () => {
     attach(home);
-    const gateway = configuredGatewayFactory(configFor(home));
+    const gateway = resolve();
     expect(gateway).toBeInstanceOf(AttachedDataGateway);
   });
 
@@ -147,7 +174,7 @@ describe('a fully attached machine', () => {
     // Constructing the decorator wires a client; it does not use one. A machine
     // that resolves a gateway and then does nothing must send nothing.
     attach(home);
-    configuredGatewayFactory(configFor(home));
+    resolve();
     expect(takeBlockedAttempts()).toEqual([]);
   });
 });
@@ -157,6 +184,6 @@ describe('the explicit local factory', () => {
     // A caller that wants the local gateway asks for it by name rather than by
     // arranging for a file to be absent.
     attach(home);
-    expect(standaloneGatewayFactory(configFor(home))).toBeInstanceOf(StandaloneDataGateway);
+    expect(resolveStandalone()).toBeInstanceOf(StandaloneDataGateway);
   });
 });

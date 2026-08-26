@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { DATA_FILE_MODE, dataDir, ensureDataDir } from '@akasecurity/plugin-sdk';
 import { PolicyBundle } from '@akasecurity/schema';
+
+import { publishByRename } from './atomic-publish.ts';
 
 // The cached policy bundle, the epoch-ms it was last CONFIRMED FRESH (drives
 // sync throttling and staleness reporting), and the ETag that confirmed it.
@@ -92,8 +94,12 @@ export function createPolicyStore(dir: string = dataDir()) {
         mode: DATA_FILE_MODE,
         flag: 'wx',
       });
-      // Atomic swap so a hook reading concurrently never sees a torn file
-      await rename(tmp, file);
+      // Atomic swap so a hook reading concurrently never sees a torn file.
+      // Through `publishByRename` because Windows refuses a rename whose
+      // destination another handle has open — a concurrent reader is enough —
+      // and raises the same EPERM when two publishes race. Both are transient
+      // and neither means the bytes are wrong.
+      await publishByRename(tmp, file);
     } catch (err) {
       // Never leave the temp behind to accumulate in ~/.aka; the write itself
       // still fails loudly to `runPolicySync`, which records the outcome.

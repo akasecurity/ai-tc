@@ -182,7 +182,7 @@ import type { IngestEvent } from '@akasecurity/schema';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { openLocalDatabase } from '../../src/database.ts';
-import { CORPUS_EPOCH_MS, seedCaptureCorpus } from '../helpers/corpus.ts';
+import { CORPUS_EPOCH_MS, corpusConnection, seedCaptureCorpus } from '../helpers/corpus.ts';
 import type { OwnedTempStore } from '../helpers/temp-store.ts';
 import { createTempStore } from '../helpers/temp-store.ts';
 
@@ -305,6 +305,38 @@ function seedAndMeasure(store: OwnedTempStore, events: number): Measured {
     // pair again, which would raise the sensitivity floor a second time.
     findingRate: SEED_FINDING_RATE,
   });
+
+  // CHECKPOINT BEFORE MEASURING, or the two sizes are not compared in the same
+  // state and `openLocalDatabase` is charged for the difference.
+  //
+  // `seedCaptureCorpus` wraps the whole corpus in ONE transaction, and a
+  // checkpoint cannot run inside one — the same property `store-growth.test.ts`
+  // measures on purpose. So the log is not the ~4.2 MB steady state a real store
+  // settles at under `wal_autocheckpoint`; it holds the entire seed. Measured
+  // here: the 2,000-event store leaves a 4,132,392-byte WAL and the 20,000-event
+  // store 17,637,752 — a factor of 4.27 that is an artifact of the FIXTURE, not
+  // a property of the open.
+  //
+  // Every open then reads a log four times bigger on one side than the other.
+  // That costs nothing while the pages are in the page cache, which is why this
+  // reads ~1.0 locally and did so on every CI run for months. It is not free on a
+  // runner executing the whole workspace suite in parallel, where those pages are
+  // not resident — and it is charged in proportion to a size only one side has.
+  // CI failed at a ratio of 3.619 (2.1464 ms against 7.7686 ms), which is that
+  // 4.27 arriving with the cache cold, on a commit whose diff touched CLAUDE.md,
+  // a shell script and one unrelated test file.
+  //
+  // Truncating here leaves both stores at the steady state — measured 4,148,872
+  // and 4,144,752 bytes, i.e. equal — so a cost proportional to the log cancels
+  // in the ratio the way every other shared cost does. It does NOT paper over a
+  // real regression: a size-dependent cost in the open itself survives this,
+  // because it is the log rather than the database being equalized (2.2 MB
+  // against 17.0 MB, still 7.7x apart).
+  //
+  // Do not answer a future flake here by widening FLATNESS_CEILING. The ceiling
+  // separates flat from linear-in-the-table (~10); what went wrong was the two
+  // sides being in different states, and that is the thing to fix.
+  corpusConnection(db).exec('PRAGMA wal_checkpoint(TRUNCATE)');
 
   const captures: number[] = [];
   for (let i = 0; i < CAPTURE_SAMPLES; i += 1) {

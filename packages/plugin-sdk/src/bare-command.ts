@@ -25,8 +25,9 @@
  *     so itself, in DEP0190: "the arguments are not escaped, only concatenated".
  *     So `shell: true` alone is not a fix, it is a command-injection surface
  *     wherever an argument carries content this repo did not choose. The
- *     Antigravity judge is exactly that case: its prompt rides argv and contains
- *     raw scanned transcript text.
+ *     Antigravity judge was exactly that case until its prompt moved to stdin,
+ *     which is the real fix wherever a host offers one — this module is what
+ *     covers an argument that still has to ride argv.
  *
  * What this module does about (3) is refuse rather than hope. On the shell path
  * every argument is quoted here, the whole command line is passed as a single
@@ -111,8 +112,8 @@ export const BARE_COMMAND_ERROR_CODE = 'ERR_AKA_WINDOWS_ARGV';
  *
  * `reason` is raw-free BY CONSTRUCTION — it names the argv index and the
  * character class that made the argument unusable, never the argument. That
- * matters because the one caller that hits this in practice is the Antigravity
- * judge, whose refused argument is the raw-bearing judge prompt.
+ * matters because a refused argument is by definition one this repo did not
+ * choose the content of, so it may itself be a raw scanned value.
  */
 export class BareCommandUnsupportedError extends Error {
   readonly code = BARE_COMMAND_ERROR_CODE;

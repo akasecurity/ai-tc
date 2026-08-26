@@ -165,6 +165,29 @@ describe('SECURITY.md "Data at rest" enumerates the store', () => {
     expect(occurrences(atRest, FILE_MODE_CLAIM)).toBe(1);
   });
 
+  /**
+   * The `.bak` paragraph states WHEN a copy is made, and that condition is the
+   * part a user audits against: they open `~/.aka/data`, find no `.bak`, and
+   * need to know whether that is healthy. It read as unconditional ("before a
+   * migration rewrites the schema") long after the pre-drop snapshot became
+   * conditional on the drop destroying rows, so a new install — which writes
+   * none — looked like a store whose migration had silently not run.
+   *
+   * Everything else here derives a NAME from the module that writes it, which is
+   * why this drifted with nothing going red: no name changed. The condition is
+   * prose and has no constant to derive from, so it is pinned as prose, and
+   * pinned in BOTH directions — the qualifier has to be present, and the
+   * unconditional phrasing it replaced has to be absent, or a reword that
+   * reinstates the old claim beside the new one reads as green.
+   */
+  it('says a snapshot is conditional, not routine', () => {
+    expect(atRest).toContain('before a migration that would destroy rows');
+    expect(atRest).not.toContain('before a migration rewrites the schema');
+    // …and that a store legitimately carrying none is a normal state, which is
+    // the half a user needs to read their own data dir.
+    expect(atRest).toMatch(/may carry no `\.bak` at all/);
+  });
+
   it.each(STORE_DIRS)('lists the %s directory among the tightened set', (dir) => {
     expect(enumeration).toContain(dir);
   });

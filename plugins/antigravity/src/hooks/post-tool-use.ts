@@ -33,6 +33,7 @@ import { loadConfig } from '@akasecurity/plugin-sdk';
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { parseJson, readStdin, runHookFailOpen } from './shared.ts';
 import { parseReconcileTrigger } from './stop-payload.ts';
+import { warnIfStoreRedirected } from './store-health.ts';
 
 const CARRY_ON = {};
 
@@ -40,6 +41,9 @@ async function main(): Promise<unknown> {
   const trigger = parseReconcileTrigger(parseJson(await readStdin()));
   if (trigger === undefined) return CARRY_ON;
   const config = loadConfig();
+  // A symlinked store path redirects the corpus without failing anything;
+  // say so once per session (stderr, so the stdout contract is untouched).
+  warnIfStoreRedirected(config, trigger.sessionId);
   triggerReconcile(config.dataDir, trigger.sessionId, trigger.transcriptPath);
   return CARRY_ON;
 }

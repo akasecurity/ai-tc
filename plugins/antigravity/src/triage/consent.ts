@@ -1,6 +1,6 @@
 /**
  * Model-judge consent — the distinct opt-in that gates sending findings to the
- * model API (the aka-setup judge's `agy -p` egress). This is separate from
+ * model API (the aka-setup judge's `agy` egress). This is separate from
  * the historical-access grant, which only governs READING local transcripts.
  * The judge refuses to run unless the stored consent is present AND matches the
  * current payload-shape version.

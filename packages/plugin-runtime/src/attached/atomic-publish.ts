@@ -34,7 +34,16 @@ import { rename } from 'node:fs/promises';
  */
 const RETRYABLE = new Set(['EPERM', 'EACCES', 'EBUSY']);
 
-/** Attempts including the first. Five tries spans ~150ms of backoff. */
+/**
+ * Attempts including the first.
+ *
+ * Five tries spend 100ms of backoff, not 150: `delay(attempt * 10)` is reached
+ * on attempts 1 through 4 only (10 + 20 + 30 + 40), because the fifth hits the
+ * budget check and rethrows without sleeping. Nothing measures this — the tests
+ * pin the attempt COUNT and deliberately assert no elapsed time, since a
+ * wall-clock assertion on a shared runner is a flake — so this comment is the
+ * only statement of the budget and is worth being right.
+ */
 const ATTEMPTS = 5;
 
 const delay = (ms: number): Promise<void> =>

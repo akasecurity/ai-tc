@@ -79,15 +79,27 @@ export type AttachedCredential = z.infer<typeof AttachedCredential>;
 
 // The largest epoch-millis value that round-trips as a timestamp everywhere:
 // 9999-12-31T23:59:59.999Z. Past year 9999, `Date#toISOString()` switches to
-// the extended-year form (`+010000-…`), which timestamp parsers reject — so a
-// larger value would parse clean here and then fail inside the receiving
-// deployment, an error on a body this contract called valid. Bounded at the
-// schema instead, where the sender sees it.
+// the extended-year form (`+010000-…`), which timestamp parsers reject.
+//
+// WHAT THIS BOUND BUYS, stated precisely, because an earlier wording claimed
+// more. It does NOT refuse the value on this machine: nothing in product code
+// parses a request body, here or on any other route — `reportStorePosture`
+// stringifies the snapshot straight into `send`, and `parsed()` in the client is
+// applied to RESPONSES. So an out-of-range value still leaves the device and
+// still fails inside the receiving deployment.
+//
+// What it does is define the contract that deployment validates against, which
+// is this file's job: a plane parsing with these schemas rejects the body for a
+// stated reason rather than failing somewhere in its storage layer, and the
+// bound is testable at the sender even though it is not enforced there. Making
+// it a local refusal would mean parsing request bodies before sending them —
+// a different decision, and one that has to weigh a fail-open capture path
+// against dropping a report the plane might have accepted.
 const MAX_DATE_MS = 253_402_300_799_999;
 
 // Ceiling of a signed 32-bit integer column. `.int()` alone admits everything
-// up to MAX_SAFE_INTEGER; the gap between the two would again fail only inside
-// the receiving deployment.
+// up to MAX_SAFE_INTEGER. Same standing as MAX_DATE_MS above: the contract the
+// receiving deployment validates against, not a refusal this machine performs.
 const MAX_INT4 = 2_147_483_647;
 
 // ─── Store-posture report (request: POST /v1/store-posture) ──────────────────
@@ -189,11 +201,11 @@ export const StorePostureSnapshot = z
     storePresent: z.boolean(),
     schemaVersion: z.number().int().min(0).max(MAX_INT4).nullable(), // PRAGMA user_version
     findingsTotal: z.number().int().min(0).max(MAX_INT4),
-    // Epoch millis, bounded like `capturedAt`. Read from the local store's own
-    // rows rather than from this machine's clock, so a row a damaged or
-    // hand-edited store left out of range would otherwise parse clean here and
-    // fail inside the receiving deployment, where the reason is far harder to
-    // see.
+    // Epoch millis, bounded like `capturedAt` — see MAX_DATE_MS on what that
+    // bound does and does not do. Worth stating for these two specifically:
+    // they are read from the local store's own ROWS rather than from this
+    // machine's clock, so a damaged or hand-edited store is enough to produce
+    // an out-of-range value with no clock skew involved.
     findingsFirstAt: z.number().int().min(0).max(MAX_DATE_MS).nullable(),
     findingsLastAt: z.number().int().min(0).max(MAX_DATE_MS).nullable(),
     packs: z.array(StorePosturePack).max(500),

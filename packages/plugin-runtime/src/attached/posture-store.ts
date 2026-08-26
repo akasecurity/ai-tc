@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { createOwnerOnlyFileSync } from '@akasecurity/persistence';
@@ -58,11 +58,29 @@ export function createPostureStore(dir: string = settingsDir(), legacyDir?: stri
     // swallows that, but it silently loses a throttle advance — and the throttle
     // now gates the blocking store read, so losing it costs a re-scan.
     const tmp = `${file}.${randomUUID()}.tmp`;
-    await writeFile(tmp, JSON.stringify(state), { encoding: 'utf8', mode: DATA_FILE_MODE });
-    // Atomic swap so a concurrent hook never sees a torn file. Same Windows
-    // caveat as the policy cache: a rename whose destination another handle has
-    // open is refused there, transiently, so it goes through the shared retry.
-    await publishByRename(tmp, file);
+    try {
+      await writeFile(tmp, JSON.stringify(state), { encoding: 'utf8', mode: DATA_FILE_MODE });
+      // Atomic swap so a concurrent hook never sees a torn file. Same Windows
+      // caveat as the policy cache: a rename whose destination another handle
+      // has open is refused there, transiently, so it goes through the shared
+      // retry.
+      await publishByRename(tmp, file);
+    } catch (err) {
+      // Never leave the temp behind, the same guarantee `policy-store.ts` makes
+      // about the identical pair. The suffix is a fresh uuid per write, so a
+      // leaked temp is not overwritten by the next attempt — they accumulate in
+      // the settings dir without bound, and nothing surfaces it: every caller of
+      // `persist` swallows, so the machine reports normally while the directory
+      // fills.
+      //
+      // Reachable rather than theoretical since the retry landed. POSIX rename
+      // does not fail here, which is why this was survivable before; Windows
+      // refuses a contended destination, and `publishByRename` rethrows once its
+      // attempts are spent — so a destination held past the budget leaks one
+      // file per publish, on exactly the platform the retry exists for.
+      await rm(tmp, { force: true }).catch(() => undefined);
+      throw err;
+    }
   }
 
   async function readFrom(path: string): Promise<PostureState | null> {

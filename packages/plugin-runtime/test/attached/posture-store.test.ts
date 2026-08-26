@@ -146,22 +146,31 @@ describe('createPostureStore', () => {
     }
   });
 
-  it('a forced rename failure leaves the randomized tmp file behind — a known, accepted leak', async () => {
-    // Names the property Pedro's finding pointed at rather than leaving it
-    // uncovered: an atomic tmp-swap is not atomic against every failure mode.
-    // If persist() dies between writeFile and rename (here: the destination
-    // path is itself a directory, so rename() fails with EISDIR), the
-    // already-written tmp file has no owner left to clean it up. Fail-open
-    // swallows the error at every call site (markAttempted, read()'s
-    // best-effort persist), so this never surfaces to the caller — it just
-    // accumulates unless something else prunes ~/.aka/settings. Not fixed
-    // here (out of scope for this finding); documented so a future reader
-    // finds it as a known tradeoff, not a silent gap.
+  it('a forced rename failure removes the randomized tmp file rather than leaking it', async () => {
+    // This case used to assert the OPPOSITE and call the leak a known, accepted
+    // tradeoff. Two things changed the calculus.
+    //
+    // Its sibling `policy-store.ts` already cleaned up the identical
+    // write-then-rename pair, so the two files disagreed about the same shape;
+    // and the retry that now backs this rename exists because Windows refuses a
+    // contended destination and `publishByRename` rethrows once its attempts are
+    // spent. So the failure path is reachable on a real platform rather than
+    // only under a contrived EISDIR, and every caller swallows — `markAttempted`
+    // is the only one that surfaces the rejection at all, while the mint and
+    // adoption paths catch around it. The temp name carries a fresh uuid per
+    // write, so nothing overwrites a leaked one: they accumulate in the settings
+    // dir without bound while the machine reports normally.
+    //
+    // Still provoked with a DIRECTORY at the destination, which no rename can
+    // replace on any platform, since the Windows refusal cannot be produced here.
     const store = createPostureStore(dir);
     await mkdir(store.file, { recursive: true }); // destination is a DIR, not a file
     await expect(store.markAttempted('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', 1)).rejects.toThrow();
+    // A second attempt, because one leak per publish is the property: a cleanup
+    // that only ever handled the first would still accumulate.
+    await expect(store.markAttempted('aaaaaaaa-bbbb-4ccc-8ddd-ffffffffffff', 2)).rejects.toThrow();
     const entries = await readdir(dir);
-    expect(entries.some((f) => f.includes('.tmp'))).toBe(true);
+    expect(entries.filter((f) => f.includes('.tmp'))).toEqual([]);
   });
 
   describe('read() is fail-open when persisting a new/adopted identity fails', () => {

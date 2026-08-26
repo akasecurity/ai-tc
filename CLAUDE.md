@@ -1478,6 +1478,33 @@ which is hundreds of megabytes. Nothing on the capture path does that (every
 `recordCapture` commits, and every hook is its own process), but a batch importer would.
 Do not "fix" the pragma without re-reading `store-growth.test.ts`.
 
+**That same property makes a two-size RATIO test compare two different states, and it has
+cost a red `main`.** `seedCaptureCorpus` commits its whole corpus in one transaction, so
+the log it leaves is the seed's entire page footprint rather than the steady state above —
+measured 4,132,392 B for 2,000 events against 17,637,752 B for 20,000, a factor of 4.27
+that belongs to the FIXTURE and to nothing the product does. Every measurement taken
+against those stores then carries a log-proportional cost on one side only. It reads as
+nothing while the pages are cached, which is why `scale-budgets.test.ts` reported a
+`openLocalDatabase` ratio of ~1.0 locally and on CI for months; on a runner executing the
+whole workspace suite in parallel those pages are not resident, and the same asymmetry
+arrived as a ratio of **3.619** (2.1464 ms against 7.7686 ms) against a ceiling of 3 — on a
+commit whose diff touched `CLAUDE.md`, a shell script and one unrelated test file, with no
+product code in it at all.
+
+So a file that seeds two sizes and divides one measurement by the other **checkpoints after
+seeding** (`PRAGMA wal_checkpoint(TRUNCATE)` through `corpusConnection`), which leaves both
+stores at the steady state — measured 4,148,872 and 4,144,752 B, i.e. equal — so the cost
+cancels in the ratio the way every other shared cost does. `scale-budgets.test.ts` and
+`security-page-scale.test.ts` both do this. It equalizes the LOG and not the DATABASE (2.2
+MB against 17.0 MB, still 7.7x apart), so a size-dependent cost in the thing under test
+survives it: verified by mutation, an index-defeated per-open scan fails at 4.14 with the
+checkpoint and 4.08 without. `store-growth.test.ts` is the deliberate exception — the
+unbounded log is what it measures, so it must NOT checkpoint.
+
+The failure this guards is quiet in the wrong direction: it reddens a tree whose diff
+cannot explain it, and the obvious-looking fix is to widen `FLATNESS_CEILING`. Widening it
+answers a state mismatch by weakening the one number that separates flat from linear.
+
 That WAL case is **skipped on Windows, on cost rather than on behaviour.** Demonstrating
 the bound needs 20,000 SEPARATE commits — a checkpoint cannot run inside a transaction, so
 batching them removes the property under test — and each one is an fsync on the platform
@@ -1604,9 +1631,19 @@ covering child processes, and its whole value is a positive control that refuses
 vacuously — which is worthless if nothing exercises it. The same suite drives
 `tools/ci/no-network-test.sh` with a `PATH` of hand-written stubs and pins every
 outcome: probe tooling missing, DNS still resolving, the target still answering, the
-probe reporting itself broken, the probe file gone, started as root, and the one green
-path where the command actually runs. Change a probe and a case fails; delete one and
-the case that covered it fails.
+probe reporting itself broken, the probe file gone, no command to run, started as root,
+the privilege drop-back not having landed, and the one green path where the command
+actually runs.
+Change a probe and a case fails; delete one and the case that covered it fails.
+
+The drop-back case guards the only **silent** outcome on that path: as root the
+read-only-store cases in `packages/persistence` report `effective: false` and **skip**,
+so the run stays green having quietly lost them. Refusing to START as root guards the
+front door only, which is why phase 3 asserts the drop-back landed as well — and why
+`id` is demanded before any of it, since a missing `id` makes every one of those checks
+evaluate false without checking. The full reasoning is in the script's own header and
+phase-3 comment; it is not restated here, because a rationale kept in two places is one
+that goes out of step.
 
 ### The PATH shim, and why it fails OPEN
 

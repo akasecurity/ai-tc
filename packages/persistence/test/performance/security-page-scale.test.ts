@@ -233,6 +233,16 @@ async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Sc
     resolutionRate: Math.min(1, RESOLUTION_TARGET / (events * TRACKABLE_PER_EVENT)),
   });
   const raw = corpusConnection(db);
+  // Both sizes measured in the same STATE. `seedCaptureCorpus` commits the whole
+  // corpus in one transaction and a checkpoint cannot run inside one, so the log
+  // is left holding the entire seed rather than the ~4.2 MB steady state a real
+  // store settles at — measured at 4.13 MB for 2,000 events against 17.64 MB for
+  // 20,000. Every read below then pays a log-proportional cost on one side only,
+  // which is free while those pages are cached and is not on a runner executing
+  // the whole workspace suite. Its sibling `scale-budgets.test.ts` failed CI on
+  // exactly that, at a ratio of 3.619 on a commit that touched no product code;
+  // the reasoning is written out there and not repeated.
+  raw.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   const findings = new SqliteFindingsRepository(raw);
   // The corpus's own clock, never `Date.now()`: the corpus is stamped from a
   // fixed 2024 epoch, so on the wall clock every windowed read is years past its

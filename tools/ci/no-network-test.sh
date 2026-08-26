@@ -39,6 +39,26 @@ if [ "$#" -eq 0 ]; then
   exit 2
 fi
 
+# `id` is demanded before anything reads a uid, for the same reason the probe
+# tools are demanded before the egress control runs: a check whose own tooling is
+# missing does not fail, it passes without checking. `[ "$(id -u)" -eq 0 ]` with
+# no `id` on PATH substitutes the empty string, and `[ "" -eq 0 ]` is not false —
+# it is an ERROR, exit 2, which `if` reads as false. `set -e` does not fire
+# inside an `if` condition, so every privilege decision below would silently
+# invert: the start-as-root refusal would not refuse, the drop-back would carry
+# an empty uid, and the phase-3 control would wave a root run through. Measured,
+# not reasoned: with `id` off PATH the script ran the command and exited 0.
+if ! command -v id >/dev/null 2>&1; then
+  echo "no-network: FAILED — 'id' is not installed, so every privilege check below" >&2
+  echo "no-network: would evaluate to false without checking anything and the suite" >&2
+  echo "no-network: could run as root with its read-only-store cases skipping." >&2
+  exit 1
+fi
+
+# Captured once. The value cannot change within one exec of this script, and a
+# single reader is also a single place for the failure handling above to cover.
+SELF_UID="$(id -u)"
+
 # Phase 1: outside the namespace. Re-enter as root in a fresh network namespace,
 # carrying the caller's identity and the environment the toolchain needs. `sudo
 # env VAR=...` is used rather than `sudo -E` because preserving the whole
@@ -49,7 +69,7 @@ if [ "${AKA_NO_NETWORK_INSIDE:-}" != "1" ]; then
   # root the drop-back below is a no-op, and the read-only-store cases skip
   # instead of asserting. That is a quieter suite still reporting green, so it
   # fails here and there is deliberately no override.
-  if [ "$(id -u)" -eq 0 ]; then
+  if [ "$SELF_UID" -eq 0 ]; then
     echo "no-network: FAILED — started as root. This script elevates itself; running" >&2
     echo "no-network: it as root leaves no unprivileged identity to drop back to, and" >&2
     echo "no-network: the read-only-store cases in packages/persistence would skip" >&2
@@ -58,7 +78,7 @@ if [ "${AKA_NO_NETWORK_INSIDE:-}" != "1" ]; then
   fi
   exec sudo env \
     AKA_NO_NETWORK_INSIDE=1 \
-    "AKA_NO_NETWORK_UID=$(id -u)" \
+    "AKA_NO_NETWORK_UID=$SELF_UID" \
     "AKA_NO_NETWORK_GID=$(id -g)" \
     "PATH=$PATH" \
     "HOME=$HOME" \
@@ -75,7 +95,7 @@ fi
 # interface but leaves it DOWN, and the suite genuinely uses loopback (the CLI's
 # isPortFree bind probe, the dashboard boot test). Bring it up, then drop back to
 # the caller and re-enter this script one last time.
-if [ "$(id -u)" -eq 0 ] && [ "${AKA_NO_NETWORK_DROPPED:-}" != "1" ]; then
+if [ "$SELF_UID" -eq 0 ] && [ "${AKA_NO_NETWORK_DROPPED:-}" != "1" ]; then
   if [ -z "${AKA_NO_NETWORK_UID:-}" ] || [ -z "${AKA_NO_NETWORK_GID:-}" ]; then
     echo "no-network: no caller identity to drop back to. Run this script as the" >&2
     echo "no-network: unprivileged user; it re-enters itself under sudo." >&2
@@ -96,6 +116,25 @@ fi
 
 # Phase 3: inside the namespace, unprivileged.
 #
+# THE PRIVILEGE CONTROL, which is the other half of the positive control below
+# and guards a quieter failure. Phase 2 drops back to the caller because root
+# ignores the 0444 mode `fault-injection.ts` builds a read-only store with, so
+# the read-only cases in packages/persistence would report `effective: false`
+# and SKIP. A skip is not a failure: the suite would still report green, with
+# those cases silently uncovered. That hazard is why this script refuses to
+# START as root — but the refusal only guards the front door. Nothing checked
+# that the drop-back actually landed, so a `setpriv` that stopped working, or a
+# future edit to phase 2, would be invisible: green run, quieter suite, no
+# signal anywhere. Assert it instead of assuming it. Cheap, and it converts the
+# one silent failure on this path into a loud one.
+if [ "$SELF_UID" -eq 0 ]; then
+  echo "no-network: FAILED — still root at the point the command runs, so the" >&2
+  echo "no-network: privilege drop-back did not happen. The read-only-store cases" >&2
+  echo "no-network: in packages/persistence would report 'effective: false' and" >&2
+  echo "no-network: skip, and the run would report green having quietly lost them." >&2
+  exit 1
+fi
+
 # The positive control. An empty network stack and a broken command look
 # identical from a green run, so prove the block is real before trusting the
 # result — the same reason the fault injectors in packages/persistence refuse to

@@ -34,6 +34,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+# The one spelling of the manifest path in this file. It was written out at every
+# site that needed the package name or the version, so moving the plugin was as
+# many edits as there were copies and a missed one failed at release time only.
+env:
+  PLUGIN_MANIFEST: plugins/claude-code/package.json
+
 jobs:
   # Tag pushes get no run of the main CI workflow (it triggers only on main
   # pushes/PRs), so the release re-verifies the tagged commit itself — nothing
@@ -76,6 +82,13 @@ jobs:
     name: Build · Verify · Publish
     needs: verify
     runs-on: ubuntu-latest
+    # What was published, for the marketplace doorbell below. Passing these on
+    # rather than having that job check out the repo and re-derive them is what
+    # makes the two structurally incapable of disagreeing about the version — and
+    # it is why the doorbell needs no checkout at all.
+    outputs:
+      pkg: ${{ steps.manifest.outputs.pkg }}
+      version: ${{ steps.manifest.outputs.version }}
     permissions:
       contents: write # create the GitHub Release
       id-token: write # OIDC trusted publishing to npm (provenance attestation)
@@ -92,6 +105,21 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
+      # Read once, here. Every consumer below — the tag check, the dist-tag
+      # choice, and the doorbell's payload — takes these outputs, so the name and
+      # the version this run publishes have exactly one source.
+      - name: Read the plugin manifest
+        id: manifest
+        run: |
+          set -euo pipefail
+          pkg=$(node -p "require('./${PLUGIN_MANIFEST}').name")
+          version=$(node -p "require('./${PLUGIN_MANIFEST}').version")
+          echo "publishing ${pkg}@${version}"
+          {
+            echo "pkg=${pkg}"
+            echo "version=${version}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -100,13 +128,14 @@ jobs:
 
       - name: Verify tag matches manifest versions
         if: github.event_name == 'push'
+        env:
+          PKG_VERSION: ${{ steps.manifest.outputs.version }}
         run: |
           tag="${GITHUB_REF_NAME#plugin-claude-v}"
-          pkg=$(node -p "require('./plugins/claude-code/package.json').version")
           manifest=$(node -p "require('./plugins/claude-code/.claude-plugin/plugin.json').version")
-          echo "tag=$tag  package.json=$pkg  plugin.json=$manifest"
-          if [ "$tag" != "$pkg" ] || [ "$tag" != "$manifest" ]; then
-            echo "::error::Version mismatch — tag plugin-claude-v$tag must equal package.json ($pkg) and plugin.json ($manifest)"
+          echo "tag=$tag  package.json=$PKG_VERSION  plugin.json=$manifest"
+          if [ "$tag" != "$PKG_VERSION" ] || [ "$tag" != "$manifest" ]; then
+            echo "::error::Version mismatch — tag plugin-claude-v$tag must equal package.json ($PKG_VERSION) and plugin.json ($manifest)"
             exit 1
           fi
 
@@ -133,14 +162,14 @@ jobs:
       - name: Publish to npm
         if: github.event_name == 'push' || inputs.publish
         run: |
-          version=$(node -p "require('./plugins/claude-code/package.json').version")
-          case "$version" in
+          case "$PKG_VERSION" in
             *-*) dist_tag="rc" ;;
             *)   dist_tag="latest" ;;
           esac
           pnpm --filter @akasecurity/ai-tc-claude-code publish --no-git-checks --tag "$dist_tag"
         env:
           NPM_CONFIG_PROVENANCE: 'true'
+          PKG_VERSION: ${{ steps.manifest.outputs.version }}
 
       - name: Create GitHub Release
         if: github.event_name == 'push'
@@ -187,7 +216,7 @@ jobs:
       # the matching auth token into .npmrc.
       - name: Publish to GitHub Packages
         run: |
-          version=$(node -p "require('./plugins/claude-code/package.json').version")
+          version=$(node -p "require('./${PLUGIN_MANIFEST}').version")
           case "$version" in
             *-*) dist_tag="rc" ;;
             *)   dist_tag="latest" ;;
@@ -196,85 +225,19 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # After a successful publish, ring the marketplace's doorbell: a repository_dispatch
-  # tells akasecurity/marketplace's import-plugin-release workflow that a new version
-  # exists, and that workflow re-verifies everything against the registry and opens the
-  # pin-advance PR. The payload carries the published dist facts as a cross-check, read
-  # back from the PUBLIC registry rather than from this run's build — what the
-  # marketplace pin resolves is what the registry serves, so that is what gets
-  # reported — but the receiver trusts none of it: it re-derives dist and provenance
-  # itself before touching the pin. Pre-release (`-` suffixed) versions dispatch too;
-  # the importer declines anything that is not an exact x.y.z, so that rule lives in
-  # one place, on the side that owns the pin.
+  # Ring the marketplace's doorbell. The mechanism lives in a reusable workflow
+  # because it is not specific to this plugin — see notify-marketplace.yml, which
+  # every plugin the marketplace pins calls the same way. `needs: release` both
+  # supplies the published package/version and means a failed publish skips this
+  # without an `always()`.
   notify-marketplace:
-    name: Notify marketplace importer
     needs: release
     if: github.event_name == 'push' || inputs.publish
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # Best-effort by design: the marketplace import can always be started by hand (its
-    # workflow_dispatch takes the version as an input), so a failed doorbell must not
-    # turn a completed npm publish + GitHub Release red. continue-on-error keeps the
-    # run green either way; the job log still shows what happened.
-    continue-on-error: true
+    uses: ./.github/workflows/notify-marketplace.yml
     permissions:
       contents: read
-    # Lifted to job env so the steps can gate on it in `if:` (the secrets context is
-    # not available in step conditionals; the env context is), matching the notify
-    # pattern in release-rules.yml. MARKETPLACE_DISPATCH_TOKEN is a fine-grained PAT
-    # scoped to akasecurity/marketplace with "Contents: read and write" — sending a
-    # repository_dispatch is authorized by contents write on the RECEIVING repo, which
-    # this run's own GITHUB_TOKEN (scoped to this repo) can never carry. Forks, where
-    # the secret is unset, skip the dispatch entirely.
-    env:
-      MARKETPLACE_DISPATCH_TOKEN: ${{ secrets.MARKETPLACE_DISPATCH_TOKEN }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-
-      # Registry-explicit (the @akasecurity scope mapping pinned on the command) so
-      # nothing ambient to the runner can route the read to a registry serving
-      # different bytes for the same version. A few retries absorb post-publish
-      # replication lag; if the registry never serves the version this fails, which
-      # continue-on-error above turns into a non-event for the release itself.
-      - name: Read the published dist from the public registry
-        if: env.MARKETPLACE_DISPATCH_TOKEN != ''
-        run: |
-          pkg=$(node -p "require('./plugins/claude-code/package.json').name")
-          version=$(node -p "require('./plugins/claude-code/package.json').version")
-          for attempt in 1 2 3 4 5; do
-            npm view "${pkg}@${version}" dist --json \
-              --@akasecurity:registry=https://registry.npmjs.org > /tmp/dist.json && break
-            echo "registry does not serve ${pkg}@${version} yet (attempt ${attempt}), retrying"
-            sleep 15
-          done
-          shasum=$(node -p "require('/tmp/dist.json').shasum ?? ''")
-          integrity=$(node -p "require('/tmp/dist.json').integrity ?? ''")
-          if [ -z "$shasum" ] || [ -z "$integrity" ]; then
-            echo "::error::registry returned no dist.shasum/dist.integrity for ${pkg}@${version}"
-            exit 1
-          fi
-          {
-            echo "PKG=${pkg}"
-            echo "PKG_VERSION=${version}"
-            echo "PKG_SHASUM=${shasum}"
-            echo "PKG_INTEGRITY=${integrity}"
-          } >> "$GITHUB_ENV"
-
-      # -f, not -F: every payload field is a string on purpose. -F re-types values
-      # that look like numbers or booleans, and a payload field changing JSON type
-      # with the content is exactly the surprise the receiver should never get.
-      - name: Dispatch plugin-release to akasecurity/marketplace
-        if: env.MARKETPLACE_DISPATCH_TOKEN != ''
-        env:
-          GH_TOKEN: ${{ env.MARKETPLACE_DISPATCH_TOKEN }}
-        run: |
-          gh api repos/akasecurity/marketplace/dispatches \
-            -f event_type=plugin-release \
-            -f "client_payload[package]=${PKG}" \
-            -f "client_payload[version]=${PKG_VERSION}" \
-            -f "client_payload[shasum]=${PKG_SHASUM}" \
-            -f "client_payload[integrity]=${PKG_INTEGRITY}"
+    with:
+      package: ${{ needs.release.outputs.pkg }}
+      version: ${{ needs.release.outputs.version }}
+    secrets:
+      dispatch-token: ${{ secrets.MARKETPLACE_DISPATCH_TOKEN }}

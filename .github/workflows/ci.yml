@@ -263,6 +263,47 @@ jobs:
           path: .turbo/cache
           key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
 
+  # The workflow tree is the one surface in this repository with no gate on it.
+  # Everything else is derived and enforced — CLAUDE.md's whole convention layer
+  # rests on "enforced by ESLint and CI" — while a typo in an `if:` expression, a
+  # `${{ }}` interpolated into a `run:` block, or a quoting bug in a release
+  # script merged unnoticed and was discovered when a tag was pushed, which is
+  # the one moment a failure is most expensive.
+  #
+  # actionlint checks the expression syntax, the event/context names and the
+  # action inputs, and runs shellcheck over every `run:` block (the runner image
+  # ships shellcheck, which actionlint picks up off PATH). It is deliberately NOT
+  # path-filtered to `.github/workflows/**`: a skipped check reports as pending
+  # rather than as passing, which is the shape this repo already avoids for the
+  # CodeQL alert-count job, and the whole job costs seconds.
+  #
+  # The binary is downloaded at a pinned version and verified against a pinned
+  # sha256 before it runs — the same fail-closed shape tools/installer's
+  # one-liners use — rather than piped from a third-party action or an
+  # unversioned install script.
+  workflows:
+    name: Workflows · actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Lint every workflow (actionlint + shellcheck)
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/actionlint.tar.gz"
+          curl -fsSL --retry 3 -o "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
+          shellcheck --version
+          "${RUNNER_TEMP}/actionlint" -color
+
   # No-network leg: the product's headline claim is that nothing leaves the
   # machine. The lint ban (@akasecurity/eslint-config) stops a network primitive
   # being WRITTEN; test/setup/no-network.ts refuses one being CALLED from inside

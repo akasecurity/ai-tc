@@ -1,0 +1,257 @@
+name: Notify marketplace importer
+
+# Ring the marketplace's doorbell after a plugin package has been published to
+# public npm: a repository_dispatch tells the marketplace repo's
+# import-plugin-release workflow that a new version exists, and that workflow
+# re-verifies everything against the registry and opens the pin-advance PR.
+#
+# Reusable rather than inlined in one release workflow. `event_type` is already
+# generic and `client_payload[package]` is already what distinguishes one plugin
+# from another, so the mechanism carries no per-plugin content — as a copy inside
+# a single release workflow it would be maintained there and forgotten in the
+# siblings, and the marketplace serves more than one plugin. Which release
+# workflows call it follows from `.claude-plugin/marketplace.json`: a plugin the
+# marketplace does not pin has no pin to advance.
+#
+# The caller passes the package name and version its own `release` job published,
+# read from that job's outputs. Nothing is re-derived here, so the two jobs
+# cannot disagree about what was published — and this workflow needs no checkout
+# to find out.
+#
+# The payload is a cross-check, read back from the PUBLIC registry rather than
+# from the caller's build: what the marketplace pin resolves is what the registry
+# serves, so that is what gets reported. The receiver trusts none of it and
+# re-derives dist and provenance itself before touching the pin. Pre-release
+# (`-` suffixed) versions dispatch too; the importer declines anything that is
+# not an exact x.y.z, so that rule lives in one place, on the side that owns the
+# pin.
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: 'npm package name that was published (e.g. @akasecurity/ai-tc-claude-code)'
+        required: true
+        type: string
+      version:
+        description: 'Version that was published'
+        required: true
+        type: string
+    secrets:
+      dispatch-token:
+        description: >-
+          Fine-grained PAT with "Contents: read and write" on the RECEIVING
+          marketplace repo. Sending a repository_dispatch is authorized by
+          contents write on the receiver, which a run's own GITHUB_TOKEN
+          (scoped to this repo) can never carry.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    name: Notify marketplace importer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    # Two failure modes, and they are not the same kind of thing — which is why
+    # `continue-on-error` sits on the best-effort STEPS below rather than on this
+    # job:
+    #
+    #   * A missing token, or a receiving repo that cannot be resolved, is a
+    #     CONFIGURATION fault. Nothing will fix itself, and a silent skip means a
+    #     rotated-away PAT leaves every later release pinning the old version
+    #     with a green tick and not even a log line. That fails the run, matching
+    #     release-rules.yml's "Fail if the publish dispatch is not configured".
+    #
+    #   * The registry read and the dispatch itself are TRANSIENT. The publish
+    #     and the GitHub Release have already happened and are immutable, and the
+    #     import can always be started by hand from the marketplace's own
+    #     workflow_dispatch — so a 502 must not redden a completed release. Those
+    #     two steps carry `continue-on-error` and raise an `::error::` annotation
+    #     that names what to do.
+    #
+    # Secrets and job-level `env` are both unreadable from a job-level `if:`, so
+    # the resolution runs as the first step and everything below gates on its
+    # outputs.
+    env:
+      MARKETPLACE_DISPATCH_TOKEN: ${{ secrets.dispatch-token }}
+      # The receiving repo is a variable, not a literal, for the same reason
+      # release-rules.yml routes through `vars.RULES_PUBLISHER_REPO`. It closes
+      # both directions at once: a downstream fork that wants this automation
+      # points it at its own marketplace without editing a workflow, and a fork
+      # that merely configures a dispatch token does NOT fire `plugin-release`
+      # events for its own build at akasecurity/marketplace — the built-in
+      # default applies on the canonical repo alone.
+      MARKETPLACE_REPO: ${{ vars.MARKETPLACE_REPO }}
+    steps:
+      - name: Resolve the receiving repository
+        id: target
+        run: |
+          set -euo pipefail
+          target="${MARKETPLACE_REPO:-}"
+          if [ -z "$target" ] && [ "$GITHUB_REPOSITORY" = 'akasecurity/ai-tc' ]; then
+            target='akasecurity/marketplace'
+          fi
+          if [ -z "$target" ]; then
+            echo "::notice::no MARKETPLACE_REPO variable and this is not akasecurity/ai-tc — not dispatching a plugin-release for ${PKG}@${PKG_VERSION}"
+          else
+            echo "receiving repository: ${target}"
+          fi
+          echo "repo=${target}" >> "$GITHUB_OUTPUT"
+        env:
+          PKG: ${{ inputs.package }}
+          PKG_VERSION: ${{ inputs.version }}
+
+      # A resolved receiver with no token is the case that must not pass quietly:
+      # the publish succeeded, the pin did not move, and nobody learns until
+      # someone notices installs are stale. No `continue-on-error` here on
+      # purpose.
+      - name: Fail if the marketplace dispatch is not configured
+        if: steps.target.outputs.repo != '' && env.MARKETPLACE_DISPATCH_TOKEN == ''
+        run: |
+          echo "::error::${PKG}@${PKG_VERSION} was published but the MARKETPLACE_DISPATCH_TOKEN secret is not configured — ${TARGET_REPO} was not notified and its pin still names the previous version. Restore the secret, then start the import by hand from that repo's workflow_dispatch."
+          exit 1
+        env:
+          PKG: ${{ inputs.package }}
+          PKG_VERSION: ${{ inputs.version }}
+          TARGET_REPO: ${{ steps.target.outputs.repo }}
+
+      # Gated so a fork, or a canonical run with the secret unset, pays nothing
+      # for a toolchain it is about to skip. `npm view` and `jq` are the only
+      # tools below; jq ships on the runner image, and pinning Node here pins the
+      # npm that performs the registry read.
+      - uses: actions/setup-node@v6
+        if: steps.target.outputs.repo != '' && env.MARKETPLACE_DISPATCH_TOKEN != ''
+        with:
+          node-version: 24
+
+      # Registry-explicit — the scope mapping is pinned on the command — so
+      # nothing ambient to the runner can route the read to a registry serving
+      # different bytes for the same version. The scope is DERIVED from the
+      # package name rather than written out: a hardcoded `--@akasecurity:` next
+      # to a package name that had been renamed or white-labelled would configure
+      # a scope no longer in play, npm would fall back to whatever `.npmrc` or
+      # `NPM_CONFIG_REGISTRY` says, and the pin this flag exists to be would fail
+      # open with nothing logged.
+      #
+      # A few retries absorb post-publish replication lag. Exhaustion is explicit
+      # rather than a fall-through: the loop's `&& break` puts every failure on
+      # the left of `&&`, which `-e` exempts, so falling through would leave a
+      # truncated file for the parse below to choke on and the real cause (an
+      # E404 that npm writes to STDOUT under `--json`) discarded unread.
+      - name: Read the published dist from the public registry
+        id: dist
+        if: steps.target.outputs.repo != '' && env.MARKETPLACE_DISPATCH_TOKEN != ''
+        continue-on-error: true
+        env:
+          PKG: ${{ inputs.package }}
+          PKG_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          # $RUNNER_TEMP, not /tmp: /tmp is shared between jobs on a self-hosted
+          # or container runner and is not cleaned between them, so a previous
+          # run's file is indistinguishable from this run's.
+          dist_file="${RUNNER_TEMP}/marketplace-dist.json"
+
+          case "$PKG" in
+            @*/*) registry_flag="--${PKG%%/*}:registry=https://registry.npmjs.org" ;;
+            *)    registry_flag="--registry=https://registry.npmjs.org" ;;
+          esac
+
+          attempts=5
+          for attempt in $(seq 1 "$attempts"); do
+            if npm view "${PKG}@${PKG_VERSION}" dist --json "$registry_flag" > "$dist_file"; then
+              break
+            fi
+            if [ "$attempt" -eq "$attempts" ]; then
+              echo "::error::the registry never served ${PKG}@${PKG_VERSION} after ${attempts} attempts — the marketplace was not notified. Start the import by hand from the marketplace repo's workflow_dispatch."
+              echo "last response from the registry:"
+              cat "$dist_file" || true
+              exit 1
+            fi
+            echo "registry does not serve ${PKG}@${PKG_VERSION} yet (attempt ${attempt}/${attempts}), retrying in 15s"
+            sleep 15
+          done
+
+          if ! jq -e . < "$dist_file" > /dev/null 2>&1; then
+            echo "::error::the registry response for ${PKG}@${PKG_VERSION} is not parseable JSON — the marketplace was not notified"
+            cat "$dist_file" || true
+            exit 1
+          fi
+
+          shasum=$(jq -r '.shasum // ""' < "$dist_file")
+          integrity=$(jq -r '.integrity // ""' < "$dist_file")
+
+          # Both values come off the wire, and both are about to cross a step
+          # boundary through $GITHUB_OUTPUT — where the single-line `KEY=VALUE`
+          # form lets an embedded newline write further assignments that the
+          # runner resolves last-one-wins. Validating the SHAPE is the primary
+          # defence rather than quoting: a value that is not a 40-character sha1
+          # or an SRI hash cannot carry a newline in the first place, and a
+          # malformed dist becomes the `::error::` this step already wants to
+          # raise instead of something to escape and pass on. `[[ =~ ]]` matches
+          # against the whole string, so `^…$` is a real anchor here — `grep`
+          # would match line by line and let a newline through.
+          if [[ ! $shasum =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::the registry returned a dist.shasum for ${PKG}@${PKG_VERSION} that is not a 40-character sha1 — the marketplace was not notified"
+            exit 1
+          fi
+          if [[ ! $integrity =~ ^sha[0-9]{3}-[A-Za-z0-9+/]+={0,2}$ ]]; then
+            echo "::error::the registry returned a dist.integrity for ${PKG}@${PKG_VERSION} that is not an SRI hash — the marketplace was not notified"
+            exit 1
+          fi
+
+          # Heredoc form even so: the shape checks above already rule out the
+          # injection, and this makes the write correct on its own terms rather
+          # than only because of them.
+          {
+            printf 'shasum<<AKA_EOF_SHASUM\n%s\nAKA_EOF_SHASUM\n' "$shasum"
+            printf 'integrity<<AKA_EOF_INTEGRITY\n%s\nAKA_EOF_INTEGRITY\n' "$integrity"
+            echo "ok=true"
+          } >> "$GITHUB_OUTPUT"
+
+      # The send is the irreplaceable half, so it retries like the read above.
+      # Without that the asymmetry ran backwards: five attempts absorbed
+      # post-publish replication lag, while a single 502 or a brief
+      # secondary-rate-limit 403 on the dispatch reached the exact end state the
+      # retries existed to prevent.
+      #
+      # -f, not -F: every payload field is a string on purpose. -F re-types
+      # values that look like numbers or booleans, and a payload field changing
+      # JSON type with its content is exactly the surprise the receiver should
+      # never get. The fields are interpolated by bash from `env:` rather than by
+      # `${{ }}`, so there is no script-injection surface in the run block.
+      - name: Dispatch plugin-release to the marketplace
+        if: steps.dist.outputs.ok == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ env.MARKETPLACE_DISPATCH_TOKEN }}
+          TARGET_REPO: ${{ steps.target.outputs.repo }}
+          PKG: ${{ inputs.package }}
+          PKG_VERSION: ${{ inputs.version }}
+          PKG_SHASUM: ${{ steps.dist.outputs.shasum }}
+          PKG_INTEGRITY: ${{ steps.dist.outputs.integrity }}
+        run: |
+          set -euo pipefail
+          attempts=5
+          for attempt in $(seq 1 "$attempts"); do
+            if gh api "repos/${TARGET_REPO}/dispatches" --silent \
+              -f event_type=plugin-release \
+              -f "client_payload[package]=${PKG}" \
+              -f "client_payload[version]=${PKG_VERSION}" \
+              -f "client_payload[shasum]=${PKG_SHASUM}" \
+              -f "client_payload[integrity]=${PKG_INTEGRITY}"; then
+              echo "notified ${TARGET_REPO}: ${PKG}@${PKG_VERSION}"
+              exit 0
+            fi
+            if [ "$attempt" -eq "$attempts" ]; then
+              echo "::error::could not dispatch plugin-release to ${TARGET_REPO} for ${PKG}@${PKG_VERSION} after ${attempts} attempts — start the import by hand from that repo's workflow_dispatch."
+              exit 1
+            fi
+            echo "dispatch failed (attempt ${attempt}/${attempts}), retrying in 10s"
+            sleep 10
+          done

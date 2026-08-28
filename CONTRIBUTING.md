@@ -156,11 +156,12 @@ set stops matching this column.
 | `macOS · Full suite`                      | `ci.yml`     | ⛔       |
 | `Windows · Unit tests (shipped surface)`  | `ci.yml`     | ✅       |
 | `Windows · Lint`                          | `ci.yml`     | ⛔       |
+| `Workflows · actionlint`                  | `ci.yml`     | ⛔       |
 | `Dependency audit`                        | `audit.yml`  | ⛔       |
 | `CodeQL (javascript-typescript)`          | `codeql.yml` | ⛔       |
 | `CodeQL (actions)`                        | `codeql.yml` | ⛔       |
 
-**Two of the nine block a merge. The other seven run on every PR and block nothing.** Two
+**Two of the ten block a merge. The other eight run on every PR and block nothing.** Two
 of those seven are asserted as enforced elsewhere in this repository: CLAUDE.md presents
 `No-network · Full suite, egress blocked` as one of the four gates behind the no-local-only
 guarantee — and as the one that covers the whole suite's child processes — and describes `Dependency

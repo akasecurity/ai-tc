@@ -8,9 +8,17 @@ import { EVENT_META } from '../../src/activity/meta.ts';
 // written out here; this is where they are, so re-toning a row is a deliberate
 // edit rather than something a spread quietly carries.
 const EXPECTED = {
-  session: 'muted', prompt: 'primary', response: 'violet', tool: 'muted',
-  hook: 'low', detection: 'critical', share: 'teal', permission: 'high',
-  commit: 'muted', error: 'critical', active: 'primary',
+  session: 'muted',
+  prompt: 'primary',
+  response: 'violet',
+  tool: 'muted',
+  hook: 'low',
+  detection: 'critical',
+  share: 'teal',
+  permission: 'high',
+  commit: 'muted',
+  error: 'critical',
+  active: 'primary',
 } as const;
 
 describe('the timeline node tones', () => {

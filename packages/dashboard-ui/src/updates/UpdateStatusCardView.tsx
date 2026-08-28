@@ -59,7 +59,7 @@ export function UpdateStatusCardView({
   return (
     <Card className="shadow-sm">
       <CardHeader>
-        <CardIcon className="bg-primary-tint text-primary">
+        <CardIcon tone="primary">
           <RefreshIcon aria-hidden focusable={false} className="size-4" />
         </CardIcon>
         <CardHeading>

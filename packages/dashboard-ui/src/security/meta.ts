@@ -16,13 +16,9 @@ export const SEVERITY_META: Record<Severity, { label: string; color: string }> =
   low: { label: 'Low', color: COLORS.sevLow },
 };
 
-// Tailwind classes for a severity-tinted icon tile (fill + foreground).
-export const SEVERITY_TILE: Record<Severity, string> = {
-  critical: 'bg-sev-critical-fill text-sev-critical-ink',
-  high: 'bg-sev-high-fill text-sev-high-ink',
-  medium: 'bg-sev-medium-fill text-sev-medium-ink',
-  low: 'bg-sev-low-fill text-sev-low-ink',
-};
+// A severity-tinted icon tile needs no lookup of its own: every Severity member
+// is also a tonal family name, so `TONE_SOFT[severity]` at the call site IS the
+// mapping.
 
 // `icon` is a concrete component (resolved here, not a string name), so the view
 // renders it directly and a missing mapping is a compile error.

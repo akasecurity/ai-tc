@@ -2,7 +2,7 @@
 
 import type { IconComponent } from '@akasecurity/dashboard-ui';
 import { ThemeToggle } from '@akasecurity/dashboard-ui/theme/toggle';
-import { cn } from '@akasecurity/ui-kit';
+import { cn, TONE_SOFT } from '@akasecurity/ui-kit';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
@@ -94,7 +94,7 @@ function NavRow({ item, active }: { item: NavItem; active: boolean }) {
   const className = cn(
     'flex w-full items-center gap-3 rounded-lg px-3 h-10 text-left text-sm group font-medium transition-colors cursor-pointer',
     active
-      ? 'bg-primary-tint text-primary font-semibold'
+      ? cn(TONE_SOFT.primary, 'font-semibold')
       : 'text-text-2 hover:bg-surface-2 hover:text-text',
   );
 

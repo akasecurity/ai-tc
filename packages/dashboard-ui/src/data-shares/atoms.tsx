@@ -8,7 +8,7 @@ import type {
   ShareTrustLevel,
   Transport,
 } from '@akasecurity/schema';
-import { Badge, cn } from '@akasecurity/ui-kit';
+import { Badge, cn, type Tone, TONE_SOFT } from '@akasecurity/ui-kit';
 
 import { BracesIcon, BuildingIcon, PinIcon, ServerIcon } from '../shared/icons.tsx';
 import { CLASS_META, destMarkStyle, providerMark, TRANSPORT_META, TRUST_META } from './meta.ts';
@@ -17,20 +17,20 @@ import { CLASS_META, destMarkStyle, providerMark, TRANSPORT_META, TRUST_META } f
  * Colored method tag (mono, method-colored). 'SDK' and 'REF' are evidence tags
  * rather than verbs — see HttpMethod in @akasecurity/schema.
  */
-const METHOD_TONE: Record<HttpMethod, string> = {
-  GET: 'bg-sev-low-fill text-sev-low-ink',
-  POST: 'bg-ok-fill text-ok-ink',
-  PUT: 'bg-sev-high-fill text-sev-high-ink',
-  DELETE: 'bg-sev-critical-fill text-sev-critical-ink',
-  SDK: 'bg-ok-fill text-ok-ink',
-  REF: 'bg-sev-medium-fill text-sev-medium-ink',
+const METHOD_TONE: Record<HttpMethod, Tone> = {
+  GET: 'low',
+  POST: 'ok',
+  PUT: 'high',
+  DELETE: 'critical',
+  SDK: 'ok',
+  REF: 'medium',
 };
 export function MethodTag({ method }: { method: HttpMethod }) {
   return (
     <span
       className={cn(
         'inline-flex h-5 items-center rounded px-1.5 font-mono text-label leading-none font-bold py-0.5',
-        METHOD_TONE[method],
+        TONE_SOFT[METHOD_TONE[method]],
       )}
     >
       {method}

@@ -44,7 +44,7 @@ describe('categoryStyle', () => {
   it.each(['__proto__', 'constructor', 'toString', ''])(
     'resolves the off-enum category %j to the neutral fallback',
     (category) => {
-      expect(categoryStyle(category)).toBe('bg-surface-2 text-text-2');
+      expect(categoryStyle(category)).toBe('bg-surface-3 text-text-2');
     },
   );
 });

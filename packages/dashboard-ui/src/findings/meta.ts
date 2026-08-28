@@ -77,24 +77,55 @@ export const CATEGORY_TONE: Record<FindingCategory, Tone> = {
 
 // The maps are exhaustive over FindingCategory (adding a member is a compile
 // error), but a response isn't runtime-validated against the enum — an off-enum
-// category would otherwise yield `undefined` and crash a cell. These string-keyed
-// views make the fallbacks genuinely reachable. The icon lookup is a member
-// access at the call site (`CATEGORY_ICON_FALLBACK[cat] ?? KeyIcon`), NOT a
-// component-returning function call, so the render-created-component lint rule
-// (react-hooks/static-components) stays satisfied.
-export const CATEGORY_ICON_FALLBACK: Record<string, IconComponent | undefined> = CATEGORY_ICON;
+// category would otherwise yield `undefined` and crash a cell, or (for the icon
+// table) resolve an inherited Object.prototype member and crash the render
+// outright: React throws on an element type of `object`, rather than merely
+// losing a tint. Unlike categoryStyle's and categoryLabel's tables, this one
+// can't be guarded with an Object.hasOwn wrapper function: the result is
+// rendered as a JSX tag (`<Icon />`), and a component derived from a function
+// call — even one assigned to a const first — trips the render-created-component
+// lint rule (react-hooks/static-components), which cannot see that the
+// underlying icon reference is module-level and stable either way. A
+// null-prototype table has no prototype chain to resolve an inherited member
+// from, so the ordinary `CATEGORY_ICON_FALLBACK[cat] ?? KeyIcon` member access
+// at each call site is safe without a guard, function or otherwise.
+export const CATEGORY_ICON_FALLBACK: Record<string, IconComponent | undefined> = Object.assign(
+  Object.create(null) as Record<string, IconComponent | undefined>,
+  CATEGORY_ICON,
+);
 
 // Returns the CLASS pair rather than the tone: every caller feeds it straight
 // into `cn()` beside layout classes, and the off-enum fallback has to resolve
 // somewhere — doing it here keeps that one place.
-export const categoryStyle = (category: string): string =>
-  TONE_SOFT[(CATEGORY_TONE as Record<string, Tone | undefined>)[category] ?? 'neutral'];
+export const categoryStyle = (category: string): string => {
+  // Object.hasOwn guards the widened lookup, exactly as policyMeta does: a category
+  // arrives as a plain string, so it can collide with an Object.prototype member
+  // ('__proto__', 'constructor', 'toString', …). The inherited member must NOT
+  // resolve — it is truthy, so `?? 'neutral'` never fires, and TONE_SOFT has no such
+  // key, leaving categoryStyle returning undefined despite its `: string` type. Read
+  // through the widened view only after the guard.
+  const table: Partial<Record<string, Tone>> = CATEGORY_TONE;
+  const tone = Object.hasOwn(CATEGORY_TONE, category) ? table[category] : undefined;
+  return TONE_SOFT[tone ?? 'neutral'];
+};
+
+// Same guard, over the label table. Mirrors the off-enum category itself back
+// as the label (matching policyMeta's unknown-id convention) rather than
+// inventing copy for a value the enum doesn't name.
+export const categoryLabel = (category: string): string => {
+  const table: Partial<Record<string, string>> = CATEGORY_LABEL;
+  const label = Object.hasOwn(CATEGORY_LABEL, category) ? table[category] : undefined;
+  return label ?? category;
+};
 
 /** Per-action pill label + icon + tinted classes. */
-export const ACTION_META: Record<
-  FindingAction,
-  { label: string; icon: IconComponent; className: string }
-> = {
+export interface ActionMeta {
+  label: string;
+  icon: IconComponent;
+  className: string;
+}
+
+export const ACTION_META: Record<FindingAction, ActionMeta> = {
   blocked: { label: 'Blocked', icon: SlashCircleIcon, className: TONE_SOFT.critical },
   redacted: { label: 'Redacted', icon: RedactIcon, className: TONE_SOFT.primary },
   warned: { label: 'Warned', icon: AlertIcon, className: TONE_SOFT.high },
@@ -103,6 +134,17 @@ export const ACTION_META: Record<
   // `neutral` is the untinted pair.
   monitored: { label: 'Monitored', icon: EyeIcon, className: TONE_SOFT.neutral },
   quarantined: { label: 'Quarantined', icon: ShieldIcon, className: TONE_SOFT.critical },
+};
+
+// ACTION_META is exhaustive over FindingAction but, like the category tables
+// above, reads an unvalidated persistence string at the call site: an action of
+// 'constructor' resolves the Object function (truthy), so `meta.icon` is
+// undefined and `<Icon />` throws "element type is invalid". Guard it the same
+// way, echoing the raw action back as the label for an off-enum value.
+export const actionMeta = (action: string): ActionMeta => {
+  const table: Partial<Record<string, ActionMeta>> = ACTION_META;
+  const meta = Object.hasOwn(ACTION_META, action) ? table[action] : undefined;
+  return meta ?? { label: action, icon: KeyIcon, className: TONE_SOFT.neutral };
 };
 
 /**
@@ -143,6 +185,17 @@ export const FINDING_STATUS_META: Record<FindingStatus, FindingStatusMeta> = {
   handled: { label: 'Handled', badge: 'primary' },
   resolved: { label: 'Resolved', badge: 'success' },
   dismissed: { label: 'Dismissed', badge: 'default' },
+};
+
+// Same guard as actionMeta, over the status table: an off-enum status (or one
+// colliding with an Object.prototype member) must not resolve `.badge` as
+// undefined into Badge's variant prop. 'default' is already this file's
+// muted/no-opinion badge variant (see `dismissed`), so it doubles as the
+// off-enum fallback rather than inventing a second one.
+export const findingStatusMeta = (status: string): FindingStatusMeta => {
+  const table: Partial<Record<string, FindingStatusMeta>> = FINDING_STATUS_META;
+  const meta = Object.hasOwn(FINDING_STATUS_META, status) ? table[status] : undefined;
+  return meta ?? { label: status, badge: 'default' };
 };
 
 /**

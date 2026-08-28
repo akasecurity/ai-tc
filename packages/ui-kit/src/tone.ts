@@ -22,15 +22,7 @@
 
 /** A tonal family that can tint a surface. */
 export type Tone =
-  | 'neutral'
-  | 'critical'
-  | 'high'
-  | 'medium'
-  | 'low'
-  | 'ok'
-  | 'teal'
-  | 'violet'
-  | 'primary';
+  'neutral' | 'critical' | 'high' | 'medium' | 'low' | 'ok' | 'teal' | 'violet' | 'primary';
 
 /**
  * The families that also carry a SOLID fill. Only the alert tones do: a solid

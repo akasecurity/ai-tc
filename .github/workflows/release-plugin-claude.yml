@@ -195,3 +195,86 @@ jobs:
           pnpm --filter @akasecurity/ai-tc-claude-code publish --registry https://npm.pkg.github.com --no-git-checks --tag "$dist_tag"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # After a successful publish, ring the marketplace's doorbell: a repository_dispatch
+  # tells akasecurity/marketplace's import-plugin-release workflow that a new version
+  # exists, and that workflow re-verifies everything against the registry and opens the
+  # pin-advance PR. The payload carries the published dist facts as a cross-check, read
+  # back from the PUBLIC registry rather than from this run's build — what the
+  # marketplace pin resolves is what the registry serves, so that is what gets
+  # reported — but the receiver trusts none of it: it re-derives dist and provenance
+  # itself before touching the pin. Pre-release (`-` suffixed) versions dispatch too;
+  # the importer declines anything that is not an exact x.y.z, so that rule lives in
+  # one place, on the side that owns the pin.
+  notify-marketplace:
+    name: Notify marketplace importer
+    needs: release
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Best-effort by design: the marketplace import can always be started by hand (its
+    # workflow_dispatch takes the version as an input), so a failed doorbell must not
+    # turn a completed npm publish + GitHub Release red. continue-on-error keeps the
+    # run green either way; the job log still shows what happened.
+    continue-on-error: true
+    permissions:
+      contents: read
+    # Lifted to job env so the steps can gate on it in `if:` (the secrets context is
+    # not available in step conditionals; the env context is), matching the notify
+    # pattern in release-rules.yml. MARKETPLACE_DISPATCH_TOKEN is a fine-grained PAT
+    # scoped to akasecurity/marketplace with "Contents: read and write" — sending a
+    # repository_dispatch is authorized by contents write on the RECEIVING repo, which
+    # this run's own GITHUB_TOKEN (scoped to this repo) can never carry. Forks, where
+    # the secret is unset, skip the dispatch entirely.
+    env:
+      MARKETPLACE_DISPATCH_TOKEN: ${{ secrets.MARKETPLACE_DISPATCH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      # Registry-explicit (the @akasecurity scope mapping pinned on the command) so
+      # nothing ambient to the runner can route the read to a registry serving
+      # different bytes for the same version. A few retries absorb post-publish
+      # replication lag; if the registry never serves the version this fails, which
+      # continue-on-error above turns into a non-event for the release itself.
+      - name: Read the published dist from the public registry
+        if: env.MARKETPLACE_DISPATCH_TOKEN != ''
+        run: |
+          pkg=$(node -p "require('./plugins/claude-code/package.json').name")
+          version=$(node -p "require('./plugins/claude-code/package.json').version")
+          for attempt in 1 2 3 4 5; do
+            npm view "${pkg}@${version}" dist --json \
+              --@akasecurity:registry=https://registry.npmjs.org > /tmp/dist.json && break
+            echo "registry does not serve ${pkg}@${version} yet (attempt ${attempt}), retrying"
+            sleep 15
+          done
+          shasum=$(node -p "require('/tmp/dist.json').shasum ?? ''")
+          integrity=$(node -p "require('/tmp/dist.json').integrity ?? ''")
+          if [ -z "$shasum" ] || [ -z "$integrity" ]; then
+            echo "::error::registry returned no dist.shasum/dist.integrity for ${pkg}@${version}"
+            exit 1
+          fi
+          {
+            echo "PKG=${pkg}"
+            echo "PKG_VERSION=${version}"
+            echo "PKG_SHASUM=${shasum}"
+            echo "PKG_INTEGRITY=${integrity}"
+          } >> "$GITHUB_ENV"
+
+      # -f, not -F: every payload field is a string on purpose. -F re-types values
+      # that look like numbers or booleans, and a payload field changing JSON type
+      # with the content is exactly the surprise the receiver should never get.
+      - name: Dispatch plugin-release to akasecurity/marketplace
+        if: env.MARKETPLACE_DISPATCH_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ env.MARKETPLACE_DISPATCH_TOKEN }}
+        run: |
+          gh api repos/akasecurity/marketplace/dispatches \
+            -f event_type=plugin-release \
+            -f "client_payload[package]=${PKG}" \
+            -f "client_payload[version]=${PKG_VERSION}" \
+            -f "client_payload[shasum]=${PKG_SHASUM}" \
+            -f "client_payload[integrity]=${PKG_INTEGRITY}"

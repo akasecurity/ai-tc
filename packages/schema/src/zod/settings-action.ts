@@ -13,6 +13,8 @@
 // receives the type it was written for.
 import { z } from 'zod';
 
+import { printable } from './control-plane.ts';
+
 // Deliberately NOT `.strict()`, for the reason exception-action.ts gives: an
 // unknown key from a newer client must not refuse a save over a field this
 // action does not read, and stripping one cannot widen anything here.
@@ -60,26 +62,19 @@ export type SaveSettingsInput = z.infer<typeof SaveSettingsInput>;
  * does nothing. A keyless attach has no valid outcome, so this is required
  * rather than optional; emptiness is rejected by the action.
  */
-/**
- * Control and format characters, refused in a label rather than stripped.
- *
- * The label is printed into `aka status`, which a user reads to decide whether
- * their machine is managed, and an escape sequence there can repaint or hide
- * lines of that block. `cli/src/commands/attach.ts` refuses the same set on
- * `--label` and says so at argv-parse time; this is the same rule for the other
- * attach surface, which writes the same field into the same file that the same
- * `aka status` reads back.
- */
-const LABEL_CONTROL_CHARS = /[\p{Cc}\p{Cf}]/u;
-
 export const AttachInput = z.object({
   endpoint: z.string(),
-  label: z
-    .string()
-    .refine((value) => !LABEL_CONTROL_CHARS.test(value), {
-      message: 'label must not contain control characters',
-    })
-    .optional(),
+  // `printable`, not a second copy of its regex. The label is written into
+  // settings.json and printed into `aka status`, which a user reads to decide
+  // whether their machine is managed — an escape sequence there can repaint or
+  // hide lines of that block. `cli/src/commands/attach.ts` refuses the same set
+  // on `--label` at argv-parse time so it can say why in its own words; this is
+  // the same rule for the other attach surface, which writes the same field
+  // into the same file that same command reads back.
+  //
+  // 200 matches the tenantName bound beside it in control-plane.ts; nothing
+  // renders a longer one usefully.
+  label: printable(200).optional(),
   accessKey: z.string(),
 });
 export type AttachInput = z.infer<typeof AttachInput>;

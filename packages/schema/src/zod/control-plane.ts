@@ -265,8 +265,18 @@ export type IngestAck = z.infer<typeof IngestAck>;
 // output the user is relying on — and a newline alone is enough to forge an
 // extra field in the block. Constraining the SHAPE rather than each render site
 // means a future consumer inherits the protection instead of having to know.
-const PRINTABLE = /^[^\p{Cc}\p{Cf}]*$/u;
-const printable = (max: number) =>
+/**
+ * A bounded string with no control or format characters.
+ *
+ * Exported because it is not only a wire concern. Any string this tree renders
+ * into a terminal — `aka status` prints the control-plane label, and these
+ * whoami fields — can repaint or hide lines around it if an escape sequence
+ * survives, so the refusal belongs wherever such a string is accepted. Named
+ * here rather than moved to a new primitives module for one helper; it is the
+ * shape's own file until a second unrelated caller earns the move.
+ */
+export const PRINTABLE = /^[^\p{Cc}\p{Cf}]*$/u;
+export const printable = (max: number) =>
   z.string().max(max).regex(PRINTABLE, 'must not contain control characters');
 
 export const PluginWhoami = z.object({

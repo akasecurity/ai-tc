@@ -26,6 +26,7 @@ import {
   ATTACH_ENDPOINT_INSECURE,
   ATTACH_KEY_MISSING,
   ATTACH_VERIFY_FAILED,
+  DETACH_CREDENTIAL_STUCK,
   malformedInput,
   managedRefusal,
   SETTINGS_WRITE_ERROR,
@@ -151,12 +152,19 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   // endpoint would write a descriptor that isAttached accepts and no transport
   // could ever use.
   if (endpoint === '') return { ok: false, error: 'Enter the deployment endpoint to attach.' };
+  // The endpoint is judged BEFORE the key, matching the CLI, and the order is
+  // the diagnosis rather than a style choice. Posting both an insecure endpoint
+  // and an empty key — which the UI's disabled button prevents but a direct
+  // caller can do — should be told the endpoint is the problem: no key would
+  // make that address safe to attach to, so reporting the missing key first
+  // sends them off to fetch one they still could not use.
+  //
+  // It is also ahead of the round trip, so a cleartext endpoint is refused
+  // before the key is put on the wire. writeControlPlaneCredential throws on the
+  // same predicate, but by then the send has already happened.
+  if (!isSafeEndpoint(endpoint)) return { ok: false, error: ATTACH_ENDPOINT_INSECURE };
   const accessKey = parsed.data.accessKey.trim();
   if (accessKey === '') return { ok: false, error: ATTACH_KEY_MISSING };
-  // Ahead of the round trip, so a cleartext endpoint is refused before the key
-  // is put on the wire rather than after. writeControlPlaneCredential throws on
-  // the same predicate, but by then the send has already happened.
-  if (!isSafeEndpoint(endpoint)) return { ok: false, error: ATTACH_ENDPOINT_INSECURE };
   const label = parsed.data.label?.trim();
 
   try {
@@ -192,8 +200,24 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
     });
   } catch (error) {
     try {
-      if (previous.usable) writeControlPlaneCredential(dir, previous.credential);
-      else removeControlPlaneCredential(dir);
+      // Restore only if the file still holds what WE wrote. None of the
+      // credential helpers takes a lock (settings.json does, through
+      // applyOnboarding), so a second process sharing this ~/.aka — `aka attach`
+      // in a terminal, another dashboard — can have committed its own credential
+      // between our write and this rollback. Blindly restoring `previous` there
+      // would clobber a working attachment with a stale key and produce exactly
+      // the attached-but-unusable state this action exists to stop creating.
+      //
+      // This narrows that window rather than closing it. Closing it means
+      // locking the credential transaction inside @akasecurity/persistence so
+      // the CLI is covered too; a lock taken only here would leave the CLI
+      // racing and read as a fix. Flagged on the PR rather than half-done.
+      const current = readControlPlaneCredentialState(dir);
+      const ours = current.usable && current.credential.apiKey === accessKey;
+      if (ours) {
+        if (previous.usable) writeControlPlaneCredential(dir, previous.credential);
+        else removeControlPlaneCredential(dir);
+      }
     } catch {
       // The rollback itself failed. Nothing further to try, and the message
       // below is the weaker of the two on purpose.
@@ -221,21 +245,35 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
 export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
   try {
     applyOnboarding({ runMode: 'standalone', controlPlane: undefined });
-    // The credential goes with the descriptor, and only AFTER it. This surface
-    // could not write one until attach started doing so, which is what makes
-    // removing it newly load-bearing: leaving it behind would keep a live
-    // access key at rest on a machine whose settings say standalone, and
-    // nothing would ever read it again to notice.
-    //
-    // After, not before, because applyOnboarding is the throwing half — an
-    // administrative lock refuses there, and a credential already deleted by
-    // then would leave a machine still descriptively attached with no way to
-    // reach its deployment.
-    removeControlPlaneCredential(settingsDir());
   } catch (error) {
     if (error instanceof ManagedFieldError)
       return { ok: false, error: managedRefusal(error.fields) };
     return { ok: false, error: SETTINGS_WRITE_ERROR };
+  }
+
+  // The credential goes with the descriptor, and only AFTER it. This surface
+  // could not write one until attach started doing so, which is what makes
+  // removing it newly load-bearing: leaving it behind would keep a live access
+  // key at rest on a machine whose settings say standalone, and nothing would
+  // ever read it again to notice.
+  //
+  // After, not before, because applyOnboarding is the throwing half — an
+  // administrative lock refuses there, and a credential already deleted by then
+  // would leave a machine still descriptively attached with no way to reach its
+  // deployment.
+  //
+  // IN ITS OWN try, not the one above, and this is the point of the split: the
+  // settings write has already committed by the time we get here, so folding a
+  // failure here into that catch reports SETTINGS_WRITE_ERROR — "could not write
+  // settings.json" — about a file that was written correctly. The user reads
+  // that the detach failed, and the machine is in the one state this removal
+  // exists to prevent: standalone in settings, live key still on disk. Say what
+  // actually happened instead, and name the file so it can be dealt with.
+  try {
+    removeControlPlaneCredential(settingsDir());
+  } catch {
+    revalidatePath('/settings');
+    return { ok: false, error: DETACH_CREDENTIAL_STUCK };
   }
   revalidatePath('/settings');
   return { ok: true };

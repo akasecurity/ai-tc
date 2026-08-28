@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -62,13 +62,21 @@ vi.mock('@akasecurity/remote', () => ({
 // managed-lock branch is otherwise unreachable from a test: applyOnboarding
 // decides it against a file at an absolute OS path (/etc/aka, /Library/…) that
 // no temp-home redirection can reach.
-const writeFailure = vi.hoisted(() => ({ error: null as Error | null }));
+const writeFailure = vi.hoisted(() => ({
+  error: null as Error | null,
+  // Runs INSIDE the failing applyOnboarding — the only moment another process
+  // could interleave between our credential write and our rollback.
+  onCall: null as (() => void) | null,
+}));
 vi.mock('@akasecurity/persistence', async (importActual) => {
   const actual = await importActual<typeof Persistence>();
   return {
     ...actual,
     applyOnboarding: (...args: Parameters<typeof actual.applyOnboarding>) => {
-      if (writeFailure.error) throw writeFailure.error;
+      if (writeFailure.error) {
+        writeFailure.onCall?.();
+        throw writeFailure.error;
+      }
       return actual.applyOnboarding(...args);
     },
   };
@@ -101,6 +109,7 @@ beforeEach(() => {
   osHome.dir = home;
   whoami.reject = null;
   whoami.calls = [];
+  writeFailure.onCall = null;
 });
 
 afterEach(() => {
@@ -109,7 +118,11 @@ afterEach(() => {
 
 describe('attachToControlPlane', () => {
   it('records the mode and the descriptor together', async () => {
-    const res = await attachToControlPlane({ endpoint: ENDPOINT, label: 'Acme Prod', accessKey: KEY });
+    const res = await attachToControlPlane({
+      endpoint: ENDPOINT,
+      label: 'Acme Prod',
+      accessKey: KEY,
+    });
     expect(res).toEqual({ ok: true });
 
     const settings = readWorkspaceSettings();
@@ -164,8 +177,13 @@ describe('attachToControlPlane', () => {
     // The half that makes the attachment usable. Without it every later surface
     // reads the machine as attached-and-broken.
     expect(credential().apiKey).toBe(KEY);
-    // 0600. The settings file beside it is not a secret; this one is.
-    expect(statSync(credentialFile()).mode & 0o777).toBe(0o600);
+    // 0600 where that means anything. Windows has no POSIX mode bits — node
+    // reports 0666 there whatever the writer asked for — so the assertion is
+    // guarded rather than the whole case skipped: the two either side of it are
+    // the ones about the SECRET, and they hold on every platform.
+    if (process.platform !== 'win32') {
+      expect(statSync(credentialFile()).mode & 0o777).toBe(0o600);
+    }
     // And the public half stays public: no run of the key anywhere in it.
     expectNoEchoOf(readFileSync(settingsFile(), 'utf8'), KEY);
   });
@@ -272,6 +290,25 @@ describe('detachFromControlPlane', () => {
     expect(isAttached(readWorkspaceSettings())).toBe(false);
   });
 
+  it('names the stuck credential rather than blaming settings.json', async () => {
+    // settings.json is already written by the time the credential removal runs,
+    // so folding its failure into the settings catch reports "could not write
+    // settings.json" about a file that was written correctly — while the machine
+    // sits in the one state the removal exists to prevent.
+    await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY });
+    rmSync(credentialFile());
+    // A directory where the file goes: unlink fails, the descriptor write does not.
+    mkdirSync(credentialFile(), { recursive: true });
+
+    const res = await detachFromControlPlane();
+
+    expect(res.ok).toBe(false);
+    expect(res.error).not.toMatch(/settings\.json/i);
+    expect(res.error).toMatch(/control-plane-credential\.json/);
+    // And the machine really is standalone — the descriptor write committed.
+    expect(isAttached(readWorkspaceSettings())).toBe(false);
+  });
+
   it('is idempotent on a machine that was never attached', async () => {
     const res = await detachFromControlPlane();
     expect(res).toEqual({ ok: true });
@@ -347,9 +384,57 @@ describe('write failures are reported, never thrown', () => {
       const res = await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY });
       expect(res.ok).toBe(false);
       expect(res.error).toMatch(/organization/i);
+      // The rollback, on the branch most likely to be forgotten. Only
+      // applyOnboarding is mocked, so the credential was really written before
+      // this failed — an administrator locked this machine to standalone, and a
+      // live access key must not be what the failed attach leaves behind.
+      expect(existsSync(credentialFile())).toBe(false);
     } finally {
       writeFailure.error = null;
     }
+  });
+});
+
+describe('the order refusals are decided in', () => {
+  it('names the endpoint, not the key, when both are wrong', async () => {
+    // No key would make a cleartext address safe, so reporting the missing key
+    // first sends the caller to fetch one they still could not use. The UI's
+    // disabled button prevents this pairing; a direct caller can post it.
+    const res = await attachToControlPlane({ endpoint: 'http://aka.acme.test', accessKey: '' });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/not secure/i);
+    expect(whoami.calls).toEqual([]);
+  });
+});
+
+describe('rollback does not clobber a concurrent writer', () => {
+  it('leaves a credential another process committed after ours', async () => {
+    // Two processes share one ~/.aka and none of the credential helpers takes a
+    // lock. Simulated at the seam: the descriptor write fails, and while it
+    // does, something else replaces the credential file. The rollback must see
+    // the file no longer holds what it wrote and leave it alone — restoring
+    // `previous` here would destroy a working attachment.
+    const { writeControlPlaneCredential } = await import('@akasecurity/persistence');
+    const other = 'aka_live_other_process_key_0000000000';
+
+    writeFailure.error = new Error('disk full');
+    writeFailure.onCall = () => {
+      writeControlPlaneCredential(join(home, '.aka', 'settings'), {
+        specVersion: 1,
+        endpoint: ENDPOINT,
+        apiKey: other,
+        mintedAt: new Date().toISOString(),
+      });
+    };
+    try {
+      const res = await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY });
+      expect(res.ok).toBe(false);
+    } finally {
+      writeFailure.error = null;
+      writeFailure.onCall = null;
+    }
+
+    expect(credential().apiKey).toBe(other);
   });
 });
 

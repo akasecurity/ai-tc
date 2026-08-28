@@ -82,3 +82,15 @@ export const ATTACH_ENDPOINT_INSECURE =
  */
 export const ATTACH_VERIFY_FAILED =
   'That key was not accepted by the deployment, so nothing was changed. Check the address, that the key has not been revoked, and that it is a plugin key rather than an ingest key.';
+
+/**
+ * Detach removed the descriptor but could not remove the credential file.
+ *
+ * Its own string rather than SETTINGS_WRITE_ERROR, because by the time this can
+ * happen settings.json has already been written correctly — blaming it would
+ * send the user to look at the wrong file while the actual problem, a live
+ * access key still on disk, went unnamed. The machine IS detached; what is left
+ * is a file to delete, so the wording asks for that rather than a retry.
+ */
+export const DETACH_CREDENTIAL_STUCK =
+  'This machine is now standalone, but its saved access key could not be deleted from ~/.aka/settings/control-plane-credential.json. Delete that file, or revoke the key in your deployment.';

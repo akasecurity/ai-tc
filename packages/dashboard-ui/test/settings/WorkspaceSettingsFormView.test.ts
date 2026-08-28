@@ -10,6 +10,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import {
+  ATTACH_KEY_HINT,
   CONNECTION_ATTACHED_DESCRIPTION,
   CONNECTION_FORWARDING_NOTICE,
   CONNECTION_STANDALONE_DESCRIPTION,
@@ -452,6 +453,39 @@ describe('the connection section', () => {
     expect(html).toContain('data-slot="attach-form"');
     expect(html).not.toContain('data-slot="detach-button"');
     expect(html).toContain(CONNECTION_STANDALONE_DESCRIPTION);
+  });
+
+  it('offers a masked access-key field, and says where the key comes from', () => {
+    const html = render({ onAttach: () => undefined, onDetach: () => undefined });
+
+    // Masked, and opted out of the three browser features that would defeat
+    // the masking by another route: a saved password, a spellchecker shipping
+    // the value to a remote dictionary, and autocorrect rewriting it.
+    //
+    // Matched case-INSENSITIVELY. This renderer serialises these three as
+    // `autoComplete` / `spellCheck` / `autoCorrect` rather than lowercasing
+    // them; HTML attribute names are case-insensitive so a browser honours
+    // them either way, and pinning the casing would fail on a renderer change
+    // that broke nothing.
+    expect(html).toContain('type="password"');
+    expect(html).toContain('aria-label="Access key"');
+    expect(html).toMatch(/autocomplete="off"/i);
+    expect(html).toMatch(/spellcheck="false"/i);
+    expect(html).toMatch(/autocorrect="off"/i);
+    // The kind is named because it is the one attach failure a user cannot
+    // diagnose from the outside: an ingest key authenticates, then fails.
+    expect(html).toContain(ATTACH_KEY_HINT);
+  });
+
+  it('will not offer to attach until both the endpoint and the key are given', () => {
+    // Both fields start empty, so the button ships disabled. Without the key
+    // in that condition the form would submit an attach that can only write a
+    // descriptor with no credential — the state this surface exists to stop
+    // producing.
+    const html = render({ onAttach: () => undefined, onDetach: () => undefined });
+    const at = html.indexOf('data-slot="attach-button"');
+    expect(at).toBeGreaterThan(-1);
+    expect(html.slice(Math.max(0, at - 400), at)).toContain('disabled');
   });
 
   it('offers a detach and names the deployment when attached', () => {

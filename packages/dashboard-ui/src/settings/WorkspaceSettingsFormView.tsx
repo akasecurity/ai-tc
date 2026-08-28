@@ -577,13 +577,14 @@ export const CONNECTION_STANDALONE_DESCRIPTION =
 // Describes the RECORDED STATE, not a live exchange — and the distinction is
 // the whole point of this string.
 //
-// It read "…which supplies policy and receives activity", which is false for
-// every user of this build: `attachToControlPlane` writes settings and dials
-// nothing, `ControlPlaneConnection` carries no status or handshake, and
-// `isAttached` is a pure local predicate over two stored fields. Nothing here
-// can tell whether anything is on the other end, so this copy must not claim
-// there is. A build that supplies a transport can say more, because it will
-// actually know.
+// It read "…which supplies policy and receives activity", which claimed a live
+// exchange this string cannot know about. The reason has narrowed but not gone:
+// `attachToControlPlane` now DOES dial once, to verify the key before it writes
+// anything — but that is a check at attach time, not a status. What this string
+// renders from is still `ControlPlaneConnection`, which carries no status or
+// handshake, read through `isAttached`, a pure local predicate over two stored
+// fields. A successful attach an hour ago says nothing about now, so this copy
+// must still not claim there is anything on the other end.
 export const CONNECTION_ATTACHED_DESCRIPTION =
   'This machine is registered against your organization’s deployment. Detection, policy and ' +
   'history still run against the local store under ~/.aka.';
@@ -712,8 +713,15 @@ function ConnectionRow({
               // same component instance and keeps its own state, so without
               // this the endpoint of the deployment just left reappears
               // pre-filled in the form offering to join a new one.
+              //
+              // The key is cleared for a stronger reason than a stale form: a
+              // key typed and never submitted — the user changed their mind, or
+              // a concurrent `aka attach` flipped this view to attached under
+              // them — would otherwise sit in component state across the whole
+              // detached period and reappear pre-filled afterwards.
               setEndpoint('');
               setLabel('');
+              setAccessKey('');
               onDetach();
             }}
             data-slot="detach-button"

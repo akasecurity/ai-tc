@@ -1,12 +1,13 @@
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import type { PolicyBundle } from '@akasecurity/schema';
 import { StorePosturePlugin } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { createPluginBlock } from '../../src/attached/plugin-block.ts';
+import { createPluginBlock, readManifestBuild } from '../../src/attached/plugin-block.ts';
 import { createPolicyStore } from '../../src/attached/policy-store.ts';
 
 async function dir(): Promise<string> {
@@ -123,5 +124,44 @@ describe('createPluginBlock', () => {
       createPolicyStore(d),
     )();
     expect(block?.ossVersion).toBe('0.9.8');
+  });
+});
+
+describe('readManifestBuild', () => {
+  async function manifestAt(d: string, content: string): Promise<URL> {
+    const path = join(d, 'plugin.json');
+    await writeFile(path, content, 'utf8');
+    return pathToFileURL(path);
+  }
+
+  it('reads the package identity from a manifest carrying a version', async () => {
+    const url = await manifestAt(await dir(), JSON.stringify({ name: 'aka', version: '0.9.8' }));
+    expect(readManifestBuild(url, '@akasecurity/ai-tc-claude-code')).toEqual({
+      package: '@akasecurity/ai-tc-claude-code',
+      version: '0.9.8',
+    });
+  });
+
+  it('a versionless manifest yields undefined rather than a half identity', async () => {
+    const url = await manifestAt(await dir(), JSON.stringify({ name: 'aka' }));
+    expect(readManifestBuild(url, '@akasecurity/ai-tc-claude-code')).toBeUndefined();
+  });
+
+  it('a missing manifest yields undefined — the report goes out without a block', async () => {
+    const url = pathToFileURL(join(await dir(), 'nowhere', 'plugin.json'));
+    expect(readManifestBuild(url, '@akasecurity/ai-tc-claude-code')).toBeUndefined();
+  });
+
+  it('memoises per manifest URL — one read per process, misses included', async () => {
+    // The manifest cannot change under a running process, so the first answer
+    // stands even when the bytes on disk move; a different URL reads fresh.
+    const d = await dir();
+    const url = await manifestAt(d, JSON.stringify({ version: '1.0.0' }));
+    expect(readManifestBuild(url, 'pkg')?.version).toBe('1.0.0');
+    await writeFile(join(d, 'plugin.json'), JSON.stringify({ version: '2.0.0' }), 'utf8');
+    expect(readManifestBuild(url, 'pkg')?.version).toBe('1.0.0');
+
+    const other = await manifestAt(await dir(), JSON.stringify({ version: '3.0.0' }));
+    expect(readManifestBuild(other, 'pkg')?.version).toBe('3.0.0');
   });
 });

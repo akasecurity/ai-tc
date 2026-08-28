@@ -59,19 +59,26 @@ export const ATTACHED_DERIVED_FILENAMES: readonly string[] = [
  *
  * `force: true` on each, so a file that was never written is not an error — a
  * machine that attached and never synced has none of these, and that is the
- * ordinary case rather than a fault.
+ * ordinary case rather than a fault. A REAL failure still THROWS: a read-only
+ * data dir, or a Windows host where a hook still holds the cache open.
  *
- * Best-effort by design: a detach whose descriptor and credential are already
- * gone has succeeded at the part that decides whether the machine is attached,
- * and failing it over a leftover cache would report a detach that did happen as
- * one that did not.
+ * THROWING IS THE SHARED DEFAULT BECAUSE THE TWO CALLERS DISAGREE, and only one
+ * of them can be recovered from the other's choice. `aka detach` must not print
+ * `Detached.` over a policy cache that is still on disk — that bundle merges
+ * raise-only and nothing will ever refresh it, so a machine told it is
+ * standalone would go on escalating enforcement permanently. The dashboard's
+ * settings action wants the opposite: it has already committed both writes that
+ * decide whether the machine is attached, so failing there would report a
+ * detach that did happen as one that did not.
+ *
+ * A swallow here can only serve the second, and it serves it SILENTLY — the
+ * strict caller keeps compiling and stops being strict. So the shared function
+ * throws, the lenient caller wraps it in try/catch and says why at the point
+ * where "best-effort" is actually true, and neither caller sets the other's
+ * error policy by accident.
  */
 export function clearAttachmentDerivedState(dataDir: string): void {
   for (const name of ATTACHED_DERIVED_FILENAMES) {
-    try {
-      rmSync(join(dataDir, name), { force: true });
-    } catch {
-      // See above: a leftover is not worth failing a completed detach over.
-    }
+    rmSync(join(dataDir, name), { force: true });
   }
 }

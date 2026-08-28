@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -293,6 +293,50 @@ describe('detach', () => {
     expect(() => readFileSync(join(dataDir, 'policy-cache.json'), 'utf8')).toThrow();
     expect(() => readFileSync(join(dataDir, 'attached-sync-state.json'), 'utf8')).toThrow();
     expect(out.output()).toContain('Detached');
+  });
+
+  it('refuses to report a clean detach when the cached policy survives', async (ctx) => {
+    // The failure path the happy case above cannot reach, and the one that
+    // decides this command's error policy. The cached bundle merges over the
+    // local policy RAISE-ONLY and nothing refreshes it once the sync is gone, so
+    // a machine told it is standalone while the cache is still on disk keeps
+    // escalating enforcement permanently. `EPERM`/`EBUSY` on a host where a hook
+    // still holds the file open is the mundane way to reach this.
+    //
+    // The attach is what makes the assertion non-vacuous: without it the detach
+    // prints "was not attached", which contains no "Detached" either and would
+    // pass whether or not the removal was refused.
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', ENDPOINT], deps(io));
+
+    const dataDir = dataDirOf(base);
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(dataDir, 'policy-cache.json'), '{}', { mode: 0o600 });
+    chmodSync(dataDir, 0o500);
+    try {
+      // Proven, not assumed: root ignores the mode and Windows ignores chmod
+      // outright, and either way every assertion below would hold vacuously
+      // over a removal that simply succeeded.
+      let refused = false;
+      try {
+        rmSync(join(dataDir, 'policy-cache.json'));
+      } catch {
+        refused = true;
+      }
+      if (!refused) ctx.skip('the directory mode did not make the removal fail here');
+
+      const out = scriptedPrompter({ interactive: true });
+      runDetach([], deps(out));
+
+      // NOT "left as it was" either — both writes that decide attachment
+      // landed, so the report has to say what actually survived.
+      expect(out.output()).not.toContain('Detached');
+      expect(out.errors()).toContain('policy-cache.json');
+      expect(out.errors()).toContain(dataDir);
+      expect(exits).toEqual([1]);
+    } finally {
+      chmodSync(dataDir, 0o700);
+    }
   });
 
   it('says so plainly when there was nothing to detach', () => {

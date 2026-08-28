@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { POLICY_CACHE_FILENAME } from '@akasecurity/persistence';
 import { DATA_FILE_MODE, dataDir, ensureDataDir } from '@akasecurity/plugin-sdk';
 import { PolicyBundle } from '@akasecurity/schema';
 
@@ -36,7 +37,12 @@ export interface StoredPolicyBundle {
  * out-of-band.
  */
 export function createPolicyStore(dir: string = dataDir()) {
-  const file = join(dir, 'policy-cache.json');
+  // The name comes from the detach list rather than from a literal, so a rename
+  // moves the writer with it. This is the file that list singles out as the most
+  // consequential to leave behind, and it was the one writer not reading it —
+  // which made a rename typecheck clean while detach quietly stopped clearing
+  // the cache and this kept writing it under the old name.
+  const file = join(dir, POLICY_CACHE_FILENAME);
 
   async function read(): Promise<StoredPolicyBundle | null> {
     try {

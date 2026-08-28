@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -252,6 +253,32 @@ describe('attachToControlPlane', () => {
     expect(res.error).toMatch(/control characters/i);
   });
 
+  it('does not blame the label a stale client never typed', async () => {
+    // `field === 'label'` covers two unrelated failures and only one of them is
+    // the user's. A NON-STRING label is a stale bundle or a hand-rolled POST —
+    // the user may have typed nothing at all — so answering it with a verdict
+    // about their text is the same wrong diagnosis the endpoint split above
+    // fixes. `wrongType` is the discriminator, and malformedInput already
+    // branches on it correctly.
+    for (const label of [1, null, { toString: () => 'Acme' }]) {
+      const res = await attachToControlPlane({ endpoint: ENDPOINT, label, accessKey: KEY });
+      expect(res.ok).toBe(false);
+      expect(res.error, `label=${JSON.stringify(label)}`).not.toMatch(/control characters/i);
+      // And it still names the field, so the refusal stays actionable.
+      expect(res.error).toMatch(/label/i);
+    }
+    // The positive control: a STRING this input refuses is still the user's
+    // typo and still gets the sentence written for them. Without this the case
+    // above would pass on an action that answered every label the same way.
+    const typo = await attachToControlPlane({
+      endpoint: ENDPOINT,
+      label: 'Acme\u001b[2KProd',
+      accessKey: KEY,
+    });
+    expect(typo.ok).toBe(false);
+    expect(typo.error).toMatch(/control characters/i);
+  });
+
   it('blames the credential file, not settings.json, when the key cannot be saved', async () => {
     // The mirror of the detach case below. This failure happens BEFORE
     // applyOnboarding, so settings.json is untouched and naming it sends the
@@ -371,6 +398,39 @@ describe('detachFromControlPlane', () => {
 
     for (const name of ATTACHED_DERIVED_FILENAMES) {
       expect(existsSync(join(data, name)), `${name} outlived the detach`).toBe(false);
+    }
+  });
+
+  it('still reports a completed detach when a leftover cannot be removed', async (ctx) => {
+    // The other half of the shared helper's error policy, and the reason it
+    // throws rather than swallowing. Here best-effort IS right: both writes that
+    // decide whether this machine is attached have already committed, so
+    // reporting a failure would send the user to re-run a detach that took
+    // effect. `aka detach` wants the opposite, which is why neither caller may
+    // set the other's policy — this case is what pins THIS one.
+    await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY });
+    const data = join(home, '.aka', 'data');
+    mkdirSync(data, { recursive: true });
+    writeFileSync(join(data, ATTACHED_DERIVED_FILENAMES[0]!), '{}');
+    chmodSync(data, 0o500);
+    try {
+      // Proven, not assumed: root ignores the mode and Windows ignores chmod
+      // outright, and either way the assertion below would hold over a removal
+      // that simply succeeded.
+      let refused = false;
+      try {
+        rmSync(join(data, ATTACHED_DERIVED_FILENAMES[0]!));
+      } catch {
+        refused = true;
+      }
+      if (!refused) ctx.skip('the directory mode did not make the removal fail here');
+
+      const res = await detachFromControlPlane();
+
+      expect(res).toEqual({ ok: true });
+      expect(isAttached(readWorkspaceSettings())).toBe(false);
+    } finally {
+      chmodSync(data, 0o700);
     }
   });
 

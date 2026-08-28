@@ -157,7 +157,17 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
     // client produces — and tells the reader to reload the page, which loses the
     // endpoint and key they just typed and cannot change the label that was
     // refused. Say what is wrong with it instead.
-    if (parsed.field === 'label') return { ok: false, error: ATTACH_LABEL_INVALID };
+    //
+    // `wrongType` splits the two failures that both land on `label`: a string
+    // this input refuses (control characters, over-long) is the user's typo and
+    // gets the sentence above, while a NON-string is a stale client or a
+    // hand-rolled POST and is not something they typed at all. Telling them
+    // "that name cannot be used" about a label that may be empty or perfectly
+    // ordinary is the same wrong diagnosis this action already avoids twice
+    // over — malformedInput branches on the flag correctly, so defer to it.
+    if (parsed.field === 'label' && !parsed.wrongType) {
+      return { ok: false, error: ATTACH_LABEL_INVALID };
+    }
     return { ok: false, error: malformedInput(parsed) };
   }
   const endpoint = parsed.data.endpoint.trim();
@@ -332,7 +342,18 @@ export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
   // After the credential and outside its refusal: the machine is already
   // detached by the two writes above, and a leftover cache is not worth
   // reporting a completed detach as a failure.
-  clearAttachmentDerivedState(dataDir());
+  //
+  // The try/catch is what makes that true, and it belongs HERE rather than in
+  // the shared helper. `aka detach` needs the opposite policy — it must not
+  // print `Detached.` over a cache still on disk — and a swallow inside
+  // clearAttachmentDerivedState would hand this caller's leniency to that one
+  // silently. Best-effort is a decision this surface gets to make for itself.
+  try {
+    clearAttachmentDerivedState(dataDir());
+  } catch {
+    // Deliberately not surfaced: see above. The two writes that decide whether
+    // this machine is attached have both committed.
+  }
   revalidatePath('/settings');
   return { ok: true };
 }

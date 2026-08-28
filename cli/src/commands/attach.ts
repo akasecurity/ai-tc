@@ -1,5 +1,6 @@
 import {
   applyOnboarding,
+  ATTACHED_DERIVED_FILENAMES,
   clearAttachmentDerivedState,
   dataDir as dataDirOf,
   isSafeEndpoint,
@@ -312,7 +313,25 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
     return;
   }
   removeControlPlaneCredential(settingsDirOf(base));
-  clearDerived(dataDirOf(base));
+  try {
+    clearDerived(dataDirOf(base));
+  } catch {
+    // NOT "left as it was" — the two writes that decide whether this machine is
+    // attached have both landed, and saying otherwise sends someone to re-run a
+    // detach that already took effect. What survived is the derived state, and
+    // the cached bundle is the consequential one: it merges over the local
+    // policy raise-only and nothing will refresh it now that the sync is gone,
+    // so a machine reported as standalone would keep escalating enforcement
+    // permanently. Name the directory, name the files, and exit non-zero — a
+    // script that detaches a fleet has to be able to see this.
+    io.err(
+      `detached, but could not remove everything the attachment left behind in ${dataDirOf(base)}. ` +
+        'The cached policy bundle may still be raising enforcement on this machine, and nothing ' +
+        `will refresh it now. Remove these by hand: ${ATTACHED_DERIVED_FILENAMES.join(', ')}.`,
+    );
+    exit(1);
+    return;
+  }
 
   io.out(
     had
@@ -337,7 +356,9 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
  *
  * `force` swallows a missing file and still throws on a real failure, which is
  * the behaviour to want here: a detach that silently left the organization's
- * policy in place is the one outcome this function exists to prevent.
+ * policy in place is the one outcome this function exists to prevent. The throw
+ * is caught at the call site and reported — it must not become a stack trace,
+ * and it must not become a `Detached.` line either.
  */
 // The list lives in @akasecurity/persistence, which both detach surfaces can
 // reach — this one and the dashboard's settings action. A second copy here is

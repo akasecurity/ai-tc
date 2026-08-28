@@ -84,6 +84,12 @@ export function ensureLayoutDirSync(dir: string = defaultDataDir()): void {
 // missing, unwritable) leaves the old file where it is — the loaders treat a
 // missing settings/cache file as "unonboarded defaults" regardless.
 export function migrateLegacyLayout(base: string = defaultDataDir()): void {
+  // These two names are LITERALS on purpose, and deliberately do not track
+  // POLICY_CACHE_FILENAME. This table describes where older installs actually
+  // wrote — a frozen historical fact — so binding it to a constant that can move
+  // would make a rename silently stop relocating the file those installs left,
+  // stranding it under the base for ever. A rename is a new name to ADD here,
+  // not an edit to this row.
   const moves: { name: string; dest: string }[] = [
     { name: 'config.json', dest: settingsDir(base) },
     { name: 'policy-cache.json', dest: dataDir(base) },

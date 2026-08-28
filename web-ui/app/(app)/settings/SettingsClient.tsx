@@ -49,8 +49,8 @@ export function SettingsClient({
       onSave={(changes) => {
         run(() => saveSettings(changes));
       }}
-      onAttach={(endpoint, label) => {
-        run(() => attachToControlPlane({ endpoint, label }));
+      onAttach={(endpoint, label, accessKey) => {
+        run(() => attachToControlPlane({ endpoint, label, accessKey }));
       }}
       onDetach={() => {
         run(() => detachFromControlPlane());

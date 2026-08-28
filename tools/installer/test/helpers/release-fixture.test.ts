@@ -226,6 +226,33 @@ describe('compressArchive', () => {
     expect(attempts).toBe(1);
   });
 
+  it('refuses an archive with no entries, which is a real zip a reader expects to pass', () => {
+    // The one case the docblock's "floor, not a validation" paragraph makes a
+    // claim about, pinned rather than left as prose: unlike `not a zip` above,
+    // this IS a well-formed zip — `unzip` reads it as empty rather than
+    // rejecting it — so a reader reasoning about what still gets past the
+    // check would expect it through. It does not get through: an archive with
+    // no entries has no local file header, so it starts at the EOCD record and
+    // fails on those bytes.
+    //
+    // Worth an assertion because the paragraph was measurably wrong before and
+    // nothing could catch that — prettier is clean either way and no test
+    // reads a comment. This is what makes the corrected sentence load-bearing:
+    // loosen the magic check to any `504b` and this goes red.
+    const at = join(dir, 'no-entries.zip');
+    const EOCD_ONLY = Buffer.concat([Buffer.from('504b0506', 'hex'), Buffer.alloc(18)]);
+
+    expect(() => {
+      compressArchive('pwsh', '/stage/aka-win32-x64', at, () => {
+        writeFileSync(at, EOCD_ONLY);
+      });
+    }).toThrow(/is not a zip — read 4 byte\(s\), starting 504b0506/);
+
+    // The 22 bytes the paragraph names, so a fixture that stopped being the
+    // canonical empty zip cannot keep satisfying the assertion above.
+    expect(statSync(at).size).toBe(22);
+  });
+
   it('is what writeArchive uses, so a revert to a bare spawn is caught', () => {
     // Everything above drives `compressArchive` directly. That leaves the one
     // edit which actually changes CI behaviour — the call site inside

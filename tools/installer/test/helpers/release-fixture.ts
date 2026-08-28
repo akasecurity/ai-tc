@@ -166,10 +166,11 @@ const runCompress: CompressRunner = (exe, args) => {
  * this hashes whatever is on disk, so the cheapest honest check is that the
  * bytes are a zip at all.
  *
- * It is a floor, not a validation. An EOCD-only archive — what an empty `-Path`
- * produces — is a structurally valid 22-byte zip and passes this; the guard
- * against that is the staging directory being built immediately above, not
- * anything here.
+ * It is a floor, not a validation: it proves the file starts with a local file
+ * header, not that the entries behind it are intact or that the right ones are
+ * there. A partial write past the first four bytes passes. An archive with no
+ * entries does NOT — an empty zip is an EOCD record alone, `504b0506`, so it
+ * fails here naming those bytes.
  */
 function assertZipWritten(archivePath: string): void {
   let fd: number;

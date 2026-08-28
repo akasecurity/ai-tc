@@ -50,6 +50,15 @@ export function CardHeader({ className, ...props }: ComponentPropsWithRef<'div'>
  * utility, so the glyph just inherits its color. `className` still wins, for the
  * one-off tile whose color is not a family theme.css names.
  */
+// The neutral pair used to be part of the base literal, so it applied no matter
+// what. Indexing makes it data-driven, and `tone` is optional on a component
+// this package ships to hosts outside this repo — where a stale or plain-JS
+// caller can pass a value outside the union, and `cn` would drop the resulting
+// `undefined`, leaving the tile with no background AND no foreground rather than
+// falling back to neutral. This string-keyed view is what makes that fallback
+// reachable to the type system rather than dead code the compiler prunes.
+const TONE_SOFT_FALLBACK: Record<string, string | undefined> = TONE_SOFT;
+
 export function CardIcon({
   className,
   tone = 'neutral',
@@ -60,7 +69,7 @@ export function CardIcon({
       data-slot="card-icon"
       className={cn(
         'flex size-7.5 shrink-0 items-center justify-center rounded-lg',
-        TONE_SOFT[tone],
+        TONE_SOFT_FALLBACK[tone] ?? TONE_SOFT.neutral,
         className,
       )}
       {...props}

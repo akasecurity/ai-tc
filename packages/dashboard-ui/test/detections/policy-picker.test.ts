@@ -1,5 +1,5 @@
 import { KNOWN_BUILTIN_IDS } from '@akasecurity/schema';
-import { createElement } from 'react';
+import { createElement, Fragment } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 
@@ -29,8 +29,17 @@ describe('PolicyPicker', () => {
     // here — a sixth one added tomorrow is covered without editing this. Via
     // policyMeta because the picker renders that, and asserting a literal '' for
     // the ids I did not spell out would have passed on all of them.
+    //
+    // The EXPECTATION is escaped by the renderer rather than by hand. Escaping
+    // '&' with a string-argument replace fixed only the first occurrence and
+    // covered only that one character, so a future label with two ampersands —
+    // or with '<' — would build an expected string React never emits, failing
+    // against correct markup and pointing at the component instead of at this
+    // line. That is the specific way the promise above stops being kept. A
+    // Fragment renders the label and nothing around it, so what is searched for
+    // cannot drift from what React actually produces for that text.
     for (const id of KNOWN_BUILTIN_IDS) {
-      const label = policyMeta(id).label.replace('&', '&amp;');
+      const label = renderToStaticMarkup(createElement(Fragment, null, policyMeta(id).label));
       expect(html, `missing the ${id} option`).toContain(label);
     }
     // Nothing disabled, and no reason line, when nothing is restricted.
@@ -49,7 +58,39 @@ describe('PolicyPicker', () => {
 
     expect(html).toContain('Redact &amp; Vault');
     expect(html).toContain('data-unavailable');
-    expect(html).toContain('disabled');
+    // `aria-disabled`, NOT the native attribute — and asserted precisely,
+    // because `toContain('disabled')` matches the aria form too and would pass
+    // whichever one the component emitted.
+    expect(html).toContain('aria-disabled="true"');
+    expect(html).not.toContain('disabled=""');
+  });
+
+  it('keeps an unassignable option in the tab order, described by its reason', () => {
+    // The reason for this state existing is that the reason REACHES the person
+    // who wanted that archetype. A natively disabled button leaves the tab
+    // order, so a keyboard or screen-reader user never lands on it and never
+    // hears why — `title` alone does not reach them either.
+    const html = render({
+      value: 'redact',
+      onChange: () => undefined,
+      unavailable: { vault: REASON },
+    });
+
+    const describedBy = /aria-describedby="([^"]+)"/.exec(html);
+    expect(describedBy, 'the unavailable option describes nothing').not.toBeNull();
+    // And it points at a element that is actually in the markup — an id
+    // referencing nothing announces nothing, and reads identically here.
+    expect(html).toContain(`id="${describedBy?.[1] ?? ''}"`);
+    expect(html).toMatch(
+      new RegExp(`id="${describedBy?.[1] ?? ''}"[^>]*data-slot="policy-unavailable-reason"`),
+    );
+  });
+
+  it('still uses the NATIVE disabled attribute for a read-only picker', () => {
+    // The whole-control case is different from the per-option one: there is no
+    // reason to convey, so keeping these out of the tab order is right.
+    const html = render({ value: 'redact' });
+    expect(html).toContain('disabled=""');
   });
 
   it('says why, both on the control and in text beside it', () => {
@@ -59,9 +100,10 @@ describe('PolicyPicker', () => {
       unavailable: { vault: REASON },
     });
 
-    // A disabled button is not focusable, so `title` alone is unreachable by
-    // keyboard and invisible on touch. The line below the control is the
-    // accessible copy of the same sentence, which is why both are asserted.
+    // `title` is invisible on touch and unreliable for assistive tech, so the
+    // line below the control is the accessible copy of the same sentence —
+    // and the one `aria-describedby` points at. Both are asserted because they
+    // reach different people.
     expect(html).toContain(`title="${REASON}"`);
     expect(html).toContain('data-slot="policy-unavailable-reason"');
     expect(html).toContain(REASON);

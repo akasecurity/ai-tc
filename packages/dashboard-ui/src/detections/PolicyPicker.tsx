@@ -17,6 +17,8 @@
 // plane whose devices will not accept a remote custody instruction — and the
 // alternative to saying so here was a live-looking button that takes a click,
 // fails on the server, and snaps back under an error banner.
+import { useId } from 'react';
+
 import { BUILTIN_POLICY_IDS, policyMeta, toneColors } from './meta.ts';
 
 export function PolicyPicker({
@@ -47,6 +49,12 @@ export function PolicyPicker({
   // it cannot deliver.
   const reasonFor = (id: string): string | undefined => unavailable?.[id];
   const reasons = [...new Set(BUILTIN_POLICY_IDS.map(reasonFor).filter((r) => r !== undefined))];
+  // Keyed on the REASON rather than the policy id, because the lines below are
+  // deduped by string — two unavailable archetypes sharing a sentence render one
+  // <p>, and both buttons must point at it. useId keeps two pickers on one page
+  // from minting the same ids.
+  const base = useId();
+  const reasonId = (reason: string): string => `${base}-unavailable-${reasons.indexOf(reason)}`;
   return (
     <div className="flex flex-col items-start gap-1.5">
       <div
@@ -70,7 +78,21 @@ export function PolicyPicker({
             <button
               key={k}
               type="button"
-              disabled={disabled || reason !== undefined}
+              // NATIVE `disabled` only for the whole-control case. For a
+              // per-option restriction the control stays focusable and carries
+              // `aria-disabled`, because the entire point of this state is that
+              // the REASON reaches the person who wanted that archetype — and a
+              // natively disabled button leaves the tab order, so a keyboard or
+              // screen-reader user never lands on it and never hears why.
+              // Focusable is safe here: `onClick` below is undefined whenever
+              // `reason` is set, so activation is already inert, and this
+              // control's styling keys on `reason` rather than on `:disabled`,
+              // so nothing visual is lost by dropping the attribute.
+              disabled={disabled}
+              aria-disabled={disabled || reason !== undefined || undefined}
+              // Points at the line below, so the reason is announced AT the
+              // control rather than as prose the user has to go and find.
+              aria-describedby={reason === undefined ? undefined : reasonId(reason)}
               // The reason travels with the control, not only in the line below,
               // so a pointer user gets it without reading ahead.
               title={reason}
@@ -98,10 +120,18 @@ export function PolicyPicker({
         })}
       </div>
       {reasons.map((reason) => (
-        // Below the control rather than only in `title`: a disabled button is
-        // not focusable, so a tooltip is unreachable by keyboard and invisible
-        // on touch. This line is the accessible copy of the same sentence.
-        <p key={reason} className="text-xs text-text-3" data-slot="policy-unavailable-reason">
+        // Below the control rather than only in `title`, because a tooltip is
+        // invisible on touch and unreliable for assistive tech. This line is the
+        // accessible copy of the same sentence, and `aria-describedby` above
+        // points the unavailable buttons at it — so it is both visible prose and
+        // the announced description, rather than something to encounter
+        // separately.
+        <p
+          key={reason}
+          id={reasonId(reason)}
+          className="text-xs text-text-3"
+          data-slot="policy-unavailable-reason"
+        >
           {reason}
         </p>
       ))}

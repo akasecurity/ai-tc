@@ -156,8 +156,6 @@ export {
   type ProvenanceState,
   provenanceState,
   PUBLISHER_META,
-  type Tone,
-  toneColors,
 } from './detections/meta.ts';
 export { PolicyPicker } from './detections/PolicyPicker.tsx';
 export { ProvenanceBlock } from './detections/ProvenanceBlock.tsx';

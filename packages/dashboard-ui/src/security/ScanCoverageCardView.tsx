@@ -35,7 +35,7 @@ export function ScanCoverageCardView({
   return (
     <Card className="flex flex-col shadow-sm">
       <CardHeader>
-        <CardIcon className="bg-teal-fill text-teal-ink">
+        <CardIcon tone="teal">
           <ShieldCheckIcon aria-hidden focusable={false} className="size-4" />
         </CardIcon>
         <CardHeading>

@@ -69,7 +69,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 function Sidebar({ pathname }: { pathname: string }) {
   return (
     <aside className="flex w-62 flex-col border-r border-border bg-surface shrink-0">
-      <div className="flex h-16 items-center border-b border-text/6 px-5">
+      <div className="flex h-16 items-center border-b border-hairline px-5">
         <AkaLogo aria-label="AKA" className="h-8 w-auto text-mark-fg" />
       </div>
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-3.5">

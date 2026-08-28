@@ -111,7 +111,7 @@ export function RecommendedActionsCardView({
                   key={a.id}
                   className={cn(
                     'flex gap-3 py-3',
-                    i < items.length - 1 && 'border-b border-text/6',
+                    i < items.length - 1 && 'border-b border-hairline',
                   )}
                 >
                   <span

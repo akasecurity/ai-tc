@@ -46,7 +46,7 @@ export function AvailablePluginsCardView({
           {plugins.map((p, i) => {
             const outcome = outcomes[p.id];
             return (
-              <div key={p.id} className={cn('py-3', i > 0 && 'border-t border-text/6')}>
+              <div key={p.id} className={cn('py-3', i > 0 && 'border-t border-hairline')}>
                 <div className="flex items-center gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-semibold text-text">{p.name}</div>

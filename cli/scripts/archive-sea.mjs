@@ -5,7 +5,15 @@
 // cli.mjs + package.json + web-ui), so extracting yields a ready-to-run tree.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,6 +33,32 @@ const archiveName = `aka-${version}-${triple}.${isWin ? 'zip' : 'tar.gz'}`;
 const archivePath = join(seaDist, archiveName);
 rmSync(archivePath, { force: true });
 
+/**
+ * Compress-Archive can exit 0 via a non-terminating error record having
+ * written nothing or a partial file, so prove the bytes are actually a zip
+ * before they get hashed into SHA256SUMS.
+ */
+function assertZipWritten(path) {
+  let fd;
+  try {
+    fd = openSync(path, 'r');
+  } catch {
+    throw new Error(`Compress-Archive reported success but wrote no ${path}`);
+  }
+  try {
+    const buf = Buffer.alloc(4);
+    const read = readSync(fd, buf, 0, 4, 0);
+    if (read < 4 || buf.toString('hex') !== '504b0304') {
+      throw new Error(
+        `Compress-Archive reported success but ${path} is not a zip — ` +
+          `read ${String(read)} byte(s), starting ${buf.subarray(0, read).toString('hex')}`,
+      );
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
 if (isWin) {
   execFileSync(
     'powershell',
@@ -36,6 +70,7 @@ if (isWin) {
     ],
     { stdio: 'inherit' },
   );
+  assertZipWritten(archivePath);
 } else {
   execFileSync('tar', ['-czf', archivePath, '-C', seaDist, stagedName], { stdio: 'inherit' });
 }

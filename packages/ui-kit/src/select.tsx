@@ -61,7 +61,7 @@ export function SelectTrigger({
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
       className={cn(
-        'flex h-9 w-full cursor-pointer items-center justify-between gap-2 rounded-lg border border-border bg-surface px-3 text-sm text-text',
+        'flex h-9 w-full cursor-pointer items-center justify-between gap-2 rounded-lg border border-border-field bg-surface px-3 text-sm text-text',
         'transition-colors focus:border-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
         'data-[placeholder]:text-text-3 disabled:cursor-not-allowed disabled:opacity-50',
         '[&>span]:truncate',

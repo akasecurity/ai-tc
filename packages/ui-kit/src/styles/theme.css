@@ -34,9 +34,15 @@
      begins, and 1.4.11 asks that boundary for 3:1 rather than that rule's 1.26:1.
      Its own token because widening --color-border to clear 3:1 would put that weight
      on every card and divider in the product, which is a different design decision
-     than making inputs findable. Set against the LIGHTEST surface a field lands on
-     (#ffffff, 3.34:1) and still clearing it on the canvas and surface-2 fills the
-     auth forms use (3.20:1). */
+     than making inputs findable.
+
+     Measured on each surface a field lands on: #ffffff at 3.34:1, and the canvas
+     and --color-surface-2 fills the search inputs use at 3.20:1. --color-surface-3
+     is the one it would NOT clear — 2.98:1 here and 2.78:1 in dark — and it is
+     listed so the next reader knows the case was measured and ruled out rather
+     than missed: nothing renders a field there today (every bg-surface-3 site is a
+     pill, meter, skeleton or badge). A field placed on surface-3 needs its own
+     value, not this one. */
   --color-border-field: #868d99;
 
   /* text. The three tiers sit closer together than they look like they should: on a

@@ -37,6 +37,11 @@ rmSync(archivePath, { force: true });
  * Compress-Archive can exit 0 via a non-terminating error record having
  * written nothing or a partial file, so prove the bytes are actually a zip
  * before they get hashed into SHA256SUMS.
+ *
+ * A floor, not a validation: it proves the file starts with a local file
+ * header, not that the entries behind it are intact. An archive with no
+ * entries does NOT pass — an empty zip is an EOCD record alone, 504b0506, so
+ * it fails here naming those bytes.
  */
 function assertZipWritten(path) {
   let fd;
@@ -54,19 +59,10 @@ function assertZipWritten(path) {
   try {
     const buf = Buffer.alloc(4);
     const read = readSync(fd, buf, 0, 4, 0);
-    const magic = buf.subarray(0, read).toString('hex');
-    // 504b0506 is the end-of-central-directory record on its own — a real,
-    // structurally valid zip with zero entries. Still wrong to hash (it means
-    // Compress-Archive staged nothing), but "is not a zip" would misdescribe it.
-    if (magic === '504b0506') {
-      throw new Error(
-        `Compress-Archive reported success but ${path} is an empty zip — nothing was staged`,
-      );
-    }
-    if (read < 4 || magic !== '504b0304') {
+    if (read < 4 || buf.toString('hex') !== '504b0304') {
       throw new Error(
         `Compress-Archive reported success but ${path} is not a zip — ` +
-          `read ${String(read)} byte(s), starting ${magic}`,
+          `read ${String(read)} byte(s), starting ${buf.subarray(0, read).toString('hex')}`,
       );
     }
   } finally {

@@ -48,3 +48,37 @@ export function managedRefusal(fields: readonly ManagedSettingKey[]): string {
 
 /** The store could not be written at all — a fault, unlike the two above. */
 export const SETTINGS_WRITE_ERROR = 'Could not write settings.json.';
+
+/**
+ * The three refusals `attachToControlPlane` adds.
+ *
+ * None of them interpolates anything the caller supplied. That is the point:
+ * this action is the one on this surface that handles a credential, and every
+ * string here is rendered straight into the page. "Help the user spot their
+ * typo" is the well-meaning change that would put a run of the key on screen,
+ * so the wording carries no value at all — the field, never its contents.
+ */
+export const ATTACH_KEY_MISSING = 'Enter the access key to attach.';
+
+/**
+ * Worded as a refusal to send rather than a failed send, because nothing has
+ * been sent yet — this is checked before the key reaches the wire.
+ */
+export const ATTACH_ENDPOINT_INSECURE =
+  'That endpoint is not secure, so the access key was not sent. Use an https:// address (http:// is accepted only for a deployment on this machine).';
+
+/**
+ * One string for every verification failure, and the ambiguity is deliberate.
+ *
+ * A wrong key, a revoked key, a key of the wrong KIND, a typo'd host, a DNS
+ * failure and a timeout are not distinguishable to this surface without either
+ * forwarding the cause — which can carry the endpoint or a response body into
+ * the page — or probing further on the user's behalf. It names the three things
+ * a user can actually check instead.
+ *
+ * The kind is named because it is the one cause a user cannot otherwise guess:
+ * an `ingest` key authenticates but carries no policy read, so it fails here
+ * looking exactly like a bad key.
+ */
+export const ATTACH_VERIFY_FAILED =
+  'That key was not accepted by the deployment, so nothing was changed. Check the address, that the key has not been revoked, and that it is a plugin key rather than an ingest key.';

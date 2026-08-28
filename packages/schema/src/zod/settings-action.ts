@@ -42,15 +42,44 @@ export type SaveSettingsInput = z.infer<typeof SaveSettingsInput>;
  * `attachToControlPlane` — register this machine against an organization's
  * deployment.
  *
- * `endpoint` is stored verbatim and dialled by nothing in this repository. It
- * is validated as a non-empty string and no further: a URL check here would
- * imply this tree knows what a valid endpoint looks like, and it does not —
- * whichever distribution supplies the transport owns that question.
+ * `endpoint` is validated as a string here and no further. The real check is
+ * `isSafeEndpoint` at the write boundary, which is where it belongs: it refuses
+ * to put a credential on a cleartext wire, and a looser duplicate here would
+ * only drift from it.
  *
- * There is deliberately no credential field. See ControlPlaneConnection.
+ * `accessKey` IS A CREDENTIAL AND NEVER REACHES settings.json. It exists on this
+ * input because the action needs it, not because the descriptor stores it — the
+ * action hands it to `writeControlPlaneCredential`, which owns the separate
+ * owner-only file, and writes the `ControlPlaneConnection` descriptor without it.
+ * That split is the one ControlPlaneConnection describes, and this field does not
+ * weaken it: settings.json still carries the public half alone.
+ *
+ * It used to be absent, and that was the defect. Attaching wrote a descriptor
+ * with no credential, which every later surface reads as attached-and-broken —
+ * `aka status` says "attached — no usable credential" and forwarding silently
+ * does nothing. A keyless attach has no valid outcome, so this is required
+ * rather than optional; emptiness is rejected by the action.
  */
+/**
+ * Control and format characters, refused in a label rather than stripped.
+ *
+ * The label is printed into `aka status`, which a user reads to decide whether
+ * their machine is managed, and an escape sequence there can repaint or hide
+ * lines of that block. `cli/src/commands/attach.ts` refuses the same set on
+ * `--label` and says so at argv-parse time; this is the same rule for the other
+ * attach surface, which writes the same field into the same file that the same
+ * `aka status` reads back.
+ */
+const LABEL_CONTROL_CHARS = /[\p{Cc}\p{Cf}]/u;
+
 export const AttachInput = z.object({
   endpoint: z.string(),
-  label: z.string().optional(),
+  label: z
+    .string()
+    .refine((value) => !LABEL_CONTROL_CHARS.test(value), {
+      message: 'label must not contain control characters',
+    })
+    .optional(),
+  accessKey: z.string(),
 });
 export type AttachInput = z.infer<typeof AttachInput>;

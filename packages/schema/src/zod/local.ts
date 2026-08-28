@@ -58,13 +58,16 @@ export const MODEL_JUDGE_PAYLOAD_VERSION = 1;
 //   'attached'   — the machine is registered against an organization's own
 //     deployment, which supplies policy and receives activity.
 //
-// THE TRANSPORT FOR 'attached' IS NOT IN THIS TREE, AND MUST NOT BE ADDED HERE.
-// This repository is local-only: it makes no network calls, and the workspace
-// lint config bans every client and transport module outright. What lives here
-// is the STATE — the mode, the descriptor below, and the surfaces that let a
-// user attach and detach — behind a port a separate distribution supplies. A
-// machine set to 'attached' with nothing plugged into that port behaves exactly
-// as standalone; it never silently degrades detection.
+// THE TRANSPORT FOR 'attached' IS NOT IN THIS FILE, and the rule that keeps it
+// out is narrower than it once was. This block used to say the transport was not
+// in this TREE at all; @akasecurity/remote ended that — it is the one package
+// here that reaches a network, and it reaches only the deployment a machine's
+// own settings name.
+//
+// What lives here is still the STATE alone: the mode, the descriptor below, and
+// nothing that parses, resolves or dials it. A machine set to 'attached' whose
+// credential is missing or unusable behaves exactly as standalone; it never
+// silently degrades detection.
 export const RunMode = z.enum(['standalone', 'attached']);
 export type RunMode = z.infer<typeof RunMode>;
 

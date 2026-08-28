@@ -396,7 +396,7 @@ export interface WorkspaceSettingsFormViewProps {
   // Register this machine against an organization's deployment, and undo that.
   // Both optional: a build with no transport plugged in renders the connection
   // state read-only rather than offering an action that cannot complete.
-  onAttach?: (endpoint: string, label: string) => void;
+  onAttach?: (endpoint: string, label: string, accessKey: string) => void;
   onDetach?: () => void;
   // Where "Configure detections" points. Injected rather than hardcoded so this
   // package stays router-agnostic.
@@ -607,9 +607,14 @@ export const CONNECTION_FORWARDING_NOTICE =
   'report what the deployment received. Detach to stop sending.';
 
 // Shown where attaching is offered but the surface supplies no attach handler.
+//
+// Reworded away from "this build has no control-plane transport": that stopped
+// being the reason. The transport exists, and both the CLI and the web dashboard
+// use it — what this notice describes is a HOST that wired no `onAttach`, which
+// is a property of the embedding surface rather than of the build.
 export const CONNECTION_UNAVAILABLE_NOTICE =
-  'This build has no control-plane transport, so it cannot attach. It runs standalone against ' +
-  'the local store.';
+  'This view cannot change the connection. Attach from the AKA dashboard, or with `aka attach` in ' +
+  'a terminal.';
 
 export const DETACH_LABEL = 'Detach';
 
@@ -623,6 +628,14 @@ export const DETACH_EXPLANATION =
 export const DETACH_UNAVAILABLE_NOTICE =
   'This machine is registered, and this build offers no way to detach it here.';
 export const ATTACH_LABEL = 'Attach';
+
+/**
+ * The kind is named on screen because it is the one attach failure a user
+ * cannot diagnose from the outside: an `ingest` key authenticates and then
+ * fails the policy read, which looks exactly like a bad key.
+ */
+export const ATTACH_KEY_HINT =
+  'Create a plugin key in your deployment and paste it here. It is stored on this machine only, in a file readable by you alone.';
 
 // The detach that MDM takes away. A machine an administrator attached is not
 // one the user may leave, and saying which organization decided that is the
@@ -639,12 +652,15 @@ function ConnectionRow({
 }: {
   settings: WorkspaceSettings;
   managedLabel?: string | undefined;
-  onAttach?: ((endpoint: string, label: string) => void) | undefined;
+  onAttach?: ((endpoint: string, label: string, accessKey: string) => void) | undefined;
   onDetach?: (() => void) | undefined;
   busy?: boolean | undefined;
 }) {
   const [endpoint, setEndpoint] = useState('');
   const [label, setLabel] = useState('');
+  // Held in component state like the other two, and cleared the moment the
+  // attach is handed off below.
+  const [accessKey, setAccessKey] = useState('');
   const attached = isAttached(settings);
   const locked = managedLabel !== undefined;
 
@@ -713,35 +729,68 @@ function ConnectionRow({
           {DETACH_UNAVAILABLE_NOTICE}
         </p>
       ) : onAttach ? (
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row" data-slot="attach-form">
+        <div className="mt-3 flex flex-col gap-2" data-slot="attach-form">
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Input
+              value={endpoint}
+              placeholder="Deployment endpoint"
+              aria-label="Deployment endpoint"
+              onChange={(e) => {
+                setEndpoint(e.target.value);
+              }}
+            />
+            <Input
+              value={label}
+              placeholder="Name (optional)"
+              aria-label="Deployment name"
+              onChange={(e) => {
+                setLabel(e.target.value);
+              }}
+            />
+          </div>
+          {/*
+            `type="password"` for the masking, and the autoComplete/spellCheck/
+            autoCorrect opt-outs because a browser offering to SAVE this, or a
+            spellchecker shipping the value to a remote dictionary, defeats the
+            masking by another route.
+          */}
           <Input
-            value={endpoint}
-            placeholder="Deployment endpoint"
-            aria-label="Deployment endpoint"
+            type="password"
+            name="aka-access-key"
+            value={accessKey}
+            placeholder="Access key"
+            aria-label="Access key"
+            autoComplete="off"
+            spellCheck={false}
+            autoCorrect="off"
             onChange={(e) => {
-              setEndpoint(e.target.value);
+              setAccessKey(e.target.value);
             }}
           />
-          <Input
-            value={label}
-            placeholder="Name (optional)"
-            aria-label="Deployment name"
-            onChange={(e) => {
-              setLabel(e.target.value);
-            }}
-          />
-          <Button
-            variant="solid"
-            tone="primary"
-            size="sm"
-            disabled={busy === true || endpoint.trim() === ''}
-            onClick={() => {
-              onAttach(endpoint.trim(), label.trim());
-            }}
-            data-slot="attach-button"
-          >
-            {ATTACH_LABEL}
-          </Button>
+          <p className="text-xs text-text-3" data-slot="attach-key-hint">
+            {ATTACH_KEY_HINT}
+          </p>
+          <div>
+            <Button
+              variant="solid"
+              tone="primary"
+              size="sm"
+              disabled={busy === true || endpoint.trim() === '' || accessKey.trim() === ''}
+              onClick={() => {
+                const key = accessKey.trim();
+                // Cleared BEFORE the handler runs, not after it resolves. The
+                // attach is async and this component stays mounted across it, so
+                // clearing on completion would leave the secret in a live input
+                // — and in React DevTools state — for the whole round trip,
+                // including the failure case where the form stays on screen.
+                setAccessKey('');
+                onAttach(endpoint.trim(), label.trim(), key);
+              }}
+              data-slot="attach-button"
+            >
+              {ATTACH_LABEL}
+            </Button>
+          </div>
         </div>
       ) : (
         <p className="mt-3 text-xs text-text-3" data-slot="connection-unavailable">

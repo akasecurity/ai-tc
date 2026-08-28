@@ -49,7 +49,21 @@ export function jobBlock(source, key) {
   // The structural positive control, and the reason this is worth sharing at
   // all: every caller below it asserts something is ABSENT from the body, and an
   // absence assertion passes on a body that was never captured.
-  expect(body, `\`${key}\` captured no runs-on — not a job body`).toMatch(/^ {4}runs-on: /m);
-  expect(body, `\`${key}\` captured no steps — the body was cut short`).toMatch(/^ {6}- /m);
+  //
+  // A job comes in two shapes and only one of them has steps. A job that CALLS a
+  // reusable workflow carries a four-space `uses:` and neither `runs-on:` nor
+  // `steps:` — GitHub rejects a job carrying both — so demanding a runner of it
+  // fails a valid job rather than catching a truncated block. Accepting either
+  // shape keeps the control: a body cut short matches neither, which is the
+  // property every absence check downstream rests on.
+  const isRunnerJob = / {4}runs-on: /m.test(body);
+  const isCallerJob = / {4}uses: /m.test(body);
+  expect(
+    isRunnerJob || isCallerJob,
+    `\`${key}\` captured neither a runs-on nor a uses — not a job body`,
+  ).toBe(true);
+  if (isRunnerJob) {
+    expect(body, `\`${key}\` captured no steps — the body was cut short`).toMatch(/^ {6}- /m);
+  }
   return body;
 }

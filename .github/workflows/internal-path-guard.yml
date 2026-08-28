@@ -48,6 +48,7 @@ jobs:
             ':(glob)**/*.internal.*')"
           if [ -n "$hits" ]; then
             echo "::error::Maintainer-internal files must not be committed to this public repository:"
+            # shellcheck disable=SC2001 # indenting a multi-line list; ${//} does not
             echo "$hits" | sed 's/^/  /'
             exit 1
           fi

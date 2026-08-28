@@ -14,12 +14,13 @@ export interface PostureReporterDeps {
   now(): number; // Date.now
   /**
    * The reporting plugin's identity and policy freshness, or `undefined` when
-   * this build does not know it (an OSS-shaped caller, or a test).
+   * this build does not know it (an embedder, or a test). The factory wires
+   * `createPluginBlock` here whenever the resolving caller passed its build
+   * identity — see plugin-block.ts.
    *
    * Async because two of the five members come from the policy CACHE, which is
    * read from disk. Optional because the block itself is `.optional()` on the
-   * wire — B4 shipped the transport and the column; until E2 there was simply no
-   * producer, so every report a shipped build sent carried no `plugin` at all.
+   * wire, so a caller with no identity to report still posts a valid snapshot.
    *
    * Fail-open like everything else here: a producer that throws costs the block,
    * never the snapshot. The rest of the posture — `storePresent` above all, the
@@ -108,10 +109,18 @@ export function createPostureReporter(deps: PostureReporterDeps): PostureReporte
       const { readError, ...measurement } = deps.readStore();
       if (readError) return null;
       // Built AFTER the store read, and never allowed to cost it: a failure here
-      // drops the plugin block and still reports posture.
+      // drops the plugin block and still reports posture. Bounded like the two
+      // store fs ops above, and for the same reason — the producer reads the
+      // policy cache from disk, and a stalled mount would otherwise hang this
+      // promise (and the gateway awaiting it) until the harness's 10s kill.
+      // Safe to arm the timer here: the blocking readStore() scan has already
+      // returned, so nothing synchronous can count through it.
       let plugin: StorePosturePlugin | undefined;
       try {
-        plugin = await deps.pluginBlock?.();
+        plugin = await withTimeout(
+          deps.pluginBlock?.() ?? Promise.resolve(undefined),
+          REQUEST_TIMEOUT_MS,
+        );
       } catch {
         plugin = undefined;
       }

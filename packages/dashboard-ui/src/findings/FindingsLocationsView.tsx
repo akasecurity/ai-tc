@@ -6,7 +6,7 @@ import { Fragment, type ReactNode } from 'react';
 
 import { relativeTime } from '../lib/relativeTime.ts';
 import { ChevronRightIcon } from '../shared/icons.tsx';
-import { FINDING_STATUS_META } from './meta.ts';
+import { findingStatusMeta } from './meta.ts';
 
 /**
  * Findings folded by location — repository, then file within it.
@@ -125,7 +125,7 @@ export function FindingsLocationsView({
 
 function StatusBadge({ status }: { status: FindingLocationRepo['status'] }) {
   if (status === undefined) return null;
-  const meta = FINDING_STATUS_META[status];
+  const meta = findingStatusMeta(status);
   return (
     <Badge variant={meta.badge} className="h-6 shrink-0">
       {meta.label}

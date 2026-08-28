@@ -1,8 +1,8 @@
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 
+import type { GatewayMeta } from './attached/factory.ts';
 import { resolveGatewayForConfig } from './attached/factory.ts';
-import type { PluginBuildInfo } from './attached/plugin-block.ts';
 import { StandaloneDataGateway } from './standalone-gateway.ts';
 
 /**
@@ -37,10 +37,7 @@ import { StandaloneDataGateway } from './standalone-gateway.ts';
  * SessionStart): whichever of them wins the hourly throttle sends the report,
  * and a report without the block nulls the control plane's plugin columns.
  */
-export type DataGatewayFactory = (
-  config: PluginConfig,
-  meta?: { recordedBy?: string; pluginBuild?: PluginBuildInfo },
-) => DataGateway;
+export type DataGatewayFactory = (config: PluginConfig, meta?: GatewayMeta) => DataGateway;
 
 export const standaloneGatewayFactory: DataGatewayFactory = (config, meta) =>
   new StandaloneDataGateway(config.dataDir, bundledDetections(), meta);
@@ -91,7 +88,7 @@ export function setDefaultGatewayFactory(factory?: DataGatewayFactory): () => vo
 
 export function resolveDataGateway(
   config: PluginConfig,
-  meta?: { recordedBy?: string; pluginBuild?: PluginBuildInfo },
+  meta?: GatewayMeta,
   gatewayFactory: DataGatewayFactory = defaultGatewayFactory,
 ): DataGateway {
   return gatewayFactory(config, meta);

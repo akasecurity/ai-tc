@@ -337,6 +337,24 @@ describe('createPostureReporter', () => {
     expect(() => StorePostureSnapshot.parse(sent)).not.toThrow();
   });
 
+  it('bounds a HANGING pluginBlock — the snapshot still goes out without it', async () => {
+    // The producer reads the policy cache from disk, so it gets the same
+    // REQUEST_TIMEOUT_MS bound as the reporter's other fs ops: a stalled mount
+    // must cost the block, never the snapshot, and never hang prepare() until
+    // the harness's 10s kill.
+    const report = mockReport();
+    const deps = makeDeps({
+      report,
+      pluginBlock: () => new Promise<never>(() => undefined), // never resolves
+    });
+    const startedAt = Date.now();
+    await run(createPostureReporter(deps));
+    expect(Date.now() - startedAt).toBeLessThan(REQUEST_TIMEOUT_MS + 1000);
+    const sent = report.mock.calls[0]?.[0];
+    if (!sent) throw new Error('expected a report');
+    expect(sent).not.toHaveProperty('plugin');
+  }, 10_000);
+
   it('omits the plugin KEY without a producer — never an explicit undefined', async () => {
     // The wire shape is `.optional()`, and downstream bridges key on presence:
     // a spread `plugin: undefined` is a different object from an absent key

@@ -1,6 +1,4 @@
-import { readFileSync } from 'node:fs';
-
-import type { PluginBuildInfo } from '@akasecurity/plugin-runtime';
+import { type PluginBuildInfo, readManifestBuild } from '@akasecurity/plugin-runtime';
 
 /** The npm package this plugin ships as — the identity its posture reports carry. */
 export const PLUGIN_PACKAGE = '@akasecurity/ai-tc-claude-code';
@@ -14,16 +12,11 @@ const MANIFEST_URL = new URL('../.claude-plugin/plugin.json', import.meta.url);
 
 /**
  * The build identity every attached posture report carries (see
- * `resolveDataGateway`'s `meta.pluginBuild`). Best-effort: an unreadable or
- * versionless manifest yields undefined and the report goes out without a
+ * `resolveDataGateway`'s `meta.pluginBuild`). One fs read per process — the
+ * shared reader memoises per manifest URL — and best-effort: an unreadable or
+ * versionless manifest yields undefined, and the report goes out without a
  * plugin block rather than failing anything.
  */
 export function pluginBuild(): PluginBuildInfo | undefined {
-  try {
-    const manifest = JSON.parse(readFileSync(MANIFEST_URL, 'utf8')) as { version?: unknown };
-    if (typeof manifest.version !== 'string' || manifest.version.length === 0) return undefined;
-    return { package: PLUGIN_PACKAGE, version: manifest.version };
-  } catch {
-    return undefined;
-  }
+  return readManifestBuild(MANIFEST_URL, PLUGIN_PACKAGE);
 }

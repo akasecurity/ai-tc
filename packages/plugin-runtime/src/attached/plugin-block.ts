@@ -1,4 +1,6 @@
-import type { StorePosturePlugin } from '@akasecurity/schema';
+import { readFileSync } from 'node:fs';
+
+import { StorePosturePlugin } from '@akasecurity/schema';
 
 import type { PolicyStore } from './policy-store.ts';
 
@@ -13,6 +15,42 @@ import type { PolicyStore } from './policy-store.ts';
 export type PluginBuildInfo = Pick<StorePosturePlugin, 'package' | 'version'> &
   Partial<Pick<StorePosturePlugin, 'ossVersion'>>;
 
+// One reader, one read: the manifest cannot change under a running process, so
+// the first answer per manifest URL is cached — including a miss, which will
+// not appear mid-process either. That bounds the cost to one fs read per
+// process on every caller, which matters most on the host whose busiest hook
+// evaluates its argument list on every invocation.
+const manifestBuildCache = new Map<string, PluginBuildInfo | undefined>();
+
+/**
+ * Read a plugin's build identity from its installed manifest. Shared by the
+ * plugin adapters' `build-info.ts` modules, which each supply only their own
+ * two literals: the npm package name and where their host keeps the manifest.
+ *
+ * Best-effort: an unreadable or versionless manifest yields undefined and the
+ * posture report goes out without a plugin block rather than failing anything.
+ */
+export function readManifestBuild(
+  manifestUrl: URL,
+  packageName: string,
+): PluginBuildInfo | undefined {
+  const key = manifestUrl.href;
+  if (!manifestBuildCache.has(key)) {
+    let build: PluginBuildInfo | undefined;
+    try {
+      const manifest = JSON.parse(readFileSync(manifestUrl, 'utf8')) as { version?: unknown };
+      build =
+        typeof manifest.version === 'string' && manifest.version.length > 0
+          ? { package: packageName, version: manifest.version }
+          : undefined;
+    } catch {
+      build = undefined;
+    }
+    manifestBuildCache.set(key, build);
+  }
+  return manifestBuildCache.get(key);
+}
+
 /**
  * Produce the posture snapshot's `plugin` block: the build identity passed in,
  * plus policy freshness read from the on-disk policy cache — the SAME cache the
@@ -24,29 +62,42 @@ export type PluginBuildInfo = Pick<StorePosturePlugin, 'package' | 'version'> &
  * `read()` fail-opens to null on a missing or corrupt cache, so those nulls are
  * "no bundle cached", never an error surfaced.
  *
- * `policyFetchedAt` is guarded rather than copied: the cache's `fetchedAtMs` is
- * read tolerantly (any number parses, and an absent field reads as 0), and the
- * wire shape requires a positive epoch stamp — forwarding a zero or a mangled
- * value would fail the whole snapshot at the receiver, costing the posture the
- * block exists to enrich. An unusable stamp reports null; the bundle version
- * still travels.
+ * The two cache-derived fields are guarded against the wire shape's OWN bounds
+ * (`StorePosturePlugin.shape.*`), not a re-spelled copy of them: the cache is
+ * read tolerantly (`fetchedAtMs` accepts any number and an absent field reads
+ * as 0; the bundle's `version` is an unbounded string), while the receiver
+ * enforces the schema — and `reportStorePosture` sends the body unvalidated,
+ * so an out-of-range value here would fail the WHOLE snapshot at the receiver,
+ * costing the posture this block exists to enrich and charging the shared
+ * forward breaker with the refusals. An unusable value reports null; the other
+ * field still travels. A zero stamp also reports null — it is inside the
+ * schema's bounds but means "never confirmed fresh", not an epoch. The final
+ * parse is the belt over the two braces: a block the receiver would refuse is
+ * dropped whole rather than sent.
  */
 export function createPluginBlock(
   build: PluginBuildInfo,
   policyStore: Pick<PolicyStore, 'read'>,
-): () => Promise<StorePosturePlugin> {
+): () => Promise<StorePosturePlugin | undefined> {
   return async () => {
     const cached = await policyStore.read();
     const fetchedAtMs = cached?.fetchedAtMs;
-    return {
+    const block: StorePosturePlugin = {
       package: build.package,
       version: build.version,
       ossVersion: build.ossVersion ?? null,
-      policyBundleVersion: cached?.bundle.version ?? null,
+      policyBundleVersion:
+        cached !== null &&
+        StorePosturePlugin.shape.policyBundleVersion.safeParse(cached.bundle.version).success
+          ? cached.bundle.version
+          : null,
       policyFetchedAt:
-        fetchedAtMs !== undefined && Number.isSafeInteger(fetchedAtMs) && fetchedAtMs > 0
+        fetchedAtMs !== undefined &&
+        fetchedAtMs > 0 &&
+        StorePosturePlugin.shape.policyFetchedAt.safeParse(fetchedAtMs).success
           ? fetchedAtMs
           : null,
     };
+    return StorePosturePlugin.safeParse(block).success ? block : undefined;
   };
 }

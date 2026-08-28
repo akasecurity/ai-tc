@@ -16,6 +16,24 @@ import { readStorePosture } from './posture-snapshot.ts';
 import { createPostureStore } from './posture-store.ts';
 
 /**
+ * What a resolving caller knows about itself, threaded to every gateway
+ * factory. ONE named shape on purpose: it is spelled at each hop of the
+ * resolution chain (`resolveDataGateway` → `DataGatewayFactory` → here), and a
+ * member added to only some of those hops would compile while silently
+ * dropping the field at whichever hop was missed.
+ *
+ * `recordedBy` names the calling binary (`plugin@<v>`) for the standalone
+ * gateway's inventory stamp. `pluginBuild` is the calling artifact's package
+ * identity for the attached posture self-report; `| undefined` is explicit so
+ * a caller can pass a best-effort read's miss verbatim rather than spelling a
+ * conditional spread at every site.
+ */
+export interface GatewayMeta {
+  recordedBy?: string;
+  pluginBuild?: PluginBuildInfo | undefined;
+}
+
+/**
  * Build the gateway a machine's own configuration asks for.
  *
  * THE LOCAL GATEWAY IS BUILT FIRST AND UNCONDITIONALLY, because attached mode
@@ -38,10 +56,7 @@ import { createPostureStore } from './posture-store.ts';
  * standalone one. A session is never broken by a configuration problem, which
  * is the whole contract this package is shaped around.
  */
-export function resolveGatewayForConfig(
-  config: PluginConfig,
-  meta?: { recordedBy?: string; pluginBuild?: PluginBuildInfo },
-): DataGateway {
+export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta): DataGateway {
   const local = new StandaloneDataGateway(config.dataDir, bundledDetections(), meta);
 
   try {

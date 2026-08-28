@@ -29,6 +29,7 @@ describe('createPluginBlock', () => {
     const store = createPolicyStore(d);
     await store.write(bundle('sha256:abc123'));
     const block = await createPluginBlock(BUILD, store)();
+    if (!block) throw new Error('expected a block');
     expect(() => StorePosturePlugin.parse(block)).not.toThrow();
     expect(block).toMatchObject({
       package: '@akasecurity/ai-tc-claude-code',
@@ -78,12 +79,49 @@ describe('createPluginBlock', () => {
     expect(block).toMatchObject({ policyBundleVersion: 'v7', policyFetchedAt: null });
   });
 
+  it('a stamp outside the wire bounds reports null; the bundle version still travels', async () => {
+    // The cache reads fetchedAtMs tolerantly (any number parses) while the
+    // receiver enforces the schema's epoch ceiling — and reportStorePosture
+    // sends the body unvalidated, so an out-of-range stamp forwarded verbatim
+    // would fail the whole snapshot at the receiver. The bound is taken from
+    // the wire shape itself, not re-spelled here.
+    const d = await dir();
+    const store = createPolicyStore(d);
+    await writeFile(
+      store.file,
+      JSON.stringify({ bundle: bundle('v7'), fetchedAtMs: 9_000_000_000_000_000 }),
+      'utf8',
+    );
+    const block = await createPluginBlock(BUILD, store)();
+    if (!block) throw new Error('expected a block');
+    expect(() => StorePosturePlugin.parse(block)).not.toThrow();
+    expect(block).toMatchObject({ policyBundleVersion: 'v7', policyFetchedAt: null });
+  });
+
+  it('a bundle version past the wire cap reports null; the stamp still travels', async () => {
+    // PolicyBundle.version is an unbounded string, the wire field caps at 200.
+    const d = await dir();
+    const store = createPolicyStore(d);
+    await writeFile(
+      store.file,
+      JSON.stringify({ bundle: bundle('v'.repeat(201)), fetchedAtMs: 1_779_500_000_000 }),
+      'utf8',
+    );
+    const block = await createPluginBlock(BUILD, store)();
+    if (!block) throw new Error('expected a block');
+    expect(() => StorePosturePlugin.parse(block)).not.toThrow();
+    expect(block).toMatchObject({
+      policyBundleVersion: null,
+      policyFetchedAt: 1_779_500_000_000,
+    });
+  });
+
   it('passes ossVersion through when the build records one', async () => {
     const d = await dir();
     const block = await createPluginBlock(
       { ...BUILD, ossVersion: '0.9.8' },
       createPolicyStore(d),
     )();
-    expect(block.ossVersion).toBe('0.9.8');
+    expect(block?.ossVersion).toBe('0.9.8');
   });
 });

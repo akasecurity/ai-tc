@@ -20,7 +20,7 @@ import { handleSessionStart } from '@akasecurity/plugin-runtime';
 import { loadConfig } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
-import { pluginBuild } from '../build-info.ts';
+import { PLUGIN_PACKAGE, pluginBuild } from '../build-info.ts';
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { standingBrief } from '../protocol/notes.ts';
@@ -45,14 +45,17 @@ async function main(): Promise<void> {
   const input = parseJson(await readStdin());
   const sessionId = input ? getString(input, 'session_id') : undefined;
   const cwd = (input ? getString(input, 'cwd') : undefined) ?? process.cwd();
+  // One version value feeds both the inventory stamp and the posture
+  // identity, so the two can never disagree about which build is running:
+  // argv's manifest when the hook command passes one, else the manifest
+  // beside the running script — read once either way.
+  const version = harnessVersion() ?? pluginBuild()?.version;
   const result = await handleSessionStart({
     sessionId,
     cwd,
     tool: SOURCE_TOOL.ClaudeCode,
-    harnessVersion: harnessVersion(),
-    // The build identity the attached posture report stamps; read from the
-    // manifest beside the running script, so it needs no argv.
-    pluginBuild: pluginBuild(),
+    harnessVersion: version,
+    pluginBuild: version === undefined ? undefined : { package: PLUGIN_PACKAGE, version },
     // harnessInterface is intentionally omitted: Claude Code's SessionStart hook
     // exposes no meaningful interface discriminator (terminal vs IDE vs web) yet.
     // The resolver already folds it into the harness bag, so pass it here once

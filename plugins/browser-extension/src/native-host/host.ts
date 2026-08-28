@@ -29,7 +29,10 @@ import { loadConfig } from '@akasecurity/plugin-sdk';
 import type { SourceTool } from '@akasecurity/schema';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
-import pkg from '../../package.json';
+// Named imports, not a default import: esbuild tree-shakes named JSON exports
+// down to the two strings, while a default import inlines the whole manifest —
+// scripts and dependency lists included — into the shipped bundle.
+import { name as pkgName, version as pkgVersion } from '../../package.json';
 import type { HostRequest, HostResponse, WebSourceTool } from './protocol.ts';
 import { isHostRequest } from './protocol.ts';
 import { readMessages, writeMessage } from './wire.ts';
@@ -43,7 +46,7 @@ const WEB_TOOL_TO_SOURCE: Record<WebSourceTool, SourceTool> = {
 // `resolveDataGateway`'s `meta.pluginBuild`). Read from this package's own
 // manifest at bundle time — the installed host ships as a single script with
 // no package.json beside it, so a runtime lookup has nothing to find.
-const PLUGIN_BUILD = { package: pkg.name, version: pkg.version };
+const PLUGIN_BUILD = { package: pkgName, version: pkgVersion };
 
 // chatgpt.com / claude.ai are each single-backend web apps — there's no local
 // env signal to read (unlike the CLI resolvers, which sniff env vars a

@@ -35,7 +35,7 @@ import { handleSessionStart } from '@akasecurity/plugin-runtime';
 import { loadConfig, resolveAntigravityProvider } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
-import { pluginBuild } from '../build-info.ts';
+import { PLUGIN_PACKAGE, pluginBuild } from '../build-info.ts';
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
 import {
   getString,
@@ -84,15 +84,20 @@ async function main(): Promise<unknown> {
   // A symlinked store path redirects the corpus without failing anything;
   // say so once per session (stderr, so the stdout contract is untouched).
   warnIfStoreRedirected(config, sessionId);
+  // One version value feeds both the inventory stamp and the posture
+  // identity, so the two can never disagree about which build is running:
+  // argv's manifest when the hook command passes one, else the manifest
+  // beside the running script. `pluginBuild()` memoises, which matters here —
+  // this host has no SessionStart, so this argument list is built on every
+  // PreInvocation and the once-per-session gate sits further in.
+  const version = harnessVersion() ?? pluginBuild()?.version;
   const result = await handleSessionStart(
     {
       sessionId,
       cwd,
       tool: SOURCE_TOOL.Antigravity,
-      harnessVersion: harnessVersion(),
-      // The build identity the attached posture report stamps; read from the
-      // manifest beside the running script, so it needs no argv.
-      pluginBuild: pluginBuild(),
+      harnessVersion: version,
+      pluginBuild: version === undefined ? undefined : { package: PLUGIN_PACKAGE, version },
     },
     config,
   );

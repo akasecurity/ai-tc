@@ -61,10 +61,10 @@ const truncateTarget = (s: string): string =>
 // The reconciler's `ensureInventory` can win the hourly posture throttle just
 // as SessionStart's can, so its gateway resolution carries the same build
 // identity — an attached posture report without it clears the control plane's
-// plugin columns.
+// plugin columns. A manifest miss passes through as an explicit undefined,
+// which the meta shape tolerates.
 function reconcileGateway(config: PluginConfig): DataGateway {
-  const build = pluginBuild();
-  return resolveDataGateway(config, build === undefined ? undefined : { pluginBuild: build });
+  return resolveDataGateway(config, { pluginBuild: pluginBuild() });
 }
 
 export interface ReconcileSummary {

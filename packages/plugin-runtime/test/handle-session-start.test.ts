@@ -723,7 +723,10 @@ describe('handleSessionStart — gateway resolution meta', () => {
       config(dir),
     );
 
-    expect(captured).toEqual({
+    // toStrictEqual: toEqual ignores an explicit-undefined member, and "the
+    // key is absent" vs "the key is undefined" is the exactOptionalPropertyTypes
+    // distinction the factory's presence-keyed spread depends on.
+    expect(captured).toStrictEqual({
       recordedBy: 'plugin@0.9.8',
       pluginBuild: { package: '@akasecurity/ai-tc-claude-code', version: '0.9.8' },
     });
@@ -738,6 +741,6 @@ describe('handleSessionStart — gateway resolution meta', () => {
 
     await handleSessionStart(start('s-meta-none', { harnessVersion: '0.9.8' }), config(dir));
 
-    expect(captured).toEqual({ recordedBy: 'plugin@0.9.8' });
+    expect(captured).toStrictEqual({ recordedBy: 'plugin@0.9.8' });
   });
 });

@@ -109,10 +109,18 @@ export function createPostureReporter(deps: PostureReporterDeps): PostureReporte
       const { readError, ...measurement } = deps.readStore();
       if (readError) return null;
       // Built AFTER the store read, and never allowed to cost it: a failure here
-      // drops the plugin block and still reports posture.
+      // drops the plugin block and still reports posture. Bounded like the two
+      // store fs ops above, and for the same reason — the producer reads the
+      // policy cache from disk, and a stalled mount would otherwise hang this
+      // promise (and the gateway awaiting it) until the harness's 10s kill.
+      // Safe to arm the timer here: the blocking readStore() scan has already
+      // returned, so nothing synchronous can count through it.
       let plugin: StorePosturePlugin | undefined;
       try {
-        plugin = await deps.pluginBlock?.();
+        plugin = await withTimeout(
+          deps.pluginBlock?.() ?? Promise.resolve(undefined),
+          REQUEST_TIMEOUT_MS,
+        );
       } catch {
         plugin = undefined;
       }

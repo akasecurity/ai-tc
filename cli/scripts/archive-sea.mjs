@@ -42,8 +42,14 @@ function assertZipWritten(path) {
   let fd;
   try {
     fd = openSync(path, 'r');
-  } catch {
-    throw new Error(`Compress-Archive reported success but wrote no ${path}`);
+  } catch (err) {
+    // Only "file genuinely doesn't exist" gets the friendly rewrite — any
+    // other errno (a permissions or descriptor-limit failure, say) means real
+    // bytes are sitting on disk and the crafted sentence would misdescribe them.
+    if (err.code !== 'ENOENT') throw err;
+    throw new Error(`Compress-Archive reported success but wrote nothing to ${path}`, {
+      cause: err,
+    });
   }
   try {
     const buf = Buffer.alloc(4);

@@ -651,6 +651,29 @@ export function canAttach(endpoint: string, accessKey: string): boolean {
   return endpoint.trim() !== '' && accessKey.trim() !== '';
 }
 
+/**
+ * Hand an attach off, clearing the key first.
+ *
+ * THE ORDER IS THE POINT, and it is why this is a named function rather than an
+ * inline handler. The attach is async and this component stays mounted across
+ * it, so clearing after it resolves would leave the secret in a live input — and
+ * in React DevTools state — for the whole round trip, including the failure case
+ * where the form stays on screen. Inline in JSX that ordering was a property no
+ * test in this package could reach; here it is one call away.
+ *
+ * `clearKey` rather than a setter, so the caller owns the state and this stays a
+ * plain function the suite can drive with two spies.
+ */
+export function submitAttach(
+  values: { endpoint: string; label: string; accessKey: string },
+  clearKey: () => void,
+  onAttach: (endpoint: string, label: string, accessKey: string) => void,
+): void {
+  const key = values.accessKey.trim();
+  clearKey();
+  onAttach(values.endpoint.trim(), values.label.trim(), key);
+}
+
 export const ATTACH_KEY_HINT =
   'Create a plugin key in your deployment and paste it here. It is stored on this machine only, in a file readable by you alone.';
 
@@ -753,25 +776,26 @@ function ConnectionRow({
           {DETACH_UNAVAILABLE_NOTICE}
         </p>
       ) : onAttach ? (
-        <div className="mt-3 flex flex-col gap-2" data-slot="attach-form">
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Input
-              value={endpoint}
-              placeholder="Deployment endpoint"
-              aria-label="Deployment endpoint"
-              onChange={(e) => {
-                setEndpoint(e.target.value);
-              }}
-            />
-            <Input
-              value={label}
-              placeholder="Name (optional)"
-              aria-label="Deployment name"
-              onChange={(e) => {
-                setLabel(e.target.value);
-              }}
-            />
-          </div>
+        // A grid rather than nested flex rows: the endpoint and name share a row
+        // on wide screens, and everything below spans both columns. Flat, so the
+        // two fields that were here before keep their place in the tree.
+        <div className="mt-3 grid gap-2 sm:grid-cols-2" data-slot="attach-form">
+          <Input
+            value={endpoint}
+            placeholder="Deployment endpoint"
+            aria-label="Deployment endpoint"
+            onChange={(e) => {
+              setEndpoint(e.target.value);
+            }}
+          />
+          <Input
+            value={label}
+            placeholder="Name (optional)"
+            aria-label="Deployment name"
+            onChange={(e) => {
+              setLabel(e.target.value);
+            }}
+          />
           {/*
             `type="password"` for the masking, and the autoComplete/spellCheck/
             autoCorrect opt-outs because a browser offering to SAVE this, or a
@@ -779,6 +803,7 @@ function ConnectionRow({
             masking by another route.
           */}
           <Input
+            className="sm:col-span-2"
             type="password"
             name="aka-access-key"
             value={accessKey}
@@ -791,24 +816,23 @@ function ConnectionRow({
               setAccessKey(e.target.value);
             }}
           />
-          <p className="text-xs text-text-3" data-slot="attach-key-hint">
+          <p className="text-xs text-text-3 sm:col-span-2" data-slot="attach-key-hint">
             {ATTACH_KEY_HINT}
           </p>
-          <div>
+          <div className="sm:col-span-2">
             <Button
               variant="solid"
               tone="primary"
               size="sm"
               disabled={busy === true || !canAttach(endpoint, accessKey)}
               onClick={() => {
-                const key = accessKey.trim();
-                // Cleared BEFORE the handler runs, not after it resolves. The
-                // attach is async and this component stays mounted across it, so
-                // clearing on completion would leave the secret in a live input
-                // — and in React DevTools state — for the whole round trip,
-                // including the failure case where the form stays on screen.
-                setAccessKey('');
-                onAttach(endpoint.trim(), label.trim(), key);
+                submitAttach(
+                  { endpoint, label, accessKey },
+                  () => {
+                    setAccessKey('');
+                  },
+                  onAttach,
+                );
               }}
               data-slot="attach-button"
             >

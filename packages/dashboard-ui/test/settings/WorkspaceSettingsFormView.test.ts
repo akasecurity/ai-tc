@@ -29,6 +29,7 @@ import {
   MODEL_JUDGE_CHOICES,
   MODEL_JUDGE_SECTION_DESCRIPTION,
   MODEL_JUDGE_SECTION_LABEL,
+  submitAttach,
   VAULT_CHOICES,
   VAULT_SECTION_DESCRIPTION,
   VAULT_SECTION_LABEL,
@@ -476,6 +477,26 @@ describe('the connection section', () => {
     // The kind is named because it is the one attach failure a user cannot
     // diagnose from the outside: an ingest key authenticates, then fails.
     expect(html).toContain(ATTACH_KEY_HINT);
+  });
+
+  it('clears the key BEFORE handing the attach off, not after it resolves', () => {
+    // The ordering is the security property. The attach is async and the form
+    // stays mounted across it, so clearing afterwards would leave the secret in
+    // a live input for the whole round trip — including the failure case, where
+    // the form stays on screen with the key still in it.
+    const order: string[] = [];
+    const clearKey = () => order.push('cleared');
+    const onAttach = (...args: string[]) => order.push(`sent:${args.join('|')}`);
+
+    submitAttach(
+      { endpoint: '  https://aka.acme.internal ', label: ' Acme ', accessKey: '  aka_live_k  ' },
+      clearKey,
+      onAttach,
+    );
+
+    // Cleared first, and the trimmed key still reached the handler — the clear
+    // must not race the value it is handing over.
+    expect(order).toEqual(['cleared', 'sent:https://aka.acme.internal|Acme|aka_live_k']);
   });
 
   it('requires both halves of an attachment, whitespace not counting', () => {

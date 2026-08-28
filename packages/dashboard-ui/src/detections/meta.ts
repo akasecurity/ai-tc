@@ -11,6 +11,7 @@ import type {
   PublisherKind,
 } from '@akasecurity/schema';
 import { KNOWN_BUILTIN_IDS } from '@akasecurity/schema';
+import type { Tone } from '@akasecurity/ui-kit';
 
 import type { IconComponent } from '../lib/icons.ts';
 import {
@@ -27,15 +28,10 @@ import {
   SlashCircleIcon,
   UserIcon,
 } from '../shared/icons.tsx';
-import type { Tone } from '../shared/tones.ts';
 
 // The default policy shown when a detection has no policy assigned. Enforcement
 // defaults to monitor (log-only) until the user picks another action.
 export const PLACEHOLDER_POLICY = 'monitor';
-
-// Re-exported from the package's one tonal registry, which the stat strip reads
-// too — see shared/tones.ts for why the class form is the source of truth.
-export { type Tone, toneColors } from '../shared/tones.ts';
 
 /** A one-line code-ish summary of a matcher, shown on rule cards. */
 export function matcherSummary(m: Matcher): string {
@@ -97,14 +93,14 @@ export const POLICY_META: Record<BuiltinPolicyId, PolicyMeta> = {
     id: 'monitor',
     label: 'Monitor',
     icon: EyeIcon,
-    tone: 'gray',
+    tone: 'neutral',
     desc: 'Log every match for audit. The request is allowed through untouched.',
   },
   warn: {
     id: 'warn',
     label: 'Warn',
     icon: AlertIcon,
-    tone: 'orange',
+    tone: 'high',
     desc: 'Allow the request, but warn the user inline before it is sent.',
   },
   redact: {
@@ -130,7 +126,7 @@ export const POLICY_META: Record<BuiltinPolicyId, PolicyMeta> = {
     id: 'block',
     label: 'Block',
     icon: SlashCircleIcon,
-    tone: 'red',
+    tone: 'critical',
     desc: 'Refuse the request entirely whenever any rule in this detection matches.',
   },
 };
@@ -154,7 +150,7 @@ export function policyMeta(id: string): PolicyMeta {
   // every call site. Read through a widened view after the hasOwn guard.
   const table: Partial<Record<string, PolicyMeta>> = POLICY_META;
   const known = Object.hasOwn(POLICY_META, id) ? table[id] : undefined;
-  return known ?? { id, label: id, icon: PolicyIcon, tone: 'gray', desc: '' };
+  return known ?? { id, label: id, icon: PolicyIcon, tone: 'neutral', desc: '' };
 }
 
 // ─── Category metadata ────────────────────────────────────────────────────────
@@ -200,7 +196,7 @@ export interface PublisherMeta {
 export const PUBLISHER_META: Record<PublisherKind, PublisherMeta> = {
   labs: { label: 'AKA Labs', icon: ShieldCheckIcon, tone: 'teal', verified: true },
   org: { label: 'Your org', icon: BuildingIcon, tone: 'violet', verified: false },
-  user: { label: 'Community', icon: UserIcon, tone: 'gray', verified: false },
+  user: { label: 'Community', icon: UserIcon, tone: 'neutral', verified: false },
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

@@ -84,13 +84,13 @@ export default async function DetectionsPage({
       // above render the same number, so they must not disagree about it.
       value: `${stats.active.toLocaleString()} / ${stats.detections.toLocaleString()}`,
       label: 'Active',
-      tone: 'green',
+      tone: 'ok',
     },
     {
       icon: ActivityIcon,
       value: stats.findingsLast30d.toLocaleString(),
       label: 'Findings · 30d',
-      tone: 'gray',
+      tone: 'muted',
     },
   ];
   return (

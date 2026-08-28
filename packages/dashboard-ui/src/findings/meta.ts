@@ -255,15 +255,18 @@ export const EMPTY_FILTERS: FindingsFilters = {
  * a consumer parsing `?view=` validates against this list rather than
  * re-spelling the values.
  */
-export const FINDINGS_VIEWS = ['grouped', 'flat', 'files'] as const;
-export type FindingsView = (typeof FINDINGS_VIEWS)[number];
-
-/** The default view — what an absent `?view=` means. */
-export const DEFAULT_FINDINGS_VIEW: FindingsView = 'grouped';
-
-export function isFindingsView(value: string): value is FindingsView {
-  return (FINDINGS_VIEWS as readonly string[]).includes(value);
-}
+// The view vocabulary lives in ./views.ts, which imports nothing — this module
+// reaches ui-kit and the icon set, and a router that only needs the view names
+// must not pay for either. Re-exported here so existing imports are unaffected.
+export {
+  DEFAULT_FINDINGS_VIEW,
+  FINDINGS_VIEWS,
+  type FindingsView,
+  isFindingsView,
+} from './views.ts';
+// Imported as well as re-exported: a re-export does not bind the name locally,
+// and this module still annotates with it below.
+import type { FindingsView } from './views.ts';
 
 /** Toggle labels, and what each view counts — the units differ per view. */
 export const FINDINGS_VIEW_LABEL: Record<FindingsView, string> = {

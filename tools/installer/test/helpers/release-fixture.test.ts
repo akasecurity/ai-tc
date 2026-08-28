@@ -12,6 +12,7 @@
 // occur. It would simply have stopped being a zip, in the suite whose whole job
 // is to be honest about what the installer is handed.
 import {
+  chmodSync,
   closeSync,
   existsSync,
   mkdtempSync,
@@ -169,8 +170,41 @@ describe('compressArchive', () => {
         attempts += 1;
         // Returns normally without writing anything.
       });
-    }).toThrow(/reported success but wrote no/);
+    }).toThrow(/reported success but wrote nothing to/);
 
+    expect(attempts).toBe(1);
+  });
+
+  it('keeps the errno when an archive was written but cannot be opened', (ctx) => {
+    // The message above is a claim about what PowerShell did, so only the
+    // errno that supports it may produce it. A file that IS there and cannot
+    // be read — a mode that denies it here, EMFILE under a parallel suite —
+    // has to arrive with its own errno intact; reported as "wrote nothing" it
+    // sends the reader after a non-terminating error record that never
+    // happened, on a file sitting right there with bytes in it.
+    const at = join(dir, 'unreadable.zip');
+    if (!denyingReadsWorks(join(dir, 'chmod-probe'))) {
+      // Root ignores the mode, and Windows has no bit that removes read
+      // access. Skipped rather than returned: a pass here would be a claim
+      // this run never checked.
+      ctx.skip('chmod cannot deny reads on this host');
+    }
+
+    let attempts = 0;
+    const error = errorFrom(() => {
+      compressArchive('pwsh', '/stage/aka-win32-x64', at, () => {
+        attempts += 1;
+        landZip(at);
+        chmodSync(at, 0o000);
+      });
+    });
+
+    // What it SAYS before what it omits — a never-thrown error arrives as
+    // undefined, and the assertion below would then read as vacuous.
+    expect(error).toBeDefined();
+    expect((error as NodeJS.ErrnoException | undefined)?.code).toBe('EACCES');
+    expect(error?.message).not.toContain('reported success but wrote nothing');
+    // Not the abort either, so it surfaces on the first attempt.
     expect(attempts).toBe(1);
   });
 
@@ -337,3 +371,36 @@ describe('the release fixture', () => {
     expect(magicOf(again).startsWith(GZIP)).toBe(true);
   });
 });
+
+/** The error a thunk threw, captured OUTSIDE its own catch. */
+function errorFrom(fn: () => void): Error | undefined {
+  try {
+    fn();
+    return undefined;
+  } catch (err) {
+    return err as Error;
+  }
+}
+
+/**
+ * Whether `chmod 0o000` really denies a read on this host, PERFORMED rather
+ * than modelled: root ignores the mode, and Windows has no bit that removes
+ * read access, so a platform check alone would still be wrong for a rootful
+ * container on Linux. The caller skips when this is false, because the case it
+ * gates would otherwise drive the readable path and assert nothing.
+ */
+function denyingReadsWorks(at: string): boolean {
+  writeFileSync(at, 'probe');
+  chmodSync(at, 0o000);
+  try {
+    closeSync(openSync(at, 'r'));
+    return false;
+  } catch {
+    return true;
+  } finally {
+    // Handed back writable before teardown sees it: on Windows `0o000` sets the
+    // read-only ATTRIBUTE, which `rmSync` meets as EPERM — tolerated there, so
+    // the tree would be left behind silently rather than failing anything.
+    chmodSync(at, 0o600);
+  }
+}

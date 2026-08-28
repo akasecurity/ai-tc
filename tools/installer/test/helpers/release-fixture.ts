@@ -175,13 +175,24 @@ function assertZipWritten(archivePath: string): void {
   let fd: number;
   try {
     fd = openSync(archivePath, 'r');
-  } catch {
+  } catch (err) {
     // rmSync ran before this attempt, so "wrote nothing" — the failure this
     // guards against — means there is no file to open at all, not a partial
     // one. That is the more likely of the two non-zip outcomes, so it gets its
     // own message rather than falling through to the magic-number check below,
     // which only ever fires for a partial write.
-    throw new Error(`Compress-Archive reported success but wrote no ${archivePath}`);
+    //
+    // ENOENT is the whole of that argument, so it is the whole of what this
+    // rewrites. Every other errno is a file that WAS written and could not be
+    // read — a mode that denies it, or the descriptor table exhausted under a
+    // parallel suite — and the crafted sentence would be a false claim about
+    // what PowerShell did, sending the reader after a non-terminating error
+    // record that never happened. Those keep their own error, and their errno
+    // with it.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    throw new Error(`Compress-Archive reported success but wrote nothing to ${archivePath}`, {
+      cause: err,
+    });
   }
   try {
     const buf = Buffer.alloc(4);

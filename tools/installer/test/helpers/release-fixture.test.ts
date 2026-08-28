@@ -11,14 +11,28 @@
 // and the one case that would open it is Windows-only, where the bug does not
 // occur. It would simply have stopped being a zip, in the suite whose whole job
 // is to be honest about what the installer is handed.
-import { closeSync, mkdtempSync, openSync, readSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
-import { archiveNameFor, FIXTURE_VERSION, sha256OfFile, writeArchive } from './release-fixture.ts';
+import {
+  archiveNameFor,
+  compressArchive,
+  FIXTURE_VERSION,
+  sha256OfFile,
+  writeArchive,
+} from './release-fixture.ts';
 import { powershellExe } from './run-installer.ts';
 
 const PS = powershellExe();
@@ -37,6 +51,120 @@ function magicOf(path: string): string {
 
 const GZIP = '1f8b';
 const ZIP = '504b0304';
+
+/**
+ * The retry inside `compressArchive`, driven through its injected runner.
+ *
+ * It exists for an abort that cannot be provoked on demand — `pwsh` dying with a
+ * truncated assembly name, on some hosts, for a command that is correct — so
+ * against a real PowerShell the retry branch is dead code on every leg that runs
+ * this suite. The failure is injected instead: a runner that aborts a bounded
+ * number of times then succeeds, one that aborts forever, and one that fails the
+ * ordinary way. Between them they pin that it retries the abort, that it gives
+ * up rather than looping, and that it does NOT swallow a real failure.
+ *
+ * `signal` is what each fake sets, because that is what the real one carries: a
+ * child killed by a signal reports `status: null, signal: 'SIGABRT'`, while
+ * every genuine `Compress-Archive` failure leaves through a non-zero exit.
+ */
+describe('compressArchive', () => {
+  // Its own directory rather than the fixture suite's: nothing here writes a
+  // real archive, and sharing one would couple two independent describes.
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aka-compress-retry-'));
+  });
+  afterAll(() => {
+    removeTree(dir);
+  });
+
+  const aborted = (): Error =>
+    Object.assign(new Error('Command failed'), { status: null, signal: 'SIGABRT' });
+  const exited = (): Error =>
+    Object.assign(new Error('Command failed'), { status: 1, signal: null });
+
+  it('runs the command once when it succeeds', () => {
+    // The positive control. Without it every assertion below could be satisfied
+    // by an implementation that never calls the runner at all.
+    const calls: string[][] = [];
+    compressArchive('pwsh', '/stage/aka-win32-x64', join(dir, 'control.zip'), (_exe, args) => {
+      calls.push([...args]);
+    });
+
+    expect(calls).toHaveLength(1);
+    // The command is still the one archive-sea.mjs writes, retry or not.
+    expect(calls[0]?.at(-1)).toContain('Compress-Archive -Force -CompressionLevel NoCompression');
+  });
+
+  it('retries an abort and returns once it lands', () => {
+    // Two aborts then success — the shape observed in CI, where one call in a
+    // job aborted and another completed. A single-attempt implementation fails
+    // this.
+    let attempts = 0;
+    compressArchive('pwsh', '/stage/aka-win32-x64', join(dir, 'flaky.zip'), () => {
+      attempts += 1;
+      if (attempts < 3) throw aborted();
+    });
+
+    expect(attempts).toBe(3);
+  });
+
+  it('gives up on an abort that never clears, and rethrows the original', () => {
+    // A host where this is not flaking. The budget is spent rather than looped,
+    // and what surfaces is the error the caller can act on — not one this retry
+    // invented, which would bury the assembly-name detail that identifies it.
+    let attempts = 0;
+    const original = aborted();
+
+    expect(() => {
+      compressArchive('pwsh', '/stage/aka-win32-x64', join(dir, 'doomed.zip'), () => {
+        attempts += 1;
+        throw original;
+      });
+    }).toThrow(original);
+
+    // Pinned as a COUNT, with no elapsed assertion: a wall-clock bound on a
+    // shared runner is the flake this file is trying to remove, not add.
+    expect(attempts).toBe(3);
+  });
+
+  it('does not retry an ordinary failure', () => {
+    // The case that keeps this narrow. A `Compress-Archive` that genuinely
+    // cannot write exits non-zero, and must surface on the FIRST attempt — a
+    // retry there would turn one clear error into three and still fail.
+    let attempts = 0;
+
+    expect(() => {
+      compressArchive('pwsh', '/stage/aka-win32-x64', join(dir, 'broken.zip'), () => {
+        attempts += 1;
+        throw exited();
+      });
+    }).toThrow();
+
+    expect(attempts).toBe(1);
+  });
+
+  it('clears a partial archive before each attempt', () => {
+    // What stops a retry being worse than the abort. `writeRelease` hashes
+    // whatever bytes are on disk into SHA256SUMS, so a truncated archive left by
+    // an aborted attempt and carried into the next one would be listed
+    // correctly — a self-consistent release that proves nothing. Each attempt
+    // therefore starts from no file at all.
+    const path = join(dir, 'partial.zip');
+    const seen: boolean[] = [];
+    let attempts = 0;
+
+    compressArchive('pwsh', '/stage/aka-win32-x64', path, () => {
+      attempts += 1;
+      seen.push(existsSync(path));
+      // Leave a partial behind, exactly as an abort mid-write would.
+      writeFileSync(path, 'truncated');
+      if (attempts < 2) throw aborted();
+    });
+
+    expect(seen).toEqual([false, false]);
+  });
+});
 
 describe('the release fixture', () => {
   // In a hook, not the describe body: work in the body runs at COLLECTION time,

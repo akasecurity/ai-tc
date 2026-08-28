@@ -82,10 +82,13 @@ jobs:
     name: Build · Verify · Publish
     needs: verify
     runs-on: ubuntu-latest
-    # What was published, for the marketplace doorbell below. Passing these on
-    # rather than having that job check out the repo and re-derive them is what
-    # makes the two structurally incapable of disagreeing about the version — and
-    # it is why the doorbell needs no checkout at all.
+    # What was published. Nothing in THIS file consumes these yet: the
+    # marketplace doorbell (notify-marketplace.yml) is not wired here, because
+    # the importer hardcodes the Claude Code package and would read a Codex
+    # dispatch as a Claude Code release at the Codex version. They are declared
+    # now because they are what that call takes, so wiring it is the job block
+    # alone — and because passing them on is what keeps the doorbell from
+    # checking out the repo to re-derive what this job already knows.
     outputs:
       pkg: ${{ steps.manifest.outputs.pkg }}
       version: ${{ steps.manifest.outputs.version }}
@@ -226,20 +229,3 @@ jobs:
           pnpm --filter @akasecurity/ai-tc-codex publish --registry https://npm.pkg.github.com --no-git-checks --tag "$dist_tag"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # Ring the marketplace's doorbell. The mechanism lives in a reusable workflow
-  # because it is not specific to this plugin — see notify-marketplace.yml, which
-  # every plugin the marketplace pins calls the same way. `needs: release` both
-  # supplies the published package/version and means a failed publish skips this
-  # without an `always()`.
-  notify-marketplace:
-    needs: release
-    if: github.event_name == 'push' || inputs.publish
-    uses: ./.github/workflows/notify-marketplace.yml
-    permissions:
-      contents: read
-    with:
-      package: ${{ needs.release.outputs.pkg }}
-      version: ${{ needs.release.outputs.version }}
-    secrets:
-      dispatch-token: ${{ secrets.MARKETPLACE_DISPATCH_TOKEN }}

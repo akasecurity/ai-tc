@@ -3,13 +3,13 @@
 // Presentational Policies views — the built-in enforcement-policy catalog with a
 // master/detail layout. Props-driven and data-fetching-free (a host feeds the
 // same components via client hooks or @akasecurity/persistence Server
-// Components). Icon + tone come
-// from the shared policyMeta / toneColors (the same source the detections
-// PolicyPicker uses), so the swatch never drifts from the picker.
+// Components). The icon and the tone NAME come from the shared policyMeta (the
+// same source the detections PolicyPicker reads), and the tone resolves through
+// @akasecurity/ui-kit, so the swatch never drifts from the picker.
 import type { PolicyDetail, PolicyListItem, PolicyStatsResponse } from '@akasecurity/schema';
-import { Card, cn, Tag } from '@akasecurity/ui-kit';
+import { Card, cn, Tag, toneColors } from '@akasecurity/ui-kit';
 
-import { policyMeta, toneColors } from '../detections/meta.ts';
+import { policyMeta } from '../detections/meta.ts';
 import { ListIcon, LockIcon, PolicyIcon, ShieldCheckIcon, TerminalIcon } from '../shared/icons.tsx';
 import { type SummaryStatItem, SummaryStripView } from '../shared/SummaryStripView.tsx';
 
@@ -52,7 +52,7 @@ export function PolicyStatsView({
       icon: ShieldCheckIcon,
       value: statValue(stats?.builtin),
       label: 'Built-in',
-      tone: 'gray',
+      tone: 'neutral',
     },
     {
       icon: TerminalIcon,
@@ -64,7 +64,7 @@ export function PolicyStatsView({
       icon: ListIcon,
       value: statValue(stats?.detectionsGoverned),
       label: 'Detections governed',
-      tone: 'green',
+      tone: 'ok',
     },
   ];
   return <SummaryStripView items={items} isLoading={loading} className={className} />;

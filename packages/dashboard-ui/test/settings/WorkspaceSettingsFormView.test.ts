@@ -11,6 +11,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import {
   ATTACH_KEY_HINT,
+  canAttach,
   CONNECTION_ATTACHED_DESCRIPTION,
   CONNECTION_FORWARDING_NOTICE,
   CONNECTION_STANDALONE_DESCRIPTION,
@@ -475,6 +476,19 @@ describe('the connection section', () => {
     // The kind is named because it is the one attach failure a user cannot
     // diagnose from the outside: an ingest key authenticates, then fails.
     expect(html).toContain(ATTACH_KEY_HINT);
+  });
+
+  it('requires both halves of an attachment, whitespace not counting', () => {
+    // The rule the button's disabled state enforces, tested where it can be
+    // reached. An endpoint with no key is the case that matters: it writes a
+    // descriptor with no credential, which every later surface reads as
+    // attached-and-broken.
+    expect(canAttach('https://aka.acme.internal', 'aka_live_k')).toBe(true);
+    expect(canAttach('https://aka.acme.internal', '')).toBe(false);
+    expect(canAttach('https://aka.acme.internal', '   ')).toBe(false);
+    expect(canAttach('', 'aka_live_k')).toBe(false);
+    expect(canAttach('   ', 'aka_live_k')).toBe(false);
+    expect(canAttach('  https://aka.acme.internal  ', '  aka_live_k  ')).toBe(true);
   });
 
   it('will not offer to attach until both the endpoint and the key are given', () => {

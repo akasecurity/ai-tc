@@ -635,6 +635,22 @@ export const ATTACH_LABEL = 'Attach';
  * cannot diagnose from the outside: an `ingest` key authenticates and then
  * fails the policy read, which looks exactly like a bad key.
  */
+/**
+ * Both halves of an attachment, or neither.
+ *
+ * Named and exported rather than left inline in the button's `disabled`, because
+ * it is the rule this whole surface exists to enforce: an attach with an
+ * endpoint and no key writes a descriptor with no credential, which every later
+ * surface reads as attached-and-broken — `aka status` says "attached — no usable
+ * credential" and forwarding silently does nothing. Inline in JSX it was a
+ * condition no test in this package could reach.
+ *
+ * Trimmed, so whitespace does not enable the button and then fail the action.
+ */
+export function canAttach(endpoint: string, accessKey: string): boolean {
+  return endpoint.trim() !== '' && accessKey.trim() !== '';
+}
+
 export const ATTACH_KEY_HINT =
   'Create a plugin key in your deployment and paste it here. It is stored on this machine only, in a file readable by you alone.';
 
@@ -783,7 +799,7 @@ function ConnectionRow({
               variant="solid"
               tone="primary"
               size="sm"
-              disabled={busy === true || endpoint.trim() === '' || accessKey.trim() === ''}
+              disabled={busy === true || !canAttach(endpoint, accessKey)}
               onClick={() => {
                 const key = accessKey.trim();
                 // Cleared BEFORE the handler runs, not after it resolves. The

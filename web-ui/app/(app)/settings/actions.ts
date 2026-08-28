@@ -2,6 +2,8 @@
 
 import {
   applyOnboarding,
+  clearAttachmentDerivedState,
+  dataDir,
   isSafeEndpoint,
   ManagedFieldError,
   readControlPlaneCredentialState,
@@ -23,8 +25,11 @@ import {
 import { revalidatePath } from 'next/cache';
 
 import {
+  ATTACH_CREDENTIAL_UNWRITABLE,
   ATTACH_ENDPOINT_INSECURE,
+  ATTACH_ENDPOINT_UNPARSEABLE,
   ATTACH_KEY_MISSING,
+  ATTACH_LABEL_INVALID,
   ATTACH_VERIFY_FAILED,
   DETACH_CREDENTIAL_STUCK,
   malformedInput,
@@ -145,7 +150,16 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
  */
 export async function attachToControlPlane(input: unknown): Promise<SaveSettingsResult> {
   const parsed = parseActionInput(AttachInput, input);
-  if (!parsed.ok) return { ok: false, error: malformedInput(parsed) };
+  if (!parsed.ok) {
+    // `label` is the one field on this input a USER types, so it is the one
+    // whose rejection must not be answered with malformedInput's wording. That
+    // string is right for its intended case — a payload shape only a stale
+    // client produces — and tells the reader to reload the page, which loses the
+    // endpoint and key they just typed and cannot change the label that was
+    // refused. Say what is wrong with it instead.
+    if (parsed.field === 'label') return { ok: false, error: ATTACH_LABEL_INVALID };
+    return { ok: false, error: malformedInput(parsed) };
+  }
   const endpoint = parsed.data.endpoint.trim();
   // Checked after the parse, not instead of it: the parse guarantees a string
   // to call .trim() on, and this guarantees the string says something. An empty
@@ -162,6 +176,12 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   // It is also ahead of the round trip, so a cleartext endpoint is refused
   // before the key is put on the wire. writeControlPlaneCredential throws on the
   // same predicate, but by then the send has already happened.
+  // Split from the safety check below, because isSafeEndpoint returns false for
+  // two unrelated things and one refusal cannot describe both. `not-a-url-at-all`
+  // and `aka.acme.internal` (no scheme — the likeliest typo, since that is how
+  // people write a host) both fail to parse; answering either with "use an https
+  // address" is a wrong diagnosis pointing at a fix that will not help.
+  if (!URL.canParse(endpoint)) return { ok: false, error: ATTACH_ENDPOINT_UNPARSEABLE };
   if (!isSafeEndpoint(endpoint)) return { ok: false, error: ATTACH_ENDPOINT_INSECURE };
   const accessKey = parsed.data.accessKey.trim();
   if (accessKey === '') return { ok: false, error: ATTACH_KEY_MISSING };
@@ -181,14 +201,38 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   // attached and working; an unconditional rollback would take that machine from
   // attached-and-forwarding to attached-and-broken.
   const dir = settingsDir();
-  const previous = readControlPlaneCredentialState(dir);
+
+  // The credential write gets its OWN try, for the reason detach's does one
+  // paragraph down and in the mirror image. writeControlPlaneCredential throws on
+  // its own account — ensureDataDirSync failing, EACCES on ~/.aka/settings, a
+  // directory in the tmp path's way, ENOSPC — and when it does, applyOnboarding
+  // has not run and settings.json has not been touched. Folding that into the
+  // catch below reports SETTINGS_WRITE_ERROR, sending the user to look at a file
+  // that is fine, about a failure in one whose name they were never told.
+  //
+  // Nothing to roll back here: this is the first write, so failing it leaves the
+  // machine exactly as it was.
+  let previous;
   try {
+    // The snapshot is INSIDE this try, not above it. Its read looks total —
+    // `throwIfNoEntry: false` covers a missing file — but that flag answers
+    // ENOENT and nothing else: with a FILE where ~/.aka/settings should be a
+    // directory, lstat raises ENOTDIR and this throws. Outside a try that
+    // rejects the whole Server Action and replaces the page with a framework
+    // error, which is precisely the failure every action in this file is written
+    // to return instead of raise.
+    previous = readControlPlaneCredentialState(dir);
     writeControlPlaneCredential(dir, {
       specVersion: 1,
       endpoint,
       apiKey: accessKey,
       mintedAt: new Date().toISOString(),
     });
+  } catch {
+    return { ok: false, error: ATTACH_CREDENTIAL_UNWRITABLE };
+  }
+
+  try {
     applyOnboarding({
       runMode: 'attached',
       controlPlane: {
@@ -275,6 +319,20 @@ export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
     revalidatePath('/settings');
     return { ok: false, error: DETACH_CREDENTIAL_STUCK };
   }
+
+  // And everything the attachment left behind, which `aka detach` has always
+  // cleared and this path did not. It was survivable while this surface could
+  // not produce a USABLE attachment — nothing attached here ever synced, so
+  // none of these files existed — and stopped being once it could. Two of them
+  // go on acting after the attachment is gone: a cached bundle merges over the
+  // local policy raise-only, and the forward breaker's cooldown makes a later
+  // re-attach forward nothing until it elapses, against a deployment this
+  // machine no longer talks to.
+  //
+  // After the credential and outside its refusal: the machine is already
+  // detached by the two writes above, and a leftover cache is not worth
+  // reporting a completed detach as a failure.
+  clearAttachmentDerivedState(dataDir());
   revalidatePath('/settings');
   return { ok: true };
 }

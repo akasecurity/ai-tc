@@ -631,11 +631,6 @@ export const DETACH_UNAVAILABLE_NOTICE =
 export const ATTACH_LABEL = 'Attach';
 
 /**
- * The kind is named on screen because it is the one attach failure a user
- * cannot diagnose from the outside: an `ingest` key authenticates and then
- * fails the policy read, which looks exactly like a bad key.
- */
-/**
  * Both halves of an attachment, or neither.
  *
  * Named and exported rather than left inline in the button's `disabled`, because
@@ -674,8 +669,13 @@ export function submitAttach(
   onAttach(values.endpoint.trim(), values.label.trim(), key);
 }
 
+/**
+ * The kind is named on screen because it is the one attach failure a user cannot
+ * diagnose from the outside: an `ingest` key authenticates and then fails the
+ * policy read, which looks exactly like a bad key.
+ */
 export const ATTACH_KEY_HINT =
-  'Create a plugin key in your deployment and paste it here. It is stored on this machine only, in a file readable by you alone.';
+  'Create a plugin key in your deployment and paste it here. It is stored on this machine only, in ~/.aka/settings.';
 
 // The detach that MDM takes away. A machine an administrator attached is not
 // one the user may leave, and saying which organization decided that is the
@@ -797,10 +797,15 @@ function ConnectionRow({
             }}
           />
           {/*
-            `type="password"` for the masking, and the autoComplete/spellCheck/
-            autoCorrect opt-outs because a browser offering to SAVE this, or a
-            spellchecker shipping the value to a remote dictionary, defeats the
-            masking by another route.
+            `type="password"` for the masking, and three opt-outs because a
+            browser offering to SAVE this, or a spellchecker shipping the value to
+            a remote dictionary, defeats the masking by another route.
+
+            `new-password` rather than `off`: on a password field the browsers
+            deliberately DISREGARD `off`, so that password managers keep working
+            on sites that set it. `new-password` is the value that actually
+            suppresses autofill and the save prompt — `off` would have been an
+            assertion that passes while the property it names is not obtained.
           */}
           <Input
             className="sm:col-span-2"
@@ -809,7 +814,7 @@ function ConnectionRow({
             value={accessKey}
             placeholder="Access key"
             aria-label="Access key"
-            autoComplete="off"
+            autoComplete="new-password"
             spellCheck={false}
             autoCorrect="off"
             onChange={(e) => {

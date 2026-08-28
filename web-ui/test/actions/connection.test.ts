@@ -1,10 +1,18 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type * as Persistence from '@akasecurity/persistence';
-import { readWorkspaceSettings } from '@akasecurity/persistence';
+import { ATTACHED_DERIVED_FILENAMES, readWorkspaceSettings } from '@akasecurity/persistence';
 import { isAttached } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -109,6 +117,7 @@ beforeEach(() => {
   osHome.dir = home;
   whoami.reject = null;
   whoami.calls = [];
+  writeFailure.error = null;
   writeFailure.onCall = null;
 });
 
@@ -220,6 +229,44 @@ describe('attachToControlPlane', () => {
     expect(res).toEqual({ ok: true });
   });
 
+  it('names the endpoint as unparseable rather than as insecure', async () => {
+    // A bare host is the likeliest typo, and "use an https address" is a wrong
+    // diagnosis for it — the scheme is what is missing, not the security.
+    const res = await attachToControlPlane({ endpoint: 'aka.acme.internal', accessKey: KEY });
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/web address/i);
+    expect(res.error).not.toMatch(/not secure/i);
+    expect(whoami.calls).toEqual([]);
+  });
+
+  it('tells the user what is wrong with a label, not to reload the page', async () => {
+    // Reloading loses the endpoint and key they just typed and cannot change the
+    // label that was refused.
+    const res = await attachToControlPlane({
+      endpoint: ENDPOINT,
+      label: 'Acme\u001b[2KProd',
+      accessKey: KEY,
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error).not.toMatch(/reload/i);
+    expect(res.error).toMatch(/control characters/i);
+  });
+
+  it('blames the credential file, not settings.json, when the key cannot be saved', async () => {
+    // The mirror of the detach case below. This failure happens BEFORE
+    // applyOnboarding, so settings.json is untouched and naming it sends the
+    // user to inspect a file that is fine.
+    mkdirSync(join(home, '.aka'), { recursive: true });
+    writeFileSync(join(home, '.aka', 'settings'), 'not a directory');
+
+    const res = await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY });
+
+    expect(res.ok).toBe(false);
+    expect(res.error).not.toMatch(/settings\.json/i);
+    expect(res.error).toMatch(/access key could not be saved/i);
+    expectNoEchoOf(res.error, KEY);
+  });
+
   it('refuses an empty key, writing nothing and dialling nothing', async () => {
     const res = await attachToControlPlane({ endpoint: ENDPOINT, accessKey: '   ' });
     expect(res.ok).toBe(false);
@@ -307,6 +354,24 @@ describe('detachFromControlPlane', () => {
     expect(res.error).toMatch(/control-plane-credential\.json/);
     // And the machine really is standalone — the descriptor write committed.
     expect(isAttached(readWorkspaceSettings())).toBe(false);
+  });
+
+  it('clears what the attachment left behind, not just the two files it wrote', async () => {
+    // `aka detach` has always done this; the dashboard did not, which was
+    // survivable only while this surface could not produce a usable attachment.
+    // The forward breaker's state is the sharp one: left behind, a later
+    // re-attach forwards nothing until a cooldown opened against a deployment
+    // this machine no longer talks to has elapsed.
+    await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY });
+    const data = join(home, '.aka', 'data');
+    mkdirSync(data, { recursive: true });
+    for (const name of ATTACHED_DERIVED_FILENAMES) writeFileSync(join(data, name), '{}');
+
+    await detachFromControlPlane();
+
+    for (const name of ATTACHED_DERIVED_FILENAMES) {
+      expect(existsSync(join(data, name)), `${name} outlived the detach`).toBe(false);
+    }
   });
 
   it('is idempotent on a machine that was never attached', async () => {

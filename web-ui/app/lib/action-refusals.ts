@@ -94,3 +94,38 @@ export const ATTACH_VERIFY_FAILED =
  */
 export const DETACH_CREDENTIAL_STUCK =
   'This machine is now standalone, but its saved access key could not be deleted from ~/.aka/settings/control-plane-credential.json. Delete that file, or revoke the key in your deployment.';
+
+/**
+ * The credential file could not be written, so the attach stopped before it
+ * began.
+ *
+ * Its own string rather than SETTINGS_WRITE_ERROR, and for the mirror of
+ * DETACH_CREDENTIAL_STUCK's reason: this failure happens BEFORE settings.json is
+ * touched, so blaming that file sends the user to inspect one that is fine while
+ * the one that actually failed goes unnamed. Nothing was changed, which is worth
+ * saying outright — the alternative reading is a half-finished attachment.
+ */
+export const ATTACH_CREDENTIAL_UNWRITABLE =
+  'The access key could not be saved to ~/.aka/settings, so nothing was changed. Check that the directory exists and is writable.';
+
+/**
+ * The endpoint is not a URL at all — a different fault from an insecure one.
+ *
+ * `isSafeEndpoint` answers false for both, so without this split the likeliest
+ * typo of all (a bare host, which is how people write one) is told to use an
+ * https address, which is approximately right by luck, while genuine garbage is
+ * told the same thing and sent to a fix that cannot help.
+ */
+export const ATTACH_ENDPOINT_UNPARSEABLE =
+  'That does not look like a web address. Include the scheme, as in https://aka.example.com.';
+
+/**
+ * A label the user typed that the shape refuses.
+ *
+ * Named separately from malformedInput because that string tells the reader to
+ * reload the page — right for a payload only a stale client produces, wrong for
+ * a value they just typed, since reloading loses the endpoint and key with it
+ * and changes nothing about the label.
+ */
+export const ATTACH_LABEL_INVALID =
+  'That name cannot be used: it must be under 200 characters and contain no control characters. It is shown in `aka status`, where an escape sequence could hide part of what that reports.';

@@ -471,7 +471,11 @@ describe('the connection section', () => {
     // that broke nothing.
     expect(html).toContain('type="password"');
     expect(html).toContain('aria-label="Access key"');
-    expect(html).toMatch(/autocomplete="off"/i);
+    // `new-password`, not `off`: on a password field the browsers deliberately
+    // DISREGARD `off`, so password managers keep working on sites that set it.
+    // Asserting `off` would have been green while the property it stands for —
+    // no autofill, no save prompt — was not obtained.
+    expect(html).toMatch(/autocomplete="new-password"/i);
     expect(html).toMatch(/spellcheck="false"/i);
     expect(html).toMatch(/autocorrect="off"/i);
     // The kind is named because it is the one attach failure a user cannot
@@ -512,11 +516,14 @@ describe('the connection section', () => {
     expect(canAttach('  https://aka.acme.internal  ', '  aka_live_k  ')).toBe(true);
   });
 
-  it('will not offer to attach until both the endpoint and the key are given', () => {
-    // Both fields start empty, so the button ships disabled. Without the key
-    // in that condition the form would submit an attach that can only write a
-    // descriptor with no credential — the state this surface exists to stop
-    // producing.
+  it('ships the attach button disabled, with both fields empty', () => {
+    // WHAT THIS DOES NOT COVER, said plainly because the title used to claim it:
+    // that the button's `disabled` consults `canAttach`. ConnectionRow holds the
+    // two fields in its own state with no way to seed them, so the only case
+    // that renders has both empty — and swapping the condition back to
+    // `endpoint.trim() === ''` leaves this green. The RULE is covered by
+    // canAttach's own unit test above; the WIRE between them is not, and
+    // pretending otherwise is worse than the gap.
     const html = render({ onAttach: () => undefined, onDetach: () => undefined });
     const at = html.indexOf('data-slot="attach-button"');
     expect(at).toBeGreaterThan(-1);

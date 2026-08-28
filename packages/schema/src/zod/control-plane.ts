@@ -275,7 +275,7 @@ export type IngestAck = z.infer<typeof IngestAck>;
  * here rather than moved to a new primitives module for one helper; it is the
  * shape's own file until a second unrelated caller earns the move.
  */
-export const PRINTABLE = /^[^\p{Cc}\p{Cf}]*$/u;
+const PRINTABLE = /^[^\p{Cc}\p{Cf}]*$/u;
 export const printable = (max: number) =>
   z.string().max(max).regex(PRINTABLE, 'must not contain control characters');
 

@@ -6,6 +6,10 @@ import * as barrel from '../src/index.ts';
 // change during internal restructuring. Type-only exports are invisible at
 // runtime; this snapshot pins the value exports.
 const PUBLIC_VALUE_EXPORTS = [
+  'ATTACHED_DERIVED_FILENAMES',
+  'ATTACHED_FORWARD_DROPS_FILENAME',
+  'ATTACHED_FORWARD_STATE_FILENAME',
+  'ATTACHED_SYNC_STATE_FILENAME',
   'AmbiguousExceptionIdError',
   'BLOCKED_DETECTIONS_RETENTION_MS',
   'BLOCKED_DETECTIONS_TTL_MS',
@@ -21,6 +25,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'KeychainKeyProvider',
   'MAX_EGRESS_CALL_SITES_PER_PROJECT',
   'ManagedFieldError',
+  'POLICY_CACHE_FILENAME',
   'SETTINGS_FILENAME',
   'SecretVault',
   'SqliteActivityRepository',
@@ -56,6 +61,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'capWarnEraEnforcementOnce',
   'captureId',
   'classifiedDataId',
+  'clearAttachmentDerivedState',
   'compareBinaryVersions',
   'computeFindingKey',
   'controlPlaneCredentialPath',

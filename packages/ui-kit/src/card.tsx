@@ -40,17 +40,6 @@ export function CardHeader({ className, ...props }: ComponentPropsWithRef<'div'>
   );
 }
 
-/**
- * Tinted square that holds a leading icon. `tone` names the tonal family and
- * defaults to `neutral`, the untinted pair — a tile that still reads against
- * the card it sits on without claiming a family colour.
- *
- * Prefer it over spelling the fill/ink pair into `className`: the pairing is
- * irregular (primary's tint is `-tint`, and its bare token is already the ink),
- * and getting it wrong fails silently — an undefined theme variable emits no
- * utility, so the glyph just inherits its color. `className` still wins, for the
- * one-off tile whose color is not a family theme.css names.
- */
 // The neutral pair used to be part of the base literal, so it applied no matter
 // what. Indexing makes it data-driven, and `tone` is optional on a component
 // this package ships to hosts outside this repo — where a stale or plain-JS
@@ -71,6 +60,17 @@ function toneClasses(tone: string): string {
   );
 }
 
+/**
+ * Tinted square that holds a leading icon. `tone` names the tonal family and
+ * defaults to `neutral`, the untinted pair — a tile that still reads against
+ * the card it sits on without claiming a family colour.
+ *
+ * Prefer it over spelling the fill/ink pair into `className`: the pairing is
+ * irregular (primary's tint is `-tint`, and its bare token is already the ink),
+ * and getting it wrong fails silently — an undefined theme variable emits no
+ * utility, so the glyph just inherits its color. `className` still wins, for the
+ * one-off tile whose color is not a family theme.css names.
+ */
 export function CardIcon({
   className,
   tone = 'neutral',

@@ -33,7 +33,7 @@ export function AvailablePluginsCardView({
   return (
     <Card className="shadow-sm">
       <CardHeader>
-        <CardIcon className="bg-teal-fill text-teal-ink">
+        <CardIcon tone="teal">
           <SparklesIcon aria-hidden focusable={false} className="size-4" />
         </CardIcon>
         <CardHeading>

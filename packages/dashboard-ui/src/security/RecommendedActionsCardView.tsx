@@ -14,6 +14,8 @@ import {
   cn,
   Skeleton,
   Tag,
+  type Tone,
+  TONE_SOFT,
 } from '@akasecurity/ui-kit';
 
 import type { IconComponent } from '../lib/icons.ts';
@@ -26,13 +28,7 @@ import {
 } from '../shared/icons.tsx';
 import { WidgetError } from './widget-shared.tsx';
 
-type RecommendationTone = 'critical' | 'primary' | 'teal';
-
-const TONE_TILE: Record<RecommendationTone, string> = {
-  critical: 'bg-sev-critical-fill text-sev-critical-ink',
-  primary: 'bg-primary-tint text-primary',
-  teal: 'bg-teal-fill text-teal-ink',
-};
+type RecommendationTone = Extract<Tone, 'critical' | 'primary' | 'teal'>;
 
 // `category` is an extensible string; map the known ones to a tile icon, falling
 // back to a generic alert for any new category.
@@ -75,7 +71,7 @@ export function RecommendedActionsCardView({
   return (
     <Card className="flex flex-col shadow-sm">
       <CardHeader>
-        <CardIcon className="bg-primary-tint text-primary">
+        <CardIcon tone="primary">
           <SparklesIcon aria-hidden focusable={false} className="size-4" />
         </CardIcon>
         <CardHeading>
@@ -117,7 +113,7 @@ export function RecommendedActionsCardView({
                   <span
                     className={cn(
                       'flex size-8 shrink-0 items-center justify-center rounded-lg',
-                      TONE_TILE[SEVERITY_TONE[a.severity]],
+                      TONE_SOFT[SEVERITY_TONE[a.severity]],
                     )}
                   >
                     <Icon aria-hidden focusable={false} className="size-4" />

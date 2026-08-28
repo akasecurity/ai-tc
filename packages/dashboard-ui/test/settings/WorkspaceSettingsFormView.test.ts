@@ -10,6 +10,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import {
+  ATTACH_KEY_HINT,
+  canAttach,
   CONNECTION_ATTACHED_DESCRIPTION,
   CONNECTION_FORWARDING_NOTICE,
   CONNECTION_STANDALONE_DESCRIPTION,
@@ -27,6 +29,7 @@ import {
   MODEL_JUDGE_CHOICES,
   MODEL_JUDGE_SECTION_DESCRIPTION,
   MODEL_JUDGE_SECTION_LABEL,
+  submitAttach,
   VAULT_CHOICES,
   VAULT_SECTION_DESCRIPTION,
   VAULT_SECTION_LABEL,
@@ -452,6 +455,79 @@ describe('the connection section', () => {
     expect(html).toContain('data-slot="attach-form"');
     expect(html).not.toContain('data-slot="detach-button"');
     expect(html).toContain(CONNECTION_STANDALONE_DESCRIPTION);
+  });
+
+  it('offers a masked access-key field, and says where the key comes from', () => {
+    const html = render({ onAttach: () => undefined, onDetach: () => undefined });
+
+    // Masked, and opted out of the three browser features that would defeat
+    // the masking by another route: a saved password, a spellchecker shipping
+    // the value to a remote dictionary, and autocorrect rewriting it.
+    //
+    // Matched case-INSENSITIVELY. This renderer serialises these three as
+    // `autoComplete` / `spellCheck` / `autoCorrect` rather than lowercasing
+    // them; HTML attribute names are case-insensitive so a browser honours
+    // them either way, and pinning the casing would fail on a renderer change
+    // that broke nothing.
+    expect(html).toContain('type="password"');
+    expect(html).toContain('aria-label="Access key"');
+    // `new-password`, not `off`: on a password field the browsers deliberately
+    // DISREGARD `off`, so password managers keep working on sites that set it.
+    // Asserting `off` would have been green while the property it stands for —
+    // no autofill, no save prompt — was not obtained.
+    expect(html).toMatch(/autocomplete="new-password"/i);
+    expect(html).toMatch(/spellcheck="false"/i);
+    expect(html).toMatch(/autocorrect="off"/i);
+    // The kind is named because it is the one attach failure a user cannot
+    // diagnose from the outside: an ingest key authenticates, then fails.
+    expect(html).toContain(ATTACH_KEY_HINT);
+  });
+
+  it('clears the key BEFORE handing the attach off, not after it resolves', () => {
+    // The ordering is the security property. The attach is async and the form
+    // stays mounted across it, so clearing afterwards would leave the secret in
+    // a live input for the whole round trip — including the failure case, where
+    // the form stays on screen with the key still in it.
+    const order: string[] = [];
+    const clearKey = () => order.push('cleared');
+    const onAttach = (...args: string[]) => order.push(`sent:${args.join('|')}`);
+
+    submitAttach(
+      { endpoint: '  https://aka.acme.internal ', label: ' Acme ', accessKey: '  aka_live_k  ' },
+      clearKey,
+      onAttach,
+    );
+
+    // Cleared first, and the trimmed key still reached the handler — the clear
+    // must not race the value it is handing over.
+    expect(order).toEqual(['cleared', 'sent:https://aka.acme.internal|Acme|aka_live_k']);
+  });
+
+  it('requires both halves of an attachment, whitespace not counting', () => {
+    // The rule the button's disabled state enforces, tested where it can be
+    // reached. An endpoint with no key is the case that matters: it writes a
+    // descriptor with no credential, which every later surface reads as
+    // attached-and-broken.
+    expect(canAttach('https://aka.acme.internal', 'aka_live_k')).toBe(true);
+    expect(canAttach('https://aka.acme.internal', '')).toBe(false);
+    expect(canAttach('https://aka.acme.internal', '   ')).toBe(false);
+    expect(canAttach('', 'aka_live_k')).toBe(false);
+    expect(canAttach('   ', 'aka_live_k')).toBe(false);
+    expect(canAttach('  https://aka.acme.internal  ', '  aka_live_k  ')).toBe(true);
+  });
+
+  it('ships the attach button disabled, with both fields empty', () => {
+    // WHAT THIS DOES NOT COVER, said plainly because the title used to claim it:
+    // that the button's `disabled` consults `canAttach`. ConnectionRow holds the
+    // two fields in its own state with no way to seed them, so the only case
+    // that renders has both empty — and swapping the condition back to
+    // `endpoint.trim() === ''` leaves this green. The RULE is covered by
+    // canAttach's own unit test above; the WIRE between them is not, and
+    // pretending otherwise is worse than the gap.
+    const html = render({ onAttach: () => undefined, onDetach: () => undefined });
+    const at = html.indexOf('data-slot="attach-button"');
+    expect(at).toBeGreaterThan(-1);
+    expect(html.slice(Math.max(0, at - 400), at)).toContain('disabled');
   });
 
   it('offers a detach and names the deployment when attached', () => {

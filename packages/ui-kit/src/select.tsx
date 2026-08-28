@@ -52,6 +52,16 @@ function CheckMark({ className }: { className?: string }) {
   );
 }
 
+/**
+ * The select's own trigger.
+ *
+ * Its edge is `border-border-field`, not `border-border`, for the reason `Input`
+ * gives: it renders `bg-surface` inside panels that are also `bg-surface`, so the
+ * border is the only thing marking where the control begins, and `border-border`
+ * is 1.26:1 there. Deliberately unlike `SelectContent` below, which is a floating
+ * surface over a scrim and does not have that problem — the two differ on purpose
+ * rather than by oversight. See the token's note in theme.css.
+ */
 export function SelectTrigger({
   className,
   children,
@@ -61,7 +71,7 @@ export function SelectTrigger({
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
       className={cn(
-        'flex h-9 w-full cursor-pointer items-center justify-between gap-2 rounded-lg border border-border bg-surface px-3 text-sm text-text',
+        'flex h-9 w-full cursor-pointer items-center justify-between gap-2 rounded-lg border border-border-field bg-surface px-3 text-sm text-text',
         'transition-colors focus:border-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
         'data-[placeholder]:text-text-3 disabled:cursor-not-allowed disabled:opacity-50',
         '[&>span]:truncate',

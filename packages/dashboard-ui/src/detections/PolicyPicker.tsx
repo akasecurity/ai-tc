@@ -9,17 +9,21 @@
 //   `onChange` omitted          — read-only; a host with no per-detection write
 //                                 keeps the UI without implying a write path.
 //   `unavailable[id]` given     — the host CAN write, but not this value, and
-//                                 says why. Rendered disabled with the reason
-//                                 rather than dropped from the list.
+//                                 says why. Offered `aria-disabled` with the
+//                                 reason rather than dropped from the list —
+//                                 aria rather than native, so the option keeps
+//                                 its place in the tab order and the reason
+//                                 reaches a keyboard user at the control.
 //
 // The third state exists because an archetype the product documents can be
 // unassignable through one particular host — Redact & Vault through a control
 // plane whose devices will not accept a remote custody instruction — and the
 // alternative to saying so here was a live-looking button that takes a click,
 // fails on the server, and snaps back under an error banner.
+import { toneColors } from '@akasecurity/ui-kit';
 import { useId } from 'react';
 
-import { BUILTIN_POLICY_IDS, policyMeta, toneColors } from './meta.ts';
+import { BUILTIN_POLICY_IDS, policyMeta } from './meta.ts';
 
 export function PolicyPicker({
   value,
@@ -54,7 +58,8 @@ export function PolicyPicker({
   // <p>, and both buttons must point at it. useId keeps two pickers on one page
   // from minting the same ids.
   const base = useId();
-  const reasonId = (reason: string): string => `${base}-unavailable-${reasons.indexOf(reason)}`;
+  const reasonId = (reason: string): string =>
+    `${base}-unavailable-${String(reasons.indexOf(reason))}`;
   return (
     <div className="flex flex-col items-start gap-1.5">
       <div
@@ -68,10 +73,10 @@ export function PolicyPicker({
           const m = policyMeta(k);
           const on = value === k;
           const [fg, bg] = toneColors(m.tone);
-          // The gray tone's tint (surface-3) barely contrasts with this control's
+          // The neutral tone's tint (surface-3) barely contrasts with this control's
           // surface-2 track, so a selected "Monitor" looks unselected. Fall back to a
-          // white pill for gray — the shadow then makes the selection read clearly.
-          const selBg = m.tone === 'gray' ? 'var(--color-surface)' : bg;
+          // white pill for it — the shadow then makes the selection read clearly.
+          const selBg = m.tone === 'neutral' ? 'var(--color-surface)' : bg;
           const Icon = m.icon;
           const reason = reasonFor(k);
           return (

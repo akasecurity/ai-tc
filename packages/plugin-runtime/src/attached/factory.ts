@@ -9,10 +9,29 @@ import { isAttached } from '@akasecurity/schema';
 import { StandaloneDataGateway } from '../standalone-gateway.ts';
 import { createForwardPolicy } from './forward-policy.ts';
 import { AttachedDataGateway } from './gateway.ts';
+import { createPluginBlock, type PluginBuildInfo } from './plugin-block.ts';
 import { createPolicyStore } from './policy-store.ts';
 import { createPostureReporter } from './posture-reporter.ts';
 import { readStorePosture } from './posture-snapshot.ts';
 import { createPostureStore } from './posture-store.ts';
+
+/**
+ * What a resolving caller knows about itself, threaded to every gateway
+ * factory. ONE named shape on purpose: it is spelled at each hop of the
+ * resolution chain (`resolveDataGateway` → `DataGatewayFactory` → here), and a
+ * member added to only some of those hops would compile while silently
+ * dropping the field at whichever hop was missed.
+ *
+ * `recordedBy` names the calling binary (`plugin@<v>`) for the standalone
+ * gateway's inventory stamp. `pluginBuild` is the calling artifact's package
+ * identity for the attached posture self-report; `| undefined` is explicit so
+ * a caller can pass a best-effort read's miss verbatim rather than spelling a
+ * conditional spread at every site.
+ */
+export interface GatewayMeta {
+  recordedBy?: string;
+  pluginBuild?: PluginBuildInfo | undefined;
+}
 
 /**
  * Build the gateway a machine's own configuration asks for.
@@ -37,10 +56,7 @@ import { createPostureStore } from './posture-store.ts';
  * standalone one. A session is never broken by a configuration problem, which
  * is the whole contract this package is shaped around.
  */
-export function resolveGatewayForConfig(
-  config: PluginConfig,
-  meta?: { recordedBy?: string },
-): DataGateway {
+export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta): DataGateway {
   const local = new StandaloneDataGateway(config.dataDir, bundledDetections(), meta);
 
   try {
@@ -90,6 +106,14 @@ export function resolveGatewayForConfig(
         readStore: () => readStorePosture(config.dbPath),
         hostname: () => hostname(),
         now: () => Date.now(),
+        // The reporting build's identity, when the caller knows it (the plugin
+        // adapters do; an embedder or a test may not). Composed with the SAME
+        // policy store the sync child writes, so the block names the bundle
+        // actually in force. Key omitted rather than set undefined — the
+        // reporter keys on presence.
+        ...(meta?.pluginBuild === undefined
+          ? {}
+          : { pluginBlock: createPluginBlock(meta.pluginBuild, store) }),
       }),
     });
   } catch {

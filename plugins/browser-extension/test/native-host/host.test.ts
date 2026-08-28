@@ -1,9 +1,10 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
+import { setDefaultGatewayFactory, standaloneGatewayFactory } from '@akasecurity/plugin-runtime';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId } from '@akasecurity/schema';
@@ -85,6 +86,39 @@ describe('handleRequest (native-messaging host)', () => {
     expect(attrs.harness).toBe('claudeai');
     expect(attrs.harness_interface).toBe('claude.ai');
     expect(attrs.provider).toBe('anthropic');
+  });
+
+  it('resolves the session_start gateway with this package as pluginBuild', async () => {
+    // The host is one of the callers whose posture report must carry the build
+    // identity — a session_start resolved without it clears the control
+    // plane's plugin columns whenever this path wins the hourly throttle.
+    // Captured at the gateway-factory seam, through the real handleSessionStart.
+    let captured: unknown = 'never-resolved';
+    const restore = setDefaultGatewayFactory((cfg, meta) => {
+      captured = meta;
+      return standaloneGatewayFactory(cfg, meta);
+    });
+    try {
+      const response = await handleRequest(
+        {
+          type: 'session_start',
+          requestId: 'r-meta',
+          sessionId: 'browser-s-meta',
+          tool: 'claude-ai',
+          hostname: 'claude.ai',
+        },
+        config,
+      );
+      expect(response).toEqual({ type: 'session_start', requestId: 'r-meta', ok: true });
+    } finally {
+      restore();
+    }
+    const pkg = JSON.parse(
+      readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+    ) as { name: string; version: string };
+    expect(captured).toStrictEqual({
+      pluginBuild: { package: pkg.name, version: pkg.version },
+    });
   });
 
   it('records a capture and returns its action + rule ids', async () => {

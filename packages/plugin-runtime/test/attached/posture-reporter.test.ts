@@ -298,6 +298,74 @@ describe('createPostureReporter', () => {
     expect(report).toHaveBeenCalledWith(snapshot);
   });
 
+  it('includes the plugin block the producer supplies, schema-valid on the wire', async () => {
+    const report = mockReport();
+    const deps = makeDeps({
+      report,
+      pluginBlock: () =>
+        Promise.resolve({
+          package: '@akasecurity/ai-tc-claude-code',
+          version: '0.9.8',
+          ossVersion: null,
+          policyBundleVersion: 'sha256:abc123',
+          policyFetchedAt: 1_779_500_000_000,
+        }),
+    });
+    await run(createPostureReporter(deps));
+    const sent = report.mock.calls[0]?.[0];
+    if (!sent) throw new Error('expected a report');
+    expect(() => StorePostureSnapshot.parse(sent)).not.toThrow();
+    expect(sent.plugin).toMatchObject({
+      package: '@akasecurity/ai-tc-claude-code',
+      version: '0.9.8',
+      policyBundleVersion: 'sha256:abc123',
+    });
+  });
+
+  it('a throwing pluginBlock costs the block, never the snapshot', async () => {
+    // The posture — storePresent above all — is worth strictly more than the
+    // plugin metadata, so a broken producer must not silence the device.
+    const report = mockReport();
+    const deps = makeDeps({
+      report,
+      pluginBlock: () => Promise.reject(new Error('manifest unreadable')),
+    });
+    await run(createPostureReporter(deps));
+    const sent = report.mock.calls[0]?.[0];
+    if (!sent) throw new Error('expected a report');
+    expect(sent).not.toHaveProperty('plugin');
+    expect(() => StorePostureSnapshot.parse(sent)).not.toThrow();
+  });
+
+  it('bounds a HANGING pluginBlock — the snapshot still goes out without it', async () => {
+    // The producer reads the policy cache from disk, so it gets the same
+    // REQUEST_TIMEOUT_MS bound as the reporter's other fs ops: a stalled mount
+    // must cost the block, never the snapshot, and never hang prepare() until
+    // the harness's 10s kill.
+    const report = mockReport();
+    const deps = makeDeps({
+      report,
+      pluginBlock: () => new Promise<never>(() => undefined), // never resolves
+    });
+    const startedAt = Date.now();
+    await run(createPostureReporter(deps));
+    expect(Date.now() - startedAt).toBeLessThan(REQUEST_TIMEOUT_MS + 1000);
+    const sent = report.mock.calls[0]?.[0];
+    if (!sent) throw new Error('expected a report');
+    expect(sent).not.toHaveProperty('plugin');
+  }, 10_000);
+
+  it('omits the plugin KEY without a producer — never an explicit undefined', async () => {
+    // The wire shape is `.optional()`, and downstream bridges key on presence:
+    // a spread `plugin: undefined` is a different object from an absent key
+    // under exactOptionalPropertyTypes.
+    const report = mockReport();
+    await run(createPostureReporter(makeDeps({ report })));
+    const sent = report.mock.calls[0]?.[0];
+    if (!sent) throw new Error('expected a report');
+    expect(sent).not.toHaveProperty('plugin');
+  });
+
   it('a lastAttemptedAtMs in the FUTURE reports now instead of silencing the device', async () => {
     // A clock that jumps ahead and is then corrected backwards leaves a
     // negative delta, which is permanently < the interval. Without the guard

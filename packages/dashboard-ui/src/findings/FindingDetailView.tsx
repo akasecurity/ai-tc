@@ -11,7 +11,7 @@ import { Provider } from '../shared/Provider.tsx';
 import { ActionTag } from './ActionTag.tsx';
 import {
   CATEGORY_ICON_FALLBACK,
-  CATEGORY_LABEL,
+  categoryLabel,
   categoryStyle,
   instanceLocationLabel,
   type Selection,
@@ -29,12 +29,6 @@ export function formatConfidence(confidence: number): { label: string; tone: str
 function Confidence({ confidence }: { confidence: number }) {
   const { label, tone } = formatConfidence(confidence);
   return <span className={tone}>{label}</span>;
-}
-
-function getCategoryLabel(category: string): string {
-  const categoryLabel = CATEGORY_LABEL[category as keyof typeof CATEGORY_LABEL];
-  if (categoryLabel) return categoryLabel;
-  return category;
 }
 
 /**
@@ -58,7 +52,7 @@ export function FindingDetailView({
   const Icon = CATEGORY_ICON_FALLBACK[finding.category] ?? KeyIcon;
   const grouped = !instance;
   const providerCount = finding.providers.length;
-  const category = getCategoryLabel(finding.category);
+  const category = categoryLabel(finding.category);
 
   return (
     <>

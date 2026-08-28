@@ -55,7 +55,7 @@ export function HarnessSelect({
       <DropdownMenuTrigger
         className={cn(
           'group flex h-8.5 w-full items-center gap-2 rounded-lg border bg-surface px-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
-          all ? 'border-border' : 'border-primary',
+          all ? 'border-border-field' : 'border-primary',
         )}
       >
         <TerminalIcon

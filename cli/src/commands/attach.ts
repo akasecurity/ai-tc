@@ -1,8 +1,6 @@
-import { rmSync } from 'node:fs';
-import { join } from 'node:path';
-
 import {
   applyOnboarding,
+  clearAttachmentDerivedState,
   dataDir as dataDirOf,
   isSafeEndpoint,
   ManagedFieldError,
@@ -11,13 +9,7 @@ import {
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
-import {
-  FORWARD_DROPS_FILENAME,
-  FORWARD_STATE_FILENAME,
-  renderAttachedStatus,
-  renderPolicyLine,
-  SYNC_STATE_FILENAME,
-} from '@akasecurity/plugin-runtime';
+import { renderAttachedStatus, renderPolicyLine } from '@akasecurity/plugin-runtime';
 import { createRemoteClient } from '@akasecurity/remote';
 
 import { homeBase } from '../lib/args.ts';
@@ -33,9 +25,6 @@ import { terminalPrompter } from '../lib/prompter.ts';
 // hidden prompt, or on stdin for an automated enrolment. An unknown flag exits
 // 2 rather than being ignored, because a mistyped `--key` that was silently
 // dropped would be the exact failure this rule exists to prevent.
-
-/** The cache the sync child writes; named here because detach owns removing it. */
-const POLICY_CACHE_FILENAME = 'policy-cache.json';
 
 const USAGE = `Usage: aka attach --url <https-url> [--label <name>] [--key-stdin]
 
@@ -350,16 +339,11 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
  * the behaviour to want here: a detach that silently left the organization's
  * policy in place is the one outcome this function exists to prevent.
  */
-function clearDerived(dir: string): void {
-  for (const name of [
-    POLICY_CACHE_FILENAME,
-    SYNC_STATE_FILENAME,
-    FORWARD_STATE_FILENAME,
-    FORWARD_DROPS_FILENAME,
-  ]) {
-    rmSync(join(dir, name), { force: true });
-  }
-}
+// The list lives in @akasecurity/persistence, which both detach surfaces can
+// reach — this one and the dashboard's settings action. A second copy here is
+// how the two paths drift, and a file added to one of them silently outlives a
+// detach on the other.
+const clearDerived = clearAttachmentDerivedState;
 
 /**
  * `aka status` — what this machine is attached to, read entirely from disk.

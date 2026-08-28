@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { ensureDataDirSync, writeOwnerOnlyFileSync } from '@akasecurity/persistence';
+import {
+  ATTACHED_SYNC_STATE_FILENAME,
+  ensureDataDirSync,
+  writeOwnerOnlyFileSync,
+} from '@akasecurity/persistence';
 
 import type { PolicySyncOutcome, PolicySyncResult } from './policy-sync.ts';
 
@@ -14,7 +18,11 @@ import type { PolicySyncOutcome, PolicySyncResult } from './policy-sync.ts';
  * anything else there would be silently destroyed, and that file's own doc
  * states it never holds a credential, a property this one has to preserve too.
  */
-export const SYNC_STATE_FILENAME = 'attached-sync-state.json';
+// Defined in @akasecurity/persistence, which sits below both detach surfaces
+// (`aka detach` and the dashboard's settings action) and owns the list they
+// both clear. Re-exported under this package's own name so its consumers are
+// unaffected by where the string lives.
+export const SYNC_STATE_FILENAME = ATTACHED_SYNC_STATE_FILENAME;
 
 /** The persisted form. Deliberately tiny, and deliberately free of any error text. */
 interface PersistedSyncState {

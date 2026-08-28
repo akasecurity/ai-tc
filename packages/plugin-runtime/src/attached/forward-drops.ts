@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { ensureDataDirSync, writeOwnerOnlyFileSync } from '@akasecurity/persistence';
+import {
+  ATTACHED_FORWARD_DROPS_FILENAME,
+  ensureDataDirSync,
+  writeOwnerOnlyFileSync,
+} from '@akasecurity/persistence';
 
 /**
  * Where events discarded by the BATCH BUDGET are counted, for `status` to render.
@@ -23,7 +27,11 @@ import { ensureDataDirSync, writeOwnerOnlyFileSync } from '@akasecurity/persiste
  * expose, is the very next thing that happens. `sync-state.ts` refused the same
  * file for the same reason.
  */
-export const FORWARD_DROPS_FILENAME = 'attached-forward-drops.json';
+// Defined in @akasecurity/persistence, which sits below both detach surfaces
+// (`aka detach` and the dashboard's settings action) and owns the list they
+// both clear. Re-exported under this package's own name so its consumers are
+// unaffected by where the string lives.
+export const FORWARD_DROPS_FILENAME = ATTACHED_FORWARD_DROPS_FILENAME;
 
 /**
  * A COUNT and a clock, and nothing else.

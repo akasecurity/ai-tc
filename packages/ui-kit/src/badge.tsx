@@ -9,15 +9,15 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        // `default` is the one tonal variant with no TONE_SOFT member: the
-        // vocabulary's `neutral` is bg-surface-2, and this is the step deeper.
-        default: 'bg-surface-3 text-text-2',
-        outline: 'border border-border text-text-2',
-        // The rest ARE vocabulary members, so they are read from it rather than
-        // respelled — a second copy of a pair is a second place to get the
+        // Every TINTED variant reads its pair from the vocabulary rather than
+        // respelling it — a second copy of a pair is a second place to get the
         // fill/ink halves wrong, which is the failure tone.ts exists to remove.
-        // The variant NAMES stay as they are: `variant` is public API, and
-        // `success` is spelled across consumers outside this repo.
+        // `default` is `neutral`, the untinted pair; `outline` is the one variant
+        // with no vocabulary member, because it carries no fill at all. The
+        // variant NAMES stay as they are: `variant` is public API, and `success`
+        // is spelled across consumers outside this repo.
+        default: TONE_SOFT.neutral,
+        outline: 'border border-border text-text-2',
         critical: TONE_SOFT.critical,
         high: TONE_SOFT.high,
         medium: TONE_SOFT.medium,

@@ -6,6 +6,9 @@
 // FindingDetailView's optional footer):
 //   - onToggleEnabled : present ⇒ live Switch; absent ⇒ static Enabled/Disabled badge
 //   - onChangePolicy  : present ⇒ interactive PolicyPicker (OSS); absent ⇒ read-only
+//   - unavailablePolicies : ids this host can render but not assign, each with a
+//     reason. Interactive AND restricted is a real combination — a control plane
+//     that writes policy but cannot deliver a reversible archetype to a device.
 //   - onOpenUpdate    : present + update available ⇒ Update button in the provenance
 import type { DetectionDetail, DetectionRule } from '@akasecurity/schema';
 import { Button, SeverityBadge, Switch, toneColors } from '@akasecurity/ui-kit';
@@ -73,6 +76,7 @@ export function DetectionDetailView({
   onOpenRule,
   onToggleEnabled,
   onChangePolicy,
+  unavailablePolicies,
   onOpenUpdate,
   onRecheck,
   unknownHint,
@@ -81,6 +85,11 @@ export function DetectionDetailView({
   onOpenRule: (id: string) => void;
   onToggleEnabled?: (() => void) | undefined;
   onChangePolicy?: ((policyId: string) => void) | undefined;
+  /**
+   * Policy ids this host cannot assign, mapped to why — passed straight to
+   * PolicyPicker. A host that knows of no restriction omits it.
+   */
+  unavailablePolicies?: Readonly<Record<string, string>> | undefined;
   onOpenUpdate?: (() => void) | undefined;
   // Re-read the update state in place (the OSS web-ui's "Check again" for the
   // unknown provenance state); omitted by apps with their own refresh flow.
@@ -153,7 +162,11 @@ export function DetectionDetailView({
             <SectionLabel>Enforcement policy</SectionLabel>
             <span className="text-xs text-text-3">applied to every matching request</span>
           </div>
-          <PolicyPicker value={policyId} onChange={onChangePolicy} />
+          <PolicyPicker
+            value={policyId}
+            onChange={onChangePolicy}
+            unavailable={unavailablePolicies}
+          />
           <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-border bg-surface-2 px-3 py-2.5">
             <PolicyMetaIcon
               aria-hidden

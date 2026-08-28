@@ -34,6 +34,19 @@ describe('categoryStyle', () => {
   it('falls back to a neutral surface tone for an off-enum category', () => {
     expect(categoryStyle('not-a-category')).toBe('bg-surface-2 text-text-2');
   });
+
+  // Regression: a category reaches here as a plain string, so it can collide with
+  // an Object.prototype member. Without an Object.hasOwn guard, CATEGORY_TONE[category]
+  // resolves the INHERITED member (truthy, so `?? 'neutral'` never fires), TONE_SOFT
+  // has no such key, and categoryStyle returns undefined despite its `: string` type.
+  // In-repo that silently drops the icon tile's tonal classes via cn(); an external
+  // consumer feeding the same unguarded lookup into toneColors() throws outright.
+  it.each(['__proto__', 'constructor', 'toString', ''])(
+    'resolves the off-enum category %j to the neutral fallback',
+    (category) => {
+      expect(categoryStyle(category)).toBe('bg-surface-2 text-text-2');
+    },
+  );
 });
 
 describe('ACTION_META', () => {

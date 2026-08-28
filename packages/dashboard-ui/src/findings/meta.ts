@@ -87,8 +87,17 @@ export const CATEGORY_ICON_FALLBACK: Record<string, IconComponent | undefined> =
 // Returns the CLASS pair rather than the tone: every caller feeds it straight
 // into `cn()` beside layout classes, and the off-enum fallback has to resolve
 // somewhere — doing it here keeps that one place.
-export const categoryStyle = (category: string): string =>
-  TONE_SOFT[(CATEGORY_TONE as Record<string, Tone | undefined>)[category] ?? 'neutral'];
+export const categoryStyle = (category: string): string => {
+  // Object.hasOwn guards the widened lookup, exactly as policyMeta does: a category
+  // arrives as a plain string, so it can collide with an Object.prototype member
+  // ('__proto__', 'constructor', 'toString', …). The inherited member must NOT
+  // resolve — it is truthy, so `?? 'neutral'` never fires, and TONE_SOFT has no such
+  // key, leaving categoryStyle returning undefined despite its `: string` type. Read
+  // through the widened view only after the guard.
+  const table: Partial<Record<string, Tone>> = CATEGORY_TONE;
+  const tone = Object.hasOwn(CATEGORY_TONE, category) ? table[category] : undefined;
+  return TONE_SOFT[tone ?? 'neutral'];
+};
 
 /** Per-action pill label + icon + tinted classes. */
 export const ACTION_META: Record<

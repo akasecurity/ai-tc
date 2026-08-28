@@ -1,13 +1,14 @@
 import { type ComponentPropsWithRef } from 'react';
 
 import { cn } from './lib/cn.ts';
+import { type Tone, TONE_SOFT } from './tone.ts';
 
 /**
  * Composable card primitives. Compose instead of passing header props:
  *
  *   <Card>
  *     <CardHeader>
- *       <CardIcon className="bg-sev-critical-fill text-sev-critical-ink"><Icon /></CardIcon>
+ *       <CardIcon tone="critical"><Icon /></CardIcon>
  *       <CardHeading>
  *         <CardTitle>Open by severity</CardTitle>
  *         <CardDescription>131 findings</CardDescription>
@@ -39,13 +40,27 @@ export function CardHeader({ className, ...props }: ComponentPropsWithRef<'div'>
   );
 }
 
-/** Tinted square that holds a leading icon. Override the tile color via className. */
-export function CardIcon({ className, ...props }: ComponentPropsWithRef<'span'>) {
+/**
+ * Tinted square that holds a leading icon. `tone` names the tonal family and
+ * defaults to `neutral`, the tile's own surface.
+ *
+ * Prefer it over spelling the fill/ink pair into `className`: the pairing is
+ * irregular (primary's tint is `-tint`, and its bare token is already the ink),
+ * and getting it wrong fails silently — an undefined theme variable emits no
+ * utility, so the glyph just inherits its color. `className` still wins, for the
+ * one-off tile whose color is not a family theme.css names.
+ */
+export function CardIcon({
+  className,
+  tone = 'neutral',
+  ...props
+}: ComponentPropsWithRef<'span'> & { tone?: Tone }) {
   return (
     <span
       data-slot="card-icon"
       className={cn(
-        'flex size-7.5 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-text-2',
+        'flex size-7.5 shrink-0 items-center justify-center rounded-lg',
+        TONE_SOFT[tone],
         className,
       )}
       {...props}

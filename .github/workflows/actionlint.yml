@@ -1,0 +1,52 @@
+name: Lint workflows
+
+# actionlint over every workflow in the tree: syntax, `${{ }}` expression and
+# context errors, action-input typos, and — through its shellcheck integration
+# (the runner ships shellcheck) — every `run:` block's shell. The workflow tree
+# is the one executable surface with no other gate in front of it, and its
+# failures otherwise surface on a tag push, the most expensive moment to learn
+# about a quoting bug.
+#
+# PR-only and path-filtered, the build-binaries.yml shape: what this checks is a
+# property of the files in the diff alone, so the PR run is the whole job. It
+# deliberately does NOT also run on a push to main — running on both events is
+# what makes a workflow a gating one, and required-checks.test.js pins that set
+# with the merge-queue obligations this check does not need to carry.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      # The binary comes from its GitHub release, pinned by version AND sha256 —
+      # the same immutability a third-party action gets from a commit pin —
+      # rather than adding an action dependency for one static binary.
+      - name: Run actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          # sha256 of actionlint_1.7.12_linux_amd64.tar.gz, from the release's
+          # checksums file.
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          # Gate on shellcheck's warning severity and above. Its style/info
+          # tiers are advisory rewrites (SC2001-style "see if you can use…"),
+          # and two workflows predating this gate carry such findings — a gate
+          # that starts red teaches everyone to ignore it on day one.
+          SHELLCHECK_OPTS: --severity=warning
+        run: |
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  ${RUNNER_TEMP}/actionlint.tar.gz" | sha256sum -c
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color

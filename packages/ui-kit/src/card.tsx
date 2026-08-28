@@ -66,7 +66,9 @@ export function CardHeader({ className, ...props }: ComponentPropsWithRef<'div'>
 const TONE_SOFT_FALLBACK: Record<string, string | undefined> = TONE_SOFT;
 
 function toneClasses(tone: string): string {
-  return (Object.hasOwn(TONE_SOFT, tone) ? TONE_SOFT_FALLBACK[tone] : undefined) ?? TONE_SOFT.neutral;
+  return (
+    (Object.hasOwn(TONE_SOFT, tone) ? TONE_SOFT_FALLBACK[tone] : undefined) ?? TONE_SOFT.neutral
+  );
 }
 
 export function CardIcon({

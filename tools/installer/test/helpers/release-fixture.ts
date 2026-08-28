@@ -134,26 +134,69 @@ function writeWindowsPayload(root: string, banner: string, runnable: boolean): v
 }
 
 /**
- * Write the archive an installer will download into `intoDir` and return its
- * path. Rooted at `aka-<triple>/`, matching what build-binaries.yml asserts of a
- * real one.
- *
- * Calling this a second time with a different `banner` overwrites the archive
- * with different CONTENTS under the same name — which is what tampering with a
- * release after its SHA256SUMS was written looks like on the wire.
- *
- * `runnable` asks for a win32 payload that will actually START, and costs a
- * ~115 MB copy of the Node executable to provide — pass it only from a case
- * that runs the installed binary, which today is one case in this package. See
- * `writeWindowsPayload` for why the refusal cases lose nothing without it.
- *
- * THE FORMAT FOLLOWS THE TRIPLE, NOT THE HOST, and that is not a detail. The
- * NAME already follows the triple (`archiveNameFor`), so a host-keyed format
- * writes a gzipped tar called `.zip` the moment the ps1 suite runs anywhere but
- * Windows — a fixture that is wrong about the one thing the installer does with
- * it after verifying. The refusal cases never extract, so nothing would have
- * gone red; it would simply have stopped being a zip nobody noticed.
+ * Bounded deliberately, and short. A host where this fails three times running
+ * is not flaking, and turning that into a longer stall would replace a clear
+ * error with a slow one.
  */
+const COMPRESS_ATTEMPTS = 3;
+
+/** The one signal retried — see the note on the abort below. */
+const RETRYABLE_SIGNAL = 'SIGABRT';
+
+/** What `compressArchive` shells out with, injectable so the abort can be driven. */
+export type CompressRunner = (exe: string, args: readonly string[]) => void;
+
+const runCompress: CompressRunner = (exe, args) => {
+  // The same env every other PowerShell child here gets, rather than a bare
+  // inherit. `Compress-Archive` is an autoloaded module, so this child depends
+  // on the module path exactly as the script under test does; a bare inherit
+  // hands Windows PowerShell whatever PSModulePath the parent had -- pwsh 7's,
+  // under Actions' default shell -- which is the one value that costs it its own
+  // standard library.
+  execFileSync(exe, [...args], { stdio: 'pipe', env: powershellEnv() });
+};
+
+/**
+ * Prove an attempt actually produced a zip, so the signal fingerprint below is
+ * not the only thing standing between a bad archive and SHA256SUMS.
+ *
+ * `Compress-Archive` does not always report failure through the exit code: a
+ * non-terminating error record leaves `pwsh` exiting 0 having written nothing,
+ * and no discriminator keyed on status or signal can see that. What consumes
+ * this hashes whatever is on disk, so the cheapest honest check is that the
+ * bytes are a zip at all.
+ *
+ * It is a floor, not a validation. An EOCD-only archive — what an empty `-Path`
+ * produces — is a structurally valid 22-byte zip and passes this; the guard
+ * against that is the staging directory being built immediately above, not
+ * anything here.
+ */
+function assertZipWritten(archivePath: string): void {
+  let fd: number;
+  try {
+    fd = openSync(archivePath, 'r');
+  } catch {
+    // rmSync ran before this attempt, so "wrote nothing" — the failure this
+    // guards against — means there is no file to open at all, not a partial
+    // one. That is the more likely of the two non-zip outcomes, so it gets its
+    // own message rather than falling through to the magic-number check below,
+    // which only ever fires for a partial write.
+    throw new Error(`Compress-Archive reported success but wrote no ${archivePath}`);
+  }
+  try {
+    const buf = Buffer.alloc(4);
+    const read = readSync(fd, buf, 0, 4, 0);
+    if (read < 4 || buf.toString('hex') !== '504b0304') {
+      throw new Error(
+        `Compress-Archive reported success but ${archivePath} is not a zip — ` +
+          `read ${String(read)} byte(s), starting ${buf.subarray(0, read).toString('hex')}`,
+      );
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /**
  * Run one `Compress-Archive`, retrying the CLR aborts that PowerShell raises on
  * some hosts for a command that is correct.
@@ -191,60 +234,7 @@ function writeWindowsPayload(root: string, banner: string, runnable: boolean): v
  * listed CORRECTLY, leaving a release that verifies against itself and proves
  * nothing. Starting every attempt from no file at all makes that unreachable
  * rather than unlikely.
- *
- * Bounded deliberately, and short. A host where this fails three times running
- * is not flaking, and turning that into a longer stall would replace a clear
- * error with a slow one.
  */
-const COMPRESS_ATTEMPTS = 3;
-
-/** The one signal retried — see the note on the abort above. */
-const RETRYABLE_SIGNAL = 'SIGABRT';
-
-/** What `compressArchive` shells out with, injectable so the abort can be driven. */
-export type CompressRunner = (exe: string, args: readonly string[]) => void;
-
-const runCompress: CompressRunner = (exe, args) => {
-  // The same env every other PowerShell child here gets, rather than a bare
-  // inherit. `Compress-Archive` is an autoloaded module, so this child depends
-  // on the module path exactly as the script under test does; a bare inherit
-  // hands Windows PowerShell whatever PSModulePath the parent had -- pwsh 7's,
-  // under Actions' default shell -- which is the one value that costs it its own
-  // standard library.
-  execFileSync(exe, [...args], { stdio: 'pipe', env: powershellEnv() });
-};
-
-/**
- * Prove an attempt actually produced a zip, so the signal fingerprint above is
- * not the only thing standing between a bad archive and SHA256SUMS.
- *
- * `Compress-Archive` does not always report failure through the exit code: a
- * non-terminating error record leaves `pwsh` exiting 0 having written nothing,
- * and no discriminator keyed on status or signal can see that. What consumes
- * this hashes whatever is on disk, so the cheapest honest check is that the
- * bytes are a zip at all.
- *
- * It is a floor, not a validation. An EOCD-only archive — what an empty `-Path`
- * produces — is a structurally valid 22-byte zip and passes this; the guard
- * against that is the staging directory being built immediately above, not
- * anything here.
- */
-function assertZipWritten(archivePath: string): void {
-  const fd = openSync(archivePath, 'r');
-  try {
-    const buf = Buffer.alloc(4);
-    const read = readSync(fd, buf, 0, 4, 0);
-    if (read < 4 || buf.toString('hex') !== '504b0304') {
-      throw new Error(
-        `Compress-Archive reported success but ${archivePath} is not a zip — ` +
-          `read ${String(read)} byte(s), starting ${buf.subarray(0, read).toString('hex')}`,
-      );
-    }
-  } finally {
-    closeSync(fd);
-  }
-}
-
 export function compressArchive(
   exe: string,
   root: string,
@@ -287,6 +277,27 @@ export function compressArchive(
   }
 }
 
+/**
+ * Write the archive an installer will download into `intoDir` and return its
+ * path. Rooted at `aka-<triple>/`, matching what build-binaries.yml asserts of a
+ * real one.
+ *
+ * Calling this a second time with a different `banner` overwrites the archive
+ * with different CONTENTS under the same name — which is what tampering with a
+ * release after its SHA256SUMS was written looks like on the wire.
+ *
+ * `runnable` asks for a win32 payload that will actually START, and costs a
+ * ~115 MB copy of the Node executable to provide — pass it only from a case
+ * that runs the installed binary, which today is one case in this package. See
+ * `writeWindowsPayload` for why the refusal cases lose nothing without it.
+ *
+ * THE FORMAT FOLLOWS THE TRIPLE, NOT THE HOST, and that is not a detail. The
+ * NAME already follows the triple (`archiveNameFor`), so a host-keyed format
+ * writes a gzipped tar called `.zip` the moment the ps1 suite runs anywhere but
+ * Windows — a fixture that is wrong about the one thing the installer does with
+ * it after verifying. The refusal cases never extract, so nothing would have
+ * gone red; it would simply have stopped being a zip nobody noticed.
+ */
 export function writeArchive(
   intoDir: string,
   {

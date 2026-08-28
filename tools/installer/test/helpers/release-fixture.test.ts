@@ -155,6 +155,43 @@ describe('compressArchive', () => {
     expect(attempts).toBe(1);
   });
 
+  it('reports that nothing was written when the runner succeeds without producing a file', () => {
+    // The post-condition's primary case, per its own docblock: a
+    // non-terminating error record leaves pwsh exiting 0 having written
+    // nothing. rmSync runs before every attempt, so "wrote nothing" means
+    // there is no file to open at all, not a partial one — a bare ENOENT,
+    // not the magic-number check below. A carrier with no `.signal` is not
+    // the abort, so this must not retry either.
+    let attempts = 0;
+
+    expect(() => {
+      compressArchive('pwsh', '/stage/aka-win32-x64', join(dir, 'empty.zip'), () => {
+        attempts += 1;
+        // Returns normally without writing anything.
+      });
+    }).toThrow(/reported success but wrote no/);
+
+    expect(attempts).toBe(1);
+  });
+
+  it('reports a bad magic number when the runner writes a non-zip file', () => {
+    // The post-condition's secondary case: a file exists but is not a zip —
+    // a partial write, or a non-terminating error record with a different
+    // shape. Distinct from the "wrote nothing" case above, and the message
+    // says which one happened.
+    const at = join(dir, 'garbage.zip');
+    let attempts = 0;
+
+    expect(() => {
+      compressArchive('pwsh', '/stage/aka-win32-x64', at, () => {
+        attempts += 1;
+        writeFileSync(at, 'not a zip');
+      });
+    }).toThrow(/is not a zip — read \d+ byte\(s\)/);
+
+    expect(attempts).toBe(1);
+  });
+
   it('is what writeArchive uses, so a revert to a bare spawn is caught', () => {
     // Everything above drives `compressArchive` directly. That leaves the one
     // edit which actually changes CI behaviour — the call site inside

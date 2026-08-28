@@ -8,7 +8,7 @@ import {
   type Harness,
   type SessionStatus,
 } from '@akasecurity/schema';
-import type { BadgeProps } from '@akasecurity/ui-kit';
+import { type BadgeProps, TONE_PARTS } from '@akasecurity/ui-kit';
 
 import type { IconComponent } from '../lib/icons.ts';
 import {
@@ -62,39 +62,23 @@ interface EventMeta {
   fill: string;
 }
 
+// The tonal halves are spread from the shared registry rather than spelled here:
+// a pair written out at a call site is a pair that can be written out wrong, and
+// the two halves belong to each other.
+
 /** Node glyph + tone for each audit event type on the timeline. */
 export const EVENT_META: Record<AuditEventKind, EventMeta> = {
-  session: { label: 'Session', icon: TerminalIcon, text: 'text-text-2', fill: 'bg-surface-3' },
-  prompt: { label: 'Prompt', icon: UserIcon, text: 'text-primary', fill: 'bg-primary-tint' },
-  response: {
-    label: 'Response',
-    icon: SparklesIcon,
-    text: 'text-violet-ink',
-    fill: 'bg-violet-fill',
-  },
-  tool: { label: 'Tool', icon: TerminalIcon, text: 'text-text-2', fill: 'bg-surface-3' },
-  hook: { label: 'Hook', icon: RouteIcon, text: 'text-sev-low-ink', fill: 'bg-sev-low-fill' },
-  detection: {
-    label: 'Detection',
-    icon: ShieldCheckIcon,
-    text: 'text-sev-critical-ink',
-    fill: 'bg-sev-critical-fill',
-  },
-  share: { label: 'Egress', icon: ExternalShareIcon, text: 'text-teal-ink', fill: 'bg-teal-fill' },
-  permission: {
-    label: 'Permission',
-    icon: LockIcon,
-    text: 'text-sev-high-ink',
-    fill: 'bg-sev-high-fill',
-  },
-  commit: { label: 'Commit', icon: BranchIcon, text: 'text-text-2', fill: 'bg-surface-3' },
-  error: {
-    label: 'Error',
-    icon: AlertIcon,
-    text: 'text-sev-critical-ink',
-    fill: 'bg-sev-critical-fill',
-  },
-  active: { label: 'In progress', icon: BoltIcon, text: 'text-primary', fill: 'bg-primary-tint' },
+  session: { label: 'Session', icon: TerminalIcon, ...TONE_PARTS.neutral },
+  prompt: { label: 'Prompt', icon: UserIcon, ...TONE_PARTS.primary },
+  response: { label: 'Response', icon: SparklesIcon, ...TONE_PARTS.violet },
+  tool: { label: 'Tool', icon: TerminalIcon, ...TONE_PARTS.neutral },
+  hook: { label: 'Hook', icon: RouteIcon, ...TONE_PARTS.low },
+  detection: { label: 'Detection', icon: ShieldCheckIcon, ...TONE_PARTS.critical },
+  share: { label: 'Egress', icon: ExternalShareIcon, ...TONE_PARTS.teal },
+  permission: { label: 'Permission', icon: LockIcon, ...TONE_PARTS.high },
+  commit: { label: 'Commit', icon: BranchIcon, ...TONE_PARTS.neutral },
+  error: { label: 'Error', icon: AlertIcon, ...TONE_PARTS.critical },
+  active: { label: 'In progress', icon: BoltIcon, ...TONE_PARTS.primary },
 };
 
 // Per-tool glyphs for `tool` events and the tool-call chips. Index this directly

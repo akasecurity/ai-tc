@@ -8,7 +8,7 @@
 //   - onChangePolicy  : present ⇒ interactive PolicyPicker (OSS); absent ⇒ read-only
 //   - onOpenUpdate    : present + update available ⇒ Update button in the provenance
 import type { DetectionDetail, DetectionRule } from '@akasecurity/schema';
-import { Button, SeverityBadge, Switch } from '@akasecurity/ui-kit';
+import { Button, SeverityBadge, Switch, toneColors } from '@akasecurity/ui-kit';
 import type { ReactNode } from 'react';
 
 import type { IconComponent } from '../lib/icons.ts';
@@ -20,7 +20,6 @@ import {
   matcherSummary,
   PLACEHOLDER_POLICY,
   policyMeta,
-  toneColors,
 } from './meta.ts';
 import { PolicyPicker } from './PolicyPicker.tsx';
 import { ProvenanceBlock } from './ProvenanceBlock.tsx';

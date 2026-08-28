@@ -84,11 +84,11 @@ jobs:
     runs-on: ubuntu-latest
     # What was published. Nothing in THIS file consumes these yet: the
     # marketplace doorbell (notify-marketplace.yml) is not wired here, because
-    # the importer hardcodes the Claude Code package and would read a Codex
-    # dispatch as a Claude Code release at the Codex version. They are declared
-    # now because they are what that call takes, so wiring it is the job block
-    # alone — and because passing them on is what keeps the doorbell from
-    # checking out the repo to re-derive what this job already knows.
+    # the receiving marketplace pins no entry for this package, so there is no
+    # pin for a dispatch to advance. They are declared now because they are what
+    # that call takes, so wiring it is the job block alone — and because passing
+    # them on is what keeps the doorbell from checking out the repo to re-derive
+    # what this job already knows.
     outputs:
       pkg: ${{ steps.manifest.outputs.pkg }}
       version: ${{ steps.manifest.outputs.version }}

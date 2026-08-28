@@ -15,18 +15,23 @@ name: Notify marketplace importer
 # RECEIVER rather than on anything here. Two conditions have to hold, and only
 # the first is visible from this tree:
 #
-#   1. The marketplace pins the plugin — `.claude-plugin/marketplace.json`. A
-#      plugin it does not pin has no pin to advance. Antigravity is not pinned.
-#   2. The importer reads `client_payload[package]`. It does not: it hardcodes
-#      the Claude Code package and takes only the VERSION from the payload, so a
-#      dispatch for any other plugin is not declined — it is read as a Claude
-#      Code release at that plugin's version, and advances the wrong pin. The
-#      plugins share a version line, so the wrong package usually EXISTS at that
-#      version and the bogus import verifies rather than failing loudly.
+#   1. The importer resolves the manifest entry from `client_payload[package]`.
+#      It does now — it used to hardcode the Claude Code package and take only
+#      the VERSION from the payload, so a dispatch for any other plugin was read
+#      as a Claude Code release at that plugin's version and advanced the wrong
+#      pin. Fixed on the receiving side; a package it pins no entry for is now a
+#      green no-op there.
+#   2. The RECEIVING marketplace pins the plugin. Note this is
+#      `akasecurity/marketplace`'s manifest, NOT the `.claude-plugin/marketplace.json`
+#      in this repo — they are different documents listing different plugins, and
+#      only the receiver's decides whether there is a pin to advance. It carries
+#      one npm entry today, `ai-tc` → the Claude Code package. Neither Codex nor
+#      Antigravity is pinned there.
 #
-# Codex satisfies (1) and not (2), which is why its release workflow does not
-# call this yet. Wiring it is this job block, once the importer resolves the
-# manifest entry from the payload's package.
+# So (1) holds and (2) does not, for both other plugins. Adding a caller here
+# achieves nothing until the receiving marketplace carries an entry for that
+# package — which is a decision about what that marketplace serves, not about
+# this workflow. Once it does, wiring it is this job block.
 #
 # The caller passes the package name and version its own `release` job published,
 # read from that job's outputs. Nothing is re-derived here, so the two jobs

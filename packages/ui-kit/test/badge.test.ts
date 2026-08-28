@@ -2,16 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import { Badge, type BadgeProps } from '../src/badge.tsx';
 
-// Seven of the nine variants read their pair from TONE_SOFT rather than
+// Eight of the nine variants read their pair from TONE_SOFT rather than
 // respelling it, so a change to the vocabulary now reaches Badge. That is the
 // point — one spelling per pair — but it also means an edit in tone.ts can move
-// what Badge renders without touching this file. These are the exact strings, so
-// such a change has to be deliberate.
+// what Badge renders without touching this file. These are the exact strings
+// rather than a second reference to TONE_SOFT, which would be true by
+// construction and would move with it; so such a change has to be deliberate.
 //
-// `default` is pinned for the opposite reason: it is the one tonal variant with
-// NO vocabulary member (neutral is bg-surface-2; this is the step deeper), so
-// "convert the last one too" is a real temptation and would darken every neutral
-// chip in the product.
+// `outline` is the ninth and is not a pair at all — it carries a border and no
+// fill, so there is no vocabulary member for it to read.
 const EXPECTED: Record<NonNullable<BadgeProps['variant']>, string> = {
   default: 'bg-surface-3 text-text-2',
   outline: 'border border-border text-text-2',
@@ -47,6 +46,6 @@ describe('Badge renders each variant unchanged', () => {
   // once, which is the shape a broken cva config actually produces.
   it('does not leak another variant onto a variant', () => {
     expect(classOf('success').split(' ')).not.toContain('bg-teal-fill');
-    expect(classOf('default').split(' ')).not.toContain('bg-surface-2');
+    expect(classOf('default').split(' ')).not.toContain('bg-sev-critical-fill');
   });
 });

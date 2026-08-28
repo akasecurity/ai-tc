@@ -80,6 +80,13 @@ describe('compressArchive', () => {
 
   const aborted = (): Error =>
     Object.assign(new Error('Command failed'), { status: null, signal: 'SIGABRT' });
+  /** What a successful Compress-Archive leaves: enough of a zip to satisfy the
+   *  post-condition. The fakes have to write it, because a runner that returns
+   *  without producing an archive is exactly what that check exists to catch. */
+  const landZip = (at: string): void => {
+    writeFileSync(at, Buffer.from('504b0304', 'hex'));
+  };
+
   const exited = (): Error =>
     Object.assign(new Error('Command failed'), { status: 1, signal: null });
 
@@ -87,8 +94,10 @@ describe('compressArchive', () => {
     // The positive control. Without it every assertion below could be satisfied
     // by an implementation that never calls the runner at all.
     const calls: string[][] = [];
-    compressArchive('pwsh', '/stage/aka-win32-x64', join(dir, 'control.zip'), (_exe, args) => {
+    const at = join(dir, 'control.zip');
+    compressArchive('pwsh', '/stage/aka-win32-x64', at, (_exe, args) => {
       calls.push([...args]);
+      landZip(at);
     });
 
     expect(calls).toHaveLength(1);
@@ -101,9 +110,11 @@ describe('compressArchive', () => {
     // job aborted and another completed. A single-attempt implementation fails
     // this.
     let attempts = 0;
-    compressArchive('pwsh', '/stage/aka-win32-x64', join(dir, 'flaky.zip'), () => {
+    const at = join(dir, 'flaky.zip');
+    compressArchive('pwsh', '/stage/aka-win32-x64', at, () => {
       attempts += 1;
       if (attempts < 3) throw aborted();
+      landZip(at);
     });
 
     expect(attempts).toBe(3);
@@ -144,6 +155,35 @@ describe('compressArchive', () => {
     expect(attempts).toBe(1);
   });
 
+  it('is what writeArchive uses, so a revert to a bare spawn is caught', () => {
+    // Everything above drives `compressArchive` directly. That leaves the one
+    // edit which actually changes CI behaviour — the call site inside
+    // `writeArchive` — asserted by nothing: revert it to a bare spawn and every
+    // other case here stays green. This is the case that goes red.
+    //
+    // `exe` is injected alongside the runner so this runs everywhere rather than
+    // only where a PowerShell exists — the hosts without one are exactly the
+    // hosts where the retry branch would otherwise never be executed.
+    let attempts = 0;
+    const at = join(dir, archiveNameFor(FIXTURE_VERSION, 'win32-x64'));
+
+    const path = writeArchive(
+      dir,
+      { version: FIXTURE_VERSION, triple: 'win32-x64', banner: FIXTURE_VERSION },
+      {
+        exe: 'pwsh',
+        run: () => {
+          attempts += 1;
+          if (attempts < 2) throw aborted();
+          landZip(at);
+        },
+      },
+    );
+
+    expect(attempts).toBe(2);
+    expect(basename(path)).toMatch(/\.zip$/u);
+  });
+
   it('clears a partial archive before each attempt', () => {
     // What stops a retry being worse than the abort. `writeRelease` hashes
     // whatever bytes are on disk into SHA256SUMS, so a truncated archive left by
@@ -160,6 +200,7 @@ describe('compressArchive', () => {
       // Leave a partial behind, exactly as an abort mid-write would.
       writeFileSync(path, 'truncated');
       if (attempts < 2) throw aborted();
+      landZip(path);
     });
 
     expect(seen).toEqual([false, false]);

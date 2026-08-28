@@ -14,11 +14,14 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  closeSync,
   copyFileSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -211,6 +214,37 @@ const runCompress: CompressRunner = (exe, args) => {
   execFileSync(exe, [...args], { stdio: 'pipe', env: powershellEnv() });
 };
 
+/**
+ * Prove an attempt actually produced a zip, so the signal fingerprint above is
+ * not the only thing standing between a bad archive and SHA256SUMS.
+ *
+ * `Compress-Archive` does not always report failure through the exit code: a
+ * non-terminating error record leaves `pwsh` exiting 0 having written nothing,
+ * and no discriminator keyed on status or signal can see that. What consumes
+ * this hashes whatever is on disk, so the cheapest honest check is that the
+ * bytes are a zip at all.
+ *
+ * It is a floor, not a validation. An EOCD-only archive — what an empty `-Path`
+ * produces — is a structurally valid 22-byte zip and passes this; the guard
+ * against that is the staging directory being built immediately above, not
+ * anything here.
+ */
+function assertZipWritten(archivePath: string): void {
+  const fd = openSync(archivePath, 'r');
+  try {
+    const buf = Buffer.alloc(4);
+    const read = readSync(fd, buf, 0, 4, 0);
+    if (read < 4 || buf.toString('hex') !== '504b0304') {
+      throw new Error(
+        `Compress-Archive reported success but ${archivePath} is not a zip — ` +
+          `read ${String(read)} byte(s), starting ${buf.subarray(0, read).toString('hex')}`,
+      );
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function compressArchive(
   exe: string,
   root: string,
@@ -242,6 +276,7 @@ export function compressArchive(
     rmSync(archivePath, { force: true });
     try {
       run(exe, args);
+      assertZipWritten(archivePath);
       return;
     } catch (err) {
       const signal = (err as { signal?: NodeJS.Signals | null }).signal;
@@ -260,6 +295,14 @@ export function writeArchive(
     banner,
     runnable = false,
   }: { version: string; triple: string; banner: string; runnable?: boolean },
+  // Seams, so a test can prove this function is really WIRED to the retry.
+  // Exercised only through an injected runner one level down, every assertion
+  // about the retry stays green if this call site is reverted to a bare spawn —
+  // which is the one change that would put the flake back. `exe` is injectable
+  // with it because the interpreter is resolved here: without it the wiring
+  // could only be checked on a host that has PowerShell, i.e. not on the legs
+  // where the retry branch would otherwise be dead code.
+  { exe: exeOverride, run }: { exe?: string; run?: CompressRunner } = {},
 ): string {
   const archivePath = join(intoDir, archiveNameFor(version, triple));
   const stage = mkdtempSync(join(tmpdir(), 'aka-fixture-stage-'));
@@ -275,14 +318,14 @@ export function writeArchive(
       // Whatever PowerShell this host has, rather than `powershell` — which is
       // Windows-only, while `Compress-Archive` ships with pwsh everywhere. The
       // ps1 suite skips outright without one, so a caller that got here has one.
-      const exe = powershellExe();
+      const exe = exeOverride ?? powershellExe();
       if (exe === undefined) {
         throw new Error(
           `cannot build ${archiveNameFor(version, triple)}: a zip fixture needs a PowerShell ` +
             '(Compress-Archive), and this host has neither `powershell` nor `pwsh`',
         );
       }
-      compressArchive(exe, root, archivePath);
+      compressArchive(exe, root, archivePath, run);
     } else {
       const stub = join(root, 'aka');
       writeFileSync(stub, `#!/bin/sh\necho "aka ${banner}"\n`);

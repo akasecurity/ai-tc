@@ -368,13 +368,13 @@ describe('the required-check table in CONTRIBUTING.md', () => {
   const rows = requiredChecks();
 
   // A table that parsed to nothing would satisfy every per-row assertion below
-  // without checking anything, so pin the count first. The seven CI jobs, the
+  // without checking anything, so pin the count first. The six CI jobs, the
   // audit, and CodeQL's two matrix legs.
   it('parses, and covers every gate the table is supposed to list', () => {
-    expect(rows).toHaveLength(10);
+    expect(rows).toHaveLength(9);
     // Every line that LOOKS like a row parsed as one. The length pin above
-    // catches a REFORMATTED row (10 become 9) and cannot catch an ADDED one: an
-    // eleventh row whose Enforced cell does not parse leaves 10 here while
+    // catches a REFORMATTED row (9 become 8) and cannot catch an ADDED one: a
+    // tenth row whose Enforced cell does not parse leaves 9 here while
     // `parseGateTable` refuses the table outright, so the gate goes red daily
     // and this file stays green. Measured at 111 passed before this line.
     expect(rows).toHaveLength(rows.rowLike);

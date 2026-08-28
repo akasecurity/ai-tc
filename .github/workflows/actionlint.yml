@@ -33,17 +33,21 @@ jobs:
       # The binary comes from its GitHub release, pinned by version AND sha256 —
       # the same immutability a third-party action gets from a commit pin —
       # rather than adding an action dependency for one static binary.
+      # Shellcheck runs at its DEFAULT severity. Gating at `--severity=warning`
+      # reads like it only drops advisory rewrites, but SC2086 — an unquoted
+      # expansion, i.e. word splitting and globbing on a value this repo did not
+      # choose — is `info`, so that setting takes the most valuable check on a
+      # `run:` block with it: an unquoted `rm -rf $target/build` passes at exit 0.
+      # The two findings that predate this gate are false positives and carry
+      # inline `# shellcheck disable=` directives naming their reason, which
+      # disarms those two lines rather than a whole tier for every workflow
+      # written afterwards.
       - name: Run actionlint
         env:
           ACTIONLINT_VERSION: 1.7.12
           # sha256 of actionlint_1.7.12_linux_amd64.tar.gz, from the release's
           # checksums file.
           ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-          # Gate on shellcheck's warning severity and above. Its style/info
-          # tiers are advisory rewrites (SC2001-style "see if you can use…"),
-          # and two workflows predating this gate carry such findings — a gate
-          # that starts red teaches everyone to ignore it on day one.
-          SHELLCHECK_OPTS: --severity=warning
         run: |
           curl -sSfL --retry 3 -o "$RUNNER_TEMP/actionlint.tar.gz" \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"

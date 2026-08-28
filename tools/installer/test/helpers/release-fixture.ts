@@ -14,11 +14,15 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  closeSync,
   copyFileSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -130,6 +134,162 @@ function writeWindowsPayload(root: string, banner: string, runnable: boolean): v
 }
 
 /**
+ * Bounded deliberately, and short. A host where this fails three times running
+ * is not flaking, and turning that into a longer stall would replace a clear
+ * error with a slow one.
+ */
+const COMPRESS_ATTEMPTS = 3;
+
+/** The one signal retried — see the note on the abort below. */
+const RETRYABLE_SIGNAL = 'SIGABRT';
+
+/** What `compressArchive` shells out with, injectable so the abort can be driven. */
+export type CompressRunner = (exe: string, args: readonly string[]) => void;
+
+const runCompress: CompressRunner = (exe, args) => {
+  // The same env every other PowerShell child here gets, rather than a bare
+  // inherit. `Compress-Archive` is an autoloaded module, so this child depends
+  // on the module path exactly as the script under test does; a bare inherit
+  // hands Windows PowerShell whatever PSModulePath the parent had -- pwsh 7's,
+  // under Actions' default shell -- which is the one value that costs it its own
+  // standard library.
+  execFileSync(exe, [...args], { stdio: 'pipe', env: powershellEnv() });
+};
+
+/**
+ * Prove an attempt actually produced a zip, so the signal fingerprint below is
+ * not the only thing standing between a bad archive and SHA256SUMS.
+ *
+ * `Compress-Archive` does not always report failure through the exit code: a
+ * non-terminating error record leaves `pwsh` exiting 0 having written nothing,
+ * and no discriminator keyed on status or signal can see that. What consumes
+ * this hashes whatever is on disk, so the cheapest honest check is that the
+ * bytes are a zip at all.
+ *
+ * It is a floor, not a validation: it proves the file starts with a local file
+ * header, not that the entries behind it are intact or that the right ones are
+ * there. A partial write past the first four bytes passes. An archive with no
+ * entries does NOT — an empty zip is an EOCD record alone, `504b0506`, so it
+ * fails here naming those bytes.
+ */
+function assertZipWritten(archivePath: string): void {
+  let fd: number;
+  try {
+    fd = openSync(archivePath, 'r');
+  } catch (err) {
+    // rmSync ran before this attempt, so "wrote nothing" — the failure this
+    // guards against — means there is no file to open at all, not a partial
+    // one. That is the more likely of the two non-zip outcomes, so it gets its
+    // own message rather than falling through to the magic-number check below,
+    // which only ever fires for a partial write.
+    //
+    // ENOENT is the whole of that argument, so it is the whole of what this
+    // rewrites. Every other errno is a file that WAS written and could not be
+    // read — a mode that denies it, or the descriptor table exhausted under a
+    // parallel suite — and the crafted sentence would be a false claim about
+    // what PowerShell did, sending the reader after a non-terminating error
+    // record that never happened. Those keep their own error, and their errno
+    // with it.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    throw new Error(`Compress-Archive reported success but wrote nothing to ${archivePath}`, {
+      cause: err,
+    });
+  }
+  try {
+    const buf = Buffer.alloc(4);
+    const read = readSync(fd, buf, 0, 4, 0);
+    if (read < 4 || buf.toString('hex') !== '504b0304') {
+      throw new Error(
+        `Compress-Archive reported success but ${archivePath} is not a zip — ` +
+          `read ${String(read)} byte(s), starting ${buf.subarray(0, read).toString('hex')}`,
+      );
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Run one `Compress-Archive`, retrying the CLR aborts that PowerShell raises on
+ * some hosts for a command that is correct.
+ *
+ * On at least one CI runner architecture, `pwsh` intermittently dies before
+ * `Compress-Archive` does anything, with a `FileLoadException` naming an
+ * assembly whose PublicKeyToken has been TRUNCATED mid-string. The token is a
+ * fixed 16-hex-digit constant, so a short one is not a version mismatch or a
+ * missing module — it is a corrupted read of the assembly name, and the process
+ * aborts rather than exiting. It is not the command: the same call succeeds on
+ * the next attempt, and succeeds on other legs of the same run against the same
+ * commit; one observed job had one call abort and another complete.
+ *
+ * So the retry is keyed on the SIGNAL, which is what makes it narrow. A child
+ * killed by a signal reports `status: null, signal: 'SIGABRT'`, while every way
+ * `Compress-Archive` can genuinely fail — a path that does not exist, a
+ * destination that cannot be written, a module it cannot autoload — is caught by
+ * PowerShell and leaves through a non-zero EXIT, i.e. `status: <n>, signal:
+ * null`. A missing interpreter is different again (`code: 'ENOENT'`), and is
+ * already handled by the caller before this is reached. None of those is
+ * retried: they rethrow on the first attempt, unchanged.
+ *
+ * The destination is removed before every attempt rather than relying on
+ * `-Force`, and that is a line this fixture had been missing rather than a new
+ * precaution: archive-sea.mjs — the script the comment below says this mirrors —
+ * runs `rmSync(archivePath, { force: true })` immediately before the same
+ * cmdlet. The mirror had copied the Compress-Archive and dropped the unlink.
+ *
+ * It matters more with a retry than without one. `-Force` only permits
+ * clobbering, and it is applied when the destination stream is opened — AFTER
+ * parameter binding and module autoload, which is where this abort fires. So an
+ * attempt that dies early never reaches it, and a truncated file from an earlier
+ * attempt survives untouched. What consumes this is `writeRelease`, which hashes
+ * whatever bytes are on disk into SHA256SUMS: a truncated archive would be
+ * listed CORRECTLY, leaving a release that verifies against itself and proves
+ * nothing. Starting every attempt from no file at all makes that unreachable
+ * rather than unlikely.
+ */
+export function compressArchive(
+  exe: string,
+  root: string,
+  archivePath: string,
+  // Injectable for the same reason `publishByRename`'s mover is: the abort this
+  // exists for cannot be provoked on demand, so driven against a real pwsh the
+  // retry branch is dead code on every leg that runs these tests.
+  run: CompressRunner = runCompress,
+): void {
+  // Mirrors archive-sea.mjs's Compress-Archive, with -CompressionLevel
+  // NoCompression added: the installer only hashes the archive and expands it,
+  // and neither step cares whether the entries were deflated, so every cycle
+  // spent compressing buys the fixture nothing but wall clock. This read
+  // `Fastest` first, which reasons the same way but stops one step short —
+  // `Fastest` still deflates, and it is deflating the ~115 MB Node binary the
+  // runnable archive carries, on the platform with the most expensive fsync of
+  // the three. `NoCompression` stores instead, and `Expand-Archive` reads a
+  // stored zip exactly the same way.
+  const args = [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    `Compress-Archive -Force -CompressionLevel NoCompression -Path '${root}' -DestinationPath '${archivePath}'`,
+  ];
+
+  for (let attempt = 1; ; attempt += 1) {
+    // Never inherited from a previous attempt — see the note above on why a
+    // partial archive here would be worse than the abort.
+    rmSync(archivePath, { force: true });
+    try {
+      run(exe, args);
+      assertZipWritten(archivePath);
+      return;
+    } catch (err) {
+      const signal = (err as { signal?: NodeJS.Signals | null }).signal;
+      // The budget is spent, or this is not the abort: the caller owns it, and
+      // gets the ORIGINAL error rather than one describing the retry.
+      if (attempt >= COMPRESS_ATTEMPTS || signal !== RETRYABLE_SIGNAL) throw err;
+    }
+  }
+}
+
+/**
  * Write the archive an installer will download into `intoDir` and return its
  * path. Rooted at `aka-<triple>/`, matching what build-binaries.yml asserts of a
  * real one.
@@ -158,6 +318,14 @@ export function writeArchive(
     banner,
     runnable = false,
   }: { version: string; triple: string; banner: string; runnable?: boolean },
+  // Seams, so a test can prove this function is really WIRED to the retry.
+  // Exercised only through an injected runner one level down, every assertion
+  // about the retry stays green if this call site is reverted to a bare spawn —
+  // which is the one change that would put the flake back. `exe` is injectable
+  // with it because the interpreter is resolved here: without it the wiring
+  // could only be checked on a host that has PowerShell, i.e. not on the legs
+  // where the retry branch would otherwise be dead code.
+  { exe: exeOverride, run }: { exe?: string; run?: CompressRunner } = {},
 ): string {
   const archivePath = join(intoDir, archiveNameFor(version, triple));
   const stage = mkdtempSync(join(tmpdir(), 'aka-fixture-stage-'));
@@ -173,38 +341,14 @@ export function writeArchive(
       // Whatever PowerShell this host has, rather than `powershell` — which is
       // Windows-only, while `Compress-Archive` ships with pwsh everywhere. The
       // ps1 suite skips outright without one, so a caller that got here has one.
-      const exe = powershellExe();
+      const exe = exeOverride ?? powershellExe();
       if (exe === undefined) {
         throw new Error(
           `cannot build ${archiveNameFor(version, triple)}: a zip fixture needs a PowerShell ` +
             '(Compress-Archive), and this host has neither `powershell` nor `pwsh`',
         );
       }
-      // Mirrors archive-sea.mjs's Compress-Archive, with -CompressionLevel
-      // NoCompression added: the installer only hashes the archive and expands
-      // it, and neither step cares whether the entries were deflated, so every
-      // cycle spent compressing buys the fixture nothing but wall clock. This
-      // read `Fastest` first, which reasons the same way but stops one step
-      // short — `Fastest` still deflates, and it is deflating the ~115 MB Node
-      // binary the runnable archive carries, on the platform with the most
-      // expensive fsync of the three. `NoCompression` stores instead, and
-      // `Expand-Archive` reads a stored zip exactly the same way.
-      execFileSync(
-        exe,
-        [
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          `Compress-Archive -Force -CompressionLevel NoCompression -Path '${root}' -DestinationPath '${archivePath}'`,
-        ],
-        // The same env every other PowerShell child here gets, rather than a
-        // bare inherit. `Compress-Archive` is an autoloaded module, so this
-        // child depends on the module path exactly as the script under test
-        // does; a bare inherit hands Windows PowerShell whatever PSModulePath
-        // the parent had -- pwsh 7's, under Actions' default shell -- which is
-        // the one value that costs it its own standard library.
-        { stdio: 'pipe', env: powershellEnv() },
-      );
+      compressArchive(exe, root, archivePath, run);
     } else {
       const stub = join(root, 'aka');
       writeFileSync(stub, `#!/bin/sh\necho "aka ${banner}"\n`);

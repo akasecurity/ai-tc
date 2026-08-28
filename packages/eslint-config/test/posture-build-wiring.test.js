@@ -31,11 +31,25 @@ import { REPO_ROOT, trackedFiles } from './helpers/lint-invocations.js';
 // host.test.ts, factory-posture.test.ts) hold that half; this holds the set.
 const TREE_WALK_TIMEOUT_MS = 30_000;
 
-/** Shipped source: package src trees, never tests, benches, or build output. */
+/**
+ * Shipped source: package src trees, never tests, benches, or build output.
+ *
+ * The test/bench suffixes are excluded by NAME because this repo keeps tracked
+ * `*.test.ts` files inside src trees (packages/local-ops/src), and one of them
+ * already drives `.ensureInventory(` — a test entering either set would demand
+ * the pluginBuild key of a caller that reaches no real user's inventory pass.
+ * Excluding `.bench.` too is a deliberate divergence from test-only-seam.test.js
+ * (which classifies a `.bench.` file as shipped source on purpose): that audit
+ * asks who may TOUCH a seam, this one asks who REPORTS to a control plane, and
+ * a benchmark does neither.
+ */
 function shippedSource() {
   return trackedFiles().filter(
     (file) =>
-      /\/src\/.*\.ts$/.test(file) && !file.endsWith('.d.ts') && !file.includes('/test-fixtures/'),
+      /\/src\/.*\.ts$/.test(file) &&
+      !file.endsWith('.d.ts') &&
+      !/\.(test|bench)\.ts$/.test(file) &&
+      !file.includes('/test-fixtures/'),
   );
 }
 
@@ -47,7 +61,13 @@ function read(file) {
 // mention handleSessionStart in prose, and counting those is the same
 // comment-counts-as-caller trap the fixture-import audit documents.
 const SESSION_PASS_RE = /\bhandleSessionStart\(/;
-// A gateway resolved AND driven through the inventory pass in the same file.
+// A gateway resolved AND driven through the inventory pass in the SAME file.
+// The same-file coupling is the assumption doing the work here: a refactor
+// that moves the resolution behind a shared helper in one file while
+// `.ensureInventory(` stays in another makes both invisible to this set (the
+// per-package behavioural pins are the layer that would still see it). The
+// dot in the ensure form is what keeps the two gateway files that DECLARE the
+// method out of the AND.
 const RESOLVES_RE = /\bresolveDataGateway\(/;
 const ENSURES_RE = /\.ensureInventory\(/;
 

@@ -9,6 +9,9 @@
 //   - unavailablePolicies : ids this host can render but not assign, each with a
 //     reason. Interactive AND restricted is a real combination — a control plane
 //     that writes policy but cannot deliver a reversible archetype to a device.
+//     Requires onChangePolicy: without a write path there is no "this one value"
+//     to single out, so PolicyPicker ignores it rather than claiming a
+//     restriction on a control that can assign nothing anyway.
 //   - onOpenUpdate    : present + update available ⇒ Update button in the provenance
 import type { DetectionDetail, DetectionRule } from '@akasecurity/schema';
 import { Button, SeverityBadge, Switch, toneColors } from '@akasecurity/ui-kit';
@@ -88,6 +91,10 @@ export function DetectionDetailView({
   /**
    * Policy ids this host cannot assign, mapped to why — passed straight to
    * PolicyPicker. A host that knows of no restriction omits it.
+   *
+   * Only meaningful alongside `onChangePolicy`. With no write path the picker
+   * is read-only in whole, which is a different statement from one value being
+   * undeliverable, and the restriction is dropped rather than rendered.
    */
   unavailablePolicies?: Readonly<Record<string, string>> | undefined;
   onOpenUpdate?: (() => void) | undefined;

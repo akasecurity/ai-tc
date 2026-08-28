@@ -21,6 +21,20 @@ function render(props: Parameters<typeof PolicyPicker>[0]): string {
   return renderToStaticMarkup(createElement(PolicyPicker, props));
 }
 
+/**
+ * The whole element carrying `id`, open tag through close.
+ *
+ * String slicing rather than a RegExp, deliberately: every caller's id comes
+ * from useId(), and building a pattern out of one is a hand-rolled escaping
+ * step — the category this file removed from the label assertions. indexOf
+ * takes the id as a literal whatever characters React puts in it.
+ */
+function reasonParagraph(html: string, id: string): string {
+  const at = html.indexOf(`id="${id}"`);
+  if (at === -1) return '';
+  return html.slice(html.lastIndexOf('<', at), html.indexOf('</p>', at) + 4);
+}
+
 describe('PolicyPicker', () => {
   it('renders every archetype live when the host can assign them all', () => {
     const html = render({ value: 'redact', onChange: () => undefined });
@@ -78,11 +92,16 @@ describe('PolicyPicker', () => {
 
     const describedBy = /aria-describedby="([^"]+)"/.exec(html);
     expect(describedBy, 'the unavailable option describes nothing').not.toBeNull();
-    // And it points at a element that is actually in the markup — an id
-    // referencing nothing announces nothing, and reads identically here.
+    // And it points at an element actually in the markup — an id referencing
+    // nothing announces nothing, and reads identically here.
     expect(html).toContain(`id="${describedBy?.[1] ?? ''}"`);
-    expect(html).toMatch(
-      new RegExp(`id="${describedBy?.[1] ?? ''}"[^>]*data-slot="policy-unavailable-reason"`),
+    // Via a string slice rather than a RegExp built from the captured id: that
+    // id is a useId() output, so interpolating it into a pattern hand-rolls an
+    // escaping step whose correctness depends on what React decides an id looks
+    // like — `identifierPrefix` is a render option, and this is the same
+    // category the label assertion above stopped hand-rolling.
+    expect(reasonParagraph(html, describedBy?.[1] ?? '')).toContain(
+      'data-slot="policy-unavailable-reason"',
     );
   });
 
@@ -144,7 +163,43 @@ describe('PolicyPicker', () => {
   it('does not make a read-only picker look restricted', () => {
     // No onChange is a different statement — the host has no write path at all,
     // not that one value is undeliverable. It must not sprout a reason line.
-    const html = render({ value: 'redact' });
+    //
+    // Driven WITH `unavailable`, because without it this holds however the
+    // component treats the pair — the combination is the only thing that can
+    // fail, and asserting it over a picker that was given no restriction proved
+    // nothing about the sentence above.
+    const html = render({ value: 'redact', unavailable: { vault: REASON } });
     expect(html).not.toContain('data-slot="policy-unavailable-reason"');
+    expect(html).not.toContain(REASON);
+    expect(html).not.toContain('data-unavailable');
+    // And no dangling description: natively disabled is not focusable, so an
+    // aria-describedby here would point a keyboard user at nothing they can
+    // reach — the exact failure dropping the native attribute elsewhere avoids.
+    expect(html).not.toContain('aria-describedby');
+  });
+
+  it('points each option at ITS OWN reason when two differ', () => {
+    // `reasons.indexOf(reason)` is the mapping, and one shared reason cannot
+    // tell a correct index from a constant — both buttons would point at the
+    // one line either way. Two DISTINCT reasons is the case that can fail.
+    const OTHER = 'This deployment has not enabled that archetype.';
+    const html = render({
+      value: 'monitor',
+      onChange: () => undefined,
+      unavailable: { vault: REASON, block: OTHER },
+    });
+
+    const ids = [...html.matchAll(/aria-describedby="([^"]+)"/g)].map((m) => m[1]);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size, 'both options point at the same line').toBe(2);
+    // Each id names the paragraph carrying its own sentence, not merely some
+    // paragraph — a swapped pair would satisfy every count above.
+    expect(html.match(/data-slot="policy-unavailable-reason"/g)).toHaveLength(2);
+    for (const [id, reason] of [
+      [ids[0], REASON],
+      [ids[1], OTHER],
+    ] as const) {
+      expect(reasonParagraph(html, id ?? '')).toContain(reason);
+    }
   });
 });

@@ -8,7 +8,8 @@
 //   `onChange` given            — live; the host persists the choice.
 //   `onChange` omitted          — read-only; a host with no per-detection write
 //                                 keeps the UI without implying a write path.
-//   `unavailable[id]` given     — the host CAN write, but not this value, and
+//   `unavailable[id]` given     — with `onChange`: the host CAN write, but not
+//                                 this value (ignored entirely without it), and
 //                                 says why. Offered `aria-disabled` with the
 //                                 reason rather than dropped from the list —
 //                                 aria rather than native, so the option keeps
@@ -51,7 +52,15 @@ export function PolicyPicker({
   // Distinct from `disabled` above, which is about the HOST having no write path
   // at all. This is per-option: the host can write, and this one value is the one
   // it cannot deliver.
-  const reasonFor = (id: string): string | undefined => unavailable?.[id];
+  // Ignored outright when there is NO write path, which is the combination the
+  // two designed states do not cover between them. `unavailable` means "the host
+  // can write, but not this value" — a statement that does not exist when the
+  // host cannot write anything, and rendering it there is actively wrong twice
+  // over: the reason line implies the OTHER archetypes are assignable when none
+  // of them is, and the button would carry `aria-describedby` while natively
+  // disabled, so the description never reaches the keyboard user it exists for.
+  // Read-only wins, and the whole third state collapses.
+  const reasonFor = (id: string): string | undefined => (disabled ? undefined : unavailable?.[id]);
   const reasons = [...new Set(BUILTIN_POLICY_IDS.map(reasonFor).filter((r) => r !== undefined))];
   // Keyed on the REASON rather than the policy id, because the lines below are
   // deduped by string — two unavailable archetypes sharing a sentence render one

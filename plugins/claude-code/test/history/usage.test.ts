@@ -3,10 +3,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { resolveDataGateway } from '@akasecurity/plugin-runtime';
+import {
+  resolveDataGateway,
+  setDefaultGatewayFactory,
+  standaloneGatewayFactory,
+} from '@akasecurity/plugin-runtime';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { PLUGIN_PACKAGE, pluginBuild } from '../../src/build-info.ts';
 import {
   reconcileHistory,
   reconcileSession,
@@ -656,5 +661,50 @@ describe('reconcileSession — FK-safety & provider inheritance', () => {
     // root's env-provider wins by first-write — every leaf reads 'bedrock' back.
     expect(r.byMessageId.get('msg_1')?.provider).toBe('bedrock');
     expect(r.byMessageId.get('msg_2')?.provider).toBe('bedrock');
+  });
+});
+
+describe('the reconcilers resolve their gateway with this build as pluginBuild', () => {
+  // The reconciler can win the hourly posture throttle just as SessionStart
+  // can, and a report resolved without the build identity clears the control
+  // plane's plugin columns — so reverting either reconciler entry to a bare
+  // resolveDataGateway(config) must fail here, not surface as a fleet row
+  // that flaps between filled and null.
+  let dataDir: string;
+  let transcripts: string;
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'aka-usage-meta-data-'));
+    transcripts = mkdtempSync(join(tmpdir(), 'aka-usage-meta-tx-'));
+  });
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(transcripts, { recursive: true, force: true });
+    // The seam is process-global: a capture left installed leaks into the
+    // next suite.
+    setDefaultGatewayFactory();
+  });
+
+  function captureMeta(): { readonly value: unknown } {
+    const box: { value: unknown } = { value: 'never-resolved' };
+    setDefaultGatewayFactory((cfg, meta) => {
+      box.value = meta;
+      return standaloneGatewayFactory(cfg, meta);
+    });
+    return box;
+  }
+
+  it('reconcileHistory (the backfill sweep)', async () => {
+    const captured = captureMeta();
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: NOW });
+    expect(pluginBuild()).toMatchObject({ package: PLUGIN_PACKAGE });
+    expect(captured.value).toStrictEqual({ pluginBuild: pluginBuild() });
+  });
+
+  it('reconcileSessionTail (the live Stop path)', async () => {
+    const transcriptPath = join(transcripts, `${SESSION}.jsonl`);
+    writeFileSync(transcriptPath, transcript());
+    const captured = captureMeta();
+    await reconcileSessionTail(config(dataDir), SESSION, transcriptPath);
+    expect(captured.value).toStrictEqual({ pluginBuild: pluginBuild() });
   });
 });

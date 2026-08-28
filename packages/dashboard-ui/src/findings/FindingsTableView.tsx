@@ -27,8 +27,8 @@ import {
   CATEGORY_ICON_FALLBACK,
   categoryStyle,
   filterInstancesByStatus,
-  FINDING_STATUS_META,
   type FindingColumn,
+  findingStatusMeta,
   instanceLocationLabel,
   type Selection,
 } from './meta.ts';
@@ -315,7 +315,7 @@ function TypeCell({ finding }: { finding: FindingGroup }) {
  * legacy findings that predate the resolution feature (status undefined). */
 function StatusCell({ status }: { status: FindingStatus | undefined }) {
   if (!status) return <span className="text-text-3">—</span>;
-  const meta = FINDING_STATUS_META[status];
+  const meta = findingStatusMeta(status);
   return (
     <Badge variant={meta.badge} className="h-6">
       {meta.label}

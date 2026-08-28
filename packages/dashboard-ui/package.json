@@ -7,7 +7,8 @@
     ".": "./src/index.ts",
     "./recommendations": "./src/security/recommendations.ts",
     "./theme": "./src/theme/theme.ts",
-    "./theme/toggle": "./src/theme/ThemeToggle.tsx"
+    "./theme/toggle": "./src/theme/ThemeToggle.tsx",
+    "./findings/views": "./src/findings/views.ts"
   },
   "scripts": {
     "lint": "eslint src test *.config.*",

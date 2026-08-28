@@ -37,6 +37,7 @@ import type {
 } from '@akasecurity/schema';
 import { harnessFromTool, SOURCE_TOOL } from '@akasecurity/schema';
 
+import { pluginBuild } from '../build-info.ts';
 import { readOffset, readTail, writeOffset } from './tail.ts';
 import {
   iterateUsageAndToolCalls,
@@ -56,6 +57,15 @@ const NO_PROJECT_CWD = '/nonexistent/aka-reconciler/no-project';
 const MAX_TARGET_LEN = 500;
 const truncateTarget = (s: string): string =>
   s.length > MAX_TARGET_LEN ? `${s.slice(0, MAX_TARGET_LEN)}…` : s;
+
+// The reconciler's `ensureInventory` can win the hourly posture throttle just
+// as SessionStart's can, so its gateway resolution carries the same build
+// identity — an attached posture report without it clears the control plane's
+// plugin columns.
+function reconcileGateway(config: PluginConfig): DataGateway {
+  const build = pluginBuild();
+  return resolveDataGateway(config, build === undefined ? undefined : { pluginBuild: build });
+}
 
 export interface ReconcileSummary {
   sessions: number;
@@ -225,7 +235,7 @@ export async function reconcileHistory(
   config: PluginConfig,
   opts: { dir?: string; windowDays?: number; now?: number } = {},
 ): Promise<ReconcileSummary> {
-  const gateway = resolveDataGateway(config);
+  const gateway = reconcileGateway(config);
   let sessions = 0;
   let llmCalls = 0;
   let skipped = 0;
@@ -283,7 +293,7 @@ export async function reconcileSessionTail(
   const records = parseTranscriptUsage(chunk, 0, sessionId);
   const toolCallRecords = parseTranscriptToolCalls(chunk, 0, sessionId);
 
-  const gateway = resolveDataGateway(config);
+  const gateway = reconcileGateway(config);
   try {
     const result = await reconcileSession(gateway, sessionId, records, {
       seedPromptId: checkpoint.lastPromptId,

@@ -701,3 +701,43 @@ describe('handleSessionStart — local-store maintenance capability', () => {
     db.close();
   });
 });
+
+describe('handleSessionStart — gateway resolution meta', () => {
+  // What each adapter hands over reaches the factory intact: `recordedBy` for
+  // the inventory stamp and `pluginBuild` for the attached posture report.
+  // The factory's own use of pluginBuild is pinned in
+  // attached/factory-posture.test.ts; this seam is where an adapter's identity
+  // would silently go missing.
+  it('threads recordedBy and pluginBuild through to the factory', async () => {
+    let captured: unknown;
+    setDefaultGatewayFactory((_config, meta) => {
+      captured = meta;
+      return new StandaloneDataGateway(dir, bundledDetections(), meta);
+    });
+
+    await handleSessionStart(
+      start('s-meta', {
+        harnessVersion: '0.9.8',
+        pluginBuild: { package: '@akasecurity/ai-tc-claude-code', version: '0.9.8' },
+      }),
+      config(dir),
+    );
+
+    expect(captured).toEqual({
+      recordedBy: 'plugin@0.9.8',
+      pluginBuild: { package: '@akasecurity/ai-tc-claude-code', version: '0.9.8' },
+    });
+  });
+
+  it('an adapter with no build identity resolves with no pluginBuild key', async () => {
+    let captured: unknown;
+    setDefaultGatewayFactory((_config, meta) => {
+      captured = meta;
+      return new StandaloneDataGateway(dir, bundledDetections(), meta);
+    });
+
+    await handleSessionStart(start('s-meta-none', { harnessVersion: '0.9.8' }), config(dir));
+
+    expect(captured).toEqual({ recordedBy: 'plugin@0.9.8' });
+  });
+});

@@ -35,6 +35,7 @@ import { handleSessionStart } from '@akasecurity/plugin-runtime';
 import { loadConfig, resolveAntigravityProvider } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
+import { pluginBuild } from '../build-info.ts';
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
 import {
   getString,
@@ -89,6 +90,9 @@ async function main(): Promise<unknown> {
       cwd,
       tool: SOURCE_TOOL.Antigravity,
       harnessVersion: harnessVersion(),
+      // The build identity the attached posture report stamps; read from the
+      // manifest beside the running script, so it needs no argv.
+      pluginBuild: pluginBuild(),
     },
     config,
   );

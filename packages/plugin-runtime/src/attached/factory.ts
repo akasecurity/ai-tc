@@ -9,6 +9,7 @@ import { isAttached } from '@akasecurity/schema';
 import { StandaloneDataGateway } from '../standalone-gateway.ts';
 import { createForwardPolicy } from './forward-policy.ts';
 import { AttachedDataGateway } from './gateway.ts';
+import { createPluginBlock, type PluginBuildInfo } from './plugin-block.ts';
 import { createPolicyStore } from './policy-store.ts';
 import { createPostureReporter } from './posture-reporter.ts';
 import { readStorePosture } from './posture-snapshot.ts';
@@ -39,7 +40,7 @@ import { createPostureStore } from './posture-store.ts';
  */
 export function resolveGatewayForConfig(
   config: PluginConfig,
-  meta?: { recordedBy?: string },
+  meta?: { recordedBy?: string; pluginBuild?: PluginBuildInfo },
 ): DataGateway {
   const local = new StandaloneDataGateway(config.dataDir, bundledDetections(), meta);
 
@@ -90,6 +91,14 @@ export function resolveGatewayForConfig(
         readStore: () => readStorePosture(config.dbPath),
         hostname: () => hostname(),
         now: () => Date.now(),
+        // The reporting build's identity, when the caller knows it (the plugin
+        // adapters do; an embedder or a test may not). Composed with the SAME
+        // policy store the sync child writes, so the block names the bundle
+        // actually in force. Key omitted rather than set undefined — the
+        // reporter keys on presence.
+        ...(meta?.pluginBuild === undefined
+          ? {}
+          : { pluginBlock: createPluginBlock(meta.pluginBuild, store) }),
       }),
     });
   } catch {

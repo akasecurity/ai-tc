@@ -19,6 +19,8 @@ export {
 } from './forward-policy.ts';
 export type { AttachedClient, AttachedDataGatewayDeps } from './gateway.ts';
 export { AttachedDataGateway } from './gateway.ts';
+export type { PluginBuildInfo } from './plugin-block.ts';
+export { createPluginBlock } from './plugin-block.ts';
 export type { PolicyStore, StoredPolicyBundle } from './policy-store.ts';
 export { createPolicyStore } from './policy-store.ts';
 export type { PolicySyncOutcome, PolicySyncResult } from './policy-sync.ts';

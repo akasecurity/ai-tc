@@ -20,6 +20,7 @@ import { handleSessionStart } from '@akasecurity/plugin-runtime';
 import { loadConfig, resolveCodexProvider } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
+import { pluginBuild } from '../build-info.ts';
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { peekSessionOriginator } from '../history/transcripts.ts';
 import { getString, parseJson, readStdin } from './shared.ts';
@@ -69,6 +70,9 @@ async function main(): Promise<void> {
       tool: SOURCE_TOOL.Codex,
       harnessVersion: harnessVersion(),
       harnessInterface,
+      // The build identity the attached posture report stamps; read from the
+      // manifest beside the running script, so it needs no argv.
+      pluginBuild: pluginBuild(),
     },
     config,
   );

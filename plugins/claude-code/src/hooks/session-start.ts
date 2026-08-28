@@ -20,6 +20,7 @@ import { handleSessionStart } from '@akasecurity/plugin-runtime';
 import { loadConfig } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
+import { pluginBuild } from '../build-info.ts';
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { standingBrief } from '../protocol/notes.ts';
@@ -49,6 +50,9 @@ async function main(): Promise<void> {
     cwd,
     tool: SOURCE_TOOL.ClaudeCode,
     harnessVersion: harnessVersion(),
+    // The build identity the attached posture report stamps; read from the
+    // manifest beside the running script, so it needs no argv.
+    pluginBuild: pluginBuild(),
     // harnessInterface is intentionally omitted: Claude Code's SessionStart hook
     // exposes no meaningful interface discriminator (terminal vs IDE vs web) yet.
     // The resolver already folds it into the harness bag, so pass it here once

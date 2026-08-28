@@ -2,6 +2,7 @@ import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 
 import { resolveGatewayForConfig } from './attached/factory.ts';
+import type { PluginBuildInfo } from './attached/plugin-block.ts';
 import { StandaloneDataGateway } from './standalone-gateway.ts';
 
 /**
@@ -28,10 +29,17 @@ import { StandaloneDataGateway } from './standalone-gateway.ts';
  * mirror. Only SessionStart knows the plugin version (the manifest path rides
  * its argv alone), and a new binary generation always starts with a new
  * session, so stamping from there covers every generation change.
+ *
+ * `meta.pluginBuild` (optional) is the calling artifact's package identity for
+ * the attached posture self-report — see the factory's posture wiring. Unlike
+ * `recordedBy` it is wanted from EVERY caller that can reach
+ * `ensureInventory` on an attached machine (the reconcilers as well as
+ * SessionStart): whichever of them wins the hourly throttle sends the report,
+ * and a report without the block nulls the control plane's plugin columns.
  */
 export type DataGatewayFactory = (
   config: PluginConfig,
-  meta?: { recordedBy?: string },
+  meta?: { recordedBy?: string; pluginBuild?: PluginBuildInfo },
 ) => DataGateway;
 
 export const standaloneGatewayFactory: DataGatewayFactory = (config, meta) =>
@@ -83,7 +91,7 @@ export function setDefaultGatewayFactory(factory?: DataGatewayFactory): () => vo
 
 export function resolveDataGateway(
   config: PluginConfig,
-  meta?: { recordedBy?: string },
+  meta?: { recordedBy?: string; pluginBuild?: PluginBuildInfo },
   gatewayFactory: DataGatewayFactory = defaultGatewayFactory,
 ): DataGateway {
   return gatewayFactory(config, meta);

@@ -14,12 +14,13 @@ export interface PostureReporterDeps {
   now(): number; // Date.now
   /**
    * The reporting plugin's identity and policy freshness, or `undefined` when
-   * this build does not know it (an OSS-shaped caller, or a test).
+   * this build does not know it (an embedder, or a test). The factory wires
+   * `createPluginBlock` here whenever the resolving caller passed its build
+   * identity — see plugin-block.ts.
    *
    * Async because two of the five members come from the policy CACHE, which is
    * read from disk. Optional because the block itself is `.optional()` on the
-   * wire — B4 shipped the transport and the column; until E2 there was simply no
-   * producer, so every report a shipped build sent carried no `plugin` at all.
+   * wire, so a caller with no identity to report still posts a valid snapshot.
    *
    * Fail-open like everything else here: a producer that throws costs the block,
    * never the snapshot. The rest of the posture — `storePresent` above all, the

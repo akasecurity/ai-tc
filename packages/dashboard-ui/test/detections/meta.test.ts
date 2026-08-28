@@ -1,4 +1,5 @@
 import { BUILTIN_POLICIES, KNOWN_BUILTIN_IDS } from '@akasecurity/schema';
+import { toneColors } from '@akasecurity/ui-kit';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -6,7 +7,6 @@ import {
   PLACEHOLDER_POLICY,
   policyMeta,
   provenanceState,
-  toneColors,
 } from '../../src/detections/meta.ts';
 
 describe('matcherSummary', () => {
@@ -55,7 +55,7 @@ describe('policyMeta', () => {
   it('falls back to a neutral entry for an unknown id (keeping the id as label)', () => {
     const m = policyMeta('mystery');
     expect(m.label).toBe('mystery');
-    expect(m.tone).toBe('gray');
+    expect(m.tone).toBe('neutral');
   });
 
   it('defaults unassigned detections to monitor', () => {
@@ -72,7 +72,7 @@ describe('policyMeta', () => {
     (id) => {
       const m = policyMeta(id);
       expect(m.label).toBe(id);
-      expect(m.tone).toBe('gray');
+      expect(m.tone).toBe('neutral');
       // The destructure that crashed the page must succeed on the fallback tone.
       expect(toneColors(m.tone)).toHaveLength(2);
     },

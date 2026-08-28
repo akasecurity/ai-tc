@@ -108,10 +108,9 @@ export const ACTION_META: Record<
   redacted: { label: 'Redacted', icon: RedactIcon, className: TONE_SOFT.primary },
   warned: { label: 'Warned', icon: AlertIcon, className: TONE_SOFT.high },
   allowed: { label: 'Allowed', icon: CheckIcon, className: TONE_SOFT.ok },
-  // The one pill that is NOT a tonal family: it sits a step deeper than
-  // `neutral` (surface-3, not surface-2) to read as the quietest action of the
-  // six. There is no -ink half to get wrong, so spelling it here is safe.
-  monitored: { label: 'Monitored', icon: EyeIcon, className: 'bg-surface-3 text-text-2' },
+  // The quietest of the six, and the only one carrying no family colour:
+  // `neutral` is the untinted pair.
+  monitored: { label: 'Monitored', icon: EyeIcon, className: TONE_SOFT.neutral },
   quarantined: { label: 'Quarantined', icon: ShieldIcon, className: TONE_SOFT.critical },
 };
 

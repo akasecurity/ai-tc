@@ -32,7 +32,7 @@ describe('categoryStyle', () => {
   });
 
   it('falls back to a neutral surface tone for an off-enum category', () => {
-    expect(categoryStyle('not-a-category')).toBe('bg-surface-2 text-text-2');
+    expect(categoryStyle('not-a-category')).toBe('bg-surface-3 text-text-2');
   });
 
   // Regression: a category reaches here as a plain string, so it can collide with

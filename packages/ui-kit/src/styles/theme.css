@@ -14,6 +14,18 @@
   --color-border: #e3e5e8;
   --color-border-strong: #d6d8dc;
 
+  /* field boundary. --color-border is a hairline tuned to separate a card from the
+     page, where the two surfaces already differ and the line is reinforcement. A
+     text field is the opposite case: it renders bg-surface inside a panel that is
+     also bg-surface, so the border is the ONLY thing saying where the control
+     begins, and 1.4.11 asks that boundary for 3:1 rather than the hairline's 1.26:1.
+     Its own token because widening --color-border to clear 3:1 would put that weight
+     on every card and divider in the product, which is a different design decision
+     than making inputs findable. Set against the LIGHTEST surface a field lands on
+     (#ffffff, 3.34:1) and still clearing it on the canvas and surface-2 fills the
+     auth forms use (3.20:1). */
+  --color-border-field: #868d99;
+
   /* text. The three tiers sit closer together than they look like they should: on a
      light background everything at 4.5:1 or better is crowded into a narrow dark band,
      so the tertiary tier cannot be as faint as the eye expects. It is set against
@@ -171,6 +183,12 @@
   --color-surface-3: #3d4653; /* deeper inset, neutral solid fill */
   --color-border: #3d4653;
   --color-border-strong: #5d6572;
+
+  /* the same boundary in dark, set against the surfaces it actually lands on rather
+     than against the canvas: 3.94:1 on --color-surface, 3.26:1 on --color-surface-2.
+     It reads lighter than --color-border-strong on purpose — strong is a divider that
+     wants to recede, this is a control edge that has to be found. */
+  --color-border-field: #828b9b;
 
   /* text */
   --color-text: #ffffff;

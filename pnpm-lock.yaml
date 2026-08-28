@@ -889,6 +889,9 @@ importers:
       '@akasecurity/persistence':
         specifier: workspace:*
         version: link:../packages/persistence
+      '@akasecurity/remote':
+        specifier: workspace:*
+        version: link:../packages/remote
       '@akasecurity/schema':
         specifier: workspace:*
         version: link:../packages/schema

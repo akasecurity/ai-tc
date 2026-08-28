@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { ATTACHED_FORWARD_STATE_FILENAME } from '@akasecurity/persistence';
 import { DATA_FILE_MODE, ensureDataDir } from '@akasecurity/plugin-sdk';
 
 import { classifyFailure, type ControlPlaneFailure } from './failure.ts';
@@ -109,7 +110,11 @@ const FAILURES: ReadonlySet<string> = new Set<ControlPlaneFailure>([
  * this machine no longer talks to, and — worse than cosmetic — `run` reads the
  * stale `openedAtMs` and skips the network entirely until the cooldown elapses.
  */
-export const FORWARD_STATE_FILENAME = 'attached-state.json';
+// Defined in @akasecurity/persistence, which sits below both detach surfaces
+// (`aka detach` and the dashboard's settings action) and owns the list they
+// both clear. Re-exported under this package's own name so its consumers are
+// unaffected by where the string lives.
+export const FORWARD_STATE_FILENAME = ATTACHED_FORWARD_STATE_FILENAME;
 const STATE_FILENAME = FORWARD_STATE_FILENAME;
 
 /**

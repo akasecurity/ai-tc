@@ -20,7 +20,7 @@ import { type SummaryStatItem, SummaryStripView } from '../../src/shared/Summary
 const SPACED_VALUE = '128 / 256';
 
 const ITEMS: SummaryStatItem[] = [
-  { icon: ListIcon, value: SPACED_VALUE, label: 'Active', tone: 'green' },
+  { icon: ListIcon, value: SPACED_VALUE, label: 'Active', tone: 'ok' },
   { icon: ListIcon, value: 12, label: 'Rules', tone: 'violet' },
 ];
 

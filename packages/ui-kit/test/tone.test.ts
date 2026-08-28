@@ -2,7 +2,94 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import { type SolidTone, type Tone, TONE_SOFT, TONE_SOLID } from '../src/tone.ts';
+import {
+  type SolidTone,
+  type Tone,
+  TONE_PARTS,
+  TONE_SOFT,
+  TONE_SOLID,
+  toneColors,
+} from '../src/tone.ts';
+
+// A family's pair lives in exactly one place. It used to live in two — a map of
+// Tailwind classes and a map of `var()` strings — and they disagreed: one family
+// meant `surface-2` in one and `surface-3` in the other, so re-toning it was two
+// edits in two files with nothing relating them. What is pinned here is that the
+// joined and `var()` forms STAY DERIVED. A hand-written second map is exactly what
+// this replaced, and it would read as perfectly reasonable code.
+
+const FAMILIES: Record<Tone, [fill: string, text: string]> = {
+  neutral: ['bg-surface-3', 'text-text-2'],
+  critical: ['bg-sev-critical-fill', 'text-sev-critical-ink'],
+  high: ['bg-sev-high-fill', 'text-sev-high-ink'],
+  medium: ['bg-sev-medium-fill', 'text-sev-medium-ink'],
+  low: ['bg-sev-low-fill', 'text-sev-low-ink'],
+  ok: ['bg-ok-fill', 'text-ok-ink'],
+  teal: ['bg-teal-fill', 'text-teal-ink'],
+  violet: ['bg-violet-fill', 'text-violet-ink'],
+  primary: ['bg-primary-tint', 'text-primary'],
+};
+
+const TONES = Object.keys(FAMILIES) as Tone[];
+
+// The one family whose halves name no tonal family, so the tonal-ink lint rule
+// has nothing to match on it and only this file can hold its pair.
+const SURFACE_FAMILIES: Tone[] = ['neutral'];
+
+describe('the tonal registry', () => {
+  it('covers every family exactly, with no extras', () => {
+    // `Record<Tone, …>` already forces a new family to be given a pair, but it
+    // cannot see a family REMOVED from the union along with its row.
+    expect(Object.keys(TONE_PARTS).sort()).toEqual([...TONES].sort());
+    expect(Object.keys(TONE_SOFT).sort()).toEqual([...TONES].sort());
+  });
+
+  for (const tone of TONES) {
+    describe(tone, () => {
+      const [fill, text] = FAMILIES[tone];
+
+      it('carries the pair it is expected to', () => {
+        expect(TONE_PARTS[tone]).toEqual({ fill, text });
+      });
+
+      it('joins that same pair, fill first', () => {
+        // The property, not the implementation. Order is load-bearing beyond
+        // rendering: callers store this string and compare it, and twMerge makes
+        // either order render identically — so a flip changes the value without
+        // changing a pixel.
+        expect(TONE_SOFT[tone]).toBe(`${TONE_PARTS[tone].fill} ${TONE_PARTS[tone].text}`);
+      });
+
+      it('derives its var() pair from that same pair', () => {
+        // Whatever the classes say, the vars name the same two tokens. A second
+        // hand-written map fails here the moment it drifts — the only moment it
+        // matters.
+        const token = (utility: string) => utility.replace(/^(?:text|bg)-/, '');
+        expect(toneColors(tone)).toEqual([
+          `var(--color-${token(TONE_PARTS[tone].text)})`,
+          `var(--color-${token(TONE_PARTS[tone].fill)})`,
+        ]);
+      });
+
+      it('spells both halves as classes Tailwind can emit', () => {
+        // Assembled classes emit no rule at all, so each half must be a whole
+        // literal of the utility it belongs to.
+        expect(fill).toMatch(/^bg-[a-z0-9-]+$/);
+        expect(text).toMatch(/^text-[a-z0-9-]+$/);
+      });
+    });
+  }
+
+  it('reaches a tonal foreground through its -ink token, never a bare hue', () => {
+    // A bare hue is a non-text colour and fails contrast as text. `primary` is the
+    // documented inverse — it IS the ink, and `primary-tint` is its fill — and the
+    // two surface families are not tonal families at all.
+    for (const tone of TONES) {
+      if (tone === 'primary' || SURFACE_FAMILIES.includes(tone)) continue;
+      expect(FAMILIES[tone][1]).toMatch(/-ink$/);
+    }
+  });
+});
 
 // `Record<Tone, string>` constrains the KEYS and says nothing about the values,
 // so every way a pair can be wrong is invisible to the compiler: a `bg-ok` that
@@ -82,7 +169,7 @@ describe('the tonal pairs are shaped as fill + ink', () => {
   // the ink and its tint is `-tint`, and `neutral` is a surface rather than a
   // tonal family.
   const IRREGULAR: Partial<Record<Tone, string>> = {
-    neutral: 'bg-surface-2 text-text-2',
+    neutral: 'bg-surface-3 text-text-2',
     primary: 'bg-primary-tint text-primary',
   };
 

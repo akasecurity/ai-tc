@@ -62,7 +62,7 @@ function ResolvedRow({ item, last }: { item: ResolvedFeedItem; last: boolean }) 
   return (
     <div className={cn('relative flex gap-3', !last && 'pb-4')}>
       {/* Connector line to the next item — centered under the 32px icon tile. */}
-      {!last && <span className="absolute bottom-0 left-4 top-8 w-px bg-text/6" />}
+      {!last && <span className="absolute bottom-0 left-4 top-8 w-px bg-hairline" />}
       <span
         className={cn(
           'z-10 grid size-8 shrink-0 place-items-center rounded-lg',

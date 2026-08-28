@@ -5,6 +5,12 @@
 // family's tint. A tinted surface therefore pairs the family's `-fill` with its
 // `-ink`, and a solid surface pairs its `-ink` with `--color-on-accent`.
 //
+// The ink is calibrated to clear 4.5:1 over `--color-surface`, and that bound is
+// NOT unconditional: in dark the fills are 12% alpha, so a pair's contrast
+// depends on what sits beneath it. Over `--color-surface-2` critical, low and
+// violet fall under 4.5, and a tinted chip on a tinted row is outside what these
+// pairs promise — reach for a solid pair, or an untinted row, where that happens.
+//
 // Nothing in the names says which half belongs where, and `primary` reads the
 // inverse of every other family — it IS the ink, and pairs with `-tint` rather
 // than `-fill`. So every site that spells a pair by hand is a site that can spell

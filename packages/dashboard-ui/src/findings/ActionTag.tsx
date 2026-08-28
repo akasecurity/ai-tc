@@ -2,14 +2,14 @@ import type { FindingAction } from '@akasecurity/schema';
 import { cn, Tag } from '@akasecurity/ui-kit';
 
 import { LayersIcon } from '../shared/icons.tsx';
-import { ACTION_META } from './meta.ts';
+import { actionMeta } from './meta.ts';
 
 // A colored status pill — Tag's neutral border/surface is overridden via cn so it
 // reads as a severity-tinted action chip rather than a plain metadata label.
 const PILL = 'rounded-full border-transparent px-2.5 text-xs [&_svg]:size-3.5';
 
 export function ActionTag({ action }: { action: FindingAction }) {
-  const meta = ACTION_META[action];
+  const meta = actionMeta(action);
   const Icon = meta.icon;
   return (
     <Tag icon={<Icon />} className={cn(PILL, meta.className)}>

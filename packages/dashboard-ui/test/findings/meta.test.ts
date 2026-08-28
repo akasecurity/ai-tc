@@ -4,12 +4,18 @@ import { describe, expect, it } from 'vitest';
 import { formatConfidence } from '../../src/findings/FindingDetailView.tsx';
 import {
   ACTION_META,
+  actionMeta,
+  CATEGORY_ICON_FALLBACK,
   CATEGORY_LABEL,
+  categoryLabel,
   categoryStyle,
   filterInstancesByStatus,
+  FINDING_STATUS_META,
   FINDING_STATUSES,
+  findingStatusMeta,
   SEVERITIES,
 } from '../../src/findings/meta.ts';
+import { KeyIcon } from '../../src/shared/icons.tsx';
 
 // Minimal FindingInstance fixture — only `id` and `status` vary per test.
 function buildInstance(id: string, status?: FindingStatus): FindingInstance {
@@ -41,7 +47,7 @@ describe('categoryStyle', () => {
   // has no such key, and categoryStyle returns undefined despite its `: string` type.
   // In-repo that silently drops the icon tile's tonal classes via cn(); an external
   // consumer feeding the same unguarded lookup into toneColors() throws outright.
-  it.each(['__proto__', 'constructor', 'toString', ''])(
+  it.each(['__proto__', 'constructor', 'toString', 'hasOwnProperty', ''])(
     'resolves the off-enum category %j to the neutral fallback',
     (category) => {
       expect(categoryStyle(category)).toBe('bg-surface-3 text-text-2');
@@ -49,7 +55,57 @@ describe('categoryStyle', () => {
   );
 });
 
-describe('ACTION_META', () => {
+describe('CATEGORY_ICON_FALLBACK', () => {
+  it('resolves a known category to its real icon', () => {
+    expect(CATEGORY_ICON_FALLBACK.secret).toBe(KeyIcon);
+  });
+
+  // Regression: this table backs `CATEGORY_ICON_FALLBACK[cat] ?? KeyIcon` at
+  // every findings call site (FindingsTableView, FindingsFlatTableView,
+  // FindingDetailView), and the result is rendered directly as a JSX tag
+  // (`<Icon />`) — so it can't be guarded behind an Object.hasOwn wrapper
+  // function the way categoryStyle and categoryLabel are: a component derived
+  // from a function call trips the render-created-component lint rule
+  // (react-hooks/static-components), which can't see that the underlying icon
+  // reference is module-level and stable either way. A plain object would
+  // resolve '__proto__' to Object.prototype and 'constructor' to the Object
+  // function — both truthy, so `?? KeyIcon` would never fire, and React would
+  // throw "element type is invalid" on the very first render rather than
+  // degrading. Built null-prototype instead, so none of these keys resolve to
+  // an inherited member at all.
+  it.each(['__proto__', 'constructor', 'toString', 'hasOwnProperty', ''])(
+    'has no inherited member for %j, so the ?? KeyIcon fallback fires',
+    (category) => {
+      expect(CATEGORY_ICON_FALLBACK[category]).toBeUndefined();
+      expect(CATEGORY_ICON_FALLBACK[category] ?? KeyIcon).toBe(KeyIcon);
+    },
+  );
+});
+
+describe('categoryLabel', () => {
+  it('returns the label for a known category', () => {
+    expect(categoryLabel('secret')).toBe('Secret');
+  });
+
+  it('echoes an off-enum category back as its own label', () => {
+    expect(categoryLabel('not-a-category')).toBe('not-a-category');
+  });
+
+  // Regression: FindingDetailView used to read this table as
+  // `CATEGORY_LABEL[category as keyof typeof CATEGORY_LABEL]` — a cast, not a
+  // guard. '__proto__' resolves Object.prototype (truthy), so the cast's
+  // `if (categoryLabel) return categoryLabel;` returned the prototype object
+  // typed as `: string`, and the drawer's title — which doubles as its Radix
+  // aria-labelledby accessible name — threw rendering it.
+  it.each(['__proto__', 'constructor', 'toString', 'hasOwnProperty'])(
+    'echoes the off-enum category %j back rather than resolving the inherited member',
+    (category) => {
+      expect(categoryLabel(category)).toBe(category);
+    },
+  );
+});
+
+describe('ACTION_META / actionMeta', () => {
   it('maps every finding action to a label, icon component, and tinted className', () => {
     const actions: FindingAction[] = [
       'blocked',
@@ -64,8 +120,44 @@ describe('ACTION_META', () => {
       expect(m.label).toBe(a.charAt(0).toUpperCase() + a.slice(1));
       expect(typeof m.icon).toBe('function');
       expect(m.className).toMatch(/\S/);
+      // actionMeta must resolve every real action identically to the raw table.
+      expect(actionMeta(a)).toBe(m);
     }
   });
+
+  // Regression: ActionTag read ACTION_META[action] directly. An action of
+  // 'constructor' resolves the Object function (truthy), so `.icon` is
+  // undefined and `<Icon />` throws "element type is invalid" — the whole row
+  // fails to render, not just the tile.
+  it.each(['__proto__', 'constructor', 'toString', 'hasOwnProperty'])(
+    'falls back to a neutral, self-labelled pill for the off-enum action %j',
+    (action) => {
+      const m = actionMeta(action);
+      expect(m.label).toBe(action);
+      expect(typeof m.icon).toBe('function');
+      expect(m.className).toBe('bg-surface-3 text-text-2');
+    },
+  );
+});
+
+describe('FINDING_STATUS_META / findingStatusMeta', () => {
+  it('resolves every real status identically to the raw table', () => {
+    for (const s of FINDING_STATUSES) {
+      expect(findingStatusMeta(s)).toBe(FINDING_STATUS_META[s]);
+    }
+  });
+
+  // Regression: FindingsTableView, FindingsFlatTableView and
+  // FindingsLocationsView all read FINDING_STATUS_META[status] directly once
+  // status was known to be defined — but defined isn't the same as validated.
+  // 'constructor' resolves the Object function (truthy), so `.badge` is
+  // undefined and Badge receives an invalid variant.
+  it.each(['__proto__', 'constructor', 'toString', 'hasOwnProperty'])(
+    'falls back to the neutral "default" badge for the off-enum status %j',
+    (status) => {
+      expect(findingStatusMeta(status)).toEqual({ label: status, badge: 'default' });
+    },
+  );
 });
 
 describe('CATEGORY_LABEL / SEVERITIES / FINDING_STATUSES', () => {

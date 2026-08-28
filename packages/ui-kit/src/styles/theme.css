@@ -14,11 +14,24 @@
   --color-border: #e3e5e8;
   --color-border-strong: #d6d8dc;
 
-  /* field boundary. --color-border is a hairline tuned to separate a card from the
+  /* the lightest separator weight: the rule BETWEEN rows inside a card, where
+     --color-border is already drawing the card's own edge and repeating it per row
+     would draw a table. Its own token because it is the one separator that has to
+     stay under the container it sits in — the two above are container edges and
+     read as too heavy for a row.
+
+     The value is --color-text at 6% in each theme, which is what these rows spelled
+     inline before this token existed. Written out rather than derived, because the
+     alpha rides on a token that INVERTS between themes: 6% of the near-black light
+     ink and 6% of the white dark ink are opposite colors, and only writing both
+     keeps the pair honest if either text value is ever retuned. */
+  --color-hairline: rgb(37 47 61 / 0.06);
+
+  /* field boundary. --color-border is a thin rule tuned to separate a card from the
      page, where the two surfaces already differ and the line is reinforcement. A
      text field is the opposite case: it renders bg-surface inside a panel that is
      also bg-surface, so the border is the ONLY thing saying where the control
-     begins, and 1.4.11 asks that boundary for 3:1 rather than the hairline's 1.26:1.
+     begins, and 1.4.11 asks that boundary for 3:1 rather than that rule's 1.26:1.
      Its own token because widening --color-border to clear 3:1 would put that weight
      on every card and divider in the product, which is a different design decision
      than making inputs findable. Set against the LIGHTEST surface a field lands on
@@ -183,6 +196,10 @@
   --color-surface-3: #3d4653; /* deeper inset, neutral solid fill */
   --color-border: #3d4653;
   --color-border-strong: #5d6572;
+
+  /* 6% of this theme's --color-text (#ffffff), so the row rule lifts off the card
+     here where the light theme's sinks into it. */
+  --color-hairline: rgb(255 255 255 / 0.06);
 
   /* the same boundary in dark, set against the surfaces it actually lands on rather
      than against the canvas: 3.94:1 on --color-surface, 3.26:1 on --color-surface-2.

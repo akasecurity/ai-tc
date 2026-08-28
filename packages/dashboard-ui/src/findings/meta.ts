@@ -10,6 +10,7 @@ import type {
   FindingStatus,
   Severity,
 } from '@akasecurity/schema';
+import { type Tone, TONE_SOFT } from '@akasecurity/ui-kit';
 
 import type { IconComponent } from '../lib/icons.ts';
 import {
@@ -60,18 +61,18 @@ export const CATEGORY_ICON: Record<FindingCategory, IconComponent> = {
   custom: KeyIcon,
 };
 
-/** Per-category icon-tile fill + text color (falls back to a neutral surface tone). */
-export const CATEGORY_STYLE: Record<FindingCategory, string> = {
-  secret: 'bg-sev-critical-fill text-sev-critical-ink',
-  pii: 'bg-sev-low-fill text-sev-low-ink',
-  source_code: 'bg-violet-fill text-violet-ink',
-  code_flaw: 'bg-sev-high-fill text-sev-high-ink',
-  external_share: 'bg-teal-fill text-teal-ink',
-  mcp_server: 'bg-sev-high-fill text-sev-high-ink',
-  customer_data: 'bg-sev-high-fill text-sev-high-ink',
-  financial: 'bg-sev-high-fill text-sev-high-ink',
-  phi: 'bg-sev-low-fill text-sev-low-ink',
-  custom: 'bg-surface-2 text-text-2',
+/** Per-category icon-tile tone (falls back to a neutral surface tone). */
+export const CATEGORY_TONE: Record<FindingCategory, Tone> = {
+  secret: 'critical',
+  pii: 'low',
+  source_code: 'violet',
+  code_flaw: 'high',
+  external_share: 'teal',
+  mcp_server: 'high',
+  customer_data: 'high',
+  financial: 'high',
+  phi: 'low',
+  custom: 'neutral',
 };
 
 // The maps are exhaustive over FindingCategory (adding a member is a compile
@@ -83,28 +84,26 @@ export const CATEGORY_STYLE: Record<FindingCategory, string> = {
 // (react-hooks/static-components) stays satisfied.
 export const CATEGORY_ICON_FALLBACK: Record<string, IconComponent | undefined> = CATEGORY_ICON;
 
+// Returns the CLASS pair rather than the tone: every caller feeds it straight
+// into `cn()` beside layout classes, and the off-enum fallback has to resolve
+// somewhere — doing it here keeps that one place.
 export const categoryStyle = (category: string): string =>
-  (CATEGORY_STYLE as Record<string, string | undefined>)[category] ?? 'bg-surface-2 text-text-2';
+  TONE_SOFT[(CATEGORY_TONE as Record<string, Tone | undefined>)[category] ?? 'neutral'];
 
 /** Per-action pill label + icon + tinted classes. */
 export const ACTION_META: Record<
   FindingAction,
   { label: string; icon: IconComponent; className: string }
 > = {
-  blocked: {
-    label: 'Blocked',
-    icon: SlashCircleIcon,
-    className: 'bg-sev-critical-fill text-sev-critical-ink',
-  },
-  redacted: { label: 'Redacted', icon: RedactIcon, className: 'bg-primary-tint text-primary' },
-  warned: { label: 'Warned', icon: AlertIcon, className: 'bg-sev-high-fill text-sev-high-ink' },
-  allowed: { label: 'Allowed', icon: CheckIcon, className: 'bg-ok-fill text-ok-ink' },
+  blocked: { label: 'Blocked', icon: SlashCircleIcon, className: TONE_SOFT.critical },
+  redacted: { label: 'Redacted', icon: RedactIcon, className: TONE_SOFT.primary },
+  warned: { label: 'Warned', icon: AlertIcon, className: TONE_SOFT.high },
+  allowed: { label: 'Allowed', icon: CheckIcon, className: TONE_SOFT.ok },
+  // The one pill that is NOT a tonal family: it sits a step deeper than
+  // `neutral` (surface-3, not surface-2) to read as the quietest action of the
+  // six. There is no -ink half to get wrong, so spelling it here is safe.
   monitored: { label: 'Monitored', icon: EyeIcon, className: 'bg-surface-3 text-text-2' },
-  quarantined: {
-    label: 'Quarantined',
-    icon: ShieldIcon,
-    className: 'bg-sev-critical-fill text-sev-critical-ink',
-  },
+  quarantined: { label: 'Quarantined', icon: ShieldIcon, className: TONE_SOFT.critical },
 };
 
 /**

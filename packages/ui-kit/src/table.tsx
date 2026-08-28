@@ -74,7 +74,7 @@ export function TableRow({
       onClick={onClick}
       onKeyDown={isInteractive ? handleKeyDown : onKeyDown}
       className={cn(
-        'border-b border-text/6 transition-colors',
+        'border-b border-hairline transition-colors',
         isInteractive &&
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40',
         className,

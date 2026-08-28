@@ -120,7 +120,7 @@ export function SummaryStripView({
     >
       {items.map((item, i) => (
         <Fragment key={item.label}>
-          {i > 0 && <span className="w-px shrink-0 self-stretch bg-text/6" />}
+          {i > 0 && <span className="w-px shrink-0 self-stretch bg-hairline" />}
           <SummaryStat {...item} isLoading={isLoading} />
         </Fragment>
       ))}

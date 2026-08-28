@@ -19,8 +19,7 @@ import {
 // this replaced, and it would read as perfectly reasonable code.
 
 const FAMILIES: Record<Tone, [fill: string, text: string]> = {
-  neutral: ['bg-surface-2', 'text-text-2'],
-  muted: ['bg-surface-3', 'text-text-2'],
+  neutral: ['bg-surface-3', 'text-text-2'],
   critical: ['bg-sev-critical-fill', 'text-sev-critical-ink'],
   high: ['bg-sev-high-fill', 'text-sev-high-ink'],
   medium: ['bg-sev-medium-fill', 'text-sev-medium-ink'],
@@ -33,9 +32,9 @@ const FAMILIES: Record<Tone, [fill: string, text: string]> = {
 
 const TONES = Object.keys(FAMILIES) as Tone[];
 
-// The two families whose halves name no tonal family, so the tonal-ink lint rule
-// has nothing to match on them and only this file can hold their pairs.
-const SURFACE_FAMILIES: Tone[] = ['neutral', 'muted'];
+// The one family whose halves name no tonal family, so the tonal-ink lint rule
+// has nothing to match on it and only this file can hold its pair.
+const SURFACE_FAMILIES: Tone[] = ['neutral'];
 
 describe('the tonal registry', () => {
   it('covers every family exactly, with no extras', () => {
@@ -43,13 +42,6 @@ describe('the tonal registry', () => {
     // cannot see a family REMOVED from the union along with its row.
     expect(Object.keys(TONE_PARTS).sort()).toEqual([...TONES].sort());
     expect(Object.keys(TONE_SOFT).sort()).toEqual([...TONES].sort());
-  });
-
-  it('keeps the two neutrals distinct', () => {
-    // The whole reason `muted` exists. Collapsing these is a silent visual change:
-    // in light, surface-2 equals the canvas, so a `neutral` tile is invisible on
-    // the page, while `muted` is the tile that still has to read on what it sits on.
-    expect(TONE_PARTS.neutral.fill).not.toBe(TONE_PARTS.muted.fill);
   });
 
   for (const tone of TONES) {
@@ -172,13 +164,12 @@ describe('the tonal pairs resolve in theme.css', () => {
 
 describe('the tonal pairs are shaped as fill + ink', () => {
   // Catches the half that resolves but is the wrong half — `bg-ok` names a real
-  // token (the HUE), so the resolution check above passes on it. Three families
+  // token (the HUE), so the resolution check above passes on it. Two families
   // are irregular and are named rather than inferred: `primary`'s bare token IS
-  // the ink and its tint is `-tint`, and `neutral`/`muted` are surfaces rather
-  // than tonal families.
+  // the ink and its tint is `-tint`, and `neutral` is a surface rather than a
+  // tonal family.
   const IRREGULAR: Partial<Record<Tone, string>> = {
-    neutral: 'bg-surface-2 text-text-2',
-    muted: 'bg-surface-3 text-text-2',
+    neutral: 'bg-surface-3 text-text-2',
     primary: 'bg-primary-tint text-primary',
   };
 

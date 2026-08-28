@@ -52,7 +52,7 @@ export function PolicyStatsView({
       icon: ShieldCheckIcon,
       value: statValue(stats?.builtin),
       label: 'Built-in',
-      tone: 'muted',
+      tone: 'neutral',
     },
     {
       icon: TerminalIcon,

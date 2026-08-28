@@ -29,10 +29,10 @@ export function PolicyPicker({
         const m = policyMeta(k);
         const on = value === k;
         const [fg, bg] = toneColors(m.tone);
-        // The muted tone's tint (surface-3) barely contrasts with this control's
+        // The neutral tone's tint (surface-3) barely contrasts with this control's
         // surface-2 track, so a selected "Monitor" looks unselected. Fall back to a
         // white pill for it — the shadow then makes the selection read clearly.
-        const selBg = m.tone === 'muted' ? 'var(--color-surface)' : bg;
+        const selBg = m.tone === 'neutral' ? 'var(--color-surface)' : bg;
         const Icon = m.icon;
         return (
           <button

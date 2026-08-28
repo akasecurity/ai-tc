@@ -55,7 +55,7 @@ describe('policyMeta', () => {
   it('falls back to a neutral entry for an unknown id (keeping the id as label)', () => {
     const m = policyMeta('mystery');
     expect(m.label).toBe('mystery');
-    expect(m.tone).toBe('muted');
+    expect(m.tone).toBe('neutral');
   });
 
   it('defaults unassigned detections to monitor', () => {
@@ -72,7 +72,7 @@ describe('policyMeta', () => {
     (id) => {
       const m = policyMeta(id);
       expect(m.label).toBe(id);
-      expect(m.tone).toBe('muted');
+      expect(m.tone).toBe('neutral');
       // The destructure that crashed the page must succeed on the fallback tone.
       expect(toneColors(m.tone)).toHaveLength(2);
     },

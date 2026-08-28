@@ -99,7 +99,7 @@ export default async function ActivityPage({
       icon: TerminalIcon,
       value: stats.sessionsToday.toLocaleString(),
       label: 'Sessions today',
-      tone: 'muted',
+      tone: 'neutral',
     },
     {
       icon: BoltIcon,
@@ -111,7 +111,7 @@ export default async function ActivityPage({
       icon: ListIcon,
       value: stats.toolCallsToday.toLocaleString(),
       label: 'Tool calls',
-      tone: 'muted',
+      tone: 'neutral',
     },
     {
       icon: ShieldCheckIcon,

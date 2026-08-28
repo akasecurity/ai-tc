@@ -46,18 +46,16 @@
 /**
  * A tonal family that can tint a surface.
  *
- * `neutral` and `muted` are two different tokens, not two names for one.
- * theme.css calls `--color-surface-2` "row hover / subtle inset" and
- * `--color-surface-3` "deeper inset, neutral solid fill": the first is a state a
- * CONTAINER enters, the second is an OBJECT's own fill. In light, surface-2 is
- * byte-identical to `--color-canvas`, so a `neutral` tile is invisible on the
- * page and near-invisible on a card — which is what it is for. `muted` is the
- * quiet tile that still has to READ on whatever it sits on, and is what Badge's
- * `default` variant and Button's solid `neutral` already fill with.
+ * `neutral` is the untinted one: a tile carrying no family colour at all. Its
+ * fill is `--color-surface-3`, which theme.css annotates "deeper inset, neutral
+ * solid fill" — an object's own fill, as against `--color-surface-2`'s "row
+ * hover / subtle inset", which is a state a CONTAINER enters and is applied
+ * directly rather than through this registry. Badge's `default` variant and
+ * Button's solid `neutral` fill with surface-3 too, so the word means one thing
+ * across the package.
  */
 export type Tone =
   | 'neutral'
-  | 'muted'
   | 'critical'
   | 'high'
   | 'medium'
@@ -86,11 +84,10 @@ export interface TonePair {
  * complete class names, so a half built from a family name emits no rule at all.
  */
 export const TONE_PARTS: Record<Tone, TonePair> = {
-  neutral: { fill: 'bg-surface-2', text: 'text-text-2' },
-  // The deeper of the two neutrals — see the note on `Tone`. Neither half names a
-  // tonal family, so there is no `-ink` here for the tonal-ink rule to check:
-  // this row is one the tests have to hold, because nothing else can.
-  muted: { fill: 'bg-surface-3', text: 'text-text-2' },
+  // Neither half names a tonal family, so there is no `-ink` here for the
+  // tonal-ink rule to check: this row is one the tests have to hold, because
+  // nothing else can.
+  neutral: { fill: 'bg-surface-3', text: 'text-text-2' },
   critical: { fill: 'bg-sev-critical-fill', text: 'text-sev-critical-ink' },
   high: { fill: 'bg-sev-high-fill', text: 'text-sev-high-ink' },
   medium: { fill: 'bg-sev-medium-fill', text: 'text-sev-medium-ink' },

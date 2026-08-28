@@ -90,7 +90,7 @@ export default async function DetectionsPage({
       icon: ActivityIcon,
       value: stats.findingsLast30d.toLocaleString(),
       label: 'Findings · 30d',
-      tone: 'muted',
+      tone: 'neutral',
     },
   ];
   return (

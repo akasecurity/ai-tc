@@ -22,7 +22,7 @@ import type { IconComponent } from '../lib/icons.ts';
  * the union to the families the strip actually uses; note it does NOT reject an
  * unknown name, which evaluates to `never` here and only errors at a call site.
  */
-export type StatTone = Extract<Tone, 'primary' | 'muted' | 'violet' | 'ok' | 'critical' | 'teal'>;
+export type StatTone = Extract<Tone, 'primary' | 'neutral' | 'violet' | 'ok' | 'critical' | 'teal'>;
 
 export interface SummaryStatItem {
   icon: IconComponent;

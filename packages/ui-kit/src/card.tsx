@@ -42,7 +42,8 @@ export function CardHeader({ className, ...props }: ComponentPropsWithRef<'div'>
 
 /**
  * Tinted square that holds a leading icon. `tone` names the tonal family and
- * defaults to `neutral`, the tile's own surface.
+ * defaults to `neutral`, the untinted pair — a tile that still reads against
+ * the card it sits on without claiming a family colour.
  *
  * Prefer it over spelling the fill/ink pair into `className`: the pairing is
  * irregular (primary's tint is `-tint`, and its bare token is already the ink),

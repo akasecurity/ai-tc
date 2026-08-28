@@ -68,15 +68,15 @@ interface EventMeta {
 
 /** Node glyph + tone for each audit event type on the timeline. */
 export const EVENT_META: Record<AuditEventKind, EventMeta> = {
-  session: { label: 'Session', icon: TerminalIcon, ...TONE_PARTS.muted },
+  session: { label: 'Session', icon: TerminalIcon, ...TONE_PARTS.neutral },
   prompt: { label: 'Prompt', icon: UserIcon, ...TONE_PARTS.primary },
   response: { label: 'Response', icon: SparklesIcon, ...TONE_PARTS.violet },
-  tool: { label: 'Tool', icon: TerminalIcon, ...TONE_PARTS.muted },
+  tool: { label: 'Tool', icon: TerminalIcon, ...TONE_PARTS.neutral },
   hook: { label: 'Hook', icon: RouteIcon, ...TONE_PARTS.low },
   detection: { label: 'Detection', icon: ShieldCheckIcon, ...TONE_PARTS.critical },
   share: { label: 'Egress', icon: ExternalShareIcon, ...TONE_PARTS.teal },
   permission: { label: 'Permission', icon: LockIcon, ...TONE_PARTS.high },
-  commit: { label: 'Commit', icon: BranchIcon, ...TONE_PARTS.muted },
+  commit: { label: 'Commit', icon: BranchIcon, ...TONE_PARTS.neutral },
   error: { label: 'Error', icon: AlertIcon, ...TONE_PARTS.critical },
   active: { label: 'In progress', icon: BoltIcon, ...TONE_PARTS.primary },
 };

@@ -93,7 +93,7 @@ export const POLICY_META: Record<BuiltinPolicyId, PolicyMeta> = {
     id: 'monitor',
     label: 'Monitor',
     icon: EyeIcon,
-    tone: 'muted',
+    tone: 'neutral',
     desc: 'Log every match for audit. The request is allowed through untouched.',
   },
   warn: {
@@ -150,7 +150,7 @@ export function policyMeta(id: string): PolicyMeta {
   // every call site. Read through a widened view after the hasOwn guard.
   const table: Partial<Record<string, PolicyMeta>> = POLICY_META;
   const known = Object.hasOwn(POLICY_META, id) ? table[id] : undefined;
-  return known ?? { id, label: id, icon: PolicyIcon, tone: 'muted', desc: '' };
+  return known ?? { id, label: id, icon: PolicyIcon, tone: 'neutral', desc: '' };
 }
 
 // ─── Category metadata ────────────────────────────────────────────────────────
@@ -196,7 +196,7 @@ export interface PublisherMeta {
 export const PUBLISHER_META: Record<PublisherKind, PublisherMeta> = {
   labs: { label: 'AKA Labs', icon: ShieldCheckIcon, tone: 'teal', verified: true },
   org: { label: 'Your org', icon: BuildingIcon, tone: 'violet', verified: false },
-  user: { label: 'Community', icon: UserIcon, tone: 'muted', verified: false },
+  user: { label: 'Community', icon: UserIcon, tone: 'neutral', verified: false },
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

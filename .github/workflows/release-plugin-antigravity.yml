@@ -123,6 +123,7 @@ jobs:
           # Every script hooks.json names must exist, or the host silently runs
           # nothing. Derived from the manifest rather than the list above, so a
           # hooks.json edit cannot drift past this gate.
+          # shellcheck disable=SC2016 # the JS template literals inside must reach node unexpanded
           node -e '
             const hooks = require("./hooks.json");
             const fs = require("node:fs");
@@ -153,6 +154,7 @@ jobs:
           # print an explicit allow.
           out=$(echo 'not json' | node scripts/pre-tool-use.js)
           echo "pre-tool-use junk-input output: $out"
+          # shellcheck disable=SC2016 # the JS template literals inside must reach node unexpanded
           node -e '
             const out = process.argv[1];
             const parsed = JSON.parse(out);

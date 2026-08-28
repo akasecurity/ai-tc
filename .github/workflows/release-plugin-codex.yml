@@ -34,6 +34,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+# The one spelling of the manifest path in this file. It was written out at every
+# site that needed the package name or the version, so moving the plugin was as
+# many edits as there were copies and a missed one failed at release time only.
+env:
+  PLUGIN_MANIFEST: plugins/codex/package.json
+
 jobs:
   # Tag pushes get no run of the main CI workflow (it triggers only on main
   # pushes/PRs), so the release re-verifies the tagged commit itself — nothing
@@ -76,6 +82,16 @@ jobs:
     name: Build · Verify · Publish
     needs: verify
     runs-on: ubuntu-latest
+    # What was published. Nothing in THIS file consumes these yet: the
+    # marketplace doorbell (notify-marketplace.yml) is not wired here, because
+    # the receiving marketplace pins no entry for this package, so there is no
+    # pin for a dispatch to advance. They are declared now because they are what
+    # that call takes, so wiring it is the job block alone — and because passing
+    # them on is what keeps the doorbell from checking out the repo to re-derive
+    # what this job already knows.
+    outputs:
+      pkg: ${{ steps.manifest.outputs.pkg }}
+      version: ${{ steps.manifest.outputs.version }}
     permissions:
       contents: write # create the GitHub Release
       id-token: write # OIDC trusted publishing to npm (provenance attestation)
@@ -92,6 +108,21 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
+      # Read once, here. Every consumer below — the tag check, the dist-tag
+      # choice, and the doorbell's payload — takes these outputs, so the name and
+      # the version this run publishes have exactly one source.
+      - name: Read the plugin manifest
+        id: manifest
+        run: |
+          set -euo pipefail
+          pkg=$(node -p "require('./${PLUGIN_MANIFEST}').name")
+          version=$(node -p "require('./${PLUGIN_MANIFEST}').version")
+          echo "publishing ${pkg}@${version}"
+          {
+            echo "pkg=${pkg}"
+            echo "version=${version}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -100,13 +131,14 @@ jobs:
 
       - name: Verify tag matches manifest versions
         if: github.event_name == 'push'
+        env:
+          PKG_VERSION: ${{ steps.manifest.outputs.version }}
         run: |
           tag="${GITHUB_REF_NAME#plugin-codex-v}"
-          pkg=$(node -p "require('./plugins/codex/package.json').version")
           manifest=$(node -p "require('./plugins/codex/.codex-plugin/plugin.json').version")
-          echo "tag=$tag  package.json=$pkg  plugin.json=$manifest"
-          if [ "$tag" != "$pkg" ] || [ "$tag" != "$manifest" ]; then
-            echo "::error::Version mismatch — tag plugin-codex-v$tag must equal package.json ($pkg) and plugin.json ($manifest)"
+          echo "tag=$tag  package.json=$PKG_VERSION  plugin.json=$manifest"
+          if [ "$tag" != "$PKG_VERSION" ] || [ "$tag" != "$manifest" ]; then
+            echo "::error::Version mismatch — tag plugin-codex-v$tag must equal package.json ($PKG_VERSION) and plugin.json ($manifest)"
             exit 1
           fi
 
@@ -135,14 +167,14 @@ jobs:
       - name: Publish to npm
         if: github.event_name == 'push' || inputs.publish
         run: |
-          version=$(node -p "require('./plugins/codex/package.json').version")
-          case "$version" in
+          case "$PKG_VERSION" in
             *-*) dist_tag="rc" ;;
             *)   dist_tag="latest" ;;
           esac
           pnpm --filter @akasecurity/ai-tc-codex publish --no-git-checks --tag "$dist_tag"
         env:
           NPM_CONFIG_PROVENANCE: 'true'
+          PKG_VERSION: ${{ steps.manifest.outputs.version }}
 
       - name: Create GitHub Release
         if: github.event_name == 'push'
@@ -189,7 +221,7 @@ jobs:
       # the matching auth token into .npmrc.
       - name: Publish to GitHub Packages
         run: |
-          version=$(node -p "require('./plugins/codex/package.json').version")
+          version=$(node -p "require('./${PLUGIN_MANIFEST}').version")
           case "$version" in
             *-*) dist_tag="rc" ;;
             *)   dist_tag="latest" ;;

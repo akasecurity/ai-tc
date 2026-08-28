@@ -40,16 +40,6 @@ export function CardHeader({ className, ...props }: ComponentPropsWithRef<'div'>
   );
 }
 
-/**
- * Tinted square that holds a leading icon. `tone` names the tonal family and
- * defaults to `neutral`, the tile's own surface.
- *
- * Prefer it over spelling the fill/ink pair into `className`: the pairing is
- * irregular (primary's tint is `-tint`, and its bare token is already the ink),
- * and getting it wrong fails silently — an undefined theme variable emits no
- * utility, so the glyph just inherits its color. `className` still wins, for the
- * one-off tile whose color is not a family theme.css names.
- */
 // The neutral pair used to be part of the base literal, so it applied no matter
 // what. Indexing makes it data-driven, and `tone` is optional on a component
 // this package ships to hosts outside this repo — where a stale or plain-JS
@@ -57,8 +47,30 @@ export function CardHeader({ className, ...props }: ComponentPropsWithRef<'div'>
 // `undefined`, leaving the tile with no background AND no foreground rather than
 // falling back to neutral. This string-keyed view is what makes that fallback
 // reachable to the type system rather than dead code the compiler prunes.
+// `Object.hasOwn` rather than a bare `TONE_SOFT_FALLBACK[tone] ?? …`: a tone of
+// '__proto__' or 'constructor' resolves an INHERITED Object member, which is
+// truthy, so the `??` never fires and the tile renders with no tonal classes at
+// all — the very outcome the fallback exists to prevent. The widened view is
+// read only once the guard has said the key is the map's own.
 const TONE_SOFT_FALLBACK: Record<string, string | undefined> = TONE_SOFT;
 
+function toneClasses(tone: string): string {
+  return (
+    (Object.hasOwn(TONE_SOFT, tone) ? TONE_SOFT_FALLBACK[tone] : undefined) ?? TONE_SOFT.neutral
+  );
+}
+
+/**
+ * Tinted square that holds a leading icon. `tone` names the tonal family and
+ * defaults to `neutral`, the untinted pair — a tile that still reads against
+ * the card it sits on without claiming a family colour.
+ *
+ * Prefer it over spelling the fill/ink pair into `className`: the pairing is
+ * irregular (primary's tint is `-tint`, and its bare token is already the ink),
+ * and getting it wrong fails silently — an undefined theme variable emits no
+ * utility, so the glyph just inherits its color. `className` still wins, for the
+ * one-off tile whose color is not a family theme.css names.
+ */
 export function CardIcon({
   className,
   tone = 'neutral',
@@ -69,7 +81,7 @@ export function CardIcon({
       data-slot="card-icon"
       className={cn(
         'flex size-7.5 shrink-0 items-center justify-center rounded-lg',
-        TONE_SOFT_FALLBACK[tone] ?? TONE_SOFT.neutral,
+        toneClasses(tone),
         className,
       )}
       {...props}

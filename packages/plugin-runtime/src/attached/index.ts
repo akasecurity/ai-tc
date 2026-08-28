@@ -5,6 +5,7 @@
 // decorator only when both halves of an attachment are present and agree, so a
 // machine that has never attached — the overwhelming majority — constructs none
 // of it and behaves exactly as it did before this existed.
+export type { GatewayMeta } from './factory.ts';
 export type { ControlPlaneFailure } from './failure.ts';
 export { classifyFailure } from './failure.ts';
 export type { ForwardDrops } from './forward-drops.ts';
@@ -19,6 +20,8 @@ export {
 } from './forward-policy.ts';
 export type { AttachedClient, AttachedDataGatewayDeps } from './gateway.ts';
 export { AttachedDataGateway } from './gateway.ts';
+export type { PluginBuildInfo } from './plugin-block.ts';
+export { createPluginBlock, readManifestBuild } from './plugin-block.ts';
 export type { PolicyStore, StoredPolicyBundle } from './policy-store.ts';
 export { createPolicyStore } from './policy-store.ts';
 export type { PolicySyncOutcome, PolicySyncResult } from './policy-sync.ts';

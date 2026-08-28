@@ -25,7 +25,7 @@ import { ActionTag } from './ActionTag.tsx';
 import {
   CATEGORY_ICON_FALLBACK,
   categoryStyle,
-  FINDING_STATUS_META,
+  findingStatusMeta,
   instanceLocationLabel,
 } from './meta.ts';
 import { ProviderTag } from './ProviderChips.tsx';
@@ -167,8 +167,8 @@ export function FindingsFlatTableView({
                       {instance.status === undefined ? (
                         <span className="text-text-3">—</span>
                       ) : (
-                        <Badge variant={FINDING_STATUS_META[instance.status].badge} className="h-6">
-                          {FINDING_STATUS_META[instance.status].label}
+                        <Badge variant={findingStatusMeta(instance.status).badge} className="h-6">
+                          {findingStatusMeta(instance.status).label}
                         </Badge>
                       )}
                     </TableCell>

@@ -5,8 +5,9 @@ import { cn } from './lib/cn.ts';
 
 /**
  * Slide-over panel built on @radix-ui/react-dialog — portalled, with overlay,
- * focus trap, and escape/outside-click dismissal. Anchored to the right edge.
- * Compound API mirrors Dialog:
+ * focus trap, and escape/outside-click dismissal. Anchored to the right edge by
+ * default; `side="left"` anchors it to the left and moves the divider with it,
+ * which is what a navigation drawer needs. Compound API mirrors Dialog:
  *
  *   <Sheet open={open} onOpenChange={setOpen}>
  *     <SheetContent>
@@ -22,9 +23,12 @@ export const Sheet = Dialog.Root;
 export const SheetTrigger = Dialog.Trigger;
 export const SheetClose = Dialog.Close;
 
-export type SheetContentProps = ComponentPropsWithRef<typeof Dialog.Content>;
+export type SheetContentProps = ComponentPropsWithRef<typeof Dialog.Content> & {
+  /** Which edge the panel is anchored to. Defaults to `'right'`. */
+  side?: 'left' | 'right';
+};
 
-export function SheetContent({ className, children, ...props }: SheetContentProps) {
+export function SheetContent({ className, children, side = 'right', ...props }: SheetContentProps) {
   return (
     <Dialog.Portal>
       <Dialog.Overlay
@@ -34,7 +38,11 @@ export function SheetContent({ className, children, ...props }: SheetContentProp
       <Dialog.Content
         data-slot="sheet-content"
         className={cn(
-          'fixed inset-y-0 right-0 z-50 flex h-full w-full max-w-md flex-col gap-4 overflow-y-auto border-l border-border bg-surface p-6 shadow-lg outline-none',
+          'fixed inset-y-0 z-50 flex h-full w-full max-w-md flex-col gap-4 overflow-y-auto border-border bg-surface p-6 shadow-lg outline-none',
+          // Chosen here rather than left to the caller: `left-0` does not displace
+          // `right-0` and `border-r` does not displace `border-l`, so a className
+          // can add the new edge without ever removing the old one.
+          side === 'left' ? 'left-0 border-r' : 'right-0 border-l',
           className,
         )}
         {...props}

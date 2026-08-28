@@ -12,7 +12,10 @@ import {
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { dbPath as dbPathOf, resolveInventoryContext } from '@akasecurity/plugin-sdk';
 import type { PolicyBundle, StorePostureSnapshot } from '@akasecurity/schema';
-import { SOURCE_TOOL, StorePostureSnapshot as StorePostureSnapshotSchema } from '@akasecurity/schema';
+import {
+  SOURCE_TOOL,
+  StorePostureSnapshot as StorePostureSnapshotSchema,
+} from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveGatewayForConfig } from '../../src/attached/factory.ts';

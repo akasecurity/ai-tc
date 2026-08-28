@@ -10,9 +10,9 @@ import { PLUGIN_PACKAGE, pluginBuild } from '../src/build-info.ts';
 // shipping reports under a stale identity.
 describe('pluginBuild', () => {
   it('names the npm package this plugin publishes as', () => {
-    const pkg = JSON.parse(
-      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
-    ) as { name: string };
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+      name: string;
+    };
     expect(PLUGIN_PACKAGE).toBe(pkg.name);
   });
 

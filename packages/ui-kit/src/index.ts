@@ -90,3 +90,4 @@ export {
   type TabsTriggerProps,
 } from './tabs.tsx';
 export { Tag, type TagProps } from './tag.tsx';
+export { type SolidTone, type Tone, TONE_SOFT, TONE_SOLID } from './tone.ts';

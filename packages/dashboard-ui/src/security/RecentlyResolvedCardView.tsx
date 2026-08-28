@@ -9,11 +9,12 @@ import {
   CardTitle,
   cn,
   Skeleton,
+  TONE_SOFT,
 } from '@akasecurity/ui-kit';
 
 import { relativeTime } from '../lib/relativeTime.ts';
 import { CheckCircleIcon } from '../shared/icons.tsx';
-import { SEVERITY_META, SEVERITY_TILE } from './meta.ts';
+import { SEVERITY_META } from './meta.ts';
 import { WidgetEmpty, WidgetError } from './widget-shared.tsx';
 
 export interface RecentlyResolvedView {
@@ -61,11 +62,11 @@ function ResolvedRow({ item, last }: { item: ResolvedFeedItem; last: boolean }) 
   return (
     <div className={cn('relative flex gap-3', !last && 'pb-4')}>
       {/* Connector line to the next item — centered under the 32px icon tile. */}
-      {!last && <span className="absolute bottom-0 left-4 top-8 w-px bg-text/6" />}
+      {!last && <span className="absolute bottom-0 left-4 top-8 w-px bg-hairline" />}
       <span
         className={cn(
           'z-10 grid size-8 shrink-0 place-items-center rounded-lg',
-          SEVERITY_TILE[item.severity],
+          TONE_SOFT[item.severity],
         )}
       >
         <CheckCircleIcon aria-hidden focusable={false} className="size-4" />

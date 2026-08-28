@@ -95,7 +95,7 @@ export {
   CATEGORY_ICON,
   CATEGORY_ICON_FALLBACK,
   CATEGORY_LABEL,
-  CATEGORY_STYLE,
+  CATEGORY_TONE,
   categoryStyle,
   type ColumnVisibility,
   DEFAULT_FINDINGS_VIEW,
@@ -207,7 +207,7 @@ export {
   type FindingsTimeseriesView,
 } from './security/FindingsOverTimeCardView.tsx';
 export { formatMttrDuration } from './security/format.ts';
-export { ENFORCEMENT_META, SEVERITY_META, SEVERITY_TILE } from './security/meta.ts';
+export { ENFORCEMENT_META, SEVERITY_META } from './security/meta.ts';
 export {
   type MttrChartPoint,
   MttrTrendCardView,

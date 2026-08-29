@@ -4,22 +4,15 @@
       "advisory": "GHSA-6g55-p6wh-862q",
       "scope": "artifact",
       "module": "postcss",
-      "reason": "The fix ships in postcss 8.5.12, but next 15.5.x pins postcss at exactly 8.4.31 and an end-user install resolves next's own pin, so neither a direct dependency nor a workspace override reaches it; postcss runs only at build time, and the shipped dashboard is pre-built. Bump next once it requires a patched postcss.",
-      "expires": "2026-08-28"
+      "reason": "The fix ships in postcss 8.5.12, but next 15.5.x pins postcss at exactly 8.4.31 (re-checked at next 15.5.24, the newest stable; 15.6.0 is canary-only) and an end-user install resolves next's own pin, so neither a direct dependency nor a workspace override reaches it; postcss runs only at build time, and the shipped dashboard is pre-built. Bump next once it requires a patched postcss.",
+      "expires": "2026-09-28"
     },
     {
       "advisory": "GHSA-r28c-9q8g-f849",
       "scope": "artifact",
       "module": "postcss",
-      "reason": "The fix ships in postcss 8.5.18, but next 15.5.x pins postcss at exactly 8.4.31 and an end-user install resolves next's own pin, so neither a direct dependency nor a workspace override reaches it; postcss runs only at build time, and the shipped dashboard is pre-built. Bump next once it requires a patched postcss.",
-      "expires": "2026-08-28"
-    },
-    {
-      "advisory": "GHSA-f88m-g3jw-g9cj",
-      "scope": "artifact",
-      "module": "sharp",
-      "reason": "The fix ships in sharp 0.35.0, but next 15.5.x declares sharp ^0.34.x and an end-user install resolves next's own range, so neither a direct dependency nor a workspace override reaches it; the dashboard has no next/image usage, so sharp is never loaded at runtime. Bump next once it allows sharp >=0.35.0.",
-      "expires": "2026-08-28"
+      "reason": "The fix ships in postcss 8.5.18, but next 15.5.x pins postcss at exactly 8.4.31 (re-checked at next 15.5.24, the newest stable; 15.6.0 is canary-only) and an end-user install resolves next's own pin, so neither a direct dependency nor a workspace override reaches it; postcss runs only at build time, and the shipped dashboard is pre-built. Bump next once it requires a patched postcss.",
+      "expires": "2026-09-28"
     }
   ]
 }

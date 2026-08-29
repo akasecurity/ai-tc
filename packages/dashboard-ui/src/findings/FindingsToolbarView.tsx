@@ -110,7 +110,7 @@ export function FindingsToolbarView({
           onChange={(e) => {
             onQueryChange(e.target.value);
           }}
-          className="h-9 w-full rounded-lg border border-border bg-surface-2 pl-9 pr-3 text-sm text-text placeholder:text-text-3 focus:border-primary focus:outline-none"
+          className="h-9 w-full rounded-lg border border-border-field bg-surface pl-9 pr-3 text-sm text-text placeholder:text-text-3 focus:border-primary focus:outline-none"
         />
       </div>
       <MultiSelectFilter

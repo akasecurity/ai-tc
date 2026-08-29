@@ -37,17 +37,26 @@
      than making inputs findable.
 
      THE RULE, which is what a retune needs and a list of numbers is not: choose
-     it against the LIGHTEST surface a field lands on, and require 3:1 there. That
-     is --color-surface, where it measures 3.34:1 — and today that is the only
-     ratio this token renders at, because both consumers (Input, SelectTrigger)
-     hardcode bg-surface and no call site overrides the fill.
+     it against the LIGHTEST surface a field lands on, and require 3:1 there. In
+     light that is --color-surface at 3.34:1, with --color-surface-2 at 3.20:1.
+     Both are live, and which one a field takes follows from a second rule: A
+     FIELD'S FILL IS ALWAYS A STEP OFF THE FILL UNDER IT. Card, DialogContent and
+     SheetContent are all --color-surface, so a field inside one is bg-surface-2
+     — Input and SelectTrigger, and the Detections/Inventory/ProjectPane search
+     inputs. A field on the page CANVAS is bg-surface instead, because in light
+     the canvas and --color-surface-2 are the same hex.
 
-     --color-surface-2 and the canvas are quoted at 3.20:1 as headroom for a field
-     that lands there, not as a case that exists. Note what does NOT use this
-     token: the search inputs in Findings, Detections and Inventory are still
-     `border-border` on bg-surface-2 — 1.21:1 light, 1.17:1 dark — so they are
-     BELOW the floor this token was introduced to clear, and moving them is
-     outstanding work rather than something this value already fixed.
+     Why that step matters: a field whose fill equals the fill under it leaves
+     this border drawing a rectangle against its own colour — compliant, and
+     reading as a floating outline among the 1.26:1 hairlines beside it. Both
+     collisions have shipped. The step is deliberately slight, 1.05:1 light and
+     1.21:1 dark; it is a hint, not a boundary, and this token still does all the
+     contrast work.
+
+     There is almost no room above the floor. One perceptible step lighter than
+     this value measures 2.98:1 on --color-surface and fails. It reads far
+     heavier than --color-border beside it, and that is the cost of 3:1 against a
+     near-white surface, not a value waiting to be softened.
 
      --color-surface-3 is outside the rule's input set, which is why it does not
      constrain the value: nothing renders a field there. It measures 2.98:1 light
@@ -220,8 +229,9 @@
 
   /* the same boundary in dark, under the same rule: chosen against the lightest
      surface a field lands on and required to clear 3:1 there. 3.94:1 on
-     --color-surface, which is where both consumers render, and 3.26:1 on
-     --color-surface-2. It reads lighter than --color-border-strong on purpose —
+     --color-surface and 3.26:1 on --color-surface-2 — and note which of those
+     binds: dark inverts the order of the two, so --color-surface-2 is the
+     LIGHTER one here and 3.26:1 is the figure with the least room, not 3.94:1. It reads lighter than --color-border-strong on purpose —
      strong is a divider that wants to recede, this is a control edge that has to
      be found.
 

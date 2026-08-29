@@ -29,22 +29,34 @@
 
   /* field boundary. --color-border is a thin rule tuned to separate a card from the
      page, where the two surfaces already differ and the line is reinforcement. A
-     text field is the opposite case: it renders bg-surface inside a panel that is
-     also bg-surface, so the border is the ONLY thing saying where the control
-     begins, and 1.4.11 asks that boundary for 3:1 rather than that rule's 1.26:1.
-     Its own token because widening --color-border to clear 3:1 would put that weight
-     on every card and divider in the product, which is a different design decision
-     than making inputs findable.
+     field is the opposite case: it sits INSIDE a panel, one small fill step off
+     it, so nothing but the border states where the control begins — and 1.4.11
+     asks that boundary for 3:1 rather than that rule's 1.26:1. (Before this token
+     the step did not exist either: a field rendered bg-surface inside a bg-surface
+     panel, so the border carried the whole boundary at 1.26:1.) Its own token
+     because widening --color-border to clear 3:1 would put that weight on every
+     card and divider in the product, which is a different design decision than
+     making inputs findable.
 
-     THE RULE, which is what a retune needs and a list of numbers is not: choose
-     it against the LIGHTEST surface a field lands on, and require 3:1 there. In
-     light that is --color-surface at 3.34:1, with --color-surface-2 at 3.20:1.
-     Both are live, and which one a field takes follows from a second rule: A
-     FIELD'S FILL IS ALWAYS A STEP OFF THE FILL UNDER IT. Card, DialogContent and
-     SheetContent are all --color-surface, so a field inside one is bg-surface-2
-     — Input and SelectTrigger, and the Detections/Inventory/ProjectPane search
-     inputs. A field on the page CANVAS is bg-surface instead, because in light
-     the canvas and --color-surface-2 are the same hex.
+     THE RULE, which is what a retune needs and a list of numbers is not: require
+     3:1 against EVERY surface a field lands on — i.e. the MINIMUM over that set,
+     which is the surface closest in luminance, not the lightest. Naming "the
+     lightest" is wrong in light and right only by accident in dark: this token is
+     darker than every light surface, so contrast RISES with surface lightness and
+     the lightest surface is the LOOSEST case (3.34:1 on --color-surface against
+     3.20:1 on --color-surface-2, which is the one that binds). In dark the token
+     is lighter than both surfaces and the order inverts, so there the tighter
+     surface happens to be the lighter one too. A retune obeying "lightest"
+     literally could land 3.03:1 on #ffffff and 2.90:1 on #f9fafb — under the floor
+     on the fill that now carries most of the product's fields, with nothing in the
+     repo computing a ratio to catch it.
+
+     Which fill a field takes follows from a second rule: A FIELD'S FILL IS ALWAYS
+     A STEP OFF THE FILL UNDER IT. Card, DialogContent and SheetContent are all
+     --color-surface, so a field inside one is bg-surface-2 — Input, SelectTrigger,
+     and the Detections / Inventory / ProjectPane / Sessions search inputs and the
+     Activity harness filter. A field on the page CANVAS is bg-surface instead,
+     because in light the canvas and --color-surface-2 are the same hex.
 
      Why that step matters: a field whose fill equals the fill under it leaves
      this border drawing a rectangle against its own colour — compliant, and
@@ -52,6 +64,14 @@
      collisions have shipped. The step is deliberately slight, 1.05:1 light and
      1.21:1 dark; it is a hint, not a boundary, and this token still does all the
      contrast work.
+
+     WHAT THIS TOKEN DOES NOT YET REACH, so this block is not read as a finished
+     inventory: web-ui still has fields on the ordinary border, and two fail both
+     halves — the vault reveal-confirmation input (bg-surface inside a bg-surface
+     panel, 1.000:1 and 1.26:1) and the data-shares filter bar (bg-surface-2 on the
+     canvas, the same-hex collision named above). Neither is reachable from the two
+     suites that pin this, which cover ui-kit and dashboard-ui only. Moving them is
+     outstanding work rather than something this value already fixed.
 
      There is almost no room above the floor. One perceptible step lighter than
      this value measures 2.98:1 on --color-surface and fails. It reads far
@@ -227,21 +247,22 @@
      here where the light theme's sinks into it. */
   --color-hairline: rgb(255 255 255 / 0.06);
 
-  /* the same boundary in dark, under the same rule: chosen against the lightest
-     surface a field lands on and required to clear 3:1 there. 3.94:1 on
-     --color-surface and 3.26:1 on --color-surface-2 — and note which of those
-     binds: dark inverts the order of the two, so --color-surface-2 is the
-     LIGHTER one here and 3.26:1 is the figure with the least room, not 3.94:1. It reads lighter than --color-border-strong on purpose —
-     strong is a divider that wants to recede, this is a control edge that has to
-     be found.
+  /* the same boundary in dark, under the same rule: 3:1 against every surface a
+     field lands on. 3.94:1 on --color-surface and 3.26:1 on --color-surface-2, so
+     --color-surface-2 binds here as it does in light — but for the opposite
+     reason, which is why the light block spells the rule out: this token is
+     LIGHTER than both dark surfaces, so contrast falls as the surface lightens
+     and the tighter case is the lighter surface. It reads lighter than
+     --color-border-strong on purpose — strong is a divider that wants to recede,
+     this is a control edge that has to be found.
 
      Carried here as well as in the light block, for the reason --color-hairline
      gives two tokens up: a retune of THIS value, or of --color-surface-3, has to
      see the constraint locally. --color-surface-3 is 2.78:1 against this value,
      below the floor, and stays outside the rule's input set only while nothing
-     renders a field there. The light block's canvas figure has no counterpart
-     here — canvas and --color-surface-2 are the same hex in light and different
-     in dark, so that grouping does not carry across. */
+     renders a field there. The canvas is not in this block's figures at all:
+     canvas and --color-surface-2 are the same hex in light and different in dark,
+     so the light block's same-hex collision has no counterpart here. */
   --color-border-field: #828b9b;
 
   /* text */

@@ -65,7 +65,7 @@ export function HarnessSelect({
         />
         <span className="flex-1 text-left font-medium text-text">{label}</span>
         {!all && (
-          <Badge variant="primary" className="px-1.5 py-0 text-label bg-surface">
+          <Badge variant="primary" className="px-1.5 py-0 text-label bg-surface-2">
             {value.length}
           </Badge>
         )}

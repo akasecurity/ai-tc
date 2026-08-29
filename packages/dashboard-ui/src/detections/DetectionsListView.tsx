@@ -114,7 +114,7 @@ export function DetectionsListView({
             }}
             spellCheck={false}
             placeholder="Search detections…"
-            className="h-9 w-full rounded-lg border border-border-field bg-surface-2 pl-9 pr-3 text-sm text-text placeholder:text-text-3 focus:border-primary focus:outline-none"
+            className="h-9 w-full rounded-lg border border-border-field bg-surface-2 pl-9 pr-3 text-sm text-text placeholder:text-text-3 focus:border-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
           />
         </div>
         <div className="mt-2.5 flex flex-wrap gap-1.5">

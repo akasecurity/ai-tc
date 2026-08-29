@@ -58,9 +58,12 @@ function CheckMark({ className }: { className?: string }) {
  * Its fill and edge are `bg-surface-2` / `border-border-field`, for the reason
  * `Input` gives: it renders inside panels that are `bg-surface`, so a
  * `bg-surface` trigger had no fill of its own and `border-border` is 1.26:1
- * there. Deliberately unlike `SelectContent` below, which is a floating surface
- * over a scrim and does not have that problem — the two differ on purpose rather
- * than by oversight. See the token's note in theme.css.
+ * there. Deliberately unlike `SelectContent` below, which keeps `bg-surface`
+ * because it is separated by ELEVATION rather than by a fill step — it is
+ * `Portal` + `Content` carrying `shadow-lg`, and the shadow is what marks its
+ * edge over whatever it opens on. (Not a scrim: Radix Select ships no overlay
+ * primitive, unlike Radix Dialog.) The two differ on purpose rather than by
+ * oversight. See the token's note in theme.css.
  */
 export function SelectTrigger({
   className,

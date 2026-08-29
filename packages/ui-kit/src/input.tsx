@@ -19,6 +19,17 @@ import { cn } from './lib/cn.ts';
  * The fill step is deliberately slight — 1.05:1 light, 1.21:1 dark. It is a hint,
  * not a boundary: the border still does all the contrast work.
  *
+ * `bg-surface-2` is not a free choice — theme.css annotates it `row hover /
+ * subtle inset`, and it is also the menu-highlight fill (`select.tsx`'s
+ * `data-[highlighted]`, `dropdown-menu.tsx`'s `focus:`). So a field now shares a
+ * fill with a read-only inset box and with a highlighted menu row: the 1.05:1
+ * gained against the panel is smaller than the 1.000:1 given up against those
+ * state fills. That trade is deliberate — the panel is what a field must be
+ * findable against, and the edge (3.20:1 here) is what separates it from an inset
+ * box, which carries none. Do not read the paragraph above as covering a DISABLED
+ * field: `disabled:opacity-50` collapses this fill step to 1.02:1 and the border
+ * to 1.71:1.
+ *
  * A field on the page CANVAS wants `bg-surface` instead — in light the canvas and
  * `--color-surface-2` are the same hex, so `bg-surface-2` there is the very
  * collision this fill exists to avoid. See the token's note in theme.css.

@@ -4,8 +4,10 @@ import {
   dataDir as dataDirOf,
   isSafeEndpoint,
   ManagedFieldError,
+  openLocalDatabase,
   readControlPlaneCredentialState,
   readLocalHistoryPreview,
+  readWorkspaceSettings,
   removeControlPlaneCredential,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
@@ -416,6 +418,13 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
   // That would let any user end reporting on a machine their organization
   // manages, by running a command that claims it did nothing.
   const had = readControlPlaneCredentialState(settingsDirOf(base)).usable;
+  // BEFORE the descriptor is cleared, because it is what says when this
+  // attachment began. The period since then belonged to the live forward path;
+  // recording that hands it over and releases the history drain's boundary, so a
+  // later re-attach to the same deployment freezes a new one and picks up the
+  // window in which nothing was forwarding. Without it that window is delivered
+  // by neither path and reported as outstanding by neither.
+  closeHistoryWindow(base, readWorkspaceSettings(base).controlPlane?.attachedAt);
   try {
     // The history grant goes with the attachment it named. `undefined` on an
     // optional key is how this writer records a REVOCATION, so the key leaves
@@ -467,6 +476,33 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
 // how the two paths drift, and a file added to one of them silently outlives a
 // detach on the other.
 const clearDerived = clearAttachmentDerivedState;
+
+/**
+ * Hand the attached period over to the live path, and release the drain's
+ * boundary so the next attachment can set its own.
+ *
+ * BEST-EFFORT, and deliberately silent. A detach's job is to stop this machine
+ * reporting, and it has done that by the time this runs; failing it over
+ * bookkeeping would report a detach that did happen as one that did not. The
+ * store is opened here rather than in `attach` for the same asymmetry — a bad
+ * store must never block ENROLMENT, but a detach that cannot update the ledger
+ * simply leaves it as today's builds leave it.
+ */
+function closeHistoryWindow(base: string, attachedAt: string | undefined): void {
+  if (attachedAt === undefined) return;
+  const attachedAtMs = Date.parse(attachedAt);
+  if (!Number.isFinite(attachedAtMs)) return;
+  try {
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      db.historySync.closeAttachedWindow(attachedAtMs, Date.now());
+    } finally {
+      db.close();
+    }
+  } catch {
+    // See above: a ledger that cannot be updated is not a failed detach.
+  }
+}
 
 /**
  * `aka status` — what this machine is attached to, read entirely from disk.

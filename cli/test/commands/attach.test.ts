@@ -488,6 +488,33 @@ describe('existing-history consent', () => {
     expect(consentOf()).toBeUndefined();
   });
 
+  // Detach hands the attached period to the live path and releases the drain's
+  // boundary. Without it, a re-attach to the same deployment leaves the detached
+  // window delivered by neither path — the fingerprint is unchanged, so the
+  // boundary is never re-frozen.
+  it('releases the history boundary on detach so a re-attach can set a new one', async () => {
+    await runAttach(
+      ['--url', ENDPOINT, '--sync-history'],
+      deps(scriptedPrompter({ interactive: true, answers: [KEY] })),
+    );
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      db.historySync.rearmFor('some-fingerprint', Date.parse('2026-08-01T00:00:00.000Z'));
+      expect(db.historySync.deployment().backlogBefore).toBeDefined();
+    } finally {
+      db.close();
+    }
+
+    runDetach([], deps(scriptedPrompter({ interactive: true })));
+
+    const after = openLocalDatabase(dataDirOf(base));
+    try {
+      expect(after.historySync.deployment().backlogBefore).toBeUndefined();
+    } finally {
+      after.close();
+    }
+  });
+
   // A grant names the deployment it was given for, so detaching from that
   // deployment must take the grant with it rather than leave it to apply to
   // whatever this machine attaches to next.

@@ -173,11 +173,25 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
     // moves — a re-attach to the same deployment must not widen it.
     const fingerprint = endpointFingerprint(connection.endpoint);
     const recorded = ledger.deployment();
-    if (recorded.fingerprint !== fingerprint) ledger.rearmFor(fingerprint, attachedAtMs);
-    const backlogBefore =
-      recorded.fingerprint === fingerprint
-        ? (recorded.backlogBefore ?? attachedAtMs)
-        : attachedAtMs;
+    let backlogBefore: number;
+    if (recorded.fingerprint !== fingerprint) {
+      // A different deployment. Nothing sent to the last one counts here, so
+      // the stamps go and a fresh boundary is frozen.
+      ledger.rearmFor(fingerprint, attachedAtMs);
+      backlogBefore = attachedAtMs;
+    } else if (recorded.backlogBefore === undefined) {
+      // The same deployment, with the boundary RELEASED — a detach happened and
+      // this is a re-attach. The window between the two is one nothing
+      // forwarded, so the boundary moves forward to take it in. The stamps stay:
+      // the recipient has not changed, so what it already has, it still has.
+      ledger.freezeBoundary(attachedAtMs);
+      backlogBefore = attachedAtMs;
+    } else {
+      // The same deployment with a boundary still in force — a key ROTATION, or
+      // simply another pass. Re-freezing here would widen the backlog back over
+      // rows the live path delivered while the machine stayed attached.
+      backlogBefore = recorded.backlogBefore;
+    }
 
     const pid = process.pid;
     if (!ledger.claim(pid, hostname(), now(), HISTORY_LEASE_STALE_MS)) return null;

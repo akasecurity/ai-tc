@@ -103,6 +103,9 @@ export class SqliteHistorySyncRepository {
   private readonly releaseStmt: StatementSync;
   private readonly leaseStmt: StatementSync;
   private readonly inspectionsStmt: StatementSync;
+  private readonly closeWindowStmt: StatementSync;
+  private readonly releaseBoundaryStmt: StatementSync;
+  private readonly freezeBoundaryStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
     this.ensureRowStmt = db.prepare(`INSERT OR IGNORE INTO history_sync (id) VALUES (1)`);
@@ -182,6 +185,23 @@ export class SqliteHistorySyncRepository {
           SET owner_pid = NULL, owner_host = NULL, acquired_at = NULL, heartbeat_at = NULL
         WHERE id = 1 AND owner_pid = :pid`,
     );
+    // Everything still unsent from the period the machine was ATTACHED. That
+    // period belonged to the live forward path, delivered or dropped, and this
+    // drain has never covered it — stamping it is what lets the boundary move
+    // forward afterwards without re-sending any of it.
+    this.closeWindowStmt = db.prepare(
+      `UPDATE audit_events SET synced_at = :at
+        WHERE synced_at IS NULL
+          AND event_type IN (${TYPE_LIST})
+          AND started_at >= :attachedAt`,
+    );
+    this.releaseBoundaryStmt = db.prepare(
+      `UPDATE history_sync SET backlog_before = NULL WHERE id = 1`,
+    );
+    this.freezeBoundaryStmt = db.prepare(
+      `UPDATE history_sync SET backlog_before = :backlogBefore WHERE id = 1`,
+    );
+
     this.leaseStmt = db.prepare(
       `SELECT owner_pid AS ownerPid, owner_host AS ownerHost,
               acquired_at AS acquiredAt, heartbeat_at AS heartbeatAt
@@ -321,6 +341,52 @@ export class SqliteHistorySyncRepository {
       },
       'IMMEDIATE',
     );
+  }
+
+  /**
+   * End the attached period: hand its rows to the live path, and release the
+   * boundary so the next attachment can freeze a new one.
+   *
+   * WITHOUT THIS, a detach and a re-attach to the same deployment leave a window
+   * nothing delivers. The fingerprint is unchanged, so the boundary is never
+   * re-frozen and stays at the FIRST attachment — while nothing forwards at all
+   * during the detached period, because the machine is not attached. Rows
+   * recorded in that window sit after the boundary and before the re-attach, so
+   * neither path takes them, and the pending count reports none outstanding.
+   *
+   * Stamping the attached window is not a claim that every one of those rows
+   * reached the deployment — the live path drops on failure and says so
+   * elsewhere. It records that they were ITS to deliver, which is exactly the
+   * status quo: they sit outside the frozen boundary today and are equally never
+   * re-sent. Making it explicit is what lets the boundary move.
+   *
+   * ONE TRANSACTION, so a crash cannot release the boundary while leaving the
+   * window unstamped — that half-state would re-send the whole attached period
+   * on the next attach, which is the failure the boundary exists to prevent.
+   */
+  closeAttachedWindow(attachedAtMs: number, atMs: number): void {
+    this.ensureRowStmt.run();
+    withTransaction(
+      this.db,
+      () => {
+        this.closeWindowStmt.run({ at: atMs, attachedAt: attachedAtMs });
+        this.releaseBoundaryStmt.run();
+      },
+      'IMMEDIATE',
+    );
+  }
+
+  /**
+   * Freeze a boundary for the deployment already on file, KEEPING the stamps.
+   *
+   * The re-attach half of the above. Distinct from `rearmFor`, which is for a
+   * different deployment and therefore discards what was delivered to the old
+   * one: here the recipient is the same, so everything already sent to it stays
+   * sent.
+   */
+  freezeBoundary(backlogBefore: number): void {
+    this.ensureRowStmt.run();
+    this.freezeBoundaryStmt.run({ backlogBefore });
   }
 
   /** Take the claim, or report that someone live already holds it. */

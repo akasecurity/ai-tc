@@ -450,3 +450,116 @@ describe('runHistorySync — reading the deployment right', () => {
     expect(result?.sent).toBe(2);
   });
 });
+
+describe('runHistorySync — detach and re-attach', () => {
+  const rootAt = (id: string, iso: string): void => {
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.auditEvents.ensureSessionRoot(id, iso);
+    } finally {
+      db.close();
+    }
+  };
+
+  // The window between a detach and a re-attach is forwarded by NOTHING: the
+  // live path is off because the machine is not attached, and the drain's
+  // boundary was frozen at the first attachment. Without the hand-off at detach
+  // those rows are delivered by neither path and reported outstanding by
+  // neither — the pending count calls the backlog drained.
+  it('picks up what was recorded while detached', async () => {
+    attach({ grantFor: ENDPOINT });
+    rootAt('s-pre', '2026-08-20T00:00:00.000Z'); // before the first attach
+    await run({ sendBatch: () => Promise.resolve() });
+
+    // Detach: hand the attached period over and release the boundary.
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.historySync.closeAttachedWindow(Date.parse(AT), Date.parse(AT) + 1_000);
+    } finally {
+      db.close();
+    }
+    rootAt('s-detached', '2026-08-24T12:00:00.000Z'); // recorded while detached
+
+    // Re-attach to the SAME deployment, later.
+    applyOnboarding(
+      { controlPlane: { endpoint: ENDPOINT, attachedAt: '2026-08-24T18:00:00.000Z' } },
+      home,
+    );
+
+    const sent: string[] = [];
+    await run({
+      sendBatch: (events: readonly RecordAuditEventRequest[]) => {
+        for (const e of events) sent.push(e.id);
+        return Promise.resolve();
+      },
+    });
+
+    expect(sent).toEqual(['s-detached']);
+  });
+
+  // The hand-off must not re-open the attached period itself: those rows were
+  // the live path's, and re-sending a session root overwrites the inventory ids
+  // it resolved.
+  it('does not re-send what the live path owned while attached', async () => {
+    attach({ grantFor: ENDPOINT });
+    rootAt('s-live', '2026-08-24T12:00:00.000Z'); // after the attach: live path's
+    await run({ sendBatch: () => Promise.resolve() });
+
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.historySync.closeAttachedWindow(Date.parse(AT), Date.parse(AT) + 1_000);
+    } finally {
+      db.close();
+    }
+    applyOnboarding(
+      { controlPlane: { endpoint: ENDPOINT, attachedAt: '2026-08-24T18:00:00.000Z' } },
+      home,
+    );
+
+    const sent: string[] = [];
+    await run({
+      sendBatch: (events: readonly RecordAuditEventRequest[]) => {
+        for (const e of events) sent.push(e.id);
+        return Promise.resolve();
+      },
+    });
+
+    expect(sent).toEqual([]);
+  });
+
+  // A different deployment still discards the stamps — what the old one holds
+  // is nothing to the new one.
+  it('still starts over when the re-attach names a different deployment', async () => {
+    attach({ grantFor: ENDPOINT });
+    rootAt('s-pre', '2026-08-20T00:00:00.000Z');
+    await run({ sendBatch: () => Promise.resolve() });
+
+    applyOnboarding(
+      {
+        controlPlane: { endpoint: OTHER_ENDPOINT, attachedAt: '2026-08-24T18:00:00.000Z' },
+        historySyncConsent: {
+          acknowledgedAt: AT,
+          payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+          endpoint: OTHER_ENDPOINT,
+        },
+      },
+      home,
+    );
+    writeControlPlaneCredential(settingsDirOf(home), {
+      specVersion: 1,
+      endpoint: OTHER_ENDPOINT,
+      apiKey: FIXTURE,
+      mintedAt: AT,
+    });
+
+    const sent: string[] = [];
+    await run({
+      sendBatch: (events: readonly RecordAuditEventRequest[]) => {
+        for (const e of events) sent.push(e.id);
+        return Promise.resolve();
+      },
+    });
+
+    expect(sent).toContain('s-pre');
+  });
+});

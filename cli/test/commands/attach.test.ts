@@ -8,6 +8,7 @@ import {
   readWorkspaceSettings,
   settingsDir as settingsDirOf,
 } from '@akasecurity/persistence';
+import { HISTORY_SYNC_PAYLOAD_VERSION, isHistorySyncConsentValid } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { parseAttachArgs, runAttach, runDetach, runStatus } from '../../src/commands/attach.ts';
@@ -108,7 +109,7 @@ describe('the key never travels in argv', () => {
 
   it('never echoes the key it was given', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], deps(io));
     // Positive control first: the command really did say something on success,
     // so the absence assertions below cannot pass on an empty string.
     expect(io.output()).toContain('Attached to');
@@ -120,7 +121,10 @@ describe('the key never travels in argv', () => {
 describe('what attach writes', () => {
   it('stores the credential beside settings, and never in settings', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT, '--label', 'Example Org production'], deps(io));
+    await runAttach(
+      ['--url', ENDPOINT, '--label', 'Example Org production', '--no-sync-history'],
+      deps(io),
+    );
 
     const credential: unknown = JSON.parse(
       readFileSync(controlPlaneCredentialPath(settingsDirOf(base)), 'utf8'),
@@ -229,7 +233,7 @@ describe('the --home flag every other command honours', () => {
     // `deps.base` is not passed here on purpose — the flag has to be what
     // resolves the home.
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT, '--home', base], {
+    await runAttach(['--url', ENDPOINT, '--home', base, '--no-sync-history'], {
       prompter: io,
       verify,
       exit: () => undefined,
@@ -257,7 +261,7 @@ describe('the --home flag every other command honours', () => {
 describe('output', () => {
   it('ends every verb with a newline, like every other command', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], deps(io));
     expect(io.output().endsWith('\n')).toBe(true);
 
     const st = scriptedPrompter({ interactive: true });
@@ -273,7 +277,7 @@ describe('output', () => {
 describe('detach', () => {
   it('clears both halves and everything derived from them', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], deps(io));
 
     // The cached bundle and the recorded outcome, as the sync child leaves them.
     const dataDir = dataDirOf(base);
@@ -315,7 +319,7 @@ describe('status', () => {
     // async while the connection block is sync and total. Without it the
     // command advertises an answer it never prints.
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], deps(io));
 
     const out = scriptedPrompter({ interactive: true });
     await runStatus([], deps(out));
@@ -333,11 +337,106 @@ describe('status', () => {
 
   it('names the deployment once attached, and never the key', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
-    await runAttach(['--url', ENDPOINT], deps(io));
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], deps(io));
 
     const out = scriptedPrompter({ interactive: true });
     await runStatus([], deps(out));
     expect(out.output()).toContain(ENDPOINT);
     expectNoEchoOf(out.output(), KEY);
+  });
+});
+
+/**
+ * The second grant this command can take: permission to send the activity this
+ * machine recorded BEFORE it attached. Separate from the attachment itself,
+ * because attaching says where new activity goes and says nothing about what is
+ * already on disk.
+ */
+describe('existing-history consent', () => {
+  const consentOf = () => readWorkspaceSettings(base).historySyncConsent;
+
+  it('records no grant when the flag declines, and asks nothing', async () => {
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', ENDPOINT, '--no-sync-history'], deps(io));
+    expect(exits).toEqual([]);
+    expect(consentOf()).toBeUndefined();
+  });
+
+  it('records a grant when the flag consents, and asks nothing', async () => {
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', ENDPOINT, '--sync-history'], deps(io));
+    expect(exits).toEqual([]);
+    expect(consentOf()).toMatchObject({
+      endpoint: ENDPOINT,
+      payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+    });
+    expect(isHistorySyncConsentValid(consentOf(), ENDPOINT)).toBe(true);
+  });
+
+  // Contradictory flags are a refusal, not a silent precedence rule: which one
+  // wins is exactly what the person typing them cannot know.
+  it('refuses both flags together and changes nothing', () => {
+    const parsed = parseAttachArgs(['--url', ENDPOINT, '--sync-history', '--no-sync-history']);
+    expect(parsed).toEqual({
+      error: '--sync-history and --no-sync-history are mutually exclusive',
+    });
+  });
+
+  it('refuses them in the other order too', () => {
+    const parsed = parseAttachArgs(['--url', ENDPOINT, '--no-sync-history', '--sync-history']);
+    expect(parsed).toHaveProperty('error');
+  });
+
+  it('grants on an explicit yes', async () => {
+    const io = scriptedPrompter({ interactive: true, answers: [KEY, 'Y'] });
+    await runAttach(['--url', ENDPOINT], deps(io));
+    expect(consentOf()).toMatchObject({ endpoint: ENDPOINT });
+  });
+
+  it('declines on no', async () => {
+    const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
+    await runAttach(['--url', ENDPOINT], deps(io));
+    expect(consentOf()).toBeUndefined();
+  });
+
+  // The default is decline: sending cannot be undone, so a bare Enter must not
+  // be the answer that sends.
+  it('declines on an empty answer', async () => {
+    const io = scriptedPrompter({ interactive: true, answers: [KEY, ''] });
+    await runAttach(['--url', ENDPOINT], deps(io));
+    expect(consentOf()).toBeUndefined();
+  });
+
+  it('says what it is asking about before it asks', async () => {
+    const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
+    await runAttach(['--url', ENDPOINT], deps(io));
+    const shown = io.output();
+    expect(shown).toContain('What that sends:');
+    expect(shown).toContain('What it does not:');
+    expect(shown).toContain('cannot be');
+    expectNoEchoOf(shown, KEY);
+  });
+
+  // An unattended enrolment has no one to ask, so it attaches and declines —
+  // rather than refusing to attach, or granting on the user's behalf.
+  it('attaches without asking or granting when there is no terminal', async () => {
+    const io = scriptedPrompter({ interactive: false, stdin: `${KEY}\n` });
+    await runAttach(['--url', ENDPOINT, '--key-stdin'], deps(io));
+    expect(exits).toEqual([]);
+    expect(readWorkspaceSettings(base).runMode).toBe('attached');
+    expect(consentOf()).toBeUndefined();
+    expect(io.errors()).toContain('no terminal to prompt on');
+  });
+
+  // A grant names the deployment it was given for, so detaching from that
+  // deployment must take the grant with it rather than leave it to apply to
+  // whatever this machine attaches to next.
+  it('is cleared by detach', async () => {
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', ENDPOINT, '--sync-history'], deps(io));
+    expect(consentOf()).toBeDefined();
+
+    runDetach([], deps(scriptedPrompter({ interactive: true })));
+    expect(consentOf()).toBeUndefined();
   });
 });

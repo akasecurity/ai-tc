@@ -25,6 +25,8 @@ export {
   readFingerprintKey,
   rotateFingerprintKey,
 } from './fingerprint.ts';
+export type { LocalHistoryPreview } from './history-preview.ts';
+export { readLocalHistoryPreview } from './history-preview.ts';
 export {
   captureId,
   classifiedDataId,
@@ -101,6 +103,15 @@ export {
   SqliteExceptionsRepository,
 } from './repositories/exceptions.ts';
 export { SqliteFindingsRepository } from './repositories/findings.ts';
+export type {
+  HistorySyncCounts,
+  HistorySyncInspectionRow,
+  HistorySyncLease,
+} from './repositories/history-sync.ts';
+export {
+  SqliteHistorySyncRepository,
+  STRUCTURAL_EVENT_TYPES,
+} from './repositories/history-sync.ts';
 export { SqliteInspectionDefinitionsRepository } from './repositories/inspection-definitions.ts';
 export { SqliteInspectionFindingsRepository } from './repositories/inspection-findings.ts';
 export type {

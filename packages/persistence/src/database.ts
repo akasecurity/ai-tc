@@ -41,6 +41,7 @@ import { SqliteDetectionsRepository } from './repositories/detections.ts';
 import { SqliteEventsRepository } from './repositories/events.ts';
 import { SqliteExceptionsRepository } from './repositories/exceptions.ts';
 import { SqliteFindingsRepository } from './repositories/findings.ts';
+import { SqliteHistorySyncRepository } from './repositories/history-sync.ts';
 import { SqliteInspectionDefinitionsRepository } from './repositories/inspection-definitions.ts';
 import { SqliteInspectionFindingsRepository } from './repositories/inspection-findings.ts';
 import { SqliteInstalledPacksRepository } from './repositories/installed-packs.ts';
@@ -114,6 +115,9 @@ export interface LocalDatabase {
   // Worktree-scan skip ledger (path + mtime + hash per ruleset) — written by the
   // scanner so /aka:scan re-runs skip unchanged files, including clean ones.
   readonly scanLedger: SqliteScanLedgerRepository;
+  // Delivery ledger over audit_events.synced_at, plus the singleton claim that
+  // keeps two background drains off the same rows.
+  readonly historySync: SqliteHistorySyncRepository;
   // Storage for the reversible secret vault. The crypto and the policy around
   // it live in src/vault; this is only the rows.
   readonly secretVault: SqliteSecretVaultRepository;
@@ -369,6 +373,7 @@ function openAndInitialize(file: string) {
       policies,
       installedPacks,
       scanLedger: new SqliteScanLedgerRepository(db),
+      historySync: new SqliteHistorySyncRepository(db),
       secretVault: new SqliteSecretVaultRepository(db),
       exceptions: new SqliteExceptionsRepository(db),
       resolutions: new SqliteResolutionsRepository(db),
@@ -415,6 +420,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     policies,
     installedPacks,
     scanLedger,
+    historySync,
     secretVault,
     exceptions,
     resolutions,
@@ -689,6 +695,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     policies,
     installedPacks,
     scanLedger,
+    historySync,
     secretVault,
     exceptions,
     resolutions,

@@ -191,6 +191,7 @@ export function applyMigrations(db: DatabaseSync, file?: string): void {
   // ALTER TABLE on one would throw), so there is no equivalent call for it.
   ensureSyncedAtColumn(db, 'audit_events');
   ensureScanLedgerTable(db);
+  ensureHistorySyncTable(db);
   ensureBlockedDetectionsTable(db);
   ensureRuleProbeCacheTable(db);
   // SECURITY INVARIANT — belt-and-suspenders for the installed_packs write
@@ -957,6 +958,33 @@ function ensureScanLedgerTable(db: DatabaseSync): void {
     content_hash TEXT NOT NULL,
     ruleset_hash TEXT NOT NULL,
     scanned_at INTEGER NOT NULL
+  )`);
+}
+
+// Bookkeeping for the background drain of already-recorded activity: which
+// deployment the `synced_at` stamps on audit_events were made against, and which
+// process is currently draining. Plugin-local, so like `synced_at` it stays out
+// of the canonical schema and is created here, idempotently.
+//
+// ONE ROW, pinned by the CHECK: this is a singleton record, and a table that
+// could hold two would let two drains each believe they held the claim.
+//
+// The endpoint is stored as a FINGERPRINT rather than a URL. Nothing here needs
+// to read the address back — the only question asked of it is "is this the same
+// deployment the stamps were made against", which a hash answers — and a hash
+// cannot be mistaken for a place to send anything.
+//
+// Every column outside the key is nullable: an unclaimed table is the resting
+// state, and a claim is released by writing nulls back rather than by deleting
+// the row.
+function ensureHistorySyncTable(db: DatabaseSync): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS history_sync (
+    id                   INTEGER PRIMARY KEY CHECK (id = 1),
+    endpoint_fingerprint TEXT,
+    owner_pid            INTEGER,
+    owner_host           TEXT,
+    acquired_at          INTEGER,
+    heartbeat_at         INTEGER
   )`);
 }
 

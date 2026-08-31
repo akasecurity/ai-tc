@@ -305,9 +305,17 @@ export class SqliteHistorySyncRepository {
     };
   }
 
-  /** The deployment the current stamps were made against, and where its backlog ends. */
+  /**
+   * The deployment the current stamps were made against, and where its backlog
+   * ends.
+   *
+   * READ-ONLY. An absent row reads as an absent deployment, which is what a
+   * machine that has never drained is — and every writer below seeds the row
+   * before it needs one, so nothing depends on this creating it. Keeping the
+   * write off the gate path matters because the gate runs on every pass while a
+   * write has to take the database's write lock.
+   */
   deployment(): { fingerprint: string | undefined; backlogBefore: number | undefined } {
-    this.ensureRowStmt.run();
     const row = getRow<{ fingerprint: string | null; backlogBefore: number | null }>(
       this.fingerprintStmt,
     );
@@ -436,8 +444,8 @@ export class SqliteHistorySyncRepository {
     this.releaseStmt.run({ pid });
   }
 
+  /** Who holds the claim, if anyone. Read-only, for the same reason as above. */
   lease(): HistorySyncLease | undefined {
-    this.ensureRowStmt.run();
     return getRow<HistorySyncLease>(this.leaseStmt);
   }
 }

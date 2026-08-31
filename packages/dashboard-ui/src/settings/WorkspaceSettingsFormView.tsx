@@ -4,6 +4,7 @@ import {
   controlPlaneName,
   isAttached,
   isFieldManaged,
+  isHistorySyncConsentValid,
   isModelJudgeConsentValid,
   isVaultConsentValid,
   managedByLabel,
@@ -91,6 +92,37 @@ export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
     label: 'Granted',
     description:
       'The setup scan may send each finding — its raw, unmasked value including any secret, plus about 120 characters of surrounding context on either side of it with any secrets in that window masked — to the model API to sort real leaks from noise.',
+  },
+];
+
+// The grant covering activity recorded BEFORE this machine attached. Separate
+// from the attachment itself, which governs only what is recorded from now on,
+// and separate again from historical access, which governs local READING.
+type HistorySyncChoice = 'granted' | 'revoked';
+
+export const HISTORY_SYNC_SECTION_LABEL = 'Existing activity history';
+
+export const HISTORY_SYNC_SECTION_DESCRIPTION =
+  'Whether the activity already recorded on this machine before it attached may be sent to the ' +
+  'deployment it is attached to. What that covers is the record of activity: which sessions ran ' +
+  'and when, in which project, repo and branch, token usage and model per call, which tools were ' +
+  'called with their inputs truncated and every detected secret already masked, and what was ' +
+  'detected in those inputs. Prompts and assistant replies are not sent and stay on this ' +
+  'machine. Sending happens in the background over later sessions. Revoking stops what has not ' +
+  'been sent; it cannot recall what has.';
+
+export const HISTORY_SYNC_CHOICES: Choice<HistorySyncChoice>[] = [
+  {
+    value: 'revoked',
+    label: 'Not shared',
+    description:
+      'Activity recorded before this machine attached stays on it (default — never assumed).',
+  },
+  {
+    value: 'granted',
+    label: 'Shared',
+    description:
+      'The record of activity from before this machine attached may be sent to that deployment — never the prompts or replies themselves.',
   },
 ];
 
@@ -390,6 +422,7 @@ export interface WorkspaceSettingsFormViewProps {
   onSave: (
     changes: Pick<WorkspaceSettings, 'historicalAccess' | 'vaultInlineReveal'> & {
       modelJudgeConsent: boolean;
+      historySyncConsent: boolean;
       vaultConsent: VaultConsentChoice;
     },
   ) => void;
@@ -436,6 +469,16 @@ export function WorkspaceSettingsFormView({
     ? 'granted'
     : 'revoked';
   const [modelJudge, setModelJudge] = useState<ModelJudgeChoice>(initialModelJudge);
+  // Validity, not presence, for the same reason as the model-judge grant — and
+  // here validity also depends on WHICH deployment is on file, so a grant given
+  // for a previous one renders as not shared.
+  const initialHistorySync: HistorySyncChoice = isHistorySyncConsentValid(
+    settings.historySyncConsent,
+    settings.controlPlane?.endpoint,
+  )
+    ? 'granted'
+    : 'revoked';
+  const [historySync, setHistorySync] = useState<HistorySyncChoice>(initialHistorySync);
   const [vaultConsent, setVaultConsent] = useState(vaultChoiceOf(settings.vaultConsent));
   const [inlineReveal, setInlineReveal] = useState(settings.vaultInlineReveal);
 
@@ -448,6 +491,7 @@ export function WorkspaceSettingsFormView({
   const dirty =
     historicalAccess !== settings.historicalAccess ||
     modelJudge !== initialModelJudge ||
+    historySync !== initialHistorySync ||
     vaultConsent !== vaultChoiceOf(settings.vaultConsent) ||
     inlineReveal !== settings.vaultInlineReveal ||
     // A stale grant renders as 'on' but authorizes nothing; keeping 'on'
@@ -507,6 +551,21 @@ export function WorkspaceSettingsFormView({
             </p>
           }
         />
+        {isAttached(settings) && (
+          <SettingRow
+            label={HISTORY_SYNC_SECTION_LABEL}
+            description="Whether activity recorded before attaching may be sent to that deployment."
+            name="historySyncConsent"
+            choices={HISTORY_SYNC_CHOICES}
+            value={historySync}
+            onChange={setHistorySync}
+            notice={
+              <p className="mb-3 text-xs text-text-3" data-slot="history-sync-disclosure">
+                {HISTORY_SYNC_SECTION_DESCRIPTION}
+              </p>
+            }
+          />
+        )}
         <SettingRow
           label={VAULT_SECTION_LABEL}
           description={VAULT_SECTION_DESCRIPTION}
@@ -551,6 +610,7 @@ export function WorkspaceSettingsFormView({
               // Just the answers — the server stamps the acknowledgement times
               // and the versions the grants are recorded against.
               modelJudgeConsent: modelJudge === 'granted',
+              historySyncConsent: historySync === 'granted',
               vaultConsent,
               vaultInlineReveal: inlineReveal,
             });

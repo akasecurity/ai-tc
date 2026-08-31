@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,6 +6,7 @@ import { applyOnboarding, readWorkspaceSettings } from '@akasecurity/persistence
 import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { runSyncHistory } from '../../src/commands/sync-history.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
 
@@ -56,7 +57,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(base, { recursive: true, force: true });
+  removeTree(base);
 });
 
 describe('aka sync-history', () => {

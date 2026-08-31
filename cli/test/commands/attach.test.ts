@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -12,6 +12,7 @@ import {
 import { HISTORY_SYNC_PAYLOAD_VERSION, isHistorySyncConsentValid } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { parseAttachArgs, runAttach, runDetach, runStatus } from '../../src/commands/attach.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
@@ -83,7 +84,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(base, { recursive: true, force: true });
+  removeTree(base);
 });
 
 describe('the key never travels in argv', () => {

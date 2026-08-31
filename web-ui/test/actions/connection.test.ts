@@ -12,8 +12,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type * as Persistence from '@akasecurity/persistence';
-import { ATTACHED_DERIVED_FILENAMES, readWorkspaceSettings } from '@akasecurity/persistence';
-import { isAttached } from '@akasecurity/schema';
+import {
+  ATTACHED_DERIVED_FILENAMES,
+  dataDir,
+  openLocalDatabase,
+  readWorkspaceSettings,
+} from '@akasecurity/persistence';
+import { isAttached, isHistorySyncConsentValid } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -310,6 +315,52 @@ describe('attachToControlPlane', () => {
 });
 
 describe('detachFromControlPlane', () => {
+  // A grant names the deployment it was given for. Left behind, a re-attach to
+  // that same deployment picks it straight back up and the user is never asked
+  // again — the decline they would have given is never sought. `aka detach`
+  // spells the revocation; this surface has to agree.
+  it('revokes the history grant, so it cannot outlive the deployment it named', async () => {
+    await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY });
+    await saveSettings({
+      historicalAccess: 'session-only',
+      modelJudgeConsent: false,
+      historySyncConsent: true,
+      vaultConsent: 'off',
+      vaultInlineReveal: 'masked',
+    });
+    expect(isHistorySyncConsentValid(readWorkspaceSettings().historySyncConsent, ENDPOINT)).toBe(
+      true,
+    );
+
+    await detachFromControlPlane();
+
+    expect(readWorkspaceSettings().historySyncConsent).toBeUndefined();
+  });
+
+  // The drain's boundary is released so a later re-attach freezes a new one and
+  // picks up the window in which nothing was forwarding. Left frozen, the next
+  // attach reads as a key rotation, keeps the old boundary, and that window is
+  // delivered by neither path.
+  it('releases the history drain boundary', async () => {
+    await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY });
+    const db = openLocalDatabase(dataDir());
+    try {
+      db.historySync.rearmFor('fp', Date.parse('2026-08-01T00:00:00.000Z'));
+      expect(db.historySync.deployment().backlogBefore).toBeDefined();
+    } finally {
+      db.close();
+    }
+
+    await detachFromControlPlane();
+
+    const after = openLocalDatabase(dataDir());
+    try {
+      expect(after.historySync.deployment().backlogBefore).toBeUndefined();
+    } finally {
+      after.close();
+    }
+  });
+
   it('clears the mode AND the descriptor', async () => {
     await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY });
     const res = await detachFromControlPlane();

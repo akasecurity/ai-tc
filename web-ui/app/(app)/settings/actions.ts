@@ -6,7 +6,9 @@ import {
   dataDir,
   isSafeEndpoint,
   ManagedFieldError,
+  openLocalDatabase,
   readControlPlaneCredentialState,
+  readWorkspaceSettings,
   removeControlPlaneCredential,
   settingsDir,
   writeControlPlaneCredential,
@@ -305,8 +307,24 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
  */
 // eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
 export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
+  // BEFORE the descriptor is cleared, because it is what says when this
+  // attachment began. Hands the period since then to the live forward path and
+  // releases the history drain's boundary, so a later re-attach to the same
+  // deployment freezes a new one and picks up the window in which nothing was
+  // forwarding. `aka detach` does the same; the two surfaces have to agree, and
+  // this is the one that could not do it until now.
+  closeHistoryWindow(readWorkspaceSettings().controlPlane?.attachedAt);
+
   try {
-    applyOnboarding({ runMode: 'standalone', controlPlane: undefined });
+    // The history grant goes with the attachment it named, spelled rather than
+    // omitted: this writer MERGES, so leaving the key out preserves a grant for
+    // the deployment the machine is leaving — and a re-attach to that same
+    // deployment would pick it straight back up without asking.
+    applyOnboarding({
+      runMode: 'standalone',
+      controlPlane: undefined,
+      historySyncConsent: undefined,
+    });
   } catch (error) {
     if (error instanceof ManagedFieldError)
       return { ok: false, error: managedRefusal(error.fields) };
@@ -353,4 +371,33 @@ export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
   clearAttachmentDerivedState(dataDir());
   revalidatePath('/settings');
   return { ok: true };
+}
+
+/**
+ * Hand the attached period over to the live path, and release the drain's
+ * boundary so the next attachment can set its own.
+ *
+ * BEST-EFFORT and deliberately silent, for the same reason the derived-state
+ * clear is: by the time this matters the machine is being detached either way,
+ * and failing a completed detach over ledger bookkeeping would report a detach
+ * that happened as one that did not.
+ *
+ * Not part of `clearAttachmentDerivedState`, despite sitting beside it: that
+ * helper removes FILES and takes only a directory, while this needs the store
+ * and the moment the attachment began. Both detach surfaces call both.
+ */
+function closeHistoryWindow(attachedAt: string | undefined): void {
+  if (attachedAt === undefined) return;
+  const attachedAtMs = Date.parse(attachedAt);
+  if (!Number.isFinite(attachedAtMs)) return;
+  try {
+    const db = openLocalDatabase(dataDir());
+    try {
+      db.historySync.closeAttachedWindow(attachedAtMs, Date.now());
+    } finally {
+      db.close();
+    }
+  } catch {
+    // See above: a ledger that cannot be updated is not a failed detach.
+  }
 }

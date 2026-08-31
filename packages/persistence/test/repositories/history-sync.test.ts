@@ -306,3 +306,59 @@ describe('SqliteHistorySyncRepository — the backlog boundary', () => {
     });
   });
 });
+
+describe('SqliteHistorySyncRepository — closing the attached period', () => {
+  // The boundary is where the live path's period BEGINS, and it survives a key
+  // rotation while the attachment's own timestamp does not. Measuring the
+  // hand-off from the timestamp would leave everything before the last rotation
+  // unstamped, and the next re-attach would freeze past it — so the drain would
+  // re-send rows the live path owned.
+  it('stamps from the boundary, not from the mark it is given', () => {
+    const db = store.open();
+    seedSession(db, 's-before', 0); // before the boundary: the drain's
+    seedSession(db, 's-attached', 20 * MINUTE); // after it: the live path's
+    db.historySync.rearmFor('fp', T0 + 10 * MINUTE);
+
+    // A mark LATER than the boundary, as a post-rotation attachedAt would be.
+    db.historySync.closeAttachedWindow(T0 + 30 * MINUTE, T0 + 40 * MINUTE);
+
+    // The attached period is handed over whole, despite the later mark.
+    expect(db.historySync.pendingSessions(10, ALL)).toEqual(['s-before']);
+  });
+
+  it('releases the boundary so the next attachment can freeze its own', () => {
+    const db = store.open();
+    db.historySync.rearmFor('fp', T0);
+    db.historySync.closeAttachedWindow(T0, T0 + MINUTE);
+
+    expect(db.historySync.deployment()).toEqual({
+      fingerprint: 'fp',
+      backlogBefore: undefined,
+    });
+  });
+
+  // Freezing again keeps what was delivered to this same deployment; only a
+  // change of deployment discards it.
+  it('freezes a new boundary without discarding the stamps', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.rearmFor('fp', ALL);
+    db.historySync.markSynced(['s-1'], T0);
+
+    db.historySync.freezeBoundary(ALL);
+
+    expect(db.historySync.counts(ALL).sent).toBe(1);
+    expect(db.historySync.deployment().backlogBefore).toBe(ALL);
+  });
+
+  // With nothing ever frozen, the mark it is given is the only one on file.
+  it('falls back to the given mark when no boundary was ever frozen', () => {
+    const db = store.open();
+    seedSession(db, 's-before', 0);
+    seedSession(db, 's-after', 20 * MINUTE);
+
+    db.historySync.closeAttachedWindow(T0 + 10 * MINUTE, T0 + 40 * MINUTE);
+
+    expect(db.historySync.pendingSessions(10, ALL)).toEqual(['s-before']);
+  });
+});

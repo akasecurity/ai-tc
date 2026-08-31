@@ -369,7 +369,24 @@ export class SqliteHistorySyncRepository {
     withTransaction(
       this.db,
       () => {
-        this.closeWindowStmt.run({ at: atMs, attachedAt: attachedAtMs });
+        // MEASURED FROM THE BOUNDARY, not from the attachment's own timestamp.
+        // `attachedAt` is re-stamped on every attach, a key rotation included,
+        // while the boundary deliberately is not — that asymmetry is what keeps
+        // a rotation from widening the backlog. Measuring from `attachedAt`
+        // after one rotation would stamp only from the rotation onwards and
+        // leave the first attached period unstamped, so the next re-attach would
+        // freeze past it and the drain would re-send rows the live path owned.
+        // The boundary IS where the live path's period begins, across any number
+        // of rotations.
+        //
+        // The fallback covers a boundary that was never frozen — consent
+        // declined, or no pass has run — where the attachment's own timestamp is
+        // the only mark on file. It is imprecise in one narrow case: if a
+        // rotation happened before any boundary was frozen, the first attached
+        // period is not represented anywhere on disk and cannot be excluded.
+        const row = getRow<{ backlogBefore: number | null }>(this.fingerprintStmt);
+        const from = row?.backlogBefore ?? attachedAtMs;
+        this.closeWindowStmt.run({ at: atMs, attachedAt: from });
         this.releaseBoundaryStmt.run();
       },
       'IMMEDIATE',

@@ -563,3 +563,62 @@ describe('runHistorySync — detach and re-attach', () => {
     expect(sent).toContain('s-pre');
   });
 });
+
+describe('runHistorySync — a rotation before the detach', () => {
+  const rootAt = (id: string, iso: string): void => {
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.auditEvents.ensureSessionRoot(id, iso);
+    } finally {
+      db.close();
+    }
+  };
+
+  // `attachedAt` is re-stamped on every attach, a rotation included; the
+  // boundary deliberately is not. Handing the window over from `attachedAt`
+  // would stamp only from the rotation onwards, leaving the FIRST attached
+  // period unstamped — and the next re-attach freezes past it, so the drain
+  // re-sends rows the live path owned.
+  it('hands over the whole attached period, not just since the last rotation', async () => {
+    attach({ grantFor: ENDPOINT });
+    await run({ sendBatch: () => Promise.resolve() }); // freezes the boundary at AT
+
+    // Recorded while attached, BEFORE the rotation: the live path's.
+    rootAt('s-first-window', '2026-08-24T12:00:00.000Z');
+
+    // Rotate: same endpoint, a later attachedAt. The boundary stays at AT.
+    applyOnboarding(
+      { controlPlane: { endpoint: ENDPOINT, attachedAt: '2026-08-24T20:00:00.000Z' } },
+      home,
+    );
+    await run({ sendBatch: () => Promise.resolve() });
+
+    // Detach: hand the attached period over, measured from the boundary.
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.historySync.closeAttachedWindow(
+        Date.parse('2026-08-24T20:00:00.000Z'),
+        Date.parse('2026-08-24T22:00:00.000Z'),
+      );
+    } finally {
+      db.close();
+    }
+
+    // Re-attach later, same endpoint.
+    applyOnboarding(
+      { controlPlane: { endpoint: ENDPOINT, attachedAt: '2026-08-25T06:00:00.000Z' } },
+      home,
+    );
+
+    const sent: string[] = [];
+    await run({
+      sendBatch: (events: readonly RecordAuditEventRequest[]) => {
+        for (const e of events) sent.push(e.id);
+        return Promise.resolve();
+      },
+    });
+
+    expect(sent).not.toContain('s-first-window');
+    expect(sent).toEqual([]);
+  });
+});

@@ -1,8 +1,10 @@
 import { readControlPlaneCredentialState, readWorkspaceSettings } from '@akasecurity/persistence';
-import { controlPlaneName, isAttached } from '@akasecurity/schema';
+import type { WorkspaceSettings } from '@akasecurity/schema';
+import { controlPlaneName, isAttached, isHistorySyncConsentValid } from '@akasecurity/schema';
 
 import { readForwardDrops } from './forward-drops.ts';
 import { readForwardHealth } from './forward-policy.ts';
+import { readHistorySyncState } from './history-state.ts';
 import { createPolicyStore } from './policy-store.ts';
 import type { PolicySyncOutcome } from './policy-sync.ts';
 import { readSyncState } from './sync-state.ts';
@@ -145,6 +147,7 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
       ...lines,
       ...policyLines(deps.dataDir, nowMs),
       ...forwardLines(deps.dataDir, nowMs),
+      ...historyLines(deps.dataDir, settings, connection.endpoint, nowMs),
     ].join('\n');
   } catch {
     // A status renderer that throws is worse than one that says little.
@@ -226,6 +229,68 @@ function dropLines(dataDir: string, nowMs: number): string[] {
     `             at least ${String(drops.droppedForwards)} events dropped past the ` +
       `batch budget, last ${ageLine(drops.lastDropAtMs, nowMs)}`,
   ];
+}
+
+/**
+ * What has become of the activity recorded before this machine attached.
+ *
+ * OFFLINE, like every other line here, and read from the drain's own state file
+ * rather than from the store: this renderer is synchronous and total, and a
+ * count over `audit_events` is neither.
+ *
+ * The numbers are what that file records — which is a snapshot as of the last
+ * pass, not a live figure. That is the honest thing to show: the drain runs in a
+ * child spawned by a session, so between sessions nothing moves, and a number
+ * that appeared to update would be describing work nobody did.
+ *
+ * NO ETA and no progress bar, deliberately. The schedule is coupled to how often
+ * the user opens a session, so any projection would be a guess dressed as a
+ * measurement.
+ */
+function historyLines(
+  dataDir: string,
+  settings: WorkspaceSettings,
+  endpoint: string,
+  nowMs: number,
+): string[] {
+  // Absent grant is the overwhelmingly common case, and it is not a fault: this
+  // is opt-in, and a machine that never opted in should read as settled rather
+  // than as pending.
+  if (!isHistorySyncConsentValid(settings.historySyncConsent, endpoint)) {
+    return ['  history    not shared (run `aka sync-history --on`)'];
+  }
+
+  const state = readHistorySyncState(dataDir);
+  // Granted but nothing recorded yet: the grant is real and the first pass has
+  // not run. Saying "waiting" rather than "0 sent" avoids reporting a number
+  // that no pass produced.
+  if (state === null) return ['  history    sharing — waiting for the first pass'];
+
+  const sent = count(state.sentTotal);
+  const total = count(state.sentTotal + state.pendingTotal);
+  const skipped = state.skippedTotal > 0 ? `, ${count(state.skippedTotal)} could not be sent` : '';
+
+  if (state.lastOutcome === 'refused') {
+    return [
+      "  history    stopped — that deployment refused this machine's key",
+      '             re-attach to resume',
+    ];
+  }
+  if (state.lastOutcome === 'unreachable') {
+    return [
+      `  history    paused — deployment unreachable, last tried ${ageLine(state.lastPassAtMs, nowMs)}`,
+      `             ${sent} of ${total} records sent${skipped}`,
+    ];
+  }
+  if (state.phase === 'complete' && state.pendingTotal === 0) {
+    return [`  history    complete — ${sent} records sent${skipped}`];
+  }
+  return [`  history    sending — ${sent} of ${total} records sent${skipped}`];
+}
+
+/** Thousands separators, so a six-figure backlog is readable at a glance. */
+function count(n: number): string {
+  return n.toLocaleString('en-US');
 }
 
 function forwardLines(dataDir: string, nowMs: number): string[] {

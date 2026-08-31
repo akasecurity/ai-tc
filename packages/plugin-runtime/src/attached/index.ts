@@ -19,6 +19,28 @@ export {
 } from './forward-policy.ts';
 export type { AttachedClient, AttachedDataGatewayDeps } from './gateway.ts';
 export { AttachedDataGateway } from './gateway.ts';
+export type { HistorySyncOutcome, HistorySyncPhase, HistorySyncState } from './history-state.ts';
+export {
+  HISTORY_SYNC_STATE_FILENAME,
+  historySyncStatePath,
+  readHistorySyncState,
+  writeHistorySyncState,
+} from './history-state.ts';
+export type { HistorySyncResult, RunHistorySyncDeps } from './history-sync.ts';
+export {
+  endpointFingerprint,
+  HISTORY_PASS_BUDGET_MS,
+  HISTORY_REQUEST_TIMEOUT_MS,
+  runHistorySync,
+} from './history-sync.ts';
+export { runHistorySyncPass } from './history-sync-entry.ts';
+export type { HistorySyncTriggerDeps } from './history-sync-trigger.ts';
+export {
+  HISTORY_SYNC_MARKER_NAME,
+  HISTORY_SYNC_SCRIPT_NAME,
+  HISTORY_SYNC_THROTTLE_MS,
+  triggerHistorySync,
+} from './history-sync-trigger.ts';
 export type { PolicyStore, StoredPolicyBundle } from './policy-store.ts';
 export { createPolicyStore } from './policy-store.ts';
 export type { PolicySyncOutcome, PolicySyncResult } from './policy-sync.ts';

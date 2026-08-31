@@ -107,6 +107,88 @@ describe('ensureSessionRoot', () => {
     expect(root?.event_type).toBe('session');
   });
 
+  it('an authoritative root arriving after the stub HEALS it in place', () => {
+    // The regression: a session-scoped leaf lands before SessionStart's root,
+    // so `ensureSessionRoot` stubs the row with no dimensions and no attributes.
+    db.auditEvents.ensureSessionRoot('s-heal', '2026-06-02T00:00:00.000Z');
+    expect(db.auditEvents.findById('s-heal')?.attributes).toBeNull();
+
+    // SessionStart (or the reconciler's buildSessionRoot) then writes the real
+    // root on the same id. Under the old INSERT OR IGNORE this was silently
+    // dropped and the session kept empty attributes forever — no `harness`, so
+    // every read grouping on it mis-bucketed the whole session.
+    db.auditEvents.insertAuditEvent({
+      id: 's-heal',
+      eventType: 'session',
+      startedAt: '2026-06-02T00:00:05.000Z',
+      attributes: { harness: 'claudecode', provider: 'anthropic' },
+    });
+
+    const row = db.auditEvents.findById('s-heal');
+    expect(row?.attributes ?? '').toContain('claudecode');
+    expect(db.auditEvents.sessionProvider('s-heal')).toBe('anthropic');
+    // started_at is replaced too: the stub's value was a capture's timestamp
+    // standing in for a session start nobody had recorded.
+    expect(row?.started_at).toBe(Date.parse('2026-06-02T00:00:05.000Z'));
+  });
+
+  it('the heal keeps the leaves that FK onto the stub attached to the root', () => {
+    db.auditEvents.ensureSessionRoot('s-heal-fk', '2026-06-02T00:00:00.000Z');
+    db.auditEvents.insertLlmCall({
+      sessionId: 's-heal-fk',
+      messageId: 'm1',
+      parentId: 's-heal-fk',
+      rootSessionId: 's-heal-fk',
+      startedAt: '2026-06-02T00:00:01.000Z',
+      attributes: { output_tokens: 7 },
+    });
+
+    // An UPDATE on the PK's row (not a delete+insert) — the self-FK holds.
+    expect(() => {
+      db.auditEvents.insertAuditEvent({
+        id: 's-heal-fk',
+        eventType: 'session',
+        startedAt: '2026-06-02T00:00:05.000Z',
+        attributes: { harness: 'claudecode' },
+      });
+    }).not.toThrow();
+
+    expect(db.auditEvents.findById(llmCallId('s-heal-fk', 'm1'))).toBeDefined();
+    expect(db.auditEvents.findById('s-heal-fk')?.attributes ?? '').toContain('claudecode');
+  });
+
+  it('two authoritative roots stay first-write-wins — the second never rewrites the first', () => {
+    // SessionStart's contemporaneous env-provider must beat the reconciler's
+    // model-id heuristic (plugins/*/src/history/usage.ts reads it back off the
+    // root and denormalizes it onto every llm_call leaf).
+    db.auditEvents.insertAuditEvent({
+      id: 's-two-roots',
+      eventType: 'session',
+      startedAt: '2026-06-01T00:00:00.000Z',
+      attributes: { provider: 'bedrock', harness: 'claudecode' },
+    });
+    db.auditEvents.insertAuditEvent({
+      id: 's-two-roots',
+      eventType: 'session',
+      startedAt: '2026-06-01T00:00:10.000Z',
+      attributes: { provider: 'unknown', harness: 'claudecode' },
+    });
+
+    expect(db.auditEvents.sessionProvider('s-two-roots')).toBe('bedrock');
+    expect(db.auditEvents.findById('s-two-roots')?.started_at).toBe(
+      Date.parse('2026-06-01T00:00:00.000Z'),
+    );
+  });
+
+  it('a second stub never pushes an existing stub\'s started_at later', () => {
+    db.auditEvents.ensureSessionRoot('s-two-stubs', '2026-06-02T00:00:00.000Z');
+    db.auditEvents.ensureSessionRoot('s-two-stubs', '2030-01-01T00:00:00.000Z');
+
+    expect(db.auditEvents.findById('s-two-stubs')?.started_at).toBe(
+      Date.parse('2026-06-02T00:00:00.000Z'),
+    );
+  });
+
   it('is first-write-wins and never clobbers an authoritative root', () => {
     // A rich, authoritative root arrives first (dimensions + a later timeline).
     db.auditEvents.insertAuditEvent({

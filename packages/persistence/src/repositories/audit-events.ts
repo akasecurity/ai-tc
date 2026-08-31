@@ -18,12 +18,14 @@ import { withTransaction } from '../internal/transactions.ts';
 export class SqliteAuditEventsRepository {
   private readonly insertStmt: StatementSync;
   private readonly upsertLlmCallStmt: StatementSync;
+  private readonly upsertSessionRootStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
-    // INSERT OR IGNORE: a re-opened Session root (same session id) is a no-op.
-    // Descendant events carry random ids and so never conflict — facts are never
-    // deduped, only the keyed root. Session ROOTS stay first-write-wins (structural
-    // parents) — only `llm_call` leaves get the monotonic output_tokens merge below.
+    // INSERT OR IGNORE for every NON-session row. Descendant events carry random
+    // (or content-addressed/natural-key) ids and so never conflict — facts are
+    // never deduped. `llm_call` leaves get the monotonic output_tokens merge
+    // below; session ROOTS go through `upsertSessionRootStmt` (below) so an
+    // authoritative root can heal a stub, which this statement cannot do.
     this.insertStmt = db.prepare(
       `INSERT OR IGNORE INTO audit_events
          (id, parent_id, root_session_id, event_type,
@@ -61,6 +63,58 @@ export class SqliteAuditEventsRepository {
        WHERE COALESCE(json_extract(excluded.attributes, '$.output_tokens'), 0)
            > COALESCE(json_extract(audit_events.attributes, '$.output_tokens'), 0)`,
     );
+
+    // Session ROOTS: fill-the-stub UPSERT. `ensureSessionRoot` plants a
+    // dimension-less, attribute-less stub whenever a session-scoped leaf arrives
+    // before the authoritative root (SessionStart's own root write is fail-open,
+    // so a rootless session is a real condition, not just a race). Under a plain
+    // INSERT OR IGNORE that stub WON — the authoritative root that arrived after
+    // it was silently dropped and the session kept empty attributes forever, so
+    // its `harness`/`provider`/`cwd`/`project` were never set and every read that
+    // groups on them mis-bucketed the whole session.
+    //
+    // The WHERE clause is the invariant, and it is directional: the row being
+    // replaced must be a stub (`audit_events.attributes IS NULL`) AND the row
+    // replacing it must not be one (`excluded.attributes IS NOT NULL`). So:
+    //   stub  → root : heals (the case this exists for)
+    //   root  → stub : no-op — a stub can never overwrite real data
+    //   root  → root : no-op — two authoritative roots stay FIRST-write-wins, so
+    //                  SessionStart's contemporaneous env-provider still beats
+    //                  the reconciler's model-id heuristic (usage.ts relies on it)
+    //   stub  → stub : no-op — a second stub can't push started_at later
+    // Because the guard reads the STORED row, `ensureSessionRoot` can share this
+    // same statement: its own attribute-less values fail `excluded.attributes IS
+    // NOT NULL`, so the stub path stays exactly the INSERT OR IGNORE it was.
+    //
+    // `started_at` is REPLACED, not min()'d: the stub's value is a capture's
+    // timestamp standing in for a session start nobody had recorded yet, so the
+    // authoritative root's is the better one — a session's start should not
+    // depend on which of the two writes happened to land first.
+    // `event_type` is 'session' on both sides, so it is not set.
+    this.upsertSessionRootStmt = db.prepare(
+      `INSERT INTO audit_events
+         (id, parent_id, root_session_id, event_type,
+          host_id, harness_id, source_project_id, started_at, ended_at,
+          severity, priority, content, content_hash, attributes)
+       VALUES
+         (:id, :parentId, :rootSessionId, :eventType,
+          :hostId, :harnessId, :sourceProjectId, :startedAt, :endedAt,
+          :severity, :priority, :content, :contentHash, :attributes)
+       ON CONFLICT(id) DO UPDATE SET
+         parent_id         = excluded.parent_id,
+         root_session_id   = excluded.root_session_id,
+         host_id           = excluded.host_id,
+         harness_id        = excluded.harness_id,
+         source_project_id = excluded.source_project_id,
+         started_at        = excluded.started_at,
+         ended_at          = excluded.ended_at,
+         severity          = excluded.severity,
+         priority          = excluded.priority,
+         content           = excluded.content,
+         content_hash      = excluded.content_hash,
+         attributes        = excluded.attributes
+       WHERE audit_events.attributes IS NULL AND excluded.attributes IS NOT NULL`,
+    );
   }
 
   // Run `fn` inside a single SQLite transaction (BEGIN…COMMIT). One reconcile pass
@@ -75,7 +129,12 @@ export class SqliteAuditEventsRepository {
 
   insertAuditEvent(input: AuditEventInput): void {
     const row = toAuditEventRow(input);
-    this.insertStmt.run(
+    // Session roots take the fill-the-stub UPSERT; everything else is
+    // first-write-wins. Both statements bind the identical named parameter set,
+    // so only the statement differs — see upsertSessionRootStmt for why the stub
+    // path is safe to send through it too.
+    const stmt = row.eventType === 'session' ? this.upsertSessionRootStmt : this.insertStmt;
+    stmt.run(
       bindParams({
         id: row.id,
         parentId: row.parentId,
@@ -103,10 +162,13 @@ export class SqliteAuditEventsRepository {
   // dropping the write under failOpenTransaction. SessionStart's own root write
   // is itself fail-open and marks "attempted", not "succeeded", so a session
   // with no root row yet is a real, permanent condition, not a transient race.
-  // The stub carries no dimensions/attributes; an authoritative root
-  // (SessionStart / the reconciler's buildSessionRoot) wins by first-write-wins
-  // on the id PK, so the stub never shadows real data. This is the single named
-  // home for that FK invariant — call it before writing any session-scoped row.
+  // The stub carries no dimensions/attributes, and it does NOT get to keep the
+  // id: an authoritative root (SessionStart / the reconciler's buildSessionRoot)
+  // arriving AFTERWARDS heals it in place, via insertAuditEvent's
+  // upsertSessionRootStmt — whose guard is also what keeps the reverse (a stub
+  // landing on an already-populated root) a no-op, so the stub still never
+  // shadows real data. This is the single named home for that FK invariant —
+  // call it before writing any session-scoped row.
   ensureSessionRoot(sessionId: string, startedAt: string): void {
     this.insertAuditEvent({ id: sessionId, eventType: 'session', startedAt });
   }

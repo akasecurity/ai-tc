@@ -157,8 +157,11 @@ export async function reconcileSession(
 
   // Provider for a root the reconciler is creating: model-id heuristic, else
   // 'unknown' — never live env. If SessionStart already wrote the
-  // root with the contemporaneous env-provider, that row wins (INSERT OR IGNORE
-  // no-ops) and our heuristic value is dropped.
+  // root with the contemporaneous env-provider, that row wins (a session root
+  // is written through upsertSessionRootStmt, which only ever fills an
+  // attribute-less STUB — an already-populated root is left alone) and our
+  // heuristic value is dropped. A stub planted by an earlier capture does NOT
+  // win: the root written just above heals it.
   const heuristicProvider = providerFromModelId(anchor.model);
   await gateway.recordAuditEvent(
     buildSessionRoot(sessionId, ctx, resolved, anchor, heuristicProvider),

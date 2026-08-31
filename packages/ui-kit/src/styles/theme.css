@@ -66,12 +66,29 @@
      contrast work.
 
      WHAT THIS TOKEN DOES NOT YET REACH, so this block is not read as a finished
-     inventory: web-ui still has fields on the ordinary border, and two fail both
-     halves — the vault reveal-confirmation input (bg-surface inside a bg-surface
-     panel, 1.000:1 and 1.26:1) and the data-shares filter bar (bg-surface-2 on the
-     canvas, the same-hex collision named above). Neither is reachable from the two
-     suites that pin this, which cover ui-kit and dashboard-ui only. Moving them is
+     inventory. Two things:
+
+     Fields outside ui-kit and dashboard-ui. web-ui still has fields on the ordinary
+     border, and two fail both halves — the vault reveal-confirmation input
+     (bg-surface inside a bg-surface panel, 1.000:1 and 1.26:1) and the data-shares
+     filter bar (bg-surface-2 on the canvas, the same-hex collision named above).
+     Neither is reachable from the two suites that pin this. Moving them is
      outstanding work rather than something this value already fixed.
+
+     The FOCUSED state, which this token does not address and which no value here
+     can fix. A field's focus indicator is the change between its resting and
+     focused appearance, and 2.4.13 asks that change for 3:1. It does not clear it:
+     swapping this token for --color-primary is 2.070:1 light and 1.729:1 dark, and
+     the ring beside it (--color-primary at 40%, painted OUTSIDE the border box, so
+     its backdrop is the container rather than the field) adds 2.019:1 and 2.157:1.
+     Two sub-threshold cues do not sum to a passing one. 1.4.11 is met and was never
+     at risk — the focused border against the field fill is 6.620:1 light and
+     5.628:1 dark — so what falls short is the AAA criterion, not the AA one. Every
+     field in both products shares these figures because they all use the same ring;
+     closing the gap means moving that alpha, not this value.
+
+     Both suites pin the focus fragment as PRESENT, which is a different claim from
+     clearing the bar. Do not read a green run as either.
 
      There is almost no room above the floor. One perceptible step lighter than
      this value measures 2.98:1 on --color-surface and fails. It reads far

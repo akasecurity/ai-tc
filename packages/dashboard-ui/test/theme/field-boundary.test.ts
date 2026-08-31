@@ -92,6 +92,8 @@ const FIELDS: {
   on: 'a Card' | 'the page canvas';
   edge: string;
   fill: string;
+  /** The whole focus treatment, pinned as one fragment — see the loop below. */
+  focus: string;
   alsoContains?: string;
 }[] = [
   {
@@ -100,6 +102,8 @@ const FIELDS: {
     on: 'the page canvas',
     edge: 'rounded-lg border border-border-field bg-surface pl-9 pr-3',
     fill: 'bg-surface',
+    focus:
+      'focus:border-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
   },
   {
     file: 'detections/DetectionsListView.tsx',
@@ -107,6 +111,8 @@ const FIELDS: {
     on: 'a Card',
     edge: 'rounded-lg border border-border-field bg-surface-2 pl-9 pr-3',
     fill: 'bg-surface-2',
+    focus:
+      'focus:border-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
   },
   {
     file: 'inventory/InventoryNav.tsx',
@@ -114,6 +120,8 @@ const FIELDS: {
     on: 'a Card',
     edge: 'rounded-lg border border-border-field bg-surface-2 pl-9 pr-3',
     fill: 'bg-surface-2',
+    focus:
+      'focus:border-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
   },
   {
     file: 'inventory/ProjectPane.tsx',
@@ -121,6 +129,8 @@ const FIELDS: {
     on: 'a Card',
     edge: 'rounded-lg border border-border-field bg-surface-2 pl-9 pr-8',
     fill: 'bg-surface-2',
+    focus:
+      'focus:border-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
   },
   {
     file: 'activity/SessionListView.tsx',
@@ -130,6 +140,7 @@ const FIELDS: {
     // this element is the whole visible control and carries both decisions.
     edge: 'rounded-lg border border-border-field bg-surface-2 px-2.5',
     fill: 'bg-surface-2',
+    focus: 'focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/40',
   },
   {
     file: 'activity/HarnessSelect.tsx',
@@ -141,10 +152,33 @@ const FIELDS: {
     edge: 'rounded-lg border bg-surface-2 px-2.5',
     fill: 'bg-surface-2',
     alsoContains: "all ? 'border-border-field'",
+    focus: 'outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
   },
 ];
 
 describe('the hand-rolled field boundary', () => {
+  // The FOCUS half. Pinned separately from `edge` because it lives at the far end
+  // of the class string and one control expresses it through `focus-within` on a
+  // wrapper rather than `focus`/`focus-visible` on the control itself.
+  //
+  // It is pinned at all because it was the one property of these six that nothing
+  // reached: deleting the ring from all four search inputs passed 365/365, one
+  // property over from the gap this file's header diagnoses. And pinning it found
+  // a second defect — SessionListView's wrapper carried NO focus rule while its
+  // inner input suppressed the native outline, so focusing that search changed
+  // nothing on screen at all.
+  //
+  // What this does NOT assert is that the indicator clears 3:1 between states. It
+  // does not: the border swap is 2.070:1 light / 1.729:1 dark and the ring adds
+  // 2.019:1 / 2.157:1 on its own pixels, both under SC 2.4.13. These match the
+  // ui-kit primitives, and moving that bar is a change to --color-primary's alpha
+  // across both products. See theme.css's closing paragraph.
+  for (const { file, control, focus } of FIELDS) {
+    it(`${control}: keeps a focus indicator`, () => {
+      expect(read(file)).toContain(focus);
+    });
+  }
+
   for (const { file, control, on, edge, alsoContains } of FIELDS) {
     it(`${control}: an edge that clears 3:1 and a fill a step off ${on}`, () => {
       const source = read(file);

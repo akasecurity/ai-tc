@@ -59,17 +59,26 @@ const CONTAINERS = [
   { file: 'sheet.tsx', component: 'SheetContent', anchor: 'fixed inset-y-0' },
 ] as const;
 
-const EXPECTED: { file: string; component: string; edge: string; why: string }[] = [
+const EXPECTED: {
+  file: string;
+  component: string;
+  edge: string;
+  /** The focus indicator, where the component is one a user can focus. */
+  focus?: string;
+  why: string;
+}[] = [
   {
     file: 'input.tsx',
     component: 'Input',
     edge: 'rounded-lg border border-border-field bg-surface-2 px-3',
+    focus: 'focus-visible:ring-2 focus-visible:ring-primary/40',
     why: 'a fill one step off the panel under it, and an edge that clears 3:1 on that fill',
   },
   {
     file: 'select.tsx',
     component: 'SelectTrigger',
     edge: 'rounded-lg border border-border-field bg-surface-2 px-3',
+    focus: 'focus-visible:ring-2 focus-visible:ring-primary/40',
     why: 'the same shape as Input, and it sits in the same forms',
   },
   {
@@ -108,6 +117,23 @@ describe('the field boundary', () => {
   for (const { file, component, edge, why } of EXPECTED) {
     it(`${component}: ${why}`, () => {
       expect(read(file)).toContain(edge);
+    });
+  }
+
+  // The FOCUS half, pinned for the two components a user can focus. It sits at the
+  // far end of the class string, outside every `edge` fragment above, and nothing
+  // reached it — deleting the ring from the four dashboard-ui search inputs that
+  // were given it passed 365/365 there. SelectContent carries none by design: it
+  // is a popup, not a control.
+  //
+  // This asserts the ring is PRESENT, not that it clears 3:1 between states. It
+  // does not — `ring-primary/40` paints outside the border box, so its backdrop is
+  // the container, giving 2.019:1 light and 2.157:1 dark. Raising it means moving
+  // --color-primary's alpha for every focus ring in both products.
+  for (const { file, component, focus } of EXPECTED) {
+    if (focus === undefined) continue;
+    it(`${component}: keeps its focus ring`, () => {
+      expect(read(file)).toContain(focus);
     });
   }
 

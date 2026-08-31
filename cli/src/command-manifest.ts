@@ -64,6 +64,12 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
     summary: 'Show what this machine is attached to, and whether policy is current',
   },
   {
+    name: 'sync-history',
+    argHint: '[--on | --off | --run]',
+    summary: 'Whether to send activity recorded before this machine attached',
+    args: ['--on', '--off', '--run'],
+  },
+  {
     name: 'tui',
     argHint: '[view]',
     summary: 'Interactive colour dashboard — health|findings|recommend|audit (needs a TTY)',

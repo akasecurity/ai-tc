@@ -357,9 +357,9 @@ async function askAboutHistory(
       '                  this machine — this sends the record of activity, not',
       '                  its contents.',
       '',
-      'It runs in the background over your next few sessions, and afterwards it',
-      'retries anything a later session fails to send. Anything sent cannot be',
-      'recalled.',
+      'It runs in the background over your next few sessions, and covers only',
+      'what is already recorded — activity from here on is sent as it happens.',
+      'Anything sent cannot be recalled.',
       '',
     ].join('\n'),
   );

@@ -42,9 +42,9 @@ export async function runHistorySyncPass(base: string = defaultDataDir()): Promi
       // The first pass that ran is when this machine started sending, and it
       // keeps that answer across every later pass.
       startedAtMs: previous?.startedAtMs ?? result.atMs,
-      // Stamped when the drain first empties, and cleared if later rows arrive —
-      // a machine that keeps working keeps recording, so "complete" is a
-      // statement about now rather than a terminal state.
+      // Stamped when the drain empties. The backlog is a FIXED set — everything
+      // recorded before the machine attached — so unlike a tally over a store
+      // that keeps growing, this one genuinely finishes and stays finished.
       completedAtMs: done ? (previous?.completedAtMs ?? result.atMs) : null,
     });
   } catch {

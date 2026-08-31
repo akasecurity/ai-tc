@@ -113,7 +113,9 @@ export class SqliteHistorySyncRepository {
     this.sessionsStmt = db.prepare(
       `SELECT COALESCE(root_session_id, id) AS sessionId, MIN(started_at) AS earliest
          FROM audit_events
-        WHERE synced_at IS NULL AND event_type IN (${TYPE_LIST})
+        WHERE synced_at IS NULL
+          AND event_type IN (${TYPE_LIST})
+          AND started_at < :before
         GROUP BY sessionId
         ORDER BY earliest
         LIMIT :limit`,
@@ -127,6 +129,7 @@ export class SqliteHistorySyncRepository {
          FROM audit_events
         WHERE synced_at IS NULL
           AND event_type IN (${TYPE_LIST})
+          AND started_at < :before
           AND COALESCE(root_session_id, id) = :sessionId
         ORDER BY (event_type = 'session') DESC, started_at
         LIMIT :limit`,
@@ -136,7 +139,7 @@ export class SqliteHistorySyncRepository {
 
     this.countsStmt = db.prepare(
       `SELECT
-         SUM(CASE WHEN synced_at IS NULL THEN 1 ELSE 0 END) AS pending,
+         SUM(CASE WHEN synced_at IS NULL AND started_at < :before THEN 1 ELSE 0 END) AS pending,
          SUM(CASE WHEN synced_at > 0 THEN 1 ELSE 0 END) AS sent,
          SUM(CASE WHEN synced_at = ${String(SKIPPED)} THEN 1 ELSE 0 END) AS skipped
        FROM audit_events
@@ -144,10 +147,13 @@ export class SqliteHistorySyncRepository {
     );
 
     this.fingerprintStmt = db.prepare(
-      `SELECT endpoint_fingerprint AS fingerprint FROM history_sync WHERE id = 1`,
+      `SELECT endpoint_fingerprint AS fingerprint, backlog_before AS backlogBefore
+         FROM history_sync WHERE id = 1`,
     );
     this.setFingerprintStmt = db.prepare(
-      `UPDATE history_sync SET endpoint_fingerprint = :fingerprint WHERE id = 1`,
+      `UPDATE history_sync
+          SET endpoint_fingerprint = :fingerprint, backlog_before = :backlogBefore
+        WHERE id = 1`,
     );
     // Permanent skips are NOT re-armed: a row that failed to rebuild locally
     // fails the same way against any deployment.
@@ -215,14 +221,24 @@ export class SqliteHistorySyncRepository {
     return allRows<HistorySyncInspectionRow>(this.inspectionsStmt, { auditEventId });
   }
 
-  /** Sessions with structural rows still to send, oldest first. */
-  pendingSessions(limit: number): string[] {
-    return allRows<{ sessionId: string }>(this.sessionsStmt, { limit }).map((r) => r.sessionId);
+  /**
+   * Sessions with structural rows still to send, oldest first.
+   *
+   * BOUNDED BY THE BACKLOG BOUNDARY, which is the whole correctness of this
+   * read. Anything recorded after the machine attached is the live forward
+   * path's to deliver; this drain exists for what was recorded before it, and a
+   * row both paths send is at best a duplicate request and at worst — for a
+   * session root — an overwrite of the inventory ids the live path resolved.
+   */
+  pendingSessions(limit: number, before: number): string[] {
+    return allRows<{ sessionId: string }>(this.sessionsStmt, { limit, before }).map(
+      (r) => r.sessionId,
+    );
   }
 
-  /** One session's undelivered structural rows, its root first. */
-  pendingRows(sessionId: string, limit: number): AuditEventRow[] {
-    return allRows<AuditEventRow>(this.rowsStmt, { sessionId, limit });
+  /** One session's undelivered structural rows within the backlog, root first. */
+  pendingRows(sessionId: string, limit: number, before: number): AuditEventRow[] {
+    return allRows<AuditEventRow>(this.rowsStmt, { sessionId, limit, before });
   }
 
   /** Record delivery. Called only AFTER the far side has accepted the rows. */
@@ -255,9 +271,11 @@ export class SqliteHistorySyncRepository {
     );
   }
 
-  counts(): HistorySyncCounts {
+  /** `pending` counts only what is inside the backlog; sent and skipped are totals. */
+  counts(before: number): HistorySyncCounts {
     const row = getRow<{ pending: number | null; sent: number | null; skipped: number | null }>(
       this.countsStmt,
+      { before },
     );
     // SUM() over no rows is NULL, which is zero of each here.
     return {
@@ -267,10 +285,16 @@ export class SqliteHistorySyncRepository {
     };
   }
 
-  /** The deployment the current stamps were made against, if any. */
-  endpointFingerprint(): string | undefined {
+  /** The deployment the current stamps were made against, and where its backlog ends. */
+  deployment(): { fingerprint: string | undefined; backlogBefore: number | undefined } {
     this.ensureRowStmt.run();
-    return getRow<{ fingerprint: string | null }>(this.fingerprintStmt)?.fingerprint ?? undefined;
+    const row = getRow<{ fingerprint: string | null; backlogBefore: number | null }>(
+      this.fingerprintStmt,
+    );
+    return {
+      fingerprint: row?.fingerprint ?? undefined,
+      backlogBefore: row?.backlogBefore ?? undefined,
+    };
   }
 
   /**
@@ -279,16 +303,21 @@ export class SqliteHistorySyncRepository {
    *
    * Delivery is a fact about ONE recipient: rows sent to the deployment a
    * machine has just left are undelivered as far as the new one is concerned.
-   * Both halves in one transaction, so a crash between them cannot leave stamps
-   * attributed to the wrong deployment.
+   * All three in one transaction, so a crash between them cannot leave stamps
+   * attributed to the wrong deployment, or a boundary that belongs to another.
+   *
+   * The boundary is written HERE and only here, which is what freezes it: a
+   * re-attach to the SAME deployment (a key rotation) leaves the fingerprint
+   * unchanged, so this never runs and the backlog does not widen back over rows
+   * the live path has since delivered.
    */
-  rearmFor(fingerprint: string): void {
+  rearmFor(fingerprint: string, backlogBefore: number): void {
     this.ensureRowStmt.run();
     withTransaction(
       this.db,
       () => {
         this.rearmStmt.run();
-        this.setFingerprintStmt.run({ fingerprint });
+        this.setFingerprintStmt.run({ fingerprint, backlogBefore });
       },
       'IMMEDIATE',
     );

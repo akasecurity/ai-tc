@@ -22,6 +22,8 @@ const OTHER_ENDPOINT = 'https://other.example.test';
 const AT = '2026-08-24T10:00:00.000Z';
 const FIXTURE = 'placeholder';
 const T0 = Date.parse('2026-08-25T00:00:00.000Z');
+// Past every seeded row, so a bare count reads totals rather than the backlog.
+const ALL = T0 + 365 * 24 * 60 * 60 * 1000;
 
 let home: string;
 
@@ -158,7 +160,7 @@ describe('runHistorySync — draining', () => {
     expect(result?.outcome).toBe('ok');
     expect(result?.sent).toBe(4);
     expect(sent).toEqual(['s-0', 's-0-llm', 's-1', 's-1-llm']);
-    expect(ledger((db) => db.historySync.counts())).toMatchObject({ pending: 0, sent: 4 });
+    expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ pending: 0, sent: 4 });
   });
 
   // The receiving side has real self-referencing foreign keys and stubs no
@@ -215,7 +217,7 @@ describe('runHistorySync — failures', () => {
 
     expect(result?.outcome).toBe('refused');
     expect(calls).toBe(1);
-    expect(ledger((db) => db.historySync.counts().sent)).toBe(0);
+    expect(ledger((db) => db.historySync.counts(ALL).sent)).toBe(0);
   });
 
   // Everything unacknowledged stays pending: an outage must never become data
@@ -227,7 +229,7 @@ describe('runHistorySync — failures', () => {
     const result = await run({ sendBatch: () => Promise.reject(new Error('socket hang up')) });
 
     expect(result?.outcome).toBe('unreachable');
-    expect(ledger((db) => db.historySync.counts())).toMatchObject({ pending: 4, sent: 0 });
+    expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ pending: 4, sent: 0 });
   });
 
   it('retries a failure that might not repeat before giving up', async () => {
@@ -245,7 +247,7 @@ describe('runHistorySync — failures', () => {
     // Both rows ride ONE request, so the ladder runs once: two transient
     // failures, then a success that lands the whole batch.
     expect(calls).toBe(3);
-    expect(ledger((db) => db.historySync.counts().sent)).toBe(2);
+    expect(ledger((db) => db.historySync.counts(ALL).sent)).toBe(2);
   });
 
   // A body the deployment understood and rejected cannot be fixed by sending it
@@ -257,7 +259,7 @@ describe('runHistorySync — failures', () => {
     const result = await run({ sendBatch: () => Promise.reject(new RemoteRequestError(400)) });
 
     expect(result?.skipped).toBe(2);
-    expect(ledger((db) => db.historySync.counts().skipped)).toBe(2);
+    expect(ledger((db) => db.historySync.counts(ALL).skipped)).toBe(2);
   });
 
   // A batch ack is an aggregate count, so a rejection names no row. Re-sending
@@ -276,7 +278,7 @@ describe('runHistorySync — failures', () => {
 
     expect(result?.sent).toBe(1);
     expect(result?.skipped).toBe(1);
-    expect(ledger((db) => db.historySync.counts())).toMatchObject({ sent: 1, skipped: 1 });
+    expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ sent: 1, skipped: 1 });
   });
 
   // Hitting the budget PAUSES the drain rather than failing it: the remainder
@@ -301,7 +303,7 @@ describe('runHistorySync — failures', () => {
     });
 
     expect(result?.outcome).toBe('interrupted');
-    expect(ledger((db) => db.historySync.counts().pending)).toBeGreaterThan(0);
+    expect(ledger((db) => db.historySync.counts(ALL).pending)).toBeGreaterThan(0);
   });
 });
 
@@ -312,7 +314,7 @@ describe('runHistorySync — changing deployment', () => {
     attach({ grantFor: ENDPOINT });
     seedRows(1);
     await run({ sendBatch: () => Promise.resolve() });
-    expect(ledger((db) => db.historySync.counts())).toMatchObject({ pending: 0, sent: 2 });
+    expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ pending: 0, sent: 2 });
 
     // Re-point the machine, and grant for the new place.
     applyOnboarding(
@@ -342,5 +344,67 @@ describe('runHistorySync — changing deployment', () => {
     });
 
     expect(sent).toEqual(['s-0', 's-0-llm']);
+  });
+});
+
+describe('runHistorySync — the backlog boundary', () => {
+  // The bug this exists for: without a cutoff the drain re-sends everything the
+  // live forward path already delivered. That is duplicate traffic for the life
+  // of the install on a credential this job must not exhaust — and because a
+  // re-posted SESSION ROOT is an update rather than a no-op, it overwrites the
+  // inventory ids the live path resolved with the nothing this lane sends.
+  it('never sends a row recorded after the machine attached', async () => {
+    attach({ grantFor: ENDPOINT });
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      // Before the attachment: this drain's to send.
+      db.auditEvents.ensureSessionRoot('s-old', new Date(Date.parse(AT) - 60_000).toISOString());
+      // After it: the live path's, and already delivered with resolved ids.
+      db.auditEvents.ensureSessionRoot('s-new', new Date(Date.parse(AT) + 60_000).toISOString());
+    } finally {
+      db.close();
+    }
+
+    const sent: string[] = [];
+    await run({
+      sendBatch: (events: readonly RecordAuditEventRequest[]) => {
+        for (const e of events) sent.push(e.id);
+        return Promise.resolve();
+      },
+    });
+
+    expect(sent).toEqual(['s-old']);
+  });
+
+  // A key ROTATION re-attaches to the same deployment and re-stamps attachedAt.
+  // The boundary must not follow it, or the backlog widens back over everything
+  // the live path delivered since the first attach.
+  it('does not widen the backlog when the machine re-attaches to the same deployment', async () => {
+    attach({ grantFor: ENDPOINT });
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.auditEvents.ensureSessionRoot('s-live', new Date(Date.parse(AT) + 60_000).toISOString());
+    } finally {
+      db.close();
+    }
+    await run({ sendBatch: () => Promise.resolve() });
+
+    // Rotate: same endpoint, a later attachedAt.
+    applyOnboarding(
+      {
+        controlPlane: { endpoint: ENDPOINT, attachedAt: '2026-08-26T10:00:00.000Z' },
+      },
+      home,
+    );
+
+    const sent: string[] = [];
+    await run({
+      sendBatch: (events: readonly RecordAuditEventRequest[]) => {
+        for (const e of events) sent.push(e.id);
+        return Promise.resolve();
+      },
+    });
+
+    expect(sent).toEqual([]);
   });
 });

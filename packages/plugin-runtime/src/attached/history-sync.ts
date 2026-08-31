@@ -147,11 +147,27 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
     db = (deps.openStore ?? openLocalDatabase)(deps.dataDir);
     const ledger = db.historySync;
 
+    // WHERE THE BACKLOG ENDS. Everything recorded from the attachment onwards is
+    // the live forward path's to deliver, and it delivers it with the
+    // deployment's own inventory ids substituted in. A drain that re-sent those
+    // rows would duplicate every one of them for the life of the install and —
+    // for a session root, whose re-post is an UPDATE rather than a no-op —
+    // overwrite those resolved ids with nothing, degrading a join that was
+    // already correct.
+    const attachedAtMs = Date.parse(connection.attachedAt);
+    if (!Number.isFinite(attachedAtMs)) return null;
+
     // A change of deployment invalidates every stamp: rows delivered to the
     // place this machine has left are undelivered as far as this one is
-    // concerned.
+    // concerned. It also re-freezes the boundary, which is the only time that
+    // moves — a re-attach to the same deployment must not widen it.
     const fingerprint = endpointFingerprint(connection.endpoint);
-    if (ledger.endpointFingerprint() !== fingerprint) ledger.rearmFor(fingerprint);
+    const recorded = ledger.deployment();
+    if (recorded.fingerprint !== fingerprint) ledger.rearmFor(fingerprint, attachedAtMs);
+    const backlogBefore =
+      recorded.fingerprint === fingerprint
+        ? (recorded.backlogBefore ?? attachedAtMs)
+        : attachedAtMs;
 
     const pid = process.pid;
     if (!ledger.claim(pid, hostname(), now(), HISTORY_LEASE_STALE_MS)) return null;
@@ -172,7 +188,7 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
       })();
 
     try {
-      return await drain({ ledger, send, now, sleep, random, budgetMs, pid });
+      return await drain({ ledger, send, now, sleep, random, budgetMs, pid, backlogBefore });
     } finally {
       ledger.release(pid);
     }
@@ -197,6 +213,8 @@ interface DrainDeps {
   random: () => number;
   budgetMs: number;
   pid: number;
+  /** Rows at or after this instant belong to the live path, not to this drain. */
+  backlogBefore: number;
 }
 
 /** Why one row's send stopped: the pass continues, skips it, or ends. */
@@ -211,7 +229,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   let outcome: HistorySyncOutcome = 'ok';
 
   outer: while (d.now() < deadline) {
-    const sessions = d.ledger.pendingSessions(SESSION_PAGE);
+    const sessions = d.ledger.pendingSessions(SESSION_PAGE, d.backlogBefore);
     if (sessions.length === 0) break;
 
     for (const sessionId of sessions) {
@@ -219,7 +237,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
       // self-referencing foreign keys and stubs no missing root, so a leaf that
       // overtakes its session is rejected — which is why this is sequential
       // rather than concurrent.
-      const rows = d.ledger.pendingRows(sessionId, ROW_PAGE);
+      const rows = d.ledger.pendingRows(sessionId, ROW_PAGE, d.backlogBefore);
       if (rows.length === 0) continue;
 
       // Rebuilt first, so a row that can never be expressed is counted and
@@ -264,10 +282,10 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     }
   }
 
-  if (outcome === 'ok' && d.now() >= deadline && d.ledger.counts().pending > 0) {
+  if (outcome === 'ok' && d.now() >= deadline && d.ledger.counts(d.backlogBefore).pending > 0) {
     outcome = 'interrupted';
   }
-  return { outcome, sent, skipped, counts: d.ledger.counts(), atMs: d.now() };
+  return { outcome, sent, skipped, counts: d.ledger.counts(d.backlogBefore), atMs: d.now() };
 }
 
 interface ChunkResult {

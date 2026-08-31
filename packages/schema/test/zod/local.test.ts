@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   controlPlaneName,
   defaultWorkspaceSettings,
+  HISTORY_SYNC_PAYLOAD_VERSION,
   isAttached,
+  isHistorySyncConsentValid,
   isModelJudgeConsentValid,
   MODEL_JUDGE_PAYLOAD_VERSION,
   toEventRow,
@@ -239,5 +241,59 @@ describe('isModelJudgeConsentValid', () => {
       modelJudgeConsent: { acknowledgedAt: ISO, payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION },
     });
     expect(isModelJudgeConsentValid(parsed.modelJudgeConsent)).toBe(true);
+  });
+});
+
+describe('isHistorySyncConsentValid', () => {
+  const ENDPOINT = 'https://plane.example.com';
+  const consent = (payloadVersion: number, endpoint = ENDPOINT) => ({
+    acknowledgedAt: ISO,
+    payloadVersion,
+    endpoint,
+  });
+
+  it('is false when no consent has been recorded', () => {
+    expect(isHistorySyncConsentValid(undefined, ENDPOINT)).toBe(false);
+  });
+
+  // A grant names the deployment it was given for, so an unattached machine has
+  // nothing to compare against and sends nothing.
+  it('is false when the machine is not attached to any endpoint', () => {
+    expect(isHistorySyncConsentValid(consent(HISTORY_SYNC_PAYLOAD_VERSION), undefined)).toBe(false);
+  });
+
+  it('is true when the consent covers the current payload and this endpoint', () => {
+    expect(isHistorySyncConsentValid(consent(HISTORY_SYNC_PAYLOAD_VERSION), ENDPOINT)).toBe(true);
+  });
+
+  // Widening what is sent must re-ask rather than ride an older, narrower grant.
+  it('is false for a consent recorded against an older payload version', () => {
+    expect(isHistorySyncConsentValid(consent(HISTORY_SYNC_PAYLOAD_VERSION - 1), ENDPOINT)).toBe(
+      false,
+    );
+  });
+
+  it('is false for a consent recorded against an unknown newer version', () => {
+    expect(isHistorySyncConsentValid(consent(HISTORY_SYNC_PAYLOAD_VERSION + 1), ENDPOINT)).toBe(
+      false,
+    );
+  });
+
+  // Consent to send history to one deployment is not consent to send it to
+  // another: re-attaching elsewhere asks again.
+  it('is false when the grant names a different deployment', () => {
+    const granted = consent(HISTORY_SYNC_PAYLOAD_VERSION, 'https://other.example.com');
+    expect(isHistorySyncConsentValid(granted, ENDPOINT)).toBe(false);
+  });
+
+  it('accepts what the schema actually parses out of a settings.json', () => {
+    const parsed = WorkspaceSettings.parse({
+      historySyncConsent: {
+        acknowledgedAt: ISO,
+        payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+        endpoint: ENDPOINT,
+      },
+    });
+    expect(isHistorySyncConsentValid(parsed.historySyncConsent, ENDPOINT)).toBe(true);
   });
 });

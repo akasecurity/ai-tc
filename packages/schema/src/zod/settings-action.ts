@@ -24,15 +24,17 @@ import { z } from 'zod';
  * times and payload versions are stamped server-side, so a client cannot
  * backdate a grant or claim a version it never saw.
  *
- * `modelJudgeConsent` is REQUIRED, and that is a security property rather than
- * a strictness preference. It was optional, and the action treated an absent
- * field as `false` — so any caller that simply did not mention it silently
- * REVOKED a live egress grant. A required boolean makes a revocation something
- * the caller has to say.
+ * `modelJudgeConsent` and `historySyncConsent` are REQUIRED, and that is a
+ * security property rather than a strictness preference. `modelJudgeConsent` was
+ * optional, and the action treated an absent field as `false` — so any caller
+ * that simply did not mention it silently REVOKED a live egress grant. A
+ * required boolean makes a revocation something the caller has to say, and every
+ * egress grant added since carries the same requirement for the same reason.
  */
 export const SaveSettingsInput = z.object({
   historicalAccess: z.string(),
   modelJudgeConsent: z.boolean(),
+  historySyncConsent: z.boolean(),
   vaultConsent: z.string(),
   vaultInlineReveal: z.string(),
 });

@@ -4,6 +4,8 @@ import { applyOnboarding, ManagedFieldError } from '@akasecurity/persistence';
 import {
   AttachInput,
   HistoricalAccess,
+  HISTORY_SYNC_PAYLOAD_VERSION,
+  isHistorySyncConsentValid,
   isVaultConsentValid,
   MODEL_JUDGE_PAYLOAD_VERSION,
   parseActionInput,
@@ -85,6 +87,22 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
           : isVaultConsentValid(current.vaultConsent)
             ? current.vaultConsent
             : { acknowledgedAt: new Date().toISOString(), version: VAULT_CONSENT_VERSION },
+      // The history grant names the deployment it covers, and that name is read
+      // inside the lock for the same reason as the grants above: a machine
+      // detached from another tab must not have a grant written back naming the
+      // deployment it just left. No endpoint on file means nothing to grant
+      // against, so the grant cannot be recorded at all. A still-valid grant is
+      // kept as-is so its acknowledgedAt survives unrelated edits.
+      historySyncConsent:
+        !data.historySyncConsent || current.controlPlane === undefined
+          ? undefined
+          : isHistorySyncConsentValid(current.historySyncConsent, current.controlPlane.endpoint)
+            ? current.historySyncConsent
+            : {
+                acknowledgedAt: new Date().toISOString(),
+                payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+                endpoint: current.controlPlane.endpoint,
+              },
       vaultInlineReveal: inlineReveal.data,
     }));
   } catch (error) {

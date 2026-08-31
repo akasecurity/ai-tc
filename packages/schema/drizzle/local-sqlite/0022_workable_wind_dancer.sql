@@ -1,0 +1,1 @@
+ALTER TABLE `audit_events` ADD `inspection_ms` integer GENERATED ALWAYS AS (json_extract(attributes, '$.inspection_ms')) VIRTUAL;

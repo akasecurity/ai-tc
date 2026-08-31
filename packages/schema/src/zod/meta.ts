@@ -292,6 +292,13 @@ export const CaptureAttributes = z
     // to 'allow' — the enforcement audit trail's link back to the grant that
     // authorized the bypass.
     exception_ids: z.array(z.guid()).optional(),
+    // Whole milliseconds this capture's inspection blocked its caller — the
+    // plugin's own added latency (see EventMetadata.inspectionMs, whose value
+    // this is). Promoted to the `inspection_ms` generated column on both stores
+    // so a percentile can be computed without re-running json_extract per row.
+    // ABSENT on replayed captures (backfill / worktree scan) and on rows written
+    // before the measurement shipped — never present as a placeholder 0.
+    inspection_ms: z.number().int().nonnegative().optional(),
   })
   .catchall(z.unknown());
 export type CaptureAttributes = z.infer<typeof CaptureAttributes>;

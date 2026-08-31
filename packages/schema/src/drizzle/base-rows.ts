@@ -142,6 +142,10 @@ export interface BaseAuditEventRow<TTime = number> {
   cacheReadInputTokens: number | null;
   model: string | null;
   provider: string | null;
+  // Whole ms a capture's inspection blocked its caller. NULL on every row that
+  // carries no measurement — a replayed capture, a pre-measurement row, or any
+  // non-capture event type. NULL means "not measured", never "took no time".
+  inspectionMs: number | null;
 }
 
 /** classified_data — small CLASS dimension keyed by class only. */

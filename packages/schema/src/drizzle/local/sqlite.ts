@@ -368,6 +368,15 @@ export const auditEvents = sqliteTable(
     provider: text(COL.provider).generatedAlwaysAs(sql`json_extract(attributes, '$.provider')`, {
       mode: 'virtual',
     }),
+    // Added latency (whole ms) is snapshotted into `attributes` on capture rows
+    // by the plugin SDK and surfaced as a generated column here for the same
+    // reason the token facets are: a percentile/aggregate over it must not
+    // re-run json_extract per row. NULL wherever no measurement was taken — the
+    // reader distinguishes "not measured" from a real 0.
+    inspectionMs: integer(COL.inspectionMs).generatedAlwaysAs(
+      sql`json_extract(attributes, '$.inspection_ms')`,
+      { mode: 'virtual' },
+    ),
   },
   (t) => [
     index('idx_audit_parent').on(t.parentId),

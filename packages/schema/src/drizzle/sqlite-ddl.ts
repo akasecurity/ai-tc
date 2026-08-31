@@ -115,4 +115,8 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0021_finding_resolution_resolved_at_index',
     sql: 'CREATE INDEX `idx_finding_resolution_resolved_at` ON `finding_resolution` (`resolved_at`);\n',
   },
+  {
+    tag: '0022_workable_wind_dancer',
+    sql: "ALTER TABLE `audit_events` ADD `inspection_ms` integer GENERATED ALWAYS AS (json_extract(attributes, '$.inspection_ms')) VIRTUAL;",
+  },
 ];

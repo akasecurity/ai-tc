@@ -8,10 +8,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { resolveDataGateway } from '@akasecurity/plugin-runtime';
+import {
+  resolveDataGateway,
+  setDefaultGatewayFactory,
+  standaloneGatewayFactory,
+} from '@akasecurity/plugin-runtime';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { PLUGIN_PACKAGE, pluginBuild } from '../../src/build-info.ts';
 import {
   reconcileHistory,
   reconcileSession,
@@ -577,5 +582,37 @@ describe('reconcileSession — FK-safety & provider inheritance', () => {
     // The model id (`gemini-3-pro`) heuristically resolves to 'google', but the
     // root's env-provider wins by first-write — the leaf reads 'gateway' back.
     expect(rows(dataDir).attrsByOrdinal[0]?.provider).toBe('gateway');
+  });
+});
+
+describe('the reconcilers resolve their gateway with this build as pluginBuild', () => {
+  // The reconciler can win the hourly posture throttle just as the first
+  // PreInvocation can, and a report resolved without the build identity clears
+  // the control plane's plugin columns — so reverting the reconciler entry to
+  // a bare resolveDataGateway(config) must fail here. Both reconciler entries
+  // resolve through the one reconcileGateway helper this drives.
+  let dataDir: string;
+  let transcripts: string;
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'aka-usage-meta-data-'));
+    transcripts = mkdtempSync(join(tmpdir(), 'aka-usage-meta-tx-'));
+  });
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(transcripts, { recursive: true, force: true });
+    // The seam is process-global: a capture left installed leaks into the
+    // next suite.
+    setDefaultGatewayFactory();
+  });
+
+  it('reconcileHistory (the backfill sweep)', async () => {
+    let captured: unknown = 'never-resolved';
+    setDefaultGatewayFactory((cfg, meta) => {
+      captured = meta;
+      return standaloneGatewayFactory(cfg, meta);
+    });
+    await reconcileHistory(config(dataDir), { dir: transcripts, now: FIXTURE_NOW });
+    expect(pluginBuild()).toMatchObject({ package: PLUGIN_PACKAGE });
+    expect(captured).toStrictEqual({ pluginBuild: pluginBuild() });
   });
 });

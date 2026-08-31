@@ -95,7 +95,7 @@ export {
   CATEGORY_ICON,
   CATEGORY_ICON_FALLBACK,
   CATEGORY_LABEL,
-  CATEGORY_STYLE,
+  CATEGORY_TONE,
   categoryStyle,
   type ColumnVisibility,
   DEFAULT_FINDINGS_VIEW,
@@ -156,8 +156,6 @@ export {
   type ProvenanceState,
   provenanceState,
   PUBLISHER_META,
-  type Tone,
-  toneColors,
 } from './detections/meta.ts';
 export { PolicyPicker } from './detections/PolicyPicker.tsx';
 export { ProvenanceBlock } from './detections/ProvenanceBlock.tsx';
@@ -207,7 +205,7 @@ export {
   type FindingsTimeseriesView,
 } from './security/FindingsOverTimeCardView.tsx';
 export { formatMttrDuration } from './security/format.ts';
-export { ENFORCEMENT_META, SEVERITY_META, SEVERITY_TILE } from './security/meta.ts';
+export { ENFORCEMENT_META, SEVERITY_META } from './security/meta.ts';
 export {
   type MttrChartPoint,
   MttrTrendCardView,

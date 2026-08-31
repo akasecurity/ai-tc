@@ -5,11 +5,10 @@
 // chrome above a list, so its whole point is to cost as little vertical space as
 // a row of stats can: it measures 50px, and the height it does not spend is
 // height the list underneath gets instead.
-import { Card, cn, Skeleton } from '@akasecurity/ui-kit';
+import { Card, cn, Skeleton, type Tone, TONE_PARTS } from '@akasecurity/ui-kit';
 import { Fragment } from 'react';
 
 import type { IconComponent } from '../lib/icons.ts';
-import { type Tone, TONE_CLASSES } from './tones.ts';
 
 /**
  * A stat's tonal family. Naming the family rather than its two class strings is
@@ -17,13 +16,13 @@ import { type Tone, TONE_CLASSES } from './tones.ts';
  * one `-fill` tint, and spelling both by hand at each call site compiles and
  * renders whichever pair is typed.
  *
- * It is a subset of the package's `Tone` rather than a vocabulary of its own —
- * a second registry for the same families is how `gray` came to mean
- * `surface-2` here and `surface-3` in the other one. `Extract` is what keeps it
- * a subset: a family named here that `Tone` does not define is a compile error,
- * so the strip cannot reintroduce one.
+ * It is a subset of `@akasecurity/ui-kit`'s `Tone` rather than a vocabulary of
+ * its own — a second registry for the same families is how one family came to
+ * mean `surface-2` in one place and `surface-3` in another. `Extract` narrows
+ * the union to the families the strip actually uses; note it does NOT reject an
+ * unknown name, which evaluates to `never` here and only errors at a call site.
  */
-export type StatTone = Extract<Tone, 'primary' | 'gray' | 'violet' | 'green' | 'red' | 'teal'>;
+export type StatTone = Extract<Tone, 'primary' | 'neutral' | 'violet' | 'ok' | 'critical' | 'teal'>;
 
 export interface SummaryStatItem {
   icon: IconComponent;
@@ -47,7 +46,7 @@ function SummaryStat({
   tone,
   isLoading,
 }: SummaryStatItem & { isLoading: boolean }) {
-  const { text, fill } = TONE_CLASSES[tone];
+  const { text, fill } = TONE_PARTS[tone];
   return (
     <div data-slot="summary-stat" className="flex min-w-0 flex-1 items-center gap-2 px-4">
       <span
@@ -120,7 +119,7 @@ export function SummaryStripView({
     >
       {items.map((item, i) => (
         <Fragment key={item.label}>
-          {i > 0 && <span className="w-px shrink-0 self-stretch bg-text/6" />}
+          {i > 0 && <span className="w-px shrink-0 self-stretch bg-hairline" />}
           <SummaryStat {...item} isLoading={isLoading} />
         </Fragment>
       ))}

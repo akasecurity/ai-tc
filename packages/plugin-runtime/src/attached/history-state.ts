@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { ensureDataDirSync, writeOwnerOnlyFileSync } from '@akasecurity/persistence';
+import {
+  ATTACHED_HISTORY_SYNC_STATE_FILENAME,
+  ensureDataDirSync,
+  writeOwnerOnlyFileSync,
+} from '@akasecurity/persistence';
 
 /**
  * Where the background drain's progress is recorded, for `status` to render.
@@ -11,7 +15,7 @@ import { ensureDataDirSync, writeOwnerOnlyFileSync } from '@akasecurity/persiste
  * without a trace. Not `attached-sync-state.json` either — that belongs to the
  * policy pull, and two jobs sharing a file is the same problem one step later.
  */
-export const HISTORY_SYNC_STATE_FILENAME = 'attached-history-sync.json';
+export const HISTORY_SYNC_STATE_FILENAME = ATTACHED_HISTORY_SYNC_STATE_FILENAME;
 
 /** Where the drain has got to. */
 export type HistorySyncPhase = 'filling' | 'complete';

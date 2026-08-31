@@ -1,3 +1,12 @@
+export {
+  ATTACHED_DERIVED_FILENAMES,
+  ATTACHED_FORWARD_DROPS_FILENAME,
+  ATTACHED_FORWARD_STATE_FILENAME,
+  ATTACHED_HISTORY_SYNC_STATE_FILENAME,
+  ATTACHED_SYNC_STATE_FILENAME,
+  clearAttachmentDerivedState,
+  POLICY_CACHE_FILENAME,
+} from './attached-derived.ts';
 export type { CredentialState, CredentialUnusableReason } from './control-plane-credential.ts';
 export {
   controlPlaneCredentialPath,

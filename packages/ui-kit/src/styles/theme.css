@@ -14,6 +14,48 @@
   --color-border: #e3e5e8;
   --color-border-strong: #d6d8dc;
 
+  /* the lightest separator weight: the rule BETWEEN rows inside a card, where
+     --color-border is already drawing the card's own edge and repeating it per row
+     would draw a table. Its own token because it is the one separator that has to
+     stay under the container it sits in — the two above are container edges and
+     read as too heavy for a row.
+
+     The value is --color-text at 6% in each theme, which is what these rows spelled
+     inline before this token existed. Written out rather than derived, because the
+     alpha rides on a token that INVERTS between themes: 6% of the near-black light
+     ink and 6% of the white dark ink are opposite colors, and only writing both
+     keeps the pair honest if either text value is ever retuned. */
+  --color-hairline: rgb(37 47 61 / 0.06);
+
+  /* field boundary. --color-border is a thin rule tuned to separate a card from the
+     page, where the two surfaces already differ and the line is reinforcement. A
+     text field is the opposite case: it renders bg-surface inside a panel that is
+     also bg-surface, so the border is the ONLY thing saying where the control
+     begins, and 1.4.11 asks that boundary for 3:1 rather than that rule's 1.26:1.
+     Its own token because widening --color-border to clear 3:1 would put that weight
+     on every card and divider in the product, which is a different design decision
+     than making inputs findable.
+
+     THE RULE, which is what a retune needs and a list of numbers is not: choose
+     it against the LIGHTEST surface a field lands on, and require 3:1 there. That
+     is --color-surface, where it measures 3.34:1 — and today that is the only
+     ratio this token renders at, because both consumers (Input, SelectTrigger)
+     hardcode bg-surface and no call site overrides the fill.
+
+     --color-surface-2 and the canvas are quoted at 3.20:1 as headroom for a field
+     that lands there, not as a case that exists. Note what does NOT use this
+     token: the search inputs in Findings, Detections and Inventory are still
+     `border-border` on bg-surface-2 — 1.21:1 light, 1.17:1 dark — so they are
+     BELOW the floor this token was introduced to clear, and moving them is
+     outstanding work rather than something this value already fixed.
+
+     --color-surface-3 is outside the rule's input set, which is why it does not
+     constrain the value: nothing renders a field there. It measures 2.98:1 light
+     and 2.78:1 dark, so a field placed there in future needs its own value rather
+     than this one — recorded because the rule alone does not say what happens
+     when the set grows. */
+  --color-border-field: #868d99;
+
   /* text. The three tiers sit closer together than they look like they should: on a
      light background everything at 4.5:1 or better is crowded into a narrow dark band,
      so the tertiary tier cannot be as faint as the eye expects. It is set against
@@ -171,6 +213,26 @@
   --color-surface-3: #3d4653; /* deeper inset, neutral solid fill */
   --color-border: #3d4653;
   --color-border-strong: #5d6572;
+
+  /* 6% of this theme's --color-text (#ffffff), so the row rule lifts off the card
+     here where the light theme's sinks into it. */
+  --color-hairline: rgb(255 255 255 / 0.06);
+
+  /* the same boundary in dark, under the same rule: chosen against the lightest
+     surface a field lands on and required to clear 3:1 there. 3.94:1 on
+     --color-surface, which is where both consumers render, and 3.26:1 on
+     --color-surface-2. It reads lighter than --color-border-strong on purpose —
+     strong is a divider that wants to recede, this is a control edge that has to
+     be found.
+
+     Carried here as well as in the light block, for the reason --color-hairline
+     gives two tokens up: a retune of THIS value, or of --color-surface-3, has to
+     see the constraint locally. --color-surface-3 is 2.78:1 against this value,
+     below the floor, and stays outside the rule's input set only while nothing
+     renders a field there. The light block's canvas figure has no counterpart
+     here — canvas and --color-surface-2 are the same hex in light and different
+     in dark, so that grouping does not carry across. */
+  --color-border-field: #828b9b;
 
   /* text */
   --color-text: #ffffff;

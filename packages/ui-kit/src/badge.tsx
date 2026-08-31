@@ -2,22 +2,29 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import type { ReactNode } from 'react';
 
 import { cn } from './lib/cn.ts';
+import { TONE_SOFT } from './tone.ts';
 
 const badgeVariants = cva(
   'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold',
   {
     variants: {
       variant: {
-        default: 'bg-surface-3 text-text-2',
+        // Every TINTED variant reads its pair from the vocabulary rather than
+        // respelling it — a second copy of a pair is a second place to get the
+        // fill/ink halves wrong, which is the failure tone.ts exists to remove.
+        // `default` is `neutral`, the untinted pair; `outline` is the one variant
+        // with no vocabulary member, because it carries no fill at all. The
+        // variant NAMES stay as they are: `variant` is public API, and `success`
+        // is spelled across consumers outside this repo.
+        default: TONE_SOFT.neutral,
         outline: 'border border-border text-text-2',
-        critical: 'bg-sev-critical-fill text-sev-critical-ink',
-        high: 'bg-sev-high-fill text-sev-high-ink',
-        medium: 'bg-sev-medium-fill text-sev-medium-ink',
-        low: 'bg-sev-low-fill text-sev-low-ink',
-        // Tonal (non-severity) variants for status/category chips.
-        success: 'bg-ok-fill text-ok-ink',
-        teal: 'bg-teal-fill text-teal-ink',
-        primary: 'bg-primary-tint text-primary',
+        critical: TONE_SOFT.critical,
+        high: TONE_SOFT.high,
+        medium: TONE_SOFT.medium,
+        low: TONE_SOFT.low,
+        success: TONE_SOFT.ok,
+        teal: TONE_SOFT.teal,
+        primary: TONE_SOFT.primary,
       },
     },
     defaultVariants: { variant: 'default' },

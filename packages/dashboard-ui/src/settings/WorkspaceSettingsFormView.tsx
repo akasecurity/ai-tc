@@ -429,7 +429,7 @@ export interface WorkspaceSettingsFormViewProps {
   // Register this machine against an organization's deployment, and undo that.
   // Both optional: a build with no transport plugged in renders the connection
   // state read-only rather than offering an action that cannot complete.
-  onAttach?: (endpoint: string, label: string) => void;
+  onAttach?: (endpoint: string, label: string, accessKey: string) => void;
   onDetach?: () => void;
   // Where "Configure detections" points. Injected rather than hardcoded so this
   // package stays router-agnostic.
@@ -637,13 +637,14 @@ export const CONNECTION_STANDALONE_DESCRIPTION =
 // Describes the RECORDED STATE, not a live exchange — and the distinction is
 // the whole point of this string.
 //
-// It read "…which supplies policy and receives activity", which is false for
-// every user of this build: `attachToControlPlane` writes settings and dials
-// nothing, `ControlPlaneConnection` carries no status or handshake, and
-// `isAttached` is a pure local predicate over two stored fields. Nothing here
-// can tell whether anything is on the other end, so this copy must not claim
-// there is. A build that supplies a transport can say more, because it will
-// actually know.
+// It read "…which supplies policy and receives activity", which claimed a live
+// exchange this string cannot know about. The reason has narrowed but not gone:
+// `attachToControlPlane` now DOES dial once, to verify the key before it writes
+// anything — but that is a check at attach time, not a status. What this string
+// renders from is still `ControlPlaneConnection`, which carries no status or
+// handshake, read through `isAttached`, a pure local predicate over two stored
+// fields. A successful attach an hour ago says nothing about now, so this copy
+// must still not claim there is anything on the other end.
 export const CONNECTION_ATTACHED_DESCRIPTION =
   'This machine is registered against your organization’s deployment. Detection, policy and ' +
   'history still run against the local store under ~/.aka.';
@@ -667,9 +668,14 @@ export const CONNECTION_FORWARDING_NOTICE =
   'report what the deployment received. Detach to stop sending.';
 
 // Shown where attaching is offered but the surface supplies no attach handler.
+//
+// Reworded away from "this build has no control-plane transport": that stopped
+// being the reason. The transport exists, and both the CLI and the web dashboard
+// use it — what this notice describes is a HOST that wired no `onAttach`, which
+// is a property of the embedding surface rather than of the build.
 export const CONNECTION_UNAVAILABLE_NOTICE =
-  'This build has no control-plane transport, so it cannot attach. It runs standalone against ' +
-  'the local store.';
+  'This view cannot change the connection. Attach from the AKA dashboard, or with `aka attach` in ' +
+  'a terminal.';
 
 export const DETACH_LABEL = 'Detach';
 
@@ -683,6 +689,53 @@ export const DETACH_EXPLANATION =
 export const DETACH_UNAVAILABLE_NOTICE =
   'This machine is registered, and this build offers no way to detach it here.';
 export const ATTACH_LABEL = 'Attach';
+
+/**
+ * Both halves of an attachment, or neither.
+ *
+ * Named and exported rather than left inline in the button's `disabled`, because
+ * it is the rule this whole surface exists to enforce: an attach with an
+ * endpoint and no key writes a descriptor with no credential, which every later
+ * surface reads as attached-and-broken — `aka status` says "attached — no usable
+ * credential" and forwarding silently does nothing. Inline in JSX it was a
+ * condition no test in this package could reach.
+ *
+ * Trimmed, so whitespace does not enable the button and then fail the action.
+ */
+export function canAttach(endpoint: string, accessKey: string): boolean {
+  return endpoint.trim() !== '' && accessKey.trim() !== '';
+}
+
+/**
+ * Hand an attach off, clearing the key first.
+ *
+ * THE ORDER IS THE POINT, and it is why this is a named function rather than an
+ * inline handler. The attach is async and this component stays mounted across
+ * it, so clearing after it resolves would leave the secret in a live input — and
+ * in React DevTools state — for the whole round trip, including the failure case
+ * where the form stays on screen. Inline in JSX that ordering was a property no
+ * test in this package could reach; here it is one call away.
+ *
+ * `clearKey` rather than a setter, so the caller owns the state and this stays a
+ * plain function the suite can drive with two spies.
+ */
+export function submitAttach(
+  values: { endpoint: string; label: string; accessKey: string },
+  clearKey: () => void,
+  onAttach: (endpoint: string, label: string, accessKey: string) => void,
+): void {
+  const key = values.accessKey.trim();
+  clearKey();
+  onAttach(values.endpoint.trim(), values.label.trim(), key);
+}
+
+/**
+ * The kind is named on screen because it is the one attach failure a user cannot
+ * diagnose from the outside: an `ingest` key authenticates and then fails the
+ * policy read, which looks exactly like a bad key.
+ */
+export const ATTACH_KEY_HINT =
+  'Create a plugin key in your deployment and paste it here. It is stored on this machine only, in ~/.aka/settings.';
 
 // The detach that MDM takes away. A machine an administrator attached is not
 // one the user may leave, and saying which organization decided that is the
@@ -699,12 +752,15 @@ function ConnectionRow({
 }: {
   settings: WorkspaceSettings;
   managedLabel?: string | undefined;
-  onAttach?: ((endpoint: string, label: string) => void) | undefined;
+  onAttach?: ((endpoint: string, label: string, accessKey: string) => void) | undefined;
   onDetach?: (() => void) | undefined;
   busy?: boolean | undefined;
 }) {
   const [endpoint, setEndpoint] = useState('');
   const [label, setLabel] = useState('');
+  // Held in component state like the other two, and cleared the moment the
+  // attach is handed off below.
+  const [accessKey, setAccessKey] = useState('');
   const attached = isAttached(settings);
   const locked = managedLabel !== undefined;
 
@@ -756,8 +812,15 @@ function ConnectionRow({
               // same component instance and keeps its own state, so without
               // this the endpoint of the deployment just left reappears
               // pre-filled in the form offering to join a new one.
+              //
+              // The key is cleared for a stronger reason than a stale form: a
+              // key typed and never submitted — the user changed their mind, or
+              // a concurrent `aka attach` flipped this view to attached under
+              // them — would otherwise sit in component state across the whole
+              // detached period and reappear pre-filled afterwards.
               setEndpoint('');
               setLabel('');
+              setAccessKey('');
               onDetach();
             }}
             data-slot="detach-button"
@@ -773,7 +836,10 @@ function ConnectionRow({
           {DETACH_UNAVAILABLE_NOTICE}
         </p>
       ) : onAttach ? (
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row" data-slot="attach-form">
+        // A grid rather than nested flex rows: the endpoint and name share a row
+        // on wide screens, and everything below spans both columns. Flat, so the
+        // two fields that were here before keep their place in the tree.
+        <div className="mt-3 grid gap-2 sm:grid-cols-2" data-slot="attach-form">
           <Input
             value={endpoint}
             placeholder="Deployment endpoint"
@@ -790,18 +856,54 @@ function ConnectionRow({
               setLabel(e.target.value);
             }}
           />
-          <Button
-            variant="solid"
-            tone="primary"
-            size="sm"
-            disabled={busy === true || endpoint.trim() === ''}
-            onClick={() => {
-              onAttach(endpoint.trim(), label.trim());
+          {/*
+            `type="password"` for the masking, and three opt-outs because a
+            browser offering to SAVE this, or a spellchecker shipping the value to
+            a remote dictionary, defeats the masking by another route.
+
+            `new-password` rather than `off`: on a password field the browsers
+            deliberately DISREGARD `off`, so that password managers keep working
+            on sites that set it. `new-password` is the value that actually
+            suppresses autofill and the save prompt — `off` would have been an
+            assertion that passes while the property it names is not obtained.
+          */}
+          <Input
+            className="sm:col-span-2"
+            type="password"
+            name="aka-access-key"
+            value={accessKey}
+            placeholder="Access key"
+            aria-label="Access key"
+            autoComplete="new-password"
+            spellCheck={false}
+            autoCorrect="off"
+            onChange={(e) => {
+              setAccessKey(e.target.value);
             }}
-            data-slot="attach-button"
-          >
-            {ATTACH_LABEL}
-          </Button>
+          />
+          <p className="text-xs text-text-3 sm:col-span-2" data-slot="attach-key-hint">
+            {ATTACH_KEY_HINT}
+          </p>
+          <div className="sm:col-span-2">
+            <Button
+              variant="solid"
+              tone="primary"
+              size="sm"
+              disabled={busy === true || !canAttach(endpoint, accessKey)}
+              onClick={() => {
+                submitAttach(
+                  { endpoint, label, accessKey },
+                  () => {
+                    setAccessKey('');
+                  },
+                  onAttach,
+                );
+              }}
+              data-slot="attach-button"
+            >
+              {ATTACH_LABEL}
+            </Button>
+          </div>
         </div>
       ) : (
         <p className="mt-3 text-xs text-text-3" data-slot="connection-unavailable">

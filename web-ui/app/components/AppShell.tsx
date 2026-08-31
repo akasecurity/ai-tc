@@ -2,7 +2,7 @@
 
 import type { IconComponent } from '@akasecurity/dashboard-ui';
 import { ThemeToggle } from '@akasecurity/dashboard-ui/theme/toggle';
-import { cn } from '@akasecurity/ui-kit';
+import { cn, TONE_SOFT } from '@akasecurity/ui-kit';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
@@ -69,7 +69,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 function Sidebar({ pathname }: { pathname: string }) {
   return (
     <aside className="flex w-62 flex-col border-r border-border bg-surface shrink-0">
-      <div className="flex h-16 items-center border-b border-text/6 px-5">
+      <div className="flex h-16 items-center border-b border-hairline px-5">
         <AkaLogo aria-label="AKA" className="h-8 w-auto text-mark-fg" />
       </div>
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-3.5">
@@ -94,7 +94,7 @@ function NavRow({ item, active }: { item: NavItem; active: boolean }) {
   const className = cn(
     'flex w-full items-center gap-3 rounded-lg px-3 h-10 text-left text-sm group font-medium transition-colors cursor-pointer',
     active
-      ? 'bg-primary-tint text-primary font-semibold'
+      ? cn(TONE_SOFT.primary, 'font-semibold')
       : 'text-text-2 hover:bg-surface-2 hover:text-text',
   );
 

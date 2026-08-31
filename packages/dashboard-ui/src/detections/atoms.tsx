@@ -3,11 +3,12 @@
 // styles sourced from theme-token CSS vars via toneColors. Pure (no state/events)
 // so they render in any host app.
 import type { OriginEnum, PublisherKind } from '@akasecurity/schema';
+import { type Tone, toneColors } from '@akasecurity/ui-kit';
 import { type ReactNode } from 'react';
 
 import type { IconComponent } from '../lib/icons.ts';
 import { ArrowUpIcon, BranchIcon } from '../shared/icons.tsx';
-import { ORIGIN_META, policyMeta, PUBLISHER_META, type Tone, toneColors } from './meta.ts';
+import { ORIGIN_META, policyMeta, PUBLISHER_META } from './meta.ts';
 
 /** A small tone-colored pill (the design's `badge`). */
 export function TonePill({
@@ -63,7 +64,7 @@ export function OriginBadge({ origin }: { origin: OriginEnum }) {
 
 export function BranchBadge() {
   return (
-    <TonePill tone="blue" icon={BranchIcon}>
+    <TonePill tone="low" icon={BranchIcon}>
       Customized
     </TonePill>
   );

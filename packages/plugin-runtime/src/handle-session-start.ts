@@ -25,6 +25,7 @@ import type {
 import { configInventoryInputs, harnessFromTool } from '@akasecurity/schema';
 
 import { triggerHistorySync } from './attached/history-sync-trigger.ts';
+import type { PluginBuildInfo } from './attached/plugin-block.ts';
 import { triggerPolicySync } from './attached/sync-trigger.ts';
 import { pluginRecordedBy } from './recorder.ts';
 import { resolveDataGateway } from './resolve.ts';
@@ -52,6 +53,12 @@ export interface SessionStartInput {
   tool: SourceTool;
   harnessVersion?: string | undefined;
   harnessInterface?: string | undefined;
+  // The calling artifact's package identity, for the attached posture
+  // self-report (see DataGatewayFactory on `meta.pluginBuild`). Composed by
+  // the adapter — the runtime knows neither the npm package name nor where
+  // the installed manifest lives. Optional: without it the report goes out
+  // with no plugin block, exactly as an older adapter's did.
+  pluginBuild?: PluginBuildInfo | undefined;
   // Injectable for tests only (keeps the config scan off the test machine's
   // real ~/.claude); adapters omit it and the scanner resolves os.homedir().
   homeDir?: string | undefined;
@@ -84,12 +91,14 @@ export async function handleSessionStart(
 
     // SessionStart is the one hook that knows the plugin's own version (the
     // manifest path rides its argv), so it stamps the inventory recording.
-    const gateway = resolveDataGateway(
-      config,
-      input.harnessVersion !== undefined
+    // `pluginBuild` rides beside it into the attached posture self-report.
+    const meta = {
+      ...(input.harnessVersion !== undefined
         ? { recordedBy: pluginRecordedBy(input.harnessVersion) }
-        : undefined,
-    );
+        : {}),
+      ...(input.pluginBuild !== undefined ? { pluginBuild: input.pluginBuild } : {}),
+    };
+    const gateway = resolveDataGateway(config, meta);
     try {
       // Machine/repo facts only; the writer adds the local user account.
       const ctx = resolveInventoryContext({

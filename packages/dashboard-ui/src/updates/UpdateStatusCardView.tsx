@@ -59,7 +59,7 @@ export function UpdateStatusCardView({
   return (
     <Card className="shadow-sm">
       <CardHeader>
-        <CardIcon className="bg-primary-tint text-primary">
+        <CardIcon tone="primary">
           <RefreshIcon aria-hidden focusable={false} className="size-4" />
         </CardIcon>
         <CardHeading>
@@ -83,7 +83,7 @@ export function UpdateStatusCardView({
           {statuses.map((s, i) => {
             const outcome = outcomes[s.id];
             return (
-              <div key={s.id} className={cn('py-3', i > 0 && 'border-t border-text/6')}>
+              <div key={s.id} className={cn('py-3', i > 0 && 'border-t border-hairline')}>
                 <div className="flex items-center gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-semibold text-text">{s.name}</div>

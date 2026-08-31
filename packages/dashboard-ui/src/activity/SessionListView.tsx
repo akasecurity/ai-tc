@@ -206,7 +206,7 @@ export function SessionListView({
                   <span className="text-label font-semibold uppercase tracking-wider text-text-3">
                     {group.day}
                   </span>
-                  <span className="h-px flex-1 bg-text/6" />
+                  <span className="h-px flex-1 bg-hairline" />
                   <span className="text-label text-text-3">{group.items.length}</span>
                 </div>
                 <div className="flex flex-col gap-1">

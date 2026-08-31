@@ -674,9 +674,12 @@ Keep these package boundaries intact — a forbidden import across a package wal
 @akasecurity/ui-kit        → @radix-ui/react-*, Tailwind (design-token UI primitives)
 
 web-ui            → @akasecurity/persistence, @akasecurity/dashboard-ui, @akasecurity/ui-kit,
-                     @akasecurity/schema, @akasecurity/detections, @akasecurity/local-ops
-                     (Next.js dashboard; reads the local store in Server Components,
-                     mutates via Server Actions — no HTTP client, no auth)
+                     @akasecurity/schema, @akasecurity/detections, @akasecurity/local-ops,
+                     remote (the attach verb only) (Next.js dashboard; reads the local
+                     store in Server Components, mutates via Server Actions — no auth.
+                     The ONE network call is the settings page verifying an access key
+                     against the deployment before it writes an attachment; everything
+                     else on every page is the local store)
 cli               → @akasecurity/schema, persistence, local-ops, detections,
                      plugin-runtime + remote (the attach verbs only) (the `aka` command;
                      ships the web-ui as a spawned Next server)
@@ -763,7 +766,7 @@ changes. The gaps that exist today:
 **Cross-cutting rules:**
 
 - No `process.env` reads except the sites that explicitly opt out of `n/no-process-env` — §3 tables them, and deliberately is not restated here: a second copy of that list is how the count drifted last time.
-- No `fetch()` and no transport module anywhere except `@akasecurity/remote`, which reaches only the deployment a machine's own settings name and only once it has been attached on purpose (§4). Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly — none of them acquires data over a network.
+- No `fetch()` and no transport module anywhere except `@akasecurity/remote`, which reaches only the deployment a machine's own settings name and only once it has been attached on purpose (§4). Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly — none of them acquires DATA over a network. Two of them, `cli` and `web-ui`, do take `@akasecurity/remote` for the attach verb alone: one `whoami` round trip that proves a key before an attachment is written. It acquires no store data and happens only when a human is attaching, which is why it does not add an egress path to §4.
 - Drizzle is imported **only** by `@akasecurity/schema`, which uses it to _define_ the local-store and registry schemas. Packages that read the store do so via `node:sqlite` through `@akasecurity/persistence` — they must not import Drizzle.
 - The graph above lists **runtime** edges. Test suites may additionally take `@akasecurity/plugin-sdk` as a **dev-only** dependency for fixture seeding — the bundled detection packs (`bundledDetections()` / `registerBundledPacks`) live only there, so a test that must seed `installed_packs` or the engine registry needs it. Both `cli` and `web-ui` do this in their exception tests. A dev-only test dependency is not a runtime package-wall crossing.
 

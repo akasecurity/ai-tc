@@ -29,18 +29,23 @@ export interface LocalHistoryPreview {
  * fails — which is why this takes its own handle rather than going through the
  * usual open.
  *
- * Returns undefined when the store cannot answer, which every caller must treat
- * as "ask without numbers" rather than as zero: a damaged or locked store has
- * unknown history, and describing it as none would understate what a grant
- * covers. A readable store with no sessions returns a zero count, which is a
- * different answer and lets a caller skip the question entirely.
+ * Returns undefined only when a store that EXISTS cannot answer, which every
+ * caller must treat as "ask without numbers" rather than as zero: a damaged or
+ * locked store has unknown history, and describing it as none would understate
+ * what a grant covers. A store with no sessions — and a machine with no store at
+ * all — returns a zero count, which is a different answer and lets a caller skip
+ * the question entirely.
  */
 export function readLocalHistoryPreview(
   dataDir: string,
   nowMs: number = Date.now(),
 ): LocalHistoryPreview | undefined {
   const file = join(dataDir, DB_FILENAME);
-  if (!existsSync(file)) return undefined;
+  // NO STORE IS NOT AN UNKNOWN STORE. A machine that has never opened one has
+  // recorded nothing, which is a definite answer and the strongest form of the
+  // "nothing to ask about" case — asking there offers to send a history that
+  // does not exist. Only a store that exists and cannot be read is unknown.
+  if (!existsSync(file)) return { sessions: 0, days: 0 };
   let db: DatabaseSync | undefined;
   try {
     db = new DatabaseSync(file, { readOnly: true });

@@ -245,7 +245,13 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
           attachedAt: new Date().toISOString(),
           ...(args.label === undefined ? {} : { label: args.label }),
         },
-        ...(historyConsent === undefined ? {} : { historySyncConsent: historyConsent }),
+        // SPELLED, never omitted. `undefined` on an optional key is how this
+        // writer records a REVOCATION; leaving the key out instead merges over
+        // the existing settings and preserves whatever grant is already there.
+        // Re-attaching to the SAME deployment is the ordinary path — it is how a
+        // key is rotated — so an omitted key would let a user who is asked again
+        // and answers no keep sending, with their decline discarded.
+        historySyncConsent: historyConsent,
       },
       base,
     );

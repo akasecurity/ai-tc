@@ -25,7 +25,7 @@ import { terminalPrompter } from '../lib/prompter.ts';
 // detach and does not travel to a different deployment — re-attaching elsewhere
 // asks again rather than carrying an old answer to a new recipient.
 
-const USAGE = `Usage: aka sync-history [--on | --off]
+const USAGE = `Usage: aka sync-history [--on | --off] [--run]
 
 Whether this machine may send the activity it recorded before attaching.
 
@@ -82,12 +82,15 @@ export async function runSyncHistory(argv: string[], deps: SyncHistoryDeps = {})
   const base = deps.base ?? homeBase(values.home);
   const settings = readWorkspaceSettings(base);
 
-  if (values.on === true) {
-    grant(io, exit, base, settings);
-    return;
-  }
-  if (values.off === true) {
-    revoke(io, exit, base);
+  // The answer is recorded first, then --run acts on it, so `--on --run` grants
+  // and then sends rather than granting and silently ignoring half the command.
+  if (values.on === true && !grant(io, exit, base, settings)) return;
+  if (values.off === true && !revoke(io, exit, base)) return;
+  if (values.on === true || values.off === true) {
+    if (values.run !== true) return;
+    // Re-read: the pass reads the grant that was just written.
+    await runHistorySyncPass(base);
+    io.out(`${describe(readWorkspaceSettings(base))}\n`);
     return;
   }
   if (values.run === true) {
@@ -107,7 +110,7 @@ function grant(
   exit: (code: number) => void,
   base: string,
   settings: WorkspaceSettings,
-): void {
+): boolean {
   // A grant records the endpoint it was given for, so there has to be one. An
   // unattached machine has no recipient to name, and a grant with no recipient
   // would apply to whatever this machine attached to next.
@@ -117,7 +120,7 @@ function grant(
         'Run `aka attach --url <url>` first.',
     );
     exit(1);
-    return;
+    return false;
   }
   const consent: HistorySyncConsent = {
     acknowledgedAt: new Date().toISOString(),
@@ -129,16 +132,17 @@ function grant(
   } catch {
     io.err('Could not record that; this machine is left as it was.');
     exit(1);
-    return;
+    return false;
   }
   io.out(
     `Sending this machine's existing activity to ${controlPlaneName(settings.controlPlane)}.\n` +
       'It goes in the background, a little at a time, starting with your next session.\n' +
       'Anything already sent cannot be recalled.\n',
   );
+  return true;
 }
 
-function revoke(io: Prompter, exit: (code: number) => void, base: string): void {
+function revoke(io: Prompter, exit: (code: number) => void, base: string): boolean {
   try {
     // `undefined` on an optional key is how this writer records a revocation:
     // the key leaves settings.json rather than persisting as a false grant.
@@ -146,12 +150,13 @@ function revoke(io: Prompter, exit: (code: number) => void, base: string): void 
   } catch {
     io.err('Could not record that; this machine is left as it was.');
     exit(1);
-    return;
+    return false;
   }
   io.out(
     "Not sending this machine's existing activity. Anything already sent stays sent —\n" +
       'this stops what has not gone yet.\n',
   );
+  return true;
 }
 
 function describe(settings: WorkspaceSettings): string {

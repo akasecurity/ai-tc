@@ -133,6 +133,27 @@ describe('rebuildAuditEvent — detections on a tool call', () => {
     expect(rebuildAuditEvent(toolRow)?.inspections).toEqual([]);
   });
 
+  // A stored detection the current shape will not accept — a value from a
+  // retired enum, a confidence an older writer put on a 0-100 scale — must cost
+  // itself, not the tool call it hangs off. Otherwise one bad child row stamps
+  // the whole event permanently skipped.
+  it('drops a detection that will not parse rather than losing the event', () => {
+    const built = rebuildAuditEvent(toolRow, [
+      inspection({ ruleId: 'bad', confidence: 42 }),
+      inspection({ ruleId: 'kept' }),
+    ]);
+    expect(built).toBeDefined();
+    expect(built?.inspections.map((i) => i.ruleId)).toEqual(['kept']);
+  });
+
+  it('drops a detection whose category is not one this build knows', () => {
+    const built = rebuildAuditEvent(toolRow, [
+      inspection({ ruleId: 'bad', category: 'not-a-category' }),
+      inspection({ ruleId: 'kept' }),
+    ]);
+    expect(built?.inspections.map((i) => i.ruleId)).toEqual(['kept']);
+  });
+
   // The receiving side refuses the whole request over a reserved rule-version
   // namespace. Dropping the one inspection keeps the tool call.
   it('drops a reserved-namespace inspection rather than losing the event', () => {
@@ -174,8 +195,29 @@ describe('rebuildAuditEvent — rows that cannot be sent', () => {
     expect(built).not.toHaveProperty('endedAt');
   });
 
-  it('refuses a detection the wire shape will not accept', () => {
+  // Finite but far outside what a Date can hold — a writer that stamped
+  // microseconds instead of millis. toISOString() RAISES on this rather than
+  // returning anything, and an escaping throw would not cost one row: it leaves
+  // the drain, is swallowed as "no attempt made", and the row is never marked
+  // skipped — so every later pass reaches it and dies identically, with every
+  // row behind it in the session stranded.
+  it('refuses an out-of-range timestamp instead of throwing', () => {
+    expect(() => rebuildAuditEvent(row({ startedAt: 1.7e18 }))).not.toThrow();
+    expect(rebuildAuditEvent(row({ startedAt: 1.7e18 }))).toBeUndefined();
+  });
+
+  it('keeps a row whose end time is out of range, without it', () => {
+    const built = rebuildAuditEvent(row({ endedAt: 1.7e18 }));
+    expect(built).toBeDefined();
+    expect(built).not.toHaveProperty('endedAt');
+  });
+
+  // Every inspection unusable is still a valid tool call with none — the event
+  // is what this lane is for, and the detections decorate it.
+  it('keeps a tool call whose every detection was dropped', () => {
     const toolRow = row({ eventType: 'tool_call', rootSessionId: 'e-1', parentId: 'e-1' });
-    expect(rebuildAuditEvent(toolRow, [inspection({ confidence: 42 })])).toBeUndefined();
+    const built = rebuildAuditEvent(toolRow, [inspection({ confidence: 42 })]);
+    expect(built).toBeDefined();
+    expect(built?.inspections).toEqual([]);
   });
 });

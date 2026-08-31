@@ -105,6 +105,33 @@ describe('aka sync-history', () => {
     expect(readWorkspaceSettings(base).historySyncConsent).toBeUndefined();
   });
 
+  // Granting and then not waiting for the next session is the natural thing to
+  // ask for, and the grant message itself sets it up ("starting with your next
+  // session"). Recording the grant and silently ignoring half the command is the
+  // one outcome that must not happen.
+  it('grants and then sends when --on and --run are given together', async () => {
+    attach();
+    const io = recorder();
+    await runSyncHistory(['--on', '--run'], deps(io));
+
+    expect(exits).toEqual([]);
+    expect(readWorkspaceSettings(base).historySyncConsent).toBeDefined();
+    // The grant message AND the state the pass left behind — --on alone prints
+    // only the first.
+    expect(io.output()).toContain("Sending this machine's existing activity");
+    expect(io.output().trimEnd().split('\n').length).toBeGreaterThan(3);
+  });
+
+  it('revokes and still runs cleanly when --off and --run are given together', async () => {
+    attach();
+    await runSyncHistory(['--on'], deps(recorder()));
+    const io = recorder();
+    await runSyncHistory(['--off', '--run'], deps(io));
+
+    expect(exits).toEqual([]);
+    expect(readWorkspaceSettings(base).historySyncConsent).toBeUndefined();
+  });
+
   it('refuses --on and --off together rather than picking one', async () => {
     attach();
     const io = recorder();

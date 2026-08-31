@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -406,5 +406,47 @@ describe('runHistorySync — the backlog boundary', () => {
     });
 
     expect(sent).toEqual([]);
+  });
+});
+
+describe('runHistorySync — reading the deployment right', () => {
+  // A 401 answered with an oversized body rejects as the TRANSPORT error, which
+  // carries a status too. Reading the prototype instead of the field would call
+  // that a network outage: four attempts, then "paused — deployment
+  // unreachable", sending the user to look at their network instead of
+  // re-attaching.
+  it('treats a refusal as terminal however the transport reports it', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedRows(2);
+    let calls = 0;
+
+    const result = await run({
+      sendBatch: () => {
+        calls += 1;
+        // Shaped like the transport's own body-refused rejection: a status, and
+        // not the request-error prototype.
+        return Promise.reject(Object.assign(new Error('body too large'), { status: 401 }));
+      },
+    });
+
+    expect(result?.outcome).toBe('refused');
+    expect(calls).toBe(1);
+  });
+
+  // The breaker's stamp is never cleared by elapsing, and the half-open probe
+  // re-stamps it before every attempt. Treating any stamp as "open" would hold
+  // the drain off through the whole window in which the live path has resumed
+  // probing — and on a flaky deployment, indefinitely.
+  it('runs when the breaker stamp is older than the cooldown', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedRows(1);
+    writeFileSync(
+      join(dataDirOf(home), 'attached-state.json'),
+      JSON.stringify({ consecutiveFailures: 3, openedAtMs: T0 - 10 * 60_000, lastFailure: null }),
+    );
+
+    const result = await run({ sendBatch: () => Promise.resolve() });
+
+    expect(result?.sent).toBe(2);
   });
 });

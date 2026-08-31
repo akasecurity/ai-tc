@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   controlPlaneCredentialPath,
   dataDir as dataDirOf,
+  openLocalDatabase,
   readWorkspaceSettings,
   settingsDir as settingsDirOf,
 } from '@akasecurity/persistence';
@@ -355,6 +356,28 @@ describe('status', () => {
 describe('existing-history consent', () => {
   const consentOf = () => readWorkspaceSettings(base).historySyncConsent;
 
+  // The question is only asked when there IS something to ask about, so a case
+  // about the prompt has to give the machine a history to offer.
+  const seedHistory = (): void => {
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      db.auditEvents.ensureSessionRoot('s-1', '2026-08-01T00:00:00.000Z');
+    } finally {
+      db.close();
+    }
+  };
+
+  // A machine that has never opened a store has recorded nothing. Asking there
+  // offers to send a history that does not exist — and a yes records a grant
+  // covering nothing.
+  it('does not ask on a machine with no store at all', async () => {
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', ENDPOINT], deps(io));
+    expect(exits).toEqual([]);
+    expect(consentOf()).toBeUndefined();
+    expect(io.output()).not.toContain('What that sends:');
+  });
+
   it('records no grant when the flag declines, and asks nothing', async () => {
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
     await runAttach(['--url', ENDPOINT, '--no-sync-history'], deps(io));
@@ -388,12 +411,14 @@ describe('existing-history consent', () => {
   });
 
   it('grants on an explicit yes', async () => {
+    seedHistory();
     const io = scriptedPrompter({ interactive: true, answers: [KEY, 'Y'] });
     await runAttach(['--url', ENDPOINT], deps(io));
     expect(consentOf()).toMatchObject({ endpoint: ENDPOINT });
   });
 
   it('declines on no', async () => {
+    seedHistory();
     const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
     await runAttach(['--url', ENDPOINT], deps(io));
     expect(consentOf()).toBeUndefined();
@@ -402,12 +427,14 @@ describe('existing-history consent', () => {
   // The default is decline: sending cannot be undone, so a bare Enter must not
   // be the answer that sends.
   it('declines on an empty answer', async () => {
+    seedHistory();
     const io = scriptedPrompter({ interactive: true, answers: [KEY, ''] });
     await runAttach(['--url', ENDPOINT], deps(io));
     expect(consentOf()).toBeUndefined();
   });
 
   it('says what it is asking about before it asks', async () => {
+    seedHistory();
     const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
     await runAttach(['--url', ENDPOINT], deps(io));
     const shown = io.output();
@@ -420,12 +447,44 @@ describe('existing-history consent', () => {
   // An unattended enrolment has no one to ask, so it attaches and declines —
   // rather than refusing to attach, or granting on the user's behalf.
   it('attaches without asking or granting when there is no terminal', async () => {
+    seedHistory();
     const io = scriptedPrompter({ interactive: false, stdin: `${KEY}\n` });
     await runAttach(['--url', ENDPOINT, '--key-stdin'], deps(io));
     expect(exits).toEqual([]);
     expect(readWorkspaceSettings(base).runMode).toBe('attached');
     expect(consentOf()).toBeUndefined();
     expect(io.errors()).toContain('no terminal to prompt on');
+  });
+
+  // Re-attaching to the SAME deployment is the ordinary path — it is how a key
+  // is rotated — and a decline there must be RECORDED, not merged away. Omitting
+  // the key instead of spelling the revocation preserves whatever grant is
+  // already on file, so the user's explicit no would be discarded.
+  it('clears an existing grant when the user declines on a re-attach', async () => {
+    await runAttach(
+      ['--url', ENDPOINT, '--sync-history'],
+      deps(scriptedPrompter({ interactive: true, answers: [KEY] })),
+    );
+    expect(consentOf()).toBeDefined();
+
+    seedHistory();
+    await runAttach(
+      ['--url', ENDPOINT],
+      deps(scriptedPrompter({ interactive: true, answers: [KEY, 'n'] })),
+    );
+    expect(consentOf()).toBeUndefined();
+  });
+
+  it('clears an existing grant when the decline comes from a flag', async () => {
+    await runAttach(
+      ['--url', ENDPOINT, '--sync-history'],
+      deps(scriptedPrompter({ interactive: true, answers: [KEY] })),
+    );
+    await runAttach(
+      ['--url', ENDPOINT, '--no-sync-history'],
+      deps(scriptedPrompter({ interactive: true, answers: [KEY] })),
+    );
+    expect(consentOf()).toBeUndefined();
   });
 
   // A grant names the deployment it was given for, so detaching from that

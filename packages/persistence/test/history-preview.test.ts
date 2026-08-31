@@ -15,10 +15,12 @@ describe('readLocalHistoryPreview', () => {
   // The store file appears on the first open, so a tree with no open yet is the
   // real "never recorded anything here" shape rather than a contrived one.
   //
-  // Unknown history, not "no history": a caller must be able to tell an absent
-  // store from an empty one, because only the second is safe to describe as zero.
-  it('is undefined when no store file exists', () => {
-    expect(readLocalHistoryPreview(store.dataDir, NOW)).toBeUndefined();
+  // A machine with no store has recorded NOTHING, which is a definite answer —
+  // the strongest form of "nothing to ask about". Only a store that exists and
+  // cannot be read is unknown, and the two must not be conflated: a caller that
+  // read this as unknown would offer to send a history that does not exist.
+  it('reports zero when no store file exists', () => {
+    expect(readLocalHistoryPreview(store.dataDir, NOW)).toEqual({ sessions: 0, days: 0 });
   });
 
   it('reports zero sessions on a real but empty store', () => {

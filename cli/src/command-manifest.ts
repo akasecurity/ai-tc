@@ -65,7 +65,7 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
   },
   {
     name: 'sync-history',
-    argHint: '[--on | --off | --run]',
+    argHint: '[--on | --off] [--run]',
     summary: 'Whether to send activity recorded before this machine attached',
     args: ['--on', '--off', '--run'],
   },

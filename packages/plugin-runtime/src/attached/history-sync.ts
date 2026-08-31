@@ -7,11 +7,11 @@ import {
   readControlPlaneCredentialState,
   readWorkspaceSettings,
 } from '@akasecurity/persistence';
-import { createRemoteClient, RemoteRequestError } from '@akasecurity/remote';
+import { createRemoteClient } from '@akasecurity/remote';
 import type { RecordAuditEventRequest } from '@akasecurity/schema';
 import { AUDIT_EVENT_BATCH_MAX, isAttached, isHistorySyncConsentValid } from '@akasecurity/schema';
 
-import { readForwardHealth } from './forward-policy.ts';
+import { BREAKER_COOLDOWN_MS, readForwardHealth } from './forward-policy.ts';
 import { rebuildAuditEvent } from './history-rebuild.ts';
 import type { HistorySyncOutcome } from './history-state.ts';
 
@@ -141,8 +141,18 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
     // READ-ONLY. A long-running child must never write the breaker: its view of
     // plane health would overwrite the hook path's, and the hook path is the one
     // a user is waiting on.
-    const health = readForwardHealth(deps.dataDir, now());
-    if (health !== null && health.openedAtMs !== null) return null;
+    //
+    // OPEN MEANS WITHIN THE COOLDOWN, which is the same test `run()` applies —
+    // not merely "a stamp is present". The stamp is never cleared by elapsing,
+    // and the half-open probe RE-STAMPS it before every attempt, clearing it
+    // only on a forward that succeeds. Treating any stamp as open would hold the
+    // drain off for the whole window in which the live path has resumed probing,
+    // and on a flaky deployment each cooldown re-stamps — so the job that most
+    // needs to make progress during a partial outage would be the one held off
+    // indefinitely by a breaker refusing nothing.
+    const nowMs = now();
+    const openedAtMs = readForwardHealth(deps.dataDir, nowMs)?.openedAtMs ?? null;
+    if (openedAtMs !== null && nowMs - openedAtMs < BREAKER_COOLDOWN_MS) return null;
 
     db = (deps.openStore ?? openLocalDatabase)(deps.dataDir);
     const ledger = db.historySync;
@@ -228,6 +238,23 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   let lastHeartbeat = startedAt;
   let outcome: HistorySyncOutcome = 'ok';
 
+  /**
+   * Say the claim is still held, at most once per interval.
+   *
+   * Threaded down into the send paths rather than called only between batches:
+   * one batch's worst case is four attempts at the request timeout plus the
+   * backoff ladder, which is already past the stale window, and the row-by-row
+   * isolation path multiplies that by the batch size. Checking in only after a
+   * batch returned would let a second child take the claim from a drain that is
+   * alive and mid-request — exactly the case the claim was written for.
+   */
+  const beat = (): void => {
+    const at = d.now();
+    if (at - lastHeartbeat < HEARTBEAT_EVERY_MS) return;
+    d.ledger.heartbeat(d.pid, at);
+    lastHeartbeat = at;
+  };
+
   outer: while (d.now() < deadline) {
     const sessions = d.ledger.pendingSessions(SESSION_PAGE, d.backlogBefore);
     if (sessions.length === 0) break;
@@ -264,7 +291,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
           break outer;
         }
         const chunk = ready.slice(i, i + BATCH_SIZE);
-        const result = await sendChunk(d, chunk);
+        const result = await sendChunk(d, chunk, beat);
         sent += result.sent;
         skipped += result.skipped;
         if (result.stopped !== undefined) {
@@ -273,10 +300,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
           break outer;
         }
 
-        if (d.now() - lastHeartbeat >= HEARTBEAT_EVERY_MS) {
-          d.ledger.heartbeat(d.pid, d.now());
-          lastHeartbeat = d.now();
-        }
+        beat();
         await d.sleep(PACE_INTERVAL_MS);
       }
     }
@@ -308,10 +332,12 @@ interface ChunkResult {
 async function sendChunk(
   d: DrainDeps,
   chunk: readonly { id: string; event: RecordAuditEventRequest }[],
+  beat: () => void,
 ): Promise<ChunkResult> {
   const verdict = await sendWithRetries(
     d,
     chunk.map((c) => c.event),
+    beat,
   );
   if (verdict === 'sent') {
     d.ledger.markSynced(
@@ -332,8 +358,15 @@ async function sendChunk(
   }
   let sent = 0;
   let skipped = 0;
-  for (const one of chunk) {
-    const single = await sendChunk(d, [one]);
+  for (const [index, one] of chunk.entries()) {
+    // PACED like every other request. The pause between batches lives in the
+    // caller, so without this the isolation pass would fire one request per row
+    // back to back — a burst as large as the batch, at the moment the deployment
+    // has just refused something, on a credential this job shares with the live
+    // forwarding it must never be the reason to rate-limit.
+    if (index > 0) await d.sleep(PACE_INTERVAL_MS);
+    beat();
+    const single = await sendChunk(d, [one], beat);
     sent += single.sent;
     skipped += single.skipped;
     if (single.stopped !== undefined) return { sent, skipped, stopped: single.stopped };
@@ -351,6 +384,7 @@ async function sendChunk(
 async function sendWithRetries(
   d: DrainDeps,
   events: readonly RecordAuditEventRequest[],
+  beat: () => void,
 ): Promise<RowVerdict> {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     try {
@@ -366,10 +400,32 @@ async function sendWithRetries(
       // transport carries the status alone, deliberately, so that a
       // server-authored string can never reach a log or a status line.
       const ceiling = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** attempt);
+      // Before the sleep, not after: the gap this covers is the request that
+      // just timed out plus the wait that follows it.
+      beat();
       await d.sleep(Math.floor(d.random() * ceiling));
     }
   }
   return 'unreachable';
+}
+
+/**
+ * The status a failure carries, read STRUCTURALLY.
+ *
+ * Never `instanceof`, for the reason the sibling classifier gives: this module is
+ * bundled into every hook script while the transport is a separate package, and
+ * a prototype identity that survives one bundler configuration is not a thing to
+ * hang a verdict on. Reading the field also catches the class that is easy to
+ * miss — the transport error carries a status too, on the two paths where
+ * headers arrived and only the body was refused, so a 401 answered with an
+ * oversized body would otherwise read as a network outage and be retried four
+ * times before reporting "unreachable" to a user who needs to re-attach.
+ */
+function statusOf(err: unknown): number | null {
+  if (typeof err !== 'object' || err === null || !('status' in err)) return null;
+  const { status } = err;
+  if (typeof status !== 'number' || !Number.isInteger(status)) return null;
+  return status >= 100 && status <= 599 ? status : null;
 }
 
 /** What a failure means for the pass. */
@@ -377,13 +433,19 @@ function classify(err: unknown): 'refused' | 'skip' | 'retry' {
   // A body this client refused to SEND is a defect on this machine, not an
   // outage — it fails identically on every attempt and against every deployment.
   if ((err as { name?: string }).name === 'RemoteRequestInvalid') return 'skip';
-  if (err instanceof RemoteRequestError) {
+  switch (statusOf(err)) {
     // Terminal in a way a timeout is not: the credential may have died with an
     // offboarded member, and every later row would fail the same way.
-    if (err.status === 401 || err.status === 403) return 'refused';
+    case 401:
+    case 403:
+      return 'refused';
     // The deployment understood the request and rejected it. Re-sending an
     // identical body cannot change that.
-    if (err.status === 400 || err.status === 413 || err.status === 422) return 'skip';
+    case 400:
+    case 413:
+    case 422:
+      return 'skip';
+    default:
+      return 'retry';
   }
-  return 'retry';
 }

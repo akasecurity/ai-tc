@@ -3,6 +3,7 @@ import type { AuditEventRow, RecordAuditEventRequest } from '@akasecurity/schema
 import {
   epochMillisToIso,
   RecordAuditEventRequest as RecordAuditEventRequestSchema,
+  ToolCallInspection,
 } from '@akasecurity/schema';
 
 /**
@@ -67,17 +68,26 @@ export function rebuildAuditEvent(
     ...attributesOf(row.attributes),
     inspections: inspections
       .filter((i) => !i.ruleVersion.startsWith(CAPTURE_VERSION_PREFIX))
-      .map((i) => ({
-        ruleId: i.ruleId,
-        ruleName: i.ruleName,
-        ruleVersion: i.ruleVersion,
-        category: i.category,
-        severity: i.severity,
-        span: { start: i.spanStart, end: i.spanEnd },
-        maskedMatch: i.maskedMatch,
-        actionTaken: i.actionTaken,
-        confidence: i.confidence,
-      })),
+      .map((i) =>
+        ToolCallInspection.safeParse({
+          ruleId: i.ruleId,
+          ruleName: i.ruleName,
+          ruleVersion: i.ruleVersion,
+          category: i.category,
+          severity: i.severity,
+          span: { start: i.spanStart, end: i.spanEnd },
+          maskedMatch: i.maskedMatch,
+          actionTaken: i.actionTaken,
+          confidence: i.confidence,
+        }),
+      )
+      // EACH ONE ON ITS OWN, for the same reason the reserved namespace is
+      // filtered above: one stored detection the current shape will not accept —
+      // a category or action from a retired enum, a confidence an older writer
+      // put on a 0-100 scale — would otherwise cost the whole tool call, which
+      // is then stamped permanently skipped for a child row's defect.
+      .filter((parsed) => parsed.success)
+      .map((parsed) => parsed.data),
   };
 
   const parsed = RecordAuditEventRequestSchema.safeParse(candidate);
@@ -85,11 +95,29 @@ export function rebuildAuditEvent(
 }
 
 /**
+ * The largest magnitude `new Date(ms)` represents. Beyond it `toISOString()`
+ * raises rather than returning anything, which is the ECMA-262 bound on a time
+ * value, not a Node detail.
+ */
+const MAX_EPOCH_MS = 8_640_000_000_000_000;
+
+/**
  * An epoch-millis column as an ISO string, or undefined when it is not an
- * instant at all — absent, or a number no date can be built from.
+ * instant at all — absent, not a number, or outside the range a Date can hold.
+ *
+ * THE RANGE CHECK IS NOT REDUNDANT with the finiteness one. A writer that
+ * stamped microseconds instead of milliseconds produces something like 1.7e18:
+ * finite, and far outside what `toISOString()` will render. Letting that throw
+ * would not cost one row — the throw leaves the rebuild, leaves the drain, and
+ * is swallowed by the pass's outer catch, which returns "no attempt made". The
+ * row is never marked skipped, so every later pass reaches it and dies the same
+ * way, no progress is ever recorded, and every row ordered behind it in the
+ * session is stranded. Returning undefined is what makes it the one counted skip
+ * this module's contract promises.
  */
 function isoOrUndefined(ms: number | null | undefined): string | undefined {
   if (ms === null || ms === undefined || !Number.isFinite(ms)) return undefined;
+  if (Math.abs(ms) > MAX_EPOCH_MS) return undefined;
   return epochMillisToIso(ms);
 }
 

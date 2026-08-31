@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -14,6 +14,7 @@ import type { RecordAuditEventRequest } from '@akasecurity/schema';
 import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { runHistorySync } from '../../src/attached/history-sync.ts';
 
 const ENDPOINT = 'https://plane.example.test';
@@ -101,7 +102,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(home, { recursive: true, force: true });
+  removeTree(home);
 });
 
 describe('runHistorySync — passes that are never made', () => {

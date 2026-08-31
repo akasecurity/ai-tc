@@ -137,14 +137,14 @@ describe('triggerHistorySync — when it does fork', () => {
   // session.
   it('never throws, whatever the spawn does', () => {
     setup({ grantFor: ENDPOINT });
-    expect(() =>
-      { triggerHistorySync(configFor(home), {
+    expect(() => {
+      triggerHistorySync(configFor(home), {
         ...deps(),
         spawnChild: () => {
           throw new Error('fork failed');
         },
-      }); },
-    ).not.toThrow();
+      });
+    }).not.toThrow();
   });
 });
 

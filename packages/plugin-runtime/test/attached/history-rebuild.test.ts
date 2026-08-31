@@ -150,8 +150,7 @@ describe('rebuildAuditEvent — rows that cannot be sent', () => {
   // about that, not a guarantee. A store is years of writers, and one really can
   // hold an event type this build has never heard of — which is the case this
   // lane has to survive rather than the one it can rule out.
-  const asStored = (over: Record<string, unknown>): AuditEventRow =>
-    ({ ...row(), ...over });
+  const asStored = (over: Record<string, unknown>): AuditEventRow => ({ ...row(), ...over });
 
   // A store is years of writers. A row one of them left half-shaped has to
   // become a counted, permanent skip rather than a request refused for ever.

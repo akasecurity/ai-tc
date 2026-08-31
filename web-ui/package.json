@@ -17,6 +17,7 @@
     "@akasecurity/detections": "workspace:*",
     "@akasecurity/local-ops": "workspace:*",
     "@akasecurity/persistence": "workspace:*",
+    "@akasecurity/remote": "workspace:*",
     "@akasecurity/schema": "workspace:*",
     "@akasecurity/ui-kit": "workspace:*",
     "@fontsource-variable/inter": "^5.3.0",

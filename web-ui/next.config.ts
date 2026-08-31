@@ -21,6 +21,15 @@ const nextConfig: NextConfig = {
     '@akasecurity/detections',
     '@akasecurity/local-ops',
     '@akasecurity/plugin-sdk',
+    // Raw .ts like every entry above it ("exports": { ".": "./src/index.ts" },
+    // no build step), which is the rule this list states.
+    //
+    // Listed for that consistency, NOT because the build currently needs it: it
+    // is reached only from a Server Action, and `next build` was verified to
+    // pass with this line removed. It is here so the list keeps meaning "every
+    // workspace package we import", which is what makes the next addition a
+    // one-line question rather than a bisect.
+    '@akasecurity/remote',
   ],
   // Self-contained server bundle (.next/standalone/.../server.js) so `aka dashboard`
   // — and the packaged @akasecurity/cli — can launch the web-ui without a full

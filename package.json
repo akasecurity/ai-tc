@@ -31,9 +31,9 @@
     "eslint": "^9.39.5",
     "lefthook": "^2.1.10",
     "prettier": "^3.9.6",
-    "turbo": "^2.10.10",
+    "turbo": "^2.10.12",
     "typescript": "^5.8.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "pnpm": {
     "overrides": {

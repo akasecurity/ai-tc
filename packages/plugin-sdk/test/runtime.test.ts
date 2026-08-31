@@ -475,6 +475,29 @@ describe('capture — added-latency measurement (metadata.inspectionMs)', () => 
     expect(typeof metadata?.inspectionMs).toBe('number');
   });
 
+  it("persists no measurement for a benign 'with-findings' capture — the sample is the RECORDED set, not the scanned one", async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'nothing here' },
+      { persist: 'with-findings' },
+    );
+    await rt.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'SECRET_MARKER' },
+      { persist: 'with-findings' },
+    );
+    await rt.close();
+
+    // The clean capture ran the full ruleset and was still not recorded, so its
+    // measurement reaches no reader. That is the sampling skew both this call
+    // site and `InspectionThroughputSummary.addedLatencyP50Ms` document: for
+    // this kind the recorded set is the findings-bearing subset, which does
+    // strictly more work. Pinned so the skew cannot be silently widened (a kind
+    // moved onto 'with-findings') or quietly closed without the docs moving.
+    expect(gw.records).toHaveLength(1);
+    expect(typeof gw.records[0]?.event.metadata?.inspectionMs).toBe('number');
+  });
+
   it('records a benign capture too — the cost is the same whether anything was found', async () => {
     const gw = fakeGateway(bundle());
     const rt = createPluginRuntime(gw, settings());

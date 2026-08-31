@@ -588,8 +588,15 @@ export function createPluginRuntime(
     // build below is inspection work the host session waits on. A capture that
     // brought its own `occurredAt` is replaying past work (the transcript
     // backfill, the worktree scan), so it is never timed: its scan duration is
-    // latency nobody experienced, and recording it would mix background work
-    // into a p50 that answers "what does inspection cost a live session?".
+    // latency nobody experienced, and mixing background work into the sample
+    // would misdescribe what inspection costs a live session.
+    //
+    // What the sample can NOT correct for is the persistence policy above it: a
+    // capture that is measured but never recorded (`persist: 'with-findings'`
+    // with nothing found — see the early return below) carries its measurement
+    // nowhere. So for that kind the recorded set is the findings-bearing subset,
+    // which does strictly more work than the clean captures it stands in for.
+    // Any reader aggregating this field inherits that skew.
     const timingStartedAt = input.occurredAt === undefined ? startTiming() : undefined;
     const filePath = input.metadata?.filePath;
     const { decision, excepted, exceptionIds } = await evaluate(

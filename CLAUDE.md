@@ -699,11 +699,18 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      nothing: the client is constructed only once both halves of
                      an attachment are present and agree)
 @akasecurity/remote         → @akasecurity/schema, zod
-                     (the control-plane transport: the six routes an attached
-                     machine is scoped to, and the ONLY package in this
+                     (the control-plane transport, and the ONLY package in this
                      workspace permitted to open a socket — see §4. `src/http.ts`
                      is the one module inside it that sends; everything else
-                     builds requests and parses answers)
+                     builds requests and parses answers.
+                     TWO clients, split by whether the caller holds a credential.
+                     `createRemoteClient` speaks the seven routes an ATTACHED
+                     machine is scoped to and requires a key. `createAttachClient`
+                     speaks the two anonymous routes a machine uses to OBTAIN one
+                     and holds none — a separate factory rather than an optional
+                     key, so a caller cannot reach any other route without a
+                     credential, since that client cannot express one. The exact
+                     export set is pinned by test/public-surface.test.ts)
 @akasecurity/plugin-sdk     → @akasecurity/detections, persistence, schema
                      (provider resolution for the session-root snapshot reads the host env
                      directly at SessionStart — `provider.ts` for Claude Code,

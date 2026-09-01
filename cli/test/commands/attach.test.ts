@@ -71,10 +71,30 @@ let exits: number[];
 
 const verify = () => Promise.resolve({ tenantName: 'Example Org', userEmail: 'dev@example.com' });
 
+/**
+ * A deployment that does not offer browser approval.
+ *
+ * Every case in this file is about the KEY path — the prompt, the write, the
+ * rollback — and `aka attach` now tries the interactive path first. Stubbing it
+ * as not-offered is what a pre-device-flow deployment does, so these cases
+ * exercise the same fall-through a real one produces rather than reaching for
+ * a socket the no-network guard would refuse.
+ *
+ * The interactive path has its own suite (attach-device.test.ts), and the
+ * PREFERENCE between the two is asserted below rather than assumed here.
+ */
+const notOffered = () => Promise.resolve({ kind: 'not-offered' as const });
+
 const deps = (io: ReturnType<typeof scriptedPrompter>) => ({
   base,
   prompter: io,
   verify,
+  deviceAttach: notOffered,
+  // UNMANAGED, stated rather than inherited. The administrative overlay lives
+  // at absolute system paths that a temp home cannot redirect, so without this
+  // every case here reads whatever the machine running it is enrolled in — and
+  // a developer whose own laptop is managed sees six unrelated failures.
+  managedSettings: null,
   exit: (code: number) => exits.push(code),
 });
 

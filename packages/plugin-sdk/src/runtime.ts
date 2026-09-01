@@ -594,9 +594,14 @@ export function createPluginRuntime(
     // What the sample can NOT correct for is the persistence policy above it: a
     // capture that is measured but never recorded (`persist: 'with-findings'`
     // with nothing found — see the early return below) carries its measurement
-    // nowhere. So for that kind the recorded set is the findings-bearing subset,
-    // which does strictly more work than the clean captures it stands in for.
-    // Any reader aggregating this field inherits that skew.
+    // nowhere. The skew therefore follows that CONDITION — a live capture the
+    // caller passed 'with-findings' — and not any particular kind; enumerating
+    // kinds here is what went stale last time. Both 'tool_use' (the pre-tool-use
+    // hooks) and 'response' (the post-tool-use hooks, which see every Read file
+    // and Bash stream) are live and 'with-findings' today, so for each the
+    // recorded set is the findings-bearing subset, which does strictly more work
+    // than the clean captures it stands in for. Any reader aggregating this
+    // field inherits that skew.
     const timingStartedAt = input.occurredAt === undefined ? startTiming() : undefined;
     const filePath = input.metadata?.filePath;
     const { decision, excepted, exceptionIds } = await evaluate(

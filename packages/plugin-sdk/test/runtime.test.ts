@@ -489,12 +489,34 @@ describe('capture — added-latency measurement (metadata.inspectionMs)', () => 
     await rt.close();
 
     // The clean capture ran the full ruleset and was still not recorded, so its
-    // measurement reaches no reader. That is the sampling skew both this call
-    // site and `InspectionThroughputSummary.addedLatencyP50Ms` document: for
-    // this kind the recorded set is the findings-bearing subset, which does
-    // strictly more work. Pinned so the skew cannot be silently widened (a kind
-    // moved onto 'with-findings') or quietly closed without the docs moving.
+    // measurement reaches no reader. That is the sampling skew `capture()`
+    // documents: whenever a LIVE capture is made at 'with-findings', the
+    // recorded set is the findings-bearing subset, which does strictly more
+    // work. Pinned so it cannot be silently widened (another kind moved onto
+    // 'with-findings') or quietly closed without the wording moving.
     expect(gw.records).toHaveLength(1);
+    expect(typeof gw.records[0]?.event.metadata?.inspectionMs).toBe('number');
+  });
+
+  it("persists no measurement for a benign 'with-findings' RESPONSE either — the skew follows the condition, not the kind", async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture(
+      { kind: 'response', sourceTool: 'claude-code', text: 'nothing here' },
+      { persist: 'with-findings' },
+    );
+    await rt.capture(
+      { kind: 'response', sourceTool: 'claude-code', text: 'SECRET_MARKER' },
+      { persist: 'with-findings' },
+    );
+    await rt.close();
+
+    // Both post-tool-use hooks capture kind:'response' at 'with-findings' with
+    // no occurredAt, so responses are timed and then dropped when clean —
+    // exactly the tool_use case above. Pinning only tool_use would leave a kind
+    // that is ALREADY in the widened state unguarded.
+    expect(gw.records).toHaveLength(1);
+    expect(gw.records[0]?.event.kind).toBe('response');
     expect(typeof gw.records[0]?.event.metadata?.inspectionMs).toBe('number');
   });
 

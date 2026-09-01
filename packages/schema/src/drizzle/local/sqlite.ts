@@ -345,7 +345,9 @@ export const auditEvents = sqliteTable(
     attributes: text(COL.attributes),
     // Token usage (input/output/cache tokens, model, provider) is snapshotted into
     // `attributes` on llm_call rows and surfaced as generated columns so rollups can
-    // SUM/index them without re-running json_extract per row.
+    // name and index them. These are VIRTUAL, so a SUM over one re-runs
+    // json_extract per row just as an inline call does; only an index on the
+    // column materializes the value and changes the plan.
     inputTokens: integer(COL.inputTokens).generatedAlwaysAs(
       sql`json_extract(attributes, '$.input_tokens')`,
       { mode: 'virtual' },
@@ -370,9 +372,15 @@ export const auditEvents = sqliteTable(
     }),
     // Added latency (whole ms) is snapshotted into `attributes` on capture rows
     // by the plugin SDK and surfaced as a generated column here for the same
-    // reason the token facets are: a percentile/aggregate over it must not
-    // re-run json_extract per row. NULL wherever no measurement was taken — the
-    // reader distinguishes "not measured" from a real 0.
+    // reason the token facets are: to make the facet addressable by name, and
+    // indexable when a read surface needs it. The column is VIRTUAL, so an
+    // aggregate over it re-runs json_extract per row exactly like the inline
+    // call would — measured at 200k rows, both forms plan as a bare `SCAN` and
+    // land within noise of each other. What pays is an INDEX on it: the same
+    // p50 probe goes from ~93ms to ~0.8ms once one exists (`SEARCH ... USING
+    // INDEX`). Migration 0022 adds none, so that is a later change, not a
+    // property this column already has. NULL wherever no measurement was
+    // taken — the reader distinguishes "not measured" from a real 0.
     inspectionMs: integer(COL.inspectionMs).generatedAlwaysAs(
       sql`json_extract(attributes, '$.inspection_ms')`,
       { mode: 'virtual' },

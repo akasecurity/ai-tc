@@ -157,7 +157,11 @@ function makeClient(calls: Calls, overrides: Partial<AttachedClient> = {}): Atta
   return {
     ingestEvents: vi.fn(() => {
       calls.order.push('client.ingestEvents');
-      return Promise.resolve({ accepted: 1 } as never);
+      // A COMPLETE ack. `IngestAck` carries both counts and the real client
+      // zod-parses the response, so a fake missing `duplicates` is not a
+      // lenient fixture — it is a shape the product cannot produce, and it
+      // made `accepted + duplicates` NaN in every case that reads the ack.
+      return Promise.resolve({ accepted: 1, duplicates: 0 } as never);
     }),
     ingestInventory: vi.fn(() => {
       calls.order.push('client.ingestInventory');
@@ -382,6 +386,40 @@ describe('writes are local-FIRST, then forwarded', () => {
     // The forward fake keeps its own tape; `calls` is the one the LOCAL fake
     // writes to, which is where the stamp would show up.
     const { gateway, calls } = build({ forward: deadForward({ order: [] }) });
+    await gateway.recordCapture({ event: event('e1'), findings: [] });
+    expect(calls.order).toContain('local.recordCapture');
+    expect(calls.order).not.toContain('local.markCaptureDelivered');
+  });
+
+  it('stamps a capture the plane already had, reported as a duplicate', async () => {
+    // A duplicate is the receiver's id-dedup recognising a resend, which means
+    // the plane HAS the row. Treating it as undelivered would leave the capture
+    // outstanding for ever, resent on every pass and deduped every time.
+    const { gateway, calls } = build({
+      client: makeClient(
+        { order: [] },
+        {
+          ingestEvents: vi.fn(() => Promise.resolve({ accepted: 0, duplicates: 1 })),
+        },
+      ),
+    });
+    await gateway.recordCapture({ event: event('e1'), findings: [] });
+    expect(calls.order).toContain('local.markCaptureDelivered');
+  });
+
+  it('does NOT stamp a 200 that accepted nothing', async () => {
+    // `ok` says the call completed and parsed, not that the plane took the
+    // event. An ack of {0,0} took nothing, and stamping on it is the one
+    // failure mode on this path that loses a row instead of resending it —
+    // the direction the whole "queued is what is owed" invariant rests on.
+    const { gateway, calls } = build({
+      client: makeClient(
+        { order: [] },
+        {
+          ingestEvents: vi.fn(() => Promise.resolve({ accepted: 0, duplicates: 0 })),
+        },
+      ),
+    });
     await gateway.recordCapture({ event: event('e1'), findings: [] });
     expect(calls.order).toContain('local.recordCapture');
     expect(calls.order).not.toContain('local.markCaptureDelivered');

@@ -425,13 +425,30 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     );
     // Delivered ⇒ stamp the row, so the outbox does not offer it again.
     //
-    // ONLY on `ok`. Every other outcome — timeout, refusal, breaker-open —
-    // leaves `synced_at` NULL, which IS the queue: the row stays outstanding
-    // and a later drain picks it up. That is the whole of the reversal of G8's
-    // no-outbox rule, and it needs no spool file, because the event is already
-    // on disk in `audit_events` and always was. What changes is that the local
-    // store now records whether the organization's copy was made, not just what
-    // this machine saw.
+    // Every other outcome — timeout, refusal, breaker-open — leaves `synced_at`
+    // NULL, which IS the queue: the row stays outstanding and a later drain
+    // picks it up. That is the whole of the reversal of G8's no-outbox rule, and
+    // it needs no spool file, because the event is already on disk in
+    // `audit_events` and always was. What changes is that the local store now
+    // records whether the organization's copy was made, not just what this
+    // machine saw.
+    //
+    // `ok` ALONE IS NOT DELIVERY. It says the call completed and the body parsed
+    // as an `IngestAck`; the ack itself says what the plane did with the event.
+    // `{accepted: 1, duplicates: 0}` and `{accepted: 0, duplicates: 1}` both
+    // mean it has the row — a duplicate is the id-dedup recognising a resend,
+    // which is a delivery, not a loss. `{accepted: 0, duplicates: 0}` is a 200
+    // that took nothing, and stamping on it would remove the row from the
+    // outbox for ever.
+    //
+    // Today's backend cannot produce that for a one-event batch: every return in
+    // its ingest repository keeps `accepted + duplicates` equal to the batch
+    // size. But that is a server-side invariant the WIRE contract does not
+    // express — `IngestAck` constrains both fields only to be non-negative — and
+    // this plugin talks to deployments it does not ship. So it is read rather
+    // than assumed, and the unread case errs the way everything else on this
+    // path errs: toward a redundant resend the receiver's id-dedup absorbs,
+    // never toward a row silently dropped from what is owed.
     //
     // The stamp is deliberately NOT part of the local write's transaction. The
     // write is authoritative and must commit whatever the network does; only
@@ -439,7 +456,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     // between the two costs one redundant resend, which the receiver's id-dedup
     // absorbs — `captureWireId` derives the wire id from the same tuple the row
     // is keyed on, so the retry arrives under the id the first attempt used.
-    if (forwarded.ok) {
+    if (forwarded.ok && forwarded.value.accepted + forwarded.value.duplicates > 0) {
       this.deps.local.markCaptureDelivered(record.event, Date.now());
     }
   }

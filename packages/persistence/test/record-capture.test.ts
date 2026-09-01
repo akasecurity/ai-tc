@@ -147,6 +147,7 @@ describe('recordCapture — audit/inspection trio', () => {
         correlationId: '11111111-1111-1111-1111-111111111111',
         traceId: 'a'.repeat(32),
         exceptionIds: ['22222222-2222-2222-2222-222222222222'],
+        inspectionMs: 7,
       },
     });
     db.recordCapture(ev, []);
@@ -169,10 +170,40 @@ describe('recordCapture — audit/inspection trio', () => {
       correlation_id: '11111111-1111-1111-1111-111111111111',
       trace_id: 'a'.repeat(32),
       exception_ids: ['22222222-2222-2222-2222-222222222222'],
+      inspection_ms: 7,
     });
     // sessionId became the FK, never an attribute, under either casing.
     expect('sessionId' in attributes).toBe(false);
     expect('session_id' in attributes).toBe(false);
+    r.close();
+    db.close();
+  });
+
+  it('surfaces inspection_ms as a generated column, NULL when the capture carried no measurement', () => {
+    const db = store.open();
+
+    const measured = event({ kind: 'prompt', contentHash: 'hash-measured' });
+    measured.metadata = { ...measured.metadata, inspectionMs: 0 };
+    db.recordCapture(measured, []);
+
+    const unmeasured = event({ kind: 'prompt', contentHash: 'hash-unmeasured' });
+    db.recordCapture(unmeasured, []);
+
+    const r = raw();
+    const read = (id: string) =>
+      (
+        r.prepare('SELECT inspection_ms FROM audit_events WHERE id = ?').get(id) as {
+          inspection_ms: number | null;
+        }
+      ).inspection_ms;
+
+    // A measured 0 — a capture that finished inside a millisecond — must reach
+    // the column as 0 and NOT as NULL: the read side computes a percentile over
+    // the non-NULL rows, so collapsing the two would either drop a real sample
+    // or invent one. `json_extract` returns SQL NULL for an absent key, which
+    // is what makes the unmeasured row distinguishable at all.
+    expect(read(captureId(null, 'hash-measured'))).toBe(0);
+    expect(read(captureId(null, 'hash-unmeasured'))).toBeNull();
     r.close();
     db.close();
   });

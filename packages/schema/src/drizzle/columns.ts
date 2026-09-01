@@ -70,6 +70,9 @@ export const COL = {
   cacheReadInputTokens: 'cache_read_input_tokens',
   model: 'model',
   provider: 'provider',
+  // Added-latency generated column on audit_events (json_extract from
+  // attributes) — how long a capture's inspection blocked its caller.
+  inspectionMs: 'inspection_ms',
   // Meta data model — Source / Project
   url: 'url',
   // Meta data model — Inventory API (asset/file/override tables)

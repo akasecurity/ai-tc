@@ -5,11 +5,7 @@ import { join } from 'node:path';
 import { recordSessionModel } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import {
-  decidePreModelSwitch,
-  decideProhibitedModelTurn,
-  resolveSessionModel,
-} from '../../src/hooks/model-guard.ts';
+import { decidePreModelSwitch, resolveSessionModel } from '../../src/hooks/model-guard.ts';
 
 let dir: string;
 
@@ -44,25 +40,6 @@ describe('decidePreModelSwitch', () => {
     ['an empty prohibition list', 'claude-opus-5', []],
   ])('has no opinion on %s', (_label, model, prohibited) => {
     expect(decidePreModelSwitch(model, prohibited)).toBeNull();
-  });
-});
-
-describe('decideProhibitedModelTurn', () => {
-  it("blocks the turn with UserPromptSubmit's own top-level shape", () => {
-    // Deliberately NOT `hookSpecificOutput` — the sibling decision above uses
-    // that, and the two hooks read different fields.
-    const output = decideProhibitedModelTurn('claude-opus-5', ['claude-opus-5']);
-    expect(output?.decision).toBe('block');
-    expect(output?.reason).toContain('claude-opus-5');
-    expect(Object.keys(output ?? {}).sort()).toEqual(['decision', 'reason']);
-  });
-
-  it.each([
-    ['an approved model', 'claude-sonnet-4-5', ['claude-opus-5']],
-    ['an unresolvable model', undefined, ['claude-opus-5']],
-    ['no prohibition list', 'claude-opus-5', undefined],
-  ])('allows a turn on %s', (_label, model, prohibited) => {
-    expect(decideProhibitedModelTurn(model, prohibited)).toBeNull();
   });
 });
 

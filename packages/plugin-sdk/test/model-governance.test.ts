@@ -5,8 +5,12 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  claudeCodeModelFromRecord,
+  codexModelFromRecord,
+  decideProhibitedModelTurn,
   isModelProhibited,
   modelFromTranscript,
+  modelFromTranscriptTail,
   normalizeModelId,
   prohibitedModelMessage,
   readSessionModel,
@@ -225,5 +229,69 @@ describe('modelFromTranscript reads only the tail', () => {
       [...Array<string>(64).fill(filler), assistantLine('claude-opus-5')].join('\n'),
     );
     expect(modelFromTranscript(big)).toBe('claude-opus-5');
+  });
+});
+
+describe('modelFromTranscriptTail with a per-harness extractor', () => {
+  it('reads the Codex rollout shape: model on a turn_context payload', () => {
+    // Codex names the model per TURN, not per response, so there is no
+    // assistant record to read and the Claude Code extractor finds nothing in
+    // the same file.
+    const path = join(dir, 'rollout.jsonl');
+    writeFileSync(
+      path,
+      [
+        JSON.stringify({ type: 'turn_context', payload: { model: 'gpt-4o' } }),
+        JSON.stringify({ type: 'event_msg', payload: { type: 'token_count' } }),
+        JSON.stringify({ type: 'turn_context', payload: { model: 'o3' } }),
+      ].join('\n'),
+    );
+    expect(modelFromTranscriptTail(path, codexModelFromRecord)).toBe('o3');
+    expect(modelFromTranscriptTail(path, claudeCodeModelFromRecord)).toBeUndefined();
+  });
+
+  it('keeps each extractor blind to the other harness’s records', () => {
+    // The control for the pair above: an extractor that matched any `model` key
+    // anywhere would pass both directions and silently read a foreign shape.
+    const path = join(dir, 'cc.jsonl');
+    writeFileSync(path, assistantLine('claude-opus-5'));
+    expect(modelFromTranscriptTail(path, claudeCodeModelFromRecord)).toBe('claude-opus-5');
+    expect(modelFromTranscriptTail(path, codexModelFromRecord)).toBeUndefined();
+  });
+
+  it('ignores a record whose model is absent or not a string', () => {
+    const path = join(dir, 'bad.jsonl');
+    writeFileSync(
+      path,
+      [
+        JSON.stringify({ type: 'turn_context', payload: { model: 'o3' } }),
+        JSON.stringify({ type: 'turn_context', payload: { model: 42 } }),
+        JSON.stringify({ type: 'turn_context', payload: {} }),
+      ].join('\n'),
+    );
+    // Scanning is newest-first, so the two unusable records are skipped rather
+    // than ending the scan at the newest line.
+    expect(modelFromTranscriptTail(path, codexModelFromRecord)).toBe('o3');
+  });
+});
+
+describe('decideProhibitedModelTurn', () => {
+  // Hoisted here from the two plugins, which held byte-identical copies. The
+  // decision is not harness-specific — both hosts spell a blocked prompt the
+  // same way — and two copies of one decision drift on exactly what they share.
+  it("blocks with the hosts' shared top-level shape", () => {
+    const output = decideProhibitedModelTurn('claude-opus-5', ['claude-opus-5']);
+    expect(output?.decision).toBe('block');
+    expect(output?.reason).toContain('claude-opus-5');
+    expect(Object.keys(output ?? {}).sort()).toEqual(['decision', 'reason']);
+  });
+
+  it.each([
+    ['an approved model', 'claude-sonnet-5', ['claude-opus-5']],
+    ['an unresolvable model', undefined, ['claude-opus-5']],
+    ['no prohibition list', 'claude-opus-5', undefined],
+    ['an empty prohibition list', 'claude-opus-5', []],
+  ])('allows a turn on %s', (_label, model, prohibited) => {
+    expect(decideProhibitedModelTurn(model, prohibited)).toBeNull();
   });
 });

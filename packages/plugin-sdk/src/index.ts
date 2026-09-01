@@ -56,9 +56,14 @@ export {
 } from './isolated-scan.ts';
 export type { ScanFinding } from './mask.ts';
 export { maskText, scanText } from './mask.ts';
+export type { ModelFromRecord } from './model-governance.ts';
 export {
+  claudeCodeModelFromRecord,
+  codexModelFromRecord,
+  decideProhibitedModelTurn,
   isModelProhibited,
   modelFromTranscript,
+  modelFromTranscriptTail,
   normalizeModelId,
   prohibitedModelMessage,
   readSessionModel,

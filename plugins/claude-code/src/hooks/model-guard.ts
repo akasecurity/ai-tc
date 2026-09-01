@@ -8,6 +8,7 @@
 // the one thing to get right here — see each function's own note.
 import type { DataGateway } from '@akasecurity/plugin-sdk';
 import {
+  decideProhibitedModelTurn,
   isModelProhibited,
   modelFromTranscript,
   prohibitedModelMessage,
@@ -80,27 +81,6 @@ export function resolveSessionModel(
   transcriptPath: string | undefined,
 ): string | undefined {
   return readSessionModel(dataDir, sessionId) ?? modelFromTranscript(transcriptPath);
-}
-
-/**
- * Refuse a turn whose session is running on a prohibited model.
- *
- * UserPromptSubmit's own shape — top-level `{decision:'block'}`, NOT
- * PreModelSwitch's `permissionDecision` above. The harness reads a different
- * field per event, so the two decisions in this file deliberately return
- * different types rather than one shared shape.
- *
- * Null (allow) for every uncertain case, same rule as the switch decision: an
- * unresolvable model is ignorance, and this control never blocks on ignorance.
- */
-export function decideProhibitedModelTurn(
-  model: string | undefined,
-  prohibitedModels: readonly string[] | undefined,
-): { decision: 'block'; reason: string } | null {
-  // Narrowed first, for the reason the switch decision above spells out.
-  if (model === undefined || model === '') return null;
-  if (!isModelProhibited(model, prohibitedModels)) return null;
-  return { decision: 'block', reason: prohibitedModelMessage(model, 'turn') };
 }
 
 /**

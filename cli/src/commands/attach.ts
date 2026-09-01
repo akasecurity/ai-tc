@@ -1,3 +1,4 @@
+import { cliVersion } from '@akasecurity/local-ops';
 import {
   applyOnboarding,
   clearAttachmentDerivedState,
@@ -7,20 +8,27 @@ import {
   openLocalDatabase,
   readControlPlaneCredentialFile,
   readControlPlaneCredentialState,
+  readEffectiveSettings,
   readLocalHistoryPreview,
   readWorkspaceSettings,
   removeControlPlaneCredential,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
-import { renderAttachedStatus, renderPolicyLine } from '@akasecurity/plugin-runtime';
-import { createRemoteClient } from '@akasecurity/remote';
-import type { HistorySyncConsent } from '@akasecurity/schema';
+import {
+  readDeviceIdentity,
+  renderAttachedStatus,
+  renderPolicyLine,
+} from '@akasecurity/plugin-runtime';
+import { createAttachClient, createRemoteClient } from '@akasecurity/remote';
+import type { HistorySyncConsent, ManagedSettings } from '@akasecurity/schema';
 import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 
 import { homeBase } from '../lib/args.ts';
+import { openUrl } from '../lib/open-url.ts';
 import type { Prompter } from '../lib/prompter.ts';
 import { terminalPrompter } from '../lib/prompter.ts';
+import { attachByDeviceCode, type DeviceAttachOutcome } from './attach-device.ts';
 
 // `aka attach` / `aka detach` / `aka status` — registering this machine against
 // an organization's deployment, and saying so afterwards.
@@ -48,7 +56,22 @@ Registers this machine against your organization's AKA deployment.
 The key is never accepted as a command-line argument — it would be visible to
 every process on this machine and recorded in your shell history.`;
 
+/** The interactive attach, injectable so tests drive it without a socket. */
+export type DeviceAttachRunner = (input: {
+  io: Prompter;
+  endpoint: string;
+  label?: string | undefined;
+  base: string;
+  verify: (endpoint: string, apiKey: string) => Promise<{ tenantName: string; userEmail: string }>;
+}) => Promise<DeviceAttachOutcome>;
+
 export interface AttachDeps {
+  /** The browser-approval path. Replaced wholesale in tests. */
+  deviceAttach?: DeviceAttachRunner;
+  /** The administrative overlay, injectable so a suite is not at the mercy of
+   * whatever the developer's own machine is enrolled in. `null` means
+   * unmanaged; omitted means read the real system paths. */
+  managedSettings?: ManagedSettings | null;
   base?: string;
   prompter?: Prompter;
   /** The transport, injectable so tests verify a credential without a network. */
@@ -178,12 +201,67 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     return;
   }
 
+  // THE INTERACTIVE PATH IS TRIED FIRST, and only when nobody asked for the
+  // key path. `--key-stdin` is an explicit choice — an automated enrolment
+  // piping a key it already holds — and probing a deployment on its behalf
+  // would be a network call it did not ask for.
+  //
+  // A deployment that does not offer the flow answers 404 and this falls
+  // through to the prompt below. That is the whole compatibility story: no
+  // version handshake, and no way for the CLI to require a deployment newer
+  // than the one in front of it.
+  // Set by the interactive path when it succeeds, so the shared write below
+  // does not ask `whoami` a second time for an identity the confirmation step
+  // has already shown the user and had them accept.
+  let confirmed: { apiKey: string; identity: { tenantName: string; userEmail: string } } | null =
+    null;
+
+  if (!args.keyStdin) {
+    const refusal = managedRefusal(base, endpoint, args.label, deps.managedSettings);
+    if (refusal !== null) {
+      io.err(refusal);
+      exit(2);
+      return;
+    }
+
+    const outcome = await (deps.deviceAttach ?? runDeviceAttach)({
+      io,
+      endpoint,
+      label: args.label,
+      base,
+      verify: deps.verify ?? verifyWithControlPlane,
+    });
+    if (outcome.kind === 'declined' || outcome.kind === 'failed') {
+      io.err(outcome.kind === 'failed' ? `could not attach: ${outcome.reason}` : outcome.reason);
+      exit(1);
+      return;
+    }
+    if (outcome.kind === 'attached') {
+      confirmed = { apiKey: outcome.apiKey, identity: outcome.identity };
+    } else {
+      // 'not-offered' — fall through to the prompt, with one line so the user
+      // knows why they are being asked for something the newer flow would not
+      // have needed. The two wordings are not interchangeable: "does not offer"
+      // is the deployment ANSWERING, while a reason means the probe never got
+      // an answer, and a user debugging an unreachable control plane needs to
+      // see which of those happened rather than be told a working deployment
+      // lacks a feature.
+      io.out(
+        outcome.reason === undefined
+          ? 'This deployment does not offer browser approval yet; paste an access key instead.\n'
+          : `Could not start browser approval (${outcome.reason}); paste an access key instead.\n`,
+      );
+    }
+  }
+
   const apiKey = (
-    args.keyStdin
-      ? (await io.readAllStdin()).trim()
-      : io.isInteractive
-        ? (await io.askHidden('Access key (input hidden): ')).trim()
-        : ''
+    confirmed !== null
+      ? confirmed.apiKey
+      : args.keyStdin
+        ? (await io.readAllStdin()).trim()
+        : io.isInteractive
+          ? (await io.askHidden('Access key (input hidden): ')).trim()
+          : ''
   ).trim();
   if (apiKey === '') {
     io.err(
@@ -197,7 +275,11 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
 
   let identity: { tenantName: string; userEmail: string };
   try {
-    identity = await (deps.verify ?? verifyWithControlPlane)(endpoint, apiKey);
+    // Already proved, and already shown to the user, when the interactive path
+    // produced this key — asking again would be a second round trip for an
+    // answer that has been on screen since before they confirmed.
+    identity =
+      confirmed?.identity ?? (await (deps.verify ?? verifyWithControlPlane)(endpoint, apiKey));
   } catch {
     io.err(
       `could not verify that key against ${endpoint}. Nothing was changed — ` +
@@ -535,4 +617,111 @@ export async function runStatus(argv: string[], deps: AttachDeps = {}): Promise<
   // Only for an attached machine: a standalone one has no policy to be current.
   const attached = !block.startsWith('AKA: standalone');
   io.out(attached ? `${block}\n${await renderPolicyLine(dataDir)}\n` : `${block}\n`);
+}
+
+/**
+ * Why this machine may not be attached here, or null when it may.
+ *
+ * RUN BEFORE ANY NETWORK CALL, which is the whole point of it being separate
+ * from the write-time `ManagedFieldError` further down. An administrator who
+ * froze `runMode`, or pinned a different endpoint, has already decided; asking
+ * a deployment for a grant and walking someone through a browser approval
+ * before telling them so wastes their time and leaves a decided grant behind on
+ * a deployment they were never going to join.
+ *
+ * Attaching to the endpoint an administrator PINNED is the supported path and
+ * is not refused here — that is the managed-enrolment case, not a conflict.
+ */
+export function managedRefusal(
+  base: string,
+  endpoint: string,
+  label: string | undefined,
+  // The overlay, injectable. It lives at ABSOLUTE SYSTEM paths on purpose — a
+  // lock inside `~` is removable by the party being locked — so a temp home
+  // cannot make a machine look managed, and cannot make a managed one look
+  // clean either. Without this seam a suite reads whatever the DEVELOPER'S
+  // machine is enrolled in, and a test asserting "not refused" passes or fails
+  // on who ran it.
+  managedOverride?: ManagedSettings | null,
+): string | null {
+  let effective: ReturnType<typeof readEffectiveSettings>;
+  try {
+    effective = readEffectiveSettings(base, managedOverride);
+  } catch {
+    // An unreadable managed overlay leaves the machine UNMANAGED rather than
+    // unusable — the same direction managed-settings.ts fails in, and for the
+    // same reason: a typo in an MDM payload must not stop every machine
+    // attaching at once.
+    return null;
+  }
+  const locked = new Set(effective.managed.lockedFields);
+  const org = effective.managed.organization;
+  const who = org ?? 'your organization';
+
+  if (locked.has('runMode') && effective.settings.runMode !== 'attached') {
+    return `${who} manages this machine and has set it to standalone, so it cannot be attached here.`;
+  }
+  const pinned = effective.settings.controlPlane;
+  if (locked.has('runMode') && pinned !== undefined && pinned.endpoint !== endpoint) {
+    return (
+      `${who} manages this machine and has pinned it to ${pinned.endpoint}. ` +
+      `Attach to that endpoint, or ask them to change it.`
+    );
+  }
+  // A label-only difference is still a change to a descriptor the administrator
+  // owns, and the writer would refuse it after the browser approval rather than
+  // before — so it is refused here, where nobody has been sent anywhere yet.
+  if (
+    locked.has('runMode') &&
+    pinned?.label !== undefined &&
+    label !== undefined &&
+    pinned.label !== label
+  ) {
+    return `${who} manages this machine name, so it cannot be renamed here.`;
+  }
+  return null;
+}
+
+/**
+ * The real interactive attach: the two anonymous routes, this machine's device
+ * identity, and the platform browser launcher.
+ *
+ * Thin on purpose — everything with a decision in it is in attach-device.ts,
+ * which takes each of these as a seam so its tests need no socket, no home
+ * directory and no browser.
+ */
+async function runDeviceAttach(input: {
+  io: Prompter;
+  endpoint: string;
+  label?: string | undefined;
+  base: string;
+  verify: (endpoint: string, apiKey: string) => Promise<{ tenantName: string; userEmail: string }>;
+}): Promise<DeviceAttachOutcome> {
+  // Read through the posture store, so this machine presents the SAME identity
+  // when attaching as when reporting posture. A separate id here would show one
+  // laptop as two devices, and a later re-attach would add a machine record
+  // rather than rotating the one it already has.
+  const deviceId = await readDeviceIdentity(settingsDirOf(input.base));
+  if (deviceId === null) {
+    return {
+      kind: 'failed',
+      reason: 'this machine has no device identity and one could not be created — check ~/.aka.',
+    };
+  }
+  return attachByDeviceCode({
+    io: input.io,
+    endpoint: input.endpoint,
+    label: input.label,
+    deviceId,
+    // Reported to the deployment so an approval page can show which client is
+    // asking. Unverified like everything else the device claims, and `unknown`
+    // rather than an omission when the package metadata cannot be read — the
+    // page renders a value either way.
+    cliVersion: cliVersion() ?? 'unknown',
+    client: createAttachClient({ endpoint: input.endpoint }),
+    verify: input.verify,
+    openBrowser: (url) => {
+      openUrl(url);
+    },
+  });
 }

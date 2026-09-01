@@ -123,7 +123,24 @@ export interface SendOptions {
   method: 'GET' | 'POST';
   /** Absolute URL. The caller has already checked the endpoint is one it may send to. */
   url: string;
-  apiKey: string;
+  /**
+   * The credential, when there is one.
+   *
+   * OPTIONAL, and the one caller that omits it is the reason this flow exists:
+   * the device-authorization endpoints are how a machine OBTAINS a credential,
+   * so it necessarily has none while calling them. Every other route this
+   * package can reach requires one, and each is reached through a client that
+   * supplies it — see `createRemoteClient`, whose own options keep `apiKey`
+   * required.
+   *
+   * Omitting it does not weaken anything: the header is simply not sent, so a
+   * route that authenticates refuses the request. The risk worth naming is the
+   * opposite one — a caller who MEANT to send a credential and passed
+   * `undefined` by accident would silently talk to the deployment
+   * unauthenticated. That is why the credential-less surface is a separate,
+   * two-route client rather than a flag on the main one.
+   */
+  apiKey?: string | undefined;
   /** Serialized JSON, for POST. */
   body?: string | undefined;
   /** Extra request headers, e.g. `if-none-match`. */
@@ -168,7 +185,12 @@ export async function send(options: SendOptions): Promise<RemoteResponse> {
       // The credential. One header, matching what the deployment authenticates
       // on; a second copy in an `Authorization` header would be one more place
       // it can be logged by an intermediary for no gain.
-      'x-api-key': options.apiKey,
+      //
+      // Spread conditionally rather than assigned as `undefined`: Node's header
+      // handling and `content-length` bookkeeping treat a present-but-undefined
+      // key differently from an absent one, and "the header is not there" is
+      // the property the attach flow needs.
+      ...(options.apiKey === undefined ? {} : { 'x-api-key': options.apiKey }),
       accept: 'application/json',
       ...(options.body === undefined
         ? {}

@@ -6,8 +6,21 @@
 // single module underneath that opens a socket. Nothing here decides WHETHER a
 // machine is attached, reads the credential, or holds a policy — those belong to
 // the settings, the credential store and the runtime respectively.
-export type { ConditionalBundle, RemoteClient, RemoteClientOptions } from './client.ts';
-export { createRemoteClient } from './client.ts';
+//
+// `createAttachClient` is the one credential-LESS surface, and it is a separate
+// client for a reason rather than a flag on the one above. Its two routes are
+// how a machine obtains a credential in the first place, so it necessarily has
+// none while calling them — and being a distinct object means a caller cannot
+// reach any other route without one, because this client does not know how to
+// build one. An optional key on the main client would instead have made a
+// forgotten credential a silent unauthenticated call on every route.
+export type {
+  AttachClient,
+  ConditionalBundle,
+  RemoteClient,
+  RemoteClientOptions,
+} from './client.ts';
+export { createAttachClient, createRemoteClient } from './client.ts';
 // `send` and its option/response types are deliberately NOT re-exported.
 //
 // Every guarantee `http.ts` makes is held by construction inside that module —

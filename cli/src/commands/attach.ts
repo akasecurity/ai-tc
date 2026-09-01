@@ -240,8 +240,16 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     } else {
       // 'not-offered' — fall through to the prompt, with one line so the user
       // knows why they are being asked for something the newer flow would not
-      // have needed.
-      io.out('This deployment does not offer browser approval yet; paste an access key instead.\n');
+      // have needed. The two wordings are not interchangeable: "does not offer"
+      // is the deployment ANSWERING, while a reason means the probe never got
+      // an answer, and a user debugging an unreachable control plane needs to
+      // see which of those happened rather than be told a working deployment
+      // lacks a feature.
+      io.out(
+        outcome.reason === undefined
+          ? 'This deployment does not offer browser approval yet; paste an access key instead.\n'
+          : `Could not start browser approval (${outcome.reason}); paste an access key instead.\n`,
+      );
     }
   }
 

@@ -91,11 +91,44 @@ describe('starting the flow', () => {
     const notFound = Object.assign(new Error('nope'), { status: 404 });
     const outcome = await attachByDeviceCode(deps({ client: client([], notFound) }));
     expect(outcome.kind).toBe('not-offered');
+    // No reason: the deployment ANSWERED, and the caller's message says so.
+    expect(outcome).not.toHaveProperty('reason');
   });
 
-  it('reports a failure for any other start error', async () => {
+  // A PROBE MUST NEVER LEAVE THE CALLER WORSE OFF THAN NOT PROBING.
+  //
+  // Starting a grant is the first thing `aka attach` does, and it is
+  // opportunistic. Treating a failure to start as fatal made browser approval a
+  // hard network dependency at the front of every attach — so a deployment that
+  // could not be reached, or answered 500, aborted the verb instead of falling
+  // back to the key prompt that had always worked. That is the new flow
+  // becoming a way for the old one to stop working.
+  //
+  // The seam is whether a grant EXISTS: past that the user has seen a code and
+  // is waiting in a browser, so a failure must be reported rather than silently
+  // swapped for another flow. These cases are all before it.
+  it.each([
+    ['a deployment that cannot be reached', new Error('getaddrinfo ENOTFOUND aka.example.test')],
+    ['egress blocked at the socket', new Error('connect ENETUNREACH 10.0.0.1:443')],
+    ['a 500 from the deployment', Object.assign(new Error('boom'), { status: 500 })],
+  ])('falls back to the key prompt on %s', async (_name, err) => {
+    const outcome = await attachByDeviceCode(deps({ client: client([], err) }));
+    expect(outcome.kind).toBe('not-offered');
+    // A reason IS carried here, so the line printed above the key prompt can
+    // say the probe never got an answer rather than claiming a working
+    // deployment lacks the feature.
+    expect(outcome).toHaveProperty('reason');
+  });
+
+  // `failed` is reserved for a grant that EXISTED and then went wrong, which is
+  // the other side of the seam above. The case that used to sit here asserted a
+  // 500 at START was `failed`; it is now one of the fall-back cases, because
+  // aborting there took the key path down with it.
+  it('reports a failure only once a grant exists', async () => {
     const boom = Object.assign(new Error('nope'), { status: 500 });
-    const outcome = await attachByDeviceCode(deps({ client: client([], boom) }));
+    const outcome = await attachByDeviceCode(
+      deps({ client: { ...client([]), poll: () => Promise.reject(boom) } }),
+    );
     expect(outcome.kind).toBe('failed');
   });
 });

@@ -39,12 +39,26 @@ export type DeviceAttachOutcome =
       identity: { tenantName: string; userEmail: string };
     }
   /**
-   * The deployment does not offer this flow — it predates it, or has it
-   * switched off. Indistinguishable, and deliberately so: both mean "use the
-   * key prompt", and a client that had to tell them apart would need a version
-   * handshake this flow exists to avoid.
+   * BROWSER APPROVAL IS NOT AVAILABLE HERE. Fall back to the key prompt.
+   *
+   * Three causes, and the caller does not need to tell them apart: the
+   * deployment predates this flow, it has the flow switched off, or the probe
+   * could not be completed at all. The first two are indistinguishable by
+   * design — both answer 404, and a client that had to separate them would need
+   * the version handshake this flow exists to avoid.
+   *
+   * THE THIRD IS WHY THIS IS NOT `failed`. Starting a grant is a PROBE, and a
+   * probe must never leave the caller worse off than not probing. Aborting the
+   * whole verb because an opportunistic request did not land would make browser
+   * approval a hard network dependency at the front of every `aka attach` —
+   * turning an enhancement into a new way for the key path to stop working. The
+   * user asked to attach; a probe that failed is not an answer to that.
+   *
+   * `reason` distinguishes the two for the MESSAGE only, so the line printed
+   * before the key prompt is accurate about why it is being shown. Absent for a
+   * 404, which is the deployment answering.
    */
-  | { kind: 'not-offered' }
+  | { kind: 'not-offered'; reason?: string | undefined }
   /** The user, or the person approving, said no. Nothing was written. */
   | { kind: 'declined'; reason: string }
   /** Something went wrong. `reason` is safe to print. */
@@ -113,8 +127,17 @@ export async function attachByDeviceCode(deps: DeviceAttachDeps): Promise<Device
       ...(deps.label === undefined ? {} : { label: deps.label }),
     });
   } catch (err) {
+    // EVERY failure to start falls back, not only the 404.
+    //
+    // The seam is whether a grant EXISTS yet, and it is the right one: past
+    // this point the user has been shown a code and is waiting in a browser, so
+    // a later failure has to be reported rather than silently swapped for a
+    // different flow. Before it, nothing has been shown and the key path is
+    // still open — so a transport error, a 500, or a deployment that cannot be
+    // reached at all leaves the verb exactly where it would have been without
+    // the probe.
     if (statusOf(err) === 404) return { kind: 'not-offered' };
-    return { kind: 'failed', reason: describe(err) };
+    return { kind: 'not-offered', reason: describe(err) };
   }
 
   deps.io.out(

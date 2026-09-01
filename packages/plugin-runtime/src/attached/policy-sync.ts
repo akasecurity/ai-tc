@@ -1,4 +1,4 @@
-import { readControlPlaneCredentialState, readWorkspaceSettings } from '@akasecurity/persistence';
+import { readControlPlaneCredentialFile, readWorkspaceSettings } from '@akasecurity/persistence';
 import { createRemoteClient } from '@akasecurity/remote';
 import type { AttachedCredential, ControlPlaneConnection } from '@akasecurity/schema';
 import { isAttached } from '@akasecurity/schema';
@@ -186,7 +186,7 @@ export async function runPolicySync(deps: RunPolicySyncDeps): Promise<PolicySync
   const now = deps.now ?? (() => Date.now());
   // BOTH HALVES, or there is nothing to sync against: the descriptor names the
   // deployment and the credential authenticates to it, and either alone is not
-  // an attachment. `readControlPlaneCredentialState` is given the descriptor so
+  // an attachment. `readControlPlaneCredentialFile` is given the descriptor so
   // a credential minted for a different endpoint counts as absent here rather
   // than being presented to a host it was not minted for.
   const settings = readWorkspaceSettings(deps.base);
@@ -194,7 +194,9 @@ export async function runPolicySync(deps: RunPolicySyncDeps): Promise<PolicySync
   const state =
     connection === undefined
       ? undefined
-      : readControlPlaneCredentialState(deps.settingsDir, connection);
+      : // The WIDE read: `pullPolicyBundle` presents the credential. Runs in
+        // the plugin's own process, never in a browser.
+        readControlPlaneCredentialFile(deps.settingsDir, connection);
   // Detached between the spawn and here — nothing to do, and NOT AN ERROR, so
   // nothing is recorded either. The narrow ordering that makes this matter:
   // SessionStart spawns the child, the user runs detach, `removeControlPlaneCredential`

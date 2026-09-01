@@ -750,10 +750,12 @@ describe('the connection section, credential state', () => {
       }),
     );
 
-  const usable: CredentialState = {
-    usable: true,
-    credential: { specVersion: 1, endpoint: 'https://aka.acme.internal', apiKey: 'k' },
-  };
+  // A VERDICT AND NOTHING ELSE, which is the whole of the usable branch. This
+  // package is presentational and its props are handed across a client boundary
+  // by at least one host, so the type it takes cannot carry a credential — and
+  // the view has never read one: `credentialNotice` branches on `usable` and
+  // `reason`.
+  const usable: CredentialState = { usable: true };
 
   it('says nothing extra when the credential is usable', () => {
     const html = render({ credentialState: usable });

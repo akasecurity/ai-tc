@@ -72,6 +72,23 @@ export function isSafeEndpoint(endpoint: string): boolean {
 export type { CredentialState, CredentialUnusableReason };
 
 /**
+ * The same answer as `CredentialState`, WITH the credential.
+ *
+ * A separate type, and one that never leaves this package's server-side
+ * consumers, because the two questions are different: "can this machine talk to
+ * its control plane, and if not why" is a question a surface asks, and "give me
+ * the key" is one only a transport or a rollback asks. Fusing them made every
+ * holder of a state a holder of a bearer credential, which is how one reached a
+ * client component and got serialised to the browser.
+ *
+ * Reachable only by asking for it by name. That is the whole mechanism: the
+ * narrow state is what a caller gets by default, and the wide read is a visible
+ * act at the call site.
+ */
+export type CredentialFileRead =
+  { usable: true; credential: AttachedCredential } | Extract<CredentialState, { usable: false }>;
+
+/**
  * Repair a too-permissive mode, or refuse the file.
  *
  * Repair-and-continue rather than refuse-on-sight: a group-readable credential
@@ -163,6 +180,29 @@ export function readControlPlaneCredentialState(
   settingsDir: string,
   connection?: ControlPlaneConnection,
 ): CredentialState {
+  const read = readControlPlaneCredentialFile(settingsDir, connection);
+  // THE PROJECTION, and the one line that keeps the credential off every
+  // surface. `usable` is rebuilt rather than spread, so a field added to the
+  // wide read never arrives here by accident — a spread would carry the next
+  // one out the same way `credential` went.
+  return read.usable ? { usable: true } : read;
+}
+
+/**
+ * The full read, credential included.
+ *
+ * SERVER-SIDE CALLERS ONLY. Everything this returns on the usable branch is a
+ * bearer credential, so a value from here must never be handed to a component
+ * that renders in a browser — in a React Server Components tree, anything
+ * passed to a `'use client'` boundary is serialised into the payload the
+ * browser receives. Surfaces take `readControlPlaneCredentialState`.
+ *
+ * Never throws. Every failure is a `usable: false` state.
+ */
+export function readControlPlaneCredentialFile(
+  settingsDir: string,
+  connection?: ControlPlaneConnection,
+): CredentialFileRead {
   const file = controlPlaneCredentialPath(settingsDir);
 
   let raw: string;
@@ -221,8 +261,8 @@ export function readControlPlaneCredential(
   settingsDir: string,
   connection: ControlPlaneConnection,
 ): AttachedCredential | null {
-  const state = readControlPlaneCredentialState(settingsDir, connection);
-  return state.usable ? state.credential : null;
+  const read = readControlPlaneCredentialFile(settingsDir, connection);
+  return read.usable ? read.credential : null;
 }
 
 /**

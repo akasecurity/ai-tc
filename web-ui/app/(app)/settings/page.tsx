@@ -30,9 +30,17 @@ export default function SettingsPage() {
   // that comparison is the only thing this argument enables.
   //
   // Read here, in the server component, because it touches the filesystem.
-  // Nothing secret crosses to the client: the state is a verdict plus, on a
-  // mismatch, the two endpoints — never the key. `dynamic = 'force-dynamic'`
-  // above already means this is re-read on every visit rather than baked in.
+  // `dynamic = 'force-dynamic'` above already means this is re-read on every
+  // visit rather than baked in.
+  //
+  // Nothing secret crosses to the client, and that is now a property of the
+  // TYPE rather than of this comment. `CredentialState`'s usable branch carries
+  // no payload at all — a server-side caller that needs the key asks for it by
+  // name — so what reaches `SettingsClient` below is a verdict plus, on a
+  // mismatch, the two endpoints, and there is no branch on which it could be
+  // more. That matters here specifically: `SettingsClient` is `'use client'`,
+  // so everything handed to it is serialised into the payload the browser
+  // receives on every settings render.
   const credentialState = readControlPlaneCredentialState(settingsDir(), settings.controlPlane);
 
   return (

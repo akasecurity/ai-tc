@@ -115,13 +115,28 @@ export type CredentialUnusableReason =
 /**
  * The credential half of an attachment, as a surface should read it.
  *
+ * THE USABLE BRANCH CARRIES NO PAYLOAD, and that is the point of the type
+ * rather than an omission. `AttachedCredential` holds a bearer key; a state
+ * that carried one would mean every surface accepting a `CredentialState`
+ * accepts a credential — including a client component, where the value is
+ * serialised into the payload the browser receives on every render. This type's
+ * own name says what it is for: naming a state, which needs a verdict and not a
+ * secret.
+ *
+ * A caller that genuinely needs the credential is a server one, and asks for it
+ * by name — `readControlPlaneCredential` for the transport's door, or
+ * `readControlPlaneCredentialFile` for the full read. Having to name it is the
+ * property: the narrow type is what a surface gets by default, and reaching
+ * past it is a visible act.
+ *
  * `endpoint-mismatch` carries BOTH endpoints because it is the one reason a
  * user can act on: the answer is either to re-attach against the endpoint
  * settings now names, or to put the old one back, and neither instruction can
- * be written without saying which is which.
+ * be written without saying which is which. Neither is secret — the endpoints
+ * are in settings and on screen already.
  */
 export type CredentialState =
-  | { usable: true; credential: AttachedCredential }
+  | { usable: true }
   | { usable: false; reason: Exclude<CredentialUnusableReason, 'endpoint-mismatch'> }
   | {
       usable: false;

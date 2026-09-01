@@ -7,11 +7,16 @@ export {
   clearAttachmentDerivedState,
   POLICY_CACHE_FILENAME,
 } from './attached-derived.ts';
-export type { CredentialState, CredentialUnusableReason } from './control-plane-credential.ts';
+export type {
+  CredentialFileRead,
+  CredentialState,
+  CredentialUnusableReason,
+} from './control-plane-credential.ts';
 export {
   controlPlaneCredentialPath,
   isSafeEndpoint,
   readControlPlaneCredential,
+  readControlPlaneCredentialFile,
   readControlPlaneCredentialState,
   removeControlPlaneCredential,
   writeControlPlaneCredential,

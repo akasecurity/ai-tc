@@ -3,6 +3,7 @@ import type {
   AttachDeviceRequest as AttachDeviceRequestT,
   AttachTokenResponse as AttachTokenResponseT,
   AuditEventBatchAck as AuditEventBatchAckT,
+  EgressIngestRequest as EgressIngestRequestT,
   IngestAck as IngestAckT,
   IngestBatch,
   InventoryContext,
@@ -16,6 +17,7 @@ import {
   AttachDeviceGrant,
   AttachTokenResponse,
   AuditEventBatchAck,
+  EgressIngestRequest,
   IngestAck,
   PluginWhoami,
   PolicyBundle,
@@ -28,10 +30,10 @@ import type { z } from 'zod';
 import type { RemoteResponse } from './http.ts';
 import { RemoteRequestError, RemoteRequestInvalid, RemoteResponseInvalid, send } from './http.ts';
 
-// The seven routes an attached machine may call, and nothing else.
+// The eight routes an attached machine may call, and nothing else.
 //
 // The set is small on purpose and is the same set a deployment scopes a
-// credential to: five writes and two self-scoped reads. There is deliberately
+// credential to: six writes and two self-scoped reads. There is deliberately
 // no way to ask this client for anything organization-wide — a credential on a
 // laptop should not be able to read what other people's machines reported, and
 // a client that cannot express the request is a stronger guarantee than a
@@ -50,6 +52,7 @@ const ROUTES = {
   storePosture: '/v1/store-posture',
   policyBundle: '/v1/policy-bundle',
   whoami: '/v1/plugin/whoami',
+  shares: '/v1/shares',
 } as const;
 
 export interface RemoteClientOptions {
@@ -90,6 +93,11 @@ export interface RemoteClient {
   getPolicyBundle(etag?: string): Promise<ConditionalBundle>;
   /** GET /v1/plugin/whoami — who this credential belongs to. */
   whoami(): Promise<PluginWhoamiT>;
+  /**
+   * POST /v1/shares — one project's egress-recording unit, already projected
+   * to the wire-boundary-safe shape (no snippet, hashed projectKey).
+   */
+  recordProjectEgress(request: EgressIngestRequestT): Promise<void>;
 }
 
 /** Header value as a single string; Node reports repeats as an array. */
@@ -283,6 +291,23 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
     async whoami() {
       const response = await send({ ...common, method: 'GET', url: url(ROUTES.whoami) });
       return parsed(PluginWhoami, okBody(response), ROUTES.whoami);
+    },
+
+    async recordProjectEgress(request) {
+      // Validated on the way OUT, not merely typed — the same discipline as
+      // recordAuditEvent, and for the same reason: a caller that counts
+      // failures toward a circuit breaker cannot tell a raw ZodError from a
+      // transport fault, so a deterministic local shape bug must not open
+      // the breaker and suppress every unrelated forward.
+      const validated = EgressIngestRequest.safeParse(request);
+      if (!validated.success) throw new RemoteRequestInvalid(ROUTES.shares, validated.error);
+      const response = await send({
+        ...common,
+        method: 'POST',
+        url: url(ROUTES.shares),
+        body: JSON.stringify(validated.data),
+      });
+      okBody(response);
     },
   };
 }

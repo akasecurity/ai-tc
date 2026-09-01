@@ -5,6 +5,7 @@
 // decorator only when both halves of an attachment are present and agree, so a
 // machine that has never attached — the overwhelming majority — constructs none
 // of it and behaves exactly as it did before this existed.
+export { hashProjectKey, toEgressIngestRequest } from './egress-wire.ts';
 export type { GatewayMeta } from './factory.ts';
 // The device identity, and ONLY that: `aka attach` has to tell a deployment
 // which machine is asking, and reading it through the same store the posture

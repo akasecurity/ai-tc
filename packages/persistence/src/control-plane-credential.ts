@@ -1,7 +1,12 @@
 import { chmodSync, lstatSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import type { AttachedCredential, ControlPlaneConnection } from '@akasecurity/schema';
+import type {
+  AttachedCredential,
+  ControlPlaneConnection,
+  CredentialState,
+  CredentialUnusableReason,
+} from '@akasecurity/schema';
 import {
   ATTACHED_CREDENTIAL_FILENAME,
   AttachedCredential as CredentialSchema,
@@ -55,38 +60,16 @@ export function isSafeEndpoint(endpoint: string): boolean {
   return parsed.protocol === 'http:' && LOOPBACK_HOSTS.has(parsed.hostname);
 }
 
-/**
- * Why a credential is not usable, for a surface that has to explain itself.
- *
- *   `absent`         — no file. The ordinary unattached state.
- *   `untrusted-file` — a symlink, a file owned by someone else, or one whose
- *                      mode could not be tightened. A planted credential rather
- *                      than a permissions accident.
- *   `unreadable`     — present but could not be read.
- *   `malformed`      — not JSON, or not an `AttachedCredential` (which includes
- *                      an unknown `specVersion`, a `z.literal`).
- *   `unsafe-endpoint`— minted against an endpoint this build will not send a
- *                      credential to.
- *   `endpoint-mismatch` — a valid credential for a DIFFERENT deployment than the
- *                      one settings names. See `readControlPlaneCredentialState`.
- */
-export type CredentialUnusableReason =
-  | 'absent'
-  | 'untrusted-file'
-  | 'unreadable'
-  | 'malformed'
-  | 'unsafe-endpoint'
-  | 'endpoint-mismatch';
-
-export type CredentialState =
-  | { usable: true; credential: AttachedCredential }
-  | { usable: false; reason: Exclude<CredentialUnusableReason, 'endpoint-mismatch'> }
-  | {
-      usable: false;
-      reason: 'endpoint-mismatch';
-      credentialEndpoint: string;
-      settingsEndpoint: string;
-    };
+// `CredentialUnusableReason` and `CredentialState` now live in
+// @akasecurity/schema, beside the `AttachedCredential` they describe, and are
+// re-exported here so this module's public surface is unchanged.
+//
+// They moved because a PRESENTATIONAL surface has to name these states without
+// depending on the module that reads the disk: @akasecurity/dashboard-ui may
+// reach @akasecurity/schema and must not reach this package, so while the union
+// lived here the local dashboard could not be handed one. Every consumer that
+// imports them from @akasecurity/persistence keeps working.
+export type { CredentialState, CredentialUnusableReason };
 
 /**
  * Repair a too-permissive mode, or refuse the file.

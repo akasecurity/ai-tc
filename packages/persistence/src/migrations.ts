@@ -968,6 +968,28 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
     `CREATE INDEX IF NOT EXISTS idx_audit_events_sync
        ON audit_events (event_type, synced_at, sync_claimed_at, started_at)`,
   );
+  // The stale-claim sweep cannot use the index above: that one leads with
+  // `event_type`, and the sweep's predicate never mentions it, so the planner
+  // has nothing to seek on and falls back to `SCAN audit_events` — a full pass
+  // over the most numerous table in the store, taken while holding the write
+  // lock. This is the index it can seek.
+  //
+  // PARTIAL, and that is the whole point of it rather than a refinement. The
+  // plan is the same either way — a plain index on the column also turns the
+  // sweep into a SEARCH — so what separates them is size and write cost, and
+  // there SQLite indexes NULL keys like any other: over 100k rows with the
+  // column unset throughout, a plain index costs 213 pages and this one costs 1.
+  // Claimed rows exist a batch at a time, so it stays that few entries wide
+  // however large the store gets, and the writes that never touch the column —
+  // which is nearly all of them — do not maintain it at all.
+  //
+  // Pinned in the ledger's tests for the same reason the index above is: the
+  // predicate and the index have to keep agreeing, and nothing says so out loud
+  // when they stop.
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_audit_claimed
+       ON audit_events (sync_claimed_at) WHERE sync_claimed_at IS NOT NULL`,
+  );
 }
 
 // Worktree-scan bookkeeping: which files the scanner has already run under which

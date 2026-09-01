@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
+import { SqliteHistorySyncRepository } from '../../src/repositories/history-sync.ts';
+import type { RecordedQuery } from '../helpers/query-plans.ts';
+import { explain, recordingConnection } from '../helpers/query-plans.ts';
 import { useTempStore } from '../helpers/temp-store.ts';
 
 const store = useTempStore('aka-history-sync-');
@@ -454,23 +457,34 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
 });
 
 // The ledger's reads used to scan `audit_events` — the table captures land in.
-// The comment on idx_audit_events_sync claims the index serves them; these pin
-// that claim, because a comment cannot notice when a column order stops working.
+// The comments on idx_audit_events_sync and idx_audit_claimed claim the indexes
+// serve them; these pin that claim, because a comment cannot notice when a
+// column order stops working.
+//
+// THE SQL IS TAKEN FROM THE REPOSITORY AS IT EXECUTES, never restated here.
+// `recordingConnection` captures the statement and the parameters each call
+// really ran with (see test/helpers/query-plans.ts); a query spelled a second
+// time in this file would be free to drift from the one the ledger runs, and a
+// plan assertion over drifted SQL is the most convincing kind of green there
+// is — a real plan for a real query that nothing issues.
 describe('SqliteHistorySyncRepository — the ledger reads use the index', () => {
-  const planFor = (sql: string): string =>
-    store
-      .openRaw()
-      .prepare(`EXPLAIN QUERY PLAN ${sql}`)
-      .all()
-      .map((r) => (r as { detail: string }).detail)
-      .join(' | ');
+  /** The plans for every statement `drive` executes, as one string. */
+  const planFor = (drive: (ledger: SqliteHistorySyncRepository) => void): string => {
+    // Migrations run on `open()`; `openRaw` only attaches to the file.
+    store.open();
+    const raw = store.openRaw();
+    const recorded: RecordedQuery[] = [];
+    drive(new SqliteHistorySyncRepository(recordingConnection(raw, recorded)));
+    // Without this a read that stopped issuing SQL would satisfy every
+    // assertion below vacuously, and look exactly like one that was optimised.
+    expect(recorded.length, 'the driven read issued no statement').toBeGreaterThan(0);
+    // EXPLAIN goes through the RAW handle, so the recorder does not capture its
+    // own explains and recurse.
+    return recorded.flatMap((q) => explain(raw, q).map((row) => row.detail)).join(' | ');
+  };
 
   it('answers the delivery-state partition from the index alone', () => {
-    store.open();
-    const plan = planFor(
-      `SELECT SUM(CASE WHEN synced_at IS NULL AND sync_claimed_at IS NULL THEN 1 ELSE 0 END)
-         FROM audit_events WHERE event_type IN ('session', 'llm_call', 'tool_call')`,
-    );
+    const plan = planFor((ledger) => ledger.partition());
     // COVERING is the property that matters: this read runs on every render of a
     // surface that shows it, and without the index it is a full table scan.
     expect(plan).toContain('idx_audit_events_sync');
@@ -479,20 +493,27 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
   });
 
   it('finds pending sessions on the index that bounds started_at, not the new one', () => {
-    store.open();
-    const plan = planFor(
-      `SELECT COALESCE(root_session_id, id) AS sessionId, MIN(started_at)
-         FROM audit_events
-        WHERE synced_at IS NULL AND event_type IN ('session', 'llm_call', 'tool_call')
-          AND started_at < 9
-        GROUP BY sessionId`,
-    );
+    const plan = planFor((ledger) => ledger.pendingSessions(10, ALL));
     // The drain's read prefers idx_audit_type_t, which puts started_at directly
     // after event_type; idx_audit_events_sync has the two sync columns in
     // between, so it cannot seek the range as tightly. Asserted rather than
     // assumed: the point is that this read is served by SOME index, and which
     // one is a planner decision worth noticing if it changes.
     expect(plan).toContain('idx_audit_type_t');
+    expect(plan).not.toContain('SCAN audit_events');
+  });
+
+  // The one WRITE in this block, and the reason it needs its own index.
+  it('sweeps stale claims on the partial index, not by scanning the table', () => {
+    const plan = planFor((ledger) => {
+      ledger.releaseStaleClaims(T0 + MINUTE);
+    });
+    // idx_audit_events_sync cannot serve this: it leads with event_type, which
+    // this predicate does not mention, so the planner has nothing to seek on and
+    // falls back to a full pass over the table captures land in — taken while
+    // holding the write lock. idx_audit_claimed is the one it can seek.
+    expect(plan).toContain('idx_audit_claimed');
+    expect(plan).toContain('SEARCH');
     expect(plan).not.toContain('SCAN audit_events');
   });
 });

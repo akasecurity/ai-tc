@@ -502,11 +502,13 @@ function groupBySession(records: Iterable<UsageRecord>): Map<string, UsageRecord
 }
 
 // The Session root audit event for a root the reconciler may be CREATING — keyed on
-// the session id (so a SessionStart-written root conflicts harmlessly via INSERT OR
-// IGNORE), stamped with the resolved inventory FKs and the volatile attrs snapshotted
-// from the transcript's own fields. Mirrors `handleSessionStart`'s `buildSessionRoot`
-// but sources os_version/harness_version from the transcript record (not live os/env)
-// and provider from the model-id heuristic.
+// the session id (so a SessionStart-written root is left alone: session roots go
+// through the fill-the-stub UPSERT, which only ever populates an attribute-less
+// STUB, and this row carries attributes), stamped with the resolved inventory FKs
+// and the volatile attrs snapshotted from the transcript's own fields. Mirrors
+// `handleSessionStart`'s `buildSessionRoot` but sources os_version/harness_version
+// from the transcript record (not live os/env) and provider from the model-id
+// heuristic.
 //
 // Also stamps the Activity-DISPLAY attributes (harness/cwd/version/host/project/
 // repo/branches) — the same set SessionStart writes — sourced from the

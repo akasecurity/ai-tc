@@ -81,18 +81,46 @@ export class SqliteAuditEventsRepository {
     //   root  → root : no-op — two authoritative roots stay FIRST-write-wins, so
     //                  SessionStart's contemporaneous env-provider still beats
     //                  the reconciler's model-id heuristic (usage.ts relies on it)
-    //   stub  → stub : no-op — a second stub can't push started_at later
+    //   stub  → stub : no-op — a second stub never moves the row at all, in
+    //                  either direction (see `excluded.attributes IS NOT NULL`)
     // Because the guard reads the STORED row, `ensureSessionRoot` can share this
     // same statement: its own attribute-less values fail `excluded.attributes IS
     // NOT NULL`, so the stub path stays exactly the INSERT OR IGNORE it was.
     //
-    // `started_at` is REPLACED, not min()'d: the stub's value is a capture's
-    // timestamp standing in for a session start nobody had recorded yet, so the
-    // authoritative root's is the better one — a session's start should not
-    // depend on which of the two writes happened to land first.
+    // "Stub" is SQL-NULL `attributes`, and that is only a faithful test because
+    // every root-builder gates its assignment on a non-empty bag
+    // (`if (Object.keys(attributes).length > 0)` in handle-session-start and in
+    // each plugin's buildSessionRoot). `toAuditEventRow` maps `{}` to the string
+    // '{}', which is NOT NULL — such a row could heal a stub but could never
+    // itself be healed, freezing that session with no harness/provider/cwd, i.e.
+    // this very bug through a fifth input shape. Those guards are load-bearing,
+    // not tidiness; a new root-builder that writes a possibly-empty bag has to
+    // keep one.
+    //
+    // `started_at` takes the EARLIER of the two, never the healing row's
+    // unconditionally. The heal systematically arrives LATER than the stub it
+    // fills, on both paths that produce one:
+    //   - live: SessionStart runs first, so a stub exists precisely because that
+    //     write did not land. The healer is then the reconciler, whose value is
+    //     `assistants[0].occurredAt` — the first ASSISTANT record, necessarily
+    //     after the prompt capture whose own `occurredAt` planted the stub.
+    //   - backfill: migration 0013 stubs with `min(occurred_at)` over the whole
+    //     session precisely so the root is never later than anything it parents.
+    // Replacing would therefore push a root past its own first child every time,
+    // and `audit_events.started_at` is what the Activity sessions list windows on
+    // (activity.ts) with nothing clamping the start.
+    //
+    // `OR IGNORE` is retained from the statement this replaced, and it is not
+    // decoration: `started_at` is NOT NULL, `isoToEpochMillis` yields NaN for an
+    // unparseable timestamp, and node:sqlite binds NaN as NULL. Under a bare
+    // INSERT that raises, and neither reconcile caller catches — one poisoned
+    // session would abandon the rest of a backfill walk, and a tail pass would
+    // never advance its offset, re-throwing on the same bytes for ever. The
+    // finite check in `insertAuditEvent` is the primary guard; this keeps the
+    // old tolerance for anything that gets past it.
     // `event_type` is 'session' on both sides, so it is not set.
     this.upsertSessionRootStmt = db.prepare(
-      `INSERT INTO audit_events
+      `INSERT OR IGNORE INTO audit_events
          (id, parent_id, root_session_id, event_type,
           host_id, harness_id, source_project_id, started_at, ended_at,
           severity, priority, content, content_hash, attributes)
@@ -106,7 +134,7 @@ export class SqliteAuditEventsRepository {
          host_id           = excluded.host_id,
          harness_id        = excluded.harness_id,
          source_project_id = excluded.source_project_id,
-         started_at        = excluded.started_at,
+         started_at        = min(audit_events.started_at, excluded.started_at),
          ended_at          = excluded.ended_at,
          severity          = excluded.severity,
          priority          = excluded.priority,
@@ -129,6 +157,14 @@ export class SqliteAuditEventsRepository {
 
   insertAuditEvent(input: AuditEventInput): void {
     const row = toAuditEventRow(input);
+    // `started_at` is NOT NULL and `isoToEpochMillis` yields NaN for a timestamp
+    // that is present but unparseable — a shape the transcript usage parser keeps
+    // on purpose (its sibling secret-scan parser drops it, citing this column).
+    // node:sqlite binds NaN as NULL, so letting it through means a constraint
+    // error rather than a dropped row. Refuse it here, the way insertLlmCall and
+    // insertToolCall already do: the row is skipped, which is what the write
+    // path has always done with it, and no caller has to grow a catch.
+    if (!Number.isFinite(row.startedAt)) return;
     // Session roots take the fill-the-stub UPSERT; everything else is
     // first-write-wins. Both statements bind the identical named parameter set,
     // so only the statement differs — see upsertSessionRootStmt for why the stub

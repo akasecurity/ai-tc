@@ -140,6 +140,50 @@ export function captureId(
   );
 }
 
+// Renders 16 bytes of a hex digest as a UUIDv8 (RFC 9562 §5.8 — the version
+// reserved for custom, non-random layouts, which is exactly what a digest is).
+// The version and variant nibbles are overwritten rather than appended: a UUID
+// carries them at fixed positions, so a raw digest slice is NOT a valid UUID and
+// a validator that checks either field would reject it.
+function uuidFromDigest(digest: string): string {
+  const h = digest.slice(0, 32);
+  // Version 8 — says "derived, not random" to anyone reading the id.
+  const version = '8';
+  // Variant 10xx: keep the low two bits of the nibble, force the high two.
+  const variant = ((Number.parseInt(h.charAt(16), 16) & 0b0011) | 0b1000).toString(16);
+  // charAt/slice rather than indexing: an indexed read is `string | undefined`
+  // here, and neither escape from that (`!` or `as string`) is allowed by lint.
+  const b = h.slice(0, 12) + version + h.slice(13, 16) + variant + h.slice(17, 32);
+  return `${b.slice(0, 8)}-${b.slice(8, 12)}-${b.slice(12, 16)}-${b.slice(16, 20)}-${b.slice(20, 32)}`;
+}
+
+// The id a capture is SENT under, derived from the identity `captureId` already
+// keys its row on. Two ids for one capture is not duplication — the local row is
+// keyed by a 64-hex digest and the wire needs a `guid` — but they must be two
+// renderings of ONE identity, and this is the function that makes them so.
+//
+// It replaces a `randomUUID()` minted per capture and then discarded, which had
+// three consequences worth stating because each is a bug the derivation removes:
+//
+//  1. A stored capture could not be matched to what was sent, because the wire
+//     id was never persisted. There was no id to mark delivered.
+//  2. A capture rebuilt from its row would be sent under a NEW id every attempt,
+//     so the receiver's id-dedup could not suppress a retry — the one mechanism
+//     that makes redelivery safe.
+//  3. Avoiding (2) meant reaching for content-hash dedup, which collapses
+//     genuinely distinct byte-identical prompts. Both belong on a timeline.
+//
+// Callers must pass the SAME tuple `captureId` receives for that capture. The
+// two are derived from one digest here so that stays true by construction; the
+// round-trip is pinned by `capture wire id` in test/ids.test.ts.
+export function captureWireId(
+  sessionId: string | null,
+  contentHash: string,
+  filePath: string | null = null,
+): string {
+  return uuidFromDigest(captureId(sessionId, contentHash, filePath));
+}
+
 // Data Shares dimensions — id derivations for share destinations,
 // endpoints, and call-sites. Structurally stable (fixed prefixes, fixed
 // canonicalIdentity join order) so a future local-store egress scan derives

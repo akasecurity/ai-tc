@@ -39,7 +39,10 @@ function prompter(answers: string[] = [], interactive = true): Prompter & { outp
 }
 
 /** A client that answers a scripted sequence of poll results. */
-function client(answers: (AttachTokenResponse | Error)[], grant: AttachDeviceGrant | Error = GRANT) {
+function client(
+  answers: (AttachTokenResponse | Error)[],
+  grant: AttachDeviceGrant | Error = GRANT,
+) {
   const queue = [...answers];
   return {
     calls: 0,
@@ -188,6 +191,56 @@ describe('polling', () => {
     expect(outcome).toMatchObject({ kind: 'attached', apiKey: ISSUED_KEY });
   });
 
+  // THE ANSWER'S OWN `endpoint` IS NOT WHERE THE CREDENTIAL GOES.
+  //
+  // It is the one server-supplied value in this flow with a bigger blast radius
+  // than the browser URL `safeToOpen` refuses: it would decide where the
+  // freshly-minted key is presented. Trusting it split the flow in half — the
+  // organization shown at the confirmation came from the deployment's host
+  // while the caller wrote the attachment against the user's, with nothing
+  // comparing them — and it walked around `isSafeEndpoint`, which runs once
+  // against the typed URL and is never re-applied, so an issued
+  // `http://10.0.0.5:8080` reached the socket with `x-api-key` on it.
+  //
+  // Asserted through `verify`, because that is the seam the credential actually
+  // crosses. Asserting on the outcome would not have caught it: the outcome
+  // carried an `endpoint` field nobody read.
+  it('verifies against the endpoint the user typed, never the one the answer names', async () => {
+    const verifiedAgainst: string[] = [];
+    const outcome = await attachByDeviceCode(
+      deps({
+        client: client([
+          { status: 'issued', apiKey: ISSUED_KEY, endpoint: 'https://attacker.example' },
+        ]),
+        verify: (endpoint: string) => {
+          verifiedAgainst.push(endpoint);
+          return Promise.resolve(identity);
+        },
+      }),
+    );
+    expect(verifiedAgainst).toEqual([ENDPOINT]);
+    expect(outcome).toMatchObject({ kind: 'attached', apiKey: ISSUED_KEY });
+  });
+
+  // The same value in the shape that would slip past an origin comparison but
+  // not past `isSafeEndpoint`: a private address, over plaintext, which the
+  // check on the typed URL is there to refuse and which nothing re-checks.
+  it('does not present the credential to a private plaintext host the answer names', async () => {
+    const verifiedAgainst: string[] = [];
+    await attachByDeviceCode(
+      deps({
+        client: client([
+          { status: 'issued', apiKey: ISSUED_KEY, endpoint: 'http://10.0.0.5:8080' },
+        ]),
+        verify: (endpoint: string) => {
+          verifiedAgainst.push(endpoint);
+          return Promise.resolve(identity);
+        },
+      }),
+    );
+    expect(verifiedAgainst).toEqual([ENDPOINT]);
+  });
+
   it('gives up once the grant lifetime is spent', async () => {
     let clock = 0;
     const outcome = await attachByDeviceCode(
@@ -270,12 +323,9 @@ describe('safeToOpen', () => {
     expect(safeToOpen(ENDPOINT, 'http://aka.acme.test/attach')).toBeNull();
   });
 
-  it.each(['javascript:alert(1)', 'file:///etc/passwd', 'not a url'])(
-    'refuses %s',
-    (candidate) => {
-      expect(safeToOpen(ENDPOINT, candidate)).toBeNull();
-    },
-  );
+  it.each(['javascript:alert(1)', 'file:///etc/passwd', 'not a url'])('refuses %s', (candidate) => {
+    expect(safeToOpen(ENDPOINT, candidate)).toBeNull();
+  });
 
   it('accepts the ordinary prefilled link', () => {
     expect(safeToOpen(ENDPOINT, `${ENDPOINT}/attach?code=BCDF-GHJK`)).toBe(
@@ -288,10 +338,10 @@ describe('safeToOpen', () => {
     await attachByDeviceCode(
       deps({
         openBrowser,
-        client: client(
-          [{ status: 'issued', apiKey: ISSUED_KEY, endpoint: ENDPOINT }],
-          { ...GRANT, verificationUriComplete: 'https://evil.test/attach?code=BCDF-GHJK' },
-        ),
+        client: client([{ status: 'issued', apiKey: ISSUED_KEY, endpoint: ENDPOINT }], {
+          ...GRANT,
+          verificationUriComplete: 'https://evil.test/attach?code=BCDF-GHJK',
+        }),
       }),
     );
     expect(openBrowser).not.toHaveBeenCalled();

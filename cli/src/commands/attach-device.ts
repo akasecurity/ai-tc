@@ -27,11 +27,15 @@ export type DeviceAttachOutcome =
    *
    * `identity` rides along so the caller does not ask `whoami` a second time
    * for an answer that has been on screen since before they confirmed.
+   *
+   * NO `endpoint`. The caller already holds the one the user typed and writes
+   * the attachment against it; a second copy here could only ever be the one
+   * the DEPLOYMENT named, and carrying a value nobody reads is what let that
+   * one go unchecked in the first place.
    */
   | {
       kind: 'attached';
       apiKey: string;
-      endpoint: string;
       identity: { tenantName: string; userEmail: string };
     }
   /**
@@ -132,7 +136,10 @@ export async function attachByDeviceCode(deps: DeviceAttachDeps): Promise<Device
   // Best-effort, and OPENED ONLY IF IT PASSES `safeToOpen`. A machine with no
   // browser — an SSH session, a container — is the case this whole flow exists
   // for, so a launcher that does nothing must change nothing.
-  const openable = safeToOpen(deps.endpoint, grant.verificationUriComplete ?? grant.verificationUri);
+  const openable = safeToOpen(
+    deps.endpoint,
+    grant.verificationUriComplete ?? grant.verificationUri,
+  );
   if (openable !== null) {
     try {
       deps.openBrowser?.(openable);
@@ -187,12 +194,29 @@ export async function attachByDeviceCode(deps: DeviceAttachDeps): Promise<Device
     }
     if (answer.status === 'issued') {
       const apiKey = stringField(answer, 'apiKey');
-      const issuedEndpoint = stringField(answer, 'endpoint') ?? deps.endpoint;
       // An `issued` with no key is not an attach. Waiting is the only safe
       // reading — the alternative is writing an attachment with no credential,
       // which every later surface reports as broken.
       if (apiKey === undefined) continue;
-      return confirmAndReturn(deps, apiKey, issuedEndpoint);
+      // THE ANSWER'S OWN `endpoint` IS READ AND DISCARDED. It is the one
+      // server-supplied value in this flow with a bigger blast radius than the
+      // browser URL `safeToOpen` already refuses, because it would decide where
+      // the freshly-minted credential is PRESENTED.
+      //
+      // Trusting it broke the confirmation this flow is built around. The
+      // identity below is fetched from wherever it points, while the caller
+      // writes the attachment against the endpoint the USER typed — so the
+      // organization somebody says yes to and the deployment their machine ends
+      // up talking to would be read from two different hosts, with nothing
+      // comparing them. It also walks around `isSafeEndpoint`, which runs once
+      // against the typed URL and is never re-applied: an issued
+      // `http://10.0.0.5:8080` would reach the socket with `x-api-key` on it,
+      // in plaintext.
+      //
+      // The contract's reason for echoing it — the deployment is the party that
+      // knows its own canonical origin — is real, and it is not worth this. A
+      // trailing slash is not worth a credential.
+      return confirmAndReturn(deps, apiKey);
     }
     if (answer.status === 'slow_down') {
       waitSeconds = Math.max(MIN_POLL_SECONDS, numberField(answer, 'interval') ?? waitSeconds * 2);
@@ -224,26 +248,37 @@ export async function attachByDeviceCode(deps: DeviceAttachDeps): Promise<Device
  * So the identity is fetched and SHOWN, and the user says yes, before anything
  * is written. A user who did not expect that organization has one obvious
  * answer, and declining costs them nothing: no credential has reached disk.
+ *
+ * TAKES NO ENDPOINT, deliberately. It reads `deps.endpoint` — the URL the user
+ * typed and the only one `isSafeEndpoint` has checked — so there is no
+ * parameter through which a caller could pass the one the deployment named.
+ * That closes the gap structurally rather than by remembering: the host whose
+ * identity is shown here is now necessarily the host the caller attaches to,
+ * and this step cannot vouch for a deployment other than the one being
+ * attached to.
  */
 async function confirmAndReturn(
   deps: DeviceAttachDeps,
   apiKey: string,
-  endpoint: string,
 ): Promise<DeviceAttachOutcome> {
   let identity: { tenantName: string; userEmail: string };
   try {
-    identity = await deps.verify(endpoint, apiKey);
+    identity = await deps.verify(deps.endpoint, apiKey);
   } catch (err) {
     return {
       kind: 'failed',
-      reason: `the credential could not be verified against ${endpoint}: ${describe(err)}`,
+      reason: `the credential could not be verified against ${deps.endpoint}: ${describe(err)}`,
     };
   }
 
   deps.io.out(
-    ['', '  Approved by:', `    organization  ${identity.tenantName}`, `    account       ${identity.userEmail}`, ''].join(
-      '\n',
-    ),
+    [
+      '',
+      '  Approved by:',
+      `    organization  ${identity.tenantName}`,
+      `    account       ${identity.userEmail}`,
+      '',
+    ].join('\n'),
   );
 
   // A non-interactive run cannot be asked, and must not be assumed to consent.
@@ -262,7 +297,7 @@ async function confirmAndReturn(
   if (!/^y(es)?$/i.test(answer)) {
     return { kind: 'declined', reason: 'not attaching. Nothing was changed.' };
   }
-  return { kind: 'attached', apiKey, endpoint, identity };
+  return { kind: 'attached', apiKey, identity };
 }
 
 /** The HTTP status behind a transport error, when it carried one. */

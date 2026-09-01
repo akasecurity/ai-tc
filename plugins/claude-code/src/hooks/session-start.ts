@@ -45,17 +45,18 @@ async function main(): Promise<void> {
   const input = parseJson(await readStdin());
   const sessionId = input ? getString(input, 'session_id') : undefined;
   const cwd = (input ? getString(input, 'cwd') : undefined) ?? process.cwd();
+  // Read ONCE for the whole hook. Two reads of settings.json on this path can
+  // disagree about `dataDir` — a settings write landing between them is all it
+  // takes — and then the model marker and the reconcile trigger would be
+  // written against two different homes.
+  const config = loadConfig();
   // SessionStart is the ONLY event that carries the session's starting model,
   // and the harness does not always include it — so this is best-effort, and
   // `recordSessionModel` no-ops when it is absent. Recording it is what lets
   // UserPromptSubmit refuse the very FIRST turn of a session started on a
   // prohibited model; without it that turn has no transcript to read a model
   // from and is allowed through. SessionStart itself cannot block.
-  recordSessionModel(
-    loadConfig().dataDir,
-    sessionId,
-    input ? getString(input, 'model') : undefined,
-  );
+  recordSessionModel(config.dataDir, sessionId, input ? getString(input, 'model') : undefined);
   // One version value feeds both the inventory stamp and the posture
   // identity, so the two can never disagree about which build is running:
   // argv's manifest when the hook command passes one, else the manifest
@@ -86,7 +87,6 @@ async function main(): Promise<void> {
   // reconcile throttle (so it never piles onto a recent Stop spawn) and fully
   // best-effort — a missing path or any error just skips it, the Stop path covers it.
   const transcriptPath = input ? getString(input, 'transcript_path') : undefined;
-  const config = loadConfig();
   // A symlinked store path redirects the corpus without failing anything;
   // say so once per session (stderr, so the stdout contract is untouched).
   warnIfStoreRedirected(config, sessionId);

@@ -78,9 +78,16 @@ export const HISTORY_SYNC_PAYLOAD_VERSION = 1;
 export const RunMode = z.enum(['standalone', 'attached']);
 export type RunMode = z.infer<typeof RunMode>;
 
-// Which deployment this machine is attached to. Opaque to this tree — nothing
+// Which deployment this machine is attached to. Opaque to THIS FILE — nothing
 // here parses, resolves or dials `endpoint`; it is stored so the dashboard can
 // name what the user is attached to and so a detach has something to clear.
+//
+// "This file", not "this tree", for the same reason the RunMode block above was
+// narrowed: @akasecurity/remote dials this endpoint, and the CLI and the local
+// dashboard both ask it to. The block above was corrected when that landed and
+// this one was not, which left the two neighbours disagreeing about the same
+// fact — the weaker claim is the true one, and it is the only one this file can
+// actually keep.
 //
 // DELIBERATELY CARRIES NO CREDENTIAL. A bearer token in settings.json would sit
 // in a file every local process can read for as long as the attachment lasts,

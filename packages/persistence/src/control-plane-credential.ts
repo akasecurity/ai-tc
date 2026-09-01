@@ -1,7 +1,12 @@
 import { chmodSync, lstatSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import type { AttachedCredential, ControlPlaneConnection } from '@akasecurity/schema';
+import type {
+  AttachedCredential,
+  ControlPlaneConnection,
+  CredentialState,
+  CredentialUnusableReason,
+} from '@akasecurity/schema';
 import {
   ATTACHED_CREDENTIAL_FILENAME,
   AttachedCredential as CredentialSchema,
@@ -55,38 +60,33 @@ export function isSafeEndpoint(endpoint: string): boolean {
   return parsed.protocol === 'http:' && LOOPBACK_HOSTS.has(parsed.hostname);
 }
 
-/**
- * Why a credential is not usable, for a surface that has to explain itself.
- *
- *   `absent`         — no file. The ordinary unattached state.
- *   `untrusted-file` — a symlink, a file owned by someone else, or one whose
- *                      mode could not be tightened. A planted credential rather
- *                      than a permissions accident.
- *   `unreadable`     — present but could not be read.
- *   `malformed`      — not JSON, or not an `AttachedCredential` (which includes
- *                      an unknown `specVersion`, a `z.literal`).
- *   `unsafe-endpoint`— minted against an endpoint this build will not send a
- *                      credential to.
- *   `endpoint-mismatch` — a valid credential for a DIFFERENT deployment than the
- *                      one settings names. See `readControlPlaneCredentialState`.
- */
-export type CredentialUnusableReason =
-  | 'absent'
-  | 'untrusted-file'
-  | 'unreadable'
-  | 'malformed'
-  | 'unsafe-endpoint'
-  | 'endpoint-mismatch';
+// `CredentialUnusableReason` and `CredentialState` now live in
+// @akasecurity/schema, beside the `AttachedCredential` they describe, and are
+// re-exported here so this module's public surface is unchanged.
+//
+// They moved because a PRESENTATIONAL surface has to name these states without
+// depending on the module that reads the disk: @akasecurity/dashboard-ui may
+// reach @akasecurity/schema and must not reach this package, so while the union
+// lived here the local dashboard could not be handed one. Every consumer that
+// imports them from @akasecurity/persistence keeps working.
+export type { CredentialState, CredentialUnusableReason };
 
-export type CredentialState =
-  | { usable: true; credential: AttachedCredential }
-  | { usable: false; reason: Exclude<CredentialUnusableReason, 'endpoint-mismatch'> }
-  | {
-      usable: false;
-      reason: 'endpoint-mismatch';
-      credentialEndpoint: string;
-      settingsEndpoint: string;
-    };
+/**
+ * The same answer as `CredentialState`, WITH the credential.
+ *
+ * A separate type, and one that never leaves this package's server-side
+ * consumers, because the two questions are different: "can this machine talk to
+ * its control plane, and if not why" is a question a surface asks, and "give me
+ * the key" is one only a transport or a rollback asks. Fusing them made every
+ * holder of a state a holder of a bearer credential, which is how one reached a
+ * client component and got serialised to the browser.
+ *
+ * Reachable only by asking for it by name. That is the whole mechanism: the
+ * narrow state is what a caller gets by default, and the wide read is a visible
+ * act at the call site.
+ */
+export type CredentialFileRead =
+  { usable: true; credential: AttachedCredential } | Extract<CredentialState, { usable: false }>;
 
 /**
  * Repair a too-permissive mode, or refuse the file.
@@ -180,6 +180,29 @@ export function readControlPlaneCredentialState(
   settingsDir: string,
   connection?: ControlPlaneConnection,
 ): CredentialState {
+  const read = readControlPlaneCredentialFile(settingsDir, connection);
+  // THE PROJECTION, and the one line that keeps the credential off every
+  // surface. `usable` is rebuilt rather than spread, so a field added to the
+  // wide read never arrives here by accident — a spread would carry the next
+  // one out the same way `credential` went.
+  return read.usable ? { usable: true } : read;
+}
+
+/**
+ * The full read, credential included.
+ *
+ * SERVER-SIDE CALLERS ONLY. Everything this returns on the usable branch is a
+ * bearer credential, so a value from here must never be handed to a component
+ * that renders in a browser — in a React Server Components tree, anything
+ * passed to a `'use client'` boundary is serialised into the payload the
+ * browser receives. Surfaces take `readControlPlaneCredentialState`.
+ *
+ * Never throws. Every failure is a `usable: false` state.
+ */
+export function readControlPlaneCredentialFile(
+  settingsDir: string,
+  connection?: ControlPlaneConnection,
+): CredentialFileRead {
   const file = controlPlaneCredentialPath(settingsDir);
 
   let raw: string;
@@ -238,8 +261,8 @@ export function readControlPlaneCredential(
   settingsDir: string,
   connection: ControlPlaneConnection,
 ): AttachedCredential | null {
-  const state = readControlPlaneCredentialState(settingsDir, connection);
-  return state.usable ? state.credential : null;
+  const read = readControlPlaneCredentialFile(settingsDir, connection);
+  return read.usable ? read.credential : null;
 }
 
 /**

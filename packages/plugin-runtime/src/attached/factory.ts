@@ -1,6 +1,6 @@
 import { hostname } from 'node:os';
 
-import { readControlPlaneCredentialState } from '@akasecurity/persistence';
+import { readControlPlaneCredential } from '@akasecurity/persistence';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import { createRemoteClient } from '@akasecurity/remote';
@@ -48,7 +48,7 @@ export interface GatewayMeta {
  * credential authenticates to it. Either alone is not an attachment: a
  * descriptor with no credential dials nothing, and a credential whose endpoint
  * does not match the descriptor is refused rather than presented to a host it
- * was not minted for — see `readControlPlaneCredentialState`.
+ * was not minted for — see `readControlPlaneCredentialFile`.
  *
  * FAIL-OPEN THROUGHOUT. Absent, malformed, untrusted or mismatched credential,
  * an endpoint this build will not send to, or any error at all while wiring the
@@ -64,12 +64,16 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
     const connection = config.settings.controlPlane;
     if (connection === undefined) return local;
 
-    const state = readControlPlaneCredentialState(config.settingsDir, connection);
-    if (!state.usable) return local;
+    // The transport's door: one value, no reasons, nothing to branch on. A
+    // gateway that could not build a client falls back to the local one either
+    // way, so the reason is of no use here — and asking for the credential by
+    // name is what keeps the narrow state the default everywhere else.
+    const credential = readControlPlaneCredential(config.settingsDir, connection);
+    if (credential === null) return local;
 
     const client = createRemoteClient({
       endpoint: connection.endpoint,
-      apiKey: state.credential.apiKey,
+      apiKey: credential.apiKey,
     });
     const store = createPolicyStore(config.dataDir);
     // settingsDir, not dataDir: the device identity has to outlive a wipe of

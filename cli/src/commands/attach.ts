@@ -5,6 +5,7 @@ import {
   isSafeEndpoint,
   ManagedFieldError,
   openLocalDatabase,
+  readControlPlaneCredentialFile,
   readControlPlaneCredentialState,
   readLocalHistoryPreview,
   readWorkspaceSettings,
@@ -217,7 +218,10 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // already attached and working — and an unconditional rollback would take
   // that machine from "attached and forwarding" to "attached, no usable
   // credential" while printing that nothing was changed.
-  const previous = readControlPlaneCredentialState(settingsDirOf(base));
+  // The WIDE read, because a rollback writes back the exact bytes that were
+  // there. This runs in the CLI's own process; nothing here crosses to a
+  // browser, which is the boundary the narrow state exists to protect.
+  const previous = readControlPlaneCredentialFile(settingsDirOf(base));
 
   try {
     // The credential FIRST, then the descriptor. In the other order a machine

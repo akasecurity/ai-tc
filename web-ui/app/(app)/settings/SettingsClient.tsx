@@ -1,7 +1,7 @@
 'use client';
 
 import { WorkspaceSettingsFormView } from '@akasecurity/dashboard-ui';
-import type { ManagedContext, WorkspaceSettings } from '@akasecurity/schema';
+import type { CredentialState, ManagedContext, WorkspaceSettings } from '@akasecurity/schema';
 import { useState, useTransition } from 'react';
 
 import { attachToControlPlane, detachFromControlPlane, saveSettings } from './actions';
@@ -9,9 +9,13 @@ import { attachToControlPlane, detachFromControlPlane, saveSettings } from './ac
 export function SettingsClient({
   settings,
   managed,
+  credentialState,
 }: {
   settings: WorkspaceSettings;
   managed: ManagedContext;
+  // Read on the server (page.tsx) and forwarded verbatim. Carries a verdict and,
+  // on a mismatch, the two endpoints — never the key itself.
+  credentialState: CredentialState;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -43,6 +47,7 @@ export function SettingsClient({
     <WorkspaceSettingsFormView
       settings={settings}
       managed={managed}
+      credentialState={credentialState}
       busy={busy}
       error={error}
       saved={saved}

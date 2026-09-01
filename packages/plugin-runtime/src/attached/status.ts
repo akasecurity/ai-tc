@@ -1,4 +1,4 @@
-import { readControlPlaneCredentialState, readWorkspaceSettings } from '@akasecurity/persistence';
+import { readControlPlaneCredentialFile, readWorkspaceSettings } from '@akasecurity/persistence';
 import type { WorkspaceSettings } from '@akasecurity/schema';
 import { controlPlaneName, isAttached, isHistorySyncConsentValid } from '@akasecurity/schema';
 
@@ -105,7 +105,10 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
       return ['AKA: standalone (not attached)', '  no control plane configured'].join('\n');
     }
     const connection = settings.controlPlane;
-    const state = readControlPlaneCredentialState(deps.settingsDir, connection);
+    // The WIDE read: this block prints `keyPrefix`, which the narrow state
+    // deliberately does not carry. It is a TERMINAL surface — `aka status` — so
+    // nothing here crosses to a browser.
+    const state = readControlPlaneCredentialFile(deps.settingsDir, connection);
 
     const lines = [
       // The mismatch case earns its own headline. An administrator can repoint

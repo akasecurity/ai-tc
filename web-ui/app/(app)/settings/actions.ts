@@ -7,7 +7,7 @@ import {
   isSafeEndpoint,
   ManagedFieldError,
   openLocalDatabase,
-  readControlPlaneCredentialState,
+  readControlPlaneCredentialFile,
   readWorkspaceSettings,
   removeControlPlaneCredential,
   settingsDir,
@@ -241,7 +241,11 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
     // rejects the whole Server Action and replaces the page with a framework
     // error, which is precisely the failure every action in this file is written
     // to return instead of raise.
-    previous = readControlPlaneCredentialState(dir);
+    // The FULL read, not the narrow state, and this is one of the two callers
+    // that is entitled to it: rolling a credential back means writing the exact
+    // bytes that were there. A Server Action runs only on the server, so
+    // nothing here crosses to a browser.
+    previous = readControlPlaneCredentialFile(dir);
     writeControlPlaneCredential(dir, {
       specVersion: 1,
       endpoint,
@@ -276,7 +280,7 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
       // locking the credential transaction inside @akasecurity/persistence so
       // the CLI is covered too; a lock taken only here would leave the CLI
       // racing and read as a fix. Flagged on the PR rather than half-done.
-      const current = readControlPlaneCredentialState(dir);
+      const current = readControlPlaneCredentialFile(dir);
       const ours = current.usable && current.credential.apiKey === accessKey;
       if (ours) {
         if (previous.usable) writeControlPlaneCredential(dir, previous.credential);

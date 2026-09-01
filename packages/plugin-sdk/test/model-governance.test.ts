@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -185,5 +185,45 @@ describe('prohibitedModelMessage', () => {
       // the control, which is the product claim this feature must not make.
       expect(message).not.toMatch(/proxy|intercept|network|blocked the (call|request)/iu);
     }
+  });
+});
+
+describe('modelFromTranscript reads only the tail', () => {
+  // WHY THIS IS STRUCTURAL. The property is "bytes read is bounded by the
+  // constant, not the file", and neither obvious behavioural form can state it
+  // here: `vi.spyOn(fs, 'readSync')` is refused outright (an ESM namespace is
+  // not configurable), and an elapsed-time bound on a large file is a statement
+  // about the runner rather than about the code — the reading this repo has
+  // already retracted twice elsewhere.
+  //
+  // So this reads the source. What that CAN see is the shape: a positional
+  // `readSync` behind an `openSync`, and no whole-file read of the caller's
+  // path. What it CANNOT see is whether the offsets are right — the correctness
+  // cases above cover that, and this covers the cost they cannot.
+  const SOURCE = readFileSync(new URL('../src/model-governance.ts', import.meta.url), 'utf8');
+
+  it('seeks to the tail rather than reading the file and slicing', () => {
+    expect(SOURCE).toContain('readSync(');
+    expect(SOURCE).toContain('openSync(');
+  });
+
+  it('never whole-file-reads the path it was handed', () => {
+    // `readFileSync(fd, …)` inside the small-file branch is fine and must stay
+    // reachable — that is the file that IS its own tail. What must not come
+    // back is a read of the PATH, which is the form that decodes everything
+    // before it slices.
+    expect(SOURCE).not.toMatch(/readFileSync\(\s*(transcriptPath|path)\b/u);
+  });
+
+  it('still answers correctly from a file far larger than the window', () => {
+    // The behavioural half, and the control for the two above: a guard on
+    // source text is worth nothing if the thing it describes stopped working.
+    const big = join(dir, 'big-tail.jsonl');
+    const filler = JSON.stringify({ type: 'user', text: 'x'.repeat(64 * 1024) });
+    writeFileSync(
+      big,
+      [...Array<string>(64).fill(filler), assistantLine('claude-opus-5')].join('\n'),
+    );
+    expect(modelFromTranscript(big)).toBe('claude-opus-5');
   });
 });

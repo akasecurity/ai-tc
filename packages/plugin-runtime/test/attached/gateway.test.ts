@@ -743,6 +743,42 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     expect(secret[0]?.action).toBe('block');
   });
 
+  it('DOES carry prohibitedModels from the cache — a restriction, not a relaxation', async () => {
+    // The merge below returns an EXPLICIT field list over `...local`, so a field
+    // the organization's bundle carries and this list omits is dropped in
+    // silence. That is what happened: the prohibition reached the cache on
+    // every attached device and never reached the hook that enforces it, so the
+    // whole control was inert while every test around it stayed green.
+    //
+    // Taking it is safe for the reason the two fields below are not: a
+    // prohibition can only ADD a refusal, so there is no relaxation to hand a
+    // cache-writer. What it could do is block the user's own sessions, which
+    // anyone able to write into that directory can already do far more cheaply
+    // by deleting the plugin.
+    const calls: Calls = { order: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
+    });
+    const { gateway } = build({
+      local,
+      readCachedBundle: () => Promise.resolve(bundle([], { prohibitedModels: ['claude-opus-5'] })),
+    });
+    const merged = await gateway.getPolicyBundle();
+    expect(merged.prohibitedModels).toEqual(['claude-opus-5']);
+  });
+
+  it('leaves prohibitedModels absent when the organization prohibits nothing', async () => {
+    // The control: a standalone bundle carries no prohibitions, so the merge
+    // must not invent an empty list that reads as an enforced decision.
+    const calls: Calls = { order: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
+    });
+    const { gateway } = build({ local, readCachedBundle: () => Promise.resolve(bundle([])) });
+    const merged = await gateway.getPolicyBundle();
+    expect(merged.prohibitedModels).toBeUndefined();
+  });
+
   it('never takes rulesComplete from the cache — that would be a detection kill-switch', async () => {
     const calls: Calls = { order: [] };
     const local = makeLocal(calls, {

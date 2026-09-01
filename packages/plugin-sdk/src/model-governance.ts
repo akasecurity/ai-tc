@@ -1,4 +1,12 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 import { DATA_DIR_MODE, DATA_FILE_MODE } from './data-dir.ts';
@@ -139,15 +147,39 @@ const TAIL_BYTES = 256 * 1024;
  * The first line of the slice is dropped — a byte-offset read almost always
  * lands mid-line, and half a JSON object is not a record.
  */
+/**
+ * The last `TAIL_BYTES` of a file, as text, without reading the rest of it.
+ *
+ * `readFileSync` then `.slice()` reads and UTF-8-decodes the WHOLE file first,
+ * so it is not a bounded read however small the slice — and a transcript grows
+ * for the life of a session, on a path a hook runs every turn. This seeks, so
+ * the cost is the constant rather than the file.
+ *
+ * Decoding starts mid-file, so the first bytes may be the tail of a multi-byte
+ * character. Harmless for the same reason the first LINE is dropped: a torn
+ * prefix cannot parse as JSON and is skipped either way.
+ */
+function readTail(path: string): { text: string; truncated: boolean } {
+  const fd = openSync(path, 'r');
+  try {
+    const { size } = fstatSync(fd);
+    if (size <= TAIL_BYTES) return { text: readFileSync(fd, 'utf8'), truncated: false };
+    const buffer = Buffer.allocUnsafe(TAIL_BYTES);
+    const read = readSync(fd, buffer, 0, TAIL_BYTES, size - TAIL_BYTES);
+    return { text: buffer.subarray(0, read).toString('utf8'), truncated: true };
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function modelFromTranscript(transcriptPath: string | undefined): string | undefined {
   if (transcriptPath === undefined || transcriptPath === '') return undefined;
   try {
-    const raw = readFileSync(transcriptPath, 'utf8');
-    const slice = raw.length > TAIL_BYTES ? raw.slice(raw.length - TAIL_BYTES) : raw;
+    const { text: slice, truncated } = readTail(transcriptPath);
     const lines = slice.split('\n');
     // Only when the slice was actually cut — an untruncated file's first line is
     // a whole record and dropping it would lose a single-record transcript.
-    if (raw.length > TAIL_BYTES) lines.shift();
+    if (truncated) lines.shift();
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i];
       if (line === undefined || line === '') continue;

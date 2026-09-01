@@ -118,7 +118,10 @@ describe('modelFromTranscript', () => {
   it('survives a transcript larger than the tail it reads', () => {
     const path = join(dir, 'big.jsonl');
     const filler = JSON.stringify({ type: 'user', text: 'x'.repeat(4096) });
-    writeFileSync(path, [...Array<string>(200).fill(filler), assistantLine('claude-opus-5')].join('\n'));
+    writeFileSync(
+      path,
+      [...Array<string>(200).fill(filler), assistantLine('claude-opus-5')].join('\n'),
+    );
     expect(modelFromTranscript(path)).toBe('claude-opus-5');
   });
 

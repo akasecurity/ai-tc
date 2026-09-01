@@ -48,7 +48,7 @@ describe('decidePreModelSwitch', () => {
 });
 
 describe('decideProhibitedModelTurn', () => {
-  it('blocks the turn with UserPromptSubmit\'s own top-level shape', () => {
+  it("blocks the turn with UserPromptSubmit's own top-level shape", () => {
     // Deliberately NOT `hookSpecificOutput` — the sibling decision above uses
     // that, and the two hooks read different fields.
     const output = decideProhibitedModelTurn('claude-opus-5', ['claude-opus-5']);

@@ -103,7 +103,10 @@ export function recordSessionModel(
  * failure, or a session-id mismatch; all four mean "not known", which the caller
  * must treat as allow.
  */
-export function readSessionModel(dataDir: string, sessionId: string | undefined): string | undefined {
+export function readSessionModel(
+  dataDir: string,
+  sessionId: string | undefined,
+): string | undefined {
   if (sessionId === undefined || sessionId === '') return undefined;
   try {
     const parsed: unknown = JSON.parse(readFileSync(join(dataDir, SESSION_MODEL_MARKER), 'utf8'));

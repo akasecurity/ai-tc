@@ -274,7 +274,7 @@ export async function send(options: SendOptions): Promise<RemoteResponse> {
     // request.
     //
     // There is deliberately no 'connect' sibling. Node dispatches that event
-    // only when the REQUEST method was CONNECT, and the seven routes are GET and
+    // only when the REQUEST method was CONNECT, and the eight routes are GET and
     // POST — so a handler for it could never run, and an unreachable line reads
     // as a covered case while proving nothing. The 'close' backstop below is
     // the general answer, and it covers that shape too.

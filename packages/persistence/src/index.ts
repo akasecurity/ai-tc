@@ -149,8 +149,10 @@ export type { VaultDerefInsert, VaultRow, VaultRowInsert } from './repositories/
 export { SqliteSecretVaultRepository } from './repositories/secret-vault.ts';
 export { SqliteSecurityRepository } from './repositories/security.ts';
 export {
+  capHits,
   MAX_EGRESS_CALL_SITES_PER_PROJECT,
   SqliteSharesRepository,
+  withoutDroppedFiles,
 } from './repositories/shares.ts';
 export { SqliteSourceProjectRepository } from './repositories/source-project.ts';
 export { compareBinaryVersions } from './semver.ts';

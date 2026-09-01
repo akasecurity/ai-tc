@@ -31,7 +31,7 @@ export const SYNC_REQUEST_TIMEOUT_MS = 30_000;
  * (G2).
  *
  * This module builds its own client rather than reusing the gateway's
- * `AttachedClient`. That interface declares exactly the four ingest writes, and
+ * `AttachedClient`. That interface declares exactly the five ingest writes, and
  * it is the seam that keeps the hook path off the network: putting a bundle
  * fetch on it would make "the gateway can reach the control plane for reads" true
  * again, which is the property local-first exists to remove. The cost is one

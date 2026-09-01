@@ -1,4 +1,4 @@
-import type { StorePostureSnapshot } from '@akasecurity/schema';
+import type { EgressIngestRequest, StorePostureSnapshot } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { createAttachClient, createRemoteClient } from '../src/client.ts';
@@ -30,6 +30,28 @@ const bundle = {
   rules: [],
   customKeywords: [],
   fetchedAt: '2026-08-24T10:00:00.000Z',
+};
+
+const egressRequest: EgressIngestRequest = {
+  projectKey: 'a'.repeat(64),
+  project: 'widgets',
+  reconcile: { mode: 'walk', walkedPrefix: '' },
+  hits: [
+    {
+      host: 'api.stripe.com',
+      kind: 'provider',
+      name: 'Stripe',
+      category: 'payments',
+      trust: 'recognized',
+      network: null,
+      method: 'POST',
+      transport: 'https',
+      url: 'https://api.stripe.com/v1/charges',
+      template: false,
+      dataClass: 'customer',
+      site: { file: 'src/billing/charge.ts', line: 42, dynamic: false, vendored: false },
+    },
+  ],
 };
 
 const json = (payload: unknown) => JSON.stringify(payload);
@@ -451,10 +473,66 @@ describe('the audit-event submission', () => {
   });
 });
 
+describe('the shares-ingest submission', () => {
+  const server = useLoopbackServer();
+
+  it('posts a well-formed submission', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ ok: true }));
+    });
+
+    await client.recordProjectEgress(egressRequest);
+    expect(server.received.at(-1)?.url).toBe('/v1/shares');
+  });
+
+  it('refuses a malformed request before it reaches the network', async () => {
+    // Validated on the way out, the same discipline as recordAuditEvent: a
+    // deterministic local shape bug must not be indistinguishable from a
+    // transport fault to a caller counting failures toward a circuit breaker.
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    const before = server.received.length;
+
+    const [firstHit] = egressRequest.hits;
+    if (firstHit === undefined) throw new Error('fixture must carry at least one hit');
+
+    await expect(
+      client.recordProjectEgress({
+        ...egressRequest,
+        hits: [{ ...firstHit, site: { ...firstHit.site, line: -1 } }] as never,
+      }),
+    ).rejects.toThrow();
+
+    expect(server.received).toHaveLength(before);
+  });
+
+  it('rejects a malformed projectKey digest before it reaches the wire', async () => {
+    // The digest is the one field on this request derived from the machine's own
+    // filesystem: a non-git project keys on `path:<abs root>`, which embeds an OS
+    // username. Hashing is what makes that safe to send, so a value that is not a
+    // digest is the exact shape of a build that forgot to hash — and it must fail
+    // HERE, on the machine that still holds the plaintext, not as a remote 400.
+    //
+    // Each case is a different way to miss: too short, uppercase hex, right
+    // length but not hex, and something that never resembled a digest at all.
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    const before = server.received.length;
+
+    for (const bad of ['a'.repeat(63), 'A'.repeat(64), 'zz'.repeat(32), 'AKIA-not-a-digest']) {
+      await expect(
+        client.recordProjectEgress({ ...egressRequest, projectKey: bad }),
+      ).rejects.toThrow();
+    }
+
+    expect(server.received).toHaveLength(before);
+  });
+});
+
 describe('routes', () => {
   const server = useLoopbackServer();
 
-  it('addresses each of the seven, and tolerates trailing slashes on the endpoint', async () => {
+  it('addresses each of the eight, and tolerates trailing slashes on the endpoint', async () => {
     // SEVERAL slashes, not one. The normalization is a scan rather than a
     // `replace(/\/+$/, '')` — that regex is quadratic on an all-slash string,
     // since the engine retries from every position and each attempt walks to the
@@ -476,7 +554,9 @@ describe('routes', () => {
                   keyKind: 'plugin',
                   serverTime: '2026-08-24T10:00:00.000Z',
                 })
-              : json({ accepted: 1, duplicates: 0, ok: true }),
+              : req.url === '/v1/shares'
+                ? json({ ok: true })
+                : json({ accepted: 1, duplicates: 0, ok: true }),
       );
     });
 
@@ -499,6 +579,7 @@ describe('routes', () => {
     await client.reportStorePosture(snapshot);
     await client.getPolicyBundle();
     await client.whoami();
+    await client.recordProjectEgress(egressRequest);
 
     expect(server.received.map((r) => `${r.method ?? ''} ${r.url ?? ''}`)).toEqual([
       'POST /v1/events',
@@ -508,6 +589,7 @@ describe('routes', () => {
       'POST /v1/store-posture',
       'GET /v1/policy-bundle',
       'GET /v1/plugin/whoami',
+      'POST /v1/shares',
     ]);
   });
 });

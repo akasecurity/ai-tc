@@ -167,6 +167,10 @@ function makeClient(calls: Calls, overrides: Partial<AttachedClient> = {}): Atta
       calls.order.push('client.reportStorePosture');
       return Promise.resolve({});
     }),
+    recordProjectEgress: vi.fn(() => {
+      calls.order.push('client.recordProjectEgress');
+      return Promise.resolve({ ok: true });
+    }),
     ...overrides,
   };
 }
@@ -371,11 +375,12 @@ describe('writes are local-FIRST, then forwarded', () => {
     ).toHaveBeenCalled();
   });
 
-  it('recordProjectEgress is LOCAL-ONLY — there is no egress ingest endpoint to forward to', async () => {
+  it('recordProjectEgress writes locally, then attempts a forward', async () => {
     const { gateway, calls } = build();
     const summary = await gateway.recordProjectEgress(egressInput());
-    expect(calls.order).toContain('local.recordProjectEgress');
-    expect(calls.order).not.toContain('forward.run');
+    expect(calls.order.indexOf('local.recordProjectEgress')).toBeLessThan(
+      calls.order.indexOf('client.recordProjectEgress'),
+    );
     // The inner gateway's real summary is returned, not a zeroed stand-in: the
     // scanner reads a throw as a failed write and skips its ledger commit.
     expect(summary).toEqual({
@@ -385,6 +390,22 @@ describe('writes are local-FIRST, then forwarded', () => {
       truncated: false,
       droppedFiles: [],
     });
+  });
+
+  it('recordProjectEgress forward failure still returns the LOCAL summary and does not throw', async () => {
+    const calls: Calls = { order: [] };
+    const client = makeClient(calls, {
+      recordProjectEgress: vi.fn(() => Promise.reject(new Error('backend down'))),
+    });
+    const { gateway } = build({ client, forward: passthroughForward(calls) });
+    await expect(gateway.recordProjectEgress(egressInput())).resolves.toEqual({
+      destinations: 1,
+      endpoints: 2,
+      callSites: 3,
+      truncated: false,
+      droppedFiles: [],
+    });
+    expect(calls.order).toContain('forward.run');
   });
 });
 

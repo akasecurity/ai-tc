@@ -37,14 +37,13 @@ import type { CaptureResult } from '@akasecurity/plugin-sdk';
 import {
   claimOnboardingNudge,
   createPluginRuntime,
-  decideProhibitedModelTurn,
   loadConfig,
   uniqueRuleIds,
 } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import { blockMessage, exceptionPointer } from '../exception-guidance.ts';
-import { resolveCodexSessionModel } from './model-guard.ts';
+import { handleProhibitedTurn } from './model-guard.ts';
 import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
 import {
   claimStoreUnavailableWarning,
@@ -81,28 +80,15 @@ async function main(): Promise<void> {
   // Wrapped fail-open throughout. A bundle that will not load, or a model that
   // cannot be resolved, leaves `blocked` null and the turn proceeds to the
   // ordinary detection path.
-  const blocked = await (async (): Promise<{ decision: 'block'; reason: string } | null> => {
-    try {
-      const { prohibitedModels } = await gateway.getPolicyBundle();
-      // Bundle FIRST: with no prohibition list there is nothing to enforce, and
-      // resolving the model would be a transcript read spent to reach the same
-      // allow.
-      if (prohibitedModels === undefined || prohibitedModels.length === 0) return null;
-      const model = resolveCodexSessionModel(
-        config.dataDir,
-        sessionId,
-        input === null ? undefined : getString(input, 'transcript_path'),
-      );
-      return decideProhibitedModelTurn(model, prohibitedModels);
-    } catch {
-      return null;
-    }
-  })();
-  if (blocked !== null) {
-    // Closed here rather than left to the runtime's `finally` below, which this
-    // return never reaches.
-    await gateway.close();
-    await emit(blocked);
+  if (
+    await handleProhibitedTurn(
+      gateway,
+      config.dataDir,
+      sessionId,
+      input === null ? undefined : getString(input, 'transcript_path'),
+      emit,
+    )
+  ) {
     return;
   }
 

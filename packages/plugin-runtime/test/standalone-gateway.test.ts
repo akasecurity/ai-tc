@@ -725,3 +725,76 @@ describe('per-detection policy drives enforcement (installed_packs.policy_id)', 
     expect(await decide()).toEqual({ action: 'warn', text: 'deploy with ZZTOP now' });
   });
 });
+
+/**
+ * One `audit_events` row as it REALLY comes back.
+ *
+ * `findById` is `SELECT *` cast to `AuditEventRow`, so the object carries the
+ * raw snake_case columns and the camelCase type is optimistic. Read what is
+ * there rather than what the type claims.
+ */
+function rawRow(
+  db: ReturnType<typeof openLocalDatabase>,
+  id: string,
+): { id: string; event_type: string; root_session_id: string | null } | undefined {
+  return db.auditEvents.findById(id) as unknown as
+    { id: string; event_type: string; root_session_id: string | null } | undefined;
+}
+
+describe('recordAuditEvent plants the session root it FKs onto', () => {
+  // The failure this covers is SILENT and lands exactly where the evidence
+  // matters most. `root_session_id` is a self-FK, and INSERT OR IGNORE does not
+  // suppress a foreign-key violation — so a session-scoped row written before
+  // its root exists THROWS, and every caller of this port is fail-open, so the
+  // throw is swallowed and the row is simply absent.
+  //
+  // A store with no root is not exotic: SessionStart is what writes one, and it
+  // is gated and fail-open throughout — a session where it failed, was skipped,
+  // or where the plugin arrived mid-session has none.
+  it('lands a session-scoped row in a store with NO session root', async () => {
+    const gateway = new StandaloneDataGateway(dir);
+    await gateway.recordAuditEvent({
+      id: 'refusal-1',
+      eventType: 'model_refusal',
+      startedAt: '2026-09-02T10:30:00.000Z',
+      rootSessionId: 'session-that-never-started',
+      attributes: { model: 'claude-opus-5', refusal_seam: 'switch' },
+    });
+    await gateway.close();
+
+    const check = openLocalDatabase(dir);
+    try {
+      // Asserted as PRESENCE, not as "did not throw": every caller of this
+      // port swallows the write, so a test that only drove the call would pass
+      // with nothing recorded — which is the bug.
+      const row = rawRow(check, 'refusal-1');
+      expect(row?.id).toBe('refusal-1');
+      expect(row?.root_session_id).toBe('session-that-never-started');
+      // And the stub root itself exists, which is what the FK needed.
+      expect(rawRow(check, 'session-that-never-started')?.event_type).toBe('session');
+    } finally {
+      check.close();
+    }
+  });
+
+  it('does not plant a stub for a row that IS its own root', async () => {
+    // SessionStart writes the root with `id === rootSessionId`; planting first
+    // would be a wasted statement. The fill-the-stub upsert means it would not
+    // shadow the real row either — this pins the cheaper path, not a safety one.
+    const gateway = new StandaloneDataGateway(dir);
+    await gateway.recordAuditEvent({
+      id: 'session-1',
+      eventType: 'session',
+      startedAt: '2026-09-02T10:30:00.000Z',
+      rootSessionId: 'session-1',
+    });
+    await gateway.close();
+
+    const check = openLocalDatabase(dir);
+    try {
+      expect(rawRow(check, 'session-1')?.event_type).toBe('session');
+    } finally {
+      check.close();
+    }
+  });
+});

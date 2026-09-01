@@ -11,7 +11,6 @@
 import { randomUUID } from 'node:crypto';
 
 import type { DataGateway } from '@akasecurity/plugin-sdk';
-import { SOURCE_TOOL } from '@akasecurity/schema';
 import {
   buildModelRefusalEvent,
   codexModelFromRecord,
@@ -19,6 +18,7 @@ import {
   modelFromTranscriptTail,
   readSessionModel,
 } from '@akasecurity/plugin-sdk';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 
 /**
  * The model this Codex session is running on, or undefined when it cannot be

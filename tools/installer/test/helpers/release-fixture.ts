@@ -30,6 +30,7 @@ import { join } from 'node:path';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { powershellEnv, powershellExe } from './run-installer.ts';
+import { writeStoredZip } from './stored-zip.ts';
 
 /** A version no real release carries, so a fixture can never be mistaken for one. */
 export const FIXTURE_VERSION = '0.0.0-fixture';
@@ -325,6 +326,12 @@ export function writeArchive(
   // with it because the interpreter is resolved here: without it the wiring
   // could only be checked on a host that has PowerShell, i.e. not on the legs
   // where the retry branch would otherwise be dead code.
+  //
+  // Passing EITHER also selects the PowerShell builder whatever the host, and
+  // that is the same argument rather than a second one: off Windows the default
+  // is now Node (see stored-zip.ts), so without this the wiring assertion would
+  // stop reaching `compressArchive` on exactly the hosts it was widened to
+  // cover, and would keep passing while proving nothing.
   { exe: exeOverride, run }: { exe?: string; run?: CompressRunner } = {},
 ): string {
   const archivePath = join(intoDir, archiveNameFor(version, triple));
@@ -338,17 +345,27 @@ export function writeArchive(
     writeFileSync(join(root, 'payload.txt'), `${banner}\n`);
     if (triple.startsWith('win32')) {
       writeWindowsPayload(root, banner, runnable);
-      // Whatever PowerShell this host has, rather than `powershell` — which is
-      // Windows-only, while `Compress-Archive` ships with pwsh everywhere. The
-      // ps1 suite skips outright without one, so a caller that got here has one.
-      const exe = exeOverride ?? powershellExe();
-      if (exe === undefined) {
-        throw new Error(
-          `cannot build ${archiveNameFor(version, triple)}: a zip fixture needs a PowerShell ` +
-            '(Compress-Archive), and this host has neither `powershell` nor `pwsh`',
-        );
+      // PowerShell builds this on Windows, and Node builds it everywhere else.
+      // The split is not a preference between two ways of writing a zip; see
+      // stored-zip.ts for the CI abort that motivates it and for why Windows
+      // deliberately keeps the cmdlet. An injected seam forces the PowerShell
+      // path whatever the host, because driving that path is the only thing
+      // those two options are for — without it the retry's wiring assertion
+      // would silently stop reaching the code it exists to pin.
+      if (process.platform === 'win32' || exeOverride !== undefined || run !== undefined) {
+        // Whatever PowerShell this host has, rather than `powershell` — which is
+        // Windows-only, while `Compress-Archive` ships with pwsh everywhere.
+        const exe = exeOverride ?? powershellExe();
+        if (exe === undefined) {
+          throw new Error(
+            `cannot build ${archiveNameFor(version, triple)}: a zip fixture needs a PowerShell ` +
+              '(Compress-Archive), and this host has neither `powershell` nor `pwsh`',
+          );
+        }
+        compressArchive(exe, root, archivePath, run);
+      } else {
+        writeStoredZip(archivePath, stage, rootName);
       }
-      compressArchive(exe, root, archivePath, run);
     } else {
       const stub = join(root, 'aka');
       writeFileSync(stub, `#!/bin/sh\necho "aka ${banner}"\n`);

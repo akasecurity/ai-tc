@@ -928,10 +928,10 @@ export function isForeignSqliteLineage(db: DatabaseSync): boolean {
   return columnNames(db, 'events').includes('tenant_id');
 }
 
-// `synced_at` is an additive, plugin-local bookkeeping column that existing
-// stores already carry; installing it here (outside the append-only canonical
-// migrations) keeps every store column-compatible regardless of which release
-// created it. Guarded by table_info so it is applied exactly once per table,
+// `synced_at` and `sync_claimed_at` are additive, plugin-local bookkeeping
+// columns that existing stores already carry; installing them here (outside the
+// append-only canonical migrations) keeps every store column-compatible
+// regardless of which release created it. Guarded by table_info so it is applied exactly once per table,
 // idempotently. Also probes the TABLE itself first: columnNames() returns an
 // empty list for a table that doesn't exist, so a column-only guard would
 // read that as "no columns yet" and still run the ALTER TABLE below — which
@@ -941,9 +941,33 @@ export function isForeignSqliteLineage(db: DatabaseSync): boolean {
 // reads as absent here rather than as a column-less table.
 function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
   if (!schemaObjectExists(db, 'table', table)) return;
-  if (!columnNames(db, table).includes('synced_at')) {
+  const columns = columnNames(db, table);
+  if (!columns.includes('synced_at')) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN synced_at integer`);
   }
+  // `sync_claimed_at` is the same kind of column and arrives the same way: set
+  // when a row is claimed for sending, cleared when it settles. It exists
+  // because `synced_at` alone cannot say "being sent right now" — it holds NULL,
+  // a delivery time, or the skip sentinel, and a fourth value in that column
+  // would collide with the `> 0` and `= -1` predicates the ledger already reads.
+  if (!columns.includes('sync_claimed_at')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN sync_claimed_at integer`);
+  }
+  // For the DELIVERY-STATE read specifically. That one aggregates over every row
+  // of the tracked types on each call — a surface showing it re-runs it per
+  // render — and `audit_events` is the table captures land in, the numerous
+  // grain. With all four columns present the planner answers it from the index
+  // alone (a covering index, no table access), which is what this exists for.
+  //
+  // The drain's own reads are NOT the reason for it: they bound on started_at
+  // directly after event_type, and `idx_audit_type_t` already puts those two
+  // adjacent, so the planner prefers it and is right to. Both plans are pinned
+  // in the ledger's tests, because a column order that stops working stops
+  // working silently.
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_audit_events_sync
+       ON audit_events (event_type, synced_at, sync_claimed_at, started_at)`,
+  );
 }
 
 // Worktree-scan bookkeeping: which files the scanner has already run under which

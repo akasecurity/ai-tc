@@ -68,6 +68,7 @@ const MAINTENANCE_METHODS = [
   'recordProjectFiles',
   'reconcileWorktreeProjects',
   'staleBinaryNotice',
+  'markCaptureDelivered',
 ] as const;
 type MissingMaintenance = Exclude<
   keyof LocalStoreMaintenance,
@@ -84,7 +85,7 @@ interface Calls {
 }
 
 /**
- * A recording stand-in for the inner local gateway. Two of the five maintenance
+ * A recording stand-in for the inner local gateway. Three of the six maintenance
  * members are SYNCHRONOUS on the real port and are synchronous here too — a
  * fake that returned promises for them would hide exactly the bug the composite
  * has to avoid.
@@ -145,6 +146,9 @@ function makeLocal(calls: Calls, overrides: Partial<DataGateway & LocalStoreMain
   base.staleBinaryNotice = vi.fn(() => {
     calls.order.push('local.staleBinaryNotice');
     return 'a notice';
+  });
+  base.markCaptureDelivered = vi.fn(() => {
+    calls.order.push('local.markCaptureDelivered');
   });
   return Object.assign(base, overrides) as unknown as DataGateway & LocalStoreMaintenance;
 }
@@ -355,6 +359,32 @@ describe('writes are local-FIRST, then forwarded', () => {
     await expect(
       gateway.recordCapture({ event: event('e'), findings: [] }),
     ).resolves.toBeUndefined();
+  });
+
+  it('stamps the capture delivered ONLY after the forward succeeds', async () => {
+    // The queue is the local store: `synced_at` set means the organization's
+    // copy was made, NULL means it is still owed. The stamp is what closes a
+    // row, so it has to be ordered strictly after the forward reports success —
+    // stamping before would mark a row delivered that a timeout was about to
+    // lose.
+    const { gateway, calls } = build();
+    await gateway.recordCapture({ event: event('e1'), findings: [] });
+    expect(calls.order.indexOf('forward.run')).toBeLessThan(
+      calls.order.indexOf('local.markCaptureDelivered'),
+    );
+  });
+
+  it('leaves an undelivered capture unstamped, which is what queues it', async () => {
+    // The whole of the outbox, and the case that would silently lose events if
+    // it regressed: a breaker-open forward never reached the backend, so the
+    // row must stay outstanding for a later drain. A stamp here would mark it
+    // delivered and it would never be sent again.
+    // The forward fake keeps its own tape; `calls` is the one the LOCAL fake
+    // writes to, which is where the stamp would show up.
+    const { gateway, calls } = build({ forward: deadForward({ order: [] }) });
+    await gateway.recordCapture({ event: event('e1'), findings: [] });
+    expect(calls.order).toContain('local.recordCapture');
+    expect(calls.order).not.toContain('local.markCaptureDelivered');
   });
 
   it('a forward that REJECTS is contained — the local write still stands', async () => {

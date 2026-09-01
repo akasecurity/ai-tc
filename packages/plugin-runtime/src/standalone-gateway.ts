@@ -32,6 +32,7 @@ import type {
   EgressWriteSummary,
   FindingView,
   HealthSummary,
+  IngestEvent,
   InstalledPackInput,
   InventoryContext,
   InventoryFacets,
@@ -410,6 +411,15 @@ export class StandaloneDataGateway implements DataGateway, LocalStoreMaintenance
    * than the DataGateway port. Fail-open: any error → null (no notice), and
    * unparseable versions compare equal so garbage can never fire it.
    */
+  // Implemented, not stubbed, even though standalone never forwards: the
+  // capability is declared by this class and `hasLocalStoreMaintenance` answers
+  // for the whole of it, so a member that threw would make that answer a lie
+  // the moment a composite delegated to it. A store-level no-op is the honest
+  // shape — a standalone machine has nothing delivered to record.
+  markCaptureDelivered(event: IngestEvent, atMs: number): void {
+    this.db.markCaptureDelivered(event, atMs);
+  }
+
   staleBinaryNotice(currentVersion: string): string | null {
     try {
       // newestRecordedBinary() maxes across ALL recorders (plugin + aka-cli), and

@@ -756,11 +756,13 @@ describe('recordAuditEvent plants the session root it FKs onto', () => {
   it('lands a session-scoped row in a store with NO session root', async () => {
     const gateway = new StandaloneDataGateway(dir);
     await gateway.recordAuditEvent({
-      id: 'refusal-1',
-      eventType: 'model_refusal',
+      id: 'leaf-1',
+      // Any session-scoped type: what is under test is the FK planting, which
+      // belongs to the WRITE rather than to one event type. `model_refusal` is
+      // added by a later PR in this stack and does not exist here.
+      eventType: 'tool_call',
       startedAt: '2026-09-02T10:30:00.000Z',
       rootSessionId: 'session-that-never-started',
-      attributes: { model: 'claude-opus-5', refusal_seam: 'switch' },
     });
     await gateway.close();
 
@@ -769,8 +771,8 @@ describe('recordAuditEvent plants the session root it FKs onto', () => {
       // Asserted as PRESENCE, not as "did not throw": every caller of this
       // port swallows the write, so a test that only drove the call would pass
       // with nothing recorded — which is the bug.
-      const row = rawRow(check, 'refusal-1');
-      expect(row?.id).toBe('refusal-1');
+      const row = rawRow(check, 'leaf-1');
+      expect(row?.id).toBe('leaf-1');
       expect(row?.root_session_id).toBe('session-that-never-started');
       // And the stub root itself exists, which is what the FK needed.
       expect(rawRow(check, 'session-that-never-started')?.event_type).toBe('session');

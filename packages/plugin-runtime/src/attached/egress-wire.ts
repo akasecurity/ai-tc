@@ -20,6 +20,20 @@ import type {
  * variants — there is no branch on prefix — which is what keeps `git:X` and
  * `path:X` from aliasing to the same digest while letting the same `git:`
  * identity converge to the same digest across every device that scanned it.
+ *
+ * WHAT THIS DOES NOT BUY. The digest is for stable cross-device identity, not
+ * concealment. Its inputs are low-entropy and enumerable — a repo URL, or a
+ * local filesystem path — so anyone holding the digests recovers the plaintext
+ * by hashing a candidate list. It keeps an absolute `path:` root (which on macOS
+ * embeds an OS username) out of request logs and off the wire in front of a
+ * passive observer; it does not hide it from the deployment receiving it.
+ *
+ * That trade is deliberate. The org running the control plane is entitled to
+ * know which repos its own devices scanned, and `site.file` crosses in plaintext
+ * anyway. But do not upgrade this in place if concealment from the RECIPIENT is
+ * ever wanted: that needs a keyed construction (HMAC under a per-tenant secret),
+ * and a per-tenant key destroys the cross-device convergence above. It is a
+ * contract change, not a one-line swap here.
  */
 export function hashProjectKey(projectKey: string): string {
   return createHash('sha256').update(projectKey, 'utf8').digest('hex');

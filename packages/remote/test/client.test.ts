@@ -506,6 +506,27 @@ describe('the shares-ingest submission', () => {
 
     expect(server.received).toHaveLength(before);
   });
+
+  it('rejects a malformed projectKey digest before it reaches the wire', async () => {
+    // The digest is the one field on this request derived from the machine's own
+    // filesystem: a non-git project keys on `path:<abs root>`, which embeds an OS
+    // username. Hashing is what makes that safe to send, so a value that is not a
+    // digest is the exact shape of a build that forgot to hash — and it must fail
+    // HERE, on the machine that still holds the plaintext, not as a remote 400.
+    //
+    // Each case is a different way to miss: too short, uppercase hex, right
+    // length but not hex, and something that never resembled a digest at all.
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    const before = server.received.length;
+
+    for (const bad of ['a'.repeat(63), 'A'.repeat(64), 'zz'.repeat(32), 'AKIA-not-a-digest']) {
+      await expect(
+        client.recordProjectEgress({ ...egressRequest, projectKey: bad }),
+      ).rejects.toThrow();
+    }
+
+    expect(server.received).toHaveLength(before);
+  });
 });
 
 describe('routes', () => {

@@ -51,7 +51,7 @@ import { REQUEST_TIMEOUT_MS, withTimeout } from './with-timeout.ts';
  *
  * WRITE-ONLY, plus the posture self-report. There are deliberately no reads:
  * every read is served from the local store, and the credential a machine holds
- * is scoped to the four writes plus the policy bundle and whoami — nothing
+ * is scoped to the five writes plus the policy bundle and whoami — nothing
  * else. A read added here would be a method that cannot work against the
  * credential this gateway actually holds.
  */

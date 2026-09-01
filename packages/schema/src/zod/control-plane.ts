@@ -378,8 +378,19 @@ export type EgressIngestHit = z.infer<typeof EgressIngestHit>;
 
 export const EgressIngestRequest = z
   .object({
-    /** Hash digest of the local `projectKey`, never the plaintext. */
-    projectKey: z.string().min(1),
+    /**
+     * Hash digest of the local `projectKey`, never the plaintext.
+     *
+     * ENFORCED, not just documented: 64 lowercase hex. `.min(1)` let the
+     * sentence above be true only by convention, so a build that forgot to hash
+     * would put a `path:/Users/<name>/…` root on the wire and learn about it as
+     * a remote 400, if at all. The narrow shape makes the same mistake a local
+     * `RemoteRequestInvalid` at the validate-on-out boundary, on the machine
+     * that still has the plaintext to not send.
+     */
+    projectKey: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/, 'projectKey must be a 64-character lowercase hex digest'),
     /** Display name only — never keys reconciliation. */
     project: z.string(),
     reconcile: EgressReconcile,

@@ -54,7 +54,7 @@ export function HarnessSelect({
     <DropdownMenu>
       <DropdownMenuTrigger
         className={cn(
-          'group flex h-8.5 w-full items-center gap-2 rounded-lg border bg-surface px-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+          'group flex h-8.5 w-full items-center gap-2 rounded-lg border bg-surface-2 px-2.5 text-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40',
           all ? 'border-border-field' : 'border-primary',
         )}
       >
@@ -65,7 +65,7 @@ export function HarnessSelect({
         />
         <span className="flex-1 text-left font-medium text-text">{label}</span>
         {!all && (
-          <Badge variant="primary" className="px-1.5 py-0 text-label bg-surface">
+          <Badge variant="primary" className="px-1.5 py-0 text-label bg-surface-2">
             {value.length}
           </Badge>
         )}

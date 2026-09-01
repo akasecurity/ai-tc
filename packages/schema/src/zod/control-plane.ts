@@ -369,6 +369,14 @@ export type ControlPlaneErrorBody = z.infer<typeof ControlPlaneErrorBody>;
  */
 export const AttachDeviceRequest = z
   .object({
+    // This machine's own continuity id, so re-attaching ROTATES the credential
+    // on one machine record instead of producing a second one. Client-minted
+    // and losable — a wiped state file mints a fresh id and the deployment sees
+    // a new machine, which is benign precisely because the identity that
+    // matters is the credential, not this. Deliberately NOT a hardware
+    // fingerprint: nothing here should be a value a device could be tracked by
+    // across organizations.
+    deviceId: printable(128).min(1),
     hostname: printable(255).min(1),
     os: printable(64).min(1),
     cliVersion: printable(64).min(1),

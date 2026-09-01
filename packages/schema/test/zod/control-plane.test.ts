@@ -279,7 +279,12 @@ describe('response parsers', () => {
 // ─── The device-authorization attach flow ────────────────────────────────────
 
 describe('AttachDeviceRequest', () => {
-  const request = { hostname: 'dev-laptop', os: 'darwin 24.0.0', cliVersion: '0.9.8' };
+  const request = {
+    deviceId: 'd76504a1-fab2-4e28-af82-b5aab7212fdc',
+    hostname: 'dev-laptop',
+    os: 'darwin 24.0.0',
+    cliVersion: '0.9.8',
+  };
 
   it('accepts what the CLI reports about itself', () => {
     expect(AttachDeviceRequest.safeParse(request).success).toBe(true);
@@ -289,7 +294,7 @@ describe('AttachDeviceRequest', () => {
   // Required, so an approval page always has something to render. A caller that
   // cannot determine its hostname substitutes a placeholder — a visible
   // decision — rather than leaving the server to render a blank.
-  it.each(['hostname', 'os', 'cliVersion'])('refuses an empty %s', (field) => {
+  it.each(['deviceId', 'hostname', 'os', 'cliVersion'])('refuses an empty %s', (field) => {
     expect(AttachDeviceRequest.safeParse({ ...request, [field]: '' }).success).toBe(false);
   });
 
@@ -304,6 +309,9 @@ describe('AttachDeviceRequest', () => {
       false,
     );
     expect(AttachDeviceRequest.safeParse({ ...request, label: 'l'.repeat(201) }).success).toBe(
+      false,
+    );
+    expect(AttachDeviceRequest.safeParse({ ...request, deviceId: 'd'.repeat(129) }).success).toBe(
       false,
     );
   });

@@ -47,6 +47,12 @@ export default defineConfig({
     'user-prompt-submit': 'src/hooks/user-prompt-submit.ts',
     'pre-tool-use': 'src/hooks/pre-tool-use.ts',
     'post-tool-use': 'src/hooks/post-tool-use.ts',
+    // Prohibited-model governance. pre-model-switch is refusable (it is the only
+    // point a model choice can be denied before it takes effect);
+    // post-model-switch only records, and exists for the switches the harness
+    // makes on its own, which pre-model-switch never sees.
+    'pre-model-switch': 'src/hooks/pre-model-switch.ts',
+    'post-model-switch': 'src/hooks/post-model-switch.ts',
     // Display-side pointer rendering: rewrites assistant-text deltas on screen
     // only (the transcript and the model keep the original)
     'message-display': 'src/hooks/message-display.ts',

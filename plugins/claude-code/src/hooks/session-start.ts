@@ -17,7 +17,7 @@
 import { readFileSync } from 'node:fs';
 
 import { handleSessionStart } from '@akasecurity/plugin-runtime';
-import { loadConfig } from '@akasecurity/plugin-sdk';
+import { loadConfig, recordSessionModel } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { PLUGIN_PACKAGE, pluginBuild } from '../build-info.ts';
@@ -45,6 +45,17 @@ async function main(): Promise<void> {
   const input = parseJson(await readStdin());
   const sessionId = input ? getString(input, 'session_id') : undefined;
   const cwd = (input ? getString(input, 'cwd') : undefined) ?? process.cwd();
+  // SessionStart is the ONLY event that carries the session's starting model,
+  // and the harness does not always include it — so this is best-effort, and
+  // `recordSessionModel` no-ops when it is absent. Recording it is what lets
+  // UserPromptSubmit refuse the very FIRST turn of a session started on a
+  // prohibited model; without it that turn has no transcript to read a model
+  // from and is allowed through. SessionStart itself cannot block.
+  recordSessionModel(
+    loadConfig().dataDir,
+    sessionId,
+    input ? getString(input, 'model') : undefined,
+  );
   // One version value feeds both the inventory stamp and the posture
   // identity, so the two can never disagree about which build is running:
   // argv's manifest when the hook command passes one, else the manifest

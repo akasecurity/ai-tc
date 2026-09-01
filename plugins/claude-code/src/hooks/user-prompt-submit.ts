@@ -18,6 +18,13 @@
  * lives in user-prompt-submit-decision.ts, which is importable and unit-tested;
  * this file is the I/O around it.
  *
+ * It is also where a session already RUNNING on a prohibited model is contained:
+ * PreModelSwitch refuses a switch onto one, but a session can start on a
+ * prohibited model, or have one restored on resume, without any switch passing
+ * through that hook. Neither point blocks an LLM API call — no hook fires around
+ * the request — so what the two enforce together is that a governed session does
+ * not RUN on a prohibited model.
+ *
  * This is also the first-run nudge point: on a clean prompt from a machine that
  * hasn't completed `/aka:setup`, surface a one-line pointer to it (fail-open
  * defaults are already in effect, so the nudge is informational, not blocking).
@@ -36,6 +43,7 @@ import {
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { writeClipboard } from './clipboard.ts';
+import { decideProhibitedModelTurn, resolveSessionModel } from './model-guard.ts';
 import { ONBOARDING_NUDGE } from './onboarding-nudge.ts';
 import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
 import {
@@ -71,6 +79,41 @@ async function main(): Promise<void> {
     }
     return;
   }
+  // PROHIBITED-MODEL CONTAINMENT, ahead of the scan on purpose. It is the
+  // cheaper verdict (two small local reads against a detection pass over the
+  // whole prompt) and the stronger one: if this turn cannot run at all, what the
+  // prompt contains no longer changes the outcome. Running it first also means a
+  // throw inside the scan path cannot skip it.
+  //
+  // The whole check is wrapped fail-open. A bundle that will not load, or a model
+  // that cannot be resolved, leaves `blocked` null and the turn proceeds to the
+  // ordinary detection path — this control refuses on knowledge, never on
+  // ignorance.
+  const blocked = await (async (): Promise<{ decision: 'block'; reason: string } | null> => {
+    try {
+      const { prohibitedModels } = await gateway.getPolicyBundle();
+      // Read the bundle FIRST: with no prohibition list there is nothing to
+      // enforce, and resolving the model would be a transcript read spent to
+      // reach the same allow.
+      if (prohibitedModels === undefined || prohibitedModels.length === 0) return null;
+      const model = resolveSessionModel(
+        config.dataDir,
+        sessionId,
+        getString(input ?? {}, 'transcript_path'),
+      );
+      return decideProhibitedModelTurn(model, prohibitedModels);
+    } catch {
+      return null;
+    }
+  })();
+  if (blocked !== null) {
+    // Closed here rather than left to the runtime's `finally` below, which this
+    // return never reaches.
+    await gateway.close();
+    await emit(blocked);
+    return;
+  }
+
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
   let result: CaptureResult;
   try {

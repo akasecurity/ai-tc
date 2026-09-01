@@ -24,6 +24,7 @@ import {
 } from '../src/control-plane-credential.ts';
 import { DATA_FILE_MODE } from '../src/paths.ts';
 import { applyOnboarding } from '../src/settings.ts';
+import { expectNoEchoOf } from './helpers/no-echo.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 
 const ENDPOINT = 'https://aka.example-org.internal';
@@ -106,9 +107,7 @@ describe('write then read', () => {
 
     const serialised = JSON.stringify(state);
     expect(serialised).toContain('"usable":true');
-    for (const secret of [credential.apiKey, credential.apiKey.slice(0, 8)]) {
-      expect(serialised).not.toContain(secret);
-    }
+    expectNoEchoOf(serialised, credential.apiKey);
 
     // The other half: this is not the key becoming unreachable.
     expect(readControlPlaneCredential(store.settingsDir, connection)?.apiKey).toBe(

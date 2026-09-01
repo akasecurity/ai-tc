@@ -37,19 +37,26 @@ import { VaultConsent, VaultInlineReveal, VaultKeyCustody } from './vault.ts';
 // A changelog marker for the WorkspaceSettings shape, not a migration trigger:
 // v2 added historicalAccess; v3 added dataSharesInPlace; v4 added
 // modelJudgeConsent; v5 added the secret-vault fields (vaultConsent,
-// vaultKeyCustody, vaultInlineReveal). Nothing reads it, and nothing re-stamps
-// it — the `.default()` below only fills when the key is absent, and
-// applyOnboarding's merge preserves whatever an existing settings.json already
-// carries. So an already-onboarded machine keeps the version that first wrote
-// its file, however often this is bumped. Every field added so far has been
-// optional/defaulted (backward compatible), which is why no migration has been
-// needed. Re-stamp this on write before relying on it to gate one.
-export const WORKSPACE_SETTINGS_SPEC_VERSION = 5;
+// vaultKeyCustody, vaultInlineReveal); v6 added historySyncConsent. Nothing
+// reads it, and nothing re-stamps it — the `.default()` below only fills when
+// the key is absent, and applyOnboarding's merge preserves whatever an existing
+// settings.json already carries. So an already-onboarded machine keeps the
+// version that first wrote its file, however often this is bumped. Every field
+// added so far has been optional/defaulted (backward compatible), which is why
+// no migration has been needed. Re-stamp this on write before relying on it to
+// gate one.
+export const WORKSPACE_SETTINGS_SPEC_VERSION = 6;
 
 // The payload-shape version the /aka:setup model-judge sends to the model API.
 // Recorded alongside a user's modelJudgeConsent so a consent granted against an
 // older payload shape stops counting once this is bumped.
 export const MODEL_JUDGE_PAYLOAD_VERSION = 1;
+
+// The shape of the activity history a machine sends when its user consents to
+// sharing what was already recorded locally. Recorded alongside a user's
+// historySyncConsent so a grant given against a narrower payload stops counting
+// once this is bumped — widening what is sent re-asks rather than assuming.
+export const HISTORY_SYNC_PAYLOAD_VERSION = 1;
 
 // How the plugin runs.
 //   'standalone' — everything against the local store under ~/.aka. No other
@@ -126,6 +133,31 @@ export function isModelJudgeConsentValid(consent: ModelJudgeConsent | undefined)
   return consent?.payloadVersion === MODEL_JUDGE_PAYLOAD_VERSION;
 }
 
+// A recorded consent to send activity that was already on this machine before it
+// attached, along with the payload shape and the deployment it was given for.
+// The endpoint is part of the grant because consent to send history to one
+// deployment is not consent to send it to another.
+export const HistorySyncConsent = z.object({
+  acknowledgedAt: z.iso.datetime(),
+  payloadVersion: z.number().int().positive(),
+  endpoint: z.string(),
+});
+export type HistorySyncConsent = z.infer<typeof HistorySyncConsent>;
+
+// The single definition of "this machine may send its existing history to the
+// deployment it is attached to now". Both halves must hold: a grant recorded
+// against an older payload shape no longer covers what would be sent, and a
+// grant given for a different deployment never travels. Either way stale reads
+// as revoked, so the user is asked again rather than held to a grant they did
+// not give. Pure logic over the schema — no I/O.
+export function isHistorySyncConsentValid(
+  consent: HistorySyncConsent | undefined,
+  endpoint: string | undefined,
+): boolean {
+  if (consent === undefined || endpoint === undefined) return false;
+  return consent.payloadVersion === HISTORY_SYNC_PAYLOAD_VERSION && consent.endpoint === endpoint;
+}
+
 // Onboarding answers + global prefs, persisted to ~/.aka/settings/settings.json.
 // Versioned and default-filled so future config steps are additive: a
 // settings.json written by an older plugin still parses, with any missing key
@@ -164,6 +196,11 @@ export const WorkspaceSettings = z.object({
   // Absent until granted; a stale payloadVersion means the consent no longer
   // covers the current payload and must be re-granted.
   modelJudgeConsent: ModelJudgeConsent.optional(),
+  // Records that the user consented to sending the activity already recorded on
+  // this machine to the deployment it is attached to, along with the payload
+  // shape and the endpoint they agreed to. Absent until granted, and a grant for
+  // a different endpoint or an older payload no longer counts.
+  historySyncConsent: HistorySyncConsent.optional(),
 });
 export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
 

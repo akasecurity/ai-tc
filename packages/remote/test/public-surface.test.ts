@@ -13,7 +13,7 @@
  * goes out in cleartext.
  *
  * Pinned as an EXACT set rather than as "does not export send", because the
- * property is that the surface stays six routes against one endpoint. A floor
+ * property is that the surface stays seven routes against one endpoint. A floor
  * would let the next raw-URL entry point in.
  */
 import { describe, expect, it } from 'vitest';

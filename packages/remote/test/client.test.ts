@@ -454,7 +454,7 @@ describe('the audit-event submission', () => {
 describe('routes', () => {
   const server = useLoopbackServer();
 
-  it('addresses each of the six, and tolerates trailing slashes on the endpoint', async () => {
+  it('addresses each of the seven, and tolerates trailing slashes on the endpoint', async () => {
     // SEVERAL slashes, not one. The normalization is a scan rather than a
     // `replace(/\/+$/, '')` — that regex is quadratic on an all-slash string,
     // since the engine retries from every position and each attempt walks to the
@@ -488,6 +488,14 @@ describe('routes', () => {
       startedAt: '2026-08-24T10:00:00.000Z',
       inspections: [],
     });
+    await client.recordAuditEvents([
+      {
+        id: 'e2',
+        eventType: 'session',
+        startedAt: '2026-08-24T10:00:00.000Z',
+        inspections: [],
+      },
+    ]);
     await client.reportStorePosture(snapshot);
     await client.getPolicyBundle();
     await client.whoami();
@@ -496,9 +504,119 @@ describe('routes', () => {
       'POST /v1/events',
       'POST /v1/inventory',
       'POST /v1/audit-events',
+      'POST /v1/audit-events/batch',
       'POST /v1/store-posture',
       'GET /v1/policy-bundle',
       'GET /v1/plugin/whoami',
     ]);
+  });
+});
+
+describe('recordAuditEvents', () => {
+  const server = useLoopbackServer();
+
+  const event = (id: string) => ({
+    id,
+    eventType: 'session' as const,
+    startedAt: '2026-08-24T10:00:00.000Z',
+    inspections: [],
+  });
+
+  it('sends the whole batch in one request and reports what was accepted', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ accepted: 2 }));
+    });
+    const before = server.received.length;
+
+    const ack = await client.recordAuditEvents([event('a'), event('b')]);
+
+    expect(ack).toEqual({ accepted: 2 });
+    // Two events, ONE round trip — the whole point of the route.
+    expect(server.received).toHaveLength(before + 1);
+  });
+
+  // A deployment that predates this route answers 404. That is not an outage —
+  // it is an older deployment saying it speaks only the single-event form — and
+  // the device has to keep working against it, or a device and a deployment
+  // could never be upgraded weeks apart.
+  it('falls back to one request per event against a deployment without the route', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((req, res) => {
+      if (req.url === '/v1/audit-events/batch') {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ ok: true }));
+    });
+
+    const before = server.received.length;
+
+    const ack = await client.recordAuditEvents([event('a'), event('b')]);
+
+    expect(ack).toEqual({ accepted: 2 });
+    expect(server.received.slice(before).map((r) => r.url ?? '')).toEqual([
+      '/v1/audit-events/batch',
+      '/v1/audit-events',
+      '/v1/audit-events',
+    ]);
+  });
+
+  // Refused before a socket is opened, and raised as the local-defect error
+  // rather than a ZodError — a caller counting failures toward a breaker must
+  // not read a shape bug on this machine as an outage.
+  it('refuses to send a batch the route would reject', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ accepted: 1 }));
+    });
+    const before = server.received.length;
+
+    await expect(
+      client.recordAuditEvents([
+        {
+          ...event('a'),
+          inspections: [
+            {
+              ruleId: 'r',
+              ruleName: 'R',
+              // The namespace the receiving side mints for itself.
+              ruleVersion: 'capture/1',
+              category: 'secret',
+              severity: 'high',
+              span: { start: 0, end: 1 },
+              maskedMatch: '*',
+              actionTaken: 'redact',
+              confidence: 1,
+            },
+          ],
+        },
+      ]),
+    ).rejects.toMatchObject({ name: 'RemoteRequestInvalid' });
+    // Refused BEFORE a socket was opened.
+    expect(server.received).toHaveLength(before);
+  });
+
+  it('refuses an empty batch rather than spending a round trip on nothing', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    const before = server.received.length;
+    await expect(client.recordAuditEvents([])).rejects.toMatchObject({
+      name: 'RemoteRequestInvalid',
+    });
+    expect(server.received).toHaveLength(before);
+  });
+
+  it('rejects a non-2xx that is not a 404', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(500);
+      res.end();
+    });
+
+    await expect(client.recordAuditEvents([event('a')])).rejects.toMatchObject({ status: 500 });
   });
 });

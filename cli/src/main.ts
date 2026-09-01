@@ -12,6 +12,7 @@ import { runInit } from './commands/init.ts';
 import { runPlugins } from './commands/plugins.ts';
 import { runScan } from './commands/scan.ts';
 import { runStats } from './commands/stats.ts';
+import { runSyncHistory } from './commands/sync-history.ts';
 import { runTui } from './commands/tui.tsx';
 import { runUpdate } from './commands/update.ts';
 import { runVault } from './commands/vault.ts';
@@ -42,6 +43,7 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
     runDetach(argv);
   },
   status: (argv) => runStatus(argv),
+  'sync-history': (argv) => runSyncHistory(argv),
   tui: runTui,
   update: runUpdate,
   'check-updates': runCheckUpdates,

@@ -1,7 +1,7 @@
 // The control-plane transport: the one OSS package that reaches a network, and
 // only the network a machine's own settings name.
 //
-// It is deliberately narrow. `createRemoteClient` speaks the six routes an
+// It is deliberately narrow. `createRemoteClient` speaks the seven routes an
 // attached machine is scoped to and cannot express anything else; `send` is the
 // single module underneath that opens a socket. Nothing here decides WHETHER a
 // machine is attached, reads the credential, or holds a policy — those belong to
@@ -22,7 +22,7 @@ export { createRemoteClient } from './client.ts';
 // only one a caller could step around: anything in the workspace could build a
 // `SendOptions.url` from a less-trusted source and put the credential on a
 // cleartext socket, with nothing here to refuse it. Narrowing the barrel closes
-// it by construction instead — the package's whole public surface is now six
+// it by construction instead — the package's whole public surface is now seven
 // named routes against one endpoint, and there is no exported way to hand this
 // module an arbitrary URL. Nothing outside the package used `send`.
 export {

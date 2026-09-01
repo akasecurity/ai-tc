@@ -24,6 +24,7 @@ import type {
 } from '@akasecurity/schema';
 import { configInventoryInputs, harnessFromTool } from '@akasecurity/schema';
 
+import { triggerHistorySync } from './attached/history-sync-trigger.ts';
 import type { PluginBuildInfo } from './attached/plugin-block.ts';
 import { triggerPolicySync } from './attached/sync-trigger.ts';
 import { pluginRecordedBy } from './recorder.ts';
@@ -186,6 +187,12 @@ export async function handleSessionStart(
       // harness added later gets it without a second edit. Never throws, never
       // awaited: see triggerPolicySync.
       triggerPolicySync(config);
+      // The backlog of already-recorded activity, drained in its own detached
+      // child. Separate from the policy pull above because the two have
+      // different windows and different reasons to be skipped, and one marker
+      // covering both would let whichever ran first suppress the other. Never
+      // throws, never awaited: see triggerHistorySync.
+      triggerHistorySync(config);
       // The stale-session check (P2): only meaningful when this session
       // knows its own version; a failing check here falls through to the
       // outer fail-open.

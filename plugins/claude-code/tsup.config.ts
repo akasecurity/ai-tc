@@ -61,6 +61,11 @@ export default defineConfig({
     // attached. Lands flat in scripts/ like every other entry, because that is
     // where triggerPolicySync resolves it from.
     sync: 'src/sync.ts',
+    // The detached history-drain child, spawned by SessionStart when a machine
+    // is attached and its user granted sending pre-attach activity. Lands flat
+    // in scripts/ like every other entry, because that is where
+    // triggerHistorySync resolves it from.
+    'history-sync': 'src/history-sync.ts',
     statusline: 'src/statusline.ts',
     // Read surface (/health · /findings · /recommend · /audit) + onboarding (/aka:setup)
     query: 'src/query.ts',

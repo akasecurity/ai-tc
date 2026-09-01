@@ -1,9 +1,10 @@
 /**
  * The files an attachment LEAVES BEHIND, and the one way to clear them.
  *
- * These four are written by the attached runtime rather than by the attach
- * itself — a cached policy bundle, the sync outcome, the forward breaker's state
- * and its drop tally. None of them is the attachment; all of them describe one.
+ * These five are written by the attached runtime rather than by the attach
+ * itself — a cached policy bundle, the sync outcome, the forward breaker's state,
+ * its drop tally, and the history drain's progress. None of them is the
+ * attachment; all of them describe one.
  *
  * They live HERE rather than beside the code that writes them because clearing
  * them is a detach concern, and there are two detach surfaces: `aka detach` and
@@ -41,17 +42,21 @@ export const ATTACHED_FORWARD_STATE_FILENAME = 'attached-state.json';
 /** The tally of events the breaker dropped. */
 export const ATTACHED_FORWARD_DROPS_FILENAME = 'attached-forward-drops.json';
 
+/** How far the background drain of already-recorded activity has got. */
+export const ATTACHED_HISTORY_SYNC_STATE_FILENAME = 'attached-history-sync.json';
+
 /**
  * Every file above, so a caller iterates the list rather than restating it.
  *
- * A fifth derived file added to the runtime joins both detach paths by being
- * added here, which is the whole point of the list existing.
+ * A derived file added to the runtime joins both detach paths by being added
+ * here, which is the whole point of the list existing.
  */
 export const ATTACHED_DERIVED_FILENAMES: readonly string[] = [
   POLICY_CACHE_FILENAME,
   ATTACHED_SYNC_STATE_FILENAME,
   ATTACHED_FORWARD_STATE_FILENAME,
   ATTACHED_FORWARD_DROPS_FILENAME,
+  ATTACHED_HISTORY_SYNC_STATE_FILENAME,
 ];
 
 /**

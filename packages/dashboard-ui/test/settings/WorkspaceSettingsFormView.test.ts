@@ -24,6 +24,9 @@ import {
   HISTORICAL_CHOICES,
   HISTORICAL_SECTION_DESCRIPTION,
   HISTORICAL_SECTION_LABEL,
+  HISTORY_SYNC_CHOICES,
+  HISTORY_SYNC_SECTION_DESCRIPTION,
+  HISTORY_SYNC_SECTION_LABEL,
   INLINE_REVEAL_CHOICES,
   INLINE_REVEAL_SECTION_DESCRIPTION,
   MODEL_JUDGE_CHOICES,
@@ -86,6 +89,14 @@ const FORM_COPY: Record<string, string> = {
     MODEL_JUDGE_CHOICES.flatMap((c) => [
       [`MODEL_JUDGE_CHOICES.${c.value}.label`, c.label],
       [`MODEL_JUDGE_CHOICES.${c.value}.description`, c.description],
+    ]),
+  ),
+  HISTORY_SYNC_SECTION_LABEL,
+  HISTORY_SYNC_SECTION_DESCRIPTION,
+  ...Object.fromEntries(
+    HISTORY_SYNC_CHOICES.flatMap((c) => [
+      [`HISTORY_SYNC_CHOICES.${c.value}.label`, c.label],
+      [`HISTORY_SYNC_CHOICES.${c.value}.description`, c.description],
     ]),
   ),
   ...Object.fromEntries(

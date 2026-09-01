@@ -53,6 +53,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     const res = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
+      historySyncConsent: false,
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
     });
@@ -71,6 +72,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
+      historySyncConsent: false,
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
     });
@@ -85,6 +87,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     const res = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
+      historySyncConsent: false,
       vaultConsent: 'on',
       // The unrelated edit. It has to be a field that really changes, or the
       // second save proves nothing about a re-stamp it never had cause to make.
@@ -101,6 +104,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
+      historySyncConsent: false,
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
     });
@@ -109,6 +113,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     const res = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
+      historySyncConsent: false,
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
     });
@@ -126,6 +131,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
+      historySyncConsent: false,
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
     });
@@ -134,6 +140,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     const res = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
+      historySyncConsent: false,
       vaultConsent: 'granted',
       vaultInlineReveal: 'masked',
     });
@@ -149,6 +156,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     const res = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
+      historySyncConsent: false,
       vaultConsent: forged as unknown as string,
       vaultInlineReveal: 'masked',
     });
@@ -185,6 +193,7 @@ describe('stale-grant re-consent and inline reveal', () => {
     const result = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
+      historySyncConsent: false,
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
     });
@@ -198,6 +207,7 @@ describe('stale-grant re-consent and inline reveal', () => {
     const ok = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
+      historySyncConsent: false,
       vaultConsent: 'off',
       vaultInlineReveal: 'full',
     });
@@ -207,6 +217,7 @@ describe('stale-grant re-consent and inline reveal', () => {
     const bad = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
+      historySyncConsent: false,
       vaultConsent: 'off',
       vaultInlineReveal: 'loud',
     });

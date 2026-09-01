@@ -1,4 +1,5 @@
 import type {
+  AuditEventBatchAck as AuditEventBatchAckT,
   IngestAck as IngestAckT,
   IngestBatch,
   InventoryContext,
@@ -9,9 +10,11 @@ import type {
   StorePostureSnapshot,
 } from '@akasecurity/schema';
 import {
+  AuditEventBatchAck,
   IngestAck,
   PluginWhoami,
   PolicyBundle,
+  RecordAuditEventBatch,
   RecordAuditEventRequest,
   ResolvedInventory,
 } from '@akasecurity/schema';
@@ -20,10 +23,10 @@ import type { z } from 'zod';
 import type { RemoteResponse } from './http.ts';
 import { RemoteRequestError, RemoteRequestInvalid, RemoteResponseInvalid, send } from './http.ts';
 
-// The six routes an attached machine may call, and nothing else.
+// The seven routes an attached machine may call, and nothing else.
 //
 // The set is small on purpose and is the same set a deployment scopes a
-// credential to: four writes and two self-scoped reads. There is deliberately
+// credential to: five writes and two self-scoped reads. There is deliberately
 // no way to ask this client for anything organization-wide — a credential on a
 // laptop should not be able to read what other people's machines reported, and
 // a client that cannot express the request is a stronger guarantee than a
@@ -37,6 +40,7 @@ import { RemoteRequestError, RemoteRequestInvalid, RemoteResponseInvalid, send }
 const ROUTES = {
   events: '/v1/events',
   auditEvents: '/v1/audit-events',
+  auditEventsBatch: '/v1/audit-events/batch',
   inventory: '/v1/inventory',
   storePosture: '/v1/store-posture',
   policyBundle: '/v1/policy-bundle',
@@ -68,6 +72,13 @@ export interface RemoteClient {
   ingestInventory(context: InventoryContext): Promise<ResolvedInventoryT>;
   /** POST /v1/audit-events — one audit fact (session root, llm call, tool call, config scan). */
   recordAuditEvent(event: AuditEventSubmission): Promise<void>;
+  /**
+   * POST /v1/audit-events/batch — the same facts, several at a time.
+   *
+   * Falls back to the single-event route against a deployment that does not
+   * have this one, so a device and a deployment can be upgraded weeks apart.
+   */
+  recordAuditEvents(events: readonly AuditEventSubmission[]): Promise<AuditEventBatchAckT>;
   /** POST /v1/store-posture — the hourly self-report. */
   reportStorePosture(snapshot: StorePostureSnapshot): Promise<void>;
   /** GET /v1/policy-bundle, conditional on a cached ETag. */
@@ -135,6 +146,37 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
   const url = (route: string): string => `${base}${route}`;
   const common = { apiKey: options.apiKey, timeoutMs: options.timeoutMs };
 
+  /**
+   * One audit event, validated then sent.
+   *
+   * A free function rather than a method, so the batch route's 404 fallback can
+   * reach it without depending on how the returned object is called — a
+   * destructured `recordAuditEvents` would lose `this` and take the fallback
+   * into a TypeError on the one path that exists to be forgiving.
+   */
+  const sendOne = async (event: AuditEventSubmission): Promise<void> => {
+    // Validated on the way OUT, not merely typed. This body is assembled from
+    // several call sites and carries the one field a deployment refuses on
+    // (`inspections[].ruleVersion` may not claim the capture namespace), so
+    // catching it here names the defect instead of turning it into a 400 that a
+    // fail-open forwarder swallows.
+    //
+    // Raised as `RemoteRequestInvalid` rather than letting the ZodError escape:
+    // a caller that counts failures toward a circuit breaker cannot tell a raw
+    // ZodError from a transport fault, so a deterministic local shape bug would
+    // open the breaker, suppress every unrelated forward, and be reported as an
+    // outage the control plane never had.
+    const validated = RecordAuditEventRequest.safeParse(event);
+    if (!validated.success) throw new RemoteRequestInvalid(ROUTES.auditEvents, validated.error);
+    const response = await send({
+      ...common,
+      method: 'POST',
+      url: url(ROUTES.auditEvents),
+      body: JSON.stringify(validated.data),
+    });
+    okBody(response);
+  };
+
   return {
     async ingestEvents(batch) {
       const response = await send({
@@ -168,16 +210,39 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
       // tell a raw ZodError from a transport fault, so a deterministic local
       // shape bug would open the breaker, suppress every unrelated forward, and
       // be reported as an outage the control plane never had.
-      const validated = RecordAuditEventRequest.safeParse(event);
-      if (!validated.success) throw new RemoteRequestInvalid(ROUTES.auditEvents, validated.error);
-      const submission = validated.data;
+      await sendOne(event);
+    },
+
+    async recordAuditEvents(events) {
+      // Validated on the way OUT, like the single-event route and for the same
+      // reason: this body carries the one field a deployment refuses on, and
+      // catching it here names the defect instead of turning it into a 400 a
+      // fail-open caller swallows.
+      const validated = RecordAuditEventBatch.safeParse({ events });
+      if (!validated.success) {
+        throw new RemoteRequestInvalid(ROUTES.auditEventsBatch, validated.error);
+      }
       const response = await send({
         ...common,
         method: 'POST',
-        url: url(ROUTES.auditEvents),
-        body: JSON.stringify(submission),
+        url: url(ROUTES.auditEventsBatch),
+        body: JSON.stringify(validated.data),
       });
-      okBody(response);
+
+      // A DEPLOYMENT THAT PREDATES THIS ROUTE answers 404, and that is not a
+      // failure — it is an older deployment saying it only speaks the
+      // single-event form. Handled here rather than above, because `okBody`
+      // throws away the response before a caller could look at its status, and
+      // handled here rather than in the caller because a forward policy
+      // collapses every failure into one reason and could not tell 404 from an
+      // outage. The fallback is the same rows, one request each: slower, and
+      // exactly what this route exists to avoid, but correct.
+      if (response.status === 404) {
+        for (const event of validated.data.events) await sendOne(event);
+        return { accepted: validated.data.events.length };
+      }
+
+      return parsed(AuditEventBatchAck, okBody(response), ROUTES.auditEventsBatch);
     },
 
     async reportStorePosture(snapshot) {

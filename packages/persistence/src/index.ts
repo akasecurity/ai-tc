@@ -2,6 +2,7 @@ export {
   ATTACHED_DERIVED_FILENAMES,
   ATTACHED_FORWARD_DROPS_FILENAME,
   ATTACHED_FORWARD_STATE_FILENAME,
+  ATTACHED_HISTORY_SYNC_STATE_FILENAME,
   ATTACHED_SYNC_STATE_FILENAME,
   clearAttachmentDerivedState,
   POLICY_CACHE_FILENAME,
@@ -33,6 +34,8 @@ export {
   readFingerprintKey,
   rotateFingerprintKey,
 } from './fingerprint.ts';
+export type { LocalHistoryPreview } from './history-preview.ts';
+export { readLocalHistoryPreview } from './history-preview.ts';
 export {
   captureId,
   classifiedDataId,
@@ -109,6 +112,15 @@ export {
   SqliteExceptionsRepository,
 } from './repositories/exceptions.ts';
 export { SqliteFindingsRepository } from './repositories/findings.ts';
+export type {
+  HistorySyncCounts,
+  HistorySyncInspectionRow,
+  HistorySyncLease,
+} from './repositories/history-sync.ts';
+export {
+  SqliteHistorySyncRepository,
+  STRUCTURAL_EVENT_TYPES,
+} from './repositories/history-sync.ts';
 export { SqliteInspectionDefinitionsRepository } from './repositories/inspection-definitions.ts';
 export { SqliteInspectionFindingsRepository } from './repositories/inspection-findings.ts';
 export type {

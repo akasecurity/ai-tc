@@ -242,6 +242,29 @@ export const RecordAuditEventRequest = AuditEventInput.extend({
   .meta({ id: 'RecordAuditEventRequest' });
 export type RecordAuditEventRequest = z.infer<typeof RecordAuditEventRequest>;
 
+/**
+ * The most events one batch may carry.
+ *
+ * Sized against SERVER COST rather than against the body limit. Each inspection
+ * costs its own statements in a per-event loop on the receiving side, so a batch
+ * of inspection-heavy tool calls is already hundreds of statements inside one
+ * transaction; doubling this would double how long that transaction is held.
+ */
+export const AUDIT_EVENT_BATCH_MAX = 50;
+
+// `POST /v1/audit-events/batch` — the same per-event upsert as the single-event
+// route, several at a time in one transaction.
+//
+// A batch is 50 of the same call, not a different call: idempotency is
+// unchanged, and a duplicate is settled exactly as it is one at a time. What it
+// buys is round trips, which is the whole cost of draining a large backlog.
+export const RecordAuditEventBatch = z
+  .object({
+    events: z.array(RecordAuditEventRequest).min(1).max(AUDIT_EVENT_BATCH_MAX),
+  })
+  .meta({ id: 'RecordAuditEventBatch' });
+export type RecordAuditEventBatch = z.infer<typeof RecordAuditEventBatch>;
+
 // ─── Lenient response parsers (no ids — see the header) ──────────────────────
 
 // `POST /v1/events` — how many events were accepted and how many were dropped
@@ -251,6 +274,17 @@ export const IngestAck = z.object({
   duplicates: z.number().int().nonnegative(),
 });
 export type IngestAck = z.infer<typeof IngestAck>;
+
+// `POST /v1/audit-events/batch` — how many of the batch were accepted.
+//
+// An AGGREGATE count, like the ingest ack above and for the same reason: the
+// upsert settles a duplicate silently, so there is no per-item verdict to
+// report and nothing a caller could do with one. The caller knows which rows it
+// sent.
+export const AuditEventBatchAck = z.object({
+  accepted: z.number().int().nonnegative(),
+});
+export type AuditEventBatchAck = z.infer<typeof AuditEventBatchAck>;
 
 // `GET /v1/plugin/whoami` — the identity behind the caller's own credential,
 // used by the attach flow to verify a key before storing it and to show the

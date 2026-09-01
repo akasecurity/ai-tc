@@ -191,6 +191,7 @@ export function applyMigrations(db: DatabaseSync, file?: string): void {
   // ALTER TABLE on one would throw), so there is no equivalent call for it.
   ensureSyncedAtColumn(db, 'audit_events');
   ensureScanLedgerTable(db);
+  ensureHistorySyncTable(db);
   ensureBlockedDetectionsTable(db);
   ensureRuleProbeCacheTable(db);
   // SECURITY INVARIANT — belt-and-suspenders for the installed_packs write
@@ -958,6 +959,47 @@ function ensureScanLedgerTable(db: DatabaseSync): void {
     ruleset_hash TEXT NOT NULL,
     scanned_at INTEGER NOT NULL
   )`);
+}
+
+// Bookkeeping for the background drain of already-recorded activity: which
+// deployment the `synced_at` stamps on audit_events were made against, where the
+// backlog ENDS, and which process is currently draining. Plugin-local, so like `synced_at` it stays out
+// of the canonical schema and is created here, idempotently.
+//
+// ONE ROW, pinned by the CHECK: this is a singleton record, and a table that
+// could hold two would let two drains each believe they held the claim.
+//
+// `backlog_before` is FROZEN when the deployment is first recorded and is not
+// re-derived afterwards. It has to be: the attachment's own `attachedAt` moves
+// forward on every re-attach, and a key ROTATION is a re-attach — so a boundary
+// read from settings each pass would widen after a rotation to cover rows the
+// live forward path had already delivered, and re-sending a session root
+// overwrites its resolved inventory ids with nothing.
+//
+// The endpoint is stored as a FINGERPRINT rather than a URL. Nothing here needs
+// to read the address back — the only question asked of it is "is this the same
+// deployment the stamps were made against", which a hash answers — and a hash
+// cannot be mistaken for a place to send anything.
+//
+// Every column outside the key is nullable: an unclaimed table is the resting
+// state, and a claim is released by writing nulls back rather than by deleting
+// the row.
+function ensureHistorySyncTable(db: DatabaseSync): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS history_sync (
+    id                   INTEGER PRIMARY KEY CHECK (id = 1),
+    endpoint_fingerprint TEXT,
+    backlog_before       INTEGER,
+    owner_pid            INTEGER,
+    owner_host           TEXT,
+    acquired_at          INTEGER,
+    heartbeat_at         INTEGER
+  )`);
+  // Added after the table first appeared on a development branch, so a store
+  // created by one of those builds gains it here rather than silently lacking
+  // the column every read below names. Same guard shape as ensureSyncedAtColumn.
+  if (!columnNames(db, 'history_sync').includes('backlog_before')) {
+    db.exec('ALTER TABLE history_sync ADD COLUMN backlog_before integer');
+  }
 }
 
 // Idempotent installer for the installed_packs write gate (canonical source:

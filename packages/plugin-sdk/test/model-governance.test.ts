@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   isModelProhibited,
@@ -13,14 +13,31 @@ import {
   recordSessionModel,
 } from '../src/model-governance.ts';
 
+// ONE temp root for the file, with a cheap subdirectory per test, rather than a
+// mkdtemp + recursive remove around each one.
+//
+// These cases need an isolated marker file, not an isolated filesystem, and the
+// difference is not free: this package also holds `runtime-isolation.test.ts`,
+// whose ratio is a TIMING measurement taken while vitest runs other files in
+// parallel. Two dozen recursive removes are slow enough on Windows to starve
+// the worker thread that measurement depends on, which inflates the ratio and
+// fails a guard this file has no business touching.
+let root: string;
 let dir: string;
+let n = 0;
 
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-model-gov-'));
+beforeAll(() => {
+  root = mkdtempSync(join(tmpdir(), 'aka-model-gov-'));
 });
 
-afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
+beforeEach(() => {
+  n += 1;
+  dir = join(root, `t${String(n)}`);
+  mkdirSync(dir, { recursive: true });
+});
+
+afterAll(() => {
+  rmSync(root, { recursive: true, force: true });
 });
 
 /** One transcript line, in the shape the harness really writes. */

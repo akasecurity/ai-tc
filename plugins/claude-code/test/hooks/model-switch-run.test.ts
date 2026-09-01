@@ -1,22 +1,33 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { readSessionModel, recordSessionModel } from '@akasecurity/plugin-sdk';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { handleProhibitedTurn, refuseProhibitedTurn } from '../../src/hooks/model-guard.ts';
 import { runPostModelSwitch, runPreModelSwitch } from '../../src/hooks/model-switch-run.ts';
 
+// One temp root for the file, with a cheap subdirectory per test. These cases
+// need an isolated marker file rather than an isolated filesystem, and a
+// recursive remove per test is slow enough on Windows to be worth not paying.
+let root: string;
 let dir: string;
+let n = 0;
 
-beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aka-switch-run-'));
+beforeAll(() => {
+  root = mkdtempSync(join(tmpdir(), 'aka-switch-run-'));
 });
 
-afterEach(() => {
-  rmSync(dir, { recursive: true, force: true });
+beforeEach(() => {
+  n += 1;
+  dir = join(root, `t${String(n)}`);
+  mkdirSync(dir, { recursive: true });
+});
+
+afterAll(() => {
+  rmSync(root, { recursive: true, force: true });
 });
 
 const config = (): PluginConfig => ({ dataDir: dir }) as unknown as PluginConfig;

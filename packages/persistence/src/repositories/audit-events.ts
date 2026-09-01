@@ -18,12 +18,14 @@ import { withTransaction } from '../internal/transactions.ts';
 export class SqliteAuditEventsRepository {
   private readonly insertStmt: StatementSync;
   private readonly upsertLlmCallStmt: StatementSync;
+  private readonly upsertSessionRootStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
-    // INSERT OR IGNORE: a re-opened Session root (same session id) is a no-op.
-    // Descendant events carry random ids and so never conflict — facts are never
-    // deduped, only the keyed root. Session ROOTS stay first-write-wins (structural
-    // parents) — only `llm_call` leaves get the monotonic output_tokens merge below.
+    // INSERT OR IGNORE for every NON-session row. Descendant events carry random
+    // (or content-addressed/natural-key) ids and so never conflict — facts are
+    // never deduped. `llm_call` leaves get the monotonic output_tokens merge
+    // below; session ROOTS go through `upsertSessionRootStmt` (below) so an
+    // authoritative root can heal a stub, which this statement cannot do.
     this.insertStmt = db.prepare(
       `INSERT OR IGNORE INTO audit_events
          (id, parent_id, root_session_id, event_type,
@@ -61,6 +63,86 @@ export class SqliteAuditEventsRepository {
        WHERE COALESCE(json_extract(excluded.attributes, '$.output_tokens'), 0)
            > COALESCE(json_extract(audit_events.attributes, '$.output_tokens'), 0)`,
     );
+
+    // Session ROOTS: fill-the-stub UPSERT. `ensureSessionRoot` plants a
+    // dimension-less, attribute-less stub whenever a session-scoped leaf arrives
+    // before the authoritative root (SessionStart's own root write is fail-open,
+    // so a rootless session is a real condition, not just a race). Under a plain
+    // INSERT OR IGNORE that stub WON — the authoritative root that arrived after
+    // it was silently dropped and the session kept empty attributes forever, so
+    // its `harness`/`provider`/`cwd`/`project` were never set and every read that
+    // groups on them mis-bucketed the whole session.
+    //
+    // The WHERE clause is the invariant, and it is directional: the row being
+    // replaced must be a stub (`audit_events.attributes IS NULL`) AND the row
+    // replacing it must not be one (`excluded.attributes IS NOT NULL`). So:
+    //   stub  → root : heals (the case this exists for)
+    //   root  → stub : no-op — a stub can never overwrite real data
+    //   root  → root : no-op — two authoritative roots stay FIRST-write-wins, so
+    //                  SessionStart's contemporaneous env-provider still beats
+    //                  the reconciler's model-id heuristic (usage.ts relies on it)
+    //   stub  → stub : no-op — a second stub never moves the row at all, in
+    //                  either direction (see `excluded.attributes IS NOT NULL`)
+    // Because the guard reads the STORED row, `ensureSessionRoot` can share this
+    // same statement: its own attribute-less values fail `excluded.attributes IS
+    // NOT NULL`, so the stub path stays exactly the INSERT OR IGNORE it was.
+    //
+    // "Stub" is SQL-NULL `attributes`, and that is only a faithful test because
+    // every root-builder gates its assignment on a non-empty bag
+    // (`if (Object.keys(attributes).length > 0)` in handle-session-start and in
+    // each plugin's buildSessionRoot). `toAuditEventRow` maps `{}` to the string
+    // '{}', which is NOT NULL — such a row could heal a stub but could never
+    // itself be healed, freezing that session with no harness/provider/cwd, i.e.
+    // this very bug through a fifth input shape. Those guards are load-bearing,
+    // not tidiness; a new root-builder that writes a possibly-empty bag has to
+    // keep one.
+    //
+    // `started_at` takes the EARLIER of the two, never the healing row's
+    // unconditionally. The heal systematically arrives LATER than the stub it
+    // fills, on both paths that produce one:
+    //   - live: SessionStart runs first, so a stub exists precisely because that
+    //     write did not land. The healer is then the reconciler, whose value is
+    //     `assistants[0].occurredAt` — the first ASSISTANT record, necessarily
+    //     after the prompt capture whose own `occurredAt` planted the stub.
+    //   - backfill: migration 0013 stubs with `min(occurred_at)` over the whole
+    //     session precisely so the root is never later than anything it parents.
+    // Replacing would therefore push a root past its own first child every time,
+    // and `audit_events.started_at` is what the Activity sessions list windows on
+    // (activity.ts) with nothing clamping the start.
+    //
+    // `OR IGNORE` is retained from the statement this replaced, and it is not
+    // decoration: `started_at` is NOT NULL, `isoToEpochMillis` yields NaN for an
+    // unparseable timestamp, and node:sqlite binds NaN as NULL. Under a bare
+    // INSERT that raises, and neither reconcile caller catches — one poisoned
+    // session would abandon the rest of a backfill walk, and a tail pass would
+    // never advance its offset, re-throwing on the same bytes for ever. The
+    // finite check in `insertAuditEvent` is the primary guard; this keeps the
+    // old tolerance for anything that gets past it.
+    // `event_type` is 'session' on both sides, so it is not set.
+    this.upsertSessionRootStmt = db.prepare(
+      `INSERT OR IGNORE INTO audit_events
+         (id, parent_id, root_session_id, event_type,
+          host_id, harness_id, source_project_id, started_at, ended_at,
+          severity, priority, content, content_hash, attributes)
+       VALUES
+         (:id, :parentId, :rootSessionId, :eventType,
+          :hostId, :harnessId, :sourceProjectId, :startedAt, :endedAt,
+          :severity, :priority, :content, :contentHash, :attributes)
+       ON CONFLICT(id) DO UPDATE SET
+         parent_id         = excluded.parent_id,
+         root_session_id   = excluded.root_session_id,
+         host_id           = excluded.host_id,
+         harness_id        = excluded.harness_id,
+         source_project_id = excluded.source_project_id,
+         started_at        = min(audit_events.started_at, excluded.started_at),
+         ended_at          = excluded.ended_at,
+         severity          = excluded.severity,
+         priority          = excluded.priority,
+         content           = excluded.content,
+         content_hash      = excluded.content_hash,
+         attributes        = excluded.attributes
+       WHERE audit_events.attributes IS NULL AND excluded.attributes IS NOT NULL`,
+    );
   }
 
   // Run `fn` inside a single SQLite transaction (BEGIN…COMMIT). One reconcile pass
@@ -75,7 +157,20 @@ export class SqliteAuditEventsRepository {
 
   insertAuditEvent(input: AuditEventInput): void {
     const row = toAuditEventRow(input);
-    this.insertStmt.run(
+    // `started_at` is NOT NULL and `isoToEpochMillis` yields NaN for a timestamp
+    // that is present but unparseable — a shape the transcript usage parser keeps
+    // on purpose (its sibling secret-scan parser drops it, citing this column).
+    // node:sqlite binds NaN as NULL, so letting it through means a constraint
+    // error rather than a dropped row. Refuse it here, the way insertLlmCall and
+    // insertToolCall already do: the row is skipped, which is what the write
+    // path has always done with it, and no caller has to grow a catch.
+    if (!Number.isFinite(row.startedAt)) return;
+    // Session roots take the fill-the-stub UPSERT; everything else is
+    // first-write-wins. Both statements bind the identical named parameter set,
+    // so only the statement differs — see upsertSessionRootStmt for why the stub
+    // path is safe to send through it too.
+    const stmt = row.eventType === 'session' ? this.upsertSessionRootStmt : this.insertStmt;
+    stmt.run(
       bindParams({
         id: row.id,
         parentId: row.parentId,
@@ -103,10 +198,13 @@ export class SqliteAuditEventsRepository {
   // dropping the write under failOpenTransaction. SessionStart's own root write
   // is itself fail-open and marks "attempted", not "succeeded", so a session
   // with no root row yet is a real, permanent condition, not a transient race.
-  // The stub carries no dimensions/attributes; an authoritative root
-  // (SessionStart / the reconciler's buildSessionRoot) wins by first-write-wins
-  // on the id PK, so the stub never shadows real data. This is the single named
-  // home for that FK invariant — call it before writing any session-scoped row.
+  // The stub carries no dimensions/attributes, and it does NOT get to keep the
+  // id: an authoritative root (SessionStart / the reconciler's buildSessionRoot)
+  // arriving AFTERWARDS heals it in place, via insertAuditEvent's
+  // upsertSessionRootStmt — whose guard is also what keeps the reverse (a stub
+  // landing on an already-populated root) a no-op, so the stub still never
+  // shadows real data. This is the single named home for that FK invariant —
+  // call it before writing any session-scoped row.
   ensureSessionRoot(sessionId: string, startedAt: string): void {
     this.insertAuditEvent({ id: sessionId, eventType: 'session', startedAt });
   }

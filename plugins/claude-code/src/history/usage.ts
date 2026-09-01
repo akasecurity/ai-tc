@@ -157,8 +157,11 @@ export async function reconcileSession(
 
   // Provider for a root the reconciler is creating: model-id heuristic, else
   // 'unknown' — never live env. If SessionStart already wrote the
-  // root with the contemporaneous env-provider, that row wins (INSERT OR IGNORE
-  // no-ops) and our heuristic value is dropped.
+  // root with the contemporaneous env-provider, that row wins (a session root
+  // is written through upsertSessionRootStmt, which only ever fills an
+  // attribute-less STUB — an already-populated root is left alone) and our
+  // heuristic value is dropped. A stub planted by an earlier capture does NOT
+  // win: the root written just above heals it.
   const heuristicProvider = providerFromModelId(anchor.model);
   await gateway.recordAuditEvent(
     buildSessionRoot(sessionId, ctx, resolved, anchor, heuristicProvider),
@@ -499,11 +502,13 @@ function groupBySession(records: Iterable<UsageRecord>): Map<string, UsageRecord
 }
 
 // The Session root audit event for a root the reconciler may be CREATING — keyed on
-// the session id (so a SessionStart-written root conflicts harmlessly via INSERT OR
-// IGNORE), stamped with the resolved inventory FKs and the volatile attrs snapshotted
-// from the transcript's own fields. Mirrors `handleSessionStart`'s `buildSessionRoot`
-// but sources os_version/harness_version from the transcript record (not live os/env)
-// and provider from the model-id heuristic.
+// the session id (so a SessionStart-written root is left alone: session roots go
+// through the fill-the-stub UPSERT, which only ever populates an attribute-less
+// STUB, and this row carries attributes), stamped with the resolved inventory FKs
+// and the volatile attrs snapshotted from the transcript's own fields. Mirrors
+// `handleSessionStart`'s `buildSessionRoot` but sources os_version/harness_version
+// from the transcript record (not live os/env) and provider from the model-id
+// heuristic.
 //
 // Also stamps the Activity-DISPLAY attributes (harness/cwd/version/host/project/
 // repo/branches) — the same set SessionStart writes — sourced from the

@@ -63,6 +63,19 @@ export const EventMetadata = z
     // to 'allow' — the enforcement audit trail's link back to the grant that
     // authorized the bypass. Absent on captures where no exception applied.
     exceptionIds: z.array(z.guid()).optional(),
+    // How long THIS capture's inspection blocked its caller, in whole
+    // milliseconds — the plugin's own added latency, NOT the LLM call it sat in
+    // front of. Measured inside `capture()` (@akasecurity/plugin-sdk) across
+    // detection + redaction, the work the host session actually waits on.
+    //
+    // Stamped ONLY on live in-flight captures. A capture that carries its own
+    // `occurredAt` is replaying past work (the transcript backfill, the worktree
+    // scan), and its scan duration is not latency any host session experienced,
+    // so those rows leave this ABSENT rather than reporting a misleading number.
+    // Absent is also what every pre-measurement client writes, and what a
+    // clock failure degrades to — a reader must treat absence as "not measured"
+    // and never as a zero, which would read as "inspection is free".
+    inspectionMs: z.number().int().nonnegative().optional(),
   })
   .meta({ id: 'EventMetadata' });
 export type EventMetadata = z.infer<typeof EventMetadata>;

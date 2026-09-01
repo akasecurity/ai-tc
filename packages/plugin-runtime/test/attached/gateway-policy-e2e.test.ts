@@ -145,7 +145,7 @@ function makeLocalStore(bundle: PolicyBundle): DataGateway & LocalStoreMaintenan
     recordProjectFiles: () => Promise.resolve(),
     reconcileWorktreeProjects: () => Promise.resolve(),
     staleBinaryNotice: () => null,
-  markCaptureDelivered: () => undefined,
+    markCaptureDelivered: () => undefined,
   };
 }
 

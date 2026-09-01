@@ -63,6 +63,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'bindingInput',
   'capWarnEraEnforcementOnce',
   'captureId',
+  'captureWireId',
   'classifiedDataId',
   'clearAttachmentDerivedState',
   'compareBinaryVersions',

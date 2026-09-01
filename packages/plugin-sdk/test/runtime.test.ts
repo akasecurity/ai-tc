@@ -423,6 +423,117 @@ describe('capture', () => {
   });
 });
 
+describe('capture — added-latency measurement (metadata.inspectionMs)', () => {
+  it('stamps a whole-millisecond measurement on a live capture', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture({ kind: 'prompt', sourceTool: 'claude-code', text: 'SECRET_MARKER' });
+    await rt.close();
+
+    const inspectionMs = gw.records[0]?.event.metadata?.inspectionMs;
+    // Asserted as a SHAPE, never against an elapsed budget — what a scan costs
+    // is the runner's business, and a millisecond ceiling here would be a
+    // measurement of the machine rather than of this code.
+    expect(typeof inspectionMs).toBe('number');
+    expect(Number.isInteger(inspectionMs)).toBe(true);
+    expect(inspectionMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('leaves it absent on a REPLAYED capture (one carrying its own occurredAt)', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture({
+      kind: 'prompt',
+      sourceTool: 'claude-code',
+      text: 'SECRET_MARKER',
+      occurredAt: '2026-05-01T09:00:00.000Z',
+    });
+    await rt.close();
+
+    // The transcript backfill and the worktree scan both pass occurredAt.
+    // Their scan duration is latency no host session waited on, so timing them
+    // would mix background work into a p50 that answers what inspection costs
+    // a live session. Absent, never 0 — a 0 is a real measurement of a real
+    // capture, and the read side has to be able to tell the two apart.
+    expect(gw.records[0]?.event.metadata?.inspectionMs).toBeUndefined();
+  });
+
+  it('carries the measurement alongside metadata the caller supplied, without dropping it', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture({
+      kind: 'code_change',
+      sourceTool: 'claude-code',
+      text: 'SECRET_MARKER',
+      metadata: { filePath: 'src/app.ts', repo: 'acme/app' },
+    });
+    await rt.close();
+
+    const metadata = gw.records[0]?.event.metadata;
+    expect(metadata?.filePath).toBe('src/app.ts');
+    expect(metadata?.repo).toBe('acme/app');
+    expect(typeof metadata?.inspectionMs).toBe('number');
+  });
+
+  it("persists no measurement for a benign 'with-findings' capture — the sample is the RECORDED set, not the scanned one", async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'nothing here' },
+      { persist: 'with-findings' },
+    );
+    await rt.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'SECRET_MARKER' },
+      { persist: 'with-findings' },
+    );
+    await rt.close();
+
+    // The clean capture ran the full ruleset and was still not recorded, so its
+    // measurement reaches no reader. That is the sampling skew `capture()`
+    // documents: whenever a LIVE capture is made at 'with-findings', the
+    // recorded set is the findings-bearing subset, which does strictly more
+    // work. Pinned so it cannot be silently widened (another kind moved onto
+    // 'with-findings') or quietly closed without the wording moving.
+    expect(gw.records).toHaveLength(1);
+    expect(typeof gw.records[0]?.event.metadata?.inspectionMs).toBe('number');
+  });
+
+  it("persists no measurement for a benign 'with-findings' RESPONSE either — the skew follows the condition, not the kind", async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture(
+      { kind: 'response', sourceTool: 'claude-code', text: 'nothing here' },
+      { persist: 'with-findings' },
+    );
+    await rt.capture(
+      { kind: 'response', sourceTool: 'claude-code', text: 'SECRET_MARKER' },
+      { persist: 'with-findings' },
+    );
+    await rt.close();
+
+    // Both post-tool-use hooks capture kind:'response' at 'with-findings' with
+    // no occurredAt, so responses are timed and then dropped when clean —
+    // exactly the tool_use case above. Pinning only tool_use would leave a kind
+    // that is ALREADY in the widened state unguarded.
+    expect(gw.records).toHaveLength(1);
+    expect(gw.records[0]?.event.kind).toBe('response');
+    expect(typeof gw.records[0]?.event.metadata?.inspectionMs).toBe('number');
+  });
+
+  it('records a benign capture too — the cost is the same whether anything was found', async () => {
+    const gw = fakeGateway(bundle());
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture({ kind: 'prompt', sourceTool: 'claude-code', text: 'nothing here' });
+    await rt.close();
+
+    // A clean prompt still ran the full ruleset, so its latency belongs in the
+    // p50; measuring only the captures that FOUND something would bias the
+    // median toward the slower half of the population.
+    expect(gw.records).toHaveLength(1);
+    expect(typeof gw.records[0]?.event.metadata?.inspectionMs).toBe('number');
+  });
+});
+
 describe('rulesetFingerprint', () => {
   it('is stable across runtimes over the same effective ruleset', async () => {
     const rt1 = createPluginRuntime(fakeGateway(bundle()), settings());

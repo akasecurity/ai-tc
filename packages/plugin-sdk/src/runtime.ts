@@ -36,6 +36,42 @@ const ENFORCEMENT_CEILING_ENABLED = false as boolean;
 // Worst-first ordering for collapsing multiple findings into one decision.
 const ACTION_PRIORITY: ActionTaken[] = ['block', 'redact', 'warn', 'log', 'allow'];
 
+/**
+ * Start of an added-latency measurement, or `undefined` if the clock could not
+ * be read. `performance.now()` is monotonic — a wall clock stepped by NTP mid-
+ * capture can run backwards and produce a negative duration, which would drag a
+ * percentile down exactly the way a fabricated zero would.
+ *
+ * Never throws: an unreadable clock costs the row its measurement and nothing
+ * else. That is the whole reason the pair returns `undefined` rather than 0 —
+ * a fail-open path must degrade to "not measured", never to "took no time".
+ */
+function startTiming(): number | undefined {
+  try {
+    return performance.now();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whole milliseconds since `startedAt`, or `undefined` when there is nothing
+ * honest to report — no start reading, an unreadable clock now, or a
+ * non-finite/negative difference. Rounded because the column and the contract
+ * are integer milliseconds; a sub-millisecond capture therefore reports 0,
+ * which is a real measurement of a real capture and not the absence of one.
+ */
+function elapsedMs(startedAt: number | undefined): number | undefined {
+  if (startedAt === undefined) return undefined;
+  try {
+    const delta = performance.now() - startedAt;
+    if (!Number.isFinite(delta) || delta < 0) return undefined;
+    return Math.round(delta);
+  } catch {
+    return undefined;
+  }
+}
+
 // The capture facts detection-exception conditions are ANDed against, and the
 // provenance stamped onto blocked-detections ledger rows. `capture()` fills it
 // from the CaptureInput; `processText()` has none (a conditioned grant can
@@ -547,6 +583,26 @@ export function createPluginRuntime(
   }
 
   async function capture(input: CaptureInput, opts: CaptureOptions = {}): Promise<CaptureResult> {
+    // Added latency is measured from here — the caller is blocked from this
+    // line until `capture` returns, and everything between here and the event
+    // build below is inspection work the host session waits on. A capture that
+    // brought its own `occurredAt` is replaying past work (the transcript
+    // backfill, the worktree scan), so it is never timed: its scan duration is
+    // latency nobody experienced, and mixing background work into the sample
+    // would misdescribe what inspection costs a live session.
+    //
+    // What the sample can NOT correct for is the persistence policy above it: a
+    // capture that is measured but never recorded (`persist: 'with-findings'`
+    // with nothing found — see the early return below) carries its measurement
+    // nowhere. The skew therefore follows that CONDITION — a live capture the
+    // caller passed 'with-findings' — and not any particular kind; enumerating
+    // kinds here is what went stale last time. Both 'tool_use' (the pre-tool-use
+    // hooks) and 'response' (the post-tool-use hooks, which see every Read file
+    // and Bash stream) are live and 'with-findings' today, so for each the
+    // recorded set is the findings-bearing subset, which does strictly more work
+    // than the clean captures it stands in for. Any reader aggregating this
+    // field inherits that skew.
+    const timingStartedAt = input.occurredAt === undefined ? startTiming() : undefined;
     const filePath = input.metadata?.filePath;
     const { decision, excepted, exceptionIds } = await evaluate(
       input.text,
@@ -574,8 +630,21 @@ export function createPluginRuntime(
         decision.findings.length > 0 ? redact(input.text, decision.findings) : input.text;
       // Stamp the applied exception ids onto the persisted event so the trail
       // shows WHY an enforced category passed (a declared EventMetadata field).
+      // The measurement is read HERE, immediately before the event is built,
+      // because the value has to be inside the row being written — so it spans
+      // detection, exception resolution and redaction, and stops short of the
+      // store write itself. It is therefore a lower bound on what the hook
+      // costs end to end, and `EventMetadata.inspectionMs` says so; an absent
+      // reading is left absent rather than defaulted.
+      const inspectionMs = elapsedMs(timingStartedAt);
       const metadata =
-        exceptionIds.length > 0 ? { ...input.metadata, exceptionIds } : input.metadata;
+        exceptionIds.length > 0 || inspectionMs !== undefined
+          ? {
+              ...input.metadata,
+              ...(exceptionIds.length > 0 ? { exceptionIds } : {}),
+              ...(inspectionMs !== undefined ? { inspectionMs } : {}),
+            }
+          : input.metadata;
       const event = buildIngestEvent({
         kind: input.kind,
         sourceTool: input.sourceTool,

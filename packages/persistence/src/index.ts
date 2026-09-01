@@ -43,6 +43,7 @@ export type { LocalHistoryPreview } from './history-preview.ts';
 export { readLocalHistoryPreview } from './history-preview.ts';
 export {
   captureId,
+  captureWireId,
   classifiedDataId,
   inspectionDefinitionId,
   inspectionFindingId,

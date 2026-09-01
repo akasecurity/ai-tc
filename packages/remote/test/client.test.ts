@@ -1,7 +1,7 @@
 import type { StorePostureSnapshot } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { createRemoteClient } from '../src/client.ts';
+import { createAttachClient, createRemoteClient } from '../src/client.ts';
 import { MAX_RESPONSE_BYTES, RemoteRequestError, RemoteTransportError, send } from '../src/http.ts';
 import { useLoopbackServer } from './helpers/loopback.ts';
 
@@ -618,5 +618,151 @@ describe('recordAuditEvents', () => {
     });
 
     await expect(client.recordAuditEvents([event('a')])).rejects.toMatchObject({ status: 500 });
+  });
+});
+
+// The credential-less client — the one surface in this package that reaches a
+// deployment with no key, because obtaining one is what these two routes are
+// for.
+//
+// The export-shape assertion in public-surface.test.ts pins WHAT this object
+// exposes; these pin what it DOES. The distinction matters here more than
+// usual: the separate factory exists so a caller cannot present a credential on
+// these routes or reach an authenticated one through this object, and neither
+// of those is visible in a list of method names.
+describe('the credential-less attach client', () => {
+  const server = useLoopbackServer();
+
+  const request = {
+    deviceId: '6f2d64f0-b6a4-4bb1-9a3c-6a4c26f5c9d1',
+    hostname: 'dev-laptop.local',
+    os: 'darwin 25.5.0',
+    cliVersion: '0.9.8',
+  };
+
+  const grant = {
+    deviceCode: 'Xbi-3EJMYRNAtmqp2icmOZRlXovqVv0',
+    userCode: 'BCDF-GHJK',
+    verificationUri: 'https://aka.example.test/attach',
+    expiresIn: 600,
+    interval: 5,
+  };
+
+  it('posts the device request and parses the grant back', async () => {
+    const client = createAttachClient({ endpoint: server.origin });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json(grant));
+    });
+
+    await expect(client.startGrant(request)).resolves.toMatchObject({
+      userCode: 'BCDF-GHJK',
+      interval: 5,
+    });
+    const seen = server.received.at(-1);
+    expect(seen?.method).toBe('POST');
+    expect(seen?.url).toBe('/v1/attach/device');
+    expect(JSON.parse(seen?.body ?? '{}')).toMatchObject({ hostname: 'dev-laptop.local' });
+  });
+
+  // THE PROPERTY THE SEPARATE FACTORY EXISTS FOR, and the one a list of method
+  // names cannot show. This object has no credential to send and no way to be
+  // given one; asserting the header is absent is what makes that a fact about
+  // the wire rather than about the constructor's signature.
+  it('sends no credential header on either route', async () => {
+    const client = createAttachClient({ endpoint: server.origin });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json(grant));
+    });
+    await client.startGrant(request);
+
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ status: 'pending' }));
+    });
+    await client.poll(grant.deviceCode);
+
+    for (const seen of server.received.slice(-2)) {
+      expect(seen.headers['x-api-key']).toBeUndefined();
+      expect(seen.headers.authorization).toBeUndefined();
+    }
+  });
+
+  it('posts the device code when polling, and never the user code', async () => {
+    const client = createAttachClient({ endpoint: server.origin });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ status: 'pending' }));
+    });
+
+    await expect(client.poll(grant.deviceCode)).resolves.toEqual({ status: 'pending' });
+    const seen = server.received.at(-1);
+    expect(seen?.url).toBe('/v1/attach/token');
+    // The USER code is the short one a person reads aloud; it belongs to the
+    // browser half of the flow and has no business on this route.
+    expect(seen?.body).toContain(grant.deviceCode);
+    expect(seen?.body).not.toContain(grant.userCode);
+  });
+
+  // The lenient union's whole point, exercised through the client rather than
+  // against the parser: every state arrives as a 200 and must survive the round
+  // trip intact, including one this build has never heard of.
+  it.each([
+    ['pending', { status: 'pending' }],
+    ['slow_down', { status: 'slow_down', interval: 10 }],
+    ['denied', { status: 'denied', message: 'Ask an owner or admin.' }],
+    ['expired', { status: 'expired' }],
+    ['a status this build has never heard of', { status: 'authorization_pending' }],
+  ] as const)('parses %s from a 200', async (_name, payload) => {
+    const client = createAttachClient({ endpoint: server.origin });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json(payload));
+    });
+
+    await expect(client.poll(grant.deviceCode)).resolves.toMatchObject(payload);
+  });
+
+  // THE FALLBACK CONTRACT. A 404 from `startGrant` is how a client learns the
+  // deployment does not offer this flow — it predates it, or has it switched
+  // off, and the two are deliberately indistinguishable. It has to arrive as a
+  // rejection carrying the status, since that is what `notOfferedStatus` is
+  // compared against.
+  it('rejects a 404 with the status the caller falls back on', async () => {
+    const client = createAttachClient({ endpoint: server.origin });
+    server.reply((_req, res) => {
+      res.writeHead(404);
+      res.end();
+    });
+
+    await expect(client.startGrant(request)).rejects.toMatchObject({
+      status: client.notOfferedStatus,
+    });
+    expect(client.notOfferedStatus).toBe(404);
+  });
+
+  it('rejects a non-2xx poll rather than reading a state out of it', async () => {
+    const client = createAttachClient({ endpoint: server.origin });
+    server.reply((_req, res) => {
+      res.writeHead(500);
+      res.end();
+    });
+
+    // Every state this flow defines arrives as a 200 with a body naming it, so
+    // a non-2xx is a transport or deployment fault rather than an answer.
+    await expect(client.poll(grant.deviceCode)).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('refuses a grant body that is not the shape the contract names', async () => {
+    const client = createAttachClient({ endpoint: server.origin });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ userCode: 'BCDF-GHJK' }));
+    });
+
+    await expect(client.startGrant(request)).rejects.toMatchObject({
+      name: 'RemoteResponseInvalid',
+    });
   });
 });

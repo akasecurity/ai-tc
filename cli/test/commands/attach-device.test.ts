@@ -1,3 +1,5 @@
+import { pathToFileURL } from 'node:url';
+
 import type { AttachDeviceGrant, AttachTokenResponse } from '@akasecurity/schema';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -323,9 +325,17 @@ describe('safeToOpen', () => {
     expect(safeToOpen(ENDPOINT, 'http://aka.acme.test/attach')).toBeNull();
   });
 
-  it.each(['javascript:alert(1)', 'file:///etc/passwd', 'not a url'])('refuses %s', (candidate) => {
-    expect(safeToOpen(ENDPOINT, candidate)).toBeNull();
-  });
+  // The file URL is BUILT rather than spelled. A literal `file:///etc/passwd` is
+  // a POSIX path, so on Windows the case would assert that a URL naming a path
+  // that cannot exist there is refused — true, and not the property meant. Built
+  // with `pathToFileURL`, each platform gets a file URL it would actually
+  // resolve, so the case tests the SCHEME being refused on every runner.
+  it.each(['javascript:alert(1)', pathToFileURL('/etc/passwd').href, 'not a url'])(
+    'refuses %s',
+    (candidate) => {
+      expect(safeToOpen(ENDPOINT, candidate)).toBeNull();
+    },
+  );
 
   it('accepts the ordinary prefilled link', () => {
     expect(safeToOpen(ENDPOINT, `${ENDPOINT}/attach?code=BCDF-GHJK`)).toBe(

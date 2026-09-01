@@ -29,11 +29,11 @@
     "@commitlint/config-conventional": "^21.2.2",
     "@types/node": "^24.13.3",
     "eslint": "^9.39.5",
-    "lefthook": "^2.1.10",
+    "lefthook": "^2.1.12",
     "prettier": "^3.9.6",
-    "turbo": "^2.10.10",
+    "turbo": "^2.10.12",
     "typescript": "^5.8.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "pnpm": {
     "overrides": {

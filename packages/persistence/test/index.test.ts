@@ -100,6 +100,10 @@ const PUBLIC_VALUE_EXPORTS = [
   'overlayManagedSettings',
   'promptId',
   'readControlPlaneCredential',
+  // The WIDE read. Exported deliberately and named so it cannot be reached by
+  // accident: it returns a bearer credential, unlike the state reader beside
+  // it, and belongs only to server-side callers.
+  'readControlPlaneCredentialFile',
   'readControlPlaneCredentialState',
   'readEffectiveSettings',
   'readFingerprintKey',

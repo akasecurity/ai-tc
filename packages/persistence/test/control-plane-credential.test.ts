@@ -17,6 +17,7 @@ import {
   controlPlaneCredentialPath,
   isSafeEndpoint,
   readControlPlaneCredential,
+  readControlPlaneCredentialFile,
   readControlPlaneCredentialState,
   removeControlPlaneCredential,
   writeControlPlaneCredential,
@@ -72,8 +73,8 @@ describe('write then read', () => {
   it('round-trips the credential and stores it owner-only', () => {
     writeControlPlaneCredential(store.settingsDir, credential);
 
-    const state = readControlPlaneCredentialState(store.settingsDir, connection);
-    expect(state).toEqual({ usable: true, credential });
+    const read = readControlPlaneCredentialFile(store.settingsDir, connection);
+    expect(read).toEqual({ usable: true, credential });
 
     // Owner-only is the whole at-rest control for this file. Windows has no
     // POSIX modes, so the assertion is scoped to where the mode is real.
@@ -83,13 +84,48 @@ describe('write then read', () => {
     }
   });
 
+  // THE PROJECTION, ASSERTED AT ITS SOURCE.
+  //
+  // The two readers answer the same question and only one of them may carry the
+  // key. This is the property the whole split exists for: `CredentialState` is
+  // what surfaces take, and one of those surfaces hands its value across a
+  // `'use client'` boundary, where every prop is serialised into the payload the
+  // browser receives.
+  //
+  // Asserted over the SERIALISED state, not by naming the absent field, so it
+  // stays red for any future shape that reintroduces the value under another
+  // name or nested one level down — and paired with the wide read above, which
+  // proves the same bytes ARE reachable when a server-side caller asks for them
+  // by name. A test that only checked the narrow one would pass just as well
+  // against a reader that had stopped working.
+  it('keeps the key out of the state, while the file read still carries it', () => {
+    writeControlPlaneCredential(store.settingsDir, credential);
+
+    const state = readControlPlaneCredentialState(store.settingsDir, connection);
+    expect(state).toEqual({ usable: true });
+
+    const serialised = JSON.stringify(state);
+    expect(serialised).toContain('"usable":true');
+    for (const secret of [credential.apiKey, credential.apiKey.slice(0, 8)]) {
+      expect(serialised).not.toContain(secret);
+    }
+
+    // The other half: this is not the key becoming unreachable.
+    expect(readControlPlaneCredential(store.settingsDir, connection)?.apiKey).toBe(
+      credential.apiKey,
+    );
+  });
+
   it('overwrites silently, because re-attaching is how a credential rotates', () => {
     writeControlPlaneCredential(store.settingsDir, credential);
     const rotated = { ...credential, apiKey: 'rotated-8c1d5e7a2f9b' };
     writeControlPlaneCredential(store.settingsDir, rotated);
 
-    const state = readControlPlaneCredentialState(store.settingsDir, connection);
-    expect(state.usable && state.credential.apiKey).toBe('rotated-8c1d5e7a2f9b');
+    // Through the FULL read, because the rotated key is the thing being
+    // asserted. `readControlPlaneCredentialState` deliberately cannot answer
+    // this — its usable branch carries no credential.
+    const read = readControlPlaneCredentialFile(store.settingsDir, connection);
+    expect(read.usable && read.credential.apiKey).toBe('rotated-8c1d5e7a2f9b');
   });
 
   it('refuses to store a credential for an endpoint it would never present to', () => {

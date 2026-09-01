@@ -1,4 +1,4 @@
-import type { WorkspaceSettings } from '@akasecurity/schema';
+import type { CredentialState, WorkspaceSettings } from '@akasecurity/schema';
 import {
   BUILTIN_POLICIES,
   KNOWN_BUILTIN_IDS,
@@ -13,7 +13,11 @@ import {
   ATTACH_KEY_HINT,
   canAttach,
   CONNECTION_ATTACHED_DESCRIPTION,
+  CONNECTION_ATTACHED_LABEL,
+  CONNECTION_CREDENTIAL_MISSING_NOTICE,
+  CONNECTION_CREDENTIAL_UNUSABLE_NOTICE,
   CONNECTION_FORWARDING_NOTICE,
+  CONNECTION_INACTIVE_BADGE,
   CONNECTION_STANDALONE_DESCRIPTION,
   CONNECTION_UNAVAILABLE_NOTICE,
   DETACH_EXPLANATION,
@@ -71,6 +75,8 @@ const FORM_COPY: Record<string, string> = {
   CONNECTION_ATTACHED_DESCRIPTION,
   CONNECTION_FORWARDING_NOTICE,
   CONNECTION_UNAVAILABLE_NOTICE,
+  CONNECTION_CREDENTIAL_MISSING_NOTICE,
+  CONNECTION_CREDENTIAL_UNUSABLE_NOTICE,
   DETACH_MANAGED_NOTICE,
   HISTORICAL_SECTION_LABEL,
   HISTORICAL_SECTION_DESCRIPTION,
@@ -700,5 +706,115 @@ describe('the enforcement pointer', () => {
       }),
     );
     expect(html).toContain('href="/app/detections"');
+  });
+});
+
+// ─── The credential half of an attachment ────────────────────────────────────
+//
+// `runMode: 'attached'` is only half of a working attachment. The other half is
+// a usable credential file, and when it is missing or was minted for a
+// different deployment the machine sends and receives nothing while every
+// surface still says "Attached". `aka status` has always been able to say so;
+// this view could not, because it renders from `WorkspaceSettings` alone.
+//
+// What makes this honest to show — where a live handshake would not be — is
+// that the credential is a LOCAL fact. The page is not claiming anything about
+// whether the deployment answered; it is reporting what is on this disk.
+describe('the connection section, credential state', () => {
+  const base: WorkspaceSettings = {
+    specVersion: 1,
+    runMode: 'standalone',
+    policy: 'redact',
+    historicalAccess: 'session-only',
+    dataSharesInPlace: true,
+    vaultKeyCustody: 'file',
+    vaultInlineReveal: 'masked',
+  };
+
+  const attached: WorkspaceSettings = {
+    ...base,
+    runMode: 'attached',
+    controlPlane: {
+      endpoint: 'https://aka.acme.internal',
+      label: 'Acme Prod',
+      attachedAt: '2026-02-02T00:00:00.000Z',
+    },
+  };
+
+  const render = (props: Partial<WorkspaceSettingsFormViewProps> = {}): string =>
+    renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, {
+        settings: attached,
+        onSave: () => undefined,
+        ...props,
+      }),
+    );
+
+  // A VERDICT AND NOTHING ELSE, which is the whole of the usable branch. This
+  // package is presentational and its props are handed across a client boundary
+  // by at least one host, so the type it takes cannot carry a credential — and
+  // the view has never read one: `credentialNotice` branches on `usable` and
+  // `reason`.
+  const usable: CredentialState = { usable: true };
+
+  it('says nothing extra when the credential is usable', () => {
+    const html = render({ credentialState: usable });
+    expect(html).not.toContain('data-slot="connection-credential-notice"');
+    expect(html).toContain(CONNECTION_ATTACHED_LABEL);
+    expect(html).not.toContain(CONNECTION_INACTIVE_BADGE);
+  });
+
+  // The host may not supply the state at all — the CLI inlines this package and
+  // renders the same view. An absent prop must leave the surface exactly as it
+  // was rather than accusing a working machine of being broken.
+  it('says nothing extra when the host supplies no credential state', () => {
+    const html = render();
+    expect(html).not.toContain('data-slot="connection-credential-notice"');
+    expect(html).toContain(CONNECTION_ATTACHED_LABEL);
+  });
+
+  it('names a missing credential, and stops calling the machine attached', () => {
+    const html = render({ credentialState: { usable: false, reason: 'absent' } });
+    expect(html).toContain(CONNECTION_CREDENTIAL_MISSING_NOTICE);
+    expect(html).toContain(CONNECTION_INACTIVE_BADGE);
+  });
+
+  // Four different reasons, one message. A user cannot act differently on
+  // "malformed" than on "unreadable" — the fix is the same in every case — and
+  // naming the internal distinction would be describing our parser rather than
+  // their machine.
+  it.each(['untrusted-file', 'unreadable', 'malformed', 'unsafe-endpoint'] as const)(
+    'reports a %s credential as unusable',
+    (reason) => {
+      const html = render({ credentialState: { usable: false, reason } });
+      expect(html).toContain(CONNECTION_CREDENTIAL_UNUSABLE_NOTICE);
+      expect(html).toContain(CONNECTION_INACTIVE_BADGE);
+    },
+  );
+
+  // The one reason that carries data, and the only one a user can act on in two
+  // different directions — so both endpoints have to be on screen or the advice
+  // is unfollowable.
+  it('names both endpoints on a mismatch', () => {
+    const html = render({
+      credentialState: {
+        usable: false,
+        reason: 'endpoint-mismatch',
+        credentialEndpoint: 'https://old.acme.internal',
+        settingsEndpoint: 'https://aka.acme.internal',
+      },
+    });
+    expect(html).toContain('https://old.acme.internal');
+    expect(html).toContain('https://aka.acme.internal');
+    expect(html).toContain(CONNECTION_INACTIVE_BADGE);
+  });
+
+  // A standalone machine is not "missing" a credential — it is not supposed to
+  // have one. Reporting absence there would turn the ordinary state into a
+  // fault.
+  it('reports nothing on a standalone machine', () => {
+    const html = render({ settings: base, credentialState: { usable: false, reason: 'absent' } });
+    expect(html).not.toContain('data-slot="connection-credential-notice"');
+    expect(html).not.toContain(CONNECTION_INACTIVE_BADGE);
   });
 });

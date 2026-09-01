@@ -4,7 +4,7 @@ import { hostname } from 'node:os';
 import type { HistorySyncCounts, LocalDatabase } from '@akasecurity/persistence';
 import {
   openLocalDatabase,
-  readControlPlaneCredentialState,
+  readControlPlaneCredentialFile,
   readWorkspaceSettings,
 } from '@akasecurity/persistence';
 import { createRemoteClient } from '@akasecurity/remote';
@@ -135,7 +135,9 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
     if (connection === undefined) return null;
     if (!isHistorySyncConsentValid(settings.historySyncConsent, connection.endpoint)) return null;
 
-    const state = readControlPlaneCredentialState(deps.settingsDir, connection);
+    // The WIDE read: the client below needs the key itself, and this runs in
+    // the plugin's own process rather than anywhere a browser can see.
+    const state = readControlPlaneCredentialFile(deps.settingsDir, connection);
     if (!state.usable) return null;
 
     // READ-ONLY. A long-running child must never write the breaker: its view of

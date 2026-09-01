@@ -163,19 +163,37 @@ function uuidFromDigest(digest: string): string {
 // renderings of ONE identity, and this is the function that makes them so.
 //
 // It replaces a `randomUUID()` minted per capture and then discarded, which had
-// three consequences worth stating because each is a bug the derivation removes:
+// two consequences worth stating because each is a bug the derivation removes:
 //
 //  1. A stored capture could not be matched to what was sent, because the wire
 //     id was never persisted. There was no id to mark delivered.
 //  2. A capture rebuilt from its row would be sent under a NEW id every attempt,
 //     so the receiver's id-dedup could not suppress a retry — the one mechanism
 //     that makes redelivery safe.
-//  3. Avoiding (2) meant reaching for content-hash dedup, which collapses
-//     genuinely distinct byte-identical prompts. Both belong on a timeline.
+//
+// What it does NOT do is keep byte-identical captures apart, and reading it that
+// way is the mistake to avoid. The tuple carries no timestamp and no nonce, so
+// identical content in one session at one path is ONE capture BY DEFINITION OF
+// THE KEY — and that is the point rather than a concession: `recordCapture` keys
+// the row on the same tuple with INSERT OR IGNORE, so the local timeline has
+// shown one for as long as this key has existed. Deriving the wire id from that
+// same tuple makes the wire AGREE with the store instead of diverging from it,
+// which is the property actually being bought — an id that means the same thing
+// on both sides. What the scoping adds is where the collapse STOPS: identical
+// content in two different sessions, or at two different paths, stays two
+// captures, which dedup on `contentHash` alone would not have preserved.
+//
+// One live-path behaviour changes with it, named here rather than left to be
+// discovered: a repeated identical prompt — `yes`, `continue`, `run the tests`,
+// the ordinary shape of a session — used to reach a deployment as two random-id
+// events, and now arrives as one. That matches what the local store has always
+// shown for it, which is why it is the correct outcome and not a lost capture.
 //
 // Callers must pass the SAME tuple `captureId` receives for that capture. The
-// two are derived from one digest here so that stays true by construction; the
-// round-trip is pinned by `capture wire id` in test/ids.test.ts.
+// two are derived from one digest here so that stays true by construction;
+// pinned by `is the SAME digest captureId returns, only re-rendered` in
+// test/ids.test.ts, and across the seam by `derives the id from the tuple the
+// local row is keyed on` in plugin-sdk's test/build-ingest-event.test.ts.
 export function captureWireId(
   sessionId: string | null,
   contentHash: string,

@@ -125,6 +125,11 @@ export interface BaseAuditEventRow<TTime = number> {
     | 'response'
     | 'code_change'
     | 'tool_use'
+    // Mirrors AuditEventType in ../zod/meta.ts. The two lists are restated
+    // rather than derived because the table below asserts against this one as
+    // LITERALS (drizzle/adherence.test.ts), and a type alias does not satisfy
+    // that comparison. Adding a member means editing both.
+    | 'model_refusal'
     | 'config_scan';
   hostId: string | null;
   harnessId: string | null;

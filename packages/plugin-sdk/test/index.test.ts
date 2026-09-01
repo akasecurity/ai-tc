@@ -87,6 +87,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'applySetupTriageSuppressions',
   'assertRawFree',
   'buildIngestEvent',
+  'buildModelRefusalEvent',
   'buildTokenReports',
   'bundledDetections',
   'childRel',

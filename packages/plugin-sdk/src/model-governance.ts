@@ -300,3 +300,57 @@ export function decideProhibitedModelTurn(
   if (!isModelProhibited(model, prohibitedModels)) return null;
   return { decision: 'block', reason: prohibitedModelMessage(model, 'turn') };
 }
+
+/** Which seam refused: a model switch, or a turn already running on one. */
+export type RefusalSeam = 'switch' | 'turn';
+
+/**
+ * The audit row for one refusal.
+ *
+ * WHAT IT DELIBERATELY DOES NOT CARRY is the point: no prompt, no response, no
+ * content of any kind. A governance refusal is worth recording so an operator
+ * can see the control working and on which machines — that question is answered
+ * by the model, the seam and the session, and answering it does not require
+ * moving anything the user typed. `content` is left unset rather than set to a
+ * summary, so there is no field for text to creep into later.
+ *
+ * `id` is random rather than content-addressed: refusals are facts, and two
+ * identical refusals a minute apart are two events, not one recorded twice.
+ *
+ * The caller owns whether this is written at all — every call site is
+ * best-effort and swallows its own failure, because a refusal that cannot be
+ * recorded must still be a refusal.
+ */
+export function buildModelRefusalEvent(input: {
+  id: string;
+  sessionId: string | undefined;
+  model: string;
+  seam: RefusalSeam;
+  sourceTool: string;
+  occurredAt: string;
+}): {
+  id: string;
+  eventType: 'model_refusal';
+  startedAt: string;
+  rootSessionId?: string;
+  attributes: Record<string, unknown>;
+} {
+  return {
+    id: input.id,
+    eventType: 'model_refusal',
+    startedAt: input.occurredAt,
+    // Omitted rather than nulled when unknown: `root_session_id` is a self-FK,
+    // and a session id naming no row would fail the insert outright.
+    ...(input.sessionId === undefined || input.sessionId === ''
+      ? {}
+      : { rootSessionId: input.sessionId }),
+    attributes: {
+      // `model` is a generated column on audit_events, so the refused model is
+      // queryable without unpacking the bag — which is what lets the control
+      // plane group refusals by the same id the prohibition was keyed on.
+      model: input.model,
+      refusal_seam: input.seam,
+      source_tool: input.sourceTool,
+    },
+  };
+}

@@ -733,12 +733,14 @@ describe('per-detection policy drives enforcement (installed_packs.policy_id)', 
  * raw snake_case columns and the camelCase type is optimistic. Read what is
  * there rather than what the type claims.
  */
-function rawRow(
-  db: ReturnType<typeof openLocalDatabase>,
-  id: string,
-): { id: string; event_type: string; root_session_id: string | null } | undefined {
-  return db.auditEvents.findById(id) as unknown as
-    { id: string; event_type: string; root_session_id: string | null } | undefined;
+interface RawAuditRow {
+  id: string;
+  event_type: string;
+  root_session_id: string | null;
+}
+
+function rawRow(db: ReturnType<typeof openLocalDatabase>, id: string): RawAuditRow | undefined {
+  return db.auditEvents.findById(id);
 }
 
 describe('recordAuditEvent plants the session root it FKs onto', () => {

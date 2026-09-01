@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  buildModelRefusalEvent,
   claudeCodeModelFromRecord,
   codexModelFromRecord,
   decideProhibitedModelTurn,
@@ -293,5 +294,45 @@ describe('decideProhibitedModelTurn', () => {
     ['an empty prohibition list', 'claude-opus-5', []],
   ])('allows a turn on %s', (_label, model, prohibited) => {
     expect(decideProhibitedModelTurn(model, prohibited)).toBeNull();
+  });
+});
+
+describe('buildModelRefusalEvent', () => {
+  const base = {
+    id: 'evt-1',
+    sessionId: 's1',
+    model: 'claude-opus-5',
+    seam: 'switch' as const,
+    sourceTool: 'claude-code',
+    occurredAt: '2026-09-02T10:30:00.000Z',
+  };
+
+  it('carries the model, the seam and the session, and nothing the user typed', () => {
+    const event = buildModelRefusalEvent(base);
+    expect(event.eventType).toBe('model_refusal');
+    expect(event.rootSessionId).toBe('s1');
+    expect(event.attributes).toEqual({
+      model: 'claude-opus-5',
+      refusal_seam: 'switch',
+      source_tool: 'claude-code',
+    });
+  });
+
+  it('has NO content field at all, not merely an empty one', () => {
+    // The property that keeps prompt text from creeping in later: there is no
+    // field for it. An empty string would be a slot someone fills.
+    expect(Object.keys(buildModelRefusalEvent(base))).not.toContain('content');
+    expect(Object.keys(buildModelRefusalEvent(base))).not.toContain('contentHash');
+  });
+
+  it('OMITS rootSessionId when the session is unknown, rather than nulling it', () => {
+    // `root_session_id` is a self-FK: an id naming no row fails the insert, and
+    // an explicit null would be a different (allowed) statement than omission.
+    const event = buildModelRefusalEvent({ ...base, sessionId: undefined });
+    expect('rootSessionId' in event).toBe(false);
+  });
+
+  it('records the turn seam distinctly from the switch seam', () => {
+    expect(buildModelRefusalEvent({ ...base, seam: 'turn' }).attributes.refusal_seam).toBe('turn');
   });
 });

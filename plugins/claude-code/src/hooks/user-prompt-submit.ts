@@ -43,7 +43,7 @@ import {
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { writeClipboard } from './clipboard.ts';
-import { refuseProhibitedTurn } from './model-guard.ts';
+import { handleProhibitedTurn } from './model-guard.ts';
 import { ONBOARDING_NUDGE } from './onboarding-nudge.ts';
 import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
 import {
@@ -85,17 +85,15 @@ async function main(): Promise<void> {
   // prompt contains no longer changes the outcome. Running it first also means a
   // throw inside the scan path cannot skip it. The decision itself is
   // `refuseProhibitedTurn`, which is importable and fail-open throughout.
-  const blocked = await refuseProhibitedTurn(
-    gateway,
-    config.dataDir,
-    sessionId,
-    input === null ? undefined : getString(input, 'transcript_path'),
-  );
-  if (blocked !== null) {
-    // Closed here rather than left to the runtime's `finally` below, which this
-    // return never reaches.
-    await gateway.close();
-    await emit(blocked);
+  if (
+    await handleProhibitedTurn(
+      gateway,
+      config.dataDir,
+      sessionId,
+      input === null ? undefined : getString(input, 'transcript_path'),
+      emit,
+    )
+  ) {
     return;
   }
 

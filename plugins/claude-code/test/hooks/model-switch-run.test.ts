@@ -6,7 +6,7 @@ import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { readSessionModel, recordSessionModel } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { refuseProhibitedTurn } from '../../src/hooks/model-guard.ts';
+import { handleProhibitedTurn, refuseProhibitedTurn } from '../../src/hooks/model-guard.ts';
 import { runPostModelSwitch, runPreModelSwitch } from '../../src/hooks/model-switch-run.ts';
 
 let dir: string;
@@ -158,5 +158,40 @@ describe('refuseProhibitedTurn', () => {
     expect(
       await refuseProhibitedTurn(gatewayWith(['claude-opus-5']), dir, 's1', undefined),
     ).toBeNull();
+  });
+});
+
+describe('handleProhibitedTurn', () => {
+  it('closes the gateway and emits the block, then tells the caller to stop', async () => {
+    recordSessionModel(dir, 's1', 'claude-opus-5');
+    const close = vi.fn(() => Promise.resolve());
+    const emitted: { decision: 'block'; reason: string }[] = [];
+    const emit = (output: { decision: 'block'; reason: string }): Promise<void> => {
+      emitted.push(output);
+      return Promise.resolve();
+    };
+    const stop = await handleProhibitedTurn(
+      gatewayWith(['claude-opus-5'], close),
+      dir,
+      's1',
+      undefined,
+      emit,
+    );
+    expect(stop).toBe(true);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]?.decision).toBe('block');
+    expect(emitted[0]?.reason).toContain('claude-opus-5');
+  });
+
+  it('leaves the gateway OPEN and emits nothing when the turn is allowed', async () => {
+    // The caller goes on to build a runtime over this gateway and closes it in
+    // its own `finally`; closing here would pull it out from under the scan.
+    const close = vi.fn(() => Promise.resolve());
+    const emit = vi.fn(() => Promise.resolve());
+    const stop = await handleProhibitedTurn(gatewayWith([], close), dir, 's1', undefined, emit);
+    expect(stop).toBe(false);
+    expect(close).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
   });
 });

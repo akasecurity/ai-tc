@@ -135,3 +135,31 @@ export async function refuseProhibitedTurn(
     return null;
   }
 }
+
+/**
+ * The whole containment step: decide, and on a refusal close the gateway and
+ * emit. Returns true when the turn was refused and the caller must stop.
+ *
+ * The emit and the close live HERE rather than in the hook entry for the same
+ * reason the decision does — an entry runs `main()` on import, so a test can
+ * never import one and anything left there is uncovered by construction. What
+ * remains in the entry is the call and the early return.
+ *
+ * `emit` is a parameter rather than an import so this module stays free of the
+ * stdout contract and testable without one.
+ */
+export async function handleProhibitedTurn(
+  gateway: Pick<DataGateway, 'getPolicyBundle' | 'close'>,
+  dataDir: string,
+  sessionId: string | undefined,
+  transcriptPath: string | undefined,
+  emit: (output: { decision: 'block'; reason: string }) => Promise<void>,
+): Promise<boolean> {
+  const blocked = await refuseProhibitedTurn(gateway, dataDir, sessionId, transcriptPath);
+  if (blocked === null) return false;
+  // Closed here rather than left to the caller's runtime `finally`, which the
+  // refusal path never reaches.
+  await gateway.close();
+  await emit(blocked);
+  return true;
+}

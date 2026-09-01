@@ -147,7 +147,7 @@ export function InventoryNav(props: InventoryNavProps) {
               onQuery(e.target.value);
             }}
             placeholder="Search assets…"
-            className="h-8.5 w-full rounded-lg border border-border-field bg-surface-2 pl-9 pr-3 text-sm text-text placeholder:text-text-3 focus:border-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+            className="h-8.5 w-full rounded-lg border border-border-field bg-surface-2 pl-9 pr-3 text-sm text-text placeholder:text-text-3 focus:border-primary focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40"
           />
         </div>
 

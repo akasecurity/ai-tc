@@ -86,12 +86,40 @@ function canvasCollisionFill(): string {
   return `bg-${twin}`;
 }
 
+/**
+ * A focus fragment matched as a DECISION rather than as today's spelling of it.
+ *
+ * Tailwind v4 split v3's `outline-none` in two: `outline-none` sets
+ * `outline-style: none` flat, while `outline-hidden` also re-emits a transparent
+ * outline under `forced-colors: active`, which the system then paints. Windows
+ * High Contrast Mode discards box-shadow rings and author border colours — which
+ * is exactly `ring-*` and `border-primary`, i.e. BOTH cues these six controls
+ * carry — so `outline-hidden` is the spelling that keeps an indicator there.
+ *
+ * Pinning either spelling literally makes the other fail, and a move from `none`
+ * to `hidden` is the REPAIR. A pin that reds on a repair reads as a regression and
+ * gets reverted — the same failure this file's header describes for the container
+ * premise, one property over: an assertion that mandates the state it exists to
+ * forbid. So the outline token alternates and every other token stays exact.
+ */
+function focusPattern(fragment: string): RegExp {
+  return new RegExp(
+    fragment
+      .split(' ')
+      .map((token) =>
+        /^(?:focus:)?outline-(?:none|hidden)$/.test(token)
+          ? '(?:focus:)?outline-(?:none|hidden)'
+          : token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+      )
+      .join(' '),
+  );
+}
+
 const FIELDS: {
   file: string;
   control: string;
   on: 'a Card' | 'the page canvas';
   edge: string;
-  fill: string;
   /** The whole focus treatment, pinned as one fragment — see the loop below. */
   focus: string;
   alsoContains?: string;
@@ -101,36 +129,32 @@ const FIELDS: {
     control: 'the findings search',
     on: 'the page canvas',
     edge: 'rounded-lg border border-border-field bg-surface pl-9 pr-3',
-    fill: 'bg-surface',
     focus:
-      'focus:border-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+      'focus:border-primary focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40',
   },
   {
     file: 'detections/DetectionsListView.tsx',
     control: 'the detections search',
     on: 'a Card',
     edge: 'rounded-lg border border-border-field bg-surface-2 pl-9 pr-3',
-    fill: 'bg-surface-2',
     focus:
-      'focus:border-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+      'focus:border-primary focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40',
   },
   {
     file: 'inventory/InventoryNav.tsx',
     control: 'the assets search',
     on: 'a Card',
     edge: 'rounded-lg border border-border-field bg-surface-2 pl-9 pr-3',
-    fill: 'bg-surface-2',
     focus:
-      'focus:border-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+      'focus:border-primary focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40',
   },
   {
     file: 'inventory/ProjectPane.tsx',
     control: 'the project-files search',
     on: 'a Card',
     edge: 'rounded-lg border border-border-field bg-surface-2 pl-9 pr-8',
-    fill: 'bg-surface-2',
     focus:
-      'focus:border-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+      'focus:border-primary focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40',
   },
   {
     file: 'activity/SessionListView.tsx',
@@ -139,7 +163,6 @@ const FIELDS: {
     // The border sits on the WRAPPER: the input inside it is bg-transparent, so
     // this element is the whole visible control and carries both decisions.
     edge: 'rounded-lg border border-border-field bg-surface-2 px-2.5',
-    fill: 'bg-surface-2',
     focus: 'focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/40',
   },
   {
@@ -150,9 +173,8 @@ const FIELDS: {
     // once a subset is chosen — so the fragment carries the fill and the shape,
     // and the resting colour is pinned as the CONDITIONAL below, not as a token.
     edge: 'rounded-lg border bg-surface-2 px-2.5',
-    fill: 'bg-surface-2',
     alsoContains: "all ? 'border-border-field'",
-    focus: 'outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+    focus: 'focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40',
   },
 ];
 
@@ -170,12 +192,18 @@ describe('the hand-rolled field boundary', () => {
   //
   // What this does NOT assert is that the indicator clears 3:1 between states. It
   // does not: the border swap is 2.070:1 light / 1.729:1 dark and the ring adds
-  // 2.019:1 / 2.157:1 on its own pixels, both under SC 2.4.13. These match the
-  // ui-kit primitives, and moving that bar is a change to --color-primary's alpha
-  // across both products. See theme.css's closing paragraph.
+  // 2.019:1 / 2.325:1 on its own pixels, both under SC 2.4.13. (2.157:1 is that
+  // dark figure taken over --color-surface-2 — the field's own fill, which is the
+  // one surface a ring painted OUTSIDE the border box never has behind it.) These
+  // match the ui-kit primitives, and moving that bar is a change to
+  // --color-primary's alpha across both products.
+  //
+  // Nor does it assert anything under FORCED COLORS, where the ring's box-shadow
+  // and the focused border colour are both discarded — see `focusPattern` and
+  // theme.css's closing paragraph.
   for (const { file, control, focus } of FIELDS) {
     it(`${control}: keeps a focus indicator`, () => {
-      expect(read(file)).toContain(focus);
+      expect(read(file)).toMatch(focusPattern(focus));
     });
   }
 
@@ -201,10 +229,16 @@ describe('the hand-rolled field boundary', () => {
   // the fill of the thing UNDER it, which is not in the class string. Both
   // container fills are resolved — ui-kit's Card, and the canvas/surface-2
   // same-hex identity in theme.css.
-  for (const { file, control, on, edge, fill } of FIELDS) {
+  for (const { file, control, on, edge } of FIELDS) {
     it(`${control}: its fill is not the same as ${on}`, () => {
       const container = on === 'a Card' ? cardFill() : canvasCollisionFill();
-      expect(read(file)).not.toContain(edge.replace(fill, container));
+      // The fill token is DERIVED from this control's own edge fragment, by the
+      // same regex `cardFill` uses, rather than restated in a second field that
+      // had to be edited in lockstep with it.
+      expect(edge, `${control}: no bg-surface* token in its edge fragment`).toMatch(
+        /\bbg-surface(?:-\d)?\b/,
+      );
+      expect(read(file)).not.toContain(edge.replace(/\bbg-surface(?:-\d)?\b/, container));
     });
   }
 });

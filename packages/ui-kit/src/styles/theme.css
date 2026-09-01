@@ -80,15 +80,34 @@
      focused appearance, and 2.4.13 asks that change for 3:1. It does not clear it:
      swapping this token for --color-primary is 2.070:1 light and 1.729:1 dark, and
      the ring beside it (--color-primary at 40%, painted OUTSIDE the border box, so
-     its backdrop is the container rather than the field) adds 2.019:1 and 2.157:1.
+     its backdrop is the container rather than the field) adds 2.019:1 and 2.325:1.
+     Take those against the CONTAINER, which is what that sentence says and what
+     the ring actually paints on: 2.157:1 is the dark figure over --color-surface-2,
+     i.e. over the field's own fill, which is the one surface the ring never has
+     behind it. Light barely moves either way (the two surfaces are 1.05:1 apart
+     there); dark's 1.21:1 gap makes the two computations diverge.
      Two sub-threshold cues do not sum to a passing one. 1.4.11 is met and was never
      at risk — the focused border against the field fill is 6.620:1 light and
      5.628:1 dark — so what falls short is the AAA criterion, not the AA one. Every
      field in both products shares these figures because they all use the same ring;
      closing the gap means moving that alpha, not this value.
 
+     FORCED COLORS, where the loss is total rather than sub-threshold. Both cues
+     above are exactly what Windows High Contrast Mode discards: ring-* compiles
+     to a box-shadow, and --color-primary on a focused border is an author border
+     colour. Tailwind v4 split v3's outline-none in two — outline-none sets
+     outline-style:none flat, while outline-hidden also re-emits a transparent
+     outline under forced-colors: active, which the system then paints. So a
+     control spelling outline-none keeps NO focus indicator at all under HCM.
+     The eight controls the two suites pin spell outline-hidden for that reason.
+     Ten further ui-kit components still spell outline-none — including
+     SelectItem, in the same file as the SelectTrigger that moved — and are not
+     covered by either suite; moving them is outstanding work, and this token
+     cannot fix any of it.
+
      Both suites pin the focus fragment as PRESENT, which is a different claim from
-     clearing the bar. Do not read a green run as either.
+     clearing the bar — and PRESENT is asserted against the resting/focused change,
+     not against forced colors. Do not read a green run as either.
 
      There is almost no room above the floor. One perceptible step lighter than
      this value measures 2.98:1 on --color-surface and fails. It reads far

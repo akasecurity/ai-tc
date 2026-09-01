@@ -42,7 +42,7 @@ export function Input({ className, type = 'text', ...props }: ComponentPropsWith
       className={cn(
         'h-9 w-full rounded-lg border border-border-field bg-surface-2 px-3 text-sm text-text',
         'truncate placeholder:text-text-3 transition-colors',
-        'focus:border-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+        'focus:border-primary focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40',
         'disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}

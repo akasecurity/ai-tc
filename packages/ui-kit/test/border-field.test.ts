@@ -53,6 +53,36 @@ function containerFill(file: string, anchor: string): string {
   return match[0];
 }
 
+/**
+ * A focus fragment matched as a DECISION rather than as today's spelling of it.
+ *
+ * Tailwind v4 split v3's `outline-none` in two: `outline-none` sets
+ * `outline-style: none` flat, while `outline-hidden` also re-emits a transparent
+ * outline under `forced-colors: active`, which the system then paints. Windows
+ * High Contrast Mode discards box-shadow rings and author border colours — which
+ * is exactly `ring-*` and `border-primary` — so `outline-hidden` is the spelling
+ * that keeps an indicator there at all.
+ *
+ * Pinning either spelling literally makes the other fail this suite, and a move
+ * from `none` to `hidden` is the REPAIR. A pin that reds on a repair reads as a
+ * regression and gets reverted — the same failure this file's header describes
+ * for the container premise, one property over: an assertion that mandates the
+ * state it exists to forbid. So the outline token alternates and every other
+ * token stays exact.
+ */
+function focusPattern(fragment: string): RegExp {
+  return new RegExp(
+    fragment
+      .split(' ')
+      .map((token) =>
+        /^(?:focus:)?outline-(?:none|hidden)$/.test(token)
+          ? '(?:focus:)?outline-(?:none|hidden)'
+          : token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+      )
+      .join(' '),
+  );
+}
+
 const CONTAINERS = [
   { file: 'card.tsx', component: 'Card', anchor: 'rounded-xl border border-border' },
   { file: 'dialog.tsx', component: 'DialogContent', anchor: 'rounded-2xl border border-border' },
@@ -63,22 +93,29 @@ const EXPECTED: {
   file: string;
   component: string;
   edge: string;
-  /** The focus indicator, where the component is one a user can focus. */
-  focus?: string;
+  /**
+   * The focus indicator. REQUIRED, and `null` is how a component declares it has
+   * none — an optional key skipped with `continue` is the same silently-skips
+   * shape as the `alsoContains` hole this suite already closed once: a focusable
+   * component added below would get no pin and no complaint.
+   */
+  focus: string | null;
   why: string;
 }[] = [
   {
     file: 'input.tsx',
     component: 'Input',
     edge: 'rounded-lg border border-border-field bg-surface-2 px-3',
-    focus: 'focus-visible:ring-2 focus-visible:ring-primary/40',
+    focus:
+      'focus:border-primary focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40',
     why: 'a fill one step off the panel under it, and an edge that clears 3:1 on that fill',
   },
   {
     file: 'select.tsx',
     component: 'SelectTrigger',
     edge: 'rounded-lg border border-border-field bg-surface-2 px-3',
-    focus: 'focus-visible:ring-2 focus-visible:ring-primary/40',
+    focus:
+      'focus:border-primary focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40',
     why: 'the same shape as Input, and it sits in the same forms',
   },
   {
@@ -88,6 +125,7 @@ const EXPECTED: {
     // it is separated by ELEVATION rather than by a fill step. Radix Select ships
     // no overlay primitive, so there is no scrim doing that job.
     edge: 'rounded-lg border border-border bg-surface shadow-lg',
+    focus: null, // a popup, not a control — nothing to focus
     why: 'elevated rather than inset — it does NOT share the problem, and pinning it records that the difference is deliberate',
   },
 ];
@@ -104,13 +142,19 @@ describe('the field boundary', () => {
     expect(new Set(fills.map((f) => f.fill)).size, JSON.stringify(fills)).toBe(1);
   });
 
+  // Read from the SOURCE, not from `edge`. Comparing the resolved container against
+  // the fixture literal validates the fixture against itself: reverting input.tsx to
+  // `bg-surface` left this assertion green (it fails 2 others, so nothing was
+  // uncovered overall — but this one reads as a fill guard and was not one).
   it('the field fill is one step off that container fill, not equal to it', () => {
     const container = containerFill(CONTAINERS[0].file, CONTAINERS[0].anchor);
     for (const { component, file, edge } of EXPECTED) {
       if (component === 'SelectContent') continue; // elevated, deliberately equal
-      expect(edge, `${component} (${file}) must not sit on its container's own fill`).not.toContain(
-        `${container} px-`,
-      );
+      const shape = edge.replace(/\bbg-surface(?:-\d)?\b/, container);
+      expect(
+        read(file),
+        `${component} (${file}) must not sit on its container's own fill`,
+      ).not.toContain(shape);
     }
   });
 
@@ -128,12 +172,18 @@ describe('the field boundary', () => {
   //
   // This asserts the ring is PRESENT, not that it clears 3:1 between states. It
   // does not — `ring-primary/40` paints outside the border box, so its backdrop is
-  // the container, giving 2.019:1 light and 2.157:1 dark. Raising it means moving
-  // --color-primary's alpha for every focus ring in both products.
+  // the container, giving 2.019:1 light and 2.325:1 dark (2.157:1 is that figure
+  // over --color-surface-2, i.e. the field's own fill, which is the one surface the
+  // ring never has behind it). Raising it means moving --color-primary's alpha for
+  // every focus ring in both products.
+  //
+  // Nor does it assert anything about FORCED COLORS, where a `ring-*` box-shadow and
+  // an author border colour are both discarded. That is why the outline token is
+  // matched as a decision rather than as a spelling — see `focusPattern`.
   for (const { file, component, focus } of EXPECTED) {
-    if (focus === undefined) continue;
+    if (focus === null) continue; // declared above as having none
     it(`${component}: keeps its focus ring`, () => {
-      expect(read(file)).toContain(focus);
+      expect(read(file)).toMatch(focusPattern(focus));
     });
   }
 

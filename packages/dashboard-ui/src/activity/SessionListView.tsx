@@ -169,7 +169,7 @@ export function SessionListView({
             }}
             placeholder="Search sessions & events…"
             aria-label="Search sessions and events"
-            className="min-w-0 flex-1 bg-transparent text-sm text-text placeholder:text-text-3 focus:outline-none"
+            className="min-w-0 flex-1 bg-transparent text-sm text-text placeholder:text-text-3 focus:outline-hidden"
           />
         </div>
         <HarnessSelect

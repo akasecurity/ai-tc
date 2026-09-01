@@ -28,6 +28,28 @@ export interface HistorySyncCounts {
 }
 
 /**
+ * Every tracked row, in exactly one delivery state.
+ *
+ * Distinct from `counts()`, which is the DRAIN's view and does not partition:
+ * its `pending` is bounded by the backlog boundary while `sent` and `skipped`
+ * are lifetime totals, so rows recorded after the boundary appear in none of
+ * the three and the numbers do not sum to anything. These four do sum to
+ * `total`, which is what a surface reporting delivery state needs.
+ *
+ * A caveat this cannot fix from here: a row the LIVE path delivered is NULL,
+ * because nothing on that path stamps. Until it does, `queued` over-counts on an
+ * attached machine by exactly the rows that were forwarded successfully. Read
+ * this only where that has been addressed.
+ */
+export interface HistorySyncPartition {
+  queued: number;
+  inProgress: number;
+  synced: number;
+  failed: number;
+  total: number;
+}
+
+/**
  * One stored detection, flattened across the finding and its rule definition.
  *
  * Shaped for the wire's ToolCallInspection but kept as a plain row: the span is
@@ -106,6 +128,10 @@ export class SqliteHistorySyncRepository {
   private readonly closeWindowStmt: StatementSync;
   private readonly releaseBoundaryStmt: StatementSync;
   private readonly freezeBoundaryStmt: StatementSync;
+  private readonly partitionStmt: StatementSync;
+  private readonly claimRowStmt: StatementSync;
+  private readonly releaseRowStmt: StatementSync;
+  private readonly releaseStaleClaimsStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
     this.ensureRowStmt = db.prepare(`INSERT OR IGNORE INTO history_sync (id) VALUES (1)`);
@@ -138,7 +164,44 @@ export class SqliteHistorySyncRepository {
         LIMIT :limit`,
     );
 
-    this.stampStmt = db.prepare(`UPDATE audit_events SET synced_at = :at WHERE id = :id`);
+    // Settling clears the claim in the same statement. A row that has a
+    // delivery time and still reads as claimed would show up in two states at
+    // once, and the pair is only ever written together.
+    this.stampStmt = db.prepare(
+      `UPDATE audit_events SET synced_at = :at, sync_claimed_at = NULL WHERE id = :id`,
+    );
+
+    // Claim only what is still unsent: a row that settled between the read and
+    // this write must not be dragged back into the in-flight state.
+    this.claimRowStmt = db.prepare(
+      `UPDATE audit_events SET sync_claimed_at = :at WHERE id = :id AND synced_at IS NULL`,
+    );
+    this.releaseRowStmt = db.prepare(
+      `UPDATE audit_events SET sync_claimed_at = NULL WHERE id = :id`,
+    );
+    // A drain killed mid-batch leaves rows claimed for ever, and a claim that is
+    // never cleared reads as "sending" indefinitely. Nothing recovers it on its
+    // own — the claim is per-row bookkeeping, not the lease — so a caller sweeps
+    // stale ones the same way the lease treats a stale heartbeat.
+    this.releaseStaleClaimsStmt = db.prepare(
+      `UPDATE audit_events SET sync_claimed_at = NULL
+        WHERE sync_claimed_at IS NOT NULL AND sync_claimed_at < :staleBefore`,
+    );
+
+    // The four states are written to be EXHAUSTIVE, so they always sum to
+    // total. `failed` is `IS NOT NULL AND <= 0` rather than `= -1` for that
+    // reason: the ledger only ever writes -1 there, but a row is better counted
+    // as failed than silently missing from a rendered breakdown.
+    this.partitionStmt = db.prepare(
+      `SELECT
+         SUM(CASE WHEN synced_at IS NULL AND sync_claimed_at IS NULL THEN 1 ELSE 0 END) AS queued,
+         SUM(CASE WHEN synced_at IS NULL AND sync_claimed_at IS NOT NULL THEN 1 ELSE 0 END) AS inProgress,
+         SUM(CASE WHEN synced_at > 0 THEN 1 ELSE 0 END) AS synced,
+         SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0 THEN 1 ELSE 0 END) AS failed,
+         COUNT(*) AS total
+       FROM audit_events
+       WHERE event_type IN (${TYPE_LIST})`,
+    );
 
     this.countsStmt = db.prepare(
       `SELECT
@@ -277,6 +340,17 @@ export class SqliteHistorySyncRepository {
     this.stampAll(ids, SKIPPED);
   }
 
+  private eachInTransaction(ids: readonly string[], run: (id: string) => void): void {
+    if (ids.length === 0) return;
+    withTransaction(
+      this.db,
+      () => {
+        for (const id of ids) run(id);
+      },
+      'IMMEDIATE',
+    );
+  }
+
   private stampAll(ids: readonly string[], value: number): void {
     if (ids.length === 0) return;
     // One short IMMEDIATE transaction: the write lock is taken up front rather
@@ -289,6 +363,53 @@ export class SqliteHistorySyncRepository {
       },
       'IMMEDIATE',
     );
+  }
+
+  /**
+   * Claim rows as in-flight.
+   *
+   * Advisory in exactly the sense the lease is: it records that a send is in
+   * progress so a surface can say so, and a lost claim costs a row showing as
+   * queued while it is actually being sent. It is not exclusion — the far side
+   * settles a duplicate on the row id.
+   */
+  claimRows(ids: readonly string[], atMs: number): void {
+    this.eachInTransaction(ids, (id) => this.claimRowStmt.run({ at: atMs, id }));
+  }
+
+  /** Give back a claim without settling — the send failed, the row is queued again. */
+  releaseRows(ids: readonly string[]): void {
+    this.eachInTransaction(ids, (id) => this.releaseRowStmt.run({ id }));
+  }
+
+  /**
+   * Clear claims older than `staleBefore`, and report how many were cleared.
+   *
+   * A process killed between claiming and settling leaves rows claimed with
+   * nothing left to settle them. Without this they read as "sending" for ever.
+   */
+  releaseStaleClaims(staleBefore: number): number {
+    return Number(this.releaseStaleClaimsStmt.run({ staleBefore }).changes);
+  }
+
+  /**
+   * Every tracked row in exactly one delivery state.
+   *
+   * Takes no boundary on purpose. The boundary answers "what should the drain
+   * pick up now", which is a different question from "what state is this row
+   * in" — and a machine that has never attached has no boundary to pass, so
+   * requiring one would force a caller to invent one and report the whole store
+   * as queued.
+   */
+  partition(): HistorySyncPartition {
+    const row = getRow<Record<keyof HistorySyncPartition, number | null>>(this.partitionStmt, {});
+    return {
+      queued: row?.queued ?? 0,
+      inProgress: row?.inProgress ?? 0,
+      synced: row?.synced ?? 0,
+      failed: row?.failed ?? 0,
+      total: row?.total ?? 0,
+    };
   }
 
   /** `pending` counts only what is inside the backlog; sent and skipped are totals. */

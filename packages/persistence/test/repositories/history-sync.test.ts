@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
+import { SqliteHistorySyncRepository } from '../../src/repositories/history-sync.ts';
+import type { RecordedQuery } from '../helpers/query-plans.ts';
+import { explain, recordingConnection } from '../helpers/query-plans.ts';
 import { useTempStore } from '../helpers/temp-store.ts';
 
 const store = useTempStore('aka-history-sync-');
@@ -360,5 +363,157 @@ describe('SqliteHistorySyncRepository — closing the attached period', () => {
     db.historySync.closeAttachedWindow(T0 + 10 * MINUTE, T0 + 40 * MINUTE);
 
     expect(db.historySync.pendingSessions(10, ALL)).toEqual(['s-before']);
+  });
+});
+
+// The delivery-state partition backs a surface that reports what has been sent,
+// what is going out now, and what is still waiting. It is a different read from
+// `counts()` — that one serves the drain and deliberately does not partition.
+describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
+  it('puts every tracked row in exactly one state', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    // Three structural rows per session; the capture leaf is not tracked yet.
+    const p = db.historySync.partition();
+    expect(p.total).toBe(3);
+    expect(p.queued + p.inProgress + p.synced + p.failed).toBe(p.total);
+    expect(p).toMatchObject({ queued: 3, inProgress: 0, synced: 0, failed: 0 });
+  });
+
+  it('moves a row through claimed, then settled', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.claimRows(['s-1'], T0 + MINUTE);
+    expect(db.historySync.partition()).toMatchObject({ queued: 2, inProgress: 1, synced: 0 });
+
+    db.historySync.markSynced(['s-1'], T0 + 2 * MINUTE);
+    // Settling clears the claim in the same write, so the row cannot read as
+    // both delivered and in flight.
+    expect(db.historySync.partition()).toMatchObject({ queued: 2, inProgress: 0, synced: 1 });
+  });
+
+  it('returns a claim to the queue when a send fails', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.claimRows(['s-1', 's-1-llm'], T0);
+    expect(db.historySync.partition().inProgress).toBe(2);
+
+    db.historySync.releaseRows(['s-1', 's-1-llm']);
+    expect(db.historySync.partition()).toMatchObject({ queued: 3, inProgress: 0 });
+  });
+
+  it('never claims a row that already settled', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.markSynced(['s-1'], T0 + MINUTE);
+    // A claim racing a settle must not drag a delivered row back into flight.
+    db.historySync.claimRows(['s-1'], T0 + 2 * MINUTE);
+    expect(db.historySync.partition()).toMatchObject({ synced: 1, inProgress: 0, queued: 2 });
+  });
+
+  it('counts a permanent skip as failed, not as queued', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.markSkipped(['s-1-llm']);
+    const p = db.historySync.partition();
+    expect(p).toMatchObject({ queued: 2, failed: 1 });
+    expect(p.queued + p.inProgress + p.synced + p.failed).toBe(p.total);
+  });
+
+  it('sweeps a claim a dead drain left behind', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.claimRows(['s-1'], T0);
+    // Nothing settles it — the process holding it is gone.
+    expect(db.historySync.partition().inProgress).toBe(1);
+
+    expect(db.historySync.releaseStaleClaims(T0 + MINUTE)).toBe(1);
+    expect(db.historySync.partition()).toMatchObject({ queued: 3, inProgress: 0 });
+    // A fresh claim is left alone.
+    db.historySync.claimRows(['s-1'], T0 + 10 * MINUTE);
+    expect(db.historySync.releaseStaleClaims(T0 + MINUTE)).toBe(0);
+    expect(db.historySync.partition().inProgress).toBe(1);
+  });
+
+  it('reports zeros on an empty store rather than nulls', () => {
+    const db = store.open();
+    // SUM() over no rows is NULL; a rendered breakdown must not receive one.
+    expect(db.historySync.partition()).toEqual({
+      queued: 0,
+      inProgress: 0,
+      synced: 0,
+      failed: 0,
+      total: 0,
+    });
+  });
+
+  it('does not yet count captures — the lane has not been widened', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    // seedSession writes a prompt row too. Until the drain can carry content
+    // safely, it is not part of the tracked set and must not appear here.
+    expect(db.historySync.partition().total).toBe(3);
+  });
+});
+
+// The ledger's reads used to scan `audit_events` — the table captures land in.
+// The comments on idx_audit_events_sync and idx_audit_claimed claim the indexes
+// serve them; these pin that claim, because a comment cannot notice when a
+// column order stops working.
+//
+// THE SQL IS TAKEN FROM THE REPOSITORY AS IT EXECUTES, never restated here.
+// `recordingConnection` captures the statement and the parameters each call
+// really ran with (see test/helpers/query-plans.ts); a query spelled a second
+// time in this file would be free to drift from the one the ledger runs, and a
+// plan assertion over drifted SQL is the most convincing kind of green there
+// is — a real plan for a real query that nothing issues.
+describe('SqliteHistorySyncRepository — the ledger reads use the index', () => {
+  /** The plans for every statement `drive` executes, as one string. */
+  const planFor = (drive: (ledger: SqliteHistorySyncRepository) => void): string => {
+    // Migrations run on `open()`; `openRaw` only attaches to the file.
+    store.open();
+    const raw = store.openRaw();
+    const recorded: RecordedQuery[] = [];
+    drive(new SqliteHistorySyncRepository(recordingConnection(raw, recorded)));
+    // Without this a read that stopped issuing SQL would satisfy every
+    // assertion below vacuously, and look exactly like one that was optimised.
+    expect(recorded.length, 'the driven read issued no statement').toBeGreaterThan(0);
+    // EXPLAIN goes through the RAW handle, so the recorder does not capture its
+    // own explains and recurse.
+    return recorded.flatMap((q) => explain(raw, q).map((row) => row.detail)).join(' | ');
+  };
+
+  it('answers the delivery-state partition from the index alone', () => {
+    const plan = planFor((ledger) => ledger.partition());
+    // COVERING is the property that matters: this read runs on every render of a
+    // surface that shows it, and without the index it is a full table scan.
+    expect(plan).toContain('idx_audit_events_sync');
+    expect(plan).toContain('COVERING INDEX');
+    expect(plan).not.toContain('SCAN audit_events');
+  });
+
+  it('finds pending sessions on the index that bounds started_at, not the new one', () => {
+    const plan = planFor((ledger) => ledger.pendingSessions(10, ALL));
+    // The drain's read prefers idx_audit_type_t, which puts started_at directly
+    // after event_type; idx_audit_events_sync has the two sync columns in
+    // between, so it cannot seek the range as tightly. Asserted rather than
+    // assumed: the point is that this read is served by SOME index, and which
+    // one is a planner decision worth noticing if it changes.
+    expect(plan).toContain('idx_audit_type_t');
+    expect(plan).not.toContain('SCAN audit_events');
+  });
+
+  // The one WRITE in this block, and the reason it needs its own index.
+  it('sweeps stale claims on the partial index, not by scanning the table', () => {
+    const plan = planFor((ledger) => {
+      ledger.releaseStaleClaims(T0 + MINUTE);
+    });
+    // idx_audit_events_sync cannot serve this: it leads with event_type, which
+    // this predicate does not mention, so the planner has nothing to seek on and
+    // falls back to a full pass over the table captures land in — taken while
+    // holding the write lock. idx_audit_claimed is the one it can seek.
+    expect(plan).toContain('idx_audit_claimed');
+    expect(plan).toContain('SEARCH');
+    expect(plan).not.toContain('SCAN audit_events');
   });
 });

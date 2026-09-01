@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   captureId,
+  captureWireId,
   classifiedDataId,
   inspectionDefinitionId,
   inspectionFindingId,
@@ -200,6 +201,54 @@ describe('shareEndpointId / shareCallSiteId', () => {
   it('shareCallSiteId is stable for the golden vector', () => {
     expect(shareCallSiteId('endpoint_abc', 'payments-api', 'src/lib/telemetry.ts', 42)).toBe(
       '40015cd85d9d172866157ec2c1c5414d90c29fedaf2a33468c0ba63704cf506c',
+    );
+  });
+});
+
+// `captureWireId` is the same identity as `captureId`, rendered as a UUID because
+// that is what `Event.id` accepts. The pair exists so a stored capture can
+// reproduce the id it was sent under — the property that makes redelivery
+// idempotent instead of duplicating the row on every retry.
+describe('captureWireId (the same identity as captureId, rendered as a guid)', () => {
+  it('is stable for the same (session, contentHash, path)', () => {
+    const id = captureWireId('sess_abc123', 'contenthash123');
+    expect(id).toBe('812cee34-ea16-843f-934a-565757076697');
+    expect(captureWireId('sess_abc123', 'contenthash123')).toBe(id);
+  });
+
+  it('is the SAME digest captureId returns, only re-rendered', () => {
+    // The invariant the whole design rests on. If these ever diverge, a drained
+    // capture is sent under an id its own row cannot derive, and delivery can no
+    // longer be recorded against it.
+    const digest = captureId('sess_abc123', 'contenthash123', 'src/a.ts');
+    const wire = captureWireId('sess_abc123', 'contenthash123', 'src/a.ts');
+    const flat = wire.replaceAll('-', '');
+    // Every nibble except the two the UUID format claims (version at 12,
+    // variant at 16) is carried across untouched.
+    for (let i = 0; i < 32; i += 1) {
+      if (i === 12 || i === 16) continue;
+      expect(flat.charAt(i)).toBe(digest.charAt(i));
+    }
+  });
+
+  it('sets the version and variant nibbles a UUID validator checks', () => {
+    const flat = captureWireId('sess_abc123', 'contenthash123').replaceAll('-', '');
+    // Version 8: derived, not random (RFC 9562 §5.8).
+    expect(flat[12]).toBe('8');
+    // Variant 10xx — the high two bits forced, the low two preserved.
+    expect(Number.parseInt(flat.charAt(16), 16) & 0b1100).toBe(0b1000);
+  });
+
+  it('distinguishes every component captureId distinguishes', () => {
+    expect(captureWireId(null, 'contenthash123')).toBe('68787b92-f533-8d97-854b-e0f5f56d043b');
+    expect(captureWireId('sess_abc123', 'contenthash456')).toBe(
+      '7a7a1bc5-f2bc-89f5-8615-aa418669072a',
+    );
+    expect(captureWireId('sess_abc123', 'contenthash123', 'src/a.ts')).toBe(
+      '90eef03a-6239-877d-b1c3-6f3b74b3f253',
+    );
+    expect(captureWireId('sess_abc123', 'contenthash123', 'src/a.ts')).not.toBe(
+      captureWireId('sess_abc123', 'contenthash123', 'src/b.ts'),
     );
   });
 });

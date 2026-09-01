@@ -241,9 +241,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
       // 'not-offered' — fall through to the prompt, with one line so the user
       // knows why they are being asked for something the newer flow would not
       // have needed.
-      io.out(
-        'This deployment does not offer browser approval yet; paste an access key instead.\n',
-      );
+      io.out('This deployment does not offer browser approval yet; paste an access key instead.\n');
     }
   }
 
@@ -661,7 +659,12 @@ export function managedRefusal(
   // A label-only difference is still a change to a descriptor the administrator
   // owns, and the writer would refuse it after the browser approval rather than
   // before — so it is refused here, where nobody has been sent anywhere yet.
-  if (locked.has('runMode') && pinned?.label !== undefined && label !== undefined && pinned.label !== label) {
+  if (
+    locked.has('runMode') &&
+    pinned?.label !== undefined &&
+    label !== undefined &&
+    pinned.label !== label
+  ) {
     return `${who} manages this machine name, so it cannot be renamed here.`;
   }
   return null;

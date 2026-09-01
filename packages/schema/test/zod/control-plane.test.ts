@@ -3,9 +3,13 @@ import { z } from 'zod';
 
 import type { StorePostureSnapshot as StorePostureSnapshotT } from '../../src/zod/control-plane.ts';
 import {
+  AttachDeviceGrant,
+  AttachDeviceRequest,
   ATTACHED_CREDENTIAL_FILENAME,
   ATTACHED_CREDENTIAL_SPEC_VERSION,
   AttachedCredential,
+  AttachTokenIssued,
+  AttachTokenResponse,
   ControlPlaneErrorBody,
   IngestAck,
   PluginWhoami,
@@ -269,5 +273,142 @@ describe('response parsers', () => {
     expect(z.globalRegistry.get(IngestAck)).toBeUndefined();
     expect(z.globalRegistry.get(PluginWhoami)).toBeUndefined();
     expect(z.globalRegistry.get(ControlPlaneErrorBody)).toBeUndefined();
+  });
+});
+
+// ─── The device-authorization attach flow ────────────────────────────────────
+
+describe('AttachDeviceRequest', () => {
+  const request = { hostname: 'dev-laptop', os: 'darwin 24.0.0', cliVersion: '0.9.8' };
+
+  it('accepts what the CLI reports about itself', () => {
+    expect(AttachDeviceRequest.safeParse(request).success).toBe(true);
+    expect(AttachDeviceRequest.safeParse({ ...request, label: 'Work laptop' }).success).toBe(true);
+  });
+
+  // Required, so an approval page always has something to render. A caller that
+  // cannot determine its hostname substitutes a placeholder — a visible
+  // decision — rather than leaving the server to render a blank.
+  it.each(['hostname', 'os', 'cliVersion'])('refuses an empty %s', (field) => {
+    expect(AttachDeviceRequest.safeParse({ ...request, [field]: '' }).success).toBe(false);
+  });
+
+  // Unauthenticated, so every one of these is attacker-chosen. Length caps are
+  // what stop a grant row being an arbitrary-size write.
+  it('caps every device-supplied string', () => {
+    expect(AttachDeviceRequest.safeParse({ ...request, hostname: 'h'.repeat(256) }).success).toBe(
+      false,
+    );
+    expect(AttachDeviceRequest.safeParse({ ...request, os: 'o'.repeat(65) }).success).toBe(false);
+    expect(AttachDeviceRequest.safeParse({ ...request, cliVersion: 'v'.repeat(65) }).success).toBe(
+      false,
+    );
+    expect(AttachDeviceRequest.safeParse({ ...request, label: 'l'.repeat(201) }).success).toBe(
+      false,
+    );
+  });
+
+  // These strings are rendered on an approval page and echoed by the CLI. An
+  // escape sequence in a hostname would repaint the very block a user is
+  // reading to decide whether to approve.
+  it('refuses control characters in what the device claims', () => {
+    expect(AttachDeviceRequest.safeParse({ ...request, hostname: 'a\u001b[2Kb' }).success).toBe(
+      false,
+    );
+    expect(AttachDeviceRequest.safeParse({ ...request, label: 'two\nlines' }).success).toBe(false);
+  });
+});
+
+describe('AttachTokenResponse', () => {
+  it('reads each state the flow defines', () => {
+    for (const body of [
+      { status: 'pending' },
+      { status: 'slow_down', interval: 10 },
+      { status: 'denied' },
+      { status: 'denied', message: 'your role cannot attach machines' },
+      { status: 'expired' },
+      { status: 'issued', apiKey: 'aka_live_x', endpoint: 'https://aka.example.test' },
+    ]) {
+      expect(AttachTokenResponse.safeParse(body), JSON.stringify(body)).toMatchObject({
+        success: true,
+      });
+    }
+  });
+
+  // The leniency that lets the CLI ship ahead of a deployment, and outlive one.
+  // A sixth state must not turn a poll into a parse error — the client's rule is
+  // to keep waiting for a status it does not recognise, which it can only do if
+  // the parse succeeded.
+  it('accepts a status it has never heard of rather than failing', () => {
+    expect(AttachTokenResponse.safeParse({ status: 'authorization_pending' }).success).toBe(true);
+  });
+
+  // Order is load-bearing: the catch-all is last, so a WELL-FORMED known state
+  // must still parse as itself and keep its own fields.
+  it('prefers a known state over the catch-all', () => {
+    expect(AttachTokenResponse.parse({ status: 'slow_down', interval: 10 })).toEqual({
+      status: 'slow_down',
+      interval: 10,
+    });
+  });
+
+  // The safe degradation. An `issued` with no key fails the issued member and
+  // lands on the catch-all as an unrecognised status, so a client waits instead
+  // of attaching with nothing — never a shape that says "issued" and carries no
+  // credential.
+  it('does not read a keyless issued body as an issued credential', () => {
+    const parsed = AttachTokenResponse.parse({ status: 'issued' });
+    expect(parsed).not.toHaveProperty('apiKey');
+    expect(Object.keys(parsed)).toEqual(['status']);
+  });
+
+  it('rejects a body with no status at all', () => {
+    expect(AttachTokenResponse.safeParse({}).success).toBe(false);
+  });
+
+  // Same rule, and the same reason, as AttachedCredential: this member carries a
+  // bearer credential, and a meta id would register it in the global registry
+  // for anything walking that registry to publish.
+  it('carries NO meta id on the member that holds the credential', () => {
+    expect(z.globalRegistry.get(AttachTokenIssued)).toBeUndefined();
+    expect(z.globalRegistry.get(AttachTokenResponse)).toBeUndefined();
+    expect(z.globalRegistry.get(AttachDeviceGrant)).toBeUndefined();
+  });
+});
+
+describe('AttachDeviceGrant', () => {
+  const grant = {
+    deviceCode: 'd'.repeat(64),
+    userCode: 'ABCD-EFGH',
+    verificationUri: 'https://aka.example.test/attach',
+    expiresIn: 600,
+    interval: 5,
+  };
+
+  it('reads a grant, with or without the prefilled link', () => {
+    expect(AttachDeviceGrant.safeParse(grant).success).toBe(true);
+    expect(
+      AttachDeviceGrant.safeParse({
+        ...grant,
+        verificationUriComplete: 'https://aka.example.test/attach?code=ABCD-EFGH',
+      }).success,
+    ).toBe(true);
+  });
+
+  // Everything here is printed into a terminal by a client that has not yet
+  // established which deployment it is talking to.
+  it('refuses control characters in anything it will print', () => {
+    expect(AttachDeviceGrant.safeParse({ ...grant, userCode: 'AB\u001b[1;1H' }).success).toBe(
+      false,
+    );
+    expect(
+      AttachDeviceGrant.safeParse({ ...grant, verificationUri: 'https://x.test\nfake: line' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('requires a positive expiry and interval', () => {
+    expect(AttachDeviceGrant.safeParse({ ...grant, expiresIn: 0 }).success).toBe(false);
+    expect(AttachDeviceGrant.safeParse({ ...grant, interval: -1 }).success).toBe(false);
   });
 });

@@ -334,3 +334,162 @@ export const ControlPlaneErrorBody = z.object({
     .optional(),
 });
 export type ControlPlaneErrorBody = z.infer<typeof ControlPlaneErrorBody>;
+
+// ─── Attaching a machine without ferrying a key by hand ──────────────────────
+//
+// The shape of RFC 8628's Device Authorization Grant, for the same reason it
+// exists there: the terminal that wants a credential cannot receive a browser
+// redirect. It needs no local listener, so nothing here opens a socket, and it
+// works over SSH and on headless machines — the printed code completes on
+// whatever browser the user can reach.
+//
+// TWO ENDPOINTS, BOTH UNAUTHENTICATED, because the caller has no credential
+// yet — that is the whole point. Everything a device sends is therefore
+// attacker-chosen, so every field below is length-capped, and every field a
+// deployment sends back is `printable`: the CLI writes them straight into a
+// terminal, and this flow renders MORE server-authored text than any other
+// (a code, a URL, and a refusal message). The reasoning is the one on
+// `PluginWhoami` above and applies with more force here, since a caller reaches
+// these routes before it has established which deployment it is talking to.
+
+/**
+ * `POST /v1/attach/device` — start a grant.
+ *
+ * Everything here is REPORTED BY THE DEVICE and none of it is verified: this is
+ * an unauthenticated POST, so a caller says whatever it likes. It exists so the
+ * person approving in a browser can recognise their own machine, and an
+ * approval surface must present it as claimed rather than as fact — what the
+ * server actually observed (source address, timing) is the half that cannot be
+ * forged.
+ *
+ * Required rather than optional, so an approval page always has something to
+ * show: a caller that cannot determine its own hostname sends a placeholder,
+ * which is a decision the CLI makes visibly rather than an absence the server
+ * has to render as a blank.
+ */
+export const AttachDeviceRequest = z
+  .object({
+    hostname: printable(255).min(1),
+    os: printable(64).min(1),
+    cliVersion: printable(64).min(1),
+    // What to call this machine afterwards. Optional because the CLI's own
+    // `--label` is optional, and absent means "use the endpoint".
+    label: printable(200).optional(),
+  })
+  .meta({ id: 'AttachDeviceRequest' });
+export type AttachDeviceRequest = z.infer<typeof AttachDeviceRequest>;
+
+/**
+ * `POST /v1/attach/token` — the poll.
+ *
+ * `deviceCode` is the secret half of the grant and never leaves the machine
+ * that started it. It is the reason this endpoint can answer RFC-distinct
+ * states without leaking anything: every answer only ever confirms something
+ * about a grant the caller already holds the code for.
+ */
+export const AttachTokenRequest = z
+  .object({
+    deviceCode: printable(128).min(1),
+  })
+  .meta({ id: 'AttachTokenRequest' });
+export type AttachTokenRequest = z.infer<typeof AttachTokenRequest>;
+
+// ── The answers ──────────────────────────────────────────────────────────────
+//
+// Response parsers, so NO `.meta({ id })` on any of them — see this file's
+// header. On `AttachTokenIssued` that rule is not merely conventional: it
+// carries a bearer credential in `apiKey`, and an id would register the shape in
+// Zod's global registry for anything walking it to publish. Same rule, and the
+// same reason, as `AttachedCredential` at the top of this file.
+
+/** `POST /v1/attach/device` — what the terminal prints and then polls with. */
+export const AttachDeviceGrant = z.object({
+  // The secret. Long and high-entropy; the user never sees or types it.
+  deviceCode: printable(128),
+  // The short one a human reads off the terminal and types into a browser.
+  userCode: printable(32),
+  verificationUri: printable(512),
+  // The same page with the code already filled in. Optional because a
+  // deployment may decline to offer it, and a client must not require it.
+  verificationUriComplete: printable(512).optional(),
+  expiresIn: z.number().int().positive(),
+  // The deployment's requested poll spacing, in seconds. Advisory until the
+  // deployment says `slow_down`, which is not.
+  interval: z.number().int().positive(),
+});
+export type AttachDeviceGrant = z.infer<typeof AttachDeviceGrant>;
+
+/** Still waiting for someone to approve or deny it in a browser. */
+export const AttachTokenPending = z.object({ status: z.literal('pending') });
+
+/**
+ * Polling faster than the deployment will answer.
+ *
+ * Carries a new `interval` rather than leaving the client to guess a backoff,
+ * and is a distinct state from `pending` so a client can tell "nothing has
+ * happened yet" from "you are asking too often".
+ */
+export const AttachTokenSlowDown = z.object({
+  status: z.literal('slow_down'),
+  interval: z.number().int().positive(),
+});
+
+/**
+ * Decided, and the answer was no — a TERMINAL state, not a reason to keep
+ * polling.
+ *
+ * `message` is optional and server-authored, so a deployment can say WHY when
+ * the reason is actionable — a role that may not attach machines is the case
+ * this exists for, and one a user would otherwise experience as ten minutes of
+ * polling ending in a false "expired".
+ */
+export const AttachTokenDenied = z.object({
+  status: z.literal('denied'),
+  message: printable(500).optional(),
+});
+
+/** The grant ran out before anyone decided. Terminal; start again. */
+export const AttachTokenExpired = z.object({ status: z.literal('expired') });
+
+/**
+ * Approved and redeemed — the credential, exactly once.
+ *
+ * `endpoint` is echoed back rather than assumed from the URL the client dialled:
+ * the credential file binds a key to the endpoint it was minted for, and the
+ * deployment is the party that knows its own canonical origin.
+ */
+export const AttachTokenIssued = z.object({
+  status: z.literal('issued'),
+  apiKey: z.string().min(1).max(512),
+  endpoint: printable(512),
+  // What the deployment resolved the caller to, so the CLI can show who it is
+  // about to attach as before writing anything. Optional: a deployment that
+  // does not send it leaves the CLI to ask `whoami`, which it does anyway.
+  tenantName: printable(200).optional(),
+  userEmail: printable(320).optional(),
+});
+
+/**
+ * Every answer `POST /v1/attach/token` can give, parsed leniently.
+ *
+ * A plain union with an UNKNOWN-STATUS member last, rather than a
+ * discriminated union that would reject anything it has not been taught. A
+ * newer deployment adding a sixth state must not turn an older CLI's poll into
+ * a parse error — the client's own rule is to keep waiting for a state it does
+ * not recognise, which is only expressible if the parse succeeds.
+ *
+ * Order is load-bearing: `z.union` takes the first member that matches, so the
+ * catch-all has to be last. It also makes a MALFORMED known state degrade
+ * safely — an `issued` with no `apiKey` fails the first member and lands on the
+ * catch-all as an unrecognised status, so the client waits rather than
+ * attaching with nothing.
+ */
+export const AttachTokenResponse = z.union([
+  AttachTokenIssued,
+  AttachTokenPending,
+  AttachTokenSlowDown,
+  AttachTokenDenied,
+  AttachTokenExpired,
+  z.object({ status: printable(64) }),
+]);
+export type AttachTokenResponse = z.infer<typeof AttachTokenResponse>;

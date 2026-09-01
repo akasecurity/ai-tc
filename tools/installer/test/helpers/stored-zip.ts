@@ -33,12 +33,15 @@
  * also keeps this file short enough to read in one sitting, which a fixture
  * builder has to be.
  *
- * SCOPE, so nobody reaches for it where it would be wrong: entries are held in
- * memory one at a time, and sizes are the classic 32-bit fields with no zip64
- * fallback. Both are fine for what this packs — off Windows a fixture root is a
- * line of text and an inert placeholder, because `writeWindowsPayload` only
- * copies the real ~115 MB PE when the host IS Windows — and neither would be
- * fine for a real release archive.
+ * SCOPE, so nobody reaches for it where it would be wrong. Entries are held in
+ * memory one at a time; sizes are the classic 32-bit fields with no zip64
+ * fallback; and entry names are written as UTF-8 with the UTF-8 flag CLEAR,
+ * which a reader is entitled to decode as CP437 — so a name outside ASCII would
+ * round-trip wrong, and nothing here stops one being passed. All three are fine
+ * for what this packs — off Windows a fixture root is a line of text and an
+ * inert placeholder, because `writeWindowsPayload` only copies the real ~115 MB
+ * PE when the host IS Windows, and the names are `aka-<triple>/`, `payload.txt`
+ * and `aka.exe` — and none of them would be fine for a real release archive.
  */
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -57,7 +60,7 @@ import { crc32 } from 'node:zlib';
 const DOS_TIME = 0;
 const DOS_DATE = (1 << 5) | 1;
 
-/** FILE_ATTRIBUTE_DIRECTORY, in the high half of `external file attributes`. */
+/** FILE_ATTRIBUTE_DIRECTORY, in the DOS attribute byte — the LOW half of `external file attributes`. */
 const DIR_ATTRS = 0x10;
 
 const LOCAL_HEADER = 0x04034b50;
@@ -74,16 +77,19 @@ interface Entry {
   readonly isDirectory: boolean;
 }
 
+/** How a directory is listed. Injectable — see the parameter on `writeStoredZip`. */
+export type DirLister = (dir: string) => string[];
+
 /** Every file and directory under `dir`, depth first, named relative to `prefix`. */
-function collect(dir: string, prefix: string): Entry[] {
+function collect(dir: string, prefix: string, list: DirLister): Entry[] {
   const out: Entry[] = [];
   // Sorted, so the archive does not depend on the order the filesystem happens
   // to hand back — the same determinism argument as the fixed timestamp.
-  for (const name of readdirSync(dir).sort()) {
+  for (const name of list(dir).sort()) {
     const full = join(dir, name);
     if (statSync(full).isDirectory()) {
       out.push({ name: `${prefix}${name}/`, data: Buffer.alloc(0), isDirectory: true });
-      out.push(...collect(full, `${prefix}${name}/`));
+      out.push(...collect(full, `${prefix}${name}/`, list));
       continue;
     }
     out.push({ name: `${prefix}${name}`, data: readFileSync(full), isDirectory: false });
@@ -97,10 +103,20 @@ function collect(dir: string, prefix: string): Entry[] {
  * what `build-binaries.yml` asserts of a real archive and what `install.ps1`
  * joins onto to find the binary.
  */
-export function writeStoredZip(archivePath: string, stage: string, rootName: string): void {
+export function writeStoredZip(
+  archivePath: string,
+  stage: string,
+  rootName: string,
+  // A seam, for the same reason the timestamp is fixed: the sort above is a
+  // DETERMINISM claim, and a claim nothing can falsify is not one. Removing the
+  // sort leaves every observation-based assertion green, because a host's own
+  // readdir order is usually sorted already — so the only way to pin it is to
+  // hand this an order that is deliberately not.
+  list: DirLister = readdirSync,
+): void {
   const entries = [
     { name: `${rootName}/`, data: Buffer.alloc(0), isDirectory: true },
-    ...collect(join(stage, rootName), `${rootName}/`),
+    ...collect(join(stage, rootName), `${rootName}/`, list),
   ];
 
   const local: Buffer[] = [];
@@ -117,7 +133,7 @@ export function writeStoredZip(archivePath: string, stage: string, rootName: str
     const header = Buffer.alloc(30);
     header.writeUInt32LE(LOCAL_HEADER, 0);
     header.writeUInt16LE(VERSION, 4);
-    header.writeUInt16LE(0, 6); // flags: none — names below are ASCII
+    header.writeUInt16LE(0, 6); // flags: none — bit 11 (UTF-8 names) clear, see SCOPE above
     header.writeUInt16LE(0, 8); // method: stored
     header.writeUInt16LE(DOS_TIME, 10);
     header.writeUInt16LE(DOS_DATE, 12);

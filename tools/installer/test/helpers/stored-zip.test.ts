@@ -14,7 +14,7 @@
  * to hold.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -85,12 +85,36 @@ describe('writeStoredZip', () => {
     );
   });
 
+  it('stamps the fixed 1980 date rather than the wall clock', () => {
+    // Read out of the first local header, NOT inferred from two archives
+    // matching. That was the original shape of this case and it could not fail:
+    // a DOS time field has two-SECOND resolution, so two writes milliseconds
+    // apart land in the same tick whether the stamp is fixed or a wall clock,
+    // and the equality held either way. Worse, a wall-clock stamp would then be
+    // FLAKY rather than failing — red only on the ~0.4% of runs that straddle a
+    // tick boundary, which is the shape that gets re-run instead of read.
+    const zip = readFileSync(write('stamp.zip'));
+    expect(zip.readUInt16LE(10)).toBe(0); // time: 00:00:00
+    expect(zip.readUInt16LE(12)).toBe((1 << 5) | 1); // date: 1980-01-01
+  });
+
+  it('does not depend on the order the host lists the tree in', () => {
+    // The sort in `collect` is a determinism claim, and the host's own readdir
+    // order is usually sorted already — so observing one archive proves
+    // nothing. Driving a second one through a deliberately reversed listing
+    // does: with the sort, both orders yield the same bytes; without it, they
+    // cannot.
+    const forward = readFileSync(write('order-default.zip'));
+    const at = join(dir, 'order-reversed.zip');
+    writeStoredZip(at, stage, ROOT_NAME, (d) => readdirSync(d).sort().reverse());
+    expect(readFileSync(at).equals(forward)).toBe(true);
+  });
+
   it('writes the same bytes for the same tree, and different bytes for different content', () => {
     // The tampering case rebuilds one archive under one name and asserts the
     // installer refuses the second copy, which rests entirely on the CONTENT
-    // moving the bytes. A wall-clock timestamp in the entries would move them
-    // on its own and let that case pass without any tampering — so the
-    // stability half of this is as load-bearing as the difference half.
+    // moving the bytes. This is the difference half of that; the stability half
+    // it used to carry is the case above, which can actually fail.
     const first = readFileSync(write('stable-a.zip'));
     expect(readFileSync(write('stable-b.zip')).equals(first)).toBe(true);
 

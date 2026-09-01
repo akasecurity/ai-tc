@@ -43,7 +43,7 @@ import {
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { writeClipboard } from './clipboard.ts';
-import { decideProhibitedModelTurn, resolveSessionModel } from './model-guard.ts';
+import { refuseProhibitedTurn } from './model-guard.ts';
 import { ONBOARDING_NUDGE } from './onboarding-nudge.ts';
 import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
 import {
@@ -83,29 +83,14 @@ async function main(): Promise<void> {
   // cheaper verdict (two small local reads against a detection pass over the
   // whole prompt) and the stronger one: if this turn cannot run at all, what the
   // prompt contains no longer changes the outcome. Running it first also means a
-  // throw inside the scan path cannot skip it.
-  //
-  // The whole check is wrapped fail-open. A bundle that will not load, or a model
-  // that cannot be resolved, leaves `blocked` null and the turn proceeds to the
-  // ordinary detection path — this control refuses on knowledge, never on
-  // ignorance.
-  const blocked = await (async (): Promise<{ decision: 'block'; reason: string } | null> => {
-    try {
-      const { prohibitedModels } = await gateway.getPolicyBundle();
-      // Read the bundle FIRST: with no prohibition list there is nothing to
-      // enforce, and resolving the model would be a transcript read spent to
-      // reach the same allow.
-      if (prohibitedModels === undefined || prohibitedModels.length === 0) return null;
-      const model = resolveSessionModel(
-        config.dataDir,
-        sessionId,
-        getString(input ?? {}, 'transcript_path'),
-      );
-      return decideProhibitedModelTurn(model, prohibitedModels);
-    } catch {
-      return null;
-    }
-  })();
+  // throw inside the scan path cannot skip it. The decision itself is
+  // `refuseProhibitedTurn`, which is importable and fail-open throughout.
+  const blocked = await refuseProhibitedTurn(
+    gateway,
+    config.dataDir,
+    sessionId,
+    input === null ? undefined : getString(input, 'transcript_path'),
+  );
   if (blocked !== null) {
     // Closed here rather than left to the runtime's `finally` below, which this
     // return never reaches.

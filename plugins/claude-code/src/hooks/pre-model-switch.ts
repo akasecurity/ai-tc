@@ -23,9 +23,9 @@
  *
  * Fail-open: any error → no output, exit 0.
  */
-import { loadConfig, recordSessionModel } from '@akasecurity/plugin-sdk';
+import { loadConfig } from '@akasecurity/plugin-sdk';
 
-import { decidePreModelSwitch } from './model-guard.ts';
+import { runPreModelSwitch } from './model-switch-run.ts';
 import { emit, getString, parseJson, readStdin } from './shared.ts';
 import { openGatewayOrNull, warnIfStoreRedirected } from './store-health.ts';
 
@@ -34,40 +34,13 @@ async function main(): Promise<void> {
   if (input === null) return;
   const toModel = getString(input, 'to_model');
   if (toModel === undefined || toModel === '') return;
-
   const config = loadConfig();
-  const sessionId = getString(input, 'session_id');
-  // A symlinked home redirects the policy cache this hook decides from, so it
-  // is worth saying here as much as anywhere: the prohibitions it reads may not
-  // be the ones this machine was attached with. Once per session, on stderr, so
-  // the stdout decision contract is untouched.
-  warnIfStoreRedirected(config, sessionId);
-
-  // No store, no bundle, no prohibition list — allow. Deliberately silent here,
-  // unlike user-prompt-submit's once-per-session store warning: a model switch
-  // is not the moment to explain store health, and that hook already says it.
-  const gateway = openGatewayOrNull(config);
-  if (gateway === null) return;
-
-  let prohibited: readonly string[] | undefined;
-  try {
-    prohibited = (await gateway.getPolicyBundle()).prohibitedModels;
-  } finally {
-    await gateway.close();
-  }
-
-  const decision = decidePreModelSwitch(toModel, prohibited);
-  if (decision !== null) {
-    await emit(decision);
-    return;
-  }
-
-  // ALLOWED — so this is the authoritative moment the session's model becomes
-  // `to_model`, and recording it here is what lets user-prompt-submit decide
-  // without re-reading the transcript. Recorded only on the allow path: a
-  // refused switch never happened, and storing its target would make the next
-  // turn enforce against a model the session is not running.
-  recordSessionModel(config.dataDir, sessionId, toModel);
+  await runPreModelSwitch(input, toModel, getString(input, 'session_id'), {
+    config,
+    openGateway: () => openGatewayOrNull(config),
+    emit,
+    warnIfStoreRedirected,
+  });
 }
 
 try {

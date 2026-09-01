@@ -6,6 +6,7 @@
 //
 // The two refusals answer DIFFERENT hooks in DIFFERENT vocabularies, which is
 // the one thing to get right here — see each function's own note.
+import type { DataGateway } from '@akasecurity/plugin-sdk';
 import {
   isModelProhibited,
   modelFromTranscript,
@@ -100,4 +101,37 @@ export function decideProhibitedModelTurn(
   if (model === undefined || model === '') return null;
   if (!isModelProhibited(model, prohibitedModels)) return null;
   return { decision: 'block', reason: prohibitedModelMessage(model, 'turn') };
+}
+
+/**
+ * Resolve the session's model against the bundle's prohibition list, and return
+ * the refusal when there is one.
+ *
+ * Importable rather than inline in the hook entry, so the whole containment path
+ * is exercised by the suite: an entry runs `main()` on import and can never be
+ * imported by a test, so logic left there is uncovered by construction.
+ *
+ * TOTAL AND FAIL-OPEN. A bundle that will not load, or a model that cannot be
+ * resolved, returns null and the turn proceeds to the ordinary detection path —
+ * this control refuses on knowledge, never on ignorance.
+ */
+export async function refuseProhibitedTurn(
+  gateway: Pick<DataGateway, 'getPolicyBundle'>,
+  dataDir: string,
+  sessionId: string | undefined,
+  transcriptPath: string | undefined,
+): Promise<{ decision: 'block'; reason: string } | null> {
+  try {
+    const { prohibitedModels } = await gateway.getPolicyBundle();
+    // Bundle FIRST: with no prohibition list there is nothing to enforce, and
+    // resolving the model would be a transcript read spent to reach the same
+    // allow.
+    if (prohibitedModels === undefined || prohibitedModels.length === 0) return null;
+    return decideProhibitedModelTurn(
+      resolveSessionModel(dataDir, sessionId, transcriptPath),
+      prohibitedModels,
+    );
+  } catch {
+    return null;
+  }
 }

@@ -20,20 +20,19 @@
  *
  * Fail-open: any error → no output, exit 0.
  */
-import { loadConfig, recordSessionModel } from '@akasecurity/plugin-sdk';
+import { loadConfig } from '@akasecurity/plugin-sdk';
 
+import { runPostModelSwitch } from './model-switch-run.ts';
 import { getString, parseJson, readStdin } from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 
 async function main(): Promise<void> {
   const input = parseJson(await readStdin());
   if (input === null) return;
-  const config = loadConfig();
-  const sessionId = getString(input, 'session_id');
-  // The recorded model lands in that home, so a redirected one is worth the
-  // same once-per-session note every other hook makes.
-  warnIfStoreRedirected(config, sessionId);
-  recordSessionModel(config.dataDir, sessionId, getString(input, 'to_model'));
+  runPostModelSwitch(getString(input, 'session_id'), getString(input, 'to_model'), {
+    config: loadConfig(),
+    warnIfStoreRedirected,
+  });
 }
 
 try {

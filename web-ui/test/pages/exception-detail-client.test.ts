@@ -19,12 +19,19 @@ import type { DetectionException, ExceptionDescriptor } from '@akasecurity/schem
 import { toExceptionDescriptor } from '@akasecurity/schema';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { ExceptionDetailClient } =
   await import('../../app/(app)/exceptions/[id]/ExceptionDetailClient.tsx');
 
 const RENDERED_AT = Date.parse('2026-08-01T00:30:00.000Z');
+// An hour past RENDERED_AT, pinned rather than left real for the same reason
+// the sibling suite pins its own: these guards have to discriminate because the
+// two clocks disagree by construction, not because today's date happens to sit
+// far from the fixtures. Under it a view that fell back to Date.now() reads
+// "30 minutes ago" for the expiry and calls the grant expired, taking the
+// revoke form with it — neither of which the assertions accept.
+const AMBIENT = RENDERED_AT + 60 * 60 * 1000;
 
 function exceptionRow(overrides: Partial<DetectionException>): ExceptionDescriptor {
   return toExceptionDescriptor({
@@ -60,18 +67,26 @@ function render(exception: ExceptionDescriptor): string {
 }
 
 describe('the exception detail client threads renderedAt into the view', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(AMBIENT);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('measures the expiry label against the SSR instant, not the ambient clock', () => {
-    // Expires an hour after the instant the page rendered at, and well over a
-    // month before any clock this suite could actually run on — so the label
-    // is "in 30 minutes" only if the server's instant reached the view.
+    // Expires half an hour after the instant the page rendered at, and half an
+    // hour BEFORE the pinned ambient clock — so the label reads "in 30 minutes"
+    // only if the server's instant reached the view.
     const markup = render(exceptionRow({ expiresAt: '2026-08-01T01:00:00.000Z' }));
 
     expect(markup).toContain('in 30 minutes');
   });
 
   it('keeps the revoke form for a grant still live at that instant', () => {
-    // The structural half. On the ambient clock this grant expired long ago
-    // and `exceptionState` would drop the form entirely.
+    // The structural half. On the pinned ambient clock this grant has already
+    // expired, and `exceptionState` would drop the form entirely.
     const markup = render(exceptionRow({ expiresAt: '2026-08-01T01:00:00.000Z' }));
 
     expect(markup).toContain('>active<');

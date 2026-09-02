@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import { ExceptionBundleEntry } from '../../src/zod/exception.ts';
 import { DetectionCategory } from '../../src/zod/finding.ts';
@@ -130,9 +131,24 @@ describe('POLICY_BUNDLE_SHAPE_ID tracks the schema it describes', () => {
     // strict, so Zod narrows both.
     const named = new Set(POLICY_BUNDLE_SHAPE_ID.split(','));
     const missing = PolicyTarget.options
-      .flatMap((member) => Object.keys(member.shape))
+      .flatMap((member) => ('shape' in member ? Object.keys(member.shape) : []))
       .filter((key) => !named.has(`policies.target.${key}`));
     expect(missing, 'target fields absent from the stamp').toEqual([]);
+  });
+
+  it('survives a union member that is not a plain object', () => {
+    // The `shape` guard is load-bearing, not defensive. This derivation runs at
+    // MODULE LOAD in a package every hook script bundles, so an unguarded
+    // `.shape` on a non-object member would not produce a narrower stamp — it
+    // would throw on import and take every hook with it, which is the one thing
+    // the plugin may never do. Driven on the pattern rather than on
+    // `PolicyTarget` itself, because the real union has no such member yet and
+    // the point is what happens when someone adds one.
+    const mixed = z.union([z.object({ ruleId: z.string() }), z.literal('everything')]);
+    const walk = (): string[] =>
+      mixed.options.flatMap((member) => ('shape' in member ? Object.keys(member.shape) : []));
+    expect(walk).not.toThrow();
+    expect(walk()).toEqual(['ruleId']);
   });
 
   it('carries the two fields whose loss this was built for', () => {
@@ -153,7 +169,9 @@ describe('POLICY_BUNDLE_SHAPE_ID tracks the schema it describes', () => {
       ...Object.keys(PolicyBundle.shape),
       ...Object.keys(Policy.shape).map((key) => `policies.${key}`),
       ...PolicyTarget.options
-        .flatMap((member) => Object.keys(member.shape))
+        // Guarded exactly as the derivation is, or the two stop agreeing the
+        // moment a non-object member is added.
+        .flatMap((member) => ('shape' in member ? Object.keys(member.shape) : []))
         .map((key) => `policies.target.${key}`),
       ...Object.keys(ExceptionBundleEntry.shape).map((key) => `exceptions.${key}`),
     ].sort();

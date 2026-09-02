@@ -186,7 +186,13 @@ export const POLICY_BUNDLE_SHAPE_ID: string = [
   ...Object.keys(PolicyBundle.shape),
   ...Object.keys(Policy.shape).map((key) => `policies.${key}`),
   ...PolicyTarget.options
-    .flatMap((member) => Object.keys(member.shape))
+    // `shape` GUARDED, and the guard is the load-bearing half. This expression
+    // runs at module load in a package every hook script bundles, so a union
+    // member that is not a plain object would not merely go unstamped — it
+    // would throw on import and take every hook with it, which is the one thing
+    // this plugin may never do. A non-object member contributes nothing here
+    // and is a deliberate gap for whoever adds one to close.
+    .flatMap((member) => ('shape' in member ? Object.keys(member.shape) : []))
     .map((key) => `policies.target.${key}`),
   ...Object.keys(ExceptionBundleEntry.shape).map((key) => `exceptions.${key}`),
 ]

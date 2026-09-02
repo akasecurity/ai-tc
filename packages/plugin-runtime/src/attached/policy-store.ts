@@ -227,8 +227,12 @@ export function createPolicyStore(dir: string = dataDir()) {
       // this build never held for them would rest on the control plane bumping
       // `version` for every representation it serves — true of the deployment
       // this ships against, and not a property this package owns or can check.
-      // Keeping the etag already on disk costs at most one conditional round
-      // trip and assumes nothing.
+      // Keeping the etag already on disk assumes nothing. It costs a full
+      // transfer per window rather than one round trip, because nothing on this
+      // path ever advances the stored validator — but that only happens where
+      // the plane serves a changed representation under an unchanged `version`,
+      // which is precisely the case adopting the etag would answer by stranding
+      // the wider build on a 304 against bytes the server has moved past.
       await publishRecord({
         ...(prior as unknown as StoredPolicyBundle),
         fetchedAtMs: Date.now(),

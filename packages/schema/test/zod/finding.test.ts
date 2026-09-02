@@ -6,11 +6,13 @@ import {
   Finding,
   FindingAction,
   FindingCategory,
+  FindingGroup,
   FindingInstance,
   FindingOrigin,
   FindingPolicyRef,
   FindingProvider,
   FindingStatus,
+  FindingUser,
   ListGroupedFindingsQuery,
   ResolutionMethod,
 } from '../../src/zod/finding.ts';
@@ -163,6 +165,52 @@ describe('FindingInstance.status', () => {
 
   it('rejects an unknown status value', () => {
     expect(() => FindingInstance.parse({ ...baseInstance, status: 'x' })).toThrow();
+  });
+});
+
+describe('FindingUser', () => {
+  const baseInstance = {
+    id: 'i1',
+    provider: 'claudecode' as const,
+    repo: 'acme/api',
+    file: 'a.ts',
+    action: 'blocked' as const,
+    detectedAt: '2026-01-01T00:00:00.000Z',
+    confidence: 0.9,
+  };
+  const user = { id: 'u1', name: 'alice@example.com' };
+
+  it('requires id and name as strings', () => {
+    expect(FindingUser.safeParse(user).success).toBe(true);
+    expect(FindingUser.safeParse({ id: 'u1' }).success).toBe(false);
+    expect(FindingUser.safeParse({ id: 'u1', name: null }).success).toBe(false);
+  });
+
+  it('is optional on an instance, and absent stays absent', () => {
+    expect(FindingInstance.parse({ ...baseInstance, user }).user).toEqual(user);
+    expect(FindingInstance.parse(baseInstance)).not.toHaveProperty('user');
+    // Absent means absent — null is not the way to say "nobody".
+    expect(FindingInstance.safeParse({ ...baseInstance, user: null }).success).toBe(false);
+  });
+
+  it('is an optional list on a group', () => {
+    const group = {
+      id: 'aws-key',
+      category: 'secret' as const,
+      subtype: 'aws-key',
+      severity: 'high' as const,
+      match: { maskedValue: 'AKIA****', contextPrefix: '' },
+      detection: { id: 'aws-key', name: null },
+      policy: { id: 'category:secret', name: 'secret' },
+      instanceCount: 1,
+      providers: ['claudecode' as const],
+      aggregateAction: 'blocked' as const,
+      latestDetectedAt: '2026-01-01T00:00:00.000Z',
+      instances: [baseInstance],
+    };
+    expect(FindingGroup.parse({ ...group, users: [user] }).users).toEqual([user]);
+    expect(FindingGroup.parse(group)).not.toHaveProperty('users');
+    expect(FindingGroup.safeParse({ ...group, users: null }).success).toBe(false);
   });
 });
 

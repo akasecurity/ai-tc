@@ -36,10 +36,17 @@ export interface HistorySyncCounts {
  * the three and the numbers do not sum to anything. These four do sum to
  * `total`, which is what a surface reporting delivery state needs.
  *
- * A caveat this cannot fix from here: a row the LIVE path delivered is NULL,
- * because nothing on that path stamps. Until it does, `queued` over-counts on an
- * attached machine by exactly the rows that were forwarded successfully. Read
- * this only where that has been addressed.
+ * `queued` counts what is still OWED to the deployment, and it is honest on an
+ * attached machine because both delivery paths settle here: a drain stamps
+ * through `markSynced`, and the live forward stamps through
+ * `markCaptureDelivered`, which is the same statement. A row left NULL is one no
+ * path delivered — that, and not a separate spool file, is the outbox.
+ *
+ * The one thing it still cannot see is a delivery whose stamp was lost after the
+ * forward succeeded. That row reads as `queued` and is offered again, which the
+ * receiver's id-dedup absorbs because the wire id derives from the row's own
+ * tuple — so it over-counts by the rare lost stamp rather than, as before, by
+ * every successful live forward.
  */
 export interface HistorySyncPartition {
   queued: number;

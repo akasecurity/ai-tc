@@ -167,6 +167,13 @@ export type PolicyBundle = z.infer<typeof PolicyBundle>;
  * worked example, and it decides whether a device may locally re-assign a rule
  * the deployment has authored.
  *
+ * `PolicyTarget` is walked through its UNION MEMBERS for the same reason, and
+ * it is the easiest of the three to overlook: `policies.target` is one key
+ * whatever the target holds, so widening either member moves nothing the other
+ * walks see. The comment above this schema records that a `{ packId }` variant
+ * was considered and expressed as per-rule policies instead — the kind of
+ * decision that gets revisited, which is exactly when this would matter.
+ *
  * `Rule` is deliberately absent. It is a `strictObject`, so a widened rule
  * fails the parse outright instead of being narrowed in silence — a loud
  * failure needs no stamp to detect it.
@@ -178,6 +185,9 @@ export type PolicyBundle = z.infer<typeof PolicyBundle>;
 export const POLICY_BUNDLE_SHAPE_ID: string = [
   ...Object.keys(PolicyBundle.shape),
   ...Object.keys(Policy.shape).map((key) => `policies.${key}`),
+  ...PolicyTarget.options
+    .flatMap((member) => Object.keys(member.shape))
+    .map((key) => `policies.target.${key}`),
   ...Object.keys(ExceptionBundleEntry.shape).map((key) => `exceptions.${key}`),
 ]
   .sort()

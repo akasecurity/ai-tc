@@ -111,9 +111,13 @@ export function createPolicyStore(dir: string = dataDir()) {
    */
   function knowsMoreThanThisBuild(shapeId: unknown): boolean {
     if (typeof shapeId !== 'string' || shapeId === '') return false;
+    // Both sides as SETS. The derivation cannot produce a duplicate today —
+    // the top-level keys are unprefixed and the nested ones are prefixed — so a
+    // size-against-length comparison happens to be right, and would stop being
+    // right on a derivation change that was not otherwise wrong.
     const theirs = new Set(shapeId.split(','));
-    const ours = POLICY_BUNDLE_SHAPE_ID.split(',');
-    return theirs.size > ours.length && ours.every((key) => theirs.has(key));
+    const ours = new Set(POLICY_BUNDLE_SHAPE_ID.split(','));
+    return theirs.size > ours.size && [...ours].every((key) => theirs.has(key));
   }
 
   /** The record currently on disk, unvalidated, or null when there is none. */

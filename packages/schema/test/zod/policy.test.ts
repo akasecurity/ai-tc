@@ -8,6 +8,7 @@ import {
   Policy,
   POLICY_BUNDLE_SHAPE_ID,
   PolicyBundle,
+  PolicyTarget,
 } from '../../src/zod/policy.ts';
 
 describe('DEFAULT_ACTIONS — severity-floor cold-start values', () => {
@@ -122,6 +123,18 @@ describe('POLICY_BUNDLE_SHAPE_ID tracks the schema it describes', () => {
     expect(missing, 'exception fields absent from the stamp').toEqual([]);
   });
 
+  it('names the fields of BOTH PolicyTarget union members', () => {
+    // `policies.target` is one key whatever the target holds, so widening
+    // either member moves nothing the other walks can see — the same trap as
+    // `Policy`, one level further down and easier to miss. Neither member is
+    // strict, so Zod narrows both.
+    const named = new Set(POLICY_BUNDLE_SHAPE_ID.split(','));
+    const missing = PolicyTarget.options
+      .flatMap((member) => Object.keys(member.shape))
+      .filter((key) => !named.has(`policies.target.${key}`));
+    expect(missing, 'target fields absent from the stamp').toEqual([]);
+  });
+
   it('carries the two fields whose loss this was built for', () => {
     // Named rather than derived, so the assertion is not satisfied by whatever
     // the schema happens to say today. `prohibitedModels` is the governance
@@ -139,6 +152,9 @@ describe('POLICY_BUNDLE_SHAPE_ID tracks the schema it describes', () => {
     const expected = [
       ...Object.keys(PolicyBundle.shape),
       ...Object.keys(Policy.shape).map((key) => `policies.${key}`),
+      ...PolicyTarget.options
+        .flatMap((member) => Object.keys(member.shape))
+        .map((key) => `policies.target.${key}`),
       ...Object.keys(ExceptionBundleEntry.shape).map((key) => `exceptions.${key}`),
     ].sort();
     expect(POLICY_BUNDLE_SHAPE_ID.split(',')).toEqual(expected);

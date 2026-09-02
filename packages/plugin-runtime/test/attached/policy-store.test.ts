@@ -236,12 +236,14 @@ describe('a narrower build does not flatten a wider record', () => {
   }
 
   it('leaves a record stamped by a build that knows MORE fields alone', async () => {
+    // Same version on both sides: flattening would destroy fields this build
+    // cannot name in order to land bytes the device already has.
     const d = await dir();
     const store = createPolicyStore(d);
     await store.write(bundle('wide'), 'W/"wide"');
     await restamp(d, WIDER);
 
-    await store.write(bundle('narrowed'), 'W/"narrowed"');
+    await store.write(bundle('wide'), 'W/"narrowed"');
 
     const got = await record(d);
     expect((got.bundle as { version: string }).version, 'the wider body survived').toBe('wide');
@@ -318,32 +320,48 @@ describe('a narrower build stays a good citizen of a wider record', () => {
     expect((await store.read())?.etag).toBe('W/"wide"');
   });
 
-  it('advances freshness when the version it fetched is the one on disk', async () => {
-    // The wider body stays and the record still moves: an equal `version` means
-    // the bytes on disk ARE what this validator describes. Without it
-    // `fetchedAtMs` freezes the moment the wider plugin is removed, and the
-    // device reports itself as having stopped syncing while it is syncing.
+  it('advances freshness, keeps the wider body, and adopts NO new validator', async () => {
+    // The wider record carries a field this build does not declare. Without it
+    // the "body stays" assertion is true by construction — prior and incoming
+    // would be the same bundle — and flattening would pass the case.
     const d = await dir();
     const store = createPolicyStore(d);
     await store.write(bundle('same'), 'W/"old"');
-    await restamp(d, WIDER);
+    const file = join(d, CACHE);
+    {
+      const r = JSON.parse(await readFile(file, 'utf8')) as {
+        shapeId: string;
+        bundle: Record<string, unknown>;
+      };
+      r.shapeId = WIDER;
+      r.bundle.zzzFutureField = 'only the wider build understands this';
+      await writeFile(file, JSON.stringify(r), 'utf8');
+    }
     const before = (await record(d)).fetchedAtMs as number;
     await new Promise((r) => setTimeout(r, 2));
 
     await store.write(bundle('same'), 'W/"new"');
 
     const after = await record(d);
+    expect(
+      (after.bundle as Record<string, unknown>).zzzFutureField,
+      'the field only the wider build understands survived',
+    ).toBe('only the wider build understands this');
     expect(after.shapeId, "the wider build's stamp is untouched").toBe(WIDER);
-    expect((after.bundle as { version: string }).version, 'the wider body stays').toBe('same');
-    expect(after.etag, 'the confirmed validator is adopted').toBe('W/"new"');
     expect(after.fetchedAtMs as number, 'freshness advanced').toBeGreaterThan(before);
+    // Not adopted: pairing these bytes with a validator this build never held
+    // for them would rest on the plane bumping `version` for every
+    // representation it serves, which this package cannot check.
+    expect(after.etag, 'the validator already on disk is kept').toBe('W/"old"');
   });
 
-  it('writes NOTHING when the version it fetched differs from the one on disk', async () => {
-    // Pairing a stale body with a fresh validator is the one mistake that would
-    // strand the wider build on a 304 against bytes the server has moved past.
-    // Leaving the record alone keeps it self-consistent, and the wider build's
-    // own conditional pull repairs it.
+  it('WRITES a different version through, narrowed, rather than deadlocking', async () => {
+    // The organization published a new policy. Declining because this build
+    // cannot represent one field of the OLD one would strand the device: `read`
+    // hands the wider validator back next pass, the pull returns the same 200,
+    // and the write declines again every window, forever, while the sync
+    // reports `ok`. Adopting it narrowed is strictly better — and the narrower
+    // stamp is what makes the wider build restore its own fields next pull.
     const d = await dir();
     const store = createPolicyStore(d);
     await store.write(bundle('old'), 'W/"old"');
@@ -352,7 +370,10 @@ describe('a narrower build stays a good citizen of a wider record', () => {
     await store.write(bundle('new'), 'W/"new"');
 
     const after = await record(d);
-    expect((after.bundle as { version: string }).version).toBe('old');
-    expect(after.etag, 'still describes the body beside it').toBe('W/"old"');
+    expect((after.bundle as { version: string }).version, 'the new policy landed').toBe('new');
+    expect(after.shapeId, "stamped with THIS build's shape, so the wider one refetches").toBe(
+      POLICY_BUNDLE_SHAPE_ID,
+    );
+    expect(after.etag).toBe('W/"new"');
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { ExceptionBundleEntry } from '../../src/zod/exception.ts';
 import { DetectionCategory } from '../../src/zod/finding.ts';
 import {
   DEFAULT_ACTIONS,
@@ -108,6 +109,19 @@ describe('POLICY_BUNDLE_SHAPE_ID tracks the schema it describes', () => {
     expect(missing, 'policy fields absent from the stamp').toEqual([]);
   });
 
+  it('names the NESTED exception fields too', () => {
+    // The same argument as `policies` above, and it needs its own case: without
+    // it the entire `exceptions.*` half of the derivation could be deleted with
+    // every other assertion here still green. `ExceptionBundleEntry` is a pick
+    // of a plain object, so Zod narrows it exactly as it narrows `Policy` while
+    // `exceptions` stays one unchanged key.
+    const named = new Set(POLICY_BUNDLE_SHAPE_ID.split(','));
+    const missing = Object.keys(ExceptionBundleEntry.shape).filter(
+      (key) => !named.has(`exceptions.${key}`),
+    );
+    expect(missing, 'exception fields absent from the stamp').toEqual([]);
+  });
+
   it('carries the two fields whose loss this was built for', () => {
     // Named rather than derived, so the assertion is not satisfied by whatever
     // the schema happens to say today. `prohibitedModels` is the governance
@@ -117,12 +131,16 @@ describe('POLICY_BUNDLE_SHAPE_ID tracks the schema it describes', () => {
     expect(POLICY_BUNDLE_SHAPE_ID.split(',')).toContain('policies.provenance');
   });
 
-  it('is stable across reads and sorted', () => {
-    // A set comparison downstream splits on the comma, but the value is also
-    // written to disk and compared by equality, so an unstable order would make
-    // every record read as a foreign shape.
-    const parts = POLICY_BUNDLE_SHAPE_ID.split(',');
-    expect(parts).toEqual([...parts].sort());
-    expect(POLICY_BUNDLE_SHAPE_ID).toBe(POLICY_BUNDLE_SHAPE_ID);
+  it('is exactly the sorted union of those shapes, and nothing else', () => {
+    // Written to disk and compared by EQUALITY, so the property that matters is
+    // that it is reproducible from the shapes — not merely equal to itself,
+    // which a module-level const always is. Pins the composition too: an extra
+    // key, a missing half, or an unsorted join all fail here.
+    const expected = [
+      ...Object.keys(PolicyBundle.shape),
+      ...Object.keys(Policy.shape).map((key) => `policies.${key}`),
+      ...Object.keys(ExceptionBundleEntry.shape).map((key) => `exceptions.${key}`),
+    ].sort();
+    expect(POLICY_BUNDLE_SHAPE_ID.split(',')).toEqual(expected);
   });
 });

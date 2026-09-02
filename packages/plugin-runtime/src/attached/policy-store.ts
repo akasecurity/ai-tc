@@ -196,36 +196,52 @@ export function createPolicyStore(dir: string = dataDir()) {
     // narrowing and repairing one file.
     //
     // Two overlapping children can still interleave this read and the publish.
-    // That race is benign and is not worth a lock: the publish is atomic, so the
-    // loser's bytes are whole, and a narrowing that does slip through is exactly
-    // what `read` withholds the validator for.
+    // That race is benign and is not worth a lock. What can slip through is a
+    // LOST UPDATE rather than a narrowing — the branch below republishes a
+    // record read a moment earlier, so a wider build's newer record can be
+    // clobbered by an older one CARRYING THE WIDER STAMP, which `read` will
+    // therefore not withhold a validator for. It still converges: the pair it
+    // republishes is internally consistent, so the wider build's next
+    // conditional pull answers 200 and rewrites it.
     const prior = await priorRecord();
-    if (prior !== null && knowsMoreThanThisBuild(prior.shapeId)) {
-      // The wider body STAYS. What still advances is freshness, and only when
-      // the representation is the one this pull just confirmed: an equal
-      // `version` means the bytes already on disk ARE what this validator
-      // describes, so pairing them is self-consistent rather than the stale
-      // body under a fresh tag that would strand the wider build on a 304.
+    const priorVersion = (prior?.bundle as { version?: unknown } | undefined)?.version;
+    if (
+      prior !== null &&
+      knowsMoreThanThisBuild(prior.shapeId) &&
+      priorVersion === bundle.version
+    ) {
+      // SAME VERSION, wider body: flattening it would destroy fields this build
+      // cannot even name, to land bytes the device already has. So the body and
+      // the stamp both stay, and only freshness moves.
       //
-      // Without this the record is never rewritten at all, and `fetchedAtMs`
-      // freezes the moment the wider plugin is removed — status would render an
-      // ever-growing "fetched N ago" and the posture report would tell the
-      // control plane the device had stopped syncing while it was in fact
-      // syncing successfully every window.
+      // Freshness has to move, because `fetchedAtMs` advances nowhere else. Left
+      // frozen, status renders an ever-growing "fetched N ago" and the posture
+      // report tells the control plane the device stopped syncing while it is in
+      // fact syncing successfully every window.
       //
-      // When the versions differ the prior etag is stale anyway and pairing it
-      // with the old body would be exactly that mistake, so nothing is written
-      // and the wider build's own conditional pull repairs it.
-      const priorVersion = (prior.bundle as { version?: unknown } | undefined)?.version;
-      if (priorVersion === bundle.version) {
-        await publishRecord({
-          ...(prior as unknown as StoredPolicyBundle),
-          fetchedAtMs: Date.now(),
-          ...(etag === undefined ? {} : { etag }),
-        });
-      }
+      // The VALIDATOR is deliberately not adopted. Pairing bytes with an etag
+      // this build never held for them would rest on the control plane bumping
+      // `version` for every representation it serves — true of the deployment
+      // this ships against, and not a property this package owns or can check.
+      // Keeping the etag already on disk costs at most one conditional round
+      // trip and assumes nothing.
+      await publishRecord({
+        ...(prior as unknown as StoredPolicyBundle),
+        fetchedAtMs: Date.now(),
+      });
       return;
     }
+
+    // A DIFFERENT version falls through and is written, narrowed. That is the
+    // whole point of scoping the guard to an equal version: the organization has
+    // published a new policy, and a device that refuses to adopt it because it
+    // cannot represent one field of the old one is worse off than one that adopts
+    // it narrowed. Declining here instead would deadlock — `read` hands the wider
+    // record's validator back on the next pass, the pull returns the same 200,
+    // and the write declines again, every window, forever, while `pullPolicyBundle`
+    // reports `ok`. Writing it stamps THIS build's narrower shape, which is
+    // exactly what makes the wider build's next read withhold its validator and
+    // restore the fields in one unconditional pull.
 
     await publishRecord({
       bundle,

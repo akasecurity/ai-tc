@@ -10,12 +10,13 @@ import { useMemo, useSyncExternalStore } from 'react';
  * which is the unit itself; half of it bounds the visible lag at 30s for two
  * renders a minute.
  *
- * That bound holds only in front. Browsers throttle timers in a backgrounded
- * tab to a minute or worse, so the interval alone would let a tab someone
- * comes back to show a label — and, on the detail route, a revoke form gated
- * on a stale `active` — from before they left. The visibility listener below
- * is what bounds the returning case at "as soon as you look at it", which is
- * the case this hook exists for.
+ * That bound holds only in front. A backgrounded tab has its timers clamped,
+ * and a long-hidden one is throttled harder still — Chrome drops to roughly
+ * once a minute after a few minutes out of view — so the interval alone stops
+ * bounding anything for the tab someone left open, which is the case this hook
+ * exists for. They can come back to a label, and on the detail route to a
+ * revoke form gated on a stale `active`, from before they went away. The
+ * visibility listener below is what bounds that at "as soon as you look at it".
  */
 export const CLOCK_TICK_MS = 30_000;
 

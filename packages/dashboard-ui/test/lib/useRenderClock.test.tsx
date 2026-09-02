@@ -35,6 +35,10 @@ function Probe({ seen, tickMs = CLOCK_TICK_MS }: { seen: number[]; tickMs?: numb
   return null;
 }
 
+function setVisibility(state: 'visible' | 'hidden'): void {
+  Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
+}
+
 describe('useRenderClock', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -44,6 +48,12 @@ describe('useRenderClock', () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+    // Restored here rather than at the end of a body: a failing assertion
+    // would skip an in-body restore and leak a hidden tab (or a live spy) into
+    // every case after it, so the first failure would be followed by unrelated
+    // ones and the real cause buried.
+    setVisibility('visible');
+    vi.restoreAllMocks();
   });
 
   it('returns the server instant on a server render, never the ambient clock', () => {
@@ -102,10 +112,6 @@ describe('useRenderClock', () => {
     vi.setSystemTime(Date.now() + ms);
   }
 
-  function setVisibility(state: 'visible' | 'hidden'): void {
-    Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
-  }
-
   it('republishes on return to a visible tab, which a throttled interval would not', () => {
     const seen: number[] = [];
     const root = createRoot(document.createElement('div'));
@@ -142,7 +148,6 @@ describe('useRenderClock', () => {
     });
 
     expect(seen).toHaveLength(settled);
-    setVisibility('visible');
   });
 
   it('stops on unmount, so a torn-down page leaves no interval behind', () => {
@@ -188,8 +193,5 @@ describe('useRenderClock', () => {
     });
 
     expect(visibilityHandlers(removeSpy)).toEqual(visibilityHandlers(addSpy));
-
-    addSpy.mockRestore();
-    removeSpy.mockRestore();
   });
 });

@@ -42,7 +42,7 @@ const { NavigationTransitionProvider } =
 const RENDERED_AT = Date.parse('2026-08-01T00:30:00.000Z');
 const HALF_HOUR = 30 * 60 * 1000;
 
-function blockedRow(): BlockedDetectionDescriptor {
+function blockedRow(blockedAt = '2026-08-01T00:00:00.000Z'): BlockedDetectionDescriptor {
   return {
     reference: 'blk-fresh',
     ruleId: 'secrets/aws-access-key',
@@ -51,8 +51,25 @@ function blockedRow(): BlockedDetectionDescriptor {
     maskedValue: 'AKIA****************',
     sessionId: null,
     repo: 'acme/api',
-    blockedAt: '2026-08-01T00:00:00.000Z',
+    blockedAt,
   };
+}
+
+function listRoute(blocked: BlockedDetectionDescriptor[]) {
+  return createElement(
+    NavigationTransitionProvider,
+    null,
+    createElement(ExceptionsClient, {
+      items: [],
+      blocked,
+      includeTerminal: false,
+      blockedWindow: '30m' as const,
+      keyState: { status: 'present', version: 4 },
+      activePermanent: [],
+      approvableBlocked: blocked.length,
+      renderedAt: RENDERED_AT,
+    }),
+  );
 }
 
 function exceptionRow(overrides: Partial<DetectionException>) {
@@ -108,22 +125,7 @@ describe('the exceptions clock keeps moving after hydration', () => {
   });
 
   it('ages the blocked ledger on the list route without a navigation', () => {
-    const container = mount(
-      createElement(
-        NavigationTransitionProvider,
-        null,
-        createElement(ExceptionsClient, {
-          items: [],
-          blocked: [blockedRow()],
-          includeTerminal: false,
-          blockedWindow: '30m' as const,
-          keyState: { status: 'present', version: 4 },
-          activePermanent: [],
-          approvableBlocked: 1,
-          renderedAt: RENDERED_AT,
-        }),
-      ),
-    );
+    const container = mount(listRoute([blockedRow()]));
 
     expect(container.textContent).toContain('30 minutes ago');
 
@@ -162,23 +164,32 @@ describe('the exceptions clock keeps moving after hydration', () => {
   });
 
   it('drives both routes off the shared tick length', () => {
-    // A single tick is enough to move the detail route's state, so the wiring
-    // is bound to CLOCK_TICK_MS rather than to whatever interval a caller might
-    // have hard-coded. Expiry sits inside the first tick.
-    const container = mount(
+    // ONE tick has to be enough at BOTH sites, so a site that hard-coded its
+    // own interval — or took a longer one — is caught rather than being
+    // covered by the generous half-hour the cases above advance.
+    //
+    // Each fixture is placed just inside the first tick: the detail grant
+    // expires a second after the render, and the ledger row sits 15s past a
+    // minute boundary that 30s crosses.
+    const detail = mount(
       createElement(ExceptionDetailClient, {
         exception: exceptionRow({ expiresAt: new Date(RENDERED_AT + 1000).toISOString() }),
         renderedAt: RENDERED_AT,
       }),
     );
+    const list = mount(
+      listRoute([blockedRow(new Date(RENDERED_AT - (30 * 60 + 15) * 1000).toISOString())]),
+    );
 
-    expect(container.textContent).toContain('active');
-    expect(container.textContent).not.toContain('expired');
+    expect(detail.textContent).toContain('active');
+    expect(detail.textContent).not.toContain('expired');
+    expect(list.textContent).toContain('30 minutes ago');
 
     act(() => {
       vi.advanceTimersByTime(CLOCK_TICK_MS);
     });
 
-    expect(container.textContent).toContain('expired');
+    expect(detail.textContent).toContain('expired');
+    expect(list.textContent).toContain('31 minutes ago');
   });
 });

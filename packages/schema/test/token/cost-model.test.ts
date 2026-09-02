@@ -64,7 +64,7 @@ describe('defaultCostModel.costFor', () => {
     expect(write1h).toBeGreaterThan(write5m);
   });
 
-  it('prices claude-sonnet-5 at the Sonnet tier ($3/$15 per MTok)', () => {
+  it('prices claude-sonnet-5 at its own published rate ($2/$10 per MTok)', () => {
     const cost = asNumber(
       defaultCostModel.costFor({
         provider: 'anthropic',
@@ -72,8 +72,9 @@ describe('defaultCostModel.costFor', () => {
         usage: { inputTokens: 1_000_000, outputTokens: 1_000_000 },
       }),
     );
-    // $3 input + $15 output.
-    expect(cost).toBeCloseTo(18, 6);
+    // $2 input + $10 output. Sonnet 5 is priced below the Sonnet 4.x line
+    // ($3/$15); the tier name does not carry the rate.
+    expect(cost).toBeCloseTo(12, 6);
   });
 
   it('adds a per-request web-search charge on top of token cost', () => {

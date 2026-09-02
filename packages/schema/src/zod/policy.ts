@@ -362,7 +362,12 @@ export const PackPolicyFloor = z
      */
     locked: z.boolean(),
   })
-  .meta({ id: 'PackPolicyFloor' });
+  // Deliberately NO `.meta({ id })`, for the reason the vault shapes carry: an
+  // id registers the schema globally and a swagger setup emits it as an OpenAPI
+  // component. This is what an attached DEVICE computes for itself from a bundle
+  // it already holds — no route serves it, so publishing it would advertise a
+  // component the API never returns.
+  .describe('PackPolicyFloor');
 export type PackPolicyFloor = z.infer<typeof PackPolicyFloor>;
 
 // The archetypes a per-CATEGORY policy row can actually express.

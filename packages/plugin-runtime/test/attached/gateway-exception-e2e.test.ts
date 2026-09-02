@@ -128,6 +128,7 @@ const noopClient = (): AttachedClient => ({
   ingestEvents: () => Promise.resolve({ accepted: 0 } as never),
   ingestInventory: () => Promise.resolve({}),
   recordAuditEvent: () => Promise.resolve(),
+  recordAuditEvents: (events: readonly unknown[]) => Promise.resolve({ accepted: events.length }),
   reportStorePosture: () => Promise.resolve({}),
   recordProjectEgress: () => Promise.resolve({}),
 });

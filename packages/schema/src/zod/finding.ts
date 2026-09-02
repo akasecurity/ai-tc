@@ -249,8 +249,11 @@ export const FindingGroup = z
     // Derived from instances' statuses with open-dominates precedence (see
     // buildFindingGroups). Undefined only when no instance carries a status.
     status: FindingStatus.optional(),
-    // The distinct people among `instances`, in order of first occurrence
-    // (newest-first). Undefined when no instance carries a user.
+    // The distinct people across the WHOLE group, not just the `instances`
+    // preview — from the store's whole-group aggregate when it supplies one,
+    // else folded from the rows (see buildFindingGroups). Undefined when no
+    // instance carries a user, or when the store supplied whole-group folds
+    // without one.
     users: z.array(FindingUser).optional(),
   })
   .meta({ id: 'FindingGroup' });

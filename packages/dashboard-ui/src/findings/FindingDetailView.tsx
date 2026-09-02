@@ -17,6 +17,7 @@ import {
   type Selection,
 } from './meta.ts';
 import { ProviderTag } from './ProviderChips.tsx';
+import { UserCell } from './UserCell.tsx';
 
 /** Human-readable confidence band + score for an instance's 0–1 confidence. */
 export function formatConfidence(confidence: number): { label: string; tone: string } {
@@ -149,7 +150,7 @@ export function FindingDetailView({
             {/* Only a store that attributes findings to people sets `user`. */}
             {instance.user !== undefined && (
               <MetaItem label="User">
-                <span className="text-xs wrap-break-word">{instance.user.name}</span>
+                <UserCell user={instance.user} />
               </MetaItem>
             )}
           </div>

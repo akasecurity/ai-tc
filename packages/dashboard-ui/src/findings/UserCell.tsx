@@ -18,5 +18,5 @@ export function UsersCell({ users }: { users: FindingUser[] | undefined }) {
   const first = users?.[0];
   if (!first) return <span className="text-text-3">—</span>;
   if (users.length === 1) return <UserCell user={first} />;
-  return <span className="text-text-3">{users.length} users</span>;
+  return <span className="text-xs text-text-2">{users.length} users</span>;
 }

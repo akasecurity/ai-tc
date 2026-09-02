@@ -175,6 +175,10 @@ function makeClient(calls: Calls, overrides: Partial<AttachedClient> = {}): Atta
       calls.order.push('client.reportStorePosture');
       return Promise.resolve({});
     }),
+    recordProjectEgress: vi.fn(() => {
+      calls.order.push('client.recordProjectEgress');
+      return Promise.resolve({ ok: true });
+    }),
     ...overrides,
   };
 }
@@ -450,11 +454,12 @@ describe('writes are local-FIRST, then forwarded', () => {
     ).toHaveBeenCalled();
   });
 
-  it('recordProjectEgress is LOCAL-ONLY — there is no egress ingest endpoint to forward to', async () => {
+  it('recordProjectEgress writes locally, then attempts a forward', async () => {
     const { gateway, calls } = build();
     const summary = await gateway.recordProjectEgress(egressInput());
-    expect(calls.order).toContain('local.recordProjectEgress');
-    expect(calls.order).not.toContain('forward.run');
+    expect(calls.order.indexOf('local.recordProjectEgress')).toBeLessThan(
+      calls.order.indexOf('client.recordProjectEgress'),
+    );
     // The inner gateway's real summary is returned, not a zeroed stand-in: the
     // scanner reads a throw as a failed write and skips its ledger commit.
     expect(summary).toEqual({
@@ -464,6 +469,22 @@ describe('writes are local-FIRST, then forwarded', () => {
       truncated: false,
       droppedFiles: [],
     });
+  });
+
+  it('recordProjectEgress forward failure still returns the LOCAL summary and does not throw', async () => {
+    const calls: Calls = { order: [] };
+    const client = makeClient(calls, {
+      recordProjectEgress: vi.fn(() => Promise.reject(new Error('backend down'))),
+    });
+    const { gateway } = build({ client, forward: passthroughForward(calls) });
+    await expect(gateway.recordProjectEgress(egressInput())).resolves.toEqual({
+      destinations: 1,
+      endpoints: 2,
+      callSites: 3,
+      truncated: false,
+      droppedFiles: [],
+    });
+    expect(calls.order).toContain('forward.run');
   });
 });
 
@@ -799,6 +820,42 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     // order it is read in — and it is the stronger, local one.
     expect(secret).toHaveLength(1);
     expect(secret[0]?.action).toBe('block');
+  });
+
+  it('DOES carry prohibitedModels from the cache — a restriction, not a relaxation', async () => {
+    // The merge below returns an EXPLICIT field list over `...local`, so a field
+    // the organization's bundle carries and this list omits is dropped in
+    // silence. That is what happened: the prohibition reached the cache on
+    // every attached device and never reached the hook that enforces it, so the
+    // whole control was inert while every test around it stayed green.
+    //
+    // Taking it is safe for the reason the two fields below are not: a
+    // prohibition can only ADD a refusal, so there is no relaxation to hand a
+    // cache-writer. What it could do is block the user's own sessions, which
+    // anyone able to write into that directory can already do far more cheaply
+    // by deleting the plugin.
+    const calls: Calls = { order: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
+    });
+    const { gateway } = build({
+      local,
+      readCachedBundle: () => Promise.resolve(bundle([], { prohibitedModels: ['claude-opus-5'] })),
+    });
+    const merged = await gateway.getPolicyBundle();
+    expect(merged.prohibitedModels).toEqual(['claude-opus-5']);
+  });
+
+  it('leaves prohibitedModels absent when the organization prohibits nothing', async () => {
+    // The control: a standalone bundle carries no prohibitions, so the merge
+    // must not invent an empty list that reads as an enforced decision.
+    const calls: Calls = { order: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
+    });
+    const { gateway } = build({ local, readCachedBundle: () => Promise.resolve(bundle([])) });
+    const merged = await gateway.getPolicyBundle();
+    expect(merged.prohibitedModels).toBeUndefined();
   });
 
   it('never takes rulesComplete from the cache — that would be a detection kill-switch', async () => {

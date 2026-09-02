@@ -1,5 +1,9 @@
 import type {
+  AttachDeviceGrant as AttachDeviceGrantT,
+  AttachDeviceRequest as AttachDeviceRequestT,
+  AttachTokenResponse as AttachTokenResponseT,
   AuditEventBatchAck as AuditEventBatchAckT,
+  EgressIngestRequest as EgressIngestRequestT,
   IngestAck as IngestAckT,
   IngestBatch,
   InventoryContext,
@@ -10,7 +14,10 @@ import type {
   StorePostureSnapshot,
 } from '@akasecurity/schema';
 import {
+  AttachDeviceGrant,
+  AttachTokenResponse,
   AuditEventBatchAck,
+  EgressIngestRequest,
   IngestAck,
   PluginWhoami,
   PolicyBundle,
@@ -23,10 +30,10 @@ import type { z } from 'zod';
 import type { RemoteResponse } from './http.ts';
 import { RemoteRequestError, RemoteRequestInvalid, RemoteResponseInvalid, send } from './http.ts';
 
-// The seven routes an attached machine may call, and nothing else.
+// The eight routes an attached machine may call, and nothing else.
 //
 // The set is small on purpose and is the same set a deployment scopes a
-// credential to: five writes and two self-scoped reads. There is deliberately
+// credential to: six writes and two self-scoped reads. There is deliberately
 // no way to ask this client for anything organization-wide — a credential on a
 // laptop should not be able to read what other people's machines reported, and
 // a client that cannot express the request is a stronger guarantee than a
@@ -45,6 +52,7 @@ const ROUTES = {
   storePosture: '/v1/store-posture',
   policyBundle: '/v1/policy-bundle',
   whoami: '/v1/plugin/whoami',
+  shares: '/v1/shares',
 } as const;
 
 export interface RemoteClientOptions {
@@ -85,6 +93,11 @@ export interface RemoteClient {
   getPolicyBundle(etag?: string): Promise<ConditionalBundle>;
   /** GET /v1/plugin/whoami — who this credential belongs to. */
   whoami(): Promise<PluginWhoamiT>;
+  /**
+   * POST /v1/shares — one project's egress-recording unit, already projected
+   * to the wire-boundary-safe shape (no snippet, hashed projectKey).
+   */
+  recordProjectEgress(request: EgressIngestRequestT): Promise<void>;
 }
 
 /** Header value as a single string; Node reports repeats as an array. */
@@ -278,6 +291,99 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
     async whoami() {
       const response = await send({ ...common, method: 'GET', url: url(ROUTES.whoami) });
       return parsed(PluginWhoami, okBody(response), ROUTES.whoami);
+    },
+
+    async recordProjectEgress(request) {
+      // Validated on the way OUT, not merely typed — the same discipline as
+      // recordAuditEvent, and for the same reason: a caller that counts
+      // failures toward a circuit breaker cannot tell a raw ZodError from a
+      // transport fault, so a deterministic local shape bug must not open
+      // the breaker and suppress every unrelated forward.
+      const validated = EgressIngestRequest.safeParse(request);
+      if (!validated.success) throw new RemoteRequestInvalid(ROUTES.shares, validated.error);
+      const response = await send({
+        ...common,
+        method: 'POST',
+        url: url(ROUTES.shares),
+        body: JSON.stringify(validated.data),
+      });
+      okBody(response);
+    },
+  };
+}
+
+// ─── Attaching: the two routes a machine calls before it has a credential ────
+
+const ATTACH_ROUTES = {
+  device: '/v1/attach/device',
+  token: '/v1/attach/token',
+} as const;
+
+/**
+ * The client for a machine that has NOT been attached yet.
+ *
+ * Separate from `createRemoteClient` on purpose, and the separation is the
+ * safety property rather than tidiness. These two routes are how a credential
+ * comes into existence, so they are the only ones this package may call without
+ * one — and a caller cannot reach any OTHER route through this object, because
+ * it does not know how to build one. The alternative, an optional `apiKey` on
+ * the main client, would mean a caller who forgot to pass a credential would
+ * silently talk to a deployment unauthenticated on every route.
+ *
+ * The same guarantees `send` holds for the attached client hold here: no
+ * redirects, a deadline on every request, a body cap, a protocol upgrade
+ * refused, and plain `http` only for a loopback endpoint the caller has already
+ * checked with `isSafeEndpoint`.
+ */
+export interface AttachClient {
+  /** POST /v1/attach/device — start a grant and get the codes to display. */
+  startGrant(request: AttachDeviceRequestT): Promise<AttachDeviceGrantT>;
+  /** POST /v1/attach/token — ask whether anyone has decided yet. */
+  poll(deviceCode: string): Promise<AttachTokenResponseT>;
+  /**
+   * Whether this deployment offers the flow at all.
+   *
+   * A 404 from `startGrant` means one of two things a caller cannot tell apart
+   * and does not need to: the deployment predates the flow, or has not switched
+   * it on. Both mean "fall back to the key prompt", which is why the CLI probes
+   * rather than requiring a version handshake.
+   */
+  readonly notOfferedStatus: 404;
+}
+
+export function createAttachClient(options: {
+  /** Where the deployment lives, already checked with `isSafeEndpoint`. */
+  endpoint: string;
+  timeoutMs?: number | undefined;
+}): AttachClient {
+  const base = withoutTrailingSlashes(options.endpoint);
+  const common = { timeoutMs: options.timeoutMs };
+
+  return {
+    notOfferedStatus: 404,
+
+    async startGrant(request) {
+      const response = await send({
+        ...common,
+        method: 'POST',
+        url: `${base}${ATTACH_ROUTES.device}`,
+        body: JSON.stringify(request),
+      });
+      return parsed(AttachDeviceGrant, okBody(response), ATTACH_ROUTES.device);
+    },
+
+    async poll(deviceCode) {
+      const response = await send({
+        ...common,
+        method: 'POST',
+        url: `${base}${ATTACH_ROUTES.token}`,
+        body: JSON.stringify({ deviceCode }),
+      });
+      // Parsed from a 2xx only. Every state this flow defines — including its
+      // refusals — arrives as a 200 with a body naming it, so a non-2xx here is
+      // a transport or deployment fault rather than an answer, and `okBody`
+      // turning it into a status-only error is the right shape.
+      return parsed(AttachTokenResponse, okBody(response), ATTACH_ROUTES.token);
     },
   };
 }

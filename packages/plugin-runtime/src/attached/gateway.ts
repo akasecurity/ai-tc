@@ -16,6 +16,7 @@ import type {
   ConfigScanRecord,
   DayActivity,
   DetectionCategory,
+  EgressIngestRequest,
   EgressWriteSummary,
   FindingView,
   HealthSummary,
@@ -39,6 +40,7 @@ import type {
 } from '@akasecurity/schema';
 import { DEFAULT_ACTIONS } from '@akasecurity/schema';
 
+import { toEgressIngestRequest } from './egress-wire.ts';
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
 import { REQUEST_TIMEOUT_MS, withTimeout } from './with-timeout.ts';
@@ -50,7 +52,7 @@ import { REQUEST_TIMEOUT_MS, withTimeout } from './with-timeout.ts';
  *
  * WRITE-ONLY, plus the posture self-report. There are deliberately no reads:
  * every read is served from the local store, and the credential a machine holds
- * is scoped to the four writes plus the policy bundle and whoami — nothing
+ * is scoped to the five writes plus the policy bundle and whoami — nothing
  * else. A read added here would be a method that cannot work against the
  * credential this gateway actually holds.
  */
@@ -64,6 +66,10 @@ export interface AttachedClient {
   // posture-reporter.ts). The response is unused — whether the promise settles
   // is all the throttle needs.
   reportStorePosture(snapshot: StorePostureSnapshot): Promise<unknown>;
+  // One project's egress-recording unit, already projected to the
+  // wire-boundary-safe shape by `toEgressIngestRequest`. The response is
+  // unused — see recordProjectEgress below for why.
+  recordProjectEgress(request: EgressIngestRequest): Promise<unknown>;
 }
 
 export interface AttachedDataGatewayDeps {
@@ -670,15 +676,22 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   }
 
   /**
-   * LOCAL-ONLY, deliberately. The shares API is read-plus-decision-override
-   * with no egress ingest endpoint, so there is nothing to forward to; adding a
-   * forward here would be inventing a wire contract that does not exist. The
-   * local write is the whole operation, and its summary is the real one — the
-   * scanner reads a throw as a FAILED WRITE and skips its ledger commit, so
-   * returning the inner gateway's result keeps the retry semantics honest.
+   * Local write first, forward second, LOCAL summary returned.
+   *
+   * The scanner reads a throw as a FAILED WRITE and withholds its ledger
+   * commit, so the local write happens strictly first and its result — never
+   * a server-derived one — is what the caller gets back. The forward is
+   * built through `toEgressIngestRequest`, the one place that projects the
+   * payload onto the wire-boundary-safe shape (no snippet, hashed
+   * projectKey), and its result is discarded: `forward.run` never throws or
+   * rejects, so there is nothing here to act on.
    */
   async recordProjectEgress(input: RecordProjectEgressInput): Promise<EgressWriteSummary> {
-    return this.deps.local.recordProjectEgress(input);
+    const summary = await this.deps.local.recordProjectEgress(input);
+    await this.deps.forward.run(() =>
+      this.deps.client.recordProjectEgress(toEgressIngestRequest(input)),
+    );
+    return summary;
   }
 
   // ---------------------------------------------------------------------
@@ -820,6 +833,23 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
         ruleCategoryMap(cached.rules, local.rules),
       ),
       customKeywords: [...local.customKeywords, ...cached.customKeywords],
+      // TAKEN FROM THE CACHE, unlike the two fields below — and the asymmetry
+      // is the point, so it is argued rather than asserted.
+      //
+      // What makes `rulesComplete` and `reversibleRuleIds` unsafe to honor is
+      // that each can only ever RELAX enforcement, so honoring one would hand
+      // anything able to write policy-cache.json a kill switch. A prohibition
+      // inverts that: it can only ever ADD a refusal, so there is no relaxation
+      // to grant. The capability it would give a cache-writer is to block the
+      // user's own sessions — available far more cheaply to anyone who can
+      // already write into that directory, by deleting the plugin.
+      //
+      // Local contributes nothing, so this is the organization's list or none:
+      // a machine with no control plane has no governance decision to carry,
+      // and the spread above would otherwise drop the field silently — which is
+      // exactly what it did, leaving the whole control inert on every device
+      // while every test around it stayed green.
+      prohibitedModels: cached.prohibitedModels,
       // `rulesComplete` is a STANDALONE-ONLY signal (the user's local installed
       // snapshot) and is taken from the LOCAL bundle only — never from the wire
       // or the on-disk cache. Honoring a cached one would hand the control plane, or

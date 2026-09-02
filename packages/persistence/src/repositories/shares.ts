@@ -127,7 +127,7 @@ function parseNetwork(networkJson: string | null): ShareDestinationSummary['netw
  * dropped rather than half-kept: half a generated blob's destinations is not a
  * usable inventory of it, and storing it would ledger the file as done.
  */
-function capHits(
+export function capHits(
   all: readonly ResolvedEgressHit[],
   mode: EgressReconcile['mode'],
 ): { hits: ResolvedEgressHit[]; droppedFiles: string[]; truncated: boolean } {
@@ -164,7 +164,7 @@ function capHits(
  * deletes by path prefix and recomputes the whole subtree every run — so it is
  * returned unchanged and its truncation stays a plain per-write cap.
  */
-function withoutDroppedFiles(
+export function withoutDroppedFiles(
   reconcile: EgressReconcile,
   droppedFiles: readonly string[],
 ): EgressReconcile {

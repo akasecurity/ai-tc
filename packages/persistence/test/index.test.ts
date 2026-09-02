@@ -61,6 +61,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'base32Decode',
   'base32Encode',
   'bindingInput',
+  'capHits',
   'capWarnEraEnforcementOnce',
   'captureId',
   'captureWireId',
@@ -125,6 +126,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'toolCallId',
   'verifyPointerTag',
   'withFileLock',
+  'withoutDroppedFiles',
   'writeControlPlaneCredential',
   'writeOwnerOnlyFileSync',
 ];

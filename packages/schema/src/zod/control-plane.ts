@@ -1,8 +1,17 @@
 import { z } from 'zod';
 
+import { EgressReconcile } from './egress-extraction.ts';
 import type { ActionTaken } from './finding.ts';
 import { ACTION_TAKEN_KEYS } from './finding.ts';
 import { AuditEventInput, ToolCallInspection } from './meta.ts';
+import {
+  DataClass,
+  DestinationKind,
+  DestinationNetwork,
+  HttpMethod,
+  ShareTrustLevel,
+  Transport,
+} from './shares.ts';
 
 // The control-plane wire contract: what an ATTACHED machine sends to the
 // deployment named by `WorkspaceSettings.controlPlane` (see ./local.ts), and
@@ -334,6 +343,76 @@ export const RecordAuditEventBatch = z
   })
   .meta({ id: 'RecordAuditEventBatch' });
 export type RecordAuditEventBatch = z.infer<typeof RecordAuditEventBatch>;
+
+// ─── Shares ingest (request: POST /v1/shares) ─────────────────────────────
+//
+// The wire projection of a device's local `ResolvedEgressHit` (./egress-extraction.ts).
+// Deliberately narrower than the local shape in two ways, and they are NOT the
+// same strength of claim — do not read them as a pair:
+//
+//   1. `site.snippet` is stripped before the payload leaves the device. Source
+//      text does not cross, and nothing downstream can reconstruct it.
+//   2. `projectKey` is sent as a digest. That is for STABLE CROSS-DEVICE
+//      IDENTITY, not concealment. Its inputs are low-entropy and enumerable — a
+//      `git:` key is a repo URL, a `path:` key is a local filesystem path — so
+//      anyone holding the digests recovers the plaintext by hashing a candidate
+//      list. It resists a passive observer, NOT the recipient.
+//
+// (2) is a deliberate trade rather than an oversight: the deployment is entitled
+// to know which repos its own devices scanned, and `site.file` crosses in
+// plaintext regardless. Concealment FROM THE RECIPIENT would need a keyed
+// construction — HMAC under a per-tenant secret — and this shape cannot be
+// quietly upgraded to one, because a key that varies by tenant destroys the
+// cross-device convergence the digest exists to provide. Wanting that later
+// means changing the contract, not tightening this function.
+//
+// See `toEgressIngestRequest` in `@akasecurity/plugin-runtime`'s
+// `src/attached/egress-wire.ts`, which is the only place that builds this shape.
+export const EgressIngestHit = z
+  .object({
+    host: z.string(),
+    kind: DestinationKind,
+    name: z.string(),
+    category: z.string(),
+    trust: ShareTrustLevel,
+    network: DestinationNetwork.nullable(),
+    method: HttpMethod,
+    transport: Transport,
+    url: z.string(),
+    template: z.boolean(),
+    dataClass: DataClass,
+    site: z.object({
+      file: z.string(),
+      line: z.number().int().positive(),
+      dynamic: z.boolean(),
+      vendored: z.boolean(),
+    }),
+  })
+  .meta({ id: 'EgressIngestHit' });
+export type EgressIngestHit = z.infer<typeof EgressIngestHit>;
+
+export const EgressIngestRequest = z
+  .object({
+    /**
+     * Hash digest of the local `projectKey`, never the plaintext.
+     *
+     * ENFORCED, not just documented: 64 lowercase hex. `.min(1)` let the
+     * sentence above be true only by convention, so a build that forgot to hash
+     * would put a `path:/Users/<name>/…` root on the wire and learn about it as
+     * a remote 400, if at all. The narrow shape makes the same mistake a local
+     * `RemoteRequestInvalid` at the validate-on-out boundary, on the machine
+     * that still has the plaintext to not send.
+     */
+    projectKey: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/, 'projectKey must be a 64-character lowercase hex digest'),
+    /** Display name only — never keys reconciliation. */
+    project: z.string(),
+    reconcile: EgressReconcile,
+    hits: z.array(EgressIngestHit),
+  })
+  .meta({ id: 'EgressIngestRequest' });
+export type EgressIngestRequest = z.infer<typeof EgressIngestRequest>;
 
 // ─── Lenient response parsers (no ids — see the header) ──────────────────────
 

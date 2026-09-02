@@ -128,6 +128,7 @@ const noopClient = (): AttachedClient => ({
   ingestInventory: () => Promise.resolve({}),
   recordAuditEvent: () => Promise.resolve(),
   reportStorePosture: () => Promise.resolve({}),
+  recordProjectEgress: () => Promise.resolve({}),
 });
 
 /** The backend is irrelevant to this decision; run every forward, ignore it. */

@@ -95,7 +95,12 @@ describe('RuleInspectorBody', () => {
   it('renders a rule that sets none of the optional fields without empty headings', () => {
     const html = render({ rule: rule() });
 
-    for (const heading of ['Only in files', 'Must also pass', 'Catches values like', 'Test cases']) {
+    for (const heading of [
+      'Only in files',
+      'Must also pass',
+      'Catches values like',
+      'Test cases',
+    ]) {
       expect(html).not.toContain(heading);
     }
   });

@@ -466,10 +466,21 @@ async function askAboutHistory(
             '                  AKA detected in those tool inputs.',
             '',
           ]),
+      // The masking half is CONDITIONAL and has to read that way. A drained
+      // capture is the stored content, and a span is masked in the store only
+      // where the policy assigned its detection is redact or block — so copy
+      // promising that every detected secret is masked first would be false
+      // under monitor and warn, which is every detection until the user
+      // promotes one. Saying so is the point of asking.
       'And, for anything a live send could not deliver — the deployment was',
       'unreachable, or refused the key — what was captured, which for a prompt,',
-      'an assistant reply or a tool result INCLUDES ITS TEXT. Every secret AKA',
-      'detects is masked before it is stored or sent; the rest goes as written.',
+      'an assistant reply or a tool result INCLUDES ITS TEXT. What is masked in',
+      'that text follows the policy assigned to the detection that flagged the',
+      'value: it is masked before it is stored or sent only where that policy',
+      'is redact or block. Under monitor or warn the value goes as it was seen,',
+      'and every detection ships on monitor, so on a default install nothing in',
+      'that text is masked. Everything outside a flagged span goes as written',
+      'either way.',
       '',
       'Saying no does not stop live sending — that is part of being attached.',
       'It means an undelivered item is dropped rather than kept and retried.',

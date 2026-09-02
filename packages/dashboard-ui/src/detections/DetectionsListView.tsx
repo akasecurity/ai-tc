@@ -10,6 +10,7 @@ import { Card } from '@akasecurity/ui-kit';
 import { ArrowUpIcon, SearchIcon } from '../shared/icons.tsx';
 import { OriginBadge, PolicyTag, UpdateBadge } from './atoms.tsx';
 import { PLACEHOLDER_POLICY } from './meta.ts';
+import type { DetectionPolicyFloor } from './policy-floor.ts';
 
 // The default tab set — "Updates" is fed by the local available_packs mirror
 // recorded by the plugin/CLI.
@@ -23,11 +24,13 @@ function DetectionRow({
   d,
   sel,
   updateVersion,
+  floor,
   onClick,
 }: {
   d: DetectionListItem;
   sel: boolean;
   updateVersion?: string | undefined;
+  floor?: DetectionPolicyFloor | null | undefined;
   onClick: () => void;
 }) {
   return (
@@ -63,7 +66,7 @@ function DetectionRow({
         </div>
         <div className="flex flex-wrap gap-1.5 mt-1">
           <OriginBadge origin={d.origin} />
-          <PolicyTag policy={d.policyId ?? PLACEHOLDER_POLICY} />
+          <PolicyTag policy={d.policyId ?? PLACEHOLDER_POLICY} floor={floor} />
           {updateVersion ? <UpdateBadge version={updateVersion} /> : null}
         </div>
       </div>
@@ -83,6 +86,7 @@ export function DetectionsListView({
   isLoading = false,
   error = null,
   updatesById,
+  floorsById,
   filterTabs = DETECTION_FILTER_TABS,
 }: {
   items: DetectionListItem[];
@@ -96,6 +100,15 @@ export function DetectionsListView({
   isLoading?: boolean | undefined;
   error?: string | null | undefined;
   updatesById?: Map<string, string> | undefined;
+  /**
+   * Per-detection control-plane constraints, keyed by detection id — what an
+   * attached machine's organization requires. Each row's policy pill names what
+   * is ENFORCED rather than what is stored, so the list cannot disagree with the
+   * detail pane about a detection the organization has raised or taken over.
+   * Omit it (a standalone machine, or a host that does not model this) and the
+   * pills render exactly as before.
+   */
+  floorsById?: ReadonlyMap<string, DetectionPolicyFloor> | undefined;
   filterTabs?: readonly [string, string][] | undefined;
 }) {
   return (
@@ -168,6 +181,7 @@ export function DetectionsListView({
               d={d}
               sel={d.id === activeId}
               updateVersion={updatesById?.get(d.id)}
+              floor={floorsById?.get(d.id)}
               onClick={() => {
                 onSelect(d.id);
               }}

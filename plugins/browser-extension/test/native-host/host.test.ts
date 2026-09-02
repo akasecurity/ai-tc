@@ -136,8 +136,8 @@ describe('handleRequest (native-messaging host)', () => {
     );
     expect(response.type).toBe('capture');
     if (response.type !== 'capture') throw new Error('unreachable');
-    // The bundled secrets pack is unassigned by default, so it monitors (log) —
-    // masking at rest is independent of enforcement, same as handleCapture's own test.
+    // The bundled secrets pack is unassigned by default, so it monitors (log),
+    // and at-rest masking follows that decision — same as handleCapture's own test.
     expect(response.action).toBe('log');
     expect(response.ruleIds).toContain('secrets/aws-access-key');
     // No composer rewrite needed for a log outcome, so the (possibly large)
@@ -153,12 +153,13 @@ describe('handleRequest (native-messaging host)', () => {
     db.close();
 
     expect(row.source_tool).toBe('chatgpt');
-    // Positive control FIRST: not.toContain is satisfied by empty bytes, so a
-    // content that came back '' would pass the absence check vacuously. Pinning
-    // the unflagged text around the secret proves the row holds the real capture.
+    // Monitored, so the row holds the capture verbatim: the unflagged text AND
+    // the matched span, with no placeholder standing in for a value enforcement
+    // was never going to strip.
     expect(row.content).toContain('here is');
     expect(row.content).toContain('value');
-    expect(row.content).not.toContain(AWS_EXAMPLE_KEY);
+    expect(row.content).toBe(text);
+    expect(row.content).not.toContain('[REDACTED:SECRET]');
     expect(JSON.parse(row.metadata) as Record<string, unknown>).toMatchObject({
       sessionId: 'browser-s2',
     });

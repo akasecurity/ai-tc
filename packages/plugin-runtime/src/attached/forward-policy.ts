@@ -58,11 +58,11 @@ export const BREAKER_COOLDOWN_MS = 30_000;
  *
  * This file records BREAKER BOOKKEEPING ONLY — a failure count, the instant the
  * breaker opened, and a three-member enum naming HOW the last attempt failed. It
- * never holds a payload and never holds a credential. That is not incidental: G8
- * forbids an at-rest outbox, because `Event.content` is raw prompt/tool text and
- * spooling it to disk is precisely what this product exists to prevent. A
- * forward that fails is DROPPED, and the only thing that survives to the next
- * process is the knowledge that forwarding is currently pointless.
+ * never holds a payload and never holds a credential, and that is still true
+ * even though a failed forward is now RETAINED rather than dropped. The retention
+ * is a `synced_at` column left NULL on a row the local store already holds; this
+ * file gains nothing to hold, because the knowledge that forwarding is currently
+ * pointless is all it ever needed to carry across processes.
  *
  * `lastFailure` is bounded by the same rule and is why it is an enum rather than
  * an error string. A message from a failed request can carry the URL, a header

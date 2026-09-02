@@ -20,6 +20,7 @@
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import {
+  createPolicyResolver,
   createVaultGlue,
   providerFromModelId,
   resolveInventoryContext,
@@ -445,19 +446,34 @@ export async function reconcileSessionTail(
     });
     // The store now reflects this tail; scrub the transcript FILE itself so a raw
     // secret in the new lines (Claude Code logs a prompt even when a hook blocked
-    // it) does not stay at rest in plaintext. Gated on VAULT CONSENT ALONE —
-    // deliberately not on historicalAccess, which governs reading pre-install
+    // it) does not stay at rest in plaintext. Two gates, and they answer
+    // different questions.
+    //
+    // VAULT CONSENT decides whether a struck value may be KEPT recoverably, and
+    // it is deliberately not historicalAccess, which governs reading pre-install
     // history: this tail is the live session's own data, and gating the scrub on
     // historical access would leave session-only users' residue permanently
     // unscrubbed. Without consent nothing here runs and no vault is constructed.
+    //
+    // The PACK POLICY decides what may be touched at all. Without it the glue
+    // self-scans and rewrites every span the bundled rules match, so a detection
+    // the user assigned Monitor has its value pulled out of their transcript and
+    // vaulted on the strength of having matched — which is what the resolver
+    // below exists to stop. A bundle we cannot read therefore scrubs NOTHING and
+    // leaves the transcript byte-identical rather than falling back to scrubbing
+    // everything: the next pass repeats a skipped scrub, where a rewrite against
+    // a policy nobody authored is not undoable.
+    //
     // Every failure is swallowed — the reconcile pass never fails because
-    // scrubbing did.
+    // scrubbing did — and an unreadable bundle is one of them.
     if (isVaultConsentValid(config.settings.vaultConsent)) {
       try {
+        const resolver = createPolicyResolver(await gateway.getPolicyBundle());
         const glue = createVaultGlue();
         const scrubbed = await scrubTranscriptTail(transcriptPath, {
           tokenizeText: (text) =>
             glue.tokenizeText(text, {
+              resolver,
               sighting: { location: transcriptPath, kind: 'transcript' },
             }),
           scope: platformRedactionScope(),

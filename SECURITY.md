@@ -27,17 +27,28 @@ credit reporters who wish to be named.
 
 In scope: the CLI, the local web dashboard, the Claude Code plugin, the detection
 engine, and the built-in rule packs in this repository. The local store lives under
-`~/.aka`; findings and audit records never contain raw secret/PII values (masked or
-hashed only) — a report showing raw sensitive values reaching disk or the network is
-in scope and appreciated.
+`~/.aka`; a finding row never contains raw secret/PII values (masked or hashed
+only), but the event content stored beside it does wherever the detection's policy
+is below redact — see [Data at rest](#data-at-rest). That stored content is also
+what an attached machine forwards, so below redact the value crosses the network
+unmasked as well — see [Data in transit](#data-in-transit). A report showing raw
+sensitive values reaching disk, or leaving the machine, where a redact or block
+policy should have masked them is in scope and appreciated. The same values under
+monitor or warn are the assigned policy doing what it says, not a vulnerability.
 
 ## Data at rest
 
 The local store under `~/.aka` holds a record of your agent activity — prompts,
-responses, and tool calls. Only the spans a detection rule flags as sensitive are
-masked; **everything else is stored verbatim and unencrypted**, so `aka.db`
-accumulates a full local prompt corpus. It is protected by **filesystem
-permissions, not encryption**. On macOS and Linux the store directories (`~/.aka`,
+responses, and tool calls. What is masked in it follows the policy assigned to the
+detection that flagged the span: a flagged span is masked at rest only where that
+policy is redact or block. Under monitor or warn the value is stored as it was
+seen, and **everything outside a flagged span is stored verbatim and unencrypted**
+either way, so `aka.db` accumulates a full local prompt corpus. Every detection
+ships on monitor, so **on a default install nothing in the store is masked at
+all** — raw secrets included — until you promote a detection to redact or block,
+which changes what is stored from then on and not what is already there. Files
+read by `aka scan` are stored under the same rule. The store is protected by
+**filesystem permissions, not encryption**. On macOS and Linux the store directories (`~/.aka`,
 `~/.aka/data`, `~/.aka/settings`, `~/.aka/keys`) are created owner-only (`0700`)
 and the files — `aka.db` and its `-wal`/`-shm`/`-journal` sidecars,
 `control-plane-credential.json`, `exception.key`, `settings.json`, and
@@ -54,12 +65,14 @@ mounts, behave that way. Any of the three can hold store content, so `ai-tc`
 tightens all three.
 
 `vault.key` is the one file that is not a copy of your data but the means to read
-it. If you consent to the secret vault, detected values are kept as recoverable
-encrypted rows in `aka.db`, and this key is what decrypts them. It lives in its own
-directory so that a backup or sync tool can exclude `~/.aka/keys/` and carry the
-store without the means to open what is vaulted — that separation is the whole of
-what encryption at rest buys here. The file appears only once vaulting is granted;
-without that consent there is no key and no recoverable copy.
+it. Where you consent to the secret vault and assign a detection Redact & Vault,
+its matched values are kept as recoverable encrypted rows in `aka.db`, and this
+key is what decrypts them. The key lives in its own directory so that a backup or
+sync tool can exclude `~/.aka/keys/` and carry the store without the means to open
+what is vaulted — that separation is the whole of what encryption at rest buys
+here. The file appears only once vaulting is granted; without that consent there is
+no key and no recoverable copy, and with it a detection on any other policy is
+still never vaulted.
 
 `ai-tc` also leaves copies of the store beside it: before a migration that would
 destroy rows, or on a recovery reset of a store it cannot open, it snapshots
@@ -115,6 +128,35 @@ to one — is refused the same way rather than failing with a bare `EEXIST`. Plu
 hooks stay fail-open throughout: they fall back to unonboarded defaults, as they do
 for any home they cannot read, and report the link on stderr without ever failing a
 tool call over it.
+
+## Data in transit
+
+Detection and enforcement run on the machine, and while it is unattached the
+store stays there; the narrow outbound paths a standalone install still has are
+enumerated in the egress footnote in [README.md](README.md), and none of them
+carry stored event content. `aka attach` is what sends it: it registers one
+machine against a control plane **your organization runs**, never a service AKA
+operates, and from then on the plugin forwards each captured event to that
+deployment as it stored it.
+
+That is the same content [Data at rest](#data-at-rest) describes, so the masking
+rule is the same one: a flagged span is masked before the event is sent only
+where the detection's policy is redact or block. **Under monitor or warn the
+matched value — the secret itself — reaches that deployment exactly as it was
+seen**, and everything outside a flagged span crosses either way. Every detection
+ships on monitor, so on an attached machine carrying default policy nothing is
+masked before it is sent; that is the default posture, not an edge case.
+Promoting a detection to redact or block masks its matches at rest and in transit
+together, from then on — it does not reach what has already been sent, and what
+has been sent cannot be recalled.
+
+The separate `aka sync-history` backfill, which covers activity recorded before
+you attached, sends the record of that activity rather than event content, so
+this rule does not reach it.
+
+Attaching is opt-in and inert until both an endpoint and an access key are on
+disk; `aka status` says what a machine is attached to and `aka detach` ends the
+forwarding. A machine that was never attached forwards none of this.
 
 ## Supported versions
 

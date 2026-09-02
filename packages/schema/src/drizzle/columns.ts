@@ -148,6 +148,10 @@ export const COL = {
   nonce: 'nonce',
   authTag: 'auth_tag',
   occurrenceCount: 'occurrence_count',
+  // Set when a PERSON asked for this value to be replaced, rather than a pack
+  // enforcing an assignment. Sticky: one row serves every path that vaults the
+  // same value, so a later automatic vaulting must not clear it.
+  userAuthorized: 'user_authorized',
   at: 'at',
   reason: 'reason',
   outcome: 'outcome',

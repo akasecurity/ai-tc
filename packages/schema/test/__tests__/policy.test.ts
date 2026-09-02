@@ -13,12 +13,14 @@ import {
   DEFAULT_PACK_POLICY_ID,
   KNOWN_BUILTIN_IDS,
   ListPoliciesResponse,
+  Policy,
   PolicyDetail,
   policyDisplayName,
   policyIdIsReversible,
   policyIdToAction,
   PolicyKind,
   PolicyListItem,
+  PolicyProvenance,
   PolicyStatsResponse,
 } from '../../src/zod/policy.ts';
 
@@ -34,6 +36,50 @@ describe('PolicyKind', () => {
     expect(() => PolicyKind.parse('unknown')).toThrow();
     expect(() => PolicyKind.parse('')).toThrow();
     expect(() => PolicyKind.parse(null)).toThrow();
+  });
+});
+
+// ─── PolicyProvenance ────────────────────────────────────────────────────────
+//
+// The axis Policy carries, and deliberately NOT PolicyKind. The two answer
+// different questions — which ARCHETYPE catalog entry a row is, versus whether
+// this deployment AUTHORED the row — and only the second one a device locks on.
+// Sharing one enum published one component under two meanings, so these cases
+// are about the two staying apart rather than about either one's members.
+
+describe('PolicyProvenance', () => {
+  it('parses valid values', () => {
+    expect(PolicyProvenance.parse('builtin')).toBe('builtin');
+    expect(PolicyProvenance.parse('authored')).toBe('authored');
+  });
+
+  it("rejects PolicyKind's own 'custom' member, so the two cannot be aliased", () => {
+    expect(() => PolicyProvenance.parse('custom')).toThrow();
+    expect(() => PolicyProvenance.parse('')).toThrow();
+    expect(() => PolicyProvenance.parse(null)).toThrow();
+  });
+
+  it('registers a component id of its own', () => {
+    // What a generated client sees. One id for both axes is exactly the defect:
+    // a consumer reads the archetype answer where the provenance answer was
+    // meant, and the device-side lock keys on the provenance one.
+    expect(PolicyProvenance.meta()?.id).toBe('PolicyProvenance');
+    expect(PolicyKind.meta()?.id).toBe('PolicyKind');
+  });
+
+  it('is the axis Policy carries — `kind` is not a Policy field', () => {
+    const base = {
+      id: '0b3f5f6e-6c1a-4a4f-9a2e-6c9d1f0c9a11',
+      scope: 'global' as const,
+      target: { category: 'secret' as const },
+      action: 'block' as const,
+      enabled: true,
+    };
+    expect(Policy.parse({ ...base, provenance: 'authored' }).provenance).toBe('authored');
+    // Zod strips what the shape does not declare, so a producer still sending
+    // the old key loses it here rather than locking a device by accident.
+    expect(Policy.parse({ ...base, kind: 'custom' })).not.toHaveProperty('kind');
+    expect(Policy.parse({ ...base, kind: 'custom' }).provenance).toBeUndefined();
   });
 });
 

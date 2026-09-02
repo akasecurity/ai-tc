@@ -32,14 +32,7 @@ import { ProviderTag } from './ProviderChips.tsx';
 import { UserCell } from './UserCell.tsx';
 
 type FlatColumnId =
-  | 'severity'
-  | 'type'
-  | 'sources'
-  | 'user'
-  | 'location'
-  | 'action'
-  | 'status'
-  | 'latest';
+  'severity' | 'type' | 'sources' | 'user' | 'location' | 'action' | 'status' | 'latest';
 
 const FINDING_COLUMN_CLASS: Record<FlatColumnId, string> = {
   severity: 'min-w-[110px] whitespace-nowrap',

@@ -4,7 +4,7 @@
 // applies migrations, and seeds defaults — a posture reader must report the
 // store AS FOUND (including its absence) and must never mutate what it
 // measures. The findings join below mirrors the canonical read in OSS
-// persistence (repositories/findings.ts, CAPTURE_EVENT_TYPES) — keep in sync.
+// persistence (repositories/findings.ts, schema CAPTURE_EVENT_TYPES_SQL) — keep in sync.
 //
 // What creates the store this reads: the OSS surfaces — standalone plugin
 // sessions (StandaloneDataGateway's openLocalDatabase), the aka CLI, and the

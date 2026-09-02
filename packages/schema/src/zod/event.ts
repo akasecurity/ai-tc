@@ -101,9 +101,19 @@ export type Event = z.infer<typeof Event>;
 export const IngestEvent = Event.meta({ id: 'IngestEvent' });
 export type IngestEvent = z.infer<typeof IngestEvent>;
 
+/**
+ * How many captures ride one /v1/events request.
+ *
+ * Named rather than inline because the outbox drain batches to exactly this
+ * bound, and a drain that restated it would start being refused the day the
+ * schema moved. The structural lane's AUDIT_EVENT_BATCH_MAX exists for the same
+ * reason; the numbers differ because the routes do.
+ */
+export const INGEST_BATCH_MAX = 100;
+
 export const IngestBatch = z
   .object({
-    events: z.array(IngestEvent).min(1).max(100),
+    events: z.array(IngestEvent).min(1).max(INGEST_BATCH_MAX),
     // Dedup policy for this batch. Id-dedup ALWAYS applies. 'content-hash'
     // additionally rejects any event whose contentHash the store has already
     // recorded — for re-runnable bulk ingest (worktree scan, transcript

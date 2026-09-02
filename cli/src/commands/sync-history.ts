@@ -7,6 +7,7 @@ import {
   controlPlaneName,
   HISTORY_SYNC_PAYLOAD_VERSION,
   isAttached,
+  isHistorySyncConsentStale,
   isHistorySyncConsentValid,
 } from '@akasecurity/schema';
 
@@ -135,9 +136,11 @@ function grant(
     return false;
   }
   io.out(
-    `Sending this machine's existing activity to ${controlPlaneName(settings.controlPlane)}.\n` +
-      'It goes in the background, a little at a time, starting with your next session.\n' +
-      'Anything already sent cannot be recalled.\n',
+    `Sending this machine's unsent activity to ${controlPlaneName(settings.controlPlane)}.\n` +
+      'That is the activity recorded before it attached, and anything a live send could not\n' +
+      'deliver — which for a captured prompt, reply or tool result includes its text, with\n' +
+      'detected secrets masked. It goes in the background, a little at a time, starting with\n' +
+      'your next session. Anything already sent cannot be recalled.\n',
   );
   return true;
 }
@@ -153,8 +156,9 @@ function revoke(io: Prompter, exit: (code: number) => void, base: string): boole
     return false;
   }
   io.out(
-    "Not sending this machine's existing activity. Anything already sent stays sent —\n" +
-      'this stops what has not gone yet.\n',
+    "Not sending this machine's unsent activity. Anything already sent stays sent —\n" +
+      'this stops what has not gone yet, and anything a live send cannot deliver is\n' +
+      'dropped rather than kept. Live sending is part of being attached and continues.\n',
   );
   return true;
 }
@@ -165,14 +169,25 @@ function describe(settings: WorkspaceSettings): string {
   }
   const where = controlPlaneName(settings.controlPlane);
   if (isHistorySyncConsentValid(settings.historySyncConsent, settings.controlPlane.endpoint)) {
-    return `Sending this machine's existing activity to ${where}.`;
+    return `Sending this machine's unsent activity to ${where}.`;
   }
   // A grant that exists but does not apply — given for another deployment, or
   // for a narrower payload than what would be sent now — reads as absent, and
   // saying so is more useful than reporting a bare "off" the user cannot explain.
-  return settings.historySyncConsent === undefined
-    ? `Not sending this machine's existing activity to ${where}.\n` +
-        'Run `aka sync-history --on` to send it.'
-    : `Not sending this machine's existing activity to ${where}: the earlier grant no longer\n` +
+  // The two are separated because they are not the same news: a STALE grant is
+  // this deployment's own, and what changed is the payload, so the line says
+  // what widened. A grant naming somewhere else is not re-offered at all.
+  if (settings.historySyncConsent === undefined) {
+    return (
+      `Not sending this machine's unsent activity to ${where}.\n` +
+      'Run `aka sync-history --on` to send it.'
+    );
+  }
+  return isHistorySyncConsentStale(settings.historySyncConsent, settings.controlPlane.endpoint)
+    ? `Not sending this machine's unsent activity to ${where}: your grant predates a change.\n` +
+        'It now also covers the text of captured prompts, replies and tool results that no\n' +
+        'live send delivered, with detected secrets masked.\n' +
+        'Run `aka sync-history --on` to grant it again.'
+    : `Not sending this machine's unsent activity to ${where}: the earlier grant no longer\n` +
         'applies. Run `aka sync-history --on` to grant it again.';
 }

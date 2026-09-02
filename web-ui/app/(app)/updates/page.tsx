@@ -15,6 +15,7 @@ import { defaultDataDir } from '@akasecurity/persistence';
 import type { UpdateCache } from '@akasecurity/schema';
 
 import { dashboardInstallOrigin } from '../../lib/install-origin';
+import { renderInstant } from '../../lib/rendered-at';
 import type { UpdateAdvisory } from './UpdatesClient';
 import { UpdatesClient } from './UpdatesClient';
 
@@ -115,7 +116,12 @@ export default function UpdatesPage() {
       <UpdatesClient
         statuses={report.statuses}
         availablePlugins={report.availablePlugins}
-        checkedAt={cache ? relativeTime(new Date(cache.checkedAt).toISOString()) : null}
+        // Resolved to a STRING here rather than in the client component: the
+        // label crosses the boundary already formatted, so the browser has
+        // nothing to recompute and nothing to disagree with.
+        checkedAt={
+          cache ? relativeTime(new Date(cache.checkedAt).toISOString(), renderInstant()) : null
+        }
         commands={commands}
         advisories={advisories}
         installCommands={installCommands}

@@ -347,8 +347,52 @@ function tonalInkSelectors() {
   ];
 }
 
-// The tonal-token guard, for the packages that render Tailwind classes: ui-kit,
-// dashboard-ui and web-ui.
+const AMBIENT_CLOCK_MESSAGE =
+  'A component under a `use client` directive is rendered TWICE — once on the server, ' +
+  'once when the browser hydrates it — and reading the clock makes those two renders ' +
+  'disagree whenever a rounding boundary falls between them, which React resolves by ' +
+  'discarding the server HTML for the subtree. Take the instant as a prop (`renderedAt`) ' +
+  'from the server component that captured it, or track it with `useRenderClock`, which ' +
+  'returns that instant for the hydration render and the live clock afterwards. ' +
+  '`new Date(someIso)` and `Date.parse(someIso)` are unaffected — they read no clock.';
+
+/**
+ * The `no-restricted-syntax` entries that reject an ambient clock read inside a
+ * module carrying the `use client` directive.
+ *
+ * The scoping is the whole trick: `Program:has(> ExpressionStatement[directive=…])`
+ * matches only where the directive is a real directive-prologue statement, so a
+ * SERVER component — which is where an instant is legitimately captured, and must
+ * stay legitimate — is untouched, and so is a file that merely mentions the string
+ * `use client` as a value. Only `Date.now()` and a zero-argument `new Date()` are
+ * clock reads; `new Date(iso)` and `Date.parse(iso)` parse a value the caller
+ * already had and are deliberately left alone.
+ *
+ * Known limits, in the shape `tonalInkSelectors` states its own: an alias
+ * (`const n = Date.now; n()`), a clock reached through a helper the client
+ * component calls, and `performance.now()` — which is not a wall clock and cannot
+ * produce a date label — are not matched. This bans the accident, not the evasion.
+ *
+ * @returns {{ selector: string, message: string }[]}
+ */
+function ambientClockSelectors() {
+  const CLIENT = "Program:has(> ExpressionStatement[directive='use client'])";
+  return [
+    {
+      selector: `${CLIENT} CallExpression[callee.object.name='Date'][callee.property.name='now']`,
+      message: AMBIENT_CLOCK_MESSAGE,
+    },
+    {
+      selector: `${CLIENT} NewExpression[callee.name='Date'][arguments.length=0]`,
+      message: AMBIENT_CLOCK_MESSAGE,
+    },
+  ];
+}
+
+// The assembled `no-restricted-syntax` value for the packages that render in a
+// browser: ui-kit, dashboard-ui and web-ui. Named for the tonal guard it was
+// introduced to carry; it is the ONE entry these packages get, so it also carries
+// the ambient-clock ban and, below, the two bans it must not drop.
 //
 // It re-lists the network AND drizzle selectors rather than only its own, because
 // a flat-config `rules` entry REPLACES the rule's options instead of merging them
@@ -356,16 +400,40 @@ function tonalInkSelectors() {
 // exactly these three packages, and this is spread after `noDrizzleImports` in
 // every one of them. `reactUiPackage` below is what keeps that ordering from
 // being re-derived per package.
+/**
+ * The whole `no-restricted-syntax` value one of those packages gets, assembled
+ * from every group rather than composed by spreading — because a later flat-config
+ * entry REPLACES this rule's options, so a config that sets it a second time and
+ * names a subset silently drops the rest.
+ *
+ * That is exactly what a per-file opt-out has to do, which is why the only
+ * supported way to write one is to call this with the group turned off:
+ *
+ *   { files: ['src/lib/useRenderClock.ts'],
+ *     rules: { 'no-restricted-syntax': reactSyntaxBans({ allowAmbientClock: true }) } }
+ *
+ * The other three groups come along by construction, so an opt-out for one ban
+ * cannot become an opt-out for four by omission.
+ *
+ * @param {{ allowAmbientClock?: boolean }} [opts]
+ * @returns {import('eslint').Linter.RuleEntry}
+ */
+export function reactSyntaxBans(opts = {}) {
+  const { allowAmbientClock = false } = opts;
+  return /** @type {import('eslint').Linter.RuleEntry} */ ([
+    'error',
+    ...networkSyntaxSelectors(),
+    ...drizzleSyntaxSelectors(),
+    ...tonalInkSelectors(),
+    ...(allowAmbientClock ? [] : ambientClockSelectors()),
+  ]);
+}
+
 /** @type {import('eslint').Linter.Config[]} */
 export const tonalInkTokens = [
   {
     rules: {
-      'no-restricted-syntax': /** @type {import('eslint').Linter.RuleEntry} */ ([
-        'error',
-        ...networkSyntaxSelectors(),
-        ...drizzleSyntaxSelectors(),
-        ...tonalInkSelectors(),
-      ]),
+      'no-restricted-syntax': reactSyntaxBans(),
     },
   },
 ];

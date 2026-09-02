@@ -20,6 +20,8 @@ import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
+import { ExceptionDetailClient } from '../../app/(app)/exceptions/[id]/ExceptionDetailClient.tsx';
+import ExceptionDetailPage from '../../app/(app)/exceptions/[id]/page.tsx';
 import { ExceptionsClient } from '../../app/(app)/exceptions/ExceptionsClient.tsx';
 import ExceptionsPage from '../../app/(app)/exceptions/page.tsx';
 import { withBundledPacks } from '../helpers/store-templates.ts';
@@ -259,5 +261,132 @@ describe('the exceptions route wires each ledger read to the consumer that needs
     expect(props.approvableBlocked).toBe(0);
     // Still listed: the ledger is a record of what was blocked either way.
     expect(props.blocked).toHaveLength(1);
+  });
+});
+
+// The other thing this route hands down that nothing else can see: the instant
+// every relative label and every lifecycle badge on the page is measured
+// against.
+//
+// A MISSING instant is a compile error — `renderedAt` is required on the client
+// and on each view under it — so what these cover is the failure that still
+// typechecks: an instant captured once and reused. Hoisting `renderInstant()`
+// to module scope, or replacing it with a `const` beside the imports, keeps the
+// whole route green while a long-lived dashboard process renders every age
+// against the instant it booted.
+describe('the exceptions route captures its render instant per request', () => {
+  // Only Date is faked: this suite does real file and store I/O, and faking the
+  // timer APIs as well would stall it.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('hands the client the clock as it stood for THIS render', () => {
+    const at = Date.parse('2026-08-01T00:30:00.000Z');
+    vi.setSystemTime(at);
+    return renderPage().then((props) => {
+      expect(props.renderedAt).toBe(at);
+    });
+  });
+
+  it('captures a new instant on the next request, rather than reusing one', async () => {
+    vi.setSystemTime(Date.parse('2026-08-01T00:30:00.000Z'));
+    const first = await renderPage();
+    vi.setSystemTime(Date.parse('2026-08-01T02:30:00.000Z'));
+    const second = await renderPage();
+
+    expect(second.renderedAt - first.renderedAt).toBe(2 * 60 * 60 * 1000);
+  });
+});
+
+// The same property for the DETAIL route, which no other suite reaches.
+//
+// exception-detail-client.test.ts renders ExceptionDetailClient directly with an
+// instant of its own, so it pins the client-to-view half and structurally cannot
+// see the half above it — the `renderedAt={renderInstant()}` on [id]/page.tsx.
+// Replace that call with a literal and every assertion in that suite stays green
+// while the detail route serves one fixed instant for the life of the process.
+//
+// It matters more here than on the list route: `exceptionState` gates the revoke
+// form, so a stuck instant does not merely age a label, it decides whether a
+// whole subtree renders.
+describe('the exception detail route captures its render instant per request', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function seedGrant(): Promise<string> {
+    const store = openLocalDatabase(dir);
+    try {
+      // A synthetic fingerprint: this route reads the grant by id prefix and
+      // never matches it against a value, so minting a real one would only
+      // couple the test to the key file for nothing.
+      const created = await store.exceptions.create({
+        ruleId: RULE_ID,
+        category: 'secret',
+        valueFingerprint: 'a'.repeat(64),
+        keyVersion: 1,
+        maskedValue: maskMatch(VALUE),
+        scope: 'permanent',
+        expiresAt: null,
+        maxUses: null,
+        justification: 'test fixture',
+        conditions: null,
+        createdBy: 'tester',
+        createdVia: 'web-add',
+      });
+      return created.id;
+    } finally {
+      store.close();
+    }
+  }
+
+  // The page wraps the client in layout markup, so the props are reached by
+  // walking to the client element rather than read off the wrapper — which would
+  // hand back `undefined` for every one of them and fail for the wrong reason.
+  // `toBeDefined` is what separates those two outcomes.
+  async function renderDetail(
+    idPrefix: string,
+  ): Promise<ComponentProps<typeof ExceptionDetailClient>> {
+    const element = (await ExceptionDetailPage({
+      params: Promise.resolve({ id: idPrefix }),
+    })) as ReactElement<{ children?: unknown }>;
+    const found = flatten(element.props.children).find(
+      (child) => child.type === ExceptionDetailClient,
+    );
+    expect(found).toBeDefined();
+    return (found as ReactElement<ComponentProps<typeof ExceptionDetailClient>>).props;
+  }
+
+  function flatten(node: unknown): ReactElement[] {
+    if (Array.isArray(node)) return node.flatMap(flatten);
+    if (node !== null && typeof node === 'object' && 'type' in node) return [node as ReactElement];
+    return [];
+  }
+
+  it('hands the client the clock as it stood for THIS render', async () => {
+    const id = await seedGrant();
+    const at = Date.parse('2026-08-01T00:30:00.000Z');
+    vi.setSystemTime(at);
+
+    const props = await renderDetail(id.slice(0, 8));
+
+    expect(props.renderedAt).toBe(at);
+  });
+
+  it('captures a new instant on the next request, rather than reusing one', async () => {
+    const id = await seedGrant();
+    vi.setSystemTime(Date.parse('2026-08-01T00:30:00.000Z'));
+    const first = await renderDetail(id.slice(0, 8));
+    vi.setSystemTime(Date.parse('2026-08-01T02:30:00.000Z'));
+    const second = await renderDetail(id.slice(0, 8));
+
+    expect(second.renderedAt - first.renderedAt).toBe(2 * 60 * 60 * 1000);
   });
 });

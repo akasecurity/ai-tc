@@ -17,6 +17,7 @@ import {
 } from '../../components/icons';
 import { RangeSelect } from '../../components/RangeSelect';
 import { db } from '../../lib/db';
+import { renderInstant } from '../../lib/rendered-at';
 import { ActivityClient } from './ActivityClient';
 import {
   type ActivitySearchParams,
@@ -126,6 +127,9 @@ export default async function ActivityPage({
       tone: 'teal',
     },
   ];
+  // One instant for the whole route: every relative label below is measured
+  // against it during the server render and again during hydration.
+  const renderedAt = renderInstant();
   return (
     <div className="flex h-full min-h-0 flex-col px-8 pb-8 pt-7">
       {/* Token usage sits in the filter bar beside the range picker rather than
@@ -163,6 +167,7 @@ export default async function ActivityPage({
         emptyCount={list.emptyCount}
         showEmpty={showEmpty}
         expanded={expanded}
+        renderedAt={renderedAt}
       />
     </div>
   );

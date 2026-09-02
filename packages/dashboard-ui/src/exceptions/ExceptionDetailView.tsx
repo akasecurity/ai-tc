@@ -23,8 +23,10 @@ export interface ExceptionDetailViewProps {
    * It reaches further here than on the list views: `exceptionState` gates the
    * revoke form below, so a grant whose `expiresAt` falls between the two
    * passes renders that whole block on the server and drops it on the client.
+   * Required rather than optional for exactly that reason — an omitted instant
+   * is not a smaller version of this bug, it is the bug.
    */
-  renderedAt?: number | undefined;
+  renderedAt: number;
 }
 
 /** Full grant detail — the web twin of `aka exception show <id>`. */

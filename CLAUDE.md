@@ -851,6 +851,79 @@ variable string, since `iconColor="var(--color-ok)"` and `iconBg="var(--color-ok
 are the same node to a selector (`toneColors()` is the live example); and a class
 assembled from a non-literal.
 
+`tonalInkTokens` is no longer only the tonal ban: it is the WHOLE
+`no-restricted-syntax` value those three packages get, assembled by
+`reactSyntaxBans()` from four groups (network, drizzle, tonal, ambient clock)
+because a later entry replaces the rule's options rather than merging them. A
+per-file opt-out is therefore written as `reactSyntaxBans({ … })` with one group
+switched off, never as a hand-listed subset — the other three come along by
+construction, so lifting one ban cannot silently lift four.
+
+### A time label is a function of two instants, and a client component is given both
+
+A page under `'use client'` is rendered **twice** — once on the server, once when
+the browser hydrates it. A label derived from the ambient clock is therefore two
+different strings whenever a rounding boundary falls between those two renders,
+and React resolves that by discarding the server HTML for the subtree. It is not
+only cosmetic: `exceptionState` gates **structure**, since `ExceptionDetailView`
+renders its revoke form only while the state reads `active`, so the two renders
+can disagree about whether a whole subtree exists.
+
+The class is closed in the type system rather than site by site. `relativeTime`,
+`relativeTimeShort` and `exceptionState` take `now` as a **required** argument,
+and every time-derived view takes a required `renderedAt: number` prop — a
+DEFAULT would not do, because a default reads as safe at every call site that
+omits it, which is every call site until somebody remembers. Required, the
+compiler names each place that has to decide which instant it means, and a host
+that forgets one fails the build instead of shipping the defect.
+
+Where each instant comes from:
+
+- A **server component** captures one per request with `renderInstant()`
+  (`web-ui/app/lib/rendered-at.ts`) and passes it down. It is a function, not a
+  module constant: a constant is captured once when the module loads and then
+  served to every later request, so a long-lived dashboard process would render
+  every age against the instant it booted. `exceptions-page.test.ts` pins that
+  by rendering the route twice under two clocks.
+- A **client component** that must not go stale feeds it to `useRenderClock`,
+  which returns that instant for the render React compares against the server's
+  HTML and the live clock from the commit after. It is built on
+  `useSyncExternalStore`, whose third argument IS the server snapshot, so the
+  split is in the signature rather than in a comment about effect ordering.
+  Freezing is the floor everywhere; the refresh is applied where a derived
+  lifecycle decays — a temporary grant expires in 30 minutes and a dashboard tab
+  outlives that, so a frozen instant would label an expired grant `active` and go
+  on offering to revoke it.
+
+The remaining hole — satisfying the required argument with a fresh clock read at
+the call site, which typechecks perfectly — is closed by the ambient-clock
+selectors above. They are scoped by `Program:has(> ExpressionStatement[directive=
+'use client'])`, so they fire only where the directive is a real directive-prologue
+statement: a **server** component may still read the clock, which is what makes
+capturing an instant possible at all, and a file that merely mentions the string
+as a value is untouched. `Date.now()` and a zero-argument `new Date()` are clock
+reads; `new Date(iso)` and `Date.parse(iso)` parse a value the caller already had
+and are deliberately left alone.
+
+Two things about that ban are worth knowing before trusting it. It reaches what
+`react-hooks/purity` cannot — that rule reports a clock read inside a COMPONENT,
+so a module-level helper in a client file is invisible to it, and that is exactly
+where the one site this sweep did not find by hand was living
+(`HarnessOverview`'s `formatEvent`). And it cannot follow a binding, so a clock
+reached through an imported helper goes unseen; the required argument is what
+covers that direction. `packages/dashboard-ui/src/lib/useRenderClock.ts` is the
+one sanctioned reader, and its exemption is written in that package's
+`eslint.config.mjs` through `reactSyntaxBans({ allowAmbientClock: true })`.
+
+**What none of this reaches is a LOCALE-formatted string.** `toLocaleString` and
+its siblings render in the renderer's own locale and time zone, and the server's
+need not be the browser's, so passing one instant does not reconcile them. Two
+sites carry that honestly rather than pretending otherwise: `SessionListView`'s
+`title` keeps its `suppressHydrationWarning` for the locale half alone (the clock
+half is pinned now), and `HarnessOverview`'s `formatEvent` says so in its own
+doc comment. `suppressHydrationWarning` silences a warning without reconciling
+anything, so it is never a substitute for passing an instant.
+
 ## Detection rules
 
 See `skills/write-detection-rule/SKILL.md`. A rule PR carrying fewer than 2 positive or

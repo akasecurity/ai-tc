@@ -36,6 +36,11 @@ import {
 } from '../../src/exceptions/ExceptionsTableView.tsx';
 import type { RotateKeyDialogProps } from '../../src/exceptions/RotateKeyDialog.tsx';
 
+// A fixed render instant. These cases assert display contracts rather than
+// ages, so the value only has to be the SAME one every run — but it has to be
+// passed, because the views no longer have a clock of their own to fall back on.
+const RENDERED_AT = Date.parse('2026-07-05T00:00:00.000Z');
+
 // Distinctive hex so a fragment of it in markup is an echo, not a coincidence;
 // no other fixture value below shares a 6-character window with it.
 const FINGERPRINT = 'ba5eba11deadbea7f01dab1ecafed00dfeedface8badf00dca11ab1e0ddba11e';
@@ -99,7 +104,11 @@ function expectNoFingerprintEcho(markup: string): void {
 describe('exceptions views never render the valueFingerprint', () => {
   it('ExceptionDetailView renders a full grant row without any fingerprint fragment', () => {
     const markup = renderToStaticMarkup(
-      <ExceptionDetailView exception={asExceptionDescriptor(exceptionRow)} onRevoke={vi.fn()} />,
+      <ExceptionDetailView
+        renderedAt={RENDERED_AT}
+        exception={asExceptionDescriptor(exceptionRow)}
+        onRevoke={vi.fn()}
+      />,
     );
     // Positive control first — an empty render passes every absence check vacuously.
     expect(markup).toContain(exceptionRow.id.slice(0, 8));
@@ -111,6 +120,7 @@ describe('exceptions views never render the valueFingerprint', () => {
   it('ExceptionsTableView renders full grant rows without any fingerprint fragment', () => {
     const markup = renderToStaticMarkup(
       <ExceptionsTableView
+        renderedAt={RENDERED_AT}
         items={[asExceptionDescriptor(exceptionRow)]}
         includeTerminal={false}
         onSelect={vi.fn()}
@@ -124,6 +134,7 @@ describe('exceptions views never render the valueFingerprint', () => {
   it('BlockedLedgerView renders full ledger rows without any fingerprint fragment', () => {
     const markup = renderToStaticMarkup(
       <BlockedLedgerView
+        renderedAt={RENDERED_AT}
         items={[asBlockedDescriptor(blockedRow)]}
         onApprove={vi.fn()}
         blockedWindow="30m"
@@ -146,6 +157,7 @@ describe('exceptions views never render the valueFingerprint', () => {
     // here, so the guard has to see the path rendered rather than beside it.
     const markup = renderToStaticMarkup(
       <BlockedLedgerView
+        renderedAt={RENDERED_AT}
         items={[asBlockedDescriptor(blockedRow)]}
         onApprove={vi.fn()}
         blockedWindow="30m"

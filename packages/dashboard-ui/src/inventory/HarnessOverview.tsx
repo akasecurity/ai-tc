@@ -21,11 +21,20 @@ import { Ico } from './Ico.tsx';
 
 const EVENT_KINDS: HarnessEventKind[] = ['block', 'redact', 'warn'];
 
-/** Format an ISO timestamp into the "Today · 09:19" day/time the row shows. */
-function formatEvent(iso: string): { day: string; time: string } {
+/**
+ * Format an ISO timestamp into the "Today · 09:19" day/time the row shows.
+ *
+ * `now` is the instant the day bucket is relative to, and it is a parameter for
+ * the reason relativeTime's is: a server render and a hydration that straddle
+ * local midnight would label the same event "Today" and "Yesterday". The clock
+ * half is closed by passing one instant; the LOCALE half is not closeable here —
+ * toLocaleTimeString renders in the renderer's own locale and time zone, and the
+ * server's need not be the browser's.
+ */
+function formatEvent(iso: string, now: number): { day: string; time: string } {
   const d = new Date(iso);
   const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const today = new Date();
+  const today = new Date(now);
   const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const dayDiff = Math.round((startOf(today) - startOf(d)) / 86_400_000);
   const day =
@@ -42,11 +51,19 @@ export function HarnessOverview({
   events,
   onSelect,
   onSelectProject,
+  renderedAt,
 }: {
   harness: HarnessSummary;
   events: HarnessEventsResponse | null;
   onSelect: (it: AssetSummary) => void;
   onSelectProject: (id: string) => void;
+  /**
+   * The instant this render is measured against, in epoch milliseconds. The host
+   * captures one and the event rows' day buckets read it. Required: a view that
+   * picks its own instant can label an event "Today" on the server and
+   * "Yesterday" in the browser.
+   */
+  renderedAt: number;
 }) {
   const mcpItems = harness.categories.find((c) => c.type === 'mcp')?.assets ?? [];
   const unapproved = mcpItems.filter((it) => it.trust === 'unapproved').length;
@@ -99,7 +116,7 @@ export function HarnessOverview({
             <div className="flex flex-col gap-1.5">
               {items.map((x) => {
                 const m = EVENT_KIND[x.kind];
-                const { day, time } = formatEvent(x.occurredAt);
+                const { day, time } = formatEvent(x.occurredAt, renderedAt);
                 return (
                   <div
                     key={`${x.occurredAt}·${x.title}`}

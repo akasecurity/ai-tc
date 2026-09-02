@@ -4,6 +4,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { FindingsFlatTableView } from '../../src/findings/FindingsFlatTableView.tsx';
 
+// A fixed render instant. These cases assert display contracts rather than
+// ages, so the value only has to be the SAME one every run — but it has to be
+// passed, because the views no longer have a clock of their own to fall back on.
+const RENDERED_AT = Date.parse('2026-07-05T00:00:00.000Z');
+
 function instance(over: Partial<FindingInstanceDetail> = {}): FindingInstanceDetail {
   return {
     id: 'fnd-1',
@@ -27,7 +32,12 @@ function instance(over: Partial<FindingInstanceDetail> = {}): FindingInstanceDet
 
 function render(props: Partial<Parameters<typeof FindingsFlatTableView>[0]> = {}) {
   return renderToStaticMarkup(
-    <FindingsFlatTableView items={[instance()]} onSelect={vi.fn()} {...props} />,
+    <FindingsFlatTableView
+      renderedAt={RENDERED_AT}
+      items={[instance()]}
+      onSelect={vi.fn()}
+      {...props}
+    />,
   );
 }
 

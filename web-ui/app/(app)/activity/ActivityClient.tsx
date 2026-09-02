@@ -41,6 +41,7 @@ export function ActivityClient({
   emptyCount,
   showEmpty,
   expanded,
+  renderedAt,
 }: {
   sessions: ActivitySessionSummary[];
   detail: ActivitySession | null;
@@ -62,6 +63,12 @@ export function ActivityClient({
   showEmpty: boolean;
   /** Whether the full-width session inspector is open (?view=full). */
   expanded: boolean;
+  /**
+   * The instant the SERVER rendered against. Passed down rather than read here:
+   * a client that picked its own would render different text than the HTML it
+   * is hydrating.
+   */
+  renderedAt: number;
 }) {
   const pathname = usePathname();
   const { isPending, push: pushUrl, replace: replaceUrl } = useNavigationTransition();
@@ -178,6 +185,7 @@ export function ActivityClient({
     >
       <Card className="flex w-85 shrink-0 flex-col overflow-hidden shadow-sm">
         <SessionListView
+          renderedAt={renderedAt}
           sessions={sessions}
           selectedId={selectedId}
           onSelect={(id) => {

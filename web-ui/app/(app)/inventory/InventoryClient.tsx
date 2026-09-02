@@ -58,6 +58,7 @@ export function InventoryClient({
   path,
   fq,
   drawer,
+  renderedAt,
 }: {
   harnesses: HarnessSummary[];
   assetGroups: AssetGroup[];
@@ -74,6 +75,8 @@ export function InventoryClient({
   path: string[];
   fq: string;
   drawer: string | null;
+  /** The instant the server rendered against. */
+  renderedAt: number;
 }) {
   const pathname = usePathname();
   // Navigation transition (selection/search/path pushes) — distinct from the
@@ -212,6 +215,7 @@ export function InventoryClient({
           <Card className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {selHarness ? (
               <HarnessOverview
+                renderedAt={renderedAt}
                 harness={selHarness}
                 events={harnessEvents}
                 onSelect={selectAsset}

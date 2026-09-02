@@ -21,11 +21,23 @@ export interface RecentlyResolvedView {
   items: ResolvedFeedItem[];
   isLoading: boolean;
   error: string | null;
+  /**
+   * The instant this render is measured against, in epoch milliseconds. The host
+   * captures one and every relative label below reads it. Required: a view that
+   * picks its own instant renders one string while the server renders it and
+   * another when the browser hydrates it. See ../lib/relativeTime.ts.
+   */
+  renderedAt: number;
 }
 
 /** The recently-resolved feed: a vertical timeline of findings moved to resolved,
  * newest first. */
-export function RecentlyResolvedCardView({ items, isLoading, error }: RecentlyResolvedView) {
+export function RecentlyResolvedCardView({
+  items,
+  isLoading,
+  error,
+  renderedAt,
+}: RecentlyResolvedView) {
   return (
     <Card className="flex h-full flex-col shadow-sm">
       <CardHeader>
@@ -50,7 +62,12 @@ export function RecentlyResolvedCardView({ items, isLoading, error }: RecentlyRe
           <WidgetEmpty message="No resolved findings yet." />
         ) : (
           items.map((item, i) => (
-            <ResolvedRow key={item.findingKey} item={item} last={i === items.length - 1} />
+            <ResolvedRow
+              key={item.findingKey}
+              item={item}
+              last={i === items.length - 1}
+              renderedAt={renderedAt}
+            />
           ))
         )}
       </CardContent>
@@ -58,7 +75,15 @@ export function RecentlyResolvedCardView({ items, isLoading, error }: RecentlyRe
   );
 }
 
-function ResolvedRow({ item, last }: { item: ResolvedFeedItem; last: boolean }) {
+function ResolvedRow({
+  item,
+  last,
+  renderedAt,
+}: {
+  item: ResolvedFeedItem;
+  last: boolean;
+  renderedAt: number;
+}) {
   return (
     <div className={cn('relative flex gap-3', !last && 'pb-4')}>
       {/* Connector line to the next item — centered under the 32px icon tile. */}
@@ -77,7 +102,7 @@ function ResolvedRow({ item, last }: { item: ResolvedFeedItem; last: boolean }) 
             {item.ruleId}
           </span>
           <span className="ml-auto shrink-0 text-xs text-text-3">
-            {relativeTime(item.resolvedAt)}
+            {relativeTime(item.resolvedAt, renderedAt)}
           </span>
         </div>
         <div className="mt-1.5 flex items-center gap-1.5 text-xs text-text-3">

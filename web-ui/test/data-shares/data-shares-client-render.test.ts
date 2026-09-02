@@ -101,6 +101,7 @@ function render(props: Partial<Parameters<typeof DataSharesClient>[0]> = {}) {
         destination: null,
         selectedDest: null,
         selectedEndpoint: null,
+        renderedAt: Date.parse('2026-08-01T00:30:00.000Z'),
         ...props,
       }),
     ),

@@ -1,6 +1,7 @@
 import { rangeToFromIso } from '@akasecurity/dashboard-ui';
 
 import { db } from '../../lib/db';
+import { renderInstant } from '../../lib/rendered-at';
 import {
   type FindingsScope,
   type FindingsSearchParams,
@@ -52,6 +53,9 @@ export default async function FindingsPage({
   // An absent/unknown range means all time — this list has never had a default
   // window, and applying one silently would hide findings.
   const from = range ? rangeToFromIso(range) : null;
+  // One instant for the whole route: every relative label below is measured
+  // against it during the server render and again during hydration.
+  const renderedAt = renderInstant();
   const scope: FindingsScope = {
     ...(from ? { from } : {}),
     ...(tools.length ? { tools } : {}),
@@ -76,6 +80,7 @@ export default async function FindingsPage({
         tools={tools}
         repo={repo}
         file={file}
+        renderedAt={renderedAt}
       />
     );
   }
@@ -97,6 +102,7 @@ export default async function FindingsPage({
         tools={tools}
         repo={repo}
         file={file}
+        renderedAt={renderedAt}
       />
     );
   }
@@ -120,6 +126,7 @@ export default async function FindingsPage({
       tools={tools}
       repo={repo}
       file={file}
+      renderedAt={renderedAt}
     />
   );
 }

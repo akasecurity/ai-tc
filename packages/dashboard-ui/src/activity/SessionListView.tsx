@@ -26,10 +26,12 @@ function SessionRow({
   session,
   selected,
   onSelect,
+  renderedAt,
 }: {
   session: ActivitySessionSummary;
   selected: boolean;
   onSelect: () => void;
+  renderedAt: number;
 }) {
   const flagged = session.findings > 0;
   return (
@@ -63,15 +65,18 @@ function SessionRow({
         </span>
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        {/* Relative time is "now"-relative + the tooltip is locale-formatted, so
-            server and client HTML legitimately differ — suppress the hydration
-            warning rather than freeze it to the server's clock/locale. */}
+        {/* The label reads `renderedAt`, so the clock half of this element now
+            matches across server and client. The `title` does not and cannot:
+            toLocaleString renders in the RENDERER's locale and time zone, and
+            the server's are not the browser's. suppressHydrationWarning is kept
+            for that half alone — it silences the warning without reconciling
+            the attribute, so it is not a substitute for passing an instant. */}
         <span
           className="text-xs font-semibold text-text-2"
           title={new Date(session.startedAt).toLocaleString()}
           suppressHydrationWarning
         >
-          {relativeTime(session.startedAt)}
+          {relativeTime(session.startedAt, renderedAt)}
         </span>
         <Metric icon={ClockIcon}>
           {durationLabel(session.startedAt, session.endedAt, session.status)}
@@ -116,6 +121,7 @@ export function SessionListView({
   emptyCount = 0,
   showEmpty = false,
   onToggleEmpty,
+  renderedAt,
 }: {
   sessions: ActivitySessionSummary[];
   selectedId: string;
@@ -136,6 +142,13 @@ export function SessionListView({
   showEmpty?: boolean;
   /** Flips showEmpty; omitted hides the toggle. */
   onToggleEmpty?: () => void;
+  /**
+   * The instant this render is measured against, in epoch milliseconds. The host
+   * captures one and every relative label below reads it. Required: a view that
+   * picks its own instant renders one string while the server renders it and
+   * another when the browser hydrates it. See ../lib/relativeTime.ts.
+   */
+  renderedAt: number;
 }) {
   const days = groupSessionsByDay(sessions);
   const filtersActive = query.trim() !== '' || harness.length > 0;
@@ -214,6 +227,7 @@ export function SessionListView({
                     <SessionRow
                       key={session.id}
                       session={session}
+                      renderedAt={renderedAt}
                       selected={session.id === selectedId}
                       onSelect={() => {
                         onSelect(session.id);

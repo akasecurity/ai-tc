@@ -22,6 +22,7 @@ export {
   type TimeRange,
   type TimeRangeOption,
 } from './lib/timeRanges.ts';
+export { CLOCK_TICK_MS, useRenderClock } from './lib/useRenderClock.ts';
 export {
   AreaChart,
   type AreaSeries,

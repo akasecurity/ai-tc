@@ -1,6 +1,7 @@
 'use client';
 import type {
   CredentialState,
+  HistorySyncConsentChoice,
   ManagedContext,
   ManagedSettingKey,
   WorkspaceSettings,
@@ -9,6 +10,7 @@ import {
   controlPlaneName,
   isAttached,
   isFieldManaged,
+  isHistorySyncConsentStale,
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
   isVaultConsentValid,
@@ -105,31 +107,46 @@ export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
 // and separate again from historical access, which governs local READING.
 type HistorySyncChoice = 'granted' | 'revoked';
 
-export const HISTORY_SYNC_SECTION_LABEL = 'Existing activity history';
+export const HISTORY_SYNC_SECTION_LABEL = 'Unsent activity';
 
 export const HISTORY_SYNC_SECTION_DESCRIPTION =
-  'Whether the activity already recorded on this machine before it attached may be sent to the ' +
-  'deployment it is attached to. What that covers is the record of activity: which sessions ran ' +
-  'and when, in which project, repo and branch, token usage and model per call, which tools were ' +
-  'called with their inputs truncated and every detected secret already masked, and what was ' +
-  'detected in those inputs. Prompts and assistant replies are not sent and stay on this ' +
-  'machine. Sending happens in the background over later sessions. Revoking stops what has not ' +
-  'been sent; it cannot recall what has.';
+  'Whether activity this machine has not delivered to the deployment it is attached to may be ' +
+  'sent later. Two kinds qualify: what was already recorded before it attached, and anything a ' +
+  'live send could not deliver because the deployment was unreachable or refused the ' +
+  'credential. The first is the record of activity only: which sessions ran and when, in which ' +
+  'project, repo and branch, token usage and model per call, which tools were called with their ' +
+  'inputs truncated and every detected secret already masked, and what was detected in those ' +
+  'inputs. The second is what was captured, and for a prompt, an assistant reply or a tool ' +
+  'result that INCLUDES ITS TEXT — every secret this machine detected is masked first, the rest ' +
+  'is sent as written. Live sending is part of being attached and this setting does not change ' +
+  'it: declining means an undelivered item is dropped rather than kept and retried. Sending ' +
+  'happens in the background over later sessions. Revoking stops what has not been sent; it ' +
+  'cannot recall what has.';
 
 export const HISTORY_SYNC_CHOICES: Choice<HistorySyncChoice>[] = [
   {
     value: 'revoked',
     label: 'Not shared',
     description:
-      'Activity recorded before this machine attached stays on it (default — never assumed).',
+      'Anything not delivered live is dropped, as it was before this setting existed (default — never assumed).',
   },
   {
     value: 'granted',
     label: 'Shared',
     description:
-      'The record of activity from before this machine attached may be sent to that deployment — never the prompts or replies themselves.',
+      'Undelivered activity may be sent later — including the text of captured prompts, replies and tool results, with detected secrets masked.',
   },
 ];
+
+// The one-word form of HISTORY_SYNC_STALE_NOTICE, for the collapsed summary —
+// same reason as VAULT_STALE_BADGE: the row shows the STORED answer ("Shared"),
+// which is not what is happening, so the summary carries the contradiction.
+export const HISTORY_SYNC_STALE_BADGE = 'Paused';
+
+export const HISTORY_SYNC_STALE_NOTICE =
+  'Your grant was recorded against an older version of this setting, which did not cover the ' +
+  'text of captured prompts, replies and tool results — sending is paused until you re-consent. ' +
+  'Saving with "Shared" selected re-consents to the current version.';
 
 // This is a custody change from one-way redaction: with the grant, a detected
 // value survives as recoverable ciphertext instead of being destroyed. The form
@@ -420,14 +437,17 @@ export interface WorkspaceSettingsFormViewProps {
   managed?: ManagedContext;
   // Both consents are plain answers, not the stored records: acknowledgement
   // timestamps and versions are stamped server-side, so a client-supplied one
-  // would only be discarded. modelJudgeConsent: true grants, false revokes.
+  // would only be discarded. modelJudgeConsent: true grants, false revokes;
+  // historySyncConsent carries a third answer for the untouched case.
   //
   // `policy` is deliberately absent. Enforcement is per detection now; see
   // HANDLING_SECTION_DESCRIPTION.
   onSave: (
     changes: Pick<WorkspaceSettings, 'historicalAccess' | 'vaultInlineReveal'> & {
       modelJudgeConsent: boolean;
-      historySyncConsent: boolean;
+      // THREE answers, not two — see HistorySyncConsentChoice. 'unchanged' is
+      // what an unrelated save sends, so it asserts nothing about this grant.
+      historySyncConsent: HistorySyncConsentChoice;
       vaultConsent: VaultConsentChoice;
     },
   ) => void;
@@ -482,9 +502,29 @@ export function WorkspaceSettingsFormView({
     ? 'granted'
     : 'revoked';
   const [modelJudge, setModelJudge] = useState<ModelJudgeChoice>(initialModelJudge);
-  // Validity, not presence, for the same reason as the model-judge grant — and
-  // here validity also depends on WHICH deployment is on file, so a grant given
-  // for a previous one renders as not shared.
+  // VALIDITY, not presence — and the vault row's shape is deliberately NOT
+  // copied here, because the two grants fail in opposite directions.
+  //
+  // The submit handler sends `historySyncConsent: historySync === 'granted'`
+  // unconditionally, so whatever this seeds is what an unrelated Save asserts.
+  // Seeding a stale grant as 'granted' would therefore let a user who opened
+  // Settings to change something else stamp a fresh v2 grant by clicking Save —
+  // silently re-consenting to a WIDENED payload they never affirmed, on the one
+  // grant whose entire reason to carry a version is that widening re-asks rather
+  // than assumes. That is the failure that matters; the other direction only
+  // discards a grant that already authorizes nothing.
+  //
+  // So a stale grant reads 'Not shared', and the row carries the paused badge
+  // and the notice saying why. Selecting 'Shared' is then an ordinary edit — it
+  // differs from this seed, so it enables Save on its own and re-consents in one
+  // save, with no staleness clause needed in `dirty`. The difference from the
+  // pre-v2 code is not the seed but the badge and notice beside it: before, a
+  // stale grant read 'Not shared' with nothing to explain it.
+  //
+  // Endpoint still matters, and `isHistorySyncConsentStale` is false for a grant
+  // naming a DIFFERENT deployment, so one of those shows no paused badge at all:
+  // re-consenting in place must never be offered for a grant the user gave to
+  // somebody else's endpoint.
   const initialHistorySync: HistorySyncChoice = isHistorySyncConsentValid(
     settings.historySyncConsent,
     settings.controlPlane?.endpoint,
@@ -492,6 +532,20 @@ export function WorkspaceSettingsFormView({
     ? 'granted'
     : 'revoked';
   const [historySync, setHistorySync] = useState<HistorySyncChoice>(initialHistorySync);
+  // Whether the user actually answered this row in this session. A seed cannot
+  // stand in for an answer: both seeds are wrong for a stale grant, so what the
+  // save needs to know is not which way the row reads but whether it was touched.
+  const [historySyncTouched, setHistorySyncTouched] = useState(false);
+  const answerHistorySync = (choice: HistorySyncChoice): void => {
+    setHistorySyncTouched(true);
+    setHistorySync(choice);
+  };
+  // Read once: the row's badge, its default-open state and `dirty` must all
+  // agree about staleness, and three separate calls could not disagree loudly.
+  const historySyncStale = isHistorySyncConsentStale(
+    settings.historySyncConsent,
+    settings.controlPlane?.endpoint,
+  );
   const [vaultConsent, setVaultConsent] = useState(vaultChoiceOf(settings.vaultConsent));
   const [inlineReveal, setInlineReveal] = useState(settings.vaultInlineReveal);
 
@@ -568,15 +622,27 @@ export function WorkspaceSettingsFormView({
         {isAttached(settings) && (
           <SettingRow
             label={HISTORY_SYNC_SECTION_LABEL}
-            description="Whether activity recorded before attaching may be sent to that deployment."
+            description="Whether activity this machine has not delivered may be sent later."
             name="historySyncConsent"
             choices={HISTORY_SYNC_CHOICES}
             value={historySync}
-            onChange={setHistorySync}
+            onChange={answerHistorySync}
+            alert={historySyncStale ? HISTORY_SYNC_STALE_BADGE : undefined}
+            defaultOpen={historySyncStale}
             notice={
-              <p className="mb-3 text-xs text-text-3" data-slot="history-sync-disclosure">
-                {HISTORY_SYNC_SECTION_DESCRIPTION}
-              </p>
+              <>
+                {historySyncStale && (
+                  <p
+                    className="mb-3 text-xs text-sev-high-ink"
+                    data-slot="history-sync-stale-notice"
+                  >
+                    {HISTORY_SYNC_STALE_NOTICE}
+                  </p>
+                )}
+                <p className="mb-3 text-xs text-text-3" data-slot="history-sync-disclosure">
+                  {HISTORY_SYNC_SECTION_DESCRIPTION}
+                </p>
+              </>
             }
           />
         )}
@@ -624,7 +690,15 @@ export function WorkspaceSettingsFormView({
               // Just the answers — the server stamps the acknowledgement times
               // and the versions the grants are recorded against.
               modelJudgeConsent: modelJudge === 'granted',
-              historySyncConsent: historySync === 'granted',
+              // UNTOUCHED means unchanged, not 'no'. The stale case is why: this
+              // form submits every field on every save, so asserting a boolean
+              // here made an unrelated edit either re-consent to a widened
+              // payload or delete the grant and the paused badge explaining it.
+              historySyncConsent: historySyncTouched
+                ? historySync === 'granted'
+                  ? 'granted'
+                  : 'revoked'
+                : 'unchanged',
               vaultConsent,
               vaultInlineReveal: inlineReveal,
             });

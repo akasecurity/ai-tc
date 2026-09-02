@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { readWorkspaceSettings } from '@akasecurity/persistence';
 import type { SaveSettingsInput } from '@akasecurity/schema';
-import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
+import { HISTORY_SYNC_PAYLOAD_VERSION, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import { saveSettings } from '../../app/(app)/settings/actions.ts';
@@ -47,13 +47,15 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true });
 });
 
+const ENDPOINT = 'https://plane.example.com';
+
 describe('saveSettings — vault-consent grant and revocation', () => {
   it("records a server-stamped grant at the current consent version on 'on'", async () => {
     const before = Date.now();
     const res = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
-      historySyncConsent: false,
+      historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
     });
@@ -68,11 +70,78 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     expect(acknowledged).toBeLessThanOrEqual(Date.now());
   });
 
+  // THE UNTOUCHED CASE, and the reason the answer is three-state. The form
+  // submits every field on every save, so with a boolean an unrelated edit had to
+  // assert something about this grant — and both assertions are wrong for a STALE
+  // one. 'revoked' deletes the record and with it the paused badge, the
+  // `aka status` paused line and `aka sync-history`'s stale branch, leaving a
+  // user who did opt in told that they never did. 'granted' is worse: it
+  // re-consents to a widened payload nobody affirmed.
+  it("leaves a stale grant exactly as it was when the row is 'unchanged'", async () => {
+    const stale = {
+      acknowledgedAt: '2020-01-01T00:00:00.000Z',
+      // One behind, so it is a real grant that authorizes nothing today.
+      payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION - 1,
+      endpoint: ENDPOINT,
+    };
+    const { applyOnboarding } = await import('@akasecurity/persistence');
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: '2020-01-01T00:00:00.000Z' },
+        historySyncConsent: stale,
+      },
+      join(home, '.aka'),
+    );
+
+    const res = await saveSettings({
+      historicalAccess: 'session-only',
+      modelJudgeConsent: false,
+      historySyncConsent: 'unchanged',
+      vaultConsent: 'off',
+      // A real unrelated edit, or the save proves nothing.
+      vaultInlineReveal: 'full',
+    });
+    expect(res.ok).toBe(true);
+
+    // Byte-for-byte the grant that was there: still stale, so it still
+    // authorizes nothing — and still present, so every surface that explains
+    // WHY sharing is paused still has something to read.
+    expect(readWorkspaceSettings().historySyncConsent).toEqual(stale);
+    expect(readWorkspaceSettings().vaultInlineReveal).toBe('full');
+  });
+
+  it('still revokes on an explicit revoked, stale grant or not', async () => {
+    const { applyOnboarding } = await import('@akasecurity/persistence');
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: '2020-01-01T00:00:00.000Z' },
+        historySyncConsent: {
+          acknowledgedAt: '2020-01-01T00:00:00.000Z',
+          payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION - 1,
+          endpoint: ENDPOINT,
+        },
+      },
+      join(home, '.aka'),
+    );
+
+    await saveSettings({
+      historicalAccess: 'session-only',
+      modelJudgeConsent: false,
+      historySyncConsent: 'revoked',
+      vaultConsent: 'off',
+      vaultInlineReveal: 'masked',
+    });
+
+    expect(readWorkspaceSettings().historySyncConsent).toBeUndefined();
+  });
+
   it("keeps the original acknowledgedAt when 'on' is saved again", async () => {
     await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
-      historySyncConsent: false,
+      historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
     });
@@ -87,7 +156,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     const res = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
-      historySyncConsent: false,
+      historySyncConsent: 'revoked',
       vaultConsent: 'on',
       // The unrelated edit. It has to be a field that really changes, or the
       // second save proves nothing about a re-stamp it never had cause to make.
@@ -104,7 +173,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
-      historySyncConsent: false,
+      historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
     });
@@ -113,7 +182,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     const res = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
-      historySyncConsent: false,
+      historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
     });
@@ -131,7 +200,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
-      historySyncConsent: false,
+      historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
     });
@@ -140,7 +209,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     const res = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
-      historySyncConsent: false,
+      historySyncConsent: 'revoked',
       vaultConsent: 'granted',
       vaultInlineReveal: 'masked',
     });
@@ -156,7 +225,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     const res = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
-      historySyncConsent: false,
+      historySyncConsent: 'revoked',
       vaultConsent: forged as unknown as string,
       vaultInlineReveal: 'masked',
     });
@@ -193,7 +262,7 @@ describe('stale-grant re-consent and inline reveal', () => {
     const result = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
-      historySyncConsent: false,
+      historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
     });
@@ -207,7 +276,7 @@ describe('stale-grant re-consent and inline reveal', () => {
     const ok = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
-      historySyncConsent: false,
+      historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'full',
     });
@@ -217,7 +286,7 @@ describe('stale-grant re-consent and inline reveal', () => {
     const bad = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
-      historySyncConsent: false,
+      historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'loud',
     });

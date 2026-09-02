@@ -324,7 +324,7 @@ describe('detachFromControlPlane', () => {
     await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: false,
-      historySyncConsent: true,
+      historySyncConsent: 'granted',
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
     });
@@ -435,7 +435,7 @@ describe('detachFromControlPlane', () => {
     await saveSettings({
       historicalAccess: 'full',
       modelJudgeConsent: false,
-      historySyncConsent: false,
+      historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'off',
     });
@@ -479,7 +479,7 @@ describe('write failures are reported, never thrown', () => {
       const res = await saveSettings({
         historicalAccess: 'full',
         modelJudgeConsent: false,
-        historySyncConsent: false,
+        historySyncConsent: 'revoked',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
       });
@@ -586,7 +586,7 @@ describe('untyped wire input', () => {
       const res = await saveSettings({
         historicalAccess: 12345,
         modelJudgeConsent: false,
-        historySyncConsent: false,
+        historySyncConsent: 'revoked',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
       });
@@ -613,7 +613,7 @@ describe('untyped wire input', () => {
       const res = await saveSettings({
         historicalAccess: 'full',
         modelJudgeConsent: false,
-        historySyncConsent: false,
+        historySyncConsent: 'revoked',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
       });

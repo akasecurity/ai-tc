@@ -38,7 +38,7 @@ import type {
   ToolCallInput,
   ToolCallInspection,
 } from '@akasecurity/schema';
-import { DEFAULT_ACTIONS } from '@akasecurity/schema';
+import { actionRank, DEFAULT_ACTIONS, isActionAtLeast, strongerAction } from '@akasecurity/schema';
 
 import { toEgressIngestRequest } from './egress-wire.ts';
 import { recordForwardDrops } from './forward-drops.ts';
@@ -117,18 +117,31 @@ export interface AttachedDataGatewayDeps {
   };
 }
 
-// Enforcement strength, weakest to strongest. The cached organization bundle is read
-// from disk with no signature or provenance check — so a compromised control plane or
+// WHY EVERY COMPARISON BELOW EXISTS: the cached organization bundle is read from
+// disk with no signature or provenance check — so a compromised control plane or
 // a tampered cache file must not be able to use a policy to REDUCE enforcement,
 // either below the compiled-in default for its category or below what the
 // user's own local bundle already enforces. Raising is unaffected.
-const ACTION_STRENGTH: Record<ActionTaken, number> = {
-  allow: 0,
-  log: 1,
-  warn: 2,
-  redact: 3,
-  block: 4,
-};
+//
+// The ORDERING those comparisons read is `@akasecurity/schema`'s single ladder
+// (`actionRank` / `isActionAtLeast` / `strongerAction`), never a rank map of
+// this module's own. A private copy stood here, and a copy is what drifts: the
+// day an archetype's action moves, a stale ladder goes on ranking `redact`
+// under `warn` and the clamp licenses exactly the downgrade it exists to refuse.
+
+/**
+ * The stronger of two actions; either may be absent.
+ *
+ * A thin null-tolerant wrapper over the schema's `strongerAction`, and the
+ * absence is the whole reason it exists: "no floor at all" and "the weakest
+ * floor" are different answers here — an unresolvable rule id gets the first —
+ * and spelling the first as `'allow'` would clamp against a floor nobody set.
+ */
+function strongerOf(a: ActionTaken | null, b: ActionTaken | null): ActionTaken | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return strongerAction(a, b);
+}
 
 // ruleId -> category for every rule the gateway can resolve. A policy whose
 // category can't be resolved this way is left unclamped rather than guessed at,
@@ -169,13 +182,6 @@ function ruleCategoryMap(
     for (const rule of pack.rules) map.set(rule.id, rule.category);
   }
   return map;
-}
-
-/** The stronger of two actions; either may be absent. */
-function strongerOf(a: ActionTaken | null, b: ActionTaken | null): ActionTaken | null {
-  if (a === null) return b;
-  if (b === null) return a;
-  return ACTION_STRENGTH[a] >= ACTION_STRENGTH[b] ? a : b;
 }
 
 /**
@@ -272,9 +278,7 @@ function mergeRaiseOnly(
     const floor = floorFor(policy, categoryByRuleId);
     remoteCategoryAction.set(
       policy.target.category,
-      floor !== null && ACTION_STRENGTH[policy.action] < ACTION_STRENGTH[floor]
-        ? floor
-        : policy.action,
+      floor !== null && !isActionAtLeast(policy.action, floor) ? floor : policy.action,
     );
   }
 
@@ -309,7 +313,7 @@ function mergeRaiseOnly(
     }
     merged.set(
       key,
-      remoteFloor !== null && ACTION_STRENGTH[policy.action] < ACTION_STRENGTH[remoteFloor]
+      remoteFloor !== null && !isActionAtLeast(policy.action, remoteFloor)
         ? { ...policy, action: remoteFloor }
         : policy,
     );
@@ -348,7 +352,7 @@ function mergeRaiseOnly(
     }
     const effectiveFloor = strongerOf(floor, localFloor);
     const clamped =
-      effectiveFloor !== null && ACTION_STRENGTH[policy.action] < ACTION_STRENGTH[effectiveFloor]
+      effectiveFloor !== null && !isActionAtLeast(policy.action, effectiveFloor)
         ? { ...policy, action: effectiveFloor }
         : policy;
 
@@ -360,7 +364,7 @@ function mergeRaiseOnly(
     // Contended target: the STRONGER side wins. This is the raise-only rule
     // stated against the local policy rather than against the default floor,
     // which is the half a floor-only clamp misses.
-    if (ACTION_STRENGTH[clamped.action] > ACTION_STRENGTH[existing.action]) {
+    if (actionRank(clamped.action) > actionRank(existing.action)) {
       merged.set(key, clamped);
     }
   }
@@ -376,9 +380,19 @@ function mergeRaiseOnly(
  * gateway, so the device keeps working exactly as standalone does when the
  * control plane is slow, unreachable, or refusing the credential. Every write lands locally
  * FIRST and is then forwarded to the control plane as the organization's copy — bounded,
- * budgeted and breaker-guarded, and dropped rather than spooled when it fails
- * (there is no at-rest outbox: `Event.content` is raw prompt/tool text, and
- * queueing it to disk is what this product exists to prevent).
+ * budgeted and breaker-guarded.
+ *
+ * A FAILED forward is no longer dropped, and this comment used to say it was.
+ * It now leaves the row unstamped and the outbox drain offers it again on a
+ * later pass. The reason the old stance existed is still worth carrying:
+ * `Event.content` is raw prompt/tool text. What makes retaining it acceptable is
+ * that the text is ALREADY at rest here — recordCapture writes it on every
+ * machine, attached or not — so a queue changes how long delivery may be owed
+ * rather than whether plaintext sits on disk, and the deferred send is behind
+ * its own consent, whose copy says exactly that.
+ *
+ * There is still no SPOOL FILE: the queue is `synced_at` on the row that was
+ * already written, so nothing is copied anywhere to enqueue it.
  *
  * `getPolicyBundle` composes the local bundle with the out-of-band-pulled
  * control-plane bundle, raise-only — see mergeRaiseOnly.
@@ -850,6 +864,18 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
       // exactly what it did, leaving the whole control inert on every device
       // while every test around it stayed green.
       prohibitedModels: cached.prohibitedModels,
+      // ALSO HONOURED FROM THE CACHE, and not a bundle field at all: each
+      // merged policy's own `provenance`. `mergeRaiseOnly` spreads the policies
+      // it emits, so an 'authored' policy arriving from the control plane
+      // keeps that marker even where the clamp rebuilds it with a stronger
+      // action. The device reads it in exactly one direction — the rules such a
+      // policy targets are not locally re-assignable — so it sits on the
+      // `prohibitedModels` side of the line for the same reason that field
+      // does: it can only ever ADD a refusal, never relax one, and an unsigned
+      // cache therefore has no relaxation to grant by carrying it. Dropping it
+      // would be the silent failure rather than the safe one — the action would
+      // still be enforced while the local override the organization authored
+      // away quietly came back.
       // `rulesComplete` is a STANDALONE-ONLY signal (the user's local installed
       // snapshot) and is taken from the LOCAL bundle only — never from the wire
       // or the on-disk cache. Honoring a cached one would hand the control plane, or

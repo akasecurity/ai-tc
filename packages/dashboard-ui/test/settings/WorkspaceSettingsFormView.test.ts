@@ -1,6 +1,7 @@
 import type { CredentialState, WorkspaceSettings } from '@akasecurity/schema';
 import {
   BUILTIN_POLICIES,
+  HISTORY_SYNC_PAYLOAD_VERSION,
   KNOWN_BUILTIN_IDS,
   TriageHit,
   VAULT_CONSENT_VERSION,
@@ -31,6 +32,8 @@ import {
   HISTORY_SYNC_CHOICES,
   HISTORY_SYNC_SECTION_DESCRIPTION,
   HISTORY_SYNC_SECTION_LABEL,
+  HISTORY_SYNC_STALE_BADGE,
+  HISTORY_SYNC_STALE_NOTICE,
   INLINE_REVEAL_CHOICES,
   INLINE_REVEAL_SECTION_DESCRIPTION,
   MODEL_JUDGE_CHOICES,
@@ -430,6 +433,139 @@ describe('stale grant enables the one-save re-consent', () => {
     const saveButton = /<button[^>]*>(?:[^<]*Save changes[^<]*)<\/button>/.exec(html)?.[0] ?? '';
     expect(saveButton).not.toBe('');
     expect(saveButton).not.toContain('disabled=""');
+  });
+});
+
+// The history-sync equivalent, and the reason it exists is a defect the vault
+// row never had: `initialHistorySync` used to be VALIDITY-derived, so a payload
+// bump rendered a real grant as 'Not shared' with the form clean. Nothing was
+// visibly wrong — and the next unrelated save submitted `historySyncConsent:
+// false`, which the server action maps to `undefined` and DELETES, taking
+// acknowledgedAt with it. The user was never asked; the grant simply vanished.
+// The v2 payload, asserted against the copy that describes it. The schema's
+// tripwire (packages/schema, "the payload version and its disclosure move
+// together") fails on a bump and names this file; these are the claims it sends
+// the author here to check. Substance, never headings — the whole failure mode
+// is copy that still reads plausibly while describing a narrower payload.
+describe('history-sync disclosure states what payload v2 sends', () => {
+  it('names the captured text, the masking, and what declining costs', () => {
+    // The widening: captured text is inside the grant now.
+    expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('INCLUDES ITS TEXT');
+    // ...and it is not raw — the masking is part of the claim.
+    expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('masked');
+    // Declining must not be sold as "this stops sending"; live sending remains.
+    expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('Live sending is part of being attached');
+    expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('dropped rather than kept');
+    // The pre-attach half of the grant did not go away when v2 widened it.
+    expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('before it attached');
+  });
+
+  it('does not still claim prompts and replies are never sent', () => {
+    // The exact v1 sentence, which v2 makes false. A guard on the NEW wording
+    // alone would pass with this left sitting beside it.
+    const all = [
+      HISTORY_SYNC_SECTION_DESCRIPTION,
+      ...HISTORY_SYNC_CHOICES.map((c) => c.description),
+    ].join(' ');
+    expect(all).not.toContain('never the prompts or replies themselves');
+    expect(all).not.toContain('Prompts and assistant replies are not sent');
+  });
+
+  it('offers the paused grant a way back that names what changed', () => {
+    expect(HISTORY_SYNC_STALE_NOTICE).toContain('older version');
+    expect(HISTORY_SYNC_STALE_NOTICE).toContain('re-consent');
+  });
+});
+
+describe('stale history-sync grant', () => {
+  const ENDPOINT = 'https://plane.example.com';
+  const attached = (consent: WorkspaceSettings['historySyncConsent']): WorkspaceSettings => ({
+    specVersion: 6,
+    runMode: 'attached',
+    controlPlane: { endpoint: ENDPOINT, attachedAt: '2020-01-01T00:00:00.000Z' },
+    policy: 'redact',
+    historicalAccess: 'session-only',
+    dataSharesInPlace: true,
+    vaultKeyCustody: 'file',
+    vaultInlineReveal: 'masked',
+    historySyncConsent: consent,
+  });
+
+  const render = (settings: WorkspaceSettings): string =>
+    renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, { settings, onSave: () => undefined, busy: false }),
+    );
+
+  it('shows the paused badge and an opened row, and does NOT pre-assert consent', () => {
+    const html = render(
+      attached({
+        acknowledgedAt: '2020-01-01T00:00:00.000Z',
+        payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION - 1,
+        endpoint: ENDPOINT,
+      }),
+    );
+    expect(html).toContain('data-slot="history-sync-stale-notice"');
+    // Same collapsed-<details> trap as the vault case: rendered is not visible.
+    const staleRow = html.slice(0, html.indexOf('data-slot="history-sync-stale-notice"'));
+    const rowOpen = staleRow.lastIndexOf('<details');
+    expect(staleRow.slice(rowOpen, staleRow.indexOf('>', rowOpen) + 1)).toContain('open');
+    expect(html).toContain(HISTORY_SYNC_STALE_BADGE);
+    // THE FAIL-OPEN GUARD. The submit handler asserts whatever this row is
+    // seeded with, so a stale grant seeded 'Shared' would let a user who came to
+    // change something else stamp a fresh v2 grant by clicking Save — silently
+    // re-consenting to a widened payload. It must read 'Not shared' until the
+    // user says otherwise; the badge and notice are what explain why.
+    // Anchored on the choice COPY, because the radios carry no value attribute —
+    // selection is `checked` on the label that holds the description.
+    const grantedCopy = HISTORY_SYNC_CHOICES.find((c) => c.value === 'granted')?.description ?? '';
+    const revokedCopy = HISTORY_SYNC_CHOICES.find((c) => c.value === 'revoked')?.description ?? '';
+    expect(grantedCopy).not.toBe('');
+    const labelHolding = (copy: string): string => {
+      const at = html.indexOf(copy);
+      return html.slice(html.lastIndexOf('<label', at), at);
+    };
+    expect(labelHolding(grantedCopy)).not.toContain('checked');
+    expect(labelHolding(revokedCopy)).toContain('checked');
+    // The SUBMIT side of this property — that an untouched row sends
+    // 'unchanged' rather than a boolean — is covered where it can actually be
+    // driven, in web-ui's settings action suite. Static markup cannot click, so
+    // a render-level assertion about the payload would only restate the seed.
+    //
+    // And the form starts clean, so an untouched Save is not even offered.
+    const saveButton = /<button[^>]*>(?:[^<]*Save changes[^<]*)<\/button>/.exec(html)?.[0] ?? '';
+    expect(saveButton).toContain('disabled=""');
+  });
+
+  // THE SAFETY CASE, which the vault row has no analogue for because a vault
+  // grant names no deployment. A grant given to ANOTHER endpoint must read as
+  // no grant: no paused badge, and a clean form, so that no single save can
+  // quietly re-point this machine's activity at a deployment the user never
+  // chose. If this regresses, the bug is invisible — the row just looks helpful.
+  it('does not offer a re-consent for a grant naming a different deployment', () => {
+    const html = render(
+      attached({
+        acknowledgedAt: '2020-01-01T00:00:00.000Z',
+        payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION - 1,
+        endpoint: 'https://someone-else.example.com',
+      }),
+    );
+    expect(html).not.toContain('data-slot="history-sync-stale-notice"');
+    expect(html).not.toContain(HISTORY_SYNC_STALE_BADGE);
+    const saveButton = /<button[^>]*>(?:[^<]*Save changes[^<]*)<\/button>/.exec(html)?.[0] ?? '';
+    expect(saveButton).toContain('disabled=""');
+  });
+
+  // A current grant is not paused; the row is an ordinary "Shared".
+  it('shows no paused badge for a grant covering the current payload', () => {
+    const html = render(
+      attached({
+        acknowledgedAt: '2020-01-01T00:00:00.000Z',
+        payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+        endpoint: ENDPOINT,
+      }),
+    );
+    expect(html).not.toContain('data-slot="history-sync-stale-notice"');
+    expect(html).not.toContain(HISTORY_SYNC_STALE_BADGE);
   });
 });
 

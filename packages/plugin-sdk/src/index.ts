@@ -75,6 +75,8 @@ export type { NonGitProject } from './paths.ts';
 export { resolveNonGitProject, toPosix } from './paths.ts';
 export type { ShieldedSpan, ShieldedText } from './pointer-shield.ts';
 export { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
+export type { PolicyResolver } from './policy-resolver.ts';
+export { createPolicyResolver } from './policy-resolver.ts';
 export type { PostureChange } from './posture.ts';
 export { applyCategoryPosture, detectPostureChanges, severityFloorPosture } from './posture.ts';
 export type { ProjectWalkBounds } from './project-files.ts';
@@ -126,6 +128,7 @@ export type {
   ModelDerefGrantResolver,
   SubstitutePointersResult,
   TokenizeTextResult,
+  TokenizeValueMeta,
   VaultCore,
   VaultGlue,
 } from './tokenize.ts';

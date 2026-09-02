@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { PluginConfig } from '@akasecurity/plugin-sdk';
+import { setDefaultGatewayFactory } from '@akasecurity/plugin-runtime';
+import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import type { TriageHit } from '@akasecurity/schema';
 import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -368,6 +369,41 @@ describe('runBackfill — at-rest scrub of visited transcripts', () => {
     );
     await runBackfill(deps);
     expect(out()).not.toContain('Rewrote');
+  });
+
+  // The fault posture of the REAL scrubber (no injected scrubFile), which the
+  // cases above all bypass. The scrub self-scans, so the machine's pack policy
+  // is what decides which spans it may rewrite at all; with no readable policy
+  // the only honest answer is to rewrite nothing. Falling back to a policy-blind
+  // scrub would put values whose detection is set to Monitor into the vault,
+  // and unlike a skipped scrub — which the next run simply repeats — a rewrite
+  // of the user's own transcripts is not undoable.
+  //
+  // The positive control is the first case in this block: with a scrubber in
+  // hand the same run reports 'Rewrote secrets in …'. Here it must not, and the
+  // spy proves the run got as far as asking for policy rather than bailing out
+  // somewhere earlier.
+  it('scrubs nothing when the pack policy cannot be read', async () => {
+    const getPolicyBundle = vi.fn(() => Promise.reject(new Error('bundle unreadable')));
+    const restore = setDefaultGatewayFactory(
+      () =>
+        ({
+          getPolicyBundle,
+          close: () => Promise.resolve(),
+        }) as unknown as DataGateway,
+    );
+    try {
+      const { deps, out } = depsWithConsent(
+        { scanHistory: () => Promise.resolve(summaryWithFiles(['/h/a.jsonl'])) },
+        true,
+      );
+      await runBackfill(deps);
+      expect(getPolicyBundle).toHaveBeenCalledTimes(1);
+      expect(out()).toContain('Historical scan complete');
+      expect(out()).not.toContain('Rewrote');
+    } finally {
+      restore();
+    }
   });
 
   // The --triage stdout stream is a machine protocol (hits + sentinel); the

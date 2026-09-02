@@ -9,8 +9,15 @@ import {
 } from '@akasecurity/persistence';
 import { createRemoteClient } from '@akasecurity/remote';
 import type { RecordAuditEventRequest } from '@akasecurity/schema';
-import { AUDIT_EVENT_BATCH_MAX, isAttached, isHistorySyncConsentValid } from '@akasecurity/schema';
+import type { IngestEvent } from '@akasecurity/schema';
+import {
+  AUDIT_EVENT_BATCH_MAX,
+  INGEST_BATCH_MAX,
+  isAttached,
+  isHistorySyncConsentValid,
+} from '@akasecurity/schema';
 
+import { rebuildCapture } from './capture-rebuild.ts';
 import { BREAKER_COOLDOWN_MS, readForwardHealth } from './forward-policy.ts';
 import { rebuildAuditEvent } from './history-rebuild.ts';
 import type { HistorySyncOutcome } from './history-state.ts';
@@ -60,6 +67,32 @@ const SESSION_PAGE = 25;
 const ROW_PAGE = 200;
 
 /**
+ * How long a capture is left to the live path before the outbox claims it.
+ *
+ * Not a correctness boundary — an undelivered capture is owed however new it is,
+ * and a row sent twice is absorbed by the receiver's id-dedup because the wire
+ * id is derived from the row's own tuple. This only keeps the drain off rows the
+ * live forward is plausibly still in flight on, so the common case stays one
+ * send. Comfortably longer than the decision-path budget the live send runs
+ * under.
+ */
+const CAPTURE_GRACE_MS = 30_000;
+
+/** Captures per request, taken from the wire shape's own bound (see BATCH_SIZE). */
+const CAPTURE_BATCH_SIZE = INGEST_BATCH_MAX;
+
+/**
+ * The share of one pass the structural lane may spend before it yields.
+ *
+ * Most of it, because the pre-attach backlog is the finite half and finishing it
+ * is what makes later passes cheap. The remainder is what stops the capture lane
+ * being starved behind a backlog measured in days — see drain(). A structural
+ * loop that empties the backlog early hands the rest over, so this costs nothing
+ * on a machine that has caught up.
+ */
+const STRUCTURAL_BUDGET_SHARE = 0.7;
+
+/**
  * How many events ride one request.
  *
  * The single largest lever on how long a backlog takes: this work is round-trip
@@ -75,6 +108,20 @@ export interface HistorySyncResult {
   sent: number;
   /** Rows this pass gave up on permanently. */
   skipped: number;
+  /**
+   * Whether any CAPTURE is still owed after this pass.
+   *
+   * Reported separately because `counts` cannot carry it: every statement behind
+   * it filters to the structural lane, so a caller reading `counts.pending === 0`
+   * as "nothing is owed" would say the drain had finished while thousands of
+   * captures waited. Computed here, where the attachment boundary is known — the
+   * caller has neither that number nor an open store.
+   *
+   * Unlike the structural backlog this is NOT a fixed set: it grows with every
+   * live session that fails to forward, so it answers "owed right now" and is
+   * expected to go back to true after reading false.
+   */
+  capturesPending: boolean;
   /**
    * The ledger's totals after the pass — the AUTHORITATIVE progress.
    *
@@ -96,6 +143,8 @@ export interface RunHistorySyncDeps {
   passBudgetMs?: number;
   openStore?: (dataDir: string) => LocalDatabase;
   sendBatch?: (events: readonly RecordAuditEventRequest[]) => Promise<void>;
+  /** Injected alongside sendBatch in tests; the capture lane's route. */
+  sendCaptures?: (events: readonly IngestEvent[]) => Promise<{ settled: number }>;
 }
 
 /** sha256 of the endpoint. Nothing reads the address back; only sameness matters. */
@@ -198,23 +247,61 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
     const pid = process.pid;
     if (!ledger.claim(pid, hostname(), now(), HISTORY_LEASE_STALE_MS)) return null;
 
+    // ONE client, two senders. The lanes differ only in the route they take and
+    // the shape they carry; sharing the client keeps them on one connection,
+    // one timeout and — the part that matters — one credential read. A second
+    // `createRemoteClient` here would be a second place to get that wrong.
+    const client =
+      deps.sendBatch !== undefined && deps.sendCaptures !== undefined
+        ? undefined
+        : createRemoteClient({
+            endpoint: connection.endpoint,
+            apiKey: state.credential.apiKey,
+            timeoutMs: HISTORY_REQUEST_TIMEOUT_MS,
+          });
+
     const send =
       deps.sendBatch ??
-      (() => {
-        const client = createRemoteClient({
-          endpoint: connection.endpoint,
-          apiKey: state.credential.apiKey,
-          timeoutMs: HISTORY_REQUEST_TIMEOUT_MS,
-        });
-        return async (events: readonly RecordAuditEventRequest[]): Promise<void> => {
-          // The client falls back to one request per event against a deployment
-          // that predates the batch route, so this call is correct against both.
-          await client.recordAuditEvents(events);
-        };
-      })();
+      (async (events: readonly RecordAuditEventRequest[]): Promise<void> => {
+        // THROWS rather than optional-chains. `client` is undefined only when
+        // both senders were injected, in which case this closure is unreachable
+        // — but `await client?.recordAuditEvents(...)` would resolve silently if
+        // the construction condition above ever changed, and the caller reads a
+        // resolved promise as "delivered" and stamps the rows synced. That is
+        // silent data loss on the one path that must not have any. The capture
+        // sender already fails safe (no ack ⇒ settled 0 ⇒ 'unreachable'); this
+        // makes the pair symmetric on purpose rather than by accident.
+        if (client === undefined) throw new Error('history sync: no transport');
+        // The client falls back to one request per event against a deployment
+        // that predates the batch route, so this call is correct against both.
+        await client.recordAuditEvents(events);
+      });
+
+    const sendCaptures =
+      deps.sendCaptures ??
+      (async (events: readonly IngestEvent[]): Promise<{ settled: number }> => {
+        // Symmetric with `send` above: unreachable when both senders were
+        // injected, and loud rather than silent if that ever stops being true.
+        if (client === undefined) throw new Error('history sync: no transport');
+        const ack = await client.ingestEvents({ events: [...events] });
+        // `accepted + duplicates` is delivery — the same rule the live forward
+        // stamps on. A duplicate IS a delivery: the receiver recognising a
+        // resend by its id is exactly the outcome a reproduced id is for.
+        return { settled: ack.accepted + ack.duplicates };
+      });
 
     try {
-      return await drain({ ledger, send, now, sleep, random, budgetMs, pid, backlogBefore });
+      return await drain({
+        ledger,
+        send,
+        sendCaptures,
+        now,
+        sleep,
+        random,
+        budgetMs,
+        pid,
+        backlogBefore,
+      });
     } finally {
       ledger.release(pid);
     }
@@ -234,6 +321,12 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
 interface DrainDeps {
   ledger: LocalDatabase['historySync'];
   send: (events: readonly RecordAuditEventRequest[]) => Promise<void>;
+  /**
+   * The CAPTURE lane's sender — a different route from `send`, never a variant
+   * of it. Returns how many the deployment took, so the caller can tell "your
+   * batch landed" from "the call returned". See drainCaptures.
+   */
+  sendCaptures: (events: readonly IngestEvent[]) => Promise<{ settled: number }>;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   random: () => number;
@@ -249,10 +342,22 @@ type RowVerdict = 'sent' | 'skip' | 'unreachable' | 'refused';
 async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   const startedAt = d.now();
   const deadline = startedAt + d.budgetMs;
+  // A RESERVED SLICE, not an ordering. Running captures after the structural
+  // loop is right within a pass — a capture whose session root has not arrived is
+  // a stub until it does — but that loop exits only when the whole backlog is
+  // gone or the budget is spent, so "second" would mean "not until the entire
+  // pre-attach history has drained". `askAboutHistory` advertises backlogs in
+  // days; passes are capped at 120s and throttled to one per five minutes. So on
+  // exactly the machines with the largest backlog, the half the user was newly
+  // asked about — and the only half where declining means "dropped rather than
+  // kept" — would wait weeks while fresh undelivered captures piled up behind it.
+  //
+  // Structural still goes first and still gets most of the pass. It just cannot
+  // take all of it.
+  const structuralDeadline = Math.min(deadline, startedAt + d.budgetMs * STRUCTURAL_BUDGET_SHARE);
   let sent = 0;
   let skipped = 0;
   let lastHeartbeat = startedAt;
-  let outcome: HistorySyncOutcome = 'ok';
 
   /**
    * Say the claim is still held, at most once per interval.
@@ -271,61 +376,119 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     lastHeartbeat = at;
   };
 
-  outer: while (d.now() < deadline) {
-    const sessions = d.ledger.pendingSessions(SESSION_PAGE, d.backlogBefore);
-    if (sessions.length === 0) break;
+  // The structural phase runs TWICE at most: once against its reserved slice, and
+  // again against the full deadline if the capture lane finished early. See the
+  // second call below for why.
+  const drainStructural = async (until: number): Promise<HistorySyncOutcome> => {
+    let stopped: HistorySyncOutcome = 'ok';
+    outer: while (d.now() < until) {
+      const sessions = d.ledger.pendingSessions(SESSION_PAGE, d.backlogBefore);
+      if (sessions.length === 0) break;
 
-    for (const sessionId of sessions) {
-      // ROOT FIRST, one session at a time. The receiving side has real
-      // self-referencing foreign keys and stubs no missing root, so a leaf that
-      // overtakes its session is rejected — which is why this is sequential
-      // rather than concurrent.
-      const rows = d.ledger.pendingRows(sessionId, ROW_PAGE, d.backlogBefore);
-      if (rows.length === 0) continue;
+      for (const sessionId of sessions) {
+        // ROOT FIRST, one session at a time. The receiving side has real
+        // self-referencing foreign keys and stubs no missing root, so a leaf that
+        // overtakes its session is rejected — which is why this is sequential
+        // rather than concurrent.
+        const rows = d.ledger.pendingRows(sessionId, ROW_PAGE, d.backlogBefore);
+        if (rows.length === 0) continue;
 
-      // Rebuilt first, so a row that can never be expressed is counted and
-      // dropped rather than poisoning a batch it happens to share.
-      const ready: { id: string; event: RecordAuditEventRequest }[] = [];
-      for (const row of rows) {
-        const event = rebuildAuditEvent(row, d.ledger.inspectionsFor(row.id));
-        if (event === undefined) {
-          // A local defect, not an outage: this row will never be expressible,
-          // so retrying it for ever would stall the drain behind it.
-          d.ledger.markSkipped([row.id]);
-          skipped += 1;
-          continue;
-        }
-        ready.push({ id: row.id, event });
-      }
-
-      // BATCHED WITHIN ONE SESSION, never across two. The rows arrive root
-      // first, so a batch that stayed inside a session cannot deliver a leaf
-      // before the root it keys onto; one spanning sessions could.
-      for (let i = 0; i < ready.length; i += BATCH_SIZE) {
-        if (d.now() >= deadline) {
-          outcome = 'interrupted';
-          break outer;
-        }
-        const chunk = ready.slice(i, i + BATCH_SIZE);
-        const result = await sendChunk(d, chunk, beat);
-        sent += result.sent;
-        skipped += result.skipped;
-        if (result.stopped !== undefined) {
-          // Everything not acknowledged stays pending, by doing nothing.
-          outcome = result.stopped;
-          break outer;
+        // Rebuilt first, so a row that can never be expressed is counted and
+        // dropped rather than poisoning a batch it happens to share.
+        const ready: { id: string; event: RecordAuditEventRequest }[] = [];
+        for (const row of rows) {
+          const event = rebuildAuditEvent(row, d.ledger.inspectionsFor(row.id));
+          if (event === undefined) {
+            // A local defect, not an outage: this row will never be expressible,
+            // so retrying it for ever would stall the drain behind it.
+            d.ledger.markSkipped([row.id]);
+            skipped += 1;
+            continue;
+          }
+          ready.push({ id: row.id, event });
         }
 
-        beat();
-        await d.sleep(PACE_INTERVAL_MS);
+        // BATCHED WITHIN ONE SESSION, never across two. The rows arrive root
+        // first, so a batch that stayed inside a session cannot deliver a leaf
+        // before the root it keys onto; one spanning sessions could.
+        for (let i = 0; i < ready.length; i += BATCH_SIZE) {
+          if (d.now() >= until) {
+            stopped = 'interrupted';
+            break outer;
+          }
+          const chunk = ready.slice(i, i + BATCH_SIZE);
+          const result = await sendChunk(d, chunk, beat);
+          sent += result.sent;
+          skipped += result.skipped;
+          if (result.stopped !== undefined) {
+            // Everything not acknowledged stays pending, by doing nothing.
+            stopped = result.stopped;
+            break outer;
+          }
+
+          beat();
+          await d.sleep(PACE_INTERVAL_MS);
+        }
       }
     }
+    return stopped;
+  };
+
+  let outcome = await drainStructural(structuralDeadline);
+
+  // THE CAPTURE LANE, second and deliberately so. The structural rows are what
+  // make a session legible on the receiving side — a capture whose session has
+  // no root is stubbed rather than rejected, but it is a stub until the root
+  // arrives, and draining captures first would leave a deployment full of them.
+  // Both lanes settle through the same statement, so the order costs nothing
+  // else.
+  // A structural loop that stopped at its own slice has not run out of time, and
+  // must not be reported as though it had: the pass continues here, and the final
+  // check below re-reads the real deadline. Only a stop at the PASS deadline is
+  // an interruption.
+  if (outcome === 'interrupted' && d.now() < deadline) outcome = 'ok';
+
+  if (outcome === 'ok') {
+    const captures = await drainCaptures(d, deadline, beat);
+    sent += captures.sent;
+    skipped += captures.skipped;
+    if (captures.stopped !== undefined) outcome = captures.stopped;
+  }
+
+  // THE SLICE HANDS BACK. Reserving a share for captures is only half of the
+  // reciprocity the constant claims — the other half is that a pass whose capture
+  // lane found nothing owed, which is the normal case on a machine whose live
+  // forwarding works, must not return with a third of its budget unspent while
+  // the structural backlog it was reserved from is still there. Without this,
+  // exactly the machines the slice was not needed for pay ~43% longer to drain a
+  // backlog measured in days.
+  //
+  // Guarded on `capturesPending` rather than run unconditionally: a capture lane
+  // that STOPPED — refused, unreachable, or out of time — has left work owed, and
+  // spending the remainder on the other lane would be the starvation this whole
+  // arrangement exists to prevent, inverted.
+  if (
+    outcome === 'ok' &&
+    d.now() < deadline &&
+    d.ledger.pendingCaptureRows(1, d.backlogBefore, d.now() - CAPTURE_GRACE_MS).length === 0
+  ) {
+    outcome = await drainStructural(deadline);
   }
 
   if (outcome === 'ok' && d.now() >= deadline && d.ledger.counts(d.backlogBefore).pending > 0) {
     outcome = 'interrupted';
   }
-  return { outcome, sent, skipped, counts: d.ledger.counts(d.backlogBefore), atMs: d.now() };
+  return {
+    outcome,
+    sent,
+    skipped,
+    // LIMIT 1 — this asks "is anything owed", never "how much", so it must not
+    // pay for a count over the capture grain on every pass.
+    capturesPending:
+      d.ledger.pendingCaptureRows(1, d.backlogBefore, d.now() - CAPTURE_GRACE_MS).length > 0,
+    counts: d.ledger.counts(d.backlogBefore),
+    atMs: d.now(),
+  };
 }
 
 interface ChunkResult {
@@ -333,6 +496,216 @@ interface ChunkResult {
   skipped: number;
   /** Set when the pass must stop; everything else stays pending. */
   stopped?: HistorySyncOutcome;
+}
+
+/**
+ * Drain the captures this machine still owes — the half of the outbox that
+ * carries text.
+ *
+ * Flat and time-ordered, with no session grouping, because /v1/events stubs a
+ * missing session root on the leaf's own id. The structural lane pages by
+ * session only because its route stubs nothing and its foreign keys are real.
+ *
+ * NO `dedupe` FLAG on the batch, and that is load-bearing rather than an
+ * omission. `dedupe: 'content-hash'` would reject any event whose hash the
+ * tenant has already seen, and two genuinely separate prompts can be
+ * byte-identical — a user asking "why?" twice is two events on the timeline.
+ * Id-dedup always applies and is the one this lane needs: the id is reproduced
+ * from the row's own tuple, so a redelivery collapses and a distinct capture
+ * does not.
+ *
+ * SETTLEMENT IS PER BATCH, which the route earns: ingest is atomic per request,
+ * so an ack covers every event in it and no per-row verdict is needed. What the
+ * ack must show is that the deployment actually took them — `accepted +
+ * duplicates`, exactly the rule the live forward stamps on. A `{accepted: 0,
+ * duplicates: 0}` answer stamps NOTHING and the rows stay owed; today's backend
+ * cannot produce one, but the wire contract permits it and this plugin talks to
+ * deployments it does not ship. The unread case costs a redundant resend, never
+ * a silently dropped row.
+ */
+async function drainCaptures(
+  d: DrainDeps,
+  deadline: number,
+  beat: () => void,
+): Promise<ChunkResult> {
+  let sent = 0;
+  let skipped = 0;
+
+  for (;;) {
+    if (d.now() >= deadline) return { sent, skipped, stopped: 'interrupted' };
+
+    // Re-read each time rather than paging with an offset: the previous
+    // iteration stamped or skipped everything it took, so the unstamped set has
+    // shrunk and the next page is simply the new head of it. An offset over a
+    // set being mutated underneath would step past rows.
+    // `backlogBefore` is the attachment boundary, and this lane reads the side of
+    // it the structural lane does not: captures recorded FROM the attachment
+    // onwards, which the live path owed and did not deliver. Older captures are
+    // pre-attach history and belong to the structural lane, which sends them
+    // without their text — draining them here would put a machine's whole local
+    // history of prompts on the wire under copy that promises the opposite.
+    const rows = d.ledger.pendingCaptureRows(
+      CAPTURE_BATCH_SIZE,
+      d.backlogBefore,
+      d.now() - CAPTURE_GRACE_MS,
+    );
+    if (rows.length === 0) return { sent, skipped };
+
+    const ready: { id: string; event: IngestEvent }[] = [];
+    const unbuildable: string[] = [];
+    for (const row of rows) {
+      const event = rebuildCapture(row);
+      if (event === undefined) {
+        // A local defect, not an outage. Retrying for ever would stall the lane
+        // behind one unexpressible row — and because this read has no cursor,
+        // that row would be the head of every subsequent page.
+        unbuildable.push(row.id);
+        continue;
+      }
+      ready.push({ id: row.id, event });
+    }
+    // ONE write for the page rather than one per row: markSkipped takes a list,
+    // and each call is its own IMMEDIATE transaction competing for the store's
+    // write lock with the live capture path.
+    if (unbuildable.length > 0) {
+      d.ledger.markSkipped(unbuildable);
+      skipped += unbuildable.length;
+    }
+    if (ready.length === 0) {
+      // BEFORE the continue, not after it. Every statement on this path —
+      // pendingCaptureRows, rebuildCapture, markSkipped — is synchronous, so a
+      // run of unbuildable rows would otherwise be a loop that never yields and
+      // never checks in. Twenty thousand rows carrying an attribute the wire
+      // rejects is one uninterrupted synchronous stretch: no heartbeat past
+      // HISTORY_LEASE_STALE_MS, so a second child takes the claim from a drain
+      // that is alive, and no yield at all, so the event loop is held for the
+      // whole pass budget.
+      beat();
+      await d.sleep(PACE_INTERVAL_MS);
+      continue;
+    }
+
+    const result = await sendCaptureChunk(d, ready, beat);
+    sent += result.sent;
+    skipped += result.skipped;
+    if (result.stopped !== undefined) return { sent, skipped, stopped: result.stopped };
+
+    // Nothing sent and nothing skipped would mean the loop re-reads the same
+    // head and calls the same failing send for ever. It cannot happen —
+    // sendCaptureChunk either settles, skips, or stops — but the read has no
+    // cursor, so the one shape that could stall is worth refusing outright
+    // rather than trusting a caller three levels down to keep the invariant.
+    if (result.sent === 0 && result.skipped === 0) return { sent, skipped, stopped: 'unreachable' };
+
+    beat();
+    await d.sleep(PACE_INTERVAL_MS);
+  }
+}
+
+/**
+ * Send one batch of captures, isolating a permanent rejection rather than
+ * retrying it for ever.
+ *
+ * The structural lane learned this the same way: a batch ack is an AGGREGATE, so
+ * a rejection names no row. Re-sending the identical body fails identically, and
+ * marking the whole batch skipped would discard as many as 99 good rows for one
+ * bad one. The capture lane is MORE exposed than the structural one, not less —
+ * its batches are twice the size, every row carries user text, and
+ * `ingestEvents` does no outbound validation of its own — and its read has no
+ * cursor, so a rejected row stays the head of every future page. Without this,
+ * one bad row silently retires the whole lane while status reports 'unreachable'.
+ */
+async function sendCaptureChunk(
+  d: DrainDeps,
+  chunk: readonly { id: string; event: IngestEvent }[],
+  beat: () => void,
+): Promise<ChunkResult> {
+  // THE SAME LADDER THE STRUCTURAL LANE CLIMBS, not a single attempt. A 503 or a
+  // socket timeout is exactly the failure a retry exists for, and returning on
+  // the first one would end the whole capture drain for the pass inside a 120s
+  // budget with room for four attempts — so on a deployment that blips once per
+  // pass the capture backlog would never shrink while the structural lane behind
+  // it drained normally.
+  const outcome = await sendCapturesWithRetries(d, chunk, beat);
+  if (outcome.verdict === 'refused') return { sent: 0, skipped: 0, stopped: 'refused' };
+  if (outcome.verdict === 'unreachable') return { sent: 0, skipped: 0, stopped: 'unreachable' };
+  if (outcome.verdict === 'sent') {
+    const settled = outcome.settled;
+    // The deployment did not take the whole batch. `IngestAck` constrains
+    // `accepted` and `duplicates` only to be non-negative, so a partial answer
+    // is permitted by the contract even though today's backend keeps
+    // accepted + duplicates == events.length on every return path — and this
+    // plugin talks to deployments it does not ship.
+    //
+    // The comparison is against `chunk.length`, not against 0, and that is the
+    // whole point: a 100-row batch answered {accepted: 40} would otherwise stamp
+    // all 100 delivered and never offer the other 60 again, with the ledger
+    // reading "delivered" for rows that were not. Under-counting costs a
+    // redundant resend the receiver's id-dedup absorbs; over-counting is silent
+    // data loss, so the unread case has to fall on the resend side.
+    if (settled < chunk.length) return { sent: 0, skipped: 0, stopped: 'unreachable' };
+    d.ledger.markSynced(
+      chunk.map((c) => c.id),
+      d.now(),
+    );
+    return { sent: chunk.length, skipped: 0 };
+  }
+
+  {
+    // Rejected on its merits (400/413/422, or a body this client refused to
+    // send). One row is at fault and the answer does not say which.
+    const only = chunk.length === 1 ? chunk[0] : undefined;
+    if (only !== undefined) {
+      d.ledger.markSkipped([only.id]);
+      return { sent: 0, skipped: 1 };
+    }
+    let sent = 0;
+    let skipped = 0;
+    for (const [index, one] of chunk.entries()) {
+      // PACED like every other request, for the reason the structural lane
+      // gives: the isolation pass must not burst one request per row at the
+      // moment the deployment has just refused something, on a credential this
+      // job shares with the live forwarding.
+      if (index > 0) await d.sleep(PACE_INTERVAL_MS);
+      beat();
+      const single = await sendCaptureChunk(d, [one], beat);
+      sent += single.sent;
+      skipped += single.skipped;
+      if (single.stopped !== undefined) return { sent, skipped, stopped: single.stopped };
+    }
+    return { sent, skipped };
+  }
+}
+
+/**
+ * One capture batch, retried on the failures that might not repeat.
+ *
+ * The capture twin of `sendWithRetries`, separate only because it has an ack to
+ * carry back rather than a bare verdict. Same ladder, same full-jitter backoff,
+ * same reason: machines that failed together must not retry together.
+ */
+async function sendCapturesWithRetries(
+  d: DrainDeps,
+  chunk: readonly { id: string; event: IngestEvent }[],
+  beat: () => void,
+): Promise<{ verdict: 'sent'; settled: number } | { verdict: Exclude<RowVerdict, 'sent'> }> {
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const ack = await d.sendCaptures(chunk.map((c) => c.event));
+      return { verdict: 'sent', settled: ack.settled };
+    } catch (err) {
+      const kind = classify(err);
+      if (kind === 'refused') return { verdict: 'refused' };
+      if (kind === 'skip') return { verdict: 'skip' };
+      if (attempt === MAX_ATTEMPTS - 1) return { verdict: 'unreachable' };
+      const ceiling = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** attempt);
+      // Before the sleep, for the reason the structural ladder gives: the gap
+      // this covers is the request that just timed out plus the wait after it.
+      beat();
+      await d.sleep(Math.floor(d.random() * ceiling));
+    }
+  }
+  return { verdict: 'unreachable' };
 }
 
 /**

@@ -1,6 +1,11 @@
 import { readControlPlaneCredentialFile, readWorkspaceSettings } from '@akasecurity/persistence';
 import type { WorkspaceSettings } from '@akasecurity/schema';
-import { controlPlaneName, isAttached, isHistorySyncConsentValid } from '@akasecurity/schema';
+import {
+  controlPlaneName,
+  isAttached,
+  isHistorySyncConsentStale,
+  isHistorySyncConsentValid,
+} from '@akasecurity/schema';
 
 import { readForwardDrops } from './forward-drops.ts';
 import { readForwardHealth } from './forward-policy.ts';
@@ -256,6 +261,16 @@ function historyLines(
   endpoint: string,
   nowMs: number,
 ): string[] {
+  // A grant PAUSED by a widening is not the same news as no grant, and the third
+  // surface to say so. After a payload bump every machine that opted in holds a
+  // stale grant, so a bare "not shared" tells a user who did opt in that they
+  // did not — with no hint that a real grant exists or what widened it.
+  if (isHistorySyncConsentStale(settings.historySyncConsent, endpoint)) {
+    return [
+      '  history    paused — your grant predates a change to what is sent',
+      '             (run `aka sync-history --on` to grant it again)',
+    ];
+  }
   // Absent grant is the overwhelmingly common case, and it is not a fault: this
   // is opt-in, and a machine that never opted in should read as settled rather
   // than as pending.

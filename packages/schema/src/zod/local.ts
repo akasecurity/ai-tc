@@ -52,11 +52,30 @@ export const WORKSPACE_SETTINGS_SPEC_VERSION = 6;
 // older payload shape stops counting once this is bumped.
 export const MODEL_JUDGE_PAYLOAD_VERSION = 1;
 
-// The shape of the activity history a machine sends when its user consents to
-// sharing what was already recorded locally. Recorded alongside a user's
+// The shape of the activity a machine sends to the deployment it is attached to
+// on the DEFERRED path — the outbox. Recorded alongside a user's
 // historySyncConsent so a grant given against a narrower payload stops counting
-// once this is bumped — widening what is sent re-asks rather than assuming.
-export const HISTORY_SYNC_PAYLOAD_VERSION = 1;
+// once this is bumped: widening what is sent re-asks rather than assuming.
+//
+// v1 covered one lane: the activity already recorded BEFORE the machine
+// attached, structural rows only, with `content` dropped by construction
+// (rebuildAuditEvent) so no prompt or reply text could ride it.
+//
+// v2 WIDENS THE SUBJECT from "the pre-attach backlog" to "everything this
+// machine still owes the deployment", which now includes CAPTURE rows whose
+// `content` is the prompt / reply / tool-output text, masked only at detected
+// spans. That is a genuinely different payload — it is the first version under
+// which declining changes what text can leave the machine — so every v1 grant
+// is invalidated and re-asked. The name is narrower than the meaning: the
+// persisted key stays `historySyncConsent` because renaming an on-disk field
+// would be this file's first settings migration, and the widened scope is
+// carried by these comments and the copy rather than by a rename.
+//
+// What declining costs is bounded and is NOT a regression: the live forward is
+// authorized by attaching and is unaffected. Declining only means an
+// undelivered capture is DROPPED rather than retained and retried — exactly the
+// behaviour of every release before the outbox existed.
+export const HISTORY_SYNC_PAYLOAD_VERSION = 2;
 
 // How the plugin runs.
 //   'standalone' — everything against the local store under ~/.aka. No other
@@ -140,10 +159,11 @@ export function isModelJudgeConsentValid(consent: ModelJudgeConsent | undefined)
   return consent?.payloadVersion === MODEL_JUDGE_PAYLOAD_VERSION;
 }
 
-// A recorded consent to send activity that was already on this machine before it
-// attached, along with the payload shape and the deployment it was given for.
-// The endpoint is part of the grant because consent to send history to one
-// deployment is not consent to send it to another.
+// A recorded consent to send, on the deferred path, the activity this machine
+// still owes its deployment — the pre-attach backlog and, since payload v2, the
+// captures no live forward delivered. Carries the payload shape it was given
+// against and the deployment it was given for. The endpoint is part of the grant
+// because consent to send to one deployment is never consent to send to another.
 export const HistorySyncConsent = z.object({
   acknowledgedAt: z.iso.datetime(),
   payloadVersion: z.number().int().positive(),
@@ -151,18 +171,47 @@ export const HistorySyncConsent = z.object({
 });
 export type HistorySyncConsent = z.infer<typeof HistorySyncConsent>;
 
-// The single definition of "this machine may send its existing history to the
-// deployment it is attached to now". Both halves must hold: a grant recorded
-// against an older payload shape no longer covers what would be sent, and a
-// grant given for a different deployment never travels. Either way stale reads
-// as revoked, so the user is asked again rather than held to a grant they did
-// not give. Pure logic over the schema — no I/O.
+// The single definition of "this machine may send what it owes to the deployment
+// it is attached to now". Both halves must hold: a grant recorded against an
+// older payload shape no longer covers what would be sent, and a grant given for
+// a different deployment never travels. Either way stale reads as revoked, so
+// the user is asked again rather than held to a grant they did not give. Pure
+// logic over the schema — no I/O.
 export function isHistorySyncConsentValid(
   consent: HistorySyncConsent | undefined,
   endpoint: string | undefined,
 ): boolean {
   if (consent === undefined || endpoint === undefined) return false;
   return consent.payloadVersion === HISTORY_SYNC_PAYLOAD_VERSION && consent.endpoint === endpoint;
+}
+
+/**
+ * "This grant is for THIS deployment but was recorded against an older payload."
+ *
+ * Deliberately NOT the negation of isHistorySyncConsentValid, and the difference
+ * is a safety property rather than a nicety. That predicate fails for two
+ * unrelated reasons, and only one of them may be healed by re-saving:
+ *
+ *   old version, same endpoint  → stale. The user already chose to share with
+ *                                 THIS deployment; what changed is what sharing
+ *                                 means. Re-asking in place is honest.
+ *   different endpoint          → NOT stale, whatever the version says. The
+ *                                 grant names another deployment, and a surface
+ *                                 that treated it as stale would offer to "re-
+ *                                 consent" a machine into sending its activity
+ *                                 somewhere the user never agreed to. It must
+ *                                 read as no grant at all.
+ *
+ * So the endpoint clause is an equality here, not an omission: a caller asking
+ * "should I offer a one-save re-consent?" must get `false` the moment the
+ * deployment differs. Pure logic over the schema — no I/O.
+ */
+export function isHistorySyncConsentStale(
+  consent: HistorySyncConsent | undefined,
+  endpoint: string | undefined,
+): boolean {
+  if (consent === undefined || endpoint === undefined) return false;
+  return consent.endpoint === endpoint && consent.payloadVersion !== HISTORY_SYNC_PAYLOAD_VERSION;
 }
 
 // Onboarding answers + global prefs, persisted to ~/.aka/settings/settings.json.
@@ -203,10 +252,12 @@ export const WorkspaceSettings = z.object({
   // Absent until granted; a stale payloadVersion means the consent no longer
   // covers the current payload and must be re-granted.
   modelJudgeConsent: ModelJudgeConsent.optional(),
-  // Records that the user consented to sending the activity already recorded on
-  // this machine to the deployment it is attached to, along with the payload
-  // shape and the endpoint they agreed to. Absent until granted, and a grant for
-  // a different endpoint or an older payload no longer counts.
+  // Records that the user consented to the DEFERRED send — the outbox — along
+  // with the payload shape and the endpoint they agreed to. Since payload v2
+  // that covers both the pre-attach backlog and undelivered captures (which
+  // carry prompt/reply text in `content`); the key name predates the widening.
+  // Absent until granted, and a grant for a different endpoint or an older
+  // payload no longer counts.
   historySyncConsent: HistorySyncConsent.optional(),
 });
 export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;

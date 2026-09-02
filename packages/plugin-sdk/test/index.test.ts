@@ -102,6 +102,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'createGuardedScanner',
   'createIsolatedScanner',
   'createPluginRuntime',
+  'createPolicyResolver',
   'createVaultGlue',
   'dataDir',
   'dbPath',

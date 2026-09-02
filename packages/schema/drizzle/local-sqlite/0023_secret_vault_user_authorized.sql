@@ -1,0 +1,1 @@
+ALTER TABLE `secret_vault` ADD `user_authorized` integer DEFAULT 0 NOT NULL;

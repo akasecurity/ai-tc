@@ -411,10 +411,20 @@ async function askAboutHistory(
   if (flag === true) return granted();
 
   const preview = readLocalHistoryPreview(dataDirOf(base));
-  // A readable store with nothing in it: there is no history to ask about, so
-  // asking would be a question with no subject. An UNREADABLE store is a
-  // different answer — it still gets asked, without the numbers.
-  if (preview?.sessions === 0) return undefined;
+  // NO EARLY RETURN ON AN EMPTY STORE, and that changed with payload v2.
+  //
+  // Under v1 the grant's only subject was the pre-attach backlog, so an empty
+  // store made the question one with no subject and skipping it was right. v2
+  // gave it a second subject that exists on any machine, empty or not: whether a
+  // capture the live path FAILS to deliver is kept and retried or dropped. A
+  // fresh machine — the common case for a first `aka attach` — has no history
+  // and every future undelivered capture to decide about.
+  //
+  // Skipping the question there would leave it permanently ungranted and
+  // silently drop that traffic, which is the v1 behaviour the outbox exists to
+  // end. So the numbers are what an empty store costs, not the question: `scale`
+  // below already has a branch for a store it could not read, and that is the
+  // one an empty store now takes too.
 
   if (!io.isInteractive) {
     io.err(
@@ -424,14 +434,17 @@ async function askAboutHistory(
     return undefined;
   }
 
-  const scale =
-    preview === undefined
-      ? 'This machine also has activity already recorded locally.'
+  // Two shapes, because the grant has two subjects and only one of them needs a
+  // store to be interesting. A machine with history is told how much; a machine
+  // without one is still asked, about the half that is entirely in its future.
+  const backlog =
+    preview === undefined || preview.sessions === 0
+      ? undefined
       : preview.days >= 1
         ? `This machine also has ${String(preview.days)} days of activity already recorded ` +
-          `locally (${String(preview.sessions)} sessions).`
+          `locally (${String(preview.sessions)} sessions). AKA can send that history too.`
         : `This machine also has ${String(preview.sessions)} sessions of activity already ` +
-          'recorded locally.';
+          'recorded locally. AKA can send that history too.';
 
   io.out(
     [
@@ -439,26 +452,35 @@ async function askAboutHistory(
       `Verified against ${identity.tenantName}.`,
       '',
       'Activity from here on is sent to that deployment automatically.',
-      `${scale} AKA can send that history too.`,
+      ...(backlog === undefined ? [] : [backlog]),
+      'AKA can also keep anything a live send fails to deliver, instead of',
+      'dropping it.',
       '',
-      'What that sends:  which sessions ran, when, in which project, repo and',
-      '                  git branch; token usage and model per call; which tools',
-      '                  were called, with their inputs truncated and every',
-      '                  detected secret already masked; and what AKA detected',
-      '                  in those tool inputs.',
+      ...(backlog === undefined
+        ? []
+        : [
+            'What that history sends: which sessions ran, when, in which project,',
+            '                  repo and git branch; token usage and model per call;',
+            '                  which tools were called, with their inputs truncated',
+            '                  and every detected secret already masked; and what',
+            '                  AKA detected in those tool inputs.',
+            '',
+          ]),
+      'And, for anything a live send could not deliver — the deployment was',
+      'unreachable, or refused the key — what was captured, which for a prompt,',
+      'an assistant reply or a tool result INCLUDES ITS TEXT. Every secret AKA',
+      'detects is masked before it is stored or sent; the rest goes as written.',
       '',
-      "What it does not: your prompts and the assistant's replies. Those stay on",
-      '                  this machine — this sends the record of activity, not',
-      '                  its contents.',
+      'Saying no does not stop live sending — that is part of being attached.',
+      'It means an undelivered item is dropped rather than kept and retried.',
       '',
-      'It runs in the background over your next few sessions, and covers only',
-      'what is already recorded — activity from here on is sent as it happens.',
-      'Anything sent cannot be recalled.',
+      'It runs in the background over your next few sessions. Anything sent',
+      'cannot be recalled.',
       '',
     ].join('\n'),
   );
 
-  const answer = (await io.ask("Send this machine's existing activity history? [y/N]: "))
+  const answer = (await io.ask("Send this machine's unsent activity? [y/N]: "))
     .trim()
     .toLowerCase();
   return answer === 'y' || answer === 'yes' ? granted() : undefined;

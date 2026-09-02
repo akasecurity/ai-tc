@@ -38,6 +38,16 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
   // session or tool_call under a kind the receiver reads as captured text.
   const kind = EventKind.safeParse(row.eventType);
   if (!kind.success) return undefined;
+  // …and `code_change` is a capture kind this lane still refuses. EventKind
+  // admits it, so the check above does not.
+  //
+  // Stated HERE as well as in CAPTURE_EVENT_TYPES because the two have to move
+  // together. The SQL alone is one word away from sending whole source files —
+  // gitignored scratch included, and first-time egress rather than a retry,
+  // since fs-scan writes those rows straight to the local store and no live
+  // forward has ever offered them. A reader who widens the list should have to
+  // come here and delete this too, and meet the reason on the way.
+  if (kind.data === 'code_change') return undefined;
 
   // `content` and `contentHash` are REQUIRED on the wire and nullable in the
   // table (every structural row leaves them null, and a capture written by a
@@ -78,6 +88,16 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
     ...(typeof attributes.gitignored === 'boolean' ? { gitignored: attributes.gitignored } : {}),
     ...(typeof attributes.whole_file === 'boolean' ? { wholeFile: attributes.whole_file } : {}),
     ...(typeof attributes.turn_index === 'number' ? { turnIndex: attributes.turn_index } : {}),
+    // Carried, unlike inspectionMs below. The live forward sends it, and it is
+    // the enforcement audit trail's link back to the grant that authorized a
+    // bypass — dropping it would make the same capture mean different things to
+    // the deployment depending on which route delivered it. Filtered to strings
+    // because the bag is free-form JSON; the wire shape requires guids, and
+    // IngestEvent.safeParse below is what actually enforces that.
+    ...(Array.isArray(attributes.exception_ids) &&
+    attributes.exception_ids.every((id) => typeof id === 'string')
+      ? { exceptionIds: attributes.exception_ids }
+      : {}),
     // inspectionMs is DELIBERATELY not carried. It measures latency a live host
     // session actually waited on, and a row being drained hours later is not
     // that; the field's own contract says a replay leaves it absent rather than

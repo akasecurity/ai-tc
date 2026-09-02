@@ -317,15 +317,26 @@ export class SqliteHistorySyncRepository {
     );
     // Permanent skips are NOT re-armed: a row that failed to rebuild locally
     // fails the same way against any deployment.
-    // BOTH lanes, and the capture half is not optional. A delivery stamp records
-    // that one deployment received a row; re-arming exists because the next
-    // deployment has not. Left structural-only, a capture stamped for deployment
-    // A would survive attaching to B and never be offered to it — a silent,
-    // permanent hole in the new deployment's copy, growing with every re-attach,
-    // and invisible because the ledger reads "delivered".
+    // STRUCTURAL ONLY, and the capture half is deliberately absent — it was
+    // added here and then removed, so the reasoning is worth keeping.
+    //
+    // Re-arming exists because a stamp records that ONE deployment received a
+    // row, and the next one has not. That argument holds for the structural
+    // lane, which reads `started_at < :before` and so re-drains the rows the
+    // re-arm just cleared. It does NOT hold for captures, which read the other
+    // side of the same boundary (`started_at >= :since`): every row a
+    // deployment change re-arms was recorded before the new attachment, so the
+    // capture lane would never offer one again. Widening this achieved nothing
+    // but un-stamping delivered rows for ever.
+    //
+    // And re-offering them would be WRONG, which is why the fix is to narrow
+    // rather than to loosen the bound. A capture recorded under deployment A is
+    // pre-attach relative to B, and the grant says the pre-attach half sends the
+    // record of activity, not its text. B is entitled to the structural rows —
+    // which it gets, because those DO re-arm — and not to the prompts.
     this.rearmStmt = db.prepare(
       `UPDATE audit_events SET synced_at = NULL
-        WHERE synced_at > 0 AND event_type IN (${TYPE_LIST}, ${CAPTURE_TYPE_LIST})`,
+        WHERE synced_at > 0 AND event_type IN (${TYPE_LIST})`,
     );
 
     // A heartbeat in the FUTURE counts as stale. A backwards clock correction

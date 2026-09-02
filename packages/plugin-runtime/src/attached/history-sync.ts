@@ -98,6 +98,20 @@ export interface HistorySyncResult {
   /** Rows this pass gave up on permanently. */
   skipped: number;
   /**
+   * Whether any CAPTURE is still owed after this pass.
+   *
+   * Reported separately because `counts` cannot carry it: every statement behind
+   * it filters to the structural lane, so a caller reading `counts.pending === 0`
+   * as "nothing is owed" would say the drain had finished while thousands of
+   * captures waited. Computed here, where the attachment boundary is known — the
+   * caller has neither that number nor an open store.
+   *
+   * Unlike the structural backlog this is NOT a fixed set: it grows with every
+   * live session that fails to forward, so it answers "owed right now" and is
+   * expected to go back to true after reading false.
+   */
+  capturesPending: boolean;
+  /**
    * The ledger's totals after the pass — the AUTHORITATIVE progress.
    *
    * Returned rather than left for the caller to re-read, because the caller
@@ -238,19 +252,31 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
     const send =
       deps.sendBatch ??
       (async (events: readonly RecordAuditEventRequest[]): Promise<void> => {
+        // THROWS rather than optional-chains. `client` is undefined only when
+        // both senders were injected, in which case this closure is unreachable
+        // — but `await client?.recordAuditEvents(...)` would resolve silently if
+        // the construction condition above ever changed, and the caller reads a
+        // resolved promise as "delivered" and stamps the rows synced. That is
+        // silent data loss on the one path that must not have any. The capture
+        // sender already fails safe (no ack ⇒ settled 0 ⇒ 'unreachable'); this
+        // makes the pair symmetric on purpose rather than by accident.
+        if (client === undefined) throw new Error('history sync: no transport');
         // The client falls back to one request per event against a deployment
         // that predates the batch route, so this call is correct against both.
-        await client?.recordAuditEvents(events);
+        await client.recordAuditEvents(events);
       });
 
     const sendCaptures =
       deps.sendCaptures ??
       (async (events: readonly IngestEvent[]): Promise<{ settled: number }> => {
-        const ack = await client?.ingestEvents({ events: [...events] });
+        // Symmetric with `send` above: unreachable when both senders were
+        // injected, and loud rather than silent if that ever stops being true.
+        if (client === undefined) throw new Error('history sync: no transport');
+        const ack = await client.ingestEvents({ events: [...events] });
         // `accepted + duplicates` is delivery — the same rule the live forward
         // stamps on. A duplicate IS a delivery: the receiver recognising a
         // resend by its id is exactly the outcome a reproduced id is for.
-        return { settled: (ack?.accepted ?? 0) + (ack?.duplicates ?? 0) };
+        return { settled: ack.accepted + ack.duplicates };
       });
 
     try {
@@ -394,7 +420,17 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   if (outcome === 'ok' && d.now() >= deadline && d.ledger.counts(d.backlogBefore).pending > 0) {
     outcome = 'interrupted';
   }
-  return { outcome, sent, skipped, counts: d.ledger.counts(d.backlogBefore), atMs: d.now() };
+  return {
+    outcome,
+    sent,
+    skipped,
+    // LIMIT 1 — this asks "is anything owed", never "how much", so it must not
+    // pay for a count over the capture grain on every pass.
+    capturesPending:
+      d.ledger.pendingCaptureRows(1, d.backlogBefore, d.now() - CAPTURE_GRACE_MS).length > 0,
+    counts: d.ledger.counts(d.backlogBefore),
+    atMs: d.now(),
+  };
 }
 
 interface ChunkResult {
@@ -470,7 +506,19 @@ async function drainCaptures(
       }
       ready.push({ id: row.id, event });
     }
-    if (ready.length === 0) continue;
+    if (ready.length === 0) {
+      // BEFORE the continue, not after it. Every statement on this path —
+      // pendingCaptureRows, rebuildCapture, markSkipped — is synchronous, so a
+      // run of unbuildable rows would otherwise be a loop that never yields and
+      // never checks in. Twenty thousand rows carrying an attribute the wire
+      // rejects is one uninterrupted synchronous stretch: no heartbeat past
+      // HISTORY_LEASE_STALE_MS, so a second child takes the claim from a drain
+      // that is alive, and no yield at all, so the event loop is held for the
+      // whole pass budget.
+      beat();
+      await d.sleep(PACE_INTERVAL_MS);
+      continue;
+    }
 
     const result = await sendCaptureChunk(d, ready, beat);
     sent += result.sent;
@@ -507,18 +555,38 @@ async function sendCaptureChunk(
   chunk: readonly { id: string; event: IngestEvent }[],
   beat: () => void,
 ): Promise<ChunkResult> {
-  let settled: number;
-  try {
-    const ack = await d.sendCaptures(chunk.map((c) => c.event));
-    settled = ack.settled;
-  } catch (err) {
-    const verdict = classify(err);
-    // Terminal for the whole pass: the credential is gone, and every later row
-    // would fail the same way.
-    if (verdict === 'refused') return { sent: 0, skipped: 0, stopped: 'refused' };
-    // Might not repeat. Everything stays pending by doing nothing.
-    if (verdict === 'retry') return { sent: 0, skipped: 0, stopped: 'unreachable' };
+  // THE SAME LADDER THE STRUCTURAL LANE CLIMBS, not a single attempt. A 503 or a
+  // socket timeout is exactly the failure a retry exists for, and returning on
+  // the first one would end the whole capture drain for the pass inside a 120s
+  // budget with room for four attempts — so on a deployment that blips once per
+  // pass the capture backlog would never shrink while the structural lane behind
+  // it drained normally.
+  const outcome = await sendCapturesWithRetries(d, chunk, beat);
+  if (outcome.verdict === 'refused') return { sent: 0, skipped: 0, stopped: 'refused' };
+  if (outcome.verdict === 'unreachable') return { sent: 0, skipped: 0, stopped: 'unreachable' };
+  if (outcome.verdict === 'sent') {
+    const settled = outcome.settled;
+    // The deployment did not take the whole batch. `IngestAck` constrains
+    // `accepted` and `duplicates` only to be non-negative, so a partial answer
+    // is permitted by the contract even though today's backend keeps
+    // accepted + duplicates == events.length on every return path — and this
+    // plugin talks to deployments it does not ship.
+    //
+    // The comparison is against `chunk.length`, not against 0, and that is the
+    // whole point: a 100-row batch answered {accepted: 40} would otherwise stamp
+    // all 100 delivered and never offer the other 60 again, with the ledger
+    // reading "delivered" for rows that were not. Under-counting costs a
+    // redundant resend the receiver's id-dedup absorbs; over-counting is silent
+    // data loss, so the unread case has to fall on the resend side.
+    if (settled < chunk.length) return { sent: 0, skipped: 0, stopped: 'unreachable' };
+    d.ledger.markSynced(
+      chunk.map((c) => c.id),
+      d.now(),
+    );
+    return { sent: chunk.length, skipped: 0 };
+  }
 
+  {
     // Rejected on its merits (400/413/422, or a body this client refused to
     // send). One row is at fault and the answer does not say which.
     const only = chunk.length === 1 ? chunk[0] : undefined;
@@ -542,16 +610,37 @@ async function sendCaptureChunk(
     }
     return { sent, skipped };
   }
+}
 
-  // The call returned without taking anything. Stamping would lose the batch
-  // silently; stopping leaves it owed.
-  if (settled <= 0) return { sent: 0, skipped: 0, stopped: 'unreachable' };
-
-  d.ledger.markSynced(
-    chunk.map((c) => c.id),
-    d.now(),
-  );
-  return { sent: chunk.length, skipped: 0 };
+/**
+ * One capture batch, retried on the failures that might not repeat.
+ *
+ * The capture twin of `sendWithRetries`, separate only because it has an ack to
+ * carry back rather than a bare verdict. Same ladder, same full-jitter backoff,
+ * same reason: machines that failed together must not retry together.
+ */
+async function sendCapturesWithRetries(
+  d: DrainDeps,
+  chunk: readonly { id: string; event: IngestEvent }[],
+  beat: () => void,
+): Promise<{ verdict: 'sent'; settled: number } | { verdict: Exclude<RowVerdict, 'sent'> }> {
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const ack = await d.sendCaptures(chunk.map((c) => c.event));
+      return { verdict: 'sent', settled: ack.settled };
+    } catch (err) {
+      const kind = classify(err);
+      if (kind === 'refused') return { verdict: 'refused' };
+      if (kind === 'skip') return { verdict: 'skip' };
+      if (attempt === MAX_ATTEMPTS - 1) return { verdict: 'unreachable' };
+      const ceiling = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** attempt);
+      // Before the sleep, for the reason the structural ladder gives: the gap
+      // this covers is the request that just timed out plus the wait after it.
+      beat();
+      await d.sleep(Math.floor(d.random() * ceiling));
+    }
+  }
+  return { verdict: 'unreachable' };
 }
 
 /**

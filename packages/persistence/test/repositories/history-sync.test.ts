@@ -167,22 +167,26 @@ describe('SqliteHistorySyncRepository — which deployment the stamps are for', 
     expect(db.historySync.counts(ALL)).toMatchObject({ pending: 3, sent: 0 });
   });
 
-  // The capture half of the same rule, and it had no coverage: `rearmStmt` was
-  // structural-only, so a capture stamped delivered to deployment A survived
-  // attaching to B and was never offered to it. The ledger read "delivered",
-  // which made the hole permanent AND invisible — the worst pair.
-  it('re-arms delivered CAPTURES when the deployment changes', () => {
+  // The capture half does NOT re-arm, and that is the rule rather than an
+  // omission. A capture recorded under deployment A is pre-attach relative to B,
+  // and the grant says the pre-attach half sends the record of activity, not its
+  // text — so B is entitled to the structural rows (which do re-arm, above) and
+  // not to the prompts. Re-arming captures would also be inert: the capture lane
+  // reads `started_at >= :since`, so every row a deployment change clears sits
+  // on the wrong side of the new boundary and is never offered again. The only
+  // effect would be to un-stamp delivered rows for ever.
+  it('leaves delivered CAPTURES stamped when the deployment changes', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
     db.historySync.rearmFor('fingerprint-a', ALL);
-    // The live path stamps a capture through this same statement.
     db.historySync.markSynced(['s-1-prompt'], T0);
-    expect(db.historySync.pendingCaptureRows(10, 0, ALL)).toEqual([]);
 
     db.historySync.rearmFor('fingerprint-b', ALL);
 
-    // Owed to the new deployment again, text and all.
-    expect(db.historySync.pendingCaptureRows(10, 0, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+    // Still delivered: the new deployment is not owed this text.
+    expect(db.historySync.pendingCaptureRows(10, 0, ALL)).toEqual([]);
+    // ...while the structural rows it IS owed came back.
+    expect(db.historySync.counts(ALL)).toMatchObject({ pending: 3, sent: 0 });
   });
 
   // A row that could not be rebuilt locally fails the same way anywhere, so

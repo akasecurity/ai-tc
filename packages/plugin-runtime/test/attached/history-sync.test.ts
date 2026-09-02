@@ -856,6 +856,78 @@ describe('runHistorySync — the capture lane', () => {
     expect(ledger((db2) => db2.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
   });
 
+  // A PARTIAL ack is not a delivery of the whole batch. IngestAck constrains
+  // accepted/duplicates only to be non-negative, so a deployment this plugin
+  // does not ship may answer 40 for a batch of 100 — and stamping all 100 would
+  // lose 60 rows for ever with the ledger reading "delivered".
+  it('does not stamp a batch the deployment only partly took', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }, { id: 'cap-2' }]);
+
+    await run({
+      sendBatch: () => Promise.resolve(),
+      // Two offered, one taken.
+      sendCaptures: () => Promise.resolve({ settled: 1 }),
+    });
+
+    expect(
+      ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))
+        .map((r) => r.id)
+        .sort(),
+    ).toEqual(['cap-1', 'cap-2']);
+  });
+
+  // A blip is what a retry ladder is for. Returning on the first 'retry' verdict
+  // would end the capture drain for the whole pass inside a budget with room for
+  // four attempts, so a deployment that fails once per pass would never let the
+  // capture backlog shrink while the structural lane drained normally.
+  it('retries a transient failure rather than ending the pass', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }]);
+
+    let attempts = 0;
+    await run({
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: (events: readonly IngestEvent[]) => {
+        attempts += 1;
+        return attempts === 1
+          ? Promise.reject(new RemoteRequestError(503))
+          : Promise.resolve({ settled: events.length });
+      },
+    });
+
+    expect(attempts).toBe(2);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
+  });
+
+  // `counts` is structural-only, so on its own it reports the drain finished the
+  // moment the pre-attach backlog empties — which would pin completedAtMs for
+  // the life of the install while the capture lane still owed rows.
+  it('reports captures still owed when the structural backlog is empty', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }]);
+
+    const result = await run({
+      sendBatch: () => Promise.resolve(),
+      // The deployment takes nothing, so the capture stays owed.
+      sendCaptures: () => Promise.resolve({ settled: 0 }),
+    });
+
+    expect(result?.capturesPending).toBe(true);
+  });
+
+  it('reports nothing owed once the capture lane drains', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }]);
+
+    const result = await run({
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: (events: readonly IngestEvent[]) => Promise.resolve({ settled: events.length }),
+    });
+
+    expect(result?.capturesPending).toBe(false);
+  });
+
   // THE PRE-ATTACH BOUND, and it is a privacy assertion rather than a scoping
   // one. The disclosure says the pre-attach half of the grant sends "the record
   // of activity" and that only what a live send could not deliver carries its

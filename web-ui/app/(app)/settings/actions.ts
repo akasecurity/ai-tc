@@ -117,16 +117,23 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
       // deployment it just left. No endpoint on file means nothing to grant
       // against, so the grant cannot be recorded at all. A still-valid grant is
       // kept as-is so its acknowledgedAt survives unrelated edits.
+      // THREE answers, and 'unchanged' is the one an unrelated save sends. A
+      // boolean here forced every save to assert something about this grant, and
+      // both assertions are wrong for a STALE one: granting re-consents to a
+      // widened payload nobody affirmed, revoking deletes the record and every
+      // surface that explains why sharing is paused.
       historySyncConsent:
-        !data.historySyncConsent || current.controlPlane === undefined
-          ? undefined
-          : isHistorySyncConsentValid(current.historySyncConsent, current.controlPlane.endpoint)
-            ? current.historySyncConsent
-            : {
-                acknowledgedAt: new Date().toISOString(),
-                payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
-                endpoint: current.controlPlane.endpoint,
-              },
+        data.historySyncConsent === 'unchanged'
+          ? current.historySyncConsent
+          : data.historySyncConsent === 'revoked' || current.controlPlane === undefined
+            ? undefined
+            : isHistorySyncConsentValid(current.historySyncConsent, current.controlPlane.endpoint)
+              ? current.historySyncConsent
+              : {
+                  acknowledgedAt: new Date().toISOString(),
+                  payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+                  endpoint: current.controlPlane.endpoint,
+                },
       vaultInlineReveal: inlineReveal.data,
     }));
   } catch (error) {

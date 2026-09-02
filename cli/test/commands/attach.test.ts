@@ -409,12 +409,29 @@ describe('existing-history consent', () => {
   // A machine that has never opened a store has recorded nothing. Asking there
   // offers to send a history that does not exist — and a yes records a grant
   // covering nothing.
-  it('does not ask on a machine with no store at all', async () => {
-    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+  // v2 CHANGED THIS. Under v1 the grant's only subject was the pre-attach
+  // backlog, so a machine with nothing recorded was asked nothing. v2 gave it a
+  // second subject that exists on any machine — whether a capture the live path
+  // FAILS to deliver is kept and retried or dropped — and a fresh machine is the
+  // common case for a first attach. Skipping the question there would leave it
+  // permanently ungranted and silently drop that traffic.
+  it('still asks on a machine with no store, but offers no history numbers', async () => {
+    const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
     await runAttach(['--url', ENDPOINT], deps(io));
     expect(exits).toEqual([]);
     expect(consentOf()).toBeUndefined();
-    expect(io.output()).not.toContain('What that sends:');
+    const shown = io.output();
+    // Asked about the half that has a subject...
+    expect(shown).toContain('Saying no does not stop live sending');
+    // ...and not about a backlog it does not have.
+    expect(shown).not.toContain('What that history sends:');
+    expect(shown).not.toContain('days of activity already recorded');
+  });
+
+  it('records the grant on a fresh machine when the user says yes', async () => {
+    const io = scriptedPrompter({ interactive: true, answers: [KEY, 'y'] });
+    await runAttach(['--url', ENDPOINT], deps(io));
+    expect(consentOf()).toMatchObject({ endpoint: ENDPOINT });
   });
 
   it('records no grant when the flag declines, and asks nothing', async () => {
@@ -472,13 +489,23 @@ describe('existing-history consent', () => {
     expect(consentOf()).toBeUndefined();
   });
 
+  // The assertions are on the SUBSTANCE, not on headings. This prompt is the
+  // only place many users will ever read what the grant covers, and the payload
+  // it describes widened at v2 to include captured text — so the test pins the
+  // three things that make the answer informed: what always goes, the fact that
+  // an undelivered capture carries its TEXT, and what declining actually costs.
+  // A heading match would have stayed green through exactly that widening.
   it('says what it is asking about before it asks', async () => {
     seedHistory();
     const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
     await runAttach(['--url', ENDPOINT], deps(io));
     const shown = io.output();
-    expect(shown).toContain('What that sends:');
-    expect(shown).toContain('What it does not:');
+    expect(shown).toContain('What that history sends:');
+    // The v2 widening, stated where the user is deciding.
+    expect(shown).toContain('INCLUDES ITS TEXT');
+    expect(shown).toContain('masked');
+    // Declining must not read as "this turns off sending" — it does not.
+    expect(shown).toContain('Saying no does not stop live sending');
     expect(shown).toContain('cannot be');
     expectNoEchoOf(shown, KEY);
   });

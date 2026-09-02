@@ -10,7 +10,7 @@ import {
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import { RemoteRequestError } from '@akasecurity/remote';
-import type { RecordAuditEventRequest } from '@akasecurity/schema';
+import type { IngestEvent, RecordAuditEventRequest } from '@akasecurity/schema';
 import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -39,6 +39,47 @@ const seedRows = (sessions = 1): void => {
         rootSessionId: id,
         parentId: id,
         startedAt: new Date(T0 - 86_000_000 + i).toISOString(),
+      });
+    }
+  } finally {
+    db.close();
+  }
+};
+
+/**
+ * Capture rows, which the structural seeder deliberately does not write.
+ *
+ * `startedAt` has to land inside a window with a bound at each end: AFTER the
+ * attachment (AT), because the lane deliberately ignores pre-attach captures —
+ * those are the structural lane's subject and travel without their text — and
+ * before now - 30s, so the grace window does not hold them back for the live
+ * path. An hour before T0 satisfies both. Two tests override it to exercise each
+ * bound.
+ */
+const seedCaptures = (
+  rows: readonly { id: string; content?: string | undefined; sourceTool?: string; atMs?: number }[],
+): void => {
+  const db = openLocalDatabase(dataDirOf(home));
+  try {
+    db.auditEvents.ensureSessionRoot('cap-session', new Date(T0 - 86_400_000).toISOString());
+    for (const row of rows) {
+      db.auditEvents.insertAuditEvent({
+        id: row.id,
+        eventType: 'prompt',
+        rootSessionId: 'cap-session',
+        parentId: 'cap-session',
+        startedAt: new Date(row.atMs ?? T0 - 3_600_000).toISOString(),
+        // `content` omitted entirely for the unexpressible-row case: the input
+        // shape is `z.string().optional()`, so undefined is how a row arrives
+        // without text — null would not parse.
+        ...('content' in row && row.content === undefined
+          ? {}
+          : { content: row.content ?? `text of ${row.id}` }),
+        contentHash: 'b'.repeat(64),
+        // An OBJECT, not a JSON string: AuditEventInput takes an AttributeBag
+        // and the mapper stringifies it. Passing a pre-encoded string
+        // double-encodes, and every row then rebuilds with no source_tool.
+        attributes: { source_tool: row.sourceTool ?? 'claude-code' },
       });
     }
   } finally {
@@ -620,5 +661,382 @@ describe('runHistorySync — a rotation before the detach', () => {
 
     expect(sent).not.toContain('s-first-window');
     expect(sent).toEqual([]);
+  });
+});
+
+// The capture lane. Everything here is about the property the structural lane
+// exists to NOT have: these rows carry the user's text, so the tests are about
+// where that text goes and what happens when it is not confirmed delivered.
+describe('runHistorySync — the capture lane', () => {
+  const lanes = () => {
+    const structural: RecordAuditEventRequest[] = [];
+    const captures: IngestEvent[] = [];
+    return {
+      structural,
+      captures,
+      sendBatch: (events: readonly RecordAuditEventRequest[]) => {
+        structural.push(...events);
+        return Promise.resolve();
+      },
+      sendCaptures: (events: readonly IngestEvent[]) => {
+        captures.push(...events);
+        return Promise.resolve({ settled: events.length });
+      },
+    };
+  };
+
+  it('sends a queued capture WITH its text, and settles it', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }]);
+    const l = lanes();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.captures.map((c) => c.content)).toEqual(['text of cap-1']);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
+  });
+
+  // THE ROUTING RULE. A capture on the structural lane reaches a route that
+  // persists `content` verbatim, and arrives stripped of the text anyway
+  // because rebuildAuditEvent has no `content` key. Neither half is acceptable.
+  it('never puts a capture on the structural lane', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedRows();
+    seedCaptures([{ id: 'cap-1' }]);
+    const l = lanes();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.structural.some((e) => e.eventType === 'prompt')).toBe(false);
+    expect(l.captures).toHaveLength(1);
+  });
+
+  // Settlement follows the ACK, never the call returning. A deployment that
+  // takes nothing must leave the row owed rather than stamped.
+  it('leaves a capture owed when the deployment takes nothing', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }]);
+
+    await run({
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: () => Promise.resolve({ settled: 0 }),
+    });
+
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL)).map((r) => r.id)).toEqual([
+      'cap-1',
+    ]);
+  });
+
+  it('leaves a capture owed when the send throws', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }]);
+
+    await run({
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: () => Promise.reject(new Error('unreachable')),
+    });
+
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL)).map((r) => r.id)).toEqual([
+      'cap-1',
+    ]);
+  });
+
+  // The read has no cursor — it re-reads the head of the unstamped set each
+  // time — so a row that can never be rebuilt would be the head of every page
+  // for ever. It has to be skipped, not retried.
+  it('permanently skips an unexpressible capture instead of stalling on it', async () => {
+    attach({ grantFor: ENDPOINT });
+    // No content: required on the wire, so this row can never be expressed.
+    seedCaptures([{ id: 'cap-bad', content: undefined }, { id: 'cap-good' }]);
+    const l = lanes();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.captures.map((c) => c.content)).toEqual(['text of cap-good']);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
+  });
+
+  // The grace window leaves a just-recorded capture to the live path, so the
+  // common case stays one send rather than a race the receiver has to dedup.
+  it('leaves a capture newer than the grace window to the live path', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-fresh', atMs: T0 - 1000 }]);
+    const l = lanes();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.captures).toEqual([]);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL)).map((r) => r.id)).toEqual([
+      'cap-fresh',
+    ]);
+  });
+
+  // THE STALL. The capture read has no cursor: it re-reads the head of the
+  // unstamped set every time. So a row the deployment rejects on its merits is
+  // the head of every future page on every future pass, and treating that
+  // rejection as an outage retires the lane for good while status says only
+  // 'unreachable'. The structural lane isolates for exactly this reason; this
+  // one has to as well, and is MORE exposed — bigger batches, user text in every
+  // row, and no outbound validation in ingestEvents.
+  it('isolates a permanently-rejected capture rather than stalling the lane', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-bad' }, { id: 'cap-good' }]);
+
+    const delivered: string[] = [];
+    const result = await run({
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: (events: readonly IngestEvent[]) => {
+        if (events.some((e) => e.content === 'text of cap-bad')) {
+          return Promise.reject(new RemoteRequestError(400));
+        }
+        delivered.push(...events.map((e) => e.content));
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+
+    // Asserted on the CAPTURE lane, not on `result.sent` — seedCaptures writes a
+    // session root, which is a structural row the other lane also delivers, so
+    // the pass total counts work this test is not about.
+    expect(delivered).toEqual(['text of cap-good']);
+    expect(result?.skipped).toBe(1);
+    // Neither row is offered again: one settled, one permanently skipped. That
+    // is what stops the next pass re-reading this same rejected page.
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
+  });
+
+  // A dead credential is terminal for the pass, not one bad row: every later
+  // capture would fail the same way, and skipping them would be data loss.
+  it('stops the pass on a refused credential without skipping anything', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }, { id: 'cap-2' }]);
+
+    const result = await run({
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: () => Promise.reject(new RemoteRequestError(403)),
+    });
+
+    expect(result?.skipped).toBe(0);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toHaveLength(2);
+  });
+
+  // An attribute the wire constrains more tightly than the column does — a
+  // correlation_id that is not a uuid — must be caught HERE, not by a 400 the
+  // cursorless read would replay for ever.
+  it('drops an unusable optional attribute rather than the capture', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }]);
+    // Rewrite the row's bag to carry a non-uuid correlation id.
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.auditEvents.insertAuditEvent({
+        id: 'cap-legacy',
+        eventType: 'prompt',
+        rootSessionId: 'cap-session',
+        parentId: 'cap-session',
+        startedAt: new Date(T0 - 3_600_000).toISOString(),
+        content: 'legacy text',
+        contentHash: 'c'.repeat(64),
+        attributes: { source_tool: 'claude-code', correlation_id: 'legacy-7' },
+      });
+    } finally {
+      db.close();
+    }
+
+    const sent: IngestEvent[] = [];
+    await run({
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: (events: readonly IngestEvent[]) => {
+        sent.push(...events);
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+
+    // BOTH went. The legacy row's payload is what the outbox exists to deliver,
+    // so the unusable OPTIONAL field is dropped and the capture travels — rather
+    // than the row being skipped, which would write synced_at = -1 and put that
+    // prompt permanently out of reach with nothing reporting it.
+    expect(sent.map((e) => e.content).sort()).toEqual(['legacy text', 'text of cap-1']);
+    expect(sent.find((e) => e.content === 'legacy text')?.metadata?.correlationId).toBeUndefined();
+    expect(ledger((db2) => db2.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
+  });
+
+  // STARVATION. The capture lane used to run only after the structural loop had
+  // emptied the entire backlog, so on the machines with the largest pre-attach
+  // history the half the user was newly asked about waited weeks behind it. A
+  // reserved slice of the pass budget is what stops that; this drives a
+  // structural backlog too large to finish and requires captures to move anyway.
+  it('drains captures even while a large structural backlog remains', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedRows(40);
+    seedCaptures([{ id: 'cap-1' }]);
+
+    const l = lanes();
+    let clock = T0;
+    await runHistorySync({
+      base: home,
+      settingsDir: settingsDirOf(home),
+      dataDir: dataDirOf(home),
+      // Each structural send burns a large slice of the pass, so the backlog
+      // cannot finish inside it. Before the reserved share, that meant the
+      // capture never went at all.
+      now: () => clock,
+      sleep: () => {
+        clock += 4_000;
+        return Promise.resolve();
+      },
+      random: () => 0,
+      sendBatch: l.sendBatch,
+      sendCaptures: l.sendCaptures,
+    });
+
+    // Positive control: the structural lane really did run and really did not
+    // finish, so this is not a case where captures won by default.
+    expect(l.structural.length).toBeGreaterThan(0);
+    expect(ledger((db) => db.historySync.counts(ALL).pending)).toBeGreaterThan(0);
+    // ...and the capture went regardless.
+    expect(l.captures.map((c) => c.content)).toEqual(['text of cap-1']);
+  });
+
+  // THE SLICE HANDS BACK. Reserving a share for captures is only half of the
+  // reciprocity; without the other half, a pass whose capture lane found nothing
+  // owed — the normal case on a machine whose live forwarding works — returns
+  // with a third of its budget unspent while the structural backlog it was
+  // reserved from is still there.
+  it('returns the unused capture slice to the structural lane', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedRows(40);
+    // No captures owed at all, so the reserved share is not needed this pass.
+    const l = lanes();
+    let clock = T0;
+    await runHistorySync({
+      base: home,
+      settingsDir: settingsDirOf(home),
+      dataDir: dataDirOf(home),
+      now: () => clock,
+      sleep: () => {
+        clock += 4_000;
+        return Promise.resolve();
+      },
+      random: () => 0,
+      sendBatch: l.sendBatch,
+      sendCaptures: l.sendCaptures,
+    });
+
+    expect(l.captures).toEqual([]);
+    // A floor BETWEEN the two behaviours, not merely above zero. Measured on this
+    // fixture: 60 structural rows delivered when the unused slice is handed back,
+    // 42 when it is not — so a threshold under 42 passes either way and asserts
+    // nothing. The first version of this test used 20 and was exactly that.
+    // Elapsed time is not the assertion because the clock here is fake; what the
+    // extra budget buys is rows, so rows are what is counted.
+    expect(l.structural.length).toBeGreaterThan(50);
+  });
+
+  // A PARTIAL ack is not a delivery of the whole batch. IngestAck constrains
+  // accepted/duplicates only to be non-negative, so a deployment this plugin
+  // does not ship may answer 40 for a batch of 100 — and stamping all 100 would
+  // lose 60 rows for ever with the ledger reading "delivered".
+  it('does not stamp a batch the deployment only partly took', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }, { id: 'cap-2' }]);
+
+    await run({
+      sendBatch: () => Promise.resolve(),
+      // Two offered, one taken.
+      sendCaptures: () => Promise.resolve({ settled: 1 }),
+    });
+
+    expect(
+      ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))
+        .map((r) => r.id)
+        .sort(),
+    ).toEqual(['cap-1', 'cap-2']);
+  });
+
+  // A blip is what a retry ladder is for. Returning on the first 'retry' verdict
+  // would end the capture drain for the whole pass inside a budget with room for
+  // four attempts, so a deployment that fails once per pass would never let the
+  // capture backlog shrink while the structural lane drained normally.
+  it('retries a transient failure rather than ending the pass', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }]);
+
+    let attempts = 0;
+    await run({
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: (events: readonly IngestEvent[]) => {
+        attempts += 1;
+        return attempts === 1
+          ? Promise.reject(new RemoteRequestError(503))
+          : Promise.resolve({ settled: events.length });
+      },
+    });
+
+    expect(attempts).toBe(2);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
+  });
+
+  // `counts` is structural-only, so on its own it reports the drain finished the
+  // moment the pre-attach backlog empties — which would pin completedAtMs for
+  // the life of the install while the capture lane still owed rows.
+  it('reports captures still owed when the structural backlog is empty', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }]);
+
+    const result = await run({
+      sendBatch: () => Promise.resolve(),
+      // The deployment takes nothing, so the capture stays owed.
+      sendCaptures: () => Promise.resolve({ settled: 0 }),
+    });
+
+    expect(result?.capturesPending).toBe(true);
+  });
+
+  it('reports nothing owed once the capture lane drains', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }]);
+
+    const result = await run({
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: (events: readonly IngestEvent[]) => Promise.resolve({ settled: events.length }),
+    });
+
+    expect(result?.capturesPending).toBe(false);
+  });
+
+  // THE PRE-ATTACH BOUND, and it is a privacy assertion rather than a scoping
+  // one. The disclosure says the pre-attach half of the grant sends "the record
+  // of activity" and that only what a live send could not deliver carries its
+  // TEXT. Without this bound a first attach would drain the machine's entire
+  // local history of prompts, text and all, under copy promising the opposite —
+  // and every other test here would stay green, because they all seed inside the
+  // window.
+  it('never drains a capture recorded before the machine attached', async () => {
+    attach({ grantFor: ENDPOINT });
+    const beforeAttach = Date.parse(AT) - 60_000;
+    seedCaptures([{ id: 'cap-pre', atMs: beforeAttach }, { id: 'cap-post' }]);
+    const l = lanes();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.captures.map((c) => c.content)).toEqual(['text of cap-post']);
+    // It is not skipped either — it stays owed, and the structural lane is what
+    // covers that period, without the text.
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL)).map((r) => r.id)).toEqual([
+      'cap-pre',
+    ]);
+  });
+
+  // The consent gate is the whole reason payload v2 exists: without a valid
+  // grant no pass is made at all, so no capture text leaves the machine.
+  it('sends no capture without a valid grant', async () => {
+    attach();
+    seedCaptures([{ id: 'cap-1' }]);
+    const l = lanes();
+
+    await expect(run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures })).resolves.toBeNull();
+
+    expect(l.captures).toEqual([]);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toHaveLength(1);
   });
 });

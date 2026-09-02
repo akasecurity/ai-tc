@@ -119,7 +119,7 @@ describe('aka sync-history', () => {
     expect(readWorkspaceSettings(base).historySyncConsent).toBeDefined();
     // The grant message AND the state the pass left behind — --on alone prints
     // only the first.
-    expect(io.output()).toContain("Sending this machine's existing activity");
+    expect(io.output()).toContain("Sending this machine's unsent activity");
     expect(io.output().trimEnd().split('\n').length).toBeGreaterThan(3);
   });
 

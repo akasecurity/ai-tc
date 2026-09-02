@@ -17,6 +17,58 @@ export const STRUCTURAL_EVENT_TYPES = ['session', 'llm_call', 'tool_call'] as co
 
 const TYPE_LIST = STRUCTURAL_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
 
+/**
+ * The capture grain — the rows STRUCTURAL_EVENT_TYPES exists to keep out.
+ *
+ * A SEPARATE list, deliberately, and never merged into the one above. The two
+ * lanes are not two settings of one drain: they carry different wire shapes to
+ * different routes, and only one of them may carry `content`.
+ *
+ *   structural → RecordAuditEventRequest → POST /v1/audit-events
+ *                The receiver PERSISTS `content` verbatim, so rebuildAuditEvent
+ *                drops it and this lane must never carry a capture.
+ *   capture    → IngestEvent            → POST /v1/events
+ *                The receiver scans `content` in memory and stores NULL, so this
+ *                is the only route a prompt's text may take.
+ *
+ * Widening the structural list to "just include captures" is therefore not a
+ * shortcut, it is a data leak with a green test suite: rebuildAuditEvent has no
+ * `content` key, so captures would arrive stripped of the text that is their
+ * whole point, be stamped delivered, and never be offered again — while the
+ * route that received them wrote every other field to disk for keeps.
+ *
+ * `code_change` IS A CAPTURE KIND AND IS DELIBERATELY ABSENT from the list
+ * below. No hook
+ * writes one — the only two writers are the scanners (local-ops' fs-scan, behind
+ * `aka scan` and the dashboard's folder scan, and packages/scanner's worktree
+ * scan) — and its `content` is the COMPLETE SOURCE FILE, redacted only at
+ * detected spans, gitignored scratch included. Two things follow, each
+ * disqualifying on its own:
+ *
+ *   It is not what the grant describes. Every disclosure surface enumerates the
+ *   text-carrying payload as a prompt, an assistant reply or a tool result.
+ *   Whole proprietary source files appear in none of them.
+ *
+ *   It would not be a RETRY. fs-scan takes a LocalDatabase and calls
+ *   recordCapture directly, never through AttachedDataGateway, so those rows
+ *   have never been offered to the live path at any release. Draining them is
+ *   first-time egress, under copy saying this setting only decides whether an
+ *   undelivered item is kept or dropped.
+ *
+ * Adding it is one word here — and it is a product decision that owes its own
+ * disclosure, not a completeness fix.
+ */
+// MODULE-PRIVATE, and named for the lane rather than for the grain, because
+// `@akasecurity/schema` already exports a `CAPTURE_EVENT_TYPES_SQL` derived from
+// `EventKind` — FOUR kinds, `code_change` included, with the opposite drift
+// policy — and several reads in this very package interpolate it. Exporting a
+// three-kind constant under the neighbouring name would put both on the
+// package's public surface, where a later findings read reaching for the wrong
+// one silently loses `code_change` and under-reports with nothing failing.
+const OUTBOX_CAPTURE_EVENT_TYPES = ['prompt', 'response', 'tool_use'] as const;
+
+const CAPTURE_TYPE_LIST = OUTBOX_CAPTURE_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
+
 /** `synced_at` values that are not a delivery time. */
 const SKIPPED = -1;
 
@@ -36,17 +88,24 @@ export interface HistorySyncCounts {
  * the three and the numbers do not sum to anything. These four do sum to
  * `total`, which is what a surface reporting delivery state needs.
  *
- * `queued` counts what is still OWED to the deployment, and it is honest on an
- * attached machine because both delivery paths settle here: a drain stamps
- * through `markSynced`, and the live forward stamps through
- * `markCaptureDelivered`, which is the same statement. A row left NULL is one no
- * path delivered — that, and not a separate spool file, is the outbox.
+ * SCOPE, and the caveat that follows from it: every column here is measured
+ * over STRUCTURAL rows only — `partitionStmt` carries the same
+ * `event_type IN (…)` filter as the rest of this ledger. Capture rows are not
+ * counted in `total`, so this is the delivery state of the structural lane, not
+ * of everything the machine owes a deployment.
  *
- * The one thing it still cannot see is a delivery whose stamp was lost after the
- * forward succeeded. That row reads as `queued` and is offered again, which the
- * receiver's id-dedup absorbs because the wire id derives from the row's own
- * tuple — so it over-counts by the rare lost stamp rather than, as before, by
- * every successful live forward.
+ * That scope is why `markCaptureDelivered` does NOT settle anything visible
+ * here. It stamps a capture row, through the same UPDATE a drain uses, so the
+ * two are indistinguishable afterwards — but this query never counts capture
+ * rows, so the stamp is invisible to it by construction. The stamp exists for a
+ * capture drain to read; it is not a fix for this read.
+ *
+ * `queued` therefore still OVER-COUNTS on an attached machine, and by the same
+ * rows it always did: a structural row the live path forwarded successfully
+ * (`recordToolCalls`) is never stamped by anything, so it stays NULL and reads
+ * as owed. Closing that needs a stamp on the structural forward, which no path
+ * does today. Read `queued` as "not known to have been delivered", not as
+ * "undelivered".
  */
 export interface HistorySyncPartition {
   queued: number;
@@ -135,6 +194,7 @@ export class SqliteHistorySyncRepository {
   private readonly closeWindowStmt: StatementSync;
   private readonly releaseBoundaryStmt: StatementSync;
   private readonly freezeBoundaryStmt: StatementSync;
+  private readonly captureRowsStmt: StatementSync;
   private readonly partitionStmt: StatementSync;
   private readonly claimRowStmt: StatementSync;
   private readonly releaseRowStmt: StatementSync;
@@ -168,6 +228,41 @@ export class SqliteHistorySyncRepository {
           AND started_at < :before
           AND COALESCE(root_session_id, id) = :sessionId
         ORDER BY (event_type = 'session') DESC, started_at
+        LIMIT :limit`,
+    );
+
+    // Captures, flat and oldest first — NOT grouped by session, and that is a
+    // property of the route rather than an oversight. /v1/events stubs a missing
+    // session root on the leaf's own id, so a capture that overtakes its root is
+    // absorbed rather than rejected; the structural lane pages by session only
+    // because /v1/audit-events stubs nothing and its foreign keys are real.
+    //
+    // TWO bounds, and they are not the structural lane's.
+    //
+    // `:since` is the attachment boundary, and it is the INVERSE of how the
+    // structural lane uses one. There, rows BEFORE the boundary are the backlog
+    // to drain and rows after belong to the live path. Here, rows after it are
+    // the ones the live path was supposed to deliver — so an unstamped one is
+    // precisely what the outbox owes — and rows BEFORE it are pre-attach
+    // history, which is the structural lane's subject and travels WITHOUT
+    // `content`. Dropping this bound would drain a machine's entire local
+    // history of prompts, text and all, on its first attach: covered by no
+    // disclosure, since the copy says the pre-attach half sends the record of
+    // activity only.
+    //
+    // `:before` is a GRACE WINDOW rather than a boundary. It buys quiet, not
+    // correctness: it keeps this pass off rows the live forward is probably
+    // still mid-flight on. A row sent twice is harmless — the receiver dedups on
+    // an id derived from the row's own tuple — so it may be small.
+    this.captureRowsStmt = db.prepare(
+      `SELECT ${ROW_COLUMNS}
+         FROM audit_events
+        WHERE synced_at IS NULL
+          AND sync_claimed_at IS NULL
+          AND event_type IN (${CAPTURE_TYPE_LIST})
+          AND started_at >= :since
+          AND started_at < :before
+        ORDER BY started_at
         LIMIT :limit`,
     );
 
@@ -230,6 +325,23 @@ export class SqliteHistorySyncRepository {
     );
     // Permanent skips are NOT re-armed: a row that failed to rebuild locally
     // fails the same way against any deployment.
+    // STRUCTURAL ONLY, and the capture half is deliberately absent — it was
+    // added here and then removed, so the reasoning is worth keeping.
+    //
+    // Re-arming exists because a stamp records that ONE deployment received a
+    // row, and the next one has not. That argument holds for the structural
+    // lane, which reads `started_at < :before` and so re-drains the rows the
+    // re-arm just cleared. It does NOT hold for captures, which read the other
+    // side of the same boundary (`started_at >= :since`): every row a
+    // deployment change re-arms was recorded before the new attachment, so the
+    // capture lane would never offer one again. Widening this achieved nothing
+    // but un-stamping delivered rows for ever.
+    //
+    // And re-offering them would be WRONG, which is why the fix is to narrow
+    // rather than to loosen the bound. A capture recorded under deployment A is
+    // pre-attach relative to B, and the grant says the pre-attach half sends the
+    // record of activity, not its text. B is entitled to the structural rows —
+    // which it gets, because those DO re-arm — and not to the prompts.
     this.rearmStmt = db.prepare(
       `UPDATE audit_events SET synced_at = NULL
         WHERE synced_at > 0 AND event_type IN (${TYPE_LIST})`,
@@ -329,6 +441,19 @@ export class SqliteHistorySyncRepository {
   /** One session's undelivered structural rows within the backlog, root first. */
   pendingRows(sessionId: string, limit: number, before: number): AuditEventRow[] {
     return allRows<AuditEventRow>(this.rowsStmt, { sessionId, limit, before });
+  }
+
+  /**
+   * Captures this machine still owes the deployment, oldest first.
+   *
+   * `since` is the attachment boundary — only captures from the period this
+   * machine was attached, because those are the ones a live forward owed and
+   * failed to deliver. Anything older is pre-attach history, which travels on
+   * the structural lane without its text. `before` is the grace window. See
+   * captureRowsStmt for why the two bounds point the way they do.
+   */
+  pendingCaptureRows(limit: number, since: number, before: number): AuditEventRow[] {
+    return allRows<AuditEventRow>(this.captureRowsStmt, { limit, since, before });
   }
 
   /** Record delivery. Called only AFTER the far side has accepted the rows. */

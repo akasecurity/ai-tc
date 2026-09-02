@@ -376,9 +376,19 @@ function mergeRaiseOnly(
  * gateway, so the device keeps working exactly as standalone does when the
  * control plane is slow, unreachable, or refusing the credential. Every write lands locally
  * FIRST and is then forwarded to the control plane as the organization's copy — bounded,
- * budgeted and breaker-guarded, and dropped rather than spooled when it fails
- * (there is no at-rest outbox: `Event.content` is raw prompt/tool text, and
- * queueing it to disk is what this product exists to prevent).
+ * budgeted and breaker-guarded.
+ *
+ * A FAILED forward is no longer dropped, and this comment used to say it was.
+ * It now leaves the row unstamped and the outbox drain offers it again on a
+ * later pass. The reason the old stance existed is still worth carrying:
+ * `Event.content` is raw prompt/tool text. What makes retaining it acceptable is
+ * that the text is ALREADY at rest here — recordCapture writes it on every
+ * machine, attached or not — so a queue changes how long delivery may be owed
+ * rather than whether plaintext sits on disk, and the deferred send is behind
+ * its own consent, whose copy says exactly that.
+ *
+ * There is still no SPOOL FILE: the queue is `synced_at` on the row that was
+ * already written, so nothing is copied anywhere to enqueue it.
  *
  * `getPolicyBundle` composes the local bundle with the out-of-band-pulled
  * control-plane bundle, raise-only — see mergeRaiseOnly.

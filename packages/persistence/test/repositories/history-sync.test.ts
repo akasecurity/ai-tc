@@ -167,6 +167,28 @@ describe('SqliteHistorySyncRepository — which deployment the stamps are for', 
     expect(db.historySync.counts(ALL)).toMatchObject({ pending: 3, sent: 0 });
   });
 
+  // The capture half does NOT re-arm, and that is the rule rather than an
+  // omission. A capture recorded under deployment A is pre-attach relative to B,
+  // and the grant says the pre-attach half sends the record of activity, not its
+  // text — so B is entitled to the structural rows (which do re-arm, above) and
+  // not to the prompts. Re-arming captures would also be inert: the capture lane
+  // reads `started_at >= :since`, so every row a deployment change clears sits
+  // on the wrong side of the new boundary and is never offered again. The only
+  // effect would be to un-stamp delivered rows for ever.
+  it('leaves delivered CAPTURES stamped when the deployment changes', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.rearmFor('fingerprint-a', ALL);
+    db.historySync.markSynced(['s-1-prompt'], T0);
+
+    db.historySync.rearmFor('fingerprint-b', ALL);
+
+    // Still delivered: the new deployment is not owed this text.
+    expect(db.historySync.pendingCaptureRows(10, 0, ALL)).toEqual([]);
+    // ...while the structural rows it IS owed came back.
+    expect(db.historySync.counts(ALL)).toMatchObject({ pending: 3, sent: 0 });
+  });
+
   // A row that could not be rebuilt locally fails the same way anywhere, so
   // pointing at a new deployment must not resurrect it.
   it('leaves permanently skipped rows skipped across a change of deployment', () => {
@@ -411,6 +433,27 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
     expect(db.historySync.partition()).toMatchObject({ synced: 1, inProgress: 0, queued: 2 });
   });
 
+  // The SETTLED half of the scope claim. Its sibling below ('does not yet count
+  // captures') pins the static shape — a capture is absent from `total`. This
+  // one pins what happens when the live path STAMPS that capture through
+  // `markCaptureDelivered`: still nothing, because the row was never counted.
+  // Both are needed. Without this one, the docstring's load-bearing sentence —
+  // that a live stamp settles nothing visible here — has no test at all, and the
+  // stamp could start moving `synced` with the suite fully green.
+  it('does not count a capture, before or after the live path stamps it', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    const before = db.historySync.partition();
+    expect(before).toMatchObject({ total: 3, queued: 3 });
+
+    db.historySync.markSynced(['s-1-prompt'], T0 + MINUTE);
+
+    // Same numbers: the capture row was never in `total`, so settling it is not
+    // a state change this query can see. `synced` staying 0 is the assertion
+    // that matters — it is what would break if the capture joined the lane.
+    expect(db.historySync.partition()).toMatchObject({ total: 3, queued: 3, synced: 0 });
+  });
+
   it('counts a permanent skip as failed, not as queued', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
@@ -453,6 +496,94 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
     // seedSession writes a prompt row too. Until the drain can carry content
     // safely, it is not part of the tracked set and must not appear here.
     expect(db.historySync.partition().total).toBe(3);
+  });
+});
+
+// The capture lane's read. Everything here is about what the STRUCTURAL reader
+// deliberately does not do: no session grouping (the /v1/events route stubs a
+// missing root), no backlog boundary (an undelivered capture is owed whenever it
+// was recorded), and `content` retained (it is the reason the lane exists).
+describe('SqliteHistorySyncRepository — captures the outbox still owes', () => {
+  // code_change is a capture kind and is deliberately NOT drained. Its only
+  // writers are the scanners, its content is a COMPLETE source file (gitignored
+  // scratch included), and it has never been offered to the live path — so
+  // draining it would be first-time egress of whole proprietary files under copy
+  // that names prompts, replies and tool results. Pinned here because adding it
+  // back is one word, and nothing else in the tree would notice.
+  it('never offers a code_change, whatever else is owed', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-scan',
+      eventType: 'code_change',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(MINUTE),
+      content: 'the entire contents of a source file',
+      contentHash: 'd'.repeat(64),
+    });
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-prompt2',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(2 * MINUTE),
+      content: 'a prompt',
+    });
+
+    expect(db.historySync.pendingCaptureRows(10, 0, ALL).map((r) => r.id)).toEqual(['s-1-prompt2']);
+  });
+
+  it('offers unstamped captures oldest first, and no structural rows', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    seedSession(db, 's-2', 10 * MINUTE);
+    const rows = db.historySync.pendingCaptureRows(10, 0, ALL);
+    expect(rows.map((r) => r.id)).toEqual(['s-1-prompt', 's-2-prompt']);
+    // The structural rows belong to the other lane and must not appear here.
+    expect(rows.every((r) => r.eventType === 'prompt')).toBe(true);
+  });
+
+  // The whole point of the lane: the text rides along. rebuildAuditEvent drops
+  // `content` for the structural route; this reader must not.
+  it('carries the captured text', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    expect(db.historySync.pendingCaptureRows(10, 0, ALL)[0]?.content).toBe('the text of a prompt');
+  });
+
+  it('does not offer a capture the live path already stamped', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.markSynced(['s-1-prompt'], T0);
+    expect(db.historySync.pendingCaptureRows(10, 0, ALL)).toEqual([]);
+  });
+
+  it('does not offer a capture another pass has claimed', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.claimRows(['s-1-prompt'], T0);
+    expect(db.historySync.pendingCaptureRows(10, 0, ALL)).toEqual([]);
+  });
+
+  // The grace window is what keeps this pass off rows the live forward is
+  // probably still sending. It is a quietness measure, not a correctness one —
+  // but it has to actually bound the read.
+  it('holds back a capture newer than the grace window', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    // seedSession writes its prompt at T0 + 3 minutes.
+    expect(db.historySync.pendingCaptureRows(10, 0, T0 + 2 * MINUTE)).toEqual([]);
+    expect(db.historySync.pendingCaptureRows(10, 0, T0 + 4 * MINUTE).map((r) => r.id)).toEqual([
+      's-1-prompt',
+    ]);
+  });
+
+  it('pages', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    seedSession(db, 's-2', 10 * MINUTE);
+    expect(db.historySync.pendingCaptureRows(1, 0, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
   });
 });
 

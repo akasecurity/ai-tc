@@ -6,9 +6,12 @@ import { revalidatePath } from 'next/cache';
 import { db } from '../../lib/db';
 import {
   asPolicyFloorRefusal,
+  DETECTION_ID_INVALID,
+  DETECTION_MISSING,
   DETECTION_POLICY_INVALID,
-  DETECTION_POLICY_MISSING,
-  DETECTION_POLICY_WRITE_ERROR,
+  DETECTION_STAYS_ON_REFUSAL,
+  DETECTION_WRITE_ERROR,
+  isControlPlaneRefusal,
   policyFloorRefusal,
 } from '../../lib/detection-refusals';
 
@@ -21,17 +24,21 @@ import {
 // every 'use server' export to be async — hence the require-await disables below.
 
 /**
- * The outcome of a policy assignment, in terms the client can render.
+ * The outcome of a per-detection write, in terms the client can render.
  *
- * This RETURNS a refusal rather than throwing one, for the reason every
+ * These RETURN a refusal rather than throwing one, for the reason every
  * mutating action on this dashboard does: a rejected Server Action escalates to
- * the route error boundary and replaces the whole page. But it also no longer
- * returns NOTHING, which is what it used to do — a write refused by the control
- * plane's floor left the picker showing the choice the user made, the store
- * holding a different one, and enforcement applying a third. A refusal nobody
- * can see is indistinguishable from a picker that ignores you.
+ * the route error boundary and replaces the whole page. But they also no longer
+ * return NOTHING, which is what they used to do — a write refused by the control
+ * plane left the control showing the choice the user made, the store holding a
+ * different one, and enforcement applying a third. A refusal nobody can see is
+ * indistinguishable from a control that ignores you.
+ *
+ * One shape for both writes: they answer the same questions (did it land, and
+ * if not, what does the user read), and a second shape saying the same thing is
+ * how two controls on one page start reporting the same refusal differently.
  */
-export interface SetDetectionPolicyResult {
+export interface DetectionWriteResult {
   ok: boolean;
   error?: string;
 }
@@ -50,7 +57,7 @@ export interface SetDetectionPolicyResult {
 export async function setDetectionPolicy(
   id: string,
   policyId: string,
-): Promise<SetDetectionPolicyResult> {
+): Promise<DetectionWriteResult> {
   const parts = splitDetectionId(id);
   // Both malformed inputs answer with the same sentence: only a stale or
   // hand-made client sends either, the remedy for both is a reload, and neither
@@ -68,22 +75,53 @@ export async function setDetectionPolicy(
   } catch (error) {
     const refused = asPolicyFloorRefusal(error);
     if (refused !== null) return { ok: false, error: policyFloorRefusal(refused) };
-    return { ok: false, error: DETECTION_POLICY_WRITE_ERROR };
+    return { ok: false, error: DETECTION_WRITE_ERROR };
   }
   revalidatePath('/detections');
   // No row changed: the pack this page rendered is not installed any more. Said
   // plainly, because the revalidated page below is about to stop showing it and
   // an unexplained disappearance reads as the write having broken something.
-  return written ? { ok: true } : { ok: false, error: DETECTION_POLICY_MISSING };
+  return written ? { ok: true } : { ok: false, error: DETECTION_MISSING };
 }
 
-/** Enable or disable a detection. */
+/**
+ * Enable or disable a detection.
+ *
+ * On an ATTACHED machine the store refuses to switch OFF a detection the
+ * organization's bundle names at all — a detection that does not run supplies
+ * no rules and no actions, which is below every archetype the organization
+ * could have asked for, so the floor it set would be unreachable rather than
+ * merely lowered. Re-enabling is never refused.
+ *
+ * That refusal is recognised structurally (see isControlPlaneRefusal) and
+ * reported as the organization's decision, never as a failure: retrying cannot
+ * help and the user has done nothing wrong. It goes through the same result
+ * shape the assignment does, so a toggle that is somehow clicked anyway — a
+ * stale page, a second tab, a sync that landed between render and click — says
+ * why instead of snapping back in silence.
+ */
 // eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
-export async function setDetectionEnabled(id: string, enabled: boolean): Promise<void> {
+export async function setDetectionEnabled(
+  id: string,
+  enabled: boolean,
+): Promise<DetectionWriteResult> {
   const parts = splitDetectionId(id);
-  if (!parts) return;
-  db().installedPacks.setEnabled(parts.namespace, parts.packId, enabled);
+  // Only a stale or hand-made client sends this; the remedy is a reload, and
+  // the message may not quote what was sent.
+  if (!parts) return { ok: false, error: DETECTION_ID_INVALID };
+  let written: boolean;
+  try {
+    written = db().installedPacks.setEnabled(parts.namespace, parts.packId, enabled);
+  } catch (error) {
+    if (isControlPlaneRefusal(error)) return { ok: false, error: DETECTION_STAYS_ON_REFUSAL };
+    return { ok: false, error: DETECTION_WRITE_ERROR };
+  }
   revalidatePath('/detections');
+  // No row changed: the detection this page rendered is not installed any more.
+  // Said plainly, because the revalidated page below is about to stop showing
+  // it and an unexplained disappearance reads as the write having broken
+  // something.
+  return written ? { ok: true } : { ok: false, error: DETECTION_MISSING };
 }
 
 /**

@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import type { DetectionRowInput } from '../../src/zod/detection-build.ts';
-import { rowToDetectionDetail } from '../../src/zod/detection-build.ts';
+import type { OriginEnum } from '../../src/zod/detection.ts';
+import type { DetectionRowInput, DetectionSummaryInput } from '../../src/zod/detection-build.ts';
+import {
+  buildDetectionsList,
+  rowToDetectionDetail,
+  summaryToDetectionListItem,
+} from '../../src/zod/detection-build.ts';
 import type { Rule } from '../../src/zod/rule.ts';
 
 function rule(id: string, matcher: Rule['matcher']): Rule {
@@ -147,5 +152,141 @@ describe('rowToDetectionDetail', () => {
 
     expect(detail.rules.map((r) => r.id)).toEqual(['pack/legacy']);
     expect(detail.rules[0]?.examples).toEqual(['x']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Origin: library vs custom
+// ---------------------------------------------------------------------------
+
+function summary(overrides: Partial<DetectionSummaryInput> = {}): DetectionSummaryInput {
+  return {
+    namespace: 'aka',
+    packId: 'secrets',
+    version: '1.0.0',
+    name: 'Secrets',
+    enabled: true,
+    ruleCount: 3,
+    ...overrides,
+  };
+}
+
+describe('detection origin', () => {
+  // `origin` was a one-member enum and both mappers hardcoded 'library', so a
+  // user-authored pack had no way to be represented even once one could exist —
+  // and the UI's `custom` filter and count were permanently empty as a result.
+  it('carries a custom origin through the list mapper', () => {
+    expect(summaryToDetectionListItem(summary({ origin: 'custom' })).origin).toBe('custom');
+  });
+
+  it('carries a custom origin through the detail mapper', () => {
+    const detail = rowToDetectionDetail(
+      {
+        ...row([rule('secrets/x', { type: 'regex', pattern: 'x', flags: 'g' })]),
+        origin: 'custom',
+      },
+      0,
+      null,
+    );
+
+    expect(detail.origin).toBe('custom');
+  });
+
+  // Absent must keep meaning 'library'. A caller that predates custom authoring —
+  // or a store with no origin column — must not start reporting its packs as
+  // something else, and every row in existence today is in exactly that state.
+  it('reads an absent origin as library', () => {
+    expect(summaryToDetectionListItem(summary()).origin).toBe('library');
+    expect(
+      rowToDetectionDetail(
+        row([rule('secrets/x', { type: 'regex', pattern: 'x', flags: 'g' })]),
+        0,
+        null,
+      ).origin,
+    ).toBe('library');
+  });
+
+  // Nothing parses these inputs — they are rows a caller read out of its own
+  // store — so a value outside the enum is reachable from a store written by a
+  // newer build or edited by hand. Passed through, it reaches the dashboard's
+  // `ORIGIN_META[origin]`, which is `undefined`, and the Detections page dies on
+  // the first property read. It must read as 'library', the same as absent.
+  it('reads an origin outside the enum as library', () => {
+    const foreign = 'forked' as OriginEnum;
+
+    expect(summaryToDetectionListItem(summary({ origin: foreign })).origin).toBe('library');
+    expect(
+      rowToDetectionDetail(
+        {
+          ...row([rule('secrets/x', { type: 'regex', pattern: 'x', flags: 'g' })]),
+          origin: foreign,
+        },
+        0,
+        null,
+      ).origin,
+    ).toBe('library');
+  });
+
+  // The membership test reads own properties only: an inherited key is a string
+  // that indexes the vocabulary truthily and is not a member of it.
+  it('reads an inherited key as library rather than as a member', () => {
+    expect(
+      summaryToDetectionListItem(summary({ origin: 'constructor' as OriginEnum })).origin,
+    ).toBe('library');
+  });
+
+  // Counted, not just mapped: a foreign origin must land in a bucket rather than
+  // fall out of the totals, or the tabs stop adding up to `all`.
+  it('counts an origin outside the enum as library', () => {
+    const { counts } = buildDetectionsList(
+      [
+        summary({ packId: 'a', origin: 'forked' as OriginEnum }),
+        summary({ packId: 'b', origin: 'custom' }),
+      ],
+      { filter: 'all' },
+    );
+
+    expect(counts.library).toBe(1);
+    expect(counts.custom).toBe(1);
+    expect(counts.library + counts.custom).toBe(counts.all);
+  });
+
+  it('counts library and custom separately, and they partition the whole set', () => {
+    const { counts } = buildDetectionsList(
+      [
+        summary({ packId: 'a' }),
+        summary({ packId: 'b', origin: 'library' }),
+        summary({ packId: 'c', origin: 'custom' }),
+      ],
+      { filter: 'all' },
+    );
+
+    expect(counts.all).toBe(3);
+    expect(counts.library).toBe(2);
+    expect(counts.custom).toBe(1);
+    expect(counts.library + counts.custom).toBe(counts.all);
+  });
+
+  it('filters to custom packs, and to library packs', () => {
+    const summaries = [summary({ packId: 'lib' }), summary({ packId: 'mine', origin: 'custom' })];
+
+    expect(buildDetectionsList(summaries, { filter: 'custom' }).items.map((i) => i.packId)).toEqual(
+      ['mine'],
+    );
+    expect(
+      buildDetectionsList(summaries, { filter: 'library' }).items.map((i) => i.packId),
+    ).toEqual(['lib']);
+  });
+
+  // Deliberately still empty, and asserted so rather than left unmentioned:
+  // `customized` would mean a library pack edited in place, which is not a state
+  // this model has — editing a library pack forks it. Pinning the 0 keeps it from
+  // being quietly wired to something that only looks right.
+  it('leaves customized empty, since no origin produces it', () => {
+    const summaries = [summary({ packId: 'mine', origin: 'custom' })];
+    const { counts, items } = buildDetectionsList(summaries, { filter: 'customized' });
+
+    expect(counts.customized).toBe(0);
+    expect(items).toEqual([]);
   });
 });

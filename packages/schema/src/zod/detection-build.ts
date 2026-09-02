@@ -12,6 +12,7 @@ import type {
   DetectionUpdate,
   ListDetectionsQuery,
   ListDetectionsResponse,
+  OriginEnum,
 } from './detection.ts';
 import { AppliesTo, Matcher, PostValidatorRef, RequiresNearby, type Rule } from './rule.ts';
 
@@ -46,6 +47,31 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 }
 
+// The origin vocabulary as a lookup, annotated `Record<OriginEnum, true>` so a
+// member added to the enum is a compile error here rather than a value that
+// quietly falls through resolveOrigin's default.
+const ORIGIN_VALUES: Record<OriginEnum, true> = { library: true, custom: true };
+
+/**
+ * The single definition of "which origin is this row" — shared by both mappers
+ * and the list builder, so the "absent means library" rule cannot be changed in
+ * one of the three and not the others.
+ *
+ * The declared parameter type is a claim nothing checks. These inputs are rows a
+ * caller read out of its own store, not values this module parsed, so a pack row
+ * written by a newer build — or hand-edited — can carry an origin this build has
+ * never heard of. Coalescing alone passes such a value straight through to the
+ * dashboard's `ORIGIN_META[origin]`, which is `undefined`, and the whole
+ * Detections page then fails to render on the first property read. Anything
+ * outside the enum therefore reads as 'library', exactly as absent does: one
+ * mislabelled row instead of a blank page.
+ */
+export function resolveOrigin(origin: OriginEnum | null | undefined): OriginEnum {
+  // hasOwn rather than a truthy index read, so an inherited key ('constructor',
+  // 'toString') cannot pass for a member.
+  return origin != null && Object.hasOwn(ORIGIN_VALUES, origin) ? origin : 'library';
+}
+
 // ─── Inputs ──────────────────────────────────────────────────────────────────
 
 // The minimal per-pack summary the list/stats views need. Deliberately a
@@ -58,6 +84,11 @@ export interface DetectionSummaryInput {
   name: string;
   enabled: boolean;
   ruleCount: number;
+  // Where the pack came from. Optional so a caller that predates custom
+  // authoring — or a store with no origin column — keeps its current meaning
+  // rather than having to be updated in lockstep; absent reads as 'library',
+  // which is what every such row is.
+  origin?: OriginEnum | null;
   // null/undefined == no policy assigned.
   policyId?: string | null;
   // Set ONLY when a newer snapshot is available for this pack (computed from
@@ -75,6 +106,8 @@ export interface DetectionRowInput {
   name: string;
   enabled: boolean;
   rules: Rule[];
+  // See DetectionSummaryInput.origin — absent reads as 'library'.
+  origin?: OriginEnum | null;
   // The DB-persisted last-edit time (installed_packs.updated_at).
   updatedAt: Date;
   // null/undefined == no policy assigned.
@@ -90,7 +123,7 @@ export function summaryToDetectionListItem(s: DetectionSummaryInput): DetectionL
     name: s.name,
     version: s.version,
     enabled: s.enabled,
-    origin: 'library', // v1: every installed pack is library origin
+    origin: resolveOrigin(s.origin),
     namespace: s.namespace,
     packId: s.packId,
     ruleCount: s.ruleCount,
@@ -166,7 +199,7 @@ export function rowToDetectionDetail(
     name: row.name,
     version: row.version,
     enabled: row.enabled,
-    origin: 'library',
+    origin: resolveOrigin(row.origin),
     namespace: row.namespace,
     packId: row.packId,
     ruleCount: row.rules.length,
@@ -198,10 +231,11 @@ export function splitDetectionId(id: string): { namespace: string; packId: strin
 
 /**
  * Build the GET /v1/detections response from the unfiltered summary set. Counts
- * are computed over the UNFILTERED set; `custom`/`customized` are 0 in v1 (no
- * branching model). `updates` counts summaries carrying `latestVersion` —
- * populated from available_packs; a caller that resolves updates lazily on
- * detail omits it, keeping its count 0.
+ * are computed over the UNFILTERED set: `library` and `custom` from each
+ * summary's own origin, and `customized` 0 by construction — no origin member
+ * produces it (see the counts below). `updates` counts summaries carrying
+ * `latestVersion` — populated from available_packs; a caller that resolves
+ * updates lazily on detail omits it, keeping its count 0.
  * Filtering is case-insensitive over name/packId/namespace; sort is enabled
  * DESC then name ASC.
  */
@@ -210,24 +244,38 @@ export function buildDetectionsList(
   query: ListDetectionsQuery,
 ): ListDetectionsResponse {
   const withUpdate = summaries.filter((s) => s.latestVersion != null);
+  // Both arms test their own member rather than one testing the negation of the
+  // other: a third origin must be a deliberate decision here, not a row that
+  // buckets into Library because it is not custom.
+  const originOf = (s: DetectionSummaryInput) => resolveOrigin(s.origin);
   const counts = {
     all: summaries.length,
-    library: summaries.length, // all origin=library in v1
-    custom: 0,
+    library: summaries.filter((s) => originOf(s) === 'library').length,
+    custom: summaries.filter((s) => originOf(s) === 'custom').length,
+    // No origin member produces this, so it is 0 BY CONSTRUCTION rather than by
+    // omission: `customized` would mean a LIBRARY pack whose rules were edited in
+    // place, and that state does not exist — editing a library pack forks it. See
+    // OriginEnum.
     customized: 0,
     updates: withUpdate.length,
   };
 
   // `filter` defaults to 'all' via the Zod schema, so it is always present here.
   const filter = query.filter;
-  // 'all' and 'library' include everything in v1; custom/customized have no
-  // members yet; 'updates' narrows to the packs with a newer snapshot.
+  // 'customized' has no producer (see counts above), so it stays the one arm
+  // that is empty by construction; 'updates' narrows to the packs carrying a
+  // newer snapshot. Each origin arm names its own member, for the reason above
+  // the counts.
   let filtered =
-    filter === 'custom' || filter === 'customized'
+    filter === 'customized'
       ? []
-      : filter === 'updates'
-        ? [...withUpdate]
-        : [...summaries];
+      : filter === 'custom'
+        ? summaries.filter((s) => originOf(s) === 'custom')
+        : filter === 'library'
+          ? summaries.filter((s) => originOf(s) === 'library')
+          : filter === 'updates'
+            ? [...withUpdate]
+            : [...summaries];
 
   if (query.q) {
     const q = query.q.toLowerCase();

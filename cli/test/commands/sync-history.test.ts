@@ -190,4 +190,34 @@ describe('aka sync-history', () => {
     await runSyncHistory([], deps(io));
     expect(io.output()).toContain('no longer');
   });
+
+  // The stale-grant notice is the second place this consent is stated, and the
+  // one a user meets when their grant is paused and being re-asked — so it
+  // carries the same masking claim and needs the same guard. Nothing reached
+  // this branch before, which is how the copy it replaced went unnoticed.
+  it('states the masking condition when re-asking for a grant that predates the change', async () => {
+    attach();
+    applyOnboarding(
+      {
+        historySyncConsent: {
+          acknowledgedAt: new Date().toISOString(),
+          payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION - 1,
+          endpoint: ENDPOINT,
+        },
+      },
+      base,
+    );
+
+    const io = recorder();
+    await runSyncHistory([], deps(io));
+    const shown = io.output();
+    // The branch under test, not merely some refusal: a version-stale grant is
+    // re-asked rather than reported as never given.
+    expect(shown).toContain('predates a change');
+    expect(shown).toContain('is set to redact or block');
+    expect(shown).toContain('ships on monitor');
+    // The unconditional promise this replaced. Without this the case passes on
+    // any wording that happens to mention a policy.
+    expect(shown).not.toContain('with detected secrets masked');
+  });
 });

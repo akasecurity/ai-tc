@@ -139,7 +139,7 @@ function grant(
     `Sending this machine's unsent activity to ${controlPlaneName(settings.controlPlane)}.\n` +
       'That is the activity recorded before it attached, and anything a live send could not\n' +
       'deliver — which for a captured prompt, reply or tool result includes its text. A value\n' +
-      'in that text is masked only where the policy you assigned the detection that flagged it\n' +
+      'in that text is masked only where the policy assigned to the detection that flagged it\n' +
       'is redact or block; under monitor or warn it goes as it was seen, and every detection\n' +
       'ships on monitor. It goes in the background, a little at a time, starting with your\n' +
       'next session. Anything already sent cannot be recalled.\n',

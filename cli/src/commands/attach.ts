@@ -475,7 +475,7 @@ async function askAboutHistory(
       'And, for anything a live send could not deliver — the deployment was',
       'unreachable, or refused the key — what was captured, which for a prompt,',
       'an assistant reply or a tool result INCLUDES ITS TEXT. What is masked in',
-      'that text follows the policy you assigned the detection that flagged the',
+      'that text follows the policy assigned to the detection that flagged the',
       'value: it is masked before it is stored or sent only where that policy',
       'is redact or block. Under monitor or warn the value goes as it was seen,',
       'and every detection ships on monitor, so on a default install nothing in',

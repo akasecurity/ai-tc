@@ -887,7 +887,9 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
         Promise.resolve(bundle([{ ...policy({ category: 'pii' }, 'block'), kind: 'custom' }])),
     });
     const merged = await gateway.getPolicyBundle();
-    const pii = merged.policies.filter((p) => 'category' in p.target && p.target.category === 'pii');
+    const pii = merged.policies.filter(
+      (p) => 'category' in p.target && p.target.category === 'pii',
+    );
     expect(pii).toHaveLength(1);
     expect(pii[0]?.action).toBe('block');
     expect(pii[0]?.kind).toBe('custom');

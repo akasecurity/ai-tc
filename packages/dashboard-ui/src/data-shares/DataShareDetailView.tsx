@@ -51,13 +51,15 @@ function CallSiteCard({ st }: { st: CallSite }) {
       <span className="font-mono text-xs text-text-3">
         {st.file}:<b className="text-text-2">{st.line}</b>
       </span>
-      <div className="overflow-x-auto whitespace-pre rounded-md bg-ink px-2.5 py-2 font-mono text-xs leading-relaxed text-white mt-0.5">
-        <span className="text-code-muted">
-          {st.file.split('/').pop()}:{st.line}
-          {'  '}
-        </span>
-        {st.snippet}
-      </div>
+      {st.snippet !== '' && (
+        <div className="overflow-x-auto whitespace-pre rounded-md bg-ink px-2.5 py-2 font-mono text-xs leading-relaxed text-white mt-0.5">
+          <span className="text-code-muted">
+            {st.file.split('/').pop()}:{st.line}
+            {'  '}
+          </span>
+          {st.snippet}
+        </div>
+      )}
     </div>
   );
 }

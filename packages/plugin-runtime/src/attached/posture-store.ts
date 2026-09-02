@@ -236,3 +236,28 @@ export function createPostureStore(dir: string = settingsDir(), legacyDir?: stri
 }
 
 export type PostureStore = ReturnType<typeof createPostureStore>;
+
+/**
+ * This machine's device identity, minting and persisting one if it has none.
+ *
+ * A NARROW DOOR onto the store above, exported so `aka attach` can tell a
+ * deployment which machine is asking WITHOUT this package handing out its whole
+ * posture surface. The CLI needs exactly one string and no ability to stamp
+ * attempt timestamps or reach the file path.
+ *
+ * Sharing the store matters more than the convenience. If the CLI minted its own
+ * id, a machine would present one identity when attaching and a different one
+ * when reporting posture, so the deployment would see two devices for one
+ * laptop — and a later re-attach would create a second machine record instead of
+ * rotating the first. Reading through the same store is what keeps those the
+ * same machine.
+ *
+ * Answers `null` when the identity could not be read OR minted — a permissions
+ * problem on `~/.aka/settings`, most often. The caller decides what to do about
+ * it; there is deliberately no fallback id here, because a fabricated one would
+ * reintroduce exactly the split this function exists to prevent.
+ */
+export async function readDeviceIdentity(dir?: string): Promise<string | null> {
+  const state = await createPostureStore(dir).read();
+  return state?.deviceId ?? null;
+}

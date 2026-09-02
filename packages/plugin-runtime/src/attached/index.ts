@@ -5,7 +5,11 @@
 // decorator only when both halves of an attachment are present and agree, so a
 // machine that has never attached — the overwhelming majority — constructs none
 // of it and behaves exactly as it did before this existed.
+export { hashProjectKey, toEgressIngestRequest } from './egress-wire.ts';
 export type { GatewayMeta } from './factory.ts';
+// The device identity, and ONLY that: `aka attach` has to tell a deployment
+// which machine is asking, and reading it through the same store the posture
+// reporter uses is what keeps one laptop from presenting two identities.
 export type { ControlPlaneFailure } from './failure.ts';
 export { classifyFailure } from './failure.ts';
 export type { ForwardDrops } from './forward-drops.ts';
@@ -53,6 +57,7 @@ export { createPostureReporter, POSTURE_REPORT_INTERVAL_MS } from './posture-rep
 export type { StoreReadout } from './posture-snapshot.ts';
 export { readStorePosture } from './posture-snapshot.ts';
 export type { PostureState, PostureStore } from './posture-store.ts';
+export { readDeviceIdentity } from './posture-store.ts';
 export { createPostureStore } from './posture-store.ts';
 export type { RenderAttachedStatusDeps } from './status.ts';
 export { renderAttachedStatus, renderPolicyLine } from './status.ts';

@@ -13,11 +13,11 @@ const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
 ];
 
 /** Humanize an ISO timestamp as a relative string ("6 days ago"). */
-export function relativeTime(iso: string | undefined): string {
+export function relativeTime(iso: string | undefined, now = Date.now()): string {
   if (!iso) return '';
   const then = Date.parse(iso);
   if (Number.isNaN(then)) return '';
-  const deltaSec = (then - Date.now()) / 1000;
+  const deltaSec = (then - now) / 1000;
   const abs = Math.abs(deltaSec);
   if (abs < 45) return 'just now';
   for (const [unit, secs] of UNITS) {

@@ -16,7 +16,13 @@ export function StateTag({ state }: { state: ExceptionState }) {
   return <Badge variant={STATE_TONE[state]}>{state}</Badge>;
 }
 
-export function StateTagFor({ exception, now }: { exception: ExceptionDescriptor; now?: number }) {
+export function StateTagFor({
+  exception,
+  now,
+}: {
+  exception: ExceptionDescriptor;
+  now?: number | undefined;
+}) {
   return <StateTag state={exceptionState(exception, now)} />;
 }
 

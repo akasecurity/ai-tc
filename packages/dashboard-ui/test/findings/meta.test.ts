@@ -15,6 +15,7 @@ import {
   FINDINGS_COLUMNS,
   findingStatusMeta,
   SEVERITIES,
+  USER_COLUMN_TITLE,
 } from '../../src/findings/meta.ts';
 import { KeyIcon } from '../../src/shared/icons.tsx';
 
@@ -45,6 +46,24 @@ describe('FINDINGS_COLUMNS', () => {
       'latest',
     ]);
     expect(FINDINGS_COLUMNS.find((c) => c.id === 'user')?.header).toBe('User');
+  });
+
+  // A bare "User" on a security dashboard is read as "the person who did this",
+  // but attribution is the principal that INGESTED the event — for an org-level
+  // ingest key, the admin who minted it rather than whoever ran the job. The
+  // caveat used to live only in a backend repository docblock that no rendering
+  // surface repeated.
+  it('discloses on the User column that attribution is the ingesting principal', () => {
+    const title = FINDINGS_COLUMNS.find((c) => c.id === 'user')?.title;
+    expect(title).toBe(USER_COLUMN_TITLE);
+    expect(title).toMatch(/ingested by/i);
+    expect(title).toMatch(/api key/i);
+  });
+
+  it('leaves every other column undisclosed — the label already says what it is', () => {
+    expect(FINDINGS_COLUMNS.filter((c) => c.title !== undefined).map((c) => c.id)).toEqual([
+      'user',
+    ]);
   });
 });
 

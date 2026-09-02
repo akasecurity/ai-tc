@@ -143,7 +143,11 @@ export function FindingsTableView({
               <TableRow>
                 <TableHead className="w-10" />
                 {columns.map((col) => (
-                  <TableHead key={col.id} className={FINDING_COLUMN_CLASS[col.id]}>
+                  <TableHead
+                    key={col.id}
+                    className={FINDING_COLUMN_CLASS[col.id]}
+                    {...(col.title === undefined ? {} : { title: col.title })}
+                  >
                     {col.header}
                   </TableHead>
                 ))}

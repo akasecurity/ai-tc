@@ -27,6 +27,7 @@ import {
   categoryStyle,
   findingStatusMeta,
   instanceLocationLabel,
+  USER_COLUMN_TITLE,
 } from './meta.ts';
 import { ProviderTag } from './ProviderChips.tsx';
 import { UserCell } from './UserCell.tsx';
@@ -117,7 +118,9 @@ export function FindingsFlatTableView({
                 <TableHead className={FINDING_COLUMN_CLASS.type}>Type</TableHead>
                 <TableHead className={FINDING_COLUMN_CLASS.sources}>Source</TableHead>
                 {showUserColumn && (
-                  <TableHead className={FINDING_COLUMN_CLASS.user}>User</TableHead>
+                  <TableHead className={FINDING_COLUMN_CLASS.user} title={USER_COLUMN_TITLE}>
+                    User
+                  </TableHead>
                 )}
                 <TableHead className={FINDING_COLUMN_CLASS.location}>Location</TableHead>
                 <TableHead className={FINDING_COLUMN_CLASS.action}>Action</TableHead>

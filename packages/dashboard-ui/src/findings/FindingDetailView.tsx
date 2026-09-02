@@ -15,6 +15,7 @@ import {
   categoryStyle,
   instanceLocationLabel,
   type Selection,
+  USER_COLUMN_TITLE,
 } from './meta.ts';
 import { ProviderTag } from './ProviderChips.tsx';
 import { UserCell } from './UserCell.tsx';
@@ -150,7 +151,9 @@ export function FindingDetailView({
             {/* Only a store that attributes findings to people sets `user`. */}
             {instance.user !== undefined && (
               <MetaItem label="User">
-                <UserCell user={instance.user} />
+                <span title={USER_COLUMN_TITLE}>
+                  <UserCell user={instance.user} />
+                </span>
               </MetaItem>
             )}
           </div>
@@ -197,6 +200,13 @@ function LocationRow({ instance, onClick }: { instance: FindingInstance; onClick
         <span className="font-mono text-label text-text-3 wrap-break-word">
           {instanceLocationLabel(instance)}
         </span>
+        {/* Attribution, on the one view where "who owns this" matters most: a
+          group whose locations span several people named nobody here, because
+          only the single-instance branch rendered `user`. Set only by a store
+          that attributes findings to people. */}
+        {instance.user !== undefined && (
+          <span className="text-label text-text-3 wrap-break-word">{instance.user.name}</span>
+        )}
       </div>
       <ActionTag action={instance.action} />
       <ChevronRightIcon className="size-4 shrink-0 text-text-3" />

@@ -821,6 +821,91 @@ function preEgressWriterStore(): DatabaseSync {
   return db;
 }
 
+const VAULT_USER_AUTHORIZED_TAG = '0023_secret_vault_user_authorized';
+
+// A store as the binary before the provenance marker left it: every migration
+// but that one applied and ledgered.
+function preVaultProvenanceStore(): DatabaseSync {
+  const db = new DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON');
+  db.exec('CREATE TABLE migration_ledger (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)');
+  const earlier = SQLITE_MIGRATIONS.filter((m) => m.tag !== VAULT_USER_AUTHORIZED_TAG);
+  for (const migration of earlier) {
+    for (const statement of splitBreakpoints(migration.sql)) db.exec(statement);
+    db.prepare('INSERT INTO migration_ledger (tag, applied_at) VALUES (?, ?)').run(
+      migration.tag,
+      1,
+    );
+  }
+  db.exec(`PRAGMA user_version = ${String(earlier.length)}`);
+  return db;
+}
+
+describe('migration 0023 (secret vault user-authorized provenance)', () => {
+  it('adds the column to a store that already holds vault rows, keeping every row', () => {
+    const db = preVaultProvenanceStore();
+    try {
+      // A value the previous binary vaulted. The vault is the only copy of what
+      // its pointer stands for, so an upgrade that dropped this row would
+      // destroy the value outright.
+      db.exec(
+        `INSERT INTO secret_vault (
+           pointer_id, value_fingerprint, fingerprint_key_version, key_version,
+           category, rule_id, masked_match, ciphertext, nonce, auth_tag,
+           occurrence_count, first_seen, last_seen
+         ) VALUES (
+           'pointer-a', '${'a'.repeat(64)}', 1, 1,
+           'secret', 'aka.secret.aws-key', 'AKIA…XYZQ', 'Y2lwaGVy', 'bm9uY2U=', 'dGFn',
+           2, 100, 200
+         )`,
+      );
+
+      applyMigrations(db);
+
+      expect(appliedTags(db)).toEqual(SQLITE_MIGRATIONS.map((m) => m.tag).sort());
+      expect(columnNames(db, 'secret_vault', { includeGenerated: true })).toContain(
+        'user_authorized',
+      );
+      // The row is still there, its counters untouched, and it reads as what it
+      // was: an enforcing path's work, not a user's own instruction. Any other
+      // default would tell the prune sweep that every pre-existing entry was
+      // asked for by hand.
+      expect(
+        db
+          .prepare(
+            'SELECT user_authorized, occurrence_count, first_seen FROM secret_vault WHERE pointer_id = ?',
+          )
+          .get('pointer-a'),
+      ).toEqual({ user_authorized: 0, occurrence_count: 2, first_seen: 100 });
+
+      // And the upgraded store is idempotent from here on.
+      expect(() => {
+        applyMigrations(db);
+      }).not.toThrow();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('is NOT NULL DEFAULT 0, so the ALTER is legal on a populated table', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      const column = (
+        db.prepare('PRAGMA table_xinfo(secret_vault)').all() as {
+          name: string;
+          notnull: number;
+          dflt_value: string | null;
+        }[]
+      ).find((c) => c.name === 'user_authorized');
+      expect(column?.notnull).toBe(1);
+      expect(column?.dflt_value).toBe('0');
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe('migration 0011 (egress writer schema)', () => {
   it('a fresh store carries project_key, host, and the re-keyed call-site index', () => {
     const db = new DatabaseSync(':memory:');

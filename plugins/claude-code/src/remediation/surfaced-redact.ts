@@ -135,6 +135,23 @@ function hasValidVaultConsent(base: string | undefined): boolean {
 // Any fault yields an empty map (plain strike), never a throw: the glue is
 // built to never surface raw or throw, and this guard is belt-and-braces on
 // top of that.
+//
+// Deliberately NOT filtered by the assigned pack policy, unlike the automatic
+// paths (the hooks, and the transcript scrub behind them). Those are the pack
+// acting on its own, where Monitor has to mean the value is only logged. This
+// is the user reading a list of their own surfaced secrets and asking for these
+// ones to be struck — an instruction about specific values, not an enforcement
+// decision — and a Redact button that silently declined to strike what it was
+// pointed at would be a worse answer than the policy it was honouring. Monitor
+// still governs what reached the list: it stops nothing from being detected and
+// surfaced, which is exactly what makes it a choice the user can act on here.
+//
+// That divergence has to be RECORDED, not merely acted on, which is what
+// `userAuthorized` is for. A policy sweep over the vault sees only the
+// assignment — `log` — and would read these rows as vaulting no policy
+// authorizes, restore the raw value into the very artifact it was struck from,
+// and delete the entry. The marker is what tells that sweep a person asked, and
+// it survives on the row when an automatic path later vaults the same value.
 async function buildPointerReplacements(
   recovered: readonly RecoveredTarget[],
   base: string | undefined,
@@ -151,6 +168,7 @@ async function buildPointerReplacements(
         ruleId: entry.ruleId,
         category: entry.category,
         maskedMatch: maskMatch(rawValue),
+        userAuthorized: true,
       });
       if (replacement.startsWith('[[aka:') && replacement !== rawValue) {
         replacements.set(rawValue, replacement);

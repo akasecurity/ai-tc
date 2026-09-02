@@ -119,4 +119,8 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0022_audit_inspection_ms',
     sql: "ALTER TABLE `audit_events` ADD `inspection_ms` integer GENERATED ALWAYS AS (json_extract(attributes, '$.inspection_ms')) VIRTUAL;",
   },
+  {
+    tag: '0023_secret_vault_user_authorized',
+    sql: 'ALTER TABLE `secret_vault` ADD `user_authorized` integer DEFAULT 0 NOT NULL;',
+  },
 ];

@@ -14,6 +14,13 @@ import {
 import { safeJson } from '../internal/json.ts';
 import { allRows, boolToInt, countBy, getRow, intToBool } from '../internal/rows.ts';
 import { withTransaction } from '../internal/transactions.ts';
+import type { FloorRule, PackPolicyFloor } from '../policy-floor.ts';
+import {
+  controlPlanePolicyFloor,
+  openControlPlaneFloors,
+  policyAssignmentRefusal,
+  PolicyFloorError,
+} from '../policy-floor.ts';
 import type { InstalledPacksReadPort } from '../ports.ts';
 import { compareBinaryVersions, isParseableBinaryVersion } from '../semver.ts';
 import { parseRules } from './detections.ts';
@@ -237,8 +244,22 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
   private readonly insertMissingStmt: StatementSync;
   private readonly upsertAvailableStmt: StatementSync;
   private readonly signatureStmt: StatementSync;
+  private readonly packRulesStmt: StatementSync;
 
-  constructor(private readonly db: DatabaseSync) {
+  /**
+   * `baseDir` is the `~/.aka` LAYOUT BASE, not the data dir — the control-plane
+   * floor needs both halves of it (settings/ says whether this machine is
+   * attached, data/ holds the cached bundle). It is optional because a caller
+   * holding only a DatabaseSync — every test construction site, and any embedder
+   * that opens the store itself — has no layout to point at, and such a caller
+   * gets the pre-existing behaviour: no floor, no lock. Production threads it in
+   * from `openLocalDatabase`, which is the single construction site that owns a
+   * real `~/.aka`.
+   */
+  constructor(
+    private readonly db: DatabaseSync,
+    private readonly baseDir?: string,
+  ) {
     // Install-if-absent: a pack the user already has (by (namespace, packId)) is
     // NEVER touched here — not its version, rules, enabled state, or policy.
     // Updates to existing packs are manual (applyUpdate).
@@ -267,6 +288,13 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
     );
     this.signatureStmt = db.prepare(
       `SELECT namespace, pack_id AS packId, version, rules_json AS rulesJson FROM available_packs`,
+    );
+    // One pack's rule snapshot, for the control-plane floor. Prepared here
+    // because the floor is read per pack on every Detections render, not only
+    // on the setPolicy write path.
+    this.packRulesStmt = db.prepare(
+      `SELECT rules_json AS rulesJson FROM installed_packs
+        WHERE namespace = ? AND pack_id = ?`,
     );
   }
 
@@ -644,8 +672,69 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
   // caller can tell an edit from a no-such-detection.
 
   /**
+   * The rules one installed pack owns, reduced to what a floor computation
+   * reads. Display-tolerant parsing on purpose: a pack whose snapshot is
+   * unreadable contributes no rules to a scan either, so it is not a detection
+   * the control plane can be governing, and an empty list correctly imposes no
+   * floor. Enabled state is deliberately not filtered — a disabled pack is one
+   * the user can re-enable, and its assignment stays governed meanwhile.
+   */
+  private packFloorRules(namespace: string, packId: string): FloorRule[] {
+    const row = getRow<{ rulesJson: string }>(this.packRulesStmt, [namespace, packId]);
+    if (!row) return [];
+    return parseRules(row.rulesJson).map((rule) => ({ id: rule.id, category: rule.category }));
+  }
+
+  /**
+   * What the connected control plane imposes on one installed pack, or null on a
+   * machine that is its own authority (standalone, no cached bundle, or a
+   * repository constructed without a layout base).
+   *
+   * Exposed as a READ so a surface can render the constraint — grey out the
+   * choices below the floor, mark a locked detection as locked — rather than
+   * offer the user a picker whose selections it will then be told it may not
+   * make. The refusal in `setPolicy` does not depend on any surface calling this.
+   */
+  policyFloor(namespace: string, packId: string): PackPolicyFloor | null {
+    if (this.baseDir === undefined) return null;
+    return controlPlanePolicyFloor(this.packFloorRules(namespace, packId), this.baseDir);
+  }
+
+  /**
+   * The same answer for several packs, keyed `namespace/packId` and carrying an
+   * entry only for a pack the control plane actually governs.
+   *
+   * A surface listing every detection asks per pack, and asking through
+   * `policyFloor` re-reads the settings, re-reads and re-parses the whole cached
+   * bundle and rebuilds its indexes once per pack — the entire cost of one
+   * answer, repeated for each row, on every render. This reads all of that once.
+   * Packs whose rules the snapshot cannot produce simply contribute no entry,
+   * exactly as the single-pack read returns null for them.
+   */
+  policyFloors(
+    packs: readonly { namespace: string; packId: string }[],
+  ): Map<string, PackPolicyFloor> {
+    const floors = new Map<string, PackPolicyFloor>();
+    if (this.baseDir === undefined) return floors;
+    const source = openControlPlaneFloors(this.baseDir);
+    if (source === null) return floors;
+    for (const pack of packs) {
+      const floor = source.floorFor(this.packFloorRules(pack.namespace, pack.packId));
+      if (floor !== null) floors.set(`${pack.namespace}/${pack.packId}`, floor);
+    }
+    return floors;
+  }
+
+  /**
    * Assign (or clear, with null) the enforcement policy for one installed pack.
-   * `policyId` must be a known built-in id (monitor/warn/redact/block).
+   * `policyId` must be a known built-in id (monitor/warn/redact/block/vault).
+   *
+   * On an ATTACHED machine the organization's bundle is a floor this refuses to
+   * write below, and a detection the organization has authored a policy for is
+   * refused outright — see policy-floor.ts for both, and for why the refusal is
+   * a throw rather than a silently substituted value. This is the one device-local
+   * write path for the assignment, so the check belongs here rather than on any
+   * surface that offers the choice.
    */
   setPolicy(namespace: string, packId: string, policyId: string | null): boolean {
     // Validate against the schema's canonical built-in enum — the single
@@ -654,6 +743,15 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
       throw new Error(
         `Unknown policy '${policyId}'. Must be one of: ${KNOWN_BUILTIN_IDS.join(', ')}.`,
       );
+    }
+    // Past the enum check, so the cast reflects what was just proven.
+    const requested = policyId as BuiltinPolicyId | null;
+    const floor = this.policyFloor(namespace, packId);
+    if (floor !== null) {
+      const refusal = policyAssignmentRefusal(requested, floor);
+      if (refusal !== null) {
+        throw new PolicyFloorError(`${namespace}/${packId}`, requested, floor.floor, refusal);
+      }
     }
     const res = this.db
       .prepare(

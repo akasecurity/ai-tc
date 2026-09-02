@@ -73,6 +73,57 @@ describe('detectPostureChanges', () => {
     expect(changes).toEqual([]);
   });
 
+  // The stored action comes from a column with no enum constraint, so a row a
+  // newer build wrote can carry an action this one cannot place on the ladder.
+  // The ladder ranks that below everything — the reading the enforcement gates
+  // need — but this differ warns a PERSON, and it must not answer "no change
+  // here" to a comparison it was unable to make. Both directions are asserted,
+  // because a rank of -1 would otherwise make the second case pass for the
+  // wrong reason.
+  it('flags a downgrade when the stored action is one this build cannot rank', () => {
+    const stored = 'quarantine' as ActionTaken;
+    const strongest: BuiltinPolicyId = 'block';
+    const weakest: BuiltinPolicyId = 'monitor';
+    expect(
+      detectPostureChanges({ secret: strongest }, { secret: { action: stored, enabled: true } }),
+    ).toEqual([{ category: 'secret', from: stored, to: 'block', kind: 'downgrade' }]);
+    expect(
+      detectPostureChanges({ secret: weakest }, { secret: { action: stored, enabled: true } }),
+    ).toEqual([{ category: 'secret', from: stored, to: 'log', kind: 'downgrade' }]);
+  });
+
+  // The differ ranks actions through the same ladder the enforcement collapse
+  // uses, so the two cannot come to disagree about which of a pair enforces
+  // more. Every adjacent rung is exercised: a pair swapped either way must be
+  // a downgrade in exactly one direction.
+  it('ranks every adjacent rung of the ladder the same way in both directions', () => {
+    const rungs: [ActionTaken, BuiltinPolicyId][] = [
+      ['log', 'monitor'],
+      ['warn', 'warn'],
+      ['redact', 'redact'],
+      ['block', 'block'],
+    ];
+    for (let i = 0; i < rungs.length - 1; i += 1) {
+      const weaker = rungs[i];
+      const stronger = rungs[i + 1];
+      if (weaker === undefined || stronger === undefined) throw new Error('bad rung table');
+      // stronger → weaker weakens enforcement.
+      expect(
+        detectPostureChanges(
+          { secret: weaker[1] },
+          { secret: { action: stronger[0], enabled: true } },
+        ),
+      ).toEqual([{ category: 'secret', from: stronger[0], to: weaker[0], kind: 'downgrade' }]);
+      // weaker → stronger does not.
+      expect(
+        detectPostureChanges(
+          { secret: stronger[1] },
+          { secret: { action: weaker[0], enabled: true } },
+        ),
+      ).toEqual([]);
+    }
+  });
+
   it('an upgrade (proposed stronger than existing, already enabled) is not flagged', () => {
     const changes = detectPostureChanges(
       { secret: 'block' },

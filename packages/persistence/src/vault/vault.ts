@@ -64,6 +64,11 @@ export interface TokenizeMeta {
   category: DetectionCategory;
   maskedMatch: string;
   provider?: string | undefined;
+  // True when a PERSON asked for this value to be replaced, rather than a pack
+  // enforcing its assignment. Recorded on the row, and STICKY: one value is one
+  // row, so a later automatic vaulting of the same value leaves the mark
+  // standing — see `upsert`.
+  userAuthorized?: boolean | undefined;
 }
 
 export interface DetokenizeOptions {
@@ -184,7 +189,23 @@ export class SecretVault {
       // Re-detection: bump the count, keep every minted property. The token is
       // re-emitted under the row's current epoch, which is also the epoch its
       // ciphertext is sealed under.
-      this.#repo.upsert({ ...existing, provider: existing.provider ?? undefined }, now);
+      //
+      // The provenance marker is the one property this call can still change,
+      // so it is this CALL's answer that goes in rather than the stored one a
+      // spread would carry. A person striking a value already vaulted
+      // automatically arrives HERE, not on the mint path below, because the row
+      // is keyed on the value — carrying the row's own flag forward would
+      // silently drop what they just asked for. The reverse never happens: the
+      // store merges this field upward only, so an automatic re-detection
+      // passing `false` leaves a marked row marked.
+      this.#repo.upsert(
+        {
+          ...existing,
+          provider: existing.provider ?? undefined,
+          userAuthorized: meta.userAuthorized === true,
+        },
+        now,
+      );
       return await this.#emitToken(existing.keyVersion, existing.pointerId, existing.category);
     }
 
@@ -208,6 +229,7 @@ export class SecretVault {
         ruleId: meta.ruleId,
         maskedMatch: meta.maskedMatch,
         provider: meta.provider,
+        userAuthorized: meta.userAuthorized === true,
         ciphertext: sealed.ciphertext.toString('base64'),
         nonce: sealed.nonce.toString('base64'),
         authTag: sealed.authTag.toString('base64'),

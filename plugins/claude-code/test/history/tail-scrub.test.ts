@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   appendFileSync,
   chmodSync,
@@ -13,17 +14,30 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { applyOnboarding } from '@akasecurity/persistence';
-import { createVaultGlue, type VaultGlue } from '@akasecurity/plugin-sdk';
+import {
+  createPolicyResolver,
+  createVaultGlue,
+  type PolicyResolver,
+  type VaultGlue,
+} from '@akasecurity/plugin-sdk';
+import type { ActionTaken, PolicyBundle } from '@akasecurity/schema';
 import { pointerTokenScanner, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree, removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import { scrubTranscriptTail, type TailScrubDeps } from '../../src/history/tail-scrub.ts';
 import type { RedactionScope } from '../../src/remediation/redact.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 // Canonical test AWS access-key id, composed at runtime so the repo's own secret
 // scan does not flag this test file (mirrors remediation/redact.test.ts).
 const SECRET = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
+// A second, DIFFERENT bundled detection over the same text, so a policy that
+// governs one of them can be shown not to govern the other in the same file.
+// Composed at runtime for the same reason SECRET is.
+const MONITORED = ['someone', 'mail.invalid'].join('@');
+const AWS_RULE = 'secrets/aws-access-key';
+const MONITORED_RULE = 'core-pii/email';
 
 const pointersIn = (text: string): string[] =>
   [...text.matchAll(pointerTokenScanner())].map((m) => m[0]);
@@ -82,7 +96,10 @@ describe('scrubTranscriptTail', () => {
     expect(result).toEqual({ rewritten: 1 });
 
     const after = readFileSync(file, 'utf8');
-    expect(after).not.toContain(SECRET);
+    // Positive control on the same bytes first: an absence assertion over a
+    // file the scrub never wrote would pass without proving anything.
+    expect(after).toContain('[[aka:');
+    expectNoEchoOf(after, SECRET);
     expect(after.endsWith('\n')).toBe(true);
 
     const lines = after.split('\n');
@@ -170,7 +187,12 @@ describe('scrubTranscriptTail', () => {
     // transcript lines, so the scrub must abort with the file untouched.
     const blanketDeps: TailScrubDeps = {
       tokenizeText: () =>
-        Promise.resolve({ text: '[REDACTED-EVERYTHING]', pointers: [], degraded: [] }),
+        Promise.resolve({
+          text: '[REDACTED-EVERYTHING]',
+          pointers: [],
+          degraded: [],
+          redacted: [],
+        }),
       scope,
     };
 
@@ -201,6 +223,7 @@ describe('scrubTranscriptTail', () => {
           text: text.split(SECRET).join('[[aka:secret:RACE]]'),
           pointers: ['[[aka:secret:RACE]]'],
           degraded: [],
+          redacted: [],
         });
       },
       scope,
@@ -225,7 +248,9 @@ describe('scrubTranscriptTail', () => {
       // The rewrite lands via a fresh temp file; without an explicit mode it
       // would widen the 0600 transcript to the umask default.
       expect(statSync(file).mode & 0o777).toBe(0o600);
-      expect(readFileSync(file, 'utf8')).not.toContain(SECRET);
+      const after = readFileSync(file, 'utf8');
+      expect(after).toContain('[[aka:');
+      expectNoEchoOf(after, SECRET);
     },
   );
 
@@ -242,11 +267,126 @@ describe('scrubTranscriptTail', () => {
       expect(await scrubTranscriptTail(file, depsFor(degradedGlue))).toEqual({ rewritten: 1 });
 
       const after = readFileSync(file, 'utf8');
-      expect(after).not.toContain(SECRET);
       expect(after).toContain('[REDACTED');
+      expectNoEchoOf(after, SECRET);
       expect(after).not.toContain('[[aka:');
     } finally {
       removeTree(noConsentBase);
     }
+  });
+
+  it('does not abort a changed line the tokenizer reports as struck by policy', async () => {
+    const content = `{"text":"key ${SECRET}"}\n`;
+    const file = transcriptFile('policy-struck.jsonl', content);
+    // The same SHAPE as the blanket above — changed text, no pointer, no
+    // degraded span — but accounted for: the tokenizer says it struck the span
+    // because policy assigned Redact rather than Redact & Vault. Reading only
+    // the first two counts would abandon a file on every line policy correctly
+    // rewrote.
+    const struckDeps: TailScrubDeps = {
+      tokenizeText: () =>
+        Promise.resolve({
+          text: '{"text":"key [REDACTED:SECRET]"}',
+          pointers: [],
+          degraded: [],
+          redacted: [{ category: 'secret' }],
+        }),
+      scope,
+    };
+
+    expect(await scrubTranscriptTail(file, struckDeps)).toEqual({ rewritten: 1 });
+    expect(readFileSync(file, 'utf8')).toBe('{"text":"key [REDACTED:SECRET]"}\n');
+  });
+
+  // The policy half of the scrub. The scrub carries no findings of its own, so
+  // the glue self-scans — and an unnarrowed self-scan rewrites and vaults every
+  // span the bundled rules match, including one whose detection the user only
+  // ever asked to monitor. Each case below drives ONE file holding both a
+  // governed and an ungoverned value, so a "left alone" assertion can never
+  // pass because the second rule simply never fired.
+  describe('under a pack policy', () => {
+    const bundleWith = (
+      actions: Readonly<Record<string, ActionTaken>>,
+      reversibleRuleIds: string[],
+    ): PolicyBundle => ({
+      version: 'test',
+      policies: Object.entries(actions).map(([ruleId, action]) => ({
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId },
+        action,
+        enabled: true,
+      })),
+      reversibleRuleIds,
+      rules: [],
+      customKeywords: [],
+      fetchedAt: new Date().toISOString(),
+    });
+
+    const depsWith = (resolver: PolicyResolver): TailScrubDeps => ({
+      tokenizeText: (text) => glue.tokenizeText(text, { resolver }),
+      scope,
+    });
+
+    // One file, two lines, two different bundled detections.
+    const mixedFile = (name: string): { file: string; monitoredLine: string } => {
+      const secretLine = `{"text":"key ${SECRET} end"}`;
+      const monitoredLine = `{"text":"contact ${MONITORED} end"}`;
+      return {
+        file: transcriptFile(name, `${secretLine}\n${monitoredLine}\n`),
+        monitoredLine,
+      };
+    };
+
+    it('leaves a Monitor detection where it is while a Redact & Vault one in the same file becomes a pointer', async () => {
+      const { file, monitoredLine } = mixedFile('mixed.jsonl');
+      const resolver = createPolicyResolver(
+        bundleWith({ [AWS_RULE]: 'redact', [MONITORED_RULE]: 'log' }, [AWS_RULE]),
+      );
+
+      expect(await scrubTranscriptTail(file, depsWith(resolver))).toEqual({ rewritten: 1 });
+
+      const [enforced, monitored] = readFileSync(file, 'utf8').split('\n');
+      // The enforced line is the positive control: it moved, in this file and
+      // this run, so the untouched line below is a policy decision rather than
+      // a scrub that did nothing at all.
+      expect(pointersIn(enforced ?? '')).toHaveLength(1);
+      expectNoEchoOf(enforced, SECRET);
+      // Byte-identical, value included — Monitor logged it and touched nothing.
+      expect(monitored).toBe(monitoredLine);
+      expect(monitored).toContain(MONITORED);
+    });
+
+    // Non-vacuity control for the case above, and the reported defect itself:
+    // the monitored rule DOES fire on that line, and with nothing to narrow the
+    // self-scan its value is lifted into the vault exactly like the secret's.
+    it('rewrites and vaults BOTH values when no resolver narrows the self-scan', async () => {
+      const { file } = mixedFile('unpoliced.jsonl');
+
+      expect(await scrubTranscriptTail(file, deps)).toEqual({ rewritten: 2 });
+
+      const [enforced, monitored] = readFileSync(file, 'utf8').split('\n');
+      expect(pointersIn(enforced ?? '')).toHaveLength(1);
+      expect(pointersIn(monitored ?? '')).toHaveLength(1);
+      expectNoEchoOf(monitored, MONITORED);
+    });
+
+    // A Redact (non-vault) span mints no pointer and degrades nothing, so the
+    // two-count blanket test read this correct rewrite as unclassifiable and
+    // abandoned the whole file.
+    it('strikes a Redact detection one-way without tripping the blanket abort', async () => {
+      const { file, monitoredLine } = mixedFile('one-way.jsonl');
+      const resolver = createPolicyResolver(
+        bundleWith({ [AWS_RULE]: 'redact', [MONITORED_RULE]: 'log' }, []),
+      );
+
+      expect(await scrubTranscriptTail(file, depsWith(resolver))).toEqual({ rewritten: 1 });
+
+      const [enforced, monitored] = readFileSync(file, 'utf8').split('\n');
+      expect(enforced).toContain('[REDACTED:SECRET]');
+      expect(pointersIn(enforced ?? '')).toHaveLength(0);
+      expectNoEchoOf(enforced, SECRET);
+      expect(monitored).toBe(monitoredLine);
+    });
   });
 });

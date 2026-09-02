@@ -142,6 +142,60 @@ describe('SecretVault', () => {
     });
   });
 
+  // Who asked for a value to be replaced is recorded on the row, because a
+  // policy sweep over the vault later has no other way to tell an enforcing
+  // pack's work from a person's own instruction about a specific value.
+  describe('user-authorized provenance', () => {
+    const tokenizeAs = async (raw: string, userAuthorized: boolean): Promise<string> => {
+      const result = await vault.tokenize(
+        raw,
+        {
+          ruleId: 'aws-access-key-id',
+          category: 'secret',
+          maskedMatch: 'A******E',
+          userAuthorized,
+        },
+        fpKey,
+      );
+      if (typeof result !== 'string') throw new Error('expected a pointer');
+      return result;
+    };
+
+    it('leaves the row unmarked when a pack path vaults the value', async () => {
+      await tokenize(SECRET);
+      expect(must(repo.listAll()[0], 'a vault row').userAuthorized).toBe(false);
+    });
+
+    it('marks the row when the user path mints it', async () => {
+      await tokenizeAs(SECRET, true);
+      expect(must(repo.listAll()[0], 'a vault row').userAuthorized).toBe(true);
+    });
+
+    // The reachable order, and the one the mint path cannot cover: the value is
+    // already vaulted, so the strike arrives on the RE-DETECTION branch. Taking
+    // the stored flag alone there would drop what the user just asked for.
+    it('marks a row the pack path had already minted', async () => {
+      const first = await tokenize(SECRET);
+      const struck = await tokenizeAs(SECRET, true);
+
+      expect(struck).toBe(first);
+      expect(repo.countEntries()).toBe(1);
+      expect(must(repo.listAll()[0], 'a vault row').userAuthorized).toBe(true);
+    });
+
+    // Sticky: the row is shared, and a user's statement about a value does not
+    // expire because a pack happened to see it again.
+    it('keeps the mark when a pack path vaults the same value afterwards', async () => {
+      await tokenizeAs(SECRET, true);
+      await tokenize(SECRET);
+
+      const row = must(repo.listAll()[0], 'a vault row');
+      expect(row.userAuthorized).toBe(true);
+      // The control: the second call really did write to this row.
+      expect(row.occurrenceCount).toBe(2);
+    });
+  });
+
   describe('consent gate', () => {
     it('does not vault anything without consent', async () => {
       consented = false;

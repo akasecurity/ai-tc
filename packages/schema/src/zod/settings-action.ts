@@ -27,16 +27,40 @@ import { printable } from './control-plane.ts';
  * backdate a grant or claim a version it never saw.
  *
  * `modelJudgeConsent` and `historySyncConsent` are REQUIRED, and that is a
- * security property rather than a strictness preference. `modelJudgeConsent` was
+ * security property rather than a strictness preference. `historySyncConsent`
+ * is a three-state enum rather than a boolean for a related reason, set out on
+ * HistorySyncConsentChoice — but it is required in exactly the same way. `modelJudgeConsent` was
  * optional, and the action treated an absent field as `false` — so any caller
  * that simply did not mention it silently REVOKED a live egress grant. A
  * required boolean makes a revocation something the caller has to say, and every
  * egress grant added since carries the same requirement for the same reason.
  */
+/**
+ * The history-sync answer, as three EXPLICIT states rather than a boolean.
+ *
+ * `unchanged` exists because the settings form submits every field on every
+ * save, so a boolean forces an unrelated edit to assert something about this
+ * grant — and BOTH assertions are wrong when the stored grant is stale. `true`
+ * silently re-consents to a widened payload the user never affirmed; `false`
+ * deletes the grant, its acknowledgedAt, and with them the paused badge, the
+ * `aka status` paused line and `aka sync-history`'s stale branch — every surface
+ * that exists to explain why sharing stopped, leaving the user told they never
+ * opted in.
+ *
+ * It is a third VALUE and not an optional field, which keeps the property the
+ * required boolean was introduced for: an absent key is still a parse error, so
+ * a caller that simply does not mention this grant cannot revoke it by omission.
+ * Saying "leave it alone" has to be said.
+ */
+export const HistorySyncConsentChoice = z
+  .enum(['granted', 'revoked', 'unchanged'])
+  .meta({ id: 'HistorySyncConsentChoice' });
+export type HistorySyncConsentChoice = z.infer<typeof HistorySyncConsentChoice>;
+
 export const SaveSettingsInput = z.object({
   historicalAccess: z.string(),
   modelJudgeConsent: z.boolean(),
-  historySyncConsent: z.boolean(),
+  historySyncConsent: HistorySyncConsentChoice,
   vaultConsent: z.string(),
   vaultInlineReveal: z.string(),
 });

@@ -31,7 +31,10 @@ export async function runHistorySyncPass(base: string = defaultDataDir()): Promi
     if (result === null) return;
 
     const previous = readHistorySyncState(dir);
-    const done = result.counts.pending === 0;
+    // BOTH lanes. `counts` is structural-only by construction, so on its own it
+    // would report the drain finished — and pin completedAtMs for the life of
+    // the install — while the capture lane still owed thousands of rows.
+    const done = result.counts.pending === 0 && !result.capturesPending;
     writeHistorySyncState(dir, {
       phase: done ? 'complete' : 'filling',
       lastOutcome: result.outcome,
@@ -42,9 +45,13 @@ export async function runHistorySyncPass(base: string = defaultDataDir()): Promi
       // The first pass that ran is when this machine started sending, and it
       // keeps that answer across every later pass.
       startedAtMs: previous?.startedAtMs ?? result.atMs,
-      // Stamped when the drain empties. The backlog is a FIXED set — everything
-      // recorded before the machine attached — so unlike a tally over a store
-      // that keeps growing, this one genuinely finishes and stays finished.
+      // Stamped the first time BOTH lanes were empty. The structural backlog is
+      // a fixed set — everything recorded before the machine attached — and it
+      // genuinely finishes. The capture lane does not: its subject grows with
+      // every live session that fails to forward, so `phase` can go back to
+      // 'filling' after reading 'complete'. This keeps its original meaning
+      // either way — the first moment this machine owed the deployment nothing —
+      // which is why it is pinned rather than recomputed.
       completedAtMs: done ? (previous?.completedAtMs ?? result.atMs) : null,
     });
   } catch {

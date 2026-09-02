@@ -38,13 +38,16 @@ import type {
   Rule,
   SourceTool,
 } from '@akasecurity/schema';
-import { DEFAULT_ACTIONS, SOURCE_TOOL } from '@akasecurity/schema';
+import { DEFAULT_ACTIONS, isActionAtLeast, SOURCE_TOOL } from '@akasecurity/schema';
 
 // The filesystem scan pipeline shared by `aka scan` and the web-ui's Scan page:
 // walk a file or directory, run the detection engine over each text file, and
-// record findings into the local store. The raw match never lands on disk —
-// the event keeps a REDACTED copy of the file and findings store only the
-// masked value + a sha256 content hash.
+// record findings into the local store. A FINDING never carries the raw match —
+// it stores the masked value, and the event stores a sha256 of the original
+// file. The event's copy of the file text is rewritten only where enforcement
+// reaches: a span whose resolved action is redact-or-stronger is replaced, and
+// a span a Monitor/Warn pack merely logged is stored as it was read. See
+// scanPathIntoStore for why that floor is where it is.
 //
 // Ignore files follow the same two-tier semantics as the plugin's worktree
 // scanner (packages/scanner):
@@ -226,6 +229,10 @@ export interface ScanPathOptions {
   // ruleActions), so at-rest findings carry the SAME per-pack Monitor/Warn/Redact/
   // Block decision the live capture path resolves — not the per-category default.
   // A rule absent from the map (or no map) falls back to DEFAULT_ACTIONS[category].
+  //
+  // It decides more than the stamped `actionTaken`: the same resolution picks
+  // which spans are masked in the stored file text, so a map that resolves every
+  // rule below `redact` leaves the event content byte-identical to the file.
   ruleActions?: ReadonlyMap<string, ActionTaken> | undefined;
   sourceTool?: SourceTool | undefined;
   // The ~/.aka/data directory (the same one passed to openLocalDatabase) —
@@ -291,8 +298,9 @@ function extractFileEgress(file: string, text: string): FileEgressHits | null {
 }
 
 /**
- * Walk `target` and record one redacted event + masked findings per file with
- * matches. The caller owns the database handle (and closes it).
+ * Walk `target` and record one event + masked findings per file with matches.
+ * The event's copy of the file is redacted where enforcement reaches — see the
+ * at-rest floor below. The caller owns the database handle (and closes it).
  *
  * Async because a bounded scan has to be: the only thing that can interrupt a
  * regex that never returns is another thread, and reaching one is a message
@@ -360,6 +368,23 @@ export async function scanPathIntoStore(
     const matches = dropShieldedFindings(await matchText(shielded.text), shielded.spans);
     if (matches.length === 0) continue;
 
+    // Per-pack action (monitor-by-default) when the installed snapshot supplies
+    // one, else the per-category fallback — mirrors the live path's resolveAction.
+    // Resolved ONCE per match here because two things read it: the stamped
+    // actionTaken below, and the at-rest masking immediately after.
+    const resolved = matches.map((match) => ({
+      match,
+      action: opts.ruleActions?.get(match.ruleId) ?? DEFAULT_ACTIONS[match.category],
+    }));
+    // At-rest masking is an ENFORCEMENT effect, not hygiene. A pack assigned
+    // Monitor or Warn may log a match and do nothing else to the value, so only
+    // a finding whose resolved action is redact-or-stronger has its span
+    // rewritten in the stored copy. The live capture path applies the same
+    // floor and writes this same column; a folder scan masking what a live
+    // session leaves intact would give one store two different at-rest rules
+    // and make the dashboard's two views of a file disagree.
+    const enforced = resolved.filter(({ action }) => isActionAtLeast(action, 'redact'));
+
     const eventId = randomUUID();
     const metadata: EventMetadata = { filePath: file };
     // Provenance is presence-only: omitted (not false) for tracked files.
@@ -370,10 +395,20 @@ export async function scanPathIntoStore(
       kind: 'code_change',
       occurredAt: new Date().toISOString(),
       contentHash: createHash('sha256').update(text).digest('hex'),
-      content: redact(text, matches), // store the REDACTED file, never the raw secret
+      // Only the enforced spans. `redact` folds overlapping findings into one
+      // disjoint region, so narrowing its input narrows those regions too —
+      // which is the intended reading rather than a hazard: an enforced span is
+      // still covered end to end, because a region always spans at least the
+      // finding that opened it. What goes away is the coverage a log-only
+      // neighbour used to contribute to a merged region, and that coverage was
+      // never enforcement the user asked for.
+      content: redact(
+        text,
+        enforced.map(({ match }) => match),
+      ),
       metadata,
     };
-    const findings: DetectedFindingWithKey[] = matches.map((m) => {
+    const findings: DetectedFindingWithKey[] = resolved.map(({ match: m, action }) => {
       const maskedMatch = maskMatch(m.rawMatch);
       const key = resolveFingerprintKey();
       // The SAME keyed HMAC fingerprint used for detection exceptions /
@@ -390,9 +425,7 @@ export async function scanPathIntoStore(
         severity: m.severity,
         span: m.span,
         maskedMatch,
-        // Per-pack action (monitor-by-default) when the installed snapshot supplies
-        // one, else the per-category fallback — mirrors the live path's resolveAction.
-        actionTaken: opts.ruleActions?.get(m.ruleId) ?? DEFAULT_ACTIONS[m.category],
+        actionTaken: action,
         confidence: m.confidence,
         // Every fs-scan finding is at-rest (kind: 'code_change' with a
         // filePath), unlike the plugin's in-flight captures, so — unlike

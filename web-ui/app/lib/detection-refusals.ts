@@ -1,5 +1,6 @@
 import { policyFloorReason } from '@akasecurity/dashboard-ui';
 import type { PolicyFloorError } from '@akasecurity/persistence';
+import { BuiltinPolicyId } from '@akasecurity/schema';
 
 // The wording a user reads when a per-detection enforcement-policy write does
 // not land.
@@ -32,6 +33,35 @@ export function policyFloorRefusal(error: Pick<PolicyFloorError, 'floor' | 'refu
     floor: error.floor,
     locked: error.refusal === 'lock',
   })}`;
+}
+
+/**
+ * The two facts a floor refusal carries, or null for a failure that is not one.
+ *
+ * Read STRUCTURALLY — by `name` and by the fields themselves, never by
+ * `instanceof`. The store's error class reaches this page across a bundle
+ * boundary, and a prototype identity that survives one bundler configuration is
+ * not what should decide which of these sentences a user reads: were it ever to
+ * miss, the organization's decision would be reported as DETECTION_POLICY_WRITE_ERROR
+ * — sending someone to fix a permission on `~/.aka` they do not have, and never
+ * telling them their organization set the policy.
+ *
+ * The fields are validated as well as the name, because that is the half a name
+ * check alone cannot do: a shape carrying the name without a usable floor would
+ * otherwise format `undefined` into the sentence, and falling through to the
+ * write error is the honest answer for something this cannot read.
+ */
+export function asPolicyFloorRefusal(
+  error: unknown,
+): Pick<PolicyFloorError, 'floor' | 'refusal'> | null {
+  if (typeof error !== 'object' || error === null) return null;
+  const { name, floor, refusal } = error as Record<string, unknown>;
+  if (name !== 'PolicyFloorError') return null;
+  if (refusal !== 'floor' && refusal !== 'lock') return null;
+  // The floor is stated in the archetype vocabulary the picker offers, so it is
+  // checked against that same canonical enum rather than for any string.
+  const parsed = BuiltinPolicyId.safeParse(floor);
+  return parsed.success ? { floor: parsed.data, refusal } : null;
 }
 
 /**

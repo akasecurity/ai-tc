@@ -1,7 +1,9 @@
 import { policyFloorReason } from '@akasecurity/dashboard-ui';
+import { PolicyFloorError } from '@akasecurity/persistence';
 import { describe, expect, it } from 'vitest';
 
 import {
+  asPolicyFloorRefusal,
   DETECTION_POLICY_INVALID,
   DETECTION_POLICY_MISSING,
   DETECTION_POLICY_WRITE_ERROR,
@@ -82,5 +84,70 @@ describe('the four refusals are distinguishable', () => {
     expect(DETECTION_POLICY_INVALID).toMatch(/reload/i);
     expect(DETECTION_POLICY_MISSING).toMatch(/reload/i);
     expect(DETECTION_POLICY_WRITE_ERROR).toMatch(/try again/i);
+  });
+});
+
+/**
+ * A SECOND copy of the store's error class — same name, same fields, unrelated
+ * prototype — standing in for what a page and the store it calls look like once
+ * a bundler has given each its own copy of the module. Declared here rather
+ * than faked as an object literal because the copy an `instanceof` misses in
+ * production is a real Error subclass, and a literal would not prove the reader
+ * is looking at the fields instead of the ancestry.
+ */
+class ForeignPolicyFloorError extends Error {
+  readonly floor: string;
+  readonly refusal: string;
+
+  constructor(floor: string, refusal: string) {
+    super('refusing to re-assign');
+    this.name = 'PolicyFloorError';
+    this.floor = floor;
+    this.refusal = refusal;
+  }
+}
+
+describe('asPolicyFloorRefusal', () => {
+  it("reads the store's own refusal", () => {
+    const error = new PolicyFloorError('aka/pack', 'monitor', 'block', 'floor');
+    expect(asPolicyFloorRefusal(error)).toEqual({ floor: 'block', refusal: 'floor' });
+  });
+
+  it('reads a copy of it that `instanceof` would miss', () => {
+    // The whole reason the check is structural. If this ever regressed to a
+    // prototype test, the organization's decision would come out as the
+    // store-is-broken message and send someone to fix a permission on ~/.aka
+    // they do not have.
+    const copy = new ForeignPolicyFloorError('warn', 'lock');
+    expect(copy instanceof PolicyFloorError).toBe(false);
+    const read = asPolicyFloorRefusal(copy);
+    expect(read).toEqual({ floor: 'warn', refusal: 'lock' });
+    // And the sentence it produces is the one the organization's own error
+    // would have produced — the point is the message, not the parse.
+    expect(read === null ? '' : policyFloorRefusal(read)).toBe(
+      policyFloorRefusal({ floor: 'warn', refusal: 'lock' }),
+    );
+  });
+
+  it('turns away everything that is not one', () => {
+    // A structural read is only safe if it is also strict: the name alone must
+    // not be enough, or a shape carrying it without a usable floor would be
+    // formatted into a sentence with `undefined` in it. Each of these has to
+    // fall through to the write-error message instead.
+    const notRefusals: unknown[] = [
+      null,
+      undefined,
+      'PolicyFloorError',
+      new Error('SQLITE_BUSY: database is locked'),
+      { name: 'PolicyFloorError' },
+      { name: 'PolicyFloorError', floor: 'block' },
+      { name: 'PolicyFloorError', refusal: 'floor' },
+      { name: 'PolicyFloorError', floor: 'not-an-archetype', refusal: 'floor' },
+      { name: 'PolicyFloorError', floor: 'block', refusal: 'maybe' },
+      { name: 'ManagedFieldError', floor: 'block', refusal: 'floor' },
+    ];
+    for (const candidate of notRefusals) {
+      expect(asPolicyFloorRefusal(candidate), JSON.stringify(candidate ?? null)).toBeNull();
+    }
   });
 });

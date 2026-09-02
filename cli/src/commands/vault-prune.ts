@@ -134,6 +134,11 @@ export function selectOutOfPolicy(
   return selection;
 }
 
+/** The one store read the ledger walk needs: a page of the vault inventory. */
+export interface SightingLedgerSource {
+  secretVault: Pick<LocalDatabase['secretVault'], 'listInventory'>;
+}
+
 /**
  * Everywhere each pointer has been written, one page at a time.
  *
@@ -142,11 +147,20 @@ export function selectOutOfPolicy(
  * mutable column, so the walk is bounded by the store's own total as well as by
  * the cursor: a `last_seen` bump landing mid-walk must cost a missed entry (an
  * entry not pruned), never a loop.
+ *
+ * The page budget is taken from the FIRST page's store-wide total and then
+ * spent one per iteration, unconditionally. Re-deriving it from every page
+ * would let a store being written to raise the ceiling exactly as fast as the
+ * walk lowers it — a bound that reaches a fixed point and never binds, leaving
+ * the cursor as the only thing ending the loop, which is the very thing this
+ * counter is here to backstop.
  */
-function sightingLedger(db: LocalDatabase): Map<string, VaultSighting[]> {
+export function sightingLedger(db: SightingLedgerSource): Map<string, VaultSighting[]> {
   const ledger = new Map<string, VaultSighting[]>();
   let cursor: string | undefined;
-  let pagesLeft = 1;
+  // Undefined until the first page reports the total. The `+ 1` covers the
+  // final page, which carries rows and no next cursor.
+  let pagesLeft: number | undefined;
   do {
     const page = db.secretVault.listInventory({
       limit: MAX_VAULT_PAGE_LIMIT,
@@ -154,7 +168,8 @@ function sightingLedger(db: LocalDatabase): Map<string, VaultSighting[]> {
     });
     for (const entry of page.items) ledger.set(entry.pointerId, entry.sightings);
     cursor = page.nextCursor ?? undefined;
-    pagesLeft = Math.max(pagesLeft, Math.ceil(page.totals.values / MAX_VAULT_PAGE_LIMIT) + 1) - 1;
+    pagesLeft ??= Math.ceil(page.totals.values / MAX_VAULT_PAGE_LIMIT) + 1;
+    pagesLeft -= 1;
   } while (cursor !== undefined && pagesLeft > 0);
   return ledger;
 }

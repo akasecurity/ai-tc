@@ -27,17 +27,25 @@ credit reporters who wish to be named.
 
 In scope: the CLI, the local web dashboard, the Claude Code plugin, the detection
 engine, and the built-in rule packs in this repository. The local store lives under
-`~/.aka`; findings and audit records never contain raw secret/PII values (masked or
-hashed only) — a report showing raw sensitive values reaching disk or the network is
-in scope and appreciated.
+`~/.aka`; a finding row never contains raw secret/PII values (masked or hashed
+only), but the event content stored beside it does wherever the detection's policy
+is below redact — see [Data at rest](#data-at-rest). A report showing raw sensitive
+values reaching the network, or reaching disk where a redact or block policy should
+have masked them, is in scope and appreciated.
 
 ## Data at rest
 
 The local store under `~/.aka` holds a record of your agent activity — prompts,
-responses, and tool calls. Only the spans a detection rule flags as sensitive are
-masked; **everything else is stored verbatim and unencrypted**, so `aka.db`
-accumulates a full local prompt corpus. It is protected by **filesystem
-permissions, not encryption**. On macOS and Linux the store directories (`~/.aka`,
+responses, and tool calls. What is masked in it follows the policy assigned to the
+detection that flagged the span: a flagged span is masked at rest only where that
+policy is redact or block. Under monitor or warn the value is stored as it was
+seen, and **everything outside a flagged span is stored verbatim and unencrypted**
+either way, so `aka.db` accumulates a full local prompt corpus. Every detection
+ships on monitor, so **on a default install nothing in the store is masked at
+all** — raw secrets included — until you promote a detection to redact or block,
+which changes what is stored from then on and not what is already there. Files
+read by `aka scan` are stored under the same rule. The store is protected by
+**filesystem permissions, not encryption**. On macOS and Linux the store directories (`~/.aka`,
 `~/.aka/data`, `~/.aka/settings`, `~/.aka/keys`) are created owner-only (`0700`)
 and the files — `aka.db` and its `-wal`/`-shm`/`-journal` sidecars,
 `control-plane-credential.json`, `exception.key`, `settings.json`, and
@@ -54,12 +62,14 @@ mounts, behave that way. Any of the three can hold store content, so `ai-tc`
 tightens all three.
 
 `vault.key` is the one file that is not a copy of your data but the means to read
-it. If you consent to the secret vault, detected values are kept as recoverable
-encrypted rows in `aka.db`, and this key is what decrypts them. It lives in its own
-directory so that a backup or sync tool can exclude `~/.aka/keys/` and carry the
-store without the means to open what is vaulted — that separation is the whole of
-what encryption at rest buys here. The file appears only once vaulting is granted;
-without that consent there is no key and no recoverable copy.
+it. Where you consent to the secret vault and assign a detection Redact & Vault,
+its matched values are kept as recoverable encrypted rows in `aka.db`, and this
+key is what decrypts them. The key lives in its own directory so that a backup or
+sync tool can exclude `~/.aka/keys/` and carry the store without the means to open
+what is vaulted — that separation is the whole of what encryption at rest buys
+here. The file appears only once vaulting is granted; without that consent there is
+no key and no recoverable copy, and with it a detection on any other policy is
+still never vaulted.
 
 `ai-tc` also leaves copies of the store beside it: before a migration that would
 destroy rows, or on a recovery reset of a store it cannot open, it snapshots

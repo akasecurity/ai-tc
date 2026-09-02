@@ -17,6 +17,7 @@ import { withTransaction } from '../internal/transactions.ts';
 import type { FloorRule, PackPolicyFloor } from '../policy-floor.ts';
 import {
   controlPlanePolicyFloor,
+  openControlPlaneFloors,
   policyAssignmentRefusal,
   PolicyFloorError,
 } from '../policy-floor.ts';
@@ -243,6 +244,7 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
   private readonly insertMissingStmt: StatementSync;
   private readonly upsertAvailableStmt: StatementSync;
   private readonly signatureStmt: StatementSync;
+  private readonly packRulesStmt: StatementSync;
 
   /**
    * `baseDir` is the `~/.aka` LAYOUT BASE, not the data dir — the control-plane
@@ -286,6 +288,13 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
     );
     this.signatureStmt = db.prepare(
       `SELECT namespace, pack_id AS packId, version, rules_json AS rulesJson FROM available_packs`,
+    );
+    // One pack's rule snapshot, for the control-plane floor. Prepared here
+    // because the floor is read per pack on every Detections render, not only
+    // on the setPolicy write path.
+    this.packRulesStmt = db.prepare(
+      `SELECT rules_json AS rulesJson FROM installed_packs
+        WHERE namespace = ? AND pack_id = ?`,
     );
   }
 
@@ -671,13 +680,7 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
    * the user can re-enable, and its assignment stays governed meanwhile.
    */
   private packFloorRules(namespace: string, packId: string): FloorRule[] {
-    const row = getRow<{ rulesJson: string }>(
-      this.db.prepare(
-        `SELECT rules_json AS rulesJson FROM installed_packs
-          WHERE namespace = ? AND pack_id = ?`,
-      ),
-      [namespace, packId],
-    );
+    const row = getRow<{ rulesJson: string }>(this.packRulesStmt, [namespace, packId]);
     if (!row) return [];
     return parseRules(row.rulesJson).map((rule) => ({ id: rule.id, category: rule.category }));
   }
@@ -695,6 +698,31 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
   policyFloor(namespace: string, packId: string): PackPolicyFloor | null {
     if (this.baseDir === undefined) return null;
     return controlPlanePolicyFloor(this.packFloorRules(namespace, packId), this.baseDir);
+  }
+
+  /**
+   * The same answer for several packs, keyed `namespace/packId` and carrying an
+   * entry only for a pack the control plane actually governs.
+   *
+   * A surface listing every detection asks per pack, and asking through
+   * `policyFloor` re-reads the settings, re-reads and re-parses the whole cached
+   * bundle and rebuilds its indexes once per pack — the entire cost of one
+   * answer, repeated for each row, on every render. This reads all of that once.
+   * Packs whose rules the snapshot cannot produce simply contribute no entry,
+   * exactly as the single-pack read returns null for them.
+   */
+  policyFloors(
+    packs: readonly { namespace: string; packId: string }[],
+  ): Map<string, PackPolicyFloor> {
+    const floors = new Map<string, PackPolicyFloor>();
+    if (this.baseDir === undefined) return floors;
+    const source = openControlPlaneFloors(this.baseDir);
+    if (source === null) return floors;
+    for (const pack of packs) {
+      const floor = source.floorFor(this.packFloorRules(pack.namespace, pack.packId));
+      if (floor !== null) floors.set(`${pack.namespace}/${pack.packId}`, floor);
+    }
+    return floors;
   }
 
   /**

@@ -15,13 +15,23 @@ import {
   readWorkspaceSettings,
   SecretVault,
 } from '@akasecurity/persistence';
-import type { DetectionCategory, Rule } from '@akasecurity/schema';
-import { isVaultConsentValid, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
+import type {
+  DetectionCategory,
+  ListVaultInventoryResponse,
+  Rule,
+  VaultInventoryEntry,
+} from '@akasecurity/schema';
+import {
+  isVaultConsentValid,
+  MAX_VAULT_PAGE_LIMIT,
+  VAULT_CONSENT_VERSION,
+} from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { runVault } from '../../src/commands/vault.ts';
-import { selectOutOfPolicy } from '../../src/commands/vault-prune.ts';
+import type { SightingLedgerSource } from '../../src/commands/vault-prune.ts';
+import { selectOutOfPolicy, sightingLedger } from '../../src/commands/vault-prune.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
@@ -225,6 +235,99 @@ describe('selectOutOfPolicy', () => {
     // The absent rule is a pack that is off or gone, not a decision that the
     // value must not be held — so it is reported, never pruned.
     expect(selection.ruleNotInstalled).toBe(1);
+  });
+});
+
+// One inventory row, with only the two fields the ledger walk reads varied.
+function inventoryEntry(pointerId: string): VaultInventoryEntry {
+  return {
+    pointerId,
+    category: 'code_context',
+    maskedMatch: 'q…2',
+    occurrences: 1,
+    firstSeen: new Date(0).toISOString(),
+    lastSeen: new Date(0).toISOString(),
+    revealGrantId: null,
+    sightings: [
+      { location: `/t/${pointerId}.jsonl`, kind: 'transcript', firstSeen: '0', lastSeen: '0' },
+    ],
+  };
+}
+
+// A page source rather than a store. The real repository stops minting cursors,
+// so the one walk the page budget exists to backstop — the store reporting a
+// next page forever, which ordering on a mutable `last_seen` makes reachable —
+// cannot be staged against it. Nothing here stands in for node:sqlite: the
+// store's own paging is covered by the suites that drive it, and this is the
+// walk's termination on its own.
+function endlessPages(total: number): SightingLedgerSource & { calls: () => number } {
+  let calls = 0;
+  return {
+    calls: () => calls,
+    secretVault: {
+      listInventory: (): ListVaultInventoryResponse => {
+        calls += 1;
+        return {
+          totals: { values: total },
+          items: [inventoryEntry(`p${String(calls)}`)],
+          nextCursor: `cursor-${String(calls)}`,
+        };
+      },
+    },
+  };
+}
+
+describe('sightingLedger', () => {
+  it('stops on the store total when the cursor never ends', () => {
+    const source = endlessPages(5 * MAX_VAULT_PAGE_LIMIT);
+
+    const ledger = sightingLedger(source);
+
+    // Five pages of rows plus the one that would carry the tail: the budget is
+    // seeded once and spent one per page, so it reaches zero instead of
+    // settling at a fixed point that never binds.
+    expect(source.calls()).toBe(6);
+    expect(ledger.size).toBe(6);
+  });
+
+  it('spends the budget even on an empty store', () => {
+    const source = endlessPages(0);
+
+    sightingLedger(source);
+
+    expect(source.calls()).toBe(1);
+  });
+
+  it('walks a finite chain to its end without the budget cutting it short', () => {
+    const chain: ListVaultInventoryResponse[] = [
+      {
+        totals: { values: 2 * MAX_VAULT_PAGE_LIMIT },
+        items: [inventoryEntry('a')],
+        nextCursor: 'next',
+      },
+      {
+        totals: { values: 2 * MAX_VAULT_PAGE_LIMIT },
+        items: [inventoryEntry('b')],
+        nextCursor: null,
+      },
+    ];
+    let calls = 0;
+    const source: SightingLedgerSource = {
+      secretVault: {
+        listInventory: (): ListVaultInventoryResponse => {
+          const page = chain[calls];
+          calls += 1;
+          if (page === undefined) throw new Error('walked past the end of the chain');
+          return page;
+        },
+      },
+    };
+
+    const ledger = sightingLedger(source);
+
+    expect(calls).toBe(2);
+    expect([...ledger.keys()]).toEqual(['a', 'b']);
+    expect(ledger.get('a')?.[0]?.location).toBe('/t/a.jsonl');
   });
 });
 

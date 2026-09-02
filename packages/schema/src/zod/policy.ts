@@ -50,7 +50,11 @@ export const Policy = z
     // Display name — optional so older policy rows without name still parse.
     // Added for the findings API (policy.name column migration).
     name: z.string().optional(),
-    // Whether this row is a built-in archetype expansion or an authored policy.
+    // Whether an AUTHORED policy governs this row's target — not a claim about
+    // which row this is. A producer that collapses several rows onto one target
+    // must carry the marker onto whichever row survives, or the collapse decides
+    // the answer; a survivor may therefore be a built-in expansion still marked
+    // 'custom' because an authored sibling targeted the same thing.
     // Optional so an older producer — and an older on-disk cache — still parses;
     // absent reads as 'builtin', which is the behaviour that predates the field.
     //

@@ -9,7 +9,7 @@ import {
   type VaultDriftState,
 } from '@akasecurity/dashboard-ui';
 import { readWorkspaceSettings } from '@akasecurity/persistence';
-import type { DetectionListItem } from '@akasecurity/schema';
+import type { DetectionListItem, WorkspaceSettings } from '@akasecurity/schema';
 import { isAttached, isVaultConsentValid } from '@akasecurity/schema';
 
 import { ActivityIcon, BracesIcon, ListIcon, ShieldCheckIcon } from '../../components/icons';
@@ -49,6 +49,13 @@ export default async function DetectionsPage({
     detections.listDetections(toListQuery(filter, query)),
   ]);
 
+  // ONE settings read for the render, shared by both answers below. They ask
+  // this file different questions (is this machine attached, did it ever
+  // consent to vaulting), and reading it twice would let one render describe two
+  // different moments of the same machine. Null when it cannot be read at all,
+  // which both treat as the unconstrained answer.
+  const settings = readSettings();
+
   // Whether this machine used to vault and now does not — see showsVaultDrift.
   // Read UNFILTERED, from the policy catalog rather than `list`: `list` is
   // narrowed by the URL's filter and search, so a user who had typed a query
@@ -57,12 +64,12 @@ export default async function DetectionsPage({
   //
   // Fail-open like every other read on this page: if any part of it throws, the
   // page renders without the notice rather than not at all.
-  const vaultDrift = await readVaultDrift(store);
+  const vaultDrift = await readVaultDrift(store, settings);
 
   // What this machine's organization requires per detection, if anything. The
   // store computes it and functions cannot cross into the browser, so what goes
   // down is a plain record of the two facts each answer carries.
-  const floors = readPolicyFloors(store, list.items);
+  const floors = readPolicyFloors(store, list.items, settings);
 
   // Honor the pinned ?id when it's still in the filtered list; otherwise default
   // to the first row so the detail pane is never empty when detections exist.
@@ -130,6 +137,22 @@ export default async function DetectionsPage({
 }
 
 /**
+ * The machine's settings, or null when the file cannot be read at all.
+ *
+ * Read here rather than inside each consumer so one render asks the file once.
+ * Not a cache: the reader is deliberately live, and the next render reads it
+ * again — this is one snapshot for one page, which is what makes the two
+ * answers below consistent with each other.
+ */
+function readSettings(): WorkspaceSettings | null {
+  try {
+    return readWorkspaceSettings();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The control-plane floor on each listed detection, keyed by detection id.
  *
  * Detections the organization says nothing about are simply absent, so a
@@ -139,8 +162,11 @@ export default async function DetectionsPage({
  * The attachment check up front is not redundant with the per-pack read — that
  * one answers null for an unattached machine too. It is there because the
  * per-pack read re-opens settings.json and the cached bundle EACH time, and a
- * page listing thirty detections would pay for sixty file reads to learn what
- * one read already settles for the overwhelmingly common case.
+ * page listing thirty detections would pay for those reads per pack to learn
+ * what the one settings read above already settles for the overwhelmingly
+ * common case. Attached, that per-pack cost stands: the store's floor entry
+ * point takes one pack, so collapsing it into a single parse of the cached
+ * bundle is a change to make below this page, not on it.
  *
  * Fail-open like every other read on this page: a store or a settings file that
  * cannot answer must render the page without the constraint rather than not at
@@ -151,13 +177,20 @@ export default async function DetectionsPage({
 function readPolicyFloors(
   store: ReturnType<typeof db>,
   items: readonly DetectionListItem[],
+  settings: WorkspaceSettings | null,
 ): Record<string, DetectionPolicyFloor> {
   try {
-    if (!isAttached(readWorkspaceSettings())) return {};
+    if (settings === null || !isAttached(settings)) return {};
+    // One batch read: the settings and the cached bundle are read and parsed
+    // once for the whole page rather than once per row, which is what asking
+    // per pack costs. Keyed `namespace/packId` there, re-keyed to the list's
+    // own ids here, and a pack the control plane does not govern simply has no
+    // entry — the same answer the single-pack read gives as null.
+    const byPack = store.installedPacks.policyFloors(items);
     const floors: Record<string, DetectionPolicyFloor> = {};
     for (const item of items) {
-      const floor = store.installedPacks.policyFloor(item.namespace, item.packId);
-      if (floor !== null) floors[item.id] = floor;
+      const floor = byPack.get(`${item.namespace}/${item.packId}`);
+      if (floor !== undefined) floors[item.id] = floor;
     }
     return floors;
   } catch {
@@ -167,10 +200,12 @@ function readPolicyFloors(
 
 // The three facts showsVaultDrift needs, each read defensively: a store that
 // cannot answer one of them must not take the whole page down over a notice.
-async function readVaultDrift(store: ReturnType<typeof db>): Promise<VaultDriftState> {
+async function readVaultDrift(
+  store: ReturnType<typeof db>,
+  settings: WorkspaceSettings | null,
+): Promise<VaultDriftState> {
   try {
-    const settings = readWorkspaceSettings();
-    if (!isVaultConsentValid(settings.vaultConsent)) {
+    if (settings === null || !isVaultConsentValid(settings.vaultConsent)) {
       // No valid grant — nothing was being vaulted before this change either,
       // so there is no drift to report and no need to count anything.
       return { consentValid: false, vaultEntries: 0, vaultAssignedPacks: 0 };

@@ -1,11 +1,11 @@
 'use server';
 
-import { PolicyFloorError } from '@akasecurity/persistence';
 import { BuiltinPolicyId, splitDetectionId } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
 import { db } from '../../lib/db';
 import {
+  asPolicyFloorRefusal,
   DETECTION_POLICY_INVALID,
   DETECTION_POLICY_MISSING,
   DETECTION_POLICY_WRITE_ERROR,
@@ -41,9 +41,10 @@ export interface SetDetectionPolicyResult {
  *
  * On an ATTACHED machine the store refuses an assignment below what the
  * organization's policy requires, and refuses any re-assignment at all for a
- * detection the organization has written a policy for. Those arrive as
- * PolicyFloorError and are reported as the organization's decision — never as a
- * failure, because retrying cannot help and the user has done nothing wrong.
+ * detection the organization has written a policy for. Those refusals are
+ * recognised structurally (see asPolicyFloorRefusal) and reported as the
+ * organization's decision — never as a failure, because retrying cannot help
+ * and the user has done nothing wrong.
  */
 // eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
 export async function setDetectionPolicy(
@@ -65,7 +66,8 @@ export async function setDetectionPolicy(
   try {
     written = db().installedPacks.setPolicy(parts.namespace, parts.packId, policyId);
   } catch (error) {
-    if (error instanceof PolicyFloorError) return { ok: false, error: policyFloorRefusal(error) };
+    const refused = asPolicyFloorRefusal(error);
+    if (refused !== null) return { ok: false, error: policyFloorRefusal(refused) };
     return { ok: false, error: DETECTION_POLICY_WRITE_ERROR };
   }
   revalidatePath('/detections');

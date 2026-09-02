@@ -18,9 +18,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { setDetectionPolicy } from '../../app/(app)/detections/actions.ts';
+import { db } from '../../app/lib/db.ts';
 import {
   DETECTION_POLICY_INVALID,
   DETECTION_POLICY_MISSING,
+  DETECTION_POLICY_WRITE_ERROR,
   policyFloorRefusal,
 } from '../../app/lib/detection-refusals.ts';
 import { ECHO_RUN, expectNoEchoOf } from '../helpers/no-echo.ts';
@@ -150,6 +152,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   resetSingleton();
   removeTree(home);
 });
@@ -274,5 +277,54 @@ describe('setDetectionPolicy on input it cannot act on', () => {
     // No pack seeded at all: the write changes no row.
     const result = await expectNoRejection(() => setDetectionPolicy(DETECTION_ID, 'block'));
     expect(result).toEqual({ ok: false, error: DETECTION_POLICY_MISSING });
+  });
+});
+
+/**
+ * A SECOND copy of the store's error class: same name, same fields, unrelated
+ * prototype — what the page sees once a bundler has handed it and the store
+ * their own copies of the module. The real store cannot be made to throw one,
+ * so it is thrown from the real store's own write method here; everything
+ * downstream of the throw is the production path.
+ */
+class ForeignPolicyFloorError extends Error {
+  readonly floor: string;
+  readonly refusal: string;
+
+  constructor(floor: string, refusal: string) {
+    super('refusing to re-assign');
+    this.name = 'PolicyFloorError';
+    this.floor = floor;
+    this.refusal = refusal;
+  }
+}
+
+describe('setDetectionPolicy when the refusal arrives from another copy of the class', () => {
+  it("still reports it as the organization's decision, not a broken store", async () => {
+    // An identity check would fail here and answer DETECTION_POLICY_WRITE_ERROR,
+    // which tells the user to retry and to check that ~/.aka is writable — a
+    // permission problem they do not have, while never learning that their
+    // organization set the policy. The refusal is therefore read by its fields.
+    seedPack();
+    vi.spyOn(db().installedPacks, 'setPolicy').mockImplementation(() => {
+      throw new ForeignPolicyFloorError('block', 'floor');
+    });
+    const result = await expectNoRejection(() => setDetectionPolicy(DETECTION_ID, 'monitor'));
+    expect(result.error).toBe(policyFloorRefusal({ floor: 'block', refusal: 'floor' }));
+    expect(result.error).not.toBe(DETECTION_POLICY_WRITE_ERROR);
+    expect(result.ok).toBe(false);
+  });
+
+  it('still reports a genuine store fault as one', async () => {
+    // The other half of the same read: strictness. A write that failed for a
+    // real reason must keep the message that tells the user to retry, or the
+    // structural check would have turned every fault into somebody else's
+    // decision.
+    seedPack();
+    vi.spyOn(db().installedPacks, 'setPolicy').mockImplementation(() => {
+      throw new Error('SQLITE_BUSY: database is locked');
+    });
+    const result = await expectNoRejection(() => setDetectionPolicy(DETECTION_ID, 'monitor'));
+    expect(result).toEqual({ ok: false, error: DETECTION_POLICY_WRITE_ERROR });
   });
 });

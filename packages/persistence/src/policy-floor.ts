@@ -209,12 +209,41 @@ export function controlPlanePolicyFloor(
   rules: readonly FloorRule[],
   base: string = defaultDataDir(),
 ): PackPolicyFloor | null {
-  if (rules.length === 0) return null;
+  const floors = openControlPlaneFloors(base);
+  return floors === null ? null : floors.floorFor(rules);
+}
+
+/**
+ * The same resolution, prepared ONCE for a caller with several packs to answer
+ * for — a page listing every detection asks per pack, and the per-pack entry
+ * point above re-reads settings.json, re-reads and re-parses the whole cached
+ * bundle, and rebuilds both indexes on each of those calls. That is the entire
+ * cost of the answer repeated N times for one render, and again on every
+ * revalidation after a write.
+ *
+ * Null carries exactly what the per-pack null carries — not attached, or no
+ * usable bundle — decided once here rather than per pack, since neither can
+ * change between packs within one answer.
+ */
+export function openControlPlaneFloors(base: string = defaultDataDir()): ControlPlaneFloors | null {
   if (!isAttached(readWorkspaceSettings(base))) return null;
   const bundle = readCachedPolicyBundle(base);
   if (bundle === null) return null;
+  const indexes = indexEnabled(bundle.policies);
+  return { floorFor: (rules) => resolveFloor(rules, bundle.policies, indexes) };
+}
 
-  const { byRuleId, byCategory } = indexEnabled(bundle.policies);
+/** A control-plane floor resolver over one already-read bundle. */
+export interface ControlPlaneFloors {
+  floorFor(rules: readonly FloorRule[]): PackPolicyFloor | null;
+}
+
+function resolveFloor(
+  rules: readonly FloorRule[],
+  policies: readonly Policy[],
+  { byRuleId, byCategory }: ReturnType<typeof indexEnabled>,
+): PackPolicyFloor | null {
+  if (rules.length === 0) return null;
   let action: ActionTaken | null = null;
   for (const rule of rules) {
     // The category comes from a stored snapshot and is therefore an arbitrary
@@ -229,7 +258,7 @@ export function controlPlanePolicyFloor(
   return {
     // `action` is non-null: the empty-rules case returned above.
     floor: weakestBuiltinAtLeast(action ?? 'log'),
-    locked: hasAuthoredPolicy(bundle.policies, rules),
+    locked: hasAuthoredPolicy(policies, rules),
   };
 }
 

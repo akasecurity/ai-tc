@@ -124,3 +124,47 @@ export function serviceTierMultiplier(tier: string | undefined): number {
   if (tier === undefined) return 1;
   return SERVICE_TIER_MULTIPLIERS.get(tier) ?? 1;
 }
+
+/** The token components a cost is derived from. */
+export interface PricedUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheWrite1hTokens?: number;
+  cacheWrite5mTokens?: number;
+  cacheReadTokens?: number;
+  webSearchRequests?: number;
+  serviceTier?: string;
+}
+
+/**
+ * Cost in USD for a usage bag at a given price, or `null` when the price
+ * carries no verified rate for a column the usage actually bills against.
+ *
+ * A `null` column is an UNREAD rate, not a free one. Tokens billed against one
+ * cannot be priced, so the whole call is unknown rather than silently
+ * undercounted — a partial sum reported as a total is a number nobody checked.
+ * A column the usage does not touch contributes nothing either way.
+ */
+export function costOf(price: ModelPrice, usage: PricedUsage): number | null {
+  const metered: readonly (readonly [number, number | null])[] = [
+    [usage.cacheWrite1hTokens ?? 0, price.cacheWrite1h],
+    [usage.cacheWrite5mTokens ?? 0, price.cacheWrite5m],
+    [usage.cacheReadTokens ?? 0, price.cacheRead],
+  ];
+
+  let tokenCost = (usage.inputTokens ?? 0) * price.input + (usage.outputTokens ?? 0) * price.output;
+  for (const [tokens, rate] of metered) {
+    if (tokens === 0) continue;
+    if (rate === null) return null;
+    tokenCost += tokens * rate;
+  }
+
+  // Token prices are per MILLION tokens; divide once at the end.
+  const tokenUsd = (tokenCost / 1_000_000) * serviceTierMultiplier(usage.serviceTier);
+
+  // Web search bills per request, not per token, and is not tier-scaled.
+  const searches = usage.webSearchRequests ?? 0;
+  if (searches > 0 && price.webSearch === null) return null;
+
+  return tokenUsd + searches * (price.webSearch ?? 0);
+}

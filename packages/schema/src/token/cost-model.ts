@@ -26,7 +26,7 @@
 // credits.
 import { MODEL_INDEX } from '../model/catalog.ts';
 import type { ModelPrice } from '../model/pricing.ts';
-import { serviceTierMultiplier, ZERO_PRICE } from '../model/pricing.ts';
+import { costOf, ZERO_PRICE } from '../model/pricing.ts';
 import { ModelPlatform } from '../model/providers.ts';
 import { resolveModel } from '../model/resolve.ts';
 
@@ -124,30 +124,7 @@ const defaultCostModel: CostModel = {
   costFor({ provider, model, usage }) {
     const price = priceFor(provider, model);
     if (price === null) return null; // unknown (provider, model) — never guess
-
-    // A nullable column is an unread rate. Tokens billed against one cannot be
-    // priced, so the whole call is unknown rather than silently undercounted.
-    const columns: readonly [number, number | null][] = [
-      [usage.cacheWrite1hTokens ?? 0, price.cacheWrite1h],
-      [usage.cacheWrite5mTokens ?? 0, price.cacheWrite5m],
-      [usage.cacheReadTokens ?? 0, price.cacheRead],
-    ];
-    let tokenCost = (usage.inputTokens ?? 0) * price.input + (usage.outputTokens ?? 0) * price.output;
-    for (const [tokens, rate] of columns) {
-      if (tokens === 0) continue;
-      if (rate === null) return null;
-      tokenCost += tokens * rate;
-    }
-
-    // Token prices are per MILLION tokens; divide once at the end.
-    const tokenUsd = (tokenCost / 1_000_000) * serviceTierMultiplier(usage.serviceTier);
-
-    // Web-search is billed per request, not per token, and not tier-scaled.
-    const searches = usage.webSearchRequests ?? 0;
-    if (searches > 0 && price.webSearch === null) return null;
-    const webSearchUsd = searches * (price.webSearch ?? 0);
-
-    return tokenUsd + webSearchUsd;
+    return costOf(price, usage);
   },
 };
 

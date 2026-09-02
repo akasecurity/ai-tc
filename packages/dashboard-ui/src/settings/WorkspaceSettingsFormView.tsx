@@ -1,6 +1,7 @@
 'use client';
 import type {
   CredentialState,
+  HistorySyncConsentChoice,
   ManagedContext,
   ManagedSettingKey,
   WorkspaceSettings,
@@ -436,14 +437,17 @@ export interface WorkspaceSettingsFormViewProps {
   managed?: ManagedContext;
   // Both consents are plain answers, not the stored records: acknowledgement
   // timestamps and versions are stamped server-side, so a client-supplied one
-  // would only be discarded. modelJudgeConsent: true grants, false revokes.
+  // would only be discarded. modelJudgeConsent: true grants, false revokes;
+  // historySyncConsent carries a third answer for the untouched case.
   //
   // `policy` is deliberately absent. Enforcement is per detection now; see
   // HANDLING_SECTION_DESCRIPTION.
   onSave: (
     changes: Pick<WorkspaceSettings, 'historicalAccess' | 'vaultInlineReveal'> & {
       modelJudgeConsent: boolean;
-      historySyncConsent: boolean;
+      // THREE answers, not two — see HistorySyncConsentChoice. 'unchanged' is
+      // what an unrelated save sends, so it asserts nothing about this grant.
+      historySyncConsent: HistorySyncConsentChoice;
       vaultConsent: VaultConsentChoice;
     },
   ) => void;
@@ -528,6 +532,14 @@ export function WorkspaceSettingsFormView({
     ? 'granted'
     : 'revoked';
   const [historySync, setHistorySync] = useState<HistorySyncChoice>(initialHistorySync);
+  // Whether the user actually answered this row in this session. A seed cannot
+  // stand in for an answer: both seeds are wrong for a stale grant, so what the
+  // save needs to know is not which way the row reads but whether it was touched.
+  const [historySyncTouched, setHistorySyncTouched] = useState(false);
+  const answerHistorySync = (choice: HistorySyncChoice): void => {
+    setHistorySyncTouched(true);
+    setHistorySync(choice);
+  };
   // Read once: the row's badge, its default-open state and `dirty` must all
   // agree about staleness, and three separate calls could not disagree loudly.
   const historySyncStale = isHistorySyncConsentStale(
@@ -614,7 +626,7 @@ export function WorkspaceSettingsFormView({
             name="historySyncConsent"
             choices={HISTORY_SYNC_CHOICES}
             value={historySync}
-            onChange={setHistorySync}
+            onChange={answerHistorySync}
             alert={historySyncStale ? HISTORY_SYNC_STALE_BADGE : undefined}
             defaultOpen={historySyncStale}
             notice={
@@ -678,7 +690,15 @@ export function WorkspaceSettingsFormView({
               // Just the answers — the server stamps the acknowledgement times
               // and the versions the grants are recorded against.
               modelJudgeConsent: modelJudge === 'granted',
-              historySyncConsent: historySync === 'granted',
+              // UNTOUCHED means unchanged, not 'no'. The stale case is why: this
+              // form submits every field on every save, so asserting a boolean
+              // here made an unrelated edit either re-consent to a widened
+              // payload or delete the grant and the paused badge explaining it.
+              historySyncConsent: historySyncTouched
+                ? historySync === 'granted'
+                  ? 'granted'
+                  : 'revoked'
+                : 'unchanged',
               vaultConsent,
               vaultInlineReveal: inlineReveal,
             });

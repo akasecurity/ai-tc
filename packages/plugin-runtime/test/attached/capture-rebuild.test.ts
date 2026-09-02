@@ -128,6 +128,22 @@ describe('rebuildCapture', () => {
       const ids = ['3f2504e0-4f89-41d3-9a0c-0305e82c3301'];
       expect(withBag({ exception_ids: ids })?.metadata?.exceptionIds).toEqual(ids);
     });
+
+    // The list form of the same rule. A bag holding a non-guid string is a plain
+    // array of strings, so a `typeof` filter passes it and the assembled event is
+    // then refused — turning one unusable id into a permanently skipped prompt.
+    it('drops an exception id that is not a guid, and keeps the capture', () => {
+      const good = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+      const event = withBag({ exception_ids: [good, 'legacy-grant-7'] });
+      expect(event?.content).toBe('the text of a prompt');
+      expect(event?.metadata?.exceptionIds).toEqual([good]);
+    });
+
+    it('drops the field entirely when no exception id survives', () => {
+      const event = withBag({ exception_ids: ['legacy-grant-7'] });
+      expect(event?.content).toBe('the text of a prompt');
+      expect(event?.metadata?.exceptionIds).toBeUndefined();
+    });
   });
 
   describe('rows that can never be expressed become a permanent skip', () => {

@@ -526,6 +526,11 @@ describe('stale history-sync grant', () => {
     };
     expect(labelHolding(grantedCopy)).not.toContain('checked');
     expect(labelHolding(revokedCopy)).toContain('checked');
+    // The SUBMIT side of this property — that an untouched row sends
+    // 'unchanged' rather than a boolean — is covered where it can actually be
+    // driven, in web-ui's settings action suite. Static markup cannot click, so
+    // a render-level assertion about the payload would only restate the seed.
+    //
     // And the form starts clean, so an untouched Save is not even offered.
     const saveButton = /<button[^>]*>(?:[^<]*Save changes[^<]*)<\/button>/.exec(html)?.[0] ?? '';
     expect(saveButton).toContain('disabled=""');

@@ -358,7 +358,6 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   let sent = 0;
   let skipped = 0;
   let lastHeartbeat = startedAt;
-  let outcome: HistorySyncOutcome = 'ok';
 
   /**
    * Say the claim is still held, at most once per interval.
@@ -377,56 +376,65 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     lastHeartbeat = at;
   };
 
-  outer: while (d.now() < structuralDeadline) {
-    const sessions = d.ledger.pendingSessions(SESSION_PAGE, d.backlogBefore);
-    if (sessions.length === 0) break;
+  // The structural phase runs TWICE at most: once against its reserved slice, and
+  // again against the full deadline if the capture lane finished early. See the
+  // second call below for why.
+  const drainStructural = async (until: number): Promise<HistorySyncOutcome> => {
+    let stopped: HistorySyncOutcome = 'ok';
+    outer: while (d.now() < until) {
+      const sessions = d.ledger.pendingSessions(SESSION_PAGE, d.backlogBefore);
+      if (sessions.length === 0) break;
 
-    for (const sessionId of sessions) {
-      // ROOT FIRST, one session at a time. The receiving side has real
-      // self-referencing foreign keys and stubs no missing root, so a leaf that
-      // overtakes its session is rejected — which is why this is sequential
-      // rather than concurrent.
-      const rows = d.ledger.pendingRows(sessionId, ROW_PAGE, d.backlogBefore);
-      if (rows.length === 0) continue;
+      for (const sessionId of sessions) {
+        // ROOT FIRST, one session at a time. The receiving side has real
+        // self-referencing foreign keys and stubs no missing root, so a leaf that
+        // overtakes its session is rejected — which is why this is sequential
+        // rather than concurrent.
+        const rows = d.ledger.pendingRows(sessionId, ROW_PAGE, d.backlogBefore);
+        if (rows.length === 0) continue;
 
-      // Rebuilt first, so a row that can never be expressed is counted and
-      // dropped rather than poisoning a batch it happens to share.
-      const ready: { id: string; event: RecordAuditEventRequest }[] = [];
-      for (const row of rows) {
-        const event = rebuildAuditEvent(row, d.ledger.inspectionsFor(row.id));
-        if (event === undefined) {
-          // A local defect, not an outage: this row will never be expressible,
-          // so retrying it for ever would stall the drain behind it.
-          d.ledger.markSkipped([row.id]);
-          skipped += 1;
-          continue;
-        }
-        ready.push({ id: row.id, event });
-      }
-
-      // BATCHED WITHIN ONE SESSION, never across two. The rows arrive root
-      // first, so a batch that stayed inside a session cannot deliver a leaf
-      // before the root it keys onto; one spanning sessions could.
-      for (let i = 0; i < ready.length; i += BATCH_SIZE) {
-        if (d.now() >= structuralDeadline) {
-          outcome = 'interrupted';
-          break outer;
-        }
-        const chunk = ready.slice(i, i + BATCH_SIZE);
-        const result = await sendChunk(d, chunk, beat);
-        sent += result.sent;
-        skipped += result.skipped;
-        if (result.stopped !== undefined) {
-          // Everything not acknowledged stays pending, by doing nothing.
-          outcome = result.stopped;
-          break outer;
+        // Rebuilt first, so a row that can never be expressed is counted and
+        // dropped rather than poisoning a batch it happens to share.
+        const ready: { id: string; event: RecordAuditEventRequest }[] = [];
+        for (const row of rows) {
+          const event = rebuildAuditEvent(row, d.ledger.inspectionsFor(row.id));
+          if (event === undefined) {
+            // A local defect, not an outage: this row will never be expressible,
+            // so retrying it for ever would stall the drain behind it.
+            d.ledger.markSkipped([row.id]);
+            skipped += 1;
+            continue;
+          }
+          ready.push({ id: row.id, event });
         }
 
-        beat();
-        await d.sleep(PACE_INTERVAL_MS);
+        // BATCHED WITHIN ONE SESSION, never across two. The rows arrive root
+        // first, so a batch that stayed inside a session cannot deliver a leaf
+        // before the root it keys onto; one spanning sessions could.
+        for (let i = 0; i < ready.length; i += BATCH_SIZE) {
+          if (d.now() >= until) {
+            stopped = 'interrupted';
+            break outer;
+          }
+          const chunk = ready.slice(i, i + BATCH_SIZE);
+          const result = await sendChunk(d, chunk, beat);
+          sent += result.sent;
+          skipped += result.skipped;
+          if (result.stopped !== undefined) {
+            // Everything not acknowledged stays pending, by doing nothing.
+            stopped = result.stopped;
+            break outer;
+          }
+
+          beat();
+          await d.sleep(PACE_INTERVAL_MS);
+        }
       }
     }
-  }
+    return stopped;
+  };
+
+  let outcome = await drainStructural(structuralDeadline);
 
   // THE CAPTURE LANE, second and deliberately so. The structural rows are what
   // make a session legible on the receiving side — a capture whose session has
@@ -445,6 +453,26 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     sent += captures.sent;
     skipped += captures.skipped;
     if (captures.stopped !== undefined) outcome = captures.stopped;
+  }
+
+  // THE SLICE HANDS BACK. Reserving a share for captures is only half of the
+  // reciprocity the constant claims — the other half is that a pass whose capture
+  // lane found nothing owed, which is the normal case on a machine whose live
+  // forwarding works, must not return with a third of its budget unspent while
+  // the structural backlog it was reserved from is still there. Without this,
+  // exactly the machines the slice was not needed for pay ~43% longer to drain a
+  // backlog measured in days.
+  //
+  // Guarded on `capturesPending` rather than run unconditionally: a capture lane
+  // that STOPPED — refused, unreachable, or out of time — has left work owed, and
+  // spending the remainder on the other lane would be the starvation this whole
+  // arrangement exists to prevent, inverted.
+  if (
+    outcome === 'ok' &&
+    d.now() < deadline &&
+    d.ledger.pendingCaptureRows(1, d.backlogBefore, d.now() - CAPTURE_GRACE_MS).length === 0
+  ) {
+    outcome = await drainStructural(deadline);
   }
 
   if (outcome === 'ok' && d.now() >= deadline && d.ledger.counts(d.backlogBefore).pending > 0) {

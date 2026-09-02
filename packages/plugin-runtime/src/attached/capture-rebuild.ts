@@ -110,13 +110,15 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
     // Carried, unlike inspectionMs below. The live forward sends it, and it is
     // the enforcement audit trail's link back to the grant that authorized a
     // bypass — dropping it would make the same capture mean different things to
-    // the deployment depending on which route delivered it. Filtered to strings
-    // because the bag is free-form JSON; the wire shape requires guids, and
-    // IngestEvent.safeParse below is what actually enforces that.
-    ...(Array.isArray(attributes.exception_ids) &&
-    attributes.exception_ids.every((id) => typeof id === 'string')
-      ? { exceptionIds: attributes.exception_ids }
-      : {}),
+    // the deployment depending on which route delivered it.
+    //
+    // Filtered ELEMENT-WISE against the wire's own element schema, for the same
+    // reason the two constrained strings above are: a bag holding
+    // ['legacy-grant-7'] is a plain array of strings, so a `typeof` filter passes
+    // it, IngestEvent.safeParse then refuses the assembled event, and the whole
+    // capture becomes a permanent skip. That is the per-row door the rest of this
+    // function exists to avoid, and this field was the last one still using it.
+    ...withList('exceptionIds', keepAll(attributes.exception_ids, EXCEPTION_ID)),
     // inspectionMs is DELIBERATELY not carried. It measures latency a live host
     // session actually waited on, and a row being drained hours later is not
     // that; the field's own contract says a replay leaves it absent rather than
@@ -157,10 +159,27 @@ function withField(name: string, value: string | undefined): Record<string, stri
   return value === undefined ? {} : { [name]: value };
 }
 
+/** The list form: absent when nothing in it survived, so the field is dropped. */
+function withList(name: string, values: string[]): Record<string, string[]> {
+  return values.length === 0 ? {} : { [name]: values };
+}
+
+/** Every element the wire would accept, and none of the ones it would not. */
+function keepAll(
+  value: unknown,
+  schema: { safeParse: (v: unknown) => { success: boolean } },
+): string[] {
+  return Array.isArray(value)
+    ? value.filter((v): v is string => typeof v === 'string' && schema.safeParse(v).success)
+    : [];
+}
+
 // Taken from EventMetadata's own shape so the two cannot drift: whatever the
 // wire requires of these fields is what is checked here.
 const CORRELATION_ID = EventMetadata.shape.correlationId;
 const TRACE_ID = EventMetadata.shape.traceId;
+// The ELEMENT schema, not the array's: what is filtered here is each id.
+const EXCEPTION_ID = EventMetadata.shape.exceptionIds.unwrap().element;
 
 function isoOrUndefined(epochMs: number): string | undefined {
   if (!Number.isFinite(epochMs)) return undefined;

@@ -897,6 +897,41 @@ describe('runHistorySync — the capture lane', () => {
     expect(l.captures.map((c) => c.content)).toEqual(['text of cap-1']);
   });
 
+  // THE SLICE HANDS BACK. Reserving a share for captures is only half of the
+  // reciprocity; without the other half, a pass whose capture lane found nothing
+  // owed — the normal case on a machine whose live forwarding works — returns
+  // with a third of its budget unspent while the structural backlog it was
+  // reserved from is still there.
+  it('returns the unused capture slice to the structural lane', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedRows(40);
+    // No captures owed at all, so the reserved share is not needed this pass.
+    const l = lanes();
+    let clock = T0;
+    await runHistorySync({
+      base: home,
+      settingsDir: settingsDirOf(home),
+      dataDir: dataDirOf(home),
+      now: () => clock,
+      sleep: () => {
+        clock += 4_000;
+        return Promise.resolve();
+      },
+      random: () => 0,
+      sendBatch: l.sendBatch,
+      sendCaptures: l.sendCaptures,
+    });
+
+    expect(l.captures).toEqual([]);
+    // A floor BETWEEN the two behaviours, not merely above zero. Measured on this
+    // fixture: 60 structural rows delivered when the unused slice is handed back,
+    // 42 when it is not — so a threshold under 42 passes either way and asserts
+    // nothing. The first version of this test used 20 and was exactly that.
+    // Elapsed time is not the assertion because the clock here is fake; what the
+    // extra budget buys is rows, so rows are what is counted.
+    expect(l.structural.length).toBeGreaterThan(50);
+  });
+
   // A PARTIAL ack is not a delivery of the whole batch. IngestAck constrains
   // accepted/duplicates only to be non-negative, so a deployment this plugin
   // does not ship may answer 40 for a batch of 100 — and stamping all 100 would

@@ -12,6 +12,7 @@ import type {
   DetectionUpdate,
   ListDetectionsQuery,
   ListDetectionsResponse,
+  OriginEnum,
 } from './detection.ts';
 import { AppliesTo, Matcher, PostValidatorRef, RequiresNearby, type Rule } from './rule.ts';
 
@@ -58,6 +59,11 @@ export interface DetectionSummaryInput {
   name: string;
   enabled: boolean;
   ruleCount: number;
+  // Where the pack came from. Optional so a caller that predates custom
+  // authoring — or a store with no origin column — keeps its current meaning
+  // rather than having to be updated in lockstep; absent reads as 'library',
+  // which is what every such row is.
+  origin?: OriginEnum | null;
   // null/undefined == no policy assigned.
   policyId?: string | null;
   // Set ONLY when a newer snapshot is available for this pack (computed from
@@ -75,6 +81,8 @@ export interface DetectionRowInput {
   name: string;
   enabled: boolean;
   rules: Rule[];
+  // See DetectionSummaryInput.origin — absent reads as 'library'.
+  origin?: OriginEnum | null;
   // The DB-persisted last-edit time (installed_packs.updated_at).
   updatedAt: Date;
   // null/undefined == no policy assigned.
@@ -90,7 +98,7 @@ export function summaryToDetectionListItem(s: DetectionSummaryInput): DetectionL
     name: s.name,
     version: s.version,
     enabled: s.enabled,
-    origin: 'library', // v1: every installed pack is library origin
+    origin: s.origin ?? 'library',
     namespace: s.namespace,
     packId: s.packId,
     ruleCount: s.ruleCount,
@@ -166,7 +174,7 @@ export function rowToDetectionDetail(
     name: row.name,
     version: row.version,
     enabled: row.enabled,
-    origin: 'library',
+    origin: row.origin ?? 'library',
     namespace: row.namespace,
     packId: row.packId,
     ruleCount: row.rules.length,
@@ -210,24 +218,34 @@ export function buildDetectionsList(
   query: ListDetectionsQuery,
 ): ListDetectionsResponse {
   const withUpdate = summaries.filter((s) => s.latestVersion != null);
+  const isCustom = (s: DetectionSummaryInput) => (s.origin ?? 'library') === 'custom';
   const counts = {
     all: summaries.length,
-    library: summaries.length, // all origin=library in v1
-    custom: 0,
+    library: summaries.filter((s) => !isCustom(s)).length,
+    custom: summaries.filter(isCustom).length,
+    // No origin member produces this, so it is 0 BY CONSTRUCTION rather than by
+    // omission: `customized` would mean a LIBRARY pack whose rules were edited in
+    // place, and that state does not exist — editing a library pack forks it. See
+    // OriginEnum.
     customized: 0,
     updates: withUpdate.length,
   };
 
   // `filter` defaults to 'all' via the Zod schema, so it is always present here.
   const filter = query.filter;
-  // 'all' and 'library' include everything in v1; custom/customized have no
-  // members yet; 'updates' narrows to the packs with a newer snapshot.
+  // 'customized' has no producer (see counts above), so it stays the one arm
+  // that is empty by construction; 'updates' narrows to the packs carrying a
+  // newer snapshot, and the two origin arms partition everything else.
   let filtered =
-    filter === 'custom' || filter === 'customized'
+    filter === 'customized'
       ? []
-      : filter === 'updates'
-        ? [...withUpdate]
-        : [...summaries];
+      : filter === 'custom'
+        ? summaries.filter(isCustom)
+        : filter === 'library'
+          ? summaries.filter((s) => !isCustom(s))
+          : filter === 'updates'
+            ? [...withUpdate]
+            : [...summaries];
 
   if (query.q) {
     const q = query.q.toLowerCase();

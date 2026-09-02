@@ -18,6 +18,7 @@ import {
   AlertIcon,
   BracesIcon,
   BuildingIcon,
+  EditIcon,
   EyeIcon,
   FingerprintIcon,
   GlobeIcon,
@@ -181,6 +182,16 @@ export const ORIGIN_META: Record<OriginEnum, OriginMeta> = {
     icon: GlobeIcon,
     tone: 'teal',
     blurb: 'Imported from the public library',
+  },
+  // An edit icon rather than a person icon: what distinguishes a custom pack in
+  // use is not who made it but that its rules CAN be changed, where a library
+  // pack's are an immutable published snapshot. `violet` is categorical against
+  // library's `teal` — neither is an alert tone, because origin is not a problem.
+  custom: {
+    label: 'Custom',
+    icon: EditIcon,
+    tone: 'violet',
+    blurb: 'Authored here — no upstream to track',
   },
 };
 

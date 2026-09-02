@@ -14,8 +14,20 @@ import { AppliesTo, Matcher, PostValidatorRef, RegexMatcher, RequiresNearby } fr
 // Enums
 // ---------------------------------------------------------------------------
 
-// In v1 the only origin is "library" (no custom-authoring model yet).
-export const OriginEnum = z.enum(['library']).meta({ id: 'OriginEnum' });
+// Where an installed pack came from.
+//
+//   library — installed from the rule registry. Its rules are an immutable
+//             snapshot of a published version, so they are never edited in place;
+//             moving forward means pulling a new version.
+//   custom  — authored by the user. There is no upstream, so nothing to track,
+//             diff, or update against, and its rules ARE editable.
+//
+// `DetectionFilterEnum` also carries `customized`, which has no origin member and
+// deliberately none yet: it would mean a LIBRARY pack whose rules were edited in
+// place, and that state does not exist — editing a library pack is forking it.
+// Adding the member before anything can produce it is what left `custom` itself
+// unreachable for as long as it was.
+export const OriginEnum = z.enum(['library', 'custom']).meta({ id: 'OriginEnum' });
 export type OriginEnum = z.infer<typeof OriginEnum>;
 
 // Filter options for the detections read.

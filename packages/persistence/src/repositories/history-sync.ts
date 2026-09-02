@@ -36,17 +36,24 @@ export interface HistorySyncCounts {
  * the three and the numbers do not sum to anything. These four do sum to
  * `total`, which is what a surface reporting delivery state needs.
  *
- * `queued` counts what is still OWED to the deployment, and it is honest on an
- * attached machine because both delivery paths settle here: a drain stamps
- * through `markSynced`, and the live forward stamps through
- * `markCaptureDelivered`, which is the same statement. A row left NULL is one no
- * path delivered — that, and not a separate spool file, is the outbox.
+ * SCOPE, and the caveat that follows from it: every column here is measured
+ * over STRUCTURAL rows only — `partitionStmt` carries the same
+ * `event_type IN (…)` filter as the rest of this ledger. Capture rows are not
+ * counted in `total`, so this is the delivery state of the structural lane, not
+ * of everything the machine owes a deployment.
  *
- * The one thing it still cannot see is a delivery whose stamp was lost after the
- * forward succeeded. That row reads as `queued` and is offered again, which the
- * receiver's id-dedup absorbs because the wire id derives from the row's own
- * tuple — so it over-counts by the rare lost stamp rather than, as before, by
- * every successful live forward.
+ * That scope is why `markCaptureDelivered` does NOT settle anything visible
+ * here. It stamps a capture row, through the same UPDATE a drain uses, so the
+ * two are indistinguishable afterwards — but this query never counts capture
+ * rows, so the stamp is invisible to it by construction. The stamp exists for a
+ * capture drain to read; it is not a fix for this read.
+ *
+ * `queued` therefore still OVER-COUNTS on an attached machine, and by the same
+ * rows it always did: a structural row the live path forwarded successfully
+ * (`recordToolCalls`) is never stamped by anything, so it stays NULL and reads
+ * as owed. Closing that needs a stamp on the structural forward, which no path
+ * does today. Read `queued` as "not known to have been delivered", not as
+ * "undelivered".
  */
 export interface HistorySyncPartition {
   queued: number;

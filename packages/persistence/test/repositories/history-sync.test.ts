@@ -411,6 +411,27 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
     expect(db.historySync.partition()).toMatchObject({ synced: 1, inProgress: 0, queued: 2 });
   });
 
+  // The SETTLED half of the scope claim. Its sibling below ('does not yet count
+  // captures') pins the static shape — a capture is absent from `total`. This
+  // one pins what happens when the live path STAMPS that capture through
+  // `markCaptureDelivered`: still nothing, because the row was never counted.
+  // Both are needed. Without this one, the docstring's load-bearing sentence —
+  // that a live stamp settles nothing visible here — has no test at all, and the
+  // stamp could start moving `synced` with the suite fully green.
+  it('does not count a capture, before or after the live path stamps it', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    const before = db.historySync.partition();
+    expect(before).toMatchObject({ total: 3, queued: 3 });
+
+    db.historySync.markSynced(['s-1-prompt'], T0 + MINUTE);
+
+    // Same numbers: the capture row was never in `total`, so settling it is not
+    // a state change this query can see. `synced` staying 0 is the assertion
+    // that matters — it is what would break if the capture joined the lane.
+    expect(db.historySync.partition()).toMatchObject({ total: 3, queued: 3, synced: 0 });
+  });
+
   it('counts a permanent skip as failed, not as queued', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);

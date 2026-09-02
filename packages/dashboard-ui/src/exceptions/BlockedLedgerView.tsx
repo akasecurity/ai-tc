@@ -88,6 +88,11 @@ export interface BlockedLedgerViewProps {
    * clears this assumption here and meets it again there.
    */
   blockReason: (row: BlockedDetectionDescriptor) => string | null;
+  /**
+   * Time captured by an SSR host for a stable initial render. Passing this
+   * prevents relative labels from crossing a boundary between SSR and hydration.
+   */
+  renderedAt?: number;
 }
 
 /**
@@ -110,6 +115,7 @@ export function BlockedLedgerView({
   blockedWindow,
   onBlockedWindowChange,
   blockReason,
+  renderedAt,
 }: BlockedLedgerViewProps) {
   return (
     <div className="mb-3.5 overflow-hidden rounded-xl border border-sev-high-fill bg-sev-high-fill">
@@ -152,7 +158,7 @@ export function BlockedLedgerView({
                     <span className="font-mono text-xs text-text-2">{b.maskedValue}</span>
                   </div>
                   <div className={cn('mt-1 text-label text-text-3')}>
-                    {relativeTime(b.blockedAt)}
+                    {relativeTime(b.blockedAt, renderedAt)}
                     {b.repo ? ` · ${b.repo}` : ''}
                     {blocked === null ? '' : ' · not approvable'}
                   </div>

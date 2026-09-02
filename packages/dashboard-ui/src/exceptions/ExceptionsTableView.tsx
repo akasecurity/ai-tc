@@ -12,6 +12,12 @@ export interface ExceptionsTableViewProps {
   // audit view; affects only the empty-state copy.
   includeTerminal: boolean;
   onSelect: (id: string) => void;
+  /**
+   * Time captured by an SSR host for a stable initial render. Passing this
+   * prevents relative labels — and the expiry-derived state badge — from
+   * crossing a boundary between SSR and hydration.
+   */
+  renderedAt?: number;
 }
 
 /**
@@ -23,6 +29,7 @@ export function ExceptionsTableView({
   items,
   includeTerminal,
   onSelect,
+  renderedAt,
 }: ExceptionsTableViewProps) {
   if (items.length === 0) {
     return (
@@ -68,7 +75,7 @@ export function ExceptionsTableView({
               </TableCell>
               <TableCell className="text-xs">{SCOPE_LABEL[ex.scope]}</TableCell>
               <TableCell className="text-xs text-text-2">
-                {ex.expiresAt === null ? '—' : relativeTime(ex.expiresAt)}
+                {ex.expiresAt === null ? '—' : relativeTime(ex.expiresAt, renderedAt)}
               </TableCell>
               <TableCell className="text-xs text-text-2">
                 {ex.maxUses === null
@@ -76,10 +83,10 @@ export function ExceptionsTableView({
                   : `${String(ex.useCount)}/${String(ex.maxUses)}`}
               </TableCell>
               <TableCell className="text-xs text-text-2">
-                {relativeTime(ex.createdAt)} · {VIA_LABEL[ex.createdVia]}
+                {relativeTime(ex.createdAt, renderedAt)} · {VIA_LABEL[ex.createdVia]}
               </TableCell>
               <TableCell>
-                <StateTagFor exception={ex} />
+                <StateTagFor exception={ex} now={renderedAt} />
               </TableCell>
             </TableRow>
           ))}

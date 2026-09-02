@@ -134,20 +134,6 @@ export function readSessionModel(
 const TAIL_BYTES = 256 * 1024;
 
 /**
- * The model of the most recent assistant record in a transcript, or undefined.
- *
- * The fallback for a session with no recorded model — a session that started
- * before this plugin version, or one whose marker was clobbered by a concurrent
- * session. Reads only the last `TAIL_BYTES` so cost is bounded by the constant
- * rather than by transcript length: this runs on the turn path, where the whole
- * budget is a few hundred milliseconds.
- *
- * Records are scanned newest-first and the first assistant record wins, because
- * a `/model` switch mid-session makes only the LATEST record's model current.
- * The first line of the slice is dropped — a byte-offset read almost always
- * lands mid-line, and half a JSON object is not a record.
- */
-/**
  * The last `TAIL_BYTES` of a file, as text, without reading the rest of it.
  *
  * `readFileSync` then `.slice()` reads and UTF-8-decodes the WHOLE file first,
@@ -164,9 +150,31 @@ function readTail(path: string): { text: string; truncated: boolean } {
   try {
     const { size } = fstatSync(fd);
     if (size <= TAIL_BYTES) return { text: readFileSync(fd, 'utf8'), truncated: false };
+    // LOOPED, because a short read here loses the WRONG END. The window is
+    // filled from its start, so bytes a single `readSync` failed to deliver are
+    // the ones nearest EOF — the NEWEST records — and the scan below would then
+    // answer from an older one.
+    //
+    // That direction is the expensive one on this path. Everywhere else an
+    // unknown means allow; this is the one shape that fails toward a wrong
+    // BLOCK, because a user who has just switched AWAY from a prohibited model
+    // would still read as running on it and be refused with a message telling
+    // them to do what they already did.
+    //
+    // A positional read wholly inside a local regular file returns the full
+    // count, so this loop is not reachable there. `~/.aka` on a network home
+    // (NFS/SMB) is where that stops being guaranteed, and this product supports
+    // one. `readFileSync` looped on the caller's behalf; `readSync` does not.
     const buffer = Buffer.allocUnsafe(TAIL_BYTES);
-    const read = readSync(fd, buffer, 0, TAIL_BYTES, size - TAIL_BYTES);
-    return { text: buffer.subarray(0, read).toString('utf8'), truncated: true };
+    let filled = 0;
+    while (filled < TAIL_BYTES) {
+      const n = readSync(fd, buffer, filled, TAIL_BYTES - filled, size - TAIL_BYTES + filled);
+      // EOF, or a reader that will deliver nothing more — the file cannot have
+      // shrunk under us without `size` being stale, and stopping beats spinning.
+      if (n === 0) break;
+      filled += n;
+    }
+    return { text: buffer.subarray(0, filled).toString('utf8'), truncated: true };
   } finally {
     closeSync(fd);
   }

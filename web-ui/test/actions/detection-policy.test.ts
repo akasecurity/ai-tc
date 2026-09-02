@@ -192,7 +192,7 @@ describe('setDetectionPolicy under a control-plane floor', () => {
 
   it('refuses every re-assignment for a detection the organization has authored', async () => {
     seedPack();
-    cacheBundle([policy({ target: { ruleId: RULE_ID }, action: 'warn', kind: 'custom' })]);
+    cacheBundle([policy({ target: { ruleId: RULE_ID }, action: 'warn', provenance: 'authored' })]);
     for (const id of KNOWN_BUILTIN_IDS) {
       const result = await expectNoRejection(() => setDetectionPolicy(DETECTION_ID, id));
       expect(result.ok, `expected '${id}' to be refused on a locked detection`).toBe(false);

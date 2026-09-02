@@ -194,9 +194,9 @@ function hasAuthoredPolicy(
   const categories = new Set(rules.map((rule) => rule.category));
   const bundleNamesPack = rules.some((rule) => byRuleId.has(rule.id));
   return policies.some((policy) => {
-    // `kind` is optional on the wire and absent reads as 'builtin' — an older
-    // producer never authored anything, so it can never lock.
-    if (!policy.enabled || policy.kind !== 'custom') return false;
+    // `provenance` is optional on the wire and absent reads as 'builtin' — an
+    // older producer never authored anything, so it can never lock.
+    if (!policy.enabled || policy.provenance !== 'authored') return false;
     return 'ruleId' in policy.target
       ? ruleIds.has(policy.target.ruleId)
       : bundleNamesPack && categories.has(policy.target.category);

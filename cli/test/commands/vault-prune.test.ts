@@ -102,11 +102,18 @@ function installPack(packId: string, ruleId: string, category: DetectionCategory
   }
 }
 
-/** Vault one value through the real vault, and return its wire pointer. */
+/**
+ * Vault one value through the real vault, and return its wire pointer.
+ *
+ * `userAuthorized` is the surfaced-secrets strike: the user pointed at this
+ * value and asked for it to be replaced, which the vault records on the row.
+ * Left off, this is an enforcing path acting on its own.
+ */
 async function vaultValue(
   raw: string,
   ruleId: string,
   category: DetectionCategory,
+  userAuthorized = false,
 ): Promise<{ pointer: string; pointerId: string }> {
   const dir = dataDir(home);
   const db = openLocalDatabase(dir);
@@ -116,8 +123,10 @@ async function vaultValue(
       keys: createKeyProvider(readWorkspaceSettings(home).vaultKeyCustody, keysDir(home)),
       isConsented: () => isVaultConsentValid(readWorkspaceSettings(home).vaultConsent),
     });
-    const pointer = await vault.tokenize(raw, { ruleId, category, maskedMatch: 'qui…-42' }, () =>
-      loadOrCreateFingerprintKey(dir),
+    const pointer = await vault.tokenize(
+      raw,
+      { ruleId, category, maskedMatch: 'qui…-42', userAuthorized },
+      () => loadOrCreateFingerprintKey(dir),
     );
     if (typeof pointer !== 'string') throw new Error('seeding tokenize was refused');
     const row = db.secretVault.listAll().find((r) => r.ruleId === ruleId);
@@ -217,8 +226,8 @@ afterEach(() => {
   removeTree(userHome);
 });
 
-// A stored vault row with only the three fields the split reads varied.
-function storedRow(ruleId: string, n: number): VaultRow {
+// A stored vault row with only the fields the split reads varied.
+function storedRow(ruleId: string, n: number, userAuthorized = false): VaultRow {
   return {
     pointerId: `p${String(n)}`,
     valueFingerprint: `f${String(n)}`,
@@ -231,6 +240,7 @@ function storedRow(ruleId: string, n: number): VaultRow {
     ciphertext: '',
     nonce: '',
     authTag: '',
+    userAuthorized,
     occurrenceCount: 1,
     firstSeen: 0,
     lastSeen: 0,
@@ -255,6 +265,22 @@ describe('selectOutOfPolicy', () => {
     // The absent rule is a pack that is off or gone, not a decision that the
     // value must not be held — so it is reported, never pruned.
     expect(selection.ruleNotInstalled).toBe(1);
+    expect(selection.userAuthorized).toBe(0);
+  });
+
+  it('never calls a user-authorized row out of policy, whatever its rule now says', () => {
+    const rows = [storedRow('a/monitored', 1), storedRow('a/monitored', 2, true)];
+    const actions = new Map([['a/monitored', 'log' as const]]);
+
+    const selection = selectOutOfPolicy(rows, actions);
+
+    // Same rule, same assignment, opposite answers: the ruleset speaks for the
+    // rule, and the marker speaks for the value. The first row is the positive
+    // control — without it a fix that simply stopped selecting anything would
+    // read the same.
+    expect(selection.outOfPolicy.map((e) => e.pointerId)).toEqual(['p1']);
+    expect(selection.userAuthorized).toBe(1);
+    expect(selection.inPolicy).toBe(0);
   });
 });
 
@@ -571,14 +597,13 @@ describe('aka vault prune', () => {
 
   it('never deletes an out-of-policy entry that has no sighting', async () => {
     installPack('code-context', 'code-context/file-path', 'code_context', 'monitor');
-    // Vaulted with no sighting recorded anywhere — the shape the surfaced-secret
-    // Redact button leaves behind, which vaults on the user's own instruction
-    // whatever the pack was assigned. `selectOutOfPolicy` reads the ruleset,
-    // finds `log`, and files this entry as out of policy; the ONLY thing that
-    // saves it from being restored and deleted is that the prune refuses an
-    // entry with no sighting. Nothing states that coupling, so it is pinned
-    // here: give that path a sighting and this goes red rather than silently
-    // undoing a strike the user asked for.
+    // An entry an enforcing path vaulted and no ledger row points at. The rule
+    // is assigned Monitor, so the split does file it as out of policy — and
+    // phase 2 still refuses it, because deleting a value whose pointer might
+    // sit in a file nobody recorded would strand that pointer for ever. This is
+    // the ledger-completeness half of the refusal, on its own: the user's own
+    // strikes are protected by the row's provenance marker instead, and are
+    // covered by the case below.
     const { pointerId } = await vaultValue(MONITOR_RAW, 'code-context/file-path', 'code_context');
 
     const io = scriptedIo();
@@ -591,6 +616,76 @@ describe('aka vault prune', () => {
     // Nothing was revealed for it either: an unsighted entry names no file, so
     // the restore pass never opens one.
     expect(remediationTrail(pointerId)).toEqual([]);
+  });
+
+  // The sequence this verb has to survive, end to end. The value is in the
+  // vault twice over — once because a pack enforced, once because a person
+  // asked — and the vault is content-addressed, so those two statements share
+  // ONE row, sighting and all. Reasoning from today's assignment alone would
+  // put the raw value back into the transcript the user had it struck from and
+  // then destroy the only copy.
+  it('never prunes a value the user struck, after the pack that vaulted it was lowered', async () => {
+    // The pack is at Redact & Vault: it vaults on its own, and the scrub
+    // records the transcript its pointer landed in.
+    installPack('code-context', 'code-context/file-path', 'code_context', 'vault');
+    const { pointer, pointerId } = await vaultValue(
+      MONITOR_RAW,
+      'code-context/file-path',
+      'code_context',
+    );
+    recordSighting(pointerId, transcript, 'transcript');
+    writeFileSync(transcript, `${transcriptLine(pointer)}\n`);
+    const before = readFileSync(transcript, 'utf8');
+
+    // The pack is lowered to Monitor — so the ruleset now says `log` about this
+    // rule — and the user then strikes that same value off the surfaced-secrets
+    // list, which vaults it whatever the assignment says.
+    installPack('code-context', 'code-context/file-path', 'code_context', 'monitor');
+    const struck = await vaultValue(MONITOR_RAW, 'code-context/file-path', 'code_context', true);
+    // One value, one row: the strike landed on the row that already carries the
+    // transcript sighting.
+    expect(struck.pointerId).toBe(pointerId);
+
+    const io = scriptedIo();
+    await runVault(['prune', '--apply', '--home', home, '--user-home', userHome], io);
+
+    // Nothing restored, nothing destroyed, nothing revealed.
+    expect(readFileSync(transcript, 'utf8')).toBe(before);
+    expect(vaultRowCount()).toBe(1);
+    expect(purgeDerefCount()).toBe(0);
+    expect(remediationTrail(pointerId)).toEqual([]);
+
+    expect(io.output()).toContain('user-authorized          1');
+    expect(io.output()).toContain('out of policy            0');
+    expect(io.output()).toContain('Nothing to undo.');
+    expectNoEchoOf(io.output(), MONITOR_RAW);
+  });
+
+  it('keeps that protection when a pack path vaults the same value afterwards', async () => {
+    installPack('code-context', 'code-context/file-path', 'code_context', 'monitor');
+    const { pointer, pointerId } = await vaultValue(
+      MONITOR_RAW,
+      'code-context/file-path',
+      'code_context',
+      true,
+    );
+    // The enforcing path meets the value again AFTER the strike, and records a
+    // transcript sighting on the shared row. What the user said about the value
+    // does not expire because a pack saw it again.
+    await vaultValue(MONITOR_RAW, 'code-context/file-path', 'code_context');
+    recordSighting(pointerId, transcript, 'transcript');
+    writeFileSync(transcript, `${transcriptLine(pointer)}\n`);
+    const before = readFileSync(transcript, 'utf8');
+
+    const io = scriptedIo();
+    await runVault(['prune', '--apply', '--home', home, '--user-home', userHome], io);
+
+    expect(readFileSync(transcript, 'utf8')).toBe(before);
+    expect(vaultRowCount()).toBe(1);
+    expect(purgeDerefCount()).toBe(0);
+    expect(io.output()).toContain('user-authorized          1');
+    expect(io.output()).toContain('Nothing to undo.');
+    expectNoEchoOf(io.output(), MONITOR_RAW);
   });
 
   it('prints its own help without touching the store', async () => {

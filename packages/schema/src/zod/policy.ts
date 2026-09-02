@@ -31,10 +31,20 @@ export const PolicyTarget = z
   .meta({ id: 'PolicyTarget' });
 export type PolicyTarget = z.infer<typeof PolicyTarget>;
 
-// Whether a policy is one of the built-in archetypes or was authored against
-// this deployment. Declared above `Policy` because `Policy` carries it.
+// Which built-in policy ARCHETYPE catalog entry a row is — the axis
+// PolicyListItem and PolicyDetail below are keyed on, and the one the
+// policy-catalog list port filters by.
 export const PolicyKind = z.enum(['builtin', 'custom']).meta({ id: 'PolicyKind' });
 export type PolicyKind = z.infer<typeof PolicyKind>;
+
+// Whether a bundle row's target was AUTHORED against this deployment, or is a
+// built-in expansion the producer synthesized. A SEPARATE axis from PolicyKind
+// above, and it carries its own name for that reason: the two answer different
+// questions, and a device-side lock keys on this one, so a shared component
+// name would let a consumer read the archetype answer as the provenance answer.
+// Declared above `Policy` because `Policy` carries it.
+export const PolicyProvenance = z.enum(['builtin', 'authored']).meta({ id: 'PolicyProvenance' });
+export type PolicyProvenance = z.infer<typeof PolicyProvenance>;
 
 // The canonical policy shape, and the component named 'Policy'. The local store
 // and the wire PolicyBundle use it directly, and it backs the policies contract.
@@ -54,16 +64,22 @@ export const Policy = z
     // which row this is. A producer that collapses several rows onto one target
     // must carry the marker onto whichever row survives, or the collapse decides
     // the answer; a survivor may therefore be a built-in expansion still marked
-    // 'custom' because an authored sibling targeted the same thing.
+    // 'authored' because an authored sibling targeted the same thing.
     // Optional so an older producer — and an older on-disk cache — still parses;
     // absent reads as 'builtin', which is the behaviour that predates the field.
     //
-    // A device consumes this in exactly one direction: an authored ('custom')
-    // policy arriving from a control plane marks the rules it targets as not
+    // Deliberately NOT `kind`/PolicyKind: that name and that enum answer which
+    // built-in archetype catalog entry a policy is, which every catalog surface
+    // reads and which a caller may state. This one is a statement the PRODUCER
+    // of a bundle makes about a row, and only the bundle builder ever stamps it
+    // — the CRUD routes neither accept nor set it.
+    //
+    // A device consumes this in exactly one direction: an 'authored' policy
+    // arriving from a control plane marks the rules it targets as not
     // locally re-assignable. That can only ever ADD a refusal, never relax one,
     // which is what makes it safe to honour from an unsigned cache — the same
     // test `prohibitedModels` passes and `reversibleRuleIds` fails.
-    kind: PolicyKind.optional(),
+    provenance: PolicyProvenance.optional(),
   })
   .meta({ id: 'Policy' });
 export type Policy = z.infer<typeof Policy>;

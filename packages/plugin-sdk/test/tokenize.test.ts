@@ -427,6 +427,49 @@ describe('vault glue', () => {
     });
   });
 
+  // The glue is the seam a user-driven surface reaches the vault through, so it
+  // is where "a person asked for this" has to survive as far as the row. Driven
+  // against the real store rather than a stub: what the marker is FOR is a later
+  // read of that row.
+  describe('user-authorized provenance', () => {
+    const storedRows = (): { userAuthorized: boolean }[] => {
+      const db = openLocalDatabase(dataDir(base));
+      try {
+        return db.secretVault.listAll();
+      } finally {
+        db.close();
+      }
+    };
+
+    it('records the marker for a value the user asked to have replaced', async () => {
+      const pointer = await glue.tokenizeValue(SECRET, {
+        ruleId: 'aws-access-key',
+        category: 'secret',
+        maskedMatch: 'A******E',
+        userAuthorized: true,
+      });
+
+      // Positive control: the value really was vaulted, so the assertion below
+      // is about the row's provenance and not about a degraded write.
+      expect(PointerToken.safeParse(pointer).success).toBe(true);
+      expect(storedRows().map((r) => r.userAuthorized)).toEqual([true]);
+    });
+
+    it('leaves it unset for the automatic paths', async () => {
+      await glue.tokenizeValue(OTHER, {
+        ruleId: 'aws-access-key',
+        category: 'secret',
+        maskedMatch: 'A******E',
+      });
+      await glue.tokenizeText(`prefix ${SECRET} suffix`, {
+        findings: [finding({ span: { start: 7, end: 7 + SECRET.length } })],
+      });
+
+      expect(storedRows()).toHaveLength(2);
+      expect(storedRows().every((r) => !r.userAuthorized)).toBe(true);
+    });
+  });
+
   describe('consent gate', () => {
     it('degrades one-way without a grant, storing nothing', async () => {
       const bare = mkdtempSync(join(tmpdir(), 'aka-glue-nc-'));

@@ -110,6 +110,14 @@ export const VaultEntry = z.object({
   // How many times this value has been detected on this machine — the reuse
   // signal the vault dashboard reads. Distinct from VaultDeref.pointerCount.
   occurrenceCount: z.number().int().nonnegative(),
+  // True when a PERSON asked for this value to be replaced — the surfaced-
+  // secrets strike — rather than a pack enforcing its assignment. One value is
+  // one row however many paths vault it, so this is what tells a policy sweep
+  // that the row carries somebody's own instruction and not just an assignment
+  // that has since been lowered. STICKY and MONOTONIC: a later automatic
+  // vaulting of the same value must never clear it — what the user said about
+  // the value does not expire.
+  userAuthorized: z.boolean(),
   firstSeen: z.string(),
   lastSeen: z.string(),
 });

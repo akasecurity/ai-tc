@@ -66,7 +66,9 @@ the reverse order would strand every one of those pointers forever.
 
 Only entries whose detection is installed AND enabled are considered. A rule the
 installed packs no longer carry is left alone: a pack that is uninstalled or
-switched off has made no statement about redaction.
+switched off has made no statement about redaction. An entry you asked for
+yourself — the Redact button on a surfaced secret — is left alone too, whatever
+its detection is assigned now.
 
 Flags:
   --apply             perform the restore and the delete (default: dry run)
@@ -94,11 +96,13 @@ export interface PolicySelection {
   inPolicy: number;
   // Entries whose rule id no installed, enabled detection carries. NOT pruned.
   ruleNotInstalled: number;
+  // Entries a person asked for, whatever their detection now says. NOT pruned.
+  userAuthorized: number;
 }
 
 /**
  * Split the vault by what the installed detections say about each entry's rule
- * TODAY.
+ * TODAY — and by what a person has said about the value, which outranks it.
  *
  * A rule id missing from the snapshot is deliberately NOT read as out of
  * policy. `installedRuleset` carries only the rules of packs that are installed
@@ -108,26 +112,41 @@ export interface PolicySelection {
  * everything a user merely toggled off, and that deletion does not come back.
  * Absence is counted and reported instead.
  *
- * ONE VAULTING PATH THIS SPLIT CANNOT SEE, and the coupling that saves it. A
- * value the user pointed at on a surfaced-secrets list is vaulted whatever its
- * pack was assigned, because that is an instruction about specific values and
- * not the pack enforcing anything. Nothing on the row records that a person
- * asked, so an entry minted that way reads here as out of policy — the ruleset
- * says `log`, which is exactly what it said when the value was struck. It
- * escapes the prune only downstream: that path records no SIGHTING, and phase 2
- * refuses to delete an entry with none. So the protection is a property of the
- * OTHER path's bookkeeping rather than of anything stated here, and giving it a
- * sighting would restore and delete the very values a user asked to have
- * struck. The pin is in the CLI suite ("never deletes an out-of-policy entry
- * that has no sighting"); the fix is a provenance marker on the row, which the
- * row shape does not carry yet.
+ * ONE VAULTING PATH THE RULESET CANNOT SPEAK FOR, which is why the row is asked
+ * as well. A value the user pointed at on a surfaced-secrets list is vaulted
+ * whatever its pack was assigned, because that is an instruction about specific
+ * values and not the pack enforcing anything. Read from the ruleset alone such
+ * an entry is indistinguishable from an out-of-policy one — the assignment says
+ * `log`, which is exactly what it said when the value was struck — so pruning
+ * it would restore the raw value into the artifact the user asked to have it
+ * taken out of, and destroy the entry. `userAuthorized` is the row's own record
+ * that a person asked, and it is what this reads.
+ *
+ * It is read from the ROW rather than inferred from the entry's bookkeeping
+ * elsewhere. Absence of a sighting was the earlier stand-in and is not
+ * sufficient: the vault is content-addressed, so one distinct value is ONE row
+ * however many paths vault it, and a transcript sighting recorded by an
+ * automatic vaulting of that same value sits on the row a later user strike
+ * upserts onto. The marker survives that sharing — the store refuses to clear
+ * it — and an absent sighting does not.
  */
 export function selectOutOfPolicy(
   rows: readonly VaultRow[],
   ruleActions: ReadonlyMap<string, ActionTaken>,
 ): PolicySelection {
-  const selection: PolicySelection = { outOfPolicy: [], inPolicy: 0, ruleNotInstalled: 0 };
+  const selection: PolicySelection = {
+    outOfPolicy: [],
+    inPolicy: 0,
+    ruleNotInstalled: 0,
+    userAuthorized: 0,
+  };
   for (const row of rows) {
+    // Checked before the ruleset, because it is an answer about this VALUE and
+    // the ruleset only has answers about the rule that matched it.
+    if (row.userAuthorized) {
+      selection.userAuthorized += 1;
+      continue;
+    }
     const action = ruleActions.get(row.ruleId);
     if (action === undefined) {
       selection.ruleNotInstalled += 1;
@@ -375,7 +394,11 @@ export async function runPrune(argv: string[], io: Prompter): Promise<void> {
   try {
     const { ruleActions } = db.installedPacks.installedRuleset();
     const selection = selectOutOfPolicy(db.secretVault.listAll(), ruleActions);
-    const total = selection.outOfPolicy.length + selection.inPolicy + selection.ruleNotInstalled;
+    const total =
+      selection.outOfPolicy.length +
+      selection.inPolicy +
+      selection.ruleNotInstalled +
+      selection.userAuthorized;
 
     out.push(apply ? 'aka vault prune' : 'aka vault prune — DRY RUN, nothing was changed');
     out.push('');
@@ -385,6 +408,9 @@ export async function runPrune(argv: string[], io: Prompter): Promise<void> {
     );
     out.push(`  in policy                ${String(selection.inPolicy)}`);
     out.push(`  detection not installed  ${String(selection.ruleNotInstalled)}  left alone`);
+    out.push(
+      `  user-authorized          ${String(selection.userAuthorized)}  the user asked for these; left alone`,
+    );
 
     if (selection.outOfPolicy.length === 0) {
       out.push('');
@@ -541,13 +567,19 @@ export async function runPrune(argv: string[], io: Prompter): Promise<void> {
 
     out.push('');
     if (apply) {
+      // Audited from what the DELETE reported, never from the selection that
+      // asked for it. `prunable` is a claim about a read taken before the whole
+      // restore pass; the store is shared, and an entry another process purged
+      // in between is one this pass never destroyed. A purge row written for it
+      // records a destruction that did not happen here — the same false record
+      // the abort stamp above exists to keep out of this trail.
       const deleted = db.secretVault.deleteByPointerIds(prunable.map((e) => e.pointerId));
-      for (const entry of prunable) {
+      for (const pointerId of deleted) {
         // The purge trail outlives the values, exactly as the vault's own purge
         // does: the record that entries were destroyed has to survive them.
         db.secretVault.recordDeref({
           id: randomUUID(),
-          pointerId: entry.pointerId,
+          pointerId,
           at: Date.now(),
           target: 'human',
           reason: 'purge',
@@ -555,7 +587,7 @@ export async function runPrune(argv: string[], io: Prompter): Promise<void> {
         });
       }
       out.push(
-        `Restored ${plural(totalReplaced, 'pointer', 'pointers')}, then deleted ${plural(deleted, 'vault entry', 'vault entries')}.`,
+        `Restored ${plural(totalReplaced, 'pointer', 'pointers')}, then deleted ${plural(deleted.length, 'vault entry', 'vault entries')}.`,
       );
     } else {
       out.push(

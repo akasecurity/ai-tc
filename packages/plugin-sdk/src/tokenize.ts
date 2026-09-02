@@ -87,13 +87,24 @@ export interface DetokenizeTextResult {
   revealed: number;
 }
 
+// What the caller knows about ONE value it is asking the vault to hold.
+//
+// `userAuthorized` is provenance, not policy: it says a PERSON asked for this
+// value to be replaced rather than a pack enforcing its assignment. It is
+// recorded on the vault row and is STICKY there — one value is one row, so an
+// automatic path vaulting the same value later must not clear it. Only a
+// user-driven surface sets it; every automatic caller leaves it absent.
+export interface TokenizeValueMeta {
+  ruleId: string;
+  category: DetectionCategory;
+  maskedMatch: string;
+  userAuthorized?: boolean | undefined;
+}
+
 // The slice of the vault core the glue calls. Narrow on purpose: tests inject a
 // stub here to exercise the degrade branches without a real store.
 export interface VaultCore {
-  tokenize(
-    raw: string,
-    meta: { ruleId: string; category: DetectionCategory; maskedMatch: string },
-  ): Promise<string | symbol>;
+  tokenize(raw: string, meta: TokenizeValueMeta): Promise<string | symbol>;
   detokenize(
     token: string,
     opts: {
@@ -171,10 +182,7 @@ export interface VaultGlue {
       resolver?: PolicyResolver;
     },
   ): Promise<TokenizeTextResult>;
-  tokenizeValue(
-    raw: string,
-    meta: { ruleId: string; category: DetectionCategory; maskedMatch: string },
-  ): Promise<string>;
+  tokenizeValue(raw: string, meta: TokenizeValueMeta): Promise<string>;
   detokenizeText(text: string, opts: DetokenizeTextOptions): Promise<DetokenizeTextResult>;
   describePointerSafe(token: string): Promise<PointerDescriptor | null>;
   // Grant resolution only — no de-reference, no audit rows. The executable-field
@@ -286,10 +294,7 @@ class SecretVaultGlue implements VaultGlue {
     }
   }
 
-  async tokenizeValue(
-    raw: string,
-    meta: { ruleId: string; category: DetectionCategory; maskedMatch: string },
-  ): Promise<string> {
+  async tokenizeValue(raw: string, meta: TokenizeValueMeta): Promise<string> {
     try {
       const result = await this.#vault.tokenize(raw, meta);
       // Any sentinel (consent absent, or a future one) degrades one-way.
@@ -713,10 +718,7 @@ export function tokenizeText(
 }
 
 /** {@link VaultGlue.tokenizeValue} over the default ~/.aka vault. */
-export function tokenizeValue(
-  raw: string,
-  meta: { ruleId: string; category: DetectionCategory; maskedMatch: string },
-): Promise<string> {
+export function tokenizeValue(raw: string, meta: TokenizeValueMeta): Promise<string> {
   return glue().tokenizeValue(raw, meta);
 }
 

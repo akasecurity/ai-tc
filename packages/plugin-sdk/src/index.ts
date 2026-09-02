@@ -128,6 +128,7 @@ export type {
   ModelDerefGrantResolver,
   SubstitutePointersResult,
   TokenizeTextResult,
+  TokenizeValueMeta,
   VaultCore,
   VaultGlue,
 } from './tokenize.ts';

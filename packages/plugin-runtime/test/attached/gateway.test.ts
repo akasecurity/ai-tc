@@ -874,8 +874,8 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   });
 
   // ── the authored-policy marker ────────────────────────────────────────────
-  // `kind: 'custom'` marks a policy as AUTHORED against the deployment rather
-  // than expanded from a built-in archetype, and the device reads it in exactly
+  // `provenance: 'authored'` marks a policy as authored against the deployment
+  // rather than expanded from a built-in archetype, and it is read in exactly
   // one direction: the rules such a policy targets are not locally
   // re-assignable. That is a refusal it can only ADD, which is what puts it on
   // the `prohibitedModels` side of the honour/drop line rather than the
@@ -896,12 +896,14 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
       local,
       readCachedBundle: () =>
         // Already at the compiled-in floor for `secret`, so nothing rebuilds it.
-        Promise.resolve(bundle([{ ...policy({ category: 'secret' }, 'block'), kind: 'custom' }])),
+        Promise.resolve(
+          bundle([{ ...policy({ category: 'secret' }, 'block'), provenance: 'authored' }]),
+        ),
     });
     const merged = await gateway.getPolicyBundle();
     expect(merged.policies).toHaveLength(1);
     expect(merged.policies[0]?.action).toBe('block');
-    expect(merged.policies[0]?.kind).toBe('custom');
+    expect(merged.policies[0]?.provenance).toBe('authored');
   });
 
   it('keeps it when the FLOOR CLAMP rebuilds the tenant policy', async () => {
@@ -915,11 +917,13 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     const { gateway } = build({
       local,
       readCachedBundle: () =>
-        Promise.resolve(bundle([{ ...policy({ category: 'secret' }, 'log'), kind: 'custom' }])),
+        Promise.resolve(
+          bundle([{ ...policy({ category: 'secret' }, 'log'), provenance: 'authored' }]),
+        ),
     });
     const merged = await gateway.getPolicyBundle();
     expect(merged.policies[0]?.action).toBe('warn');
-    expect(merged.policies[0]?.kind).toBe('custom');
+    expect(merged.policies[0]?.provenance).toBe('authored');
   });
 
   it('keeps it when a tenant category policy RAISES a local ruleId policy', async () => {
@@ -934,7 +938,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     const local = makeLocal(calls, {
       getPolicyBundle: vi.fn(() =>
         Promise.resolve(
-          bundle([{ ...policy({ ruleId: RULE }, 'log'), kind: 'custom' }], {
+          bundle([{ ...policy({ ruleId: RULE }, 'log'), provenance: 'authored' }], {
             version: 'local',
             rules: [wireRule(RULE, 'secret')],
           }),
@@ -950,7 +954,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
       (p) => 'ruleId' in p.target && p.target.ruleId === RULE,
     );
     expect(rulePolicy?.action).toBe('block');
-    expect(rulePolicy?.kind).toBe('custom');
+    expect(rulePolicy?.provenance).toBe('authored');
   });
 
   it('keeps it on the STRONGER side when both sides contend for one target', async () => {
@@ -963,7 +967,9 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     const { gateway } = build({
       local,
       readCachedBundle: () =>
-        Promise.resolve(bundle([{ ...policy({ category: 'pii' }, 'block'), kind: 'custom' }])),
+        Promise.resolve(
+          bundle([{ ...policy({ category: 'pii' }, 'block'), provenance: 'authored' }]),
+        ),
     });
     const merged = await gateway.getPolicyBundle();
     const pii = merged.policies.filter(
@@ -971,12 +977,12 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     );
     expect(pii).toHaveLength(1);
     expect(pii[0]?.action).toBe('block');
-    expect(pii[0]?.kind).toBe('custom');
+    expect(pii[0]?.provenance).toBe('authored');
   });
 
   it('invents no marker for a policy neither side authored', async () => {
     // The control. Every assertion above would also pass if the merge stamped
-    // `kind: 'custom'` onto everything it touched — which would lock a device
+    // `provenance: 'authored'` onto everything it touched — which would lock a device
     // out of re-assigning packs no one ever authored a policy for.
     const calls: Calls = { order: [] };
     const local = makeLocal(calls, {
@@ -990,7 +996,7 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     });
     const merged = await gateway.getPolicyBundle();
     expect(merged.policies).toHaveLength(1);
-    expect(merged.policies[0]?.kind).toBeUndefined();
+    expect(merged.policies[0]?.provenance).toBeUndefined();
   });
 
   it('carries disabled policies through rather than dropping them', async () => {

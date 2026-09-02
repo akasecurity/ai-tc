@@ -158,7 +158,7 @@ describe('the Detections page floor record', () => {
   it('marks a detection the organization has authored a policy for as locked', async () => {
     seedPack();
     attach();
-    cacheBundle([policy({ target: { ruleId: RULE_ID }, action: 'warn', kind: 'custom' })]);
+    cacheBundle([policy({ target: { ruleId: RULE_ID }, action: 'warn', provenance: 'authored' })]);
     expect(await renderedFloors()).toEqual({ [DETECTION_ID]: { floor: 'warn', locked: true } });
   });
 

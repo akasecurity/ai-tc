@@ -249,10 +249,10 @@ describe('control-plane floor on setPolicy', () => {
     expect(storedPolicyId('secrets')).toBe('monitor');
   });
 
-  it('refuses ANY re-assignment of a pack a custom-kind remote policy targets', () => {
+  it('refuses ANY re-assignment of a pack an authored remote policy targets', () => {
     writeAttachedSettings();
     writePolicyCache([
-      policy({ target: { ruleId: 'secrets/aws' }, action: 'redact', kind: 'custom' }),
+      policy({ target: { ruleId: 'secrets/aws' }, action: 'redact', provenance: 'authored' }),
     ]);
     const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', [rule('secrets/aws')])]);
@@ -280,7 +280,7 @@ describe('control-plane floor on setPolicy', () => {
     writeAttachedSettings();
     writePolicyCache([
       policy({ target: { ruleId: 'secrets/aws' }, action: 'warn' }),
-      policy({ target: { category: 'secret' }, action: 'warn', kind: 'custom' }),
+      policy({ target: { category: 'secret' }, action: 'warn', provenance: 'authored' }),
     ]);
     const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', [rule('secrets/aws')])]);
@@ -297,7 +297,9 @@ describe('control-plane floor on setPolicy', () => {
     // rule, greyed out under a message saying the organization set it. The
     // authored policy still floors the pack; it just does not own its answer.
     writeAttachedSettings();
-    writePolicyCache([policy({ target: { category: 'secret' }, action: 'warn', kind: 'custom' })]);
+    writePolicyCache([
+      policy({ target: { category: 'secret' }, action: 'warn', provenance: 'authored' }),
+    ]);
     const db = store.open();
     db.installedPacks.recordInventory([pack('home-grown', [rule('home-grown/token')])]);
 
@@ -315,9 +317,11 @@ describe('control-plane floor on setPolicy', () => {
     expect(storedPolicyId('home-grown')).toBe('block');
   });
 
-  it('leaves a pack alone when the custom policy targets a category it does not own', () => {
+  it('leaves a pack alone when the authored policy targets a category it does not own', () => {
     writeAttachedSettings();
-    writePolicyCache([policy({ target: { category: 'pii' }, action: 'block', kind: 'custom' })]);
+    writePolicyCache([
+      policy({ target: { category: 'pii' }, action: 'block', provenance: 'authored' }),
+    ]);
     const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', [rule('secrets/aws')])]);
 

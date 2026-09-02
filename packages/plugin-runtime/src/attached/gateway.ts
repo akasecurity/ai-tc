@@ -855,8 +855,8 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
       // while every test around it stayed green.
       prohibitedModels: cached.prohibitedModels,
       // ALSO HONOURED FROM THE CACHE, and not a bundle field at all: each
-      // merged policy's own `kind`. `mergeRaiseOnly` spreads the policies it
-      // emits, so an AUTHORED ('custom') policy arriving from the control plane
+      // merged policy's own `provenance`. `mergeRaiseOnly` spreads the policies
+      // it emits, so an 'authored' policy arriving from the control plane
       // keeps that marker even where the clamp rebuilds it with a stronger
       // action. The device reads it in exactly one direction — the rules such a
       // policy targets are not locally re-assignable — so it sits on the

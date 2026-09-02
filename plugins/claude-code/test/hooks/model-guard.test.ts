@@ -111,6 +111,14 @@ describe('resolveSpawnModel', () => {
     expect(resolveSpawnModel({}, dir)).toBeUndefined();
   });
 
+  it('reads a definition written with CRLF line endings', () => {
+    // A checkout on Windows, or any file saved with CRLF, leaves a trailing
+    // \r on every line. The parser trims it; nothing pinned that, and the leg
+    // where it would bite is the one this repo runs slowest and reads least.
+    writeAgent(dir, 'crlf', '---\r\nname: crlf\r\nmodel: haiku\r\n---\r\nbody\r\n');
+    expect(resolveSpawnModel({ subagent_type: 'crlf' }, dir)).toBe('haiku');
+  });
+
   it('refuses a subagent_type that is not a plain name', () => {
     // Caller-chosen and joined into a path: unchecked it addresses any file on
     // disk, from a hook running inside the user's own checkout.

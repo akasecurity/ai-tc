@@ -117,8 +117,11 @@ export const HISTORY_SYNC_SECTION_DESCRIPTION =
   'project, repo and branch, token usage and model per call, which tools were called with their ' +
   'inputs truncated and every detected secret already masked, and what was detected in those ' +
   'inputs. The second is what was captured, and for a prompt, an assistant reply or a tool ' +
-  'result that INCLUDES ITS TEXT — every secret this machine detected is masked first, the rest ' +
-  'is sent as written. Live sending is part of being attached and this setting does not change ' +
+  'result that INCLUDES ITS TEXT. What is masked in that text follows the policy assigned to ' +
+  'the detection that flagged the value: it is masked only where that policy is redact or ' +
+  'block, and under monitor or warn the value is sent as it was seen, as is everything outside ' +
+  'a flagged span. Every detection ships on monitor, so on a default install nothing in that ' +
+  'text is masked. Live sending is part of being attached and this setting does not change ' +
   'it: declining means an undelivered item is dropped rather than kept and retried. Sending ' +
   'happens in the background over later sessions. Revoking stops what has not been sent; it ' +
   'cannot recall what has.';
@@ -134,7 +137,7 @@ export const HISTORY_SYNC_CHOICES: Choice<HistorySyncChoice>[] = [
     value: 'granted',
     label: 'Shared',
     description:
-      'Undelivered activity may be sent later — including the text of captured prompts, replies and tool results, with detected secrets masked.',
+      'Undelivered activity may be sent later — including the text of captured prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block.',
   },
 ];
 

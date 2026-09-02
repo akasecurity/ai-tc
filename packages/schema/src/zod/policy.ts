@@ -138,6 +138,32 @@ export const PolicyBundle = z
   .meta({ id: 'PolicyBundle' });
 export type PolicyBundle = z.infer<typeof PolicyBundle>;
 
+/**
+ * Which bundle fields THIS build understands, as one stable string.
+ *
+ * Derived from the schema's own keys rather than written by hand. A field added
+ * above moves this value with no second edit, which is the entire point: a
+ * constant somebody has to remember to bump goes stale on exactly the commit
+ * that widened the shape, which is the one commit where it has to be right.
+ *
+ * It exists because "an older on-disk cache still parses" — said of every
+ * optional field above — is only half of what an older cache does. Zod drops a
+ * key the schema does not declare, so a body cached by a build that predated a
+ * field is missing it, while still carrying the `version` of a served
+ * representation that HAD it. The bundle is fetched conditionally, so the
+ * control plane answers every later poll with 304 Not Modified and the reader
+ * is handed back the same narrowed body: the field can never arrive, however
+ * often the device polls and however new the plugin gets. Stamping the cache
+ * lets a reader tell a body its own build produced from one an older build
+ * narrowed, and pay a single unconditional refetch instead of being told
+ * forever that nothing has changed.
+ *
+ * Keys, not their types. Fields here get ADDED; a field renamed to nothing or
+ * retyped under an unchanged name is not a case this separates, and claiming
+ * otherwise would make it read as a schema checksum, which it is not.
+ */
+export const POLICY_BUNDLE_SHAPE_ID: string = Object.keys(PolicyBundle.shape).sort().join(',');
+
 // Enforcement-coverage denominators use this, NOT DEFAULT_ACTIONS: 'config'
 // findings only observe (see above), so a config policy can never be "covered"
 // by enforcement and would permanently drag the coverage % down. Derived by

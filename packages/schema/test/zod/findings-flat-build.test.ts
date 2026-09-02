@@ -89,6 +89,12 @@ describe('matchesInstanceFilters', () => {
     expect(matchesInstanceFilters(withTool, { q: 'nothing-here' })).toBe(false);
   });
 
+  it('matches q against the attributed user label', () => {
+    const attributed = row({ user: { id: 'u1', name: 'Alice@example.com' } });
+    expect(matchesInstanceFilters(attributed, { q: 'alice@' })).toBe(true);
+    expect(matchesInstanceFilters(row(), { q: 'alice@' })).toBe(false);
+  });
+
   it('ignores the named dimension when one is excepted', () => {
     const opts = { severity: ['low'], subtype: ['aws-key'] };
     expect(matchesInstanceFilters(row(), opts)).toBe(false);

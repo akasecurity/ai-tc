@@ -253,6 +253,20 @@ describe('buildFindingGroups user attribution', () => {
     expect(groups[0]?.users).toEqual([alice, bob, carol]);
   });
 
+  it('matches q against the people, from the preview and from the aggregate', () => {
+    // Preview rows are Alice's; only the aggregate knows Carol is in the group.
+    const carol = { id: 'u-carol', name: 'carol@example.com' };
+    const preview: GroupableFindingRow[] = [{ ...statusRow('a1', 'aws-key'), user: alice }];
+    const groups = buildFindingGroups(preview, {
+      aggregates: new Map([['aws-key', { ...aggregate, users: [carol, alice] }]]),
+    });
+    expect(applyFindingFilters(groups, { q: 'ALICE@' })).toHaveLength(1);
+    expect(applyFindingFilters(groups, { q: 'carol@' })).toHaveLength(1);
+    expect(applyFindingFilters(groups, { q: 'bob@' })).toHaveLength(0);
+    // And with no aggregate the rows are the whole group.
+    expect(applyFindingFilters(buildFindingGroups(attributed), { q: 'bob@' })).toHaveLength(1);
+  });
+
   it('carries no users when the aggregate supplies none, rather than folding the preview', () => {
     const groups = buildFindingGroups(attributed, {
       aggregates: new Map([['aws-key', aggregate]]),

@@ -54,9 +54,11 @@ export type InstanceFilterDimension = keyof InstanceFilterOptions;
 
 /**
  * The searchable text of one instance: rule id, category, masked value, repo,
- * file, its tool as the rendered "via Bash" label, and its id. Mirrors the
- * grouped path's haystack so the same `q` matches the same things in both
- * views — a tool searched as the bare name would collide with file paths.
+ * file, its tool as the rendered "via Bash" label, its id, and the label of
+ * the person it is attributed to (when the store attributes findings).
+ * Mirrors the grouped path's haystack so the same `q` matches the same things
+ * in both views — a tool searched as the bare name would collide with file
+ * paths.
  */
 function rowHaystack(row: FlatFindingRow): string {
   return [
@@ -67,6 +69,7 @@ function rowHaystack(row: FlatFindingRow): string {
     row.file,
     row.toolName ? `via ${row.toolName}` : '',
     row.id,
+    row.user?.name ?? '',
   ]
     .join(' ')
     .toLowerCase();

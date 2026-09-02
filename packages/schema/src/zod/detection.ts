@@ -5,8 +5,10 @@ import { z } from 'zod';
 import { DetectionCategory, Severity } from './finding.ts';
 import { Namespace, PackId, PublisherKind, SemVer } from './registry.ts';
 // Matcher (the keyword|regex|validator union) + RegexMatcher already defined in
-// rule.ts — import rather than redefine to avoid collision.
-import { Matcher, RegexMatcher } from './rule.ts';
+// rule.ts — import rather than redefine to avoid collision. AppliesTo /
+// PostValidatorRef / RequiresNearby come from there for the same reason: they are
+// the rule's own field shapes, and DetectionRule reports them verbatim.
+import { AppliesTo, Matcher, PostValidatorRef, RegexMatcher, RequiresNearby } from './rule.ts';
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -118,6 +120,27 @@ export { Matcher, RegexMatcher };
 // A single rule in a DetectionDetail. `matcher` is the full Matcher union — the
 // rule inspector renders regex, keyword, and validator matchers alike, so a pack
 // with keyword/validator rules exposes all of them (not just its regex rules).
+//
+// The four optional fields below are the rest of what actually decides whether a
+// rule fires. They are already stored — `rules_json` holds parsed `Rule` objects
+// in both the local SQLite store and the tenant Postgres one — and were simply
+// projected away here, which made this shape a description of a rule the engine
+// does not run. Half the bundled catalog is affected: of 101 rules, 21 carry
+// `postValidators`, 19 `appliesTo`, 17 `requiresNearby` (50 distinct rules), and
+// all 101 carry `examples`.
+//
+// That gap is not cosmetic for anything that re-runs a rule from this shape. A
+// rule whose `postValidators` are dropped loses its false-positive guard and
+// appears to match strings it would never report; one whose `appliesTo` is
+// dropped appears to fire in files it is scoped out of. A preview built on the
+// projected shape would therefore have been confidently wrong about half the
+// catalog — the same class of defect as a fixture that passes for the wrong
+// reason.
+//
+// Optional rather than required so a stored rule that predates a field, or whose
+// value fails validation, still yields a DetectionRule (see rowToDetectionDetail:
+// each field is validated independently and omitted on failure, and only an
+// invalid `matcher` drops the rule itself).
 export const DetectionRule = z
   .object({
     id: z.string(),
@@ -125,6 +148,16 @@ export const DetectionRule = z
     category: DetectionCategory,
     severity: Severity,
     matcher: Matcher,
+    // File-extension scoping. Absent means the rule runs everywhere.
+    appliesTo: AppliesTo.optional(),
+    // False-positive guards (entropy, luhn) applied to each candidate match.
+    postValidators: z.array(PostValidatorRef).optional(),
+    // Co-occurrence / proximity gate a candidate must clear to be kept.
+    requiresNearby: RequiresNearby.optional(),
+    // Representative matching strings the rule author shipped with the rule. The
+    // cheapest honest answer to "show me what this rule catches" — every bundled
+    // rule has them, and they are already in the stored snapshot.
+    examples: z.array(z.string()).optional(),
   })
   .meta({ id: 'DetectionRule' });
 export type DetectionRule = z.infer<typeof DetectionRule>;

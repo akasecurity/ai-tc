@@ -13,7 +13,38 @@ import type {
   ListDetectionsQuery,
   ListDetectionsResponse,
 } from './detection.ts';
-import { Matcher, type Rule } from './rule.ts';
+import { AppliesTo, Matcher, PostValidatorRef, RequiresNearby, type Rule } from './rule.ts';
+
+/**
+ * Spread-able single entry for an optional DetectionRule field: `{ key: value }`
+ * when the stored value both exists and validates, `{}` otherwise.
+ *
+ * Returning the empty object rather than `{ key: undefined }` matters — the
+ * DetectionDetail this builds is serialized to JSON on the enterprise HTTP path,
+ * and an explicit `undefined` and an absent key are the same thing there but NOT
+ * the same thing to a strict deep-equality assertion or to `in`. Absent is what
+ * "the rule does not set this" has always looked like, so absent is what it keeps
+ * looking like.
+ */
+function optional<K extends string, T>(
+  key: K,
+  parsed: { success: boolean; data?: T },
+  raw: unknown,
+): Partial<Record<K, T>> {
+  if (raw === undefined || !parsed.success || parsed.data === undefined) return {};
+  return { [key]: parsed.data } as Record<K, T>;
+}
+
+/**
+ * `examples` is a plain `string[]`, checked with a type guard rather than a Zod
+ * schema. This module is reached from the plugin bundle, and a Zod array built at
+ * module scope is an un-annotated top-level call a bundler cannot tree-shake,
+ * while one built inside this function would be reconstructed per rule. A guard
+ * costs neither and says exactly as much about a list of strings.
+ */
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
 
 // ─── Inputs ──────────────────────────────────────────────────────────────────
 
@@ -101,6 +132,31 @@ export function rowToDetectionDetail(
         category: r.category,
         severity: r.severity,
         matcher: parsed.data,
+        // The rest of what decides whether this rule fires. Carried so a consumer
+        // re-running the rule (a preview, a tester) evaluates what the engine
+        // evaluates rather than a matcher stripped of its guards — half the
+        // bundled catalog carries at least one of these.
+        //
+        // Enrichment is deliberately per-field and best-effort, NOT a whole-rule
+        // `Rule.safeParse`. Two reasons: `Rule` is a strict object pinned to
+        // `specVersion: 1`, so validating the whole thing would DROP any stored
+        // rule missing or predating that literal — turning a display-fidelity
+        // improvement into rules vanishing from the inspector; and the inclusion
+        // test should stay exactly what it was, namely a renderable matcher. A
+        // field that fails validation is omitted, which reads as "not set" and is
+        // the same thing the consumer saw before this change.
+        ...optional('appliesTo', AppliesTo.safeParse(r.appliesTo), r.appliesTo),
+        ...optional(
+          'postValidators',
+          PostValidatorRef.array().safeParse(r.postValidators),
+          r.postValidators,
+        ),
+        ...optional('requiresNearby', RequiresNearby.safeParse(r.requiresNearby), r.requiresNearby),
+        ...optional(
+          'examples',
+          { success: isStringArray(r.examples), data: r.examples },
+          r.examples,
+        ),
       },
     ];
   });

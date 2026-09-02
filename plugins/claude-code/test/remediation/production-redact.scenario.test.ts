@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { applyOnboarding } from '@akasecurity/persistence';
+import { applyOnboarding, dataDir, openLocalDatabase } from '@akasecurity/persistence';
 import type { PluginRuntime } from '@akasecurity/plugin-sdk';
 import { createVaultGlue, safeMaskedMatch } from '@akasecurity/plugin-sdk';
 import type { MaskedSecretFinding } from '@akasecurity/schema';
@@ -215,6 +215,53 @@ describe('redactSurfacedSecrets — the production redaction adapter', () => {
     const back = await glue.detokenizeText(afterA, { target: 'human', reason: 'display' });
     expect(back.revealed).toBe(1);
     expect(back.text).toBe(`{"content":"a key ${TRANSCRIPT_KEY} in a prompt"}`);
+  });
+
+  // This adapter strikes what a PERSON pointed at, whatever their pack is
+  // assigned — see the comment on `buildPointerReplacements`. Anything reading
+  // the vault against today's assignment therefore has to be told, or it reads
+  // these rows as vaulting nothing authorizes: `aka vault prune` would restore
+  // the raw key into this very transcript and destroy the entry.
+  it('marks the vault rows it writes as user-authorized, and keeps the mark when a pack path vaults the same key later', async () => {
+    grantVaultConsent(dataDirBase);
+    const projectDir = join(home, '.claude', 'projects', '-Users-me-project');
+    mkdirSync(projectDir, { recursive: true });
+    const transcriptFile = join(projectDir, 'session.jsonl');
+    writeFileSync(transcriptFile, `{"content":"a key ${TRANSCRIPT_KEY} in a prompt"}`);
+
+    const result = await redactSurfacedSecrets([findingFor(transcriptFile, TRANSCRIPT_KEY)], {
+      home,
+      dataDirBase,
+    });
+    // Positive control: the strike really was the recoverable one, so the row
+    // below exists because this call vaulted something.
+    expect(result.pointeredKeys).toBe(1);
+
+    const marks = (): boolean[] => {
+      const db = openLocalDatabase(dataDir(dataDirBase));
+      try {
+        return db.secretVault.listAll().map((row) => row.userAuthorized);
+      } finally {
+        db.close();
+      }
+    };
+    expect(marks()).toEqual([true]);
+
+    // The same value vaulted again by an ordinary enforcing path. One value is
+    // one row, so this lands on the row above — and what the user said about
+    // the value does not expire because a pack saw it again.
+    const glue = createVaultGlue({ base: dataDirBase });
+    try {
+      await glue.tokenizeValue(TRANSCRIPT_KEY, {
+        ruleId: AWS_RULE_ID,
+        category: 'secret',
+        maskedMatch: safeMaskedMatch(TRANSCRIPT_KEY),
+      });
+    } finally {
+      glue.close();
+    }
+
+    expect(marks()).toEqual([true]);
   });
 
   it('without vault consent the strike is byte-identical to the legacy one-way redaction', async () => {

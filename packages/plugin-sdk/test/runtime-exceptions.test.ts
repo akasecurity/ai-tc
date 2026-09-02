@@ -205,8 +205,11 @@ describe('exception evaluation — downgrade to allow', () => {
     expect(gw.records).toHaveLength(1);
     expect(gw.records[0]?.findings[0]?.actionTaken).toBe('allow');
     expect(exceptionIdsOf(gw.records[0])).toEqual([ex.id]);
-    // Stored content still masks the excepted span (at-rest hygiene unchanged).
-    expect(gw.records[0]?.event.content).not.toContain('EX_SECRET_MARKER');
+    // The grant is the user's own decision about THIS value, and it resolved
+    // the finding to 'allow' — so the value crossed, and the stored record
+    // shows it crossing. Masking it here would hide from the person who
+    // approved it the very thing they approved.
+    expect(gw.records[0]?.event.content).toBe(text);
     // Nothing was blocked → no ledger rows.
     expect(gw.blocked).toHaveLength(0);
     expect(result.blockedReferences).toBeUndefined();

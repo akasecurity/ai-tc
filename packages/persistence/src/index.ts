@@ -86,6 +86,13 @@ export {
   tightenPerms,
   writeOwnerOnlyFileSync,
 } from './paths.ts';
+export type { FloorRule, PackPolicyFloor, PolicyFloorRefusal } from './policy-floor.ts';
+export {
+  controlPlanePolicyFloor,
+  policyAssignmentRefusal,
+  PolicyFloorError,
+  readCachedPolicyBundle,
+} from './policy-floor.ts';
 export type {
   ActivityReadPort,
   DashboardViews,

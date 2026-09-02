@@ -764,6 +764,16 @@ export const secretVault = sqliteTable(
     // How often this VALUE has been detected on this machine — the reuse signal.
     // Distinct from secret_vault_deref.pointer_count.
     occurrenceCount: integer(COL.occurrenceCount).notNull().default(1),
+    // 1 when a PERSON asked for this value to be replaced — the surfaced-secrets
+    // strike — rather than a pack enforcing its assignment. The row is shared by
+    // every path that vaults the same value (see the unique index below), so a
+    // prune that reasons only from today's assignment would undo that person's
+    // instruction; this is the provenance it reads instead. STICKY and
+    // MONOTONIC: a later automatic vaulting of the same value bumps the counters
+    // and leaves this at 1, because what the user said about the value does not
+    // expire. Default 0: every row written before this column existed was
+    // written by an enforcing path.
+    userAuthorized: integer(COL.userAuthorized).notNull().default(0),
     firstSeen: integer(COL.firstSeen).notNull(),
     lastSeen: integer(COL.lastSeen).notNull(),
   },

@@ -8,13 +8,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
+import { setDefaultGatewayFactory, standaloneGatewayFactory } from '@akasecurity/plugin-runtime';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
+import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { readOffset } from '../../src/history/tail.ts';
 import { reconcileSessionTail } from '../../src/history/usage.ts';
 
-function config(dataDir: string): PluginConfig {
+function config(dataDir: string, consented = false): PluginConfig {
   return {
     settings: {
       specVersion: 2,
@@ -24,6 +26,14 @@ function config(dataDir: string): PluginConfig {
       dataSharesInPlace: true,
       vaultKeyCustody: 'file',
       vaultInlineReveal: 'masked',
+      ...(consented
+        ? {
+            vaultConsent: {
+              acknowledgedAt: '2026-07-30T00:00:00.000Z',
+              version: VAULT_CONSENT_VERSION,
+            },
+          }
+        : {}),
     },
     dataDir,
     dbPath: join(dataDir, 'aka.db'),
@@ -231,5 +241,64 @@ describe('reconcileSessionTail — incremental tail capture', () => {
     const rows = readRows(dataDir);
     expect(rows.get('msg_1')?.run_key).toBe('p1');
     expect(rows.get('msg_2')?.run_key).toBe('p1'); // seeded carry-forward
+  });
+});
+
+// The at-rest transcript scrub the tail pass runs after the store write. What
+// is pinned here is that it reads the machine's pack policy FIRST: the scrub
+// self-scans, so an unnarrowed run would rewrite — and vault — every span the
+// bundled rules match, including one whose detection is only set to Monitor.
+// The scrub itself cannot be driven end to end from here (its containment scope
+// is the real platform transcripts root, which a tmpdir file is deliberately
+// outside of), so the observable is the bundle read.
+describe('reconcileSessionTail — the at-rest transcript scrub reads pack policy', () => {
+  let dataDir: string;
+  let txDir: string;
+  let transcriptPath: string;
+  let bundleReads: number;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'aka-tail-scrub-policy-data-'));
+    txDir = mkdtempSync(join(tmpdir(), 'aka-tail-scrub-policy-tx-'));
+    transcriptPath = join(txDir, `${SESSION}.jsonl`);
+    writeFileSync(
+      transcriptPath,
+      [userPrompt('u-1', 'p1'), assistant('msg_1', 50, { parentUuid: 'u-1' })].join('\n') + '\n',
+    );
+    bundleReads = 0;
+    setDefaultGatewayFactory((cfg, meta) => {
+      const gateway = standaloneGatewayFactory(cfg, meta);
+      const read = gateway.getPolicyBundle.bind(gateway);
+      gateway.getPolicyBundle = () => {
+        bundleReads += 1;
+        return read();
+      };
+      return gateway;
+    });
+  });
+
+  afterEach(() => {
+    // The seam is process-global: a capture left installed leaks into the next
+    // suite.
+    setDefaultGatewayFactory();
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(txDir, { recursive: true, force: true });
+  });
+
+  it('asks for the policy bundle before scrubbing', async () => {
+    const result = await reconcileSessionTail(config(dataDir, true), SESSION, transcriptPath);
+    // The pass itself did its work — without this the read count below would be
+    // a claim about a path that never ran.
+    expect(result.llmCalls).toBe(1);
+    expect(bundleReads).toBe(1);
+  });
+
+  // The control, and the reason the count above is not merely "the reconciler
+  // reads policy anyway": nothing on this path asks for a bundle except the
+  // scrub, and without vault consent the scrub does not run at all.
+  it('asks for nothing when vault consent is absent and no scrub runs', async () => {
+    const result = await reconcileSessionTail(config(dataDir), SESSION, transcriptPath);
+    expect(result.llmCalls).toBe(1);
+    expect(bundleReads).toBe(0);
   });
 });

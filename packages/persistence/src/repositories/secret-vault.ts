@@ -85,12 +85,19 @@ export interface VaultRowInsert {
   ciphertext: string;
   nonce: string;
   authTag: string;
+  // True when a PERSON asked for this value to be replaced, rather than a pack
+  // enforcing its assignment. Optional on insert; absent means an enforcing
+  // path, which is what every row written before the column existed was.
+  //
+  // Passing `false` on a value already marked does NOT clear it — see `upsert`.
+  userAuthorized?: boolean | undefined;
 }
 
 /** A stored row: the insert fields plus the counters the store maintains. */
 export interface VaultRow extends VaultRowInsert {
   // Always present on a read — the column is NOT NULL with a default.
   formatVersion: number;
+  userAuthorized: boolean;
   occurrenceCount: number;
   // epoch millis
   firstSeen: number;
@@ -110,10 +117,12 @@ export interface VaultDerefInsert {
   pointerCount?: number | undefined;
 }
 
-// SQLite hands back `provider` as null; the row type above keeps it optional,
-// so the read boundary normalizes it.
-interface RawVaultRow extends Omit<VaultRow, 'provider'> {
+// SQLite hands back `provider` as null and `user_authorized` as 0/1; the row
+// type above keeps the first optional and the second a boolean, so the read
+// boundary normalizes both.
+interface RawVaultRow extends Omit<VaultRow, 'provider' | 'userAuthorized'> {
   provider: string | null;
+  userAuthorized: number;
 }
 
 // The reuse list sorts on an occurrence COUNT, not a timestamp, so it cannot
@@ -205,13 +214,15 @@ const SELECT_COLUMNS = `
   ciphertext,
   nonce,
   auth_tag AS authTag,
+  user_authorized AS userAuthorized,
   occurrence_count AS occurrenceCount,
   first_seen AS firstSeen,
   last_seen AS lastSeen`;
 
 function toRow(raw: RawVaultRow): VaultRow {
-  const { provider, ...rest } = raw;
-  return provider === null ? rest : { ...rest, provider };
+  const { provider, userAuthorized, ...rest } = raw;
+  const row = { ...rest, userAuthorized: userAuthorized !== 0 };
+  return provider === null ? row : { ...row, provider };
 }
 
 /**
@@ -226,6 +237,7 @@ export class SqliteSecretVaultRepository {
   private readonly listStmt: StatementSync;
   private readonly replaceCiphertextStmt: StatementSync;
   private readonly refreshFingerprintStmt: StatementSync;
+  private readonly deleteByPointerStmt: StatementSync;
   private readonly derefStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
@@ -234,19 +246,28 @@ export class SqliteSecretVaultRepository {
          pointer_id, value_fingerprint, fingerprint_key_version, key_version,
          format_version, category, rule_id, masked_match, provider,
          ciphertext, nonce, auth_tag,
-         occurrence_count, first_seen, last_seen
+         user_authorized, occurrence_count, first_seen, last_seen
        ) VALUES (
          :pointerId, :valueFingerprint, :fingerprintKeyVersion, :keyVersion,
          :formatVersion, :category, :ruleId, :maskedMatch, :provider,
          :ciphertext, :nonce, :authTag,
-         1, :now, :now
+         :userAuthorized, 1, :now, :now
        )`,
     );
-    // Deliberately touches only the counters: pointer_id, category, key_version
-    // and the sealed bytes are fixed at mint.
+    // Deliberately touches only the counters and the provenance marker:
+    // pointer_id, category, key_version and the sealed bytes are fixed at mint.
+    //
+    // `max` is what makes the marker STICKY, and it is the invariant rather than
+    // an optimization: one value is one row, so an automatic vaulting of a value
+    // a person already asked to have replaced arrives here as
+    // `userAuthorized: 0` against a row holding 1. Assigning the parameter would
+    // erase that person's instruction, and the prune sweep — which reads the
+    // marker to decide what it may destroy — would then restore the value into
+    // the very file they asked to have it taken out of. It only ever goes 0 → 1.
     this.bumpStmt = db.prepare(
       `UPDATE secret_vault
-       SET occurrence_count = occurrence_count + 1, last_seen = :now
+       SET occurrence_count = occurrence_count + 1, last_seen = :now,
+           user_authorized = max(user_authorized, :userAuthorized)
        WHERE value_fingerprint = :valueFingerprint`,
     );
     this.byPointerStmt = db.prepare(
@@ -266,6 +287,7 @@ export class SqliteSecretVaultRepository {
        SET value_fingerprint = :valueFingerprint, fingerprint_key_version = :fingerprintKeyVersion
        WHERE pointer_id = :pointerId`,
     );
+    this.deleteByPointerStmt = db.prepare(`DELETE FROM secret_vault WHERE pointer_id = :pointerId`);
     this.derefStmt = db.prepare(
       `INSERT INTO secret_vault_deref (id, pointer_id, at, target, reason, outcome, grant_id, pointer_count)
        VALUES (:id, :pointerId, :at, :target, :reason, :outcome, :grantId, :pointerCount)`,
@@ -278,6 +300,11 @@ export class SqliteSecretVaultRepository {
    * bumps `occurrence_count` and `last_seen` and comes back with its ORIGINAL
    * pointer, category and ciphertext, so the same secret always resolves to one
    * wire token. `minted` is true only when this call created the row.
+   *
+   * `userAuthorized` is the one field a repeat call may still change, and only
+   * upwards: it records that a PERSON asked for this value to be replaced, and
+   * the row is shared with every automatic path that vaults the same value. See
+   * `bumpStmt` for why clearing it is the defect this shape exists to refuse.
    *
    * The read-then-write runs in one IMMEDIATE transaction so two concurrent
    * writers cannot both decide they are minting.
@@ -305,13 +332,18 @@ export class SqliteSecretVaultRepository {
               ciphertext: input.ciphertext,
               nonce: input.nonce,
               authTag: input.authTag,
+              userAuthorized: input.userAuthorized === true ? 1 : 0,
               now,
             }),
           );
           minted = true;
           return;
         }
-        this.bumpStmt.run({ valueFingerprint: input.valueFingerprint, now });
+        this.bumpStmt.run({
+          valueFingerprint: input.valueFingerprint,
+          userAuthorized: input.userAuthorized === true ? 1 : 0,
+          now,
+        });
       },
       'IMMEDIATE',
     );
@@ -386,6 +418,43 @@ export class SqliteSecretVaultRepository {
       'IMMEDIATE',
     );
     return destroyed;
+  }
+
+  /**
+   * Destroy the named entries and report WHICH ones went — the scoped
+   * counterpart to `purgeAll`, for a caller that has already put those specific
+   * values back where they came from. Ids the store does not hold are absent
+   * from the answer rather than an error, so a set assembled from a stale read
+   * is not a fault. The deref audit is left alone, exactly as the purge leaves
+   * it.
+   *
+   * The ids come back rather than a count because the caller's next act is to
+   * write a purge row per destroyed entry, and a record of destruction has to
+   * be a record of what was really destroyed: a selection is a claim about a
+   * read that has since gone stale, and auditing from it invents a purge for an
+   * entry still sitting in the vault.
+   *
+   * One transaction over the whole set rather than a statement per id: the
+   * caller hands this the result of a restore pass it has completed, and a
+   * fault partway through must leave the vault as it was found rather than
+   * destroying a prefix of it. The vault holds the only copy of what a pointer
+   * stands for, so half a delete is not a state anything can recover from.
+   */
+  deleteByPointerIds(pointerIds: readonly string[]): string[] {
+    if (pointerIds.length === 0) return [];
+    const deleted: string[] = [];
+    withTransaction(
+      this.db,
+      () => {
+        for (const pointerId of pointerIds) {
+          if (Number(this.deleteByPointerStmt.run({ pointerId }).changes) > 0) {
+            deleted.push(pointerId);
+          }
+        }
+      },
+      'IMMEDIATE',
+    );
+    return deleted;
   }
 
   /**

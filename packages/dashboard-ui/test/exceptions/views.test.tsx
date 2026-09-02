@@ -1,7 +1,7 @@
 import type { DetectionException, ExceptionDescriptor } from '@akasecurity/schema';
 import { toExceptionDescriptor } from '@akasecurity/schema';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ExceptionDetailView } from '../../src/exceptions/ExceptionDetailView.tsx';
 import { ExceptionsTableView } from '../../src/exceptions/ExceptionsTableView.tsx';
@@ -64,6 +64,55 @@ describe('ExceptionsTableView capability badge', () => {
       <ExceptionsTableView items={[exception({})]} includeTerminal={false} onSelect={noop} />,
     );
     expect(html).not.toContain(BADGE);
+  });
+});
+
+describe('ExceptionsTableView threads renderedAt, not the ambient clock', () => {
+  // The ambient clock is set an hour past renderedAt, and past every fixture
+  // instant below it, so a row that fell back to Date.now() would report a
+  // different age AND a different lifecycle state than one that honors the SSR
+  // instant — the same class of mismatch BlockedLedgerView.renderedAt exists to
+  // prevent, one level over.
+  const RENDERED_AT = Date.parse('2026-07-05T00:00:00.000Z');
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(RENDERED_AT + 60 * 60 * 1000);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('renders the expires and created columns against renderedAt', () => {
+    const html = renderToStaticMarkup(
+      <ExceptionsTableView
+        items={[
+          exception({
+            scope: 'temporary',
+            expiresAt: '2026-07-05T00:30:00.000Z',
+            createdAt: '2026-07-04T23:30:00.000Z',
+          }),
+        ]}
+        includeTerminal={false}
+        onSelect={noop}
+        renderedAt={RENDERED_AT}
+      />,
+    );
+    expect(html).toContain('in 30 minutes');
+    expect(html).toContain('30 minutes ago');
+  });
+
+  it('threads renderedAt into StateTagFor, so a row due to expire within the hour still reads active', () => {
+    const html = renderToStaticMarkup(
+      <ExceptionsTableView
+        items={[exception({ scope: 'temporary', expiresAt: '2026-07-05T00:30:00.000Z' })]}
+        includeTerminal={false}
+        onSelect={noop}
+        renderedAt={RENDERED_AT}
+      />,
+    );
+    expect(html).toContain('>active<');
+    expect(html).not.toContain('>expired<');
   });
 });
 

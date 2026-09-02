@@ -29,6 +29,7 @@ export function ExceptionsClient({
   keyState,
   activePermanent,
   approvableBlocked,
+  renderedAt,
 }: {
   items: ExceptionDescriptor[];
   blocked: BlockedDetectionDescriptor[];
@@ -37,6 +38,7 @@ export function ExceptionsClient({
   keyState: FingerprintKeyState;
   activePermanent: ExceptionDescriptor[];
   approvableBlocked: number;
+  renderedAt: number;
 }) {
   // Navigation transition (the blocked-window filter, the audit toggle and row
   // navigation) — distinct from the write transition below, which tracks the
@@ -168,6 +170,7 @@ export function ExceptionsClient({
           // keeps the machine-local remediation copy on the one host that can
           // act on it.
           blockReason={(row) => blockedRowBlockReason(row, keyState)}
+          renderedAt={renderedAt}
         />
       </div>
 
@@ -179,6 +182,7 @@ export function ExceptionsClient({
           onSelect={(id) => {
             pushUrl(`/exceptions/${id.slice(0, 8)}`);
           }}
+          renderedAt={renderedAt}
         />
       </div>
 

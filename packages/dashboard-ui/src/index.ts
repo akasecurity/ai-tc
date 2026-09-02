@@ -109,8 +109,10 @@ export {
   isFindingsView,
   type Selection,
   SEVERITIES,
+  USER_COLUMN_TITLE,
 } from './findings/meta.ts';
 export { ProviderChips, ProviderTag } from './findings/ProviderChips.tsx';
+export { UserCell, UsersCell } from './findings/UserCell.tsx';
 
 // Inlined line icons shared with app shells (the OSS web-ui reuses these rather
 // than re-declaring identical SVG paths).

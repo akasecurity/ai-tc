@@ -32,6 +32,7 @@ import type {
   EgressWriteSummary,
   FindingView,
   HealthSummary,
+  IngestEvent,
   InstalledPackInput,
   InventoryContext,
   InventoryFacets,
@@ -90,6 +91,26 @@ export class StandaloneDataGateway implements DataGateway, LocalStoreMaintenance
   }
 
   recordAuditEvent(event: AuditEventInput): Promise<void> {
+    // Plant the structural root before a row that FKs onto it — the same
+    // ordering `recordCapture` keeps, for the same reason its own comment
+    // gives: `root_session_id` is a self-FK and INSERT OR IGNORE does not
+    // suppress a foreign-key violation, so without the root the insert THROWS.
+    // Every caller of this port is fail-open, so that throw is swallowed and
+    // the row is simply, silently absent.
+    //
+    // Here rather than at each call site because the hazard belongs to the
+    // WRITE, not to any one caller: `ensureSessionRoot`'s own doc calls itself
+    // "the single named home for that FK invariant — call it before writing any
+    // session-scoped row", and this method writes them. It is also exactly the
+    // sessions least likely to have a root — SessionStart failed, was skipped,
+    // or the plugin arrived mid-session — where an audit trail is worth most.
+    //
+    // Skipped when the event IS its own root: SessionStart writes that row with
+    // `id === rootSessionId`, and the upsert is fill-the-stub, so planting first
+    // would be a wasted statement rather than a wrong one.
+    if (event.rootSessionId !== undefined && event.rootSessionId !== event.id) {
+      this.db.auditEvents.ensureSessionRoot(event.rootSessionId, event.startedAt);
+    }
     this.db.auditEvents.insertAuditEvent(event);
     return Promise.resolve();
   }
@@ -410,6 +431,15 @@ export class StandaloneDataGateway implements DataGateway, LocalStoreMaintenance
    * than the DataGateway port. Fail-open: any error → null (no notice), and
    * unparseable versions compare equal so garbage can never fire it.
    */
+  // Implemented, not stubbed, even though standalone never forwards: the
+  // capability is declared by this class and `hasLocalStoreMaintenance` answers
+  // for the whole of it, so a member that threw would make that answer a lie
+  // the moment a composite delegated to it. A store-level no-op is the honest
+  // shape — a standalone machine has nothing delivered to record.
+  markCaptureDelivered(event: IngestEvent, atMs: number): void {
+    this.db.markCaptureDelivered(event, atMs);
+  }
+
   staleBinaryNotice(currentVersion: string): string | null {
     try {
       // newestRecordedBinary() maxes across ALL recorders (plugin + aka-cli), and

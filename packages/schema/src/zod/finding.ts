@@ -185,12 +185,26 @@ export const FindingPolicyRef = z
   .meta({ id: 'FindingPolicyRef' });
 export type FindingPolicyRef = z.infer<typeof FindingPolicyRef>;
 
+// The person a finding is attributed to, in a store that attributes findings
+// to people (the event's user). `name` is the display label — an email address
+// or profile name, never an opaque id. Absent everywhere in a single-user store.
+export const FindingUser = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+  })
+  .meta({ id: 'FindingUser' });
+export type FindingUser = z.infer<typeof FindingUser>;
+
 export const FindingInstance = z
   .object({
     id: z.string(),
     provider: FindingProvider,
     repo: z.string(),
     file: z.string(),
+    // Who the capturing event is attributed to. Optional: a single-user store
+    // has no one to attribute a finding to and never sets it.
+    user: FindingUser.optional(),
     // Host tool that produced the scanned text (event metadata's toolName).
     // Present whenever the capturing hook recorded one — including
     // file-attributed captures (views prefer `file`); its display value is
@@ -235,6 +249,12 @@ export const FindingGroup = z
     // Derived from instances' statuses with open-dominates precedence (see
     // buildFindingGroups). Undefined only when no instance carries a status.
     status: FindingStatus.optional(),
+    // The distinct people across the WHOLE group, not just the `instances`
+    // preview — from the store's whole-group aggregate when it supplies one,
+    // else folded from the rows (see buildFindingGroups). Undefined when no
+    // instance carries a user, or when the store supplied whole-group folds
+    // without one.
+    users: z.array(FindingUser).optional(),
   })
   .meta({ id: 'FindingGroup' });
 export type FindingGroup = z.infer<typeof FindingGroup>;

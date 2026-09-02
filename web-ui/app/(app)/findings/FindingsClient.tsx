@@ -48,6 +48,10 @@ import { useDebouncedUrlQuery } from '../../lib/useDebouncedUrlQuery';
 import { loadMoreFindingInstances, loadMoreGroupedFindings } from './actions';
 import { buildFindingsParams, toGroupedQuery, toInstancesQuery } from './filters';
 
+// The local store is single-user, so no finding carries a user to show — the
+// User column would render as a column of dashes.
+const LOCAL_COLUMNS = FINDINGS_COLUMNS.filter((c) => c.id !== 'user');
+
 /**
  * The ?finding= deep link → the drawer's Selection: a group id opens the grouped
  * view; an instance id opens that instance narrowed inside its group. Unknown ids
@@ -223,7 +227,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
             />
             {view === 'grouped' && (
               <ColumnsMenu
-                columns={FINDINGS_COLUMNS}
+                columns={LOCAL_COLUMNS}
                 visibility={columnVisibility}
                 onChange={setColumnVisibility}
               />
@@ -427,7 +431,7 @@ function GroupedView({
   }
 
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(new Set());
-  const visibleColumns = FINDINGS_COLUMNS.filter((c) => columnVisibility[c.id] !== false);
+  const visibleColumns = LOCAL_COLUMNS.filter((c) => columnVisibility[c.id] !== false);
 
   // The selected group's transcript-firing tally (session-scoped lists only) —
   // surfaces in the drawer footer so the "45 triggered vs 6 listed" gap is

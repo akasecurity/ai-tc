@@ -22,6 +22,7 @@ import type {
   HealthSummary,
   IngestAck,
   IngestBatch,
+  IngestEvent,
   InventoryContext,
   InventoryFacets,
   LlmCallInput,
@@ -424,7 +425,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     // machine detected, not what the plane derived. Those numbers are allowed
     // to differ and are not a reconciliation signal.
     // Decision path: a hook is blocked on this, so it takes the tighter budget.
-    await this.deps.forward.run(
+    const forwarded = await this.deps.forward.run(
       () =>
         this.deps.client.ingestEvents({
           events: [record.event],
@@ -432,6 +433,42 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
         }),
       { decisionPath: true },
     );
+    // Delivered ⇒ stamp the row, so the outbox does not offer it again.
+    //
+    // Every other outcome — timeout, refusal, breaker-open — leaves `synced_at`
+    // NULL, which IS the queue: the row stays outstanding and a later drain
+    // picks it up. That is the whole of the reversal of G8's no-outbox rule, and
+    // it needs no spool file, because the event is already on disk in
+    // `audit_events` and always was. What changes is that the local store now
+    // records whether the organization's copy was made, not just what this
+    // machine saw.
+    //
+    // `ok` ALONE IS NOT DELIVERY. It says the call completed and the body parsed
+    // as an `IngestAck`; the ack itself says what the plane did with the event.
+    // `{accepted: 1, duplicates: 0}` and `{accepted: 0, duplicates: 1}` both
+    // mean it has the row — a duplicate is the id-dedup recognising a resend,
+    // which is a delivery, not a loss. `{accepted: 0, duplicates: 0}` is a 200
+    // that took nothing, and stamping on it would remove the row from the
+    // outbox for ever.
+    //
+    // Today's backend cannot produce that for a one-event batch: every return in
+    // its ingest repository keeps `accepted + duplicates` equal to the batch
+    // size. But that is a server-side invariant the WIRE contract does not
+    // express — `IngestAck` constrains both fields only to be non-negative — and
+    // this plugin talks to deployments it does not ship. So it is read rather
+    // than assumed, and the unread case errs the way everything else on this
+    // path errs: toward a redundant resend the receiver's id-dedup absorbs,
+    // never toward a row silently dropped from what is owed.
+    //
+    // The stamp is deliberately NOT part of the local write's transaction. The
+    // write is authoritative and must commit whatever the network does; only
+    // after the forward settles is there anything true to record. A stamp lost
+    // between the two costs one redundant resend, which the receiver's id-dedup
+    // absorbs — `captureWireId` derives the wire id from the same tuple the row
+    // is keyed on, so the retry arrives under the id the first attempt used.
+    if (forwarded.ok && forwarded.value.accepted + forwarded.value.duplicates > 0) {
+      this.deps.local.markCaptureDelivered(record.event, Date.now());
+    }
   }
 
   async ensureInventory(ctx: InventoryContext): Promise<ResolvedInventory> {
@@ -872,7 +909,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   // any object carrying all five, so the composite qualifies and SessionStart
   // runs maintenance on the device's real store.
   //
-  // ⚠ Two of the five are SYNCHRONOUS and must stay that way. `handle-session-start`
+  // ⚠ Three of the six are SYNCHRONOUS and must stay that way. `handle-session-start`
   // calls `capWarnEraEnforcement` without `await` and uses `staleBinaryNotice`'s
   // return value directly; declaring them `async` here would hand those call
   // sites a Promise and silently break both.
@@ -900,6 +937,13 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
 
   staleBinaryNotice(currentVersion: string): string | null {
     return this.deps.local.staleBinaryNotice(currentVersion);
+  }
+
+  // Delegated like the rest, and SYNCHRONOUS for the reason the note above
+  // gives: `recordCapture` calls it after the forward has already settled, on a
+  // path that has nothing left to await.
+  markCaptureDelivered(event: IngestEvent, atMs: number): void {
+    this.deps.local.markCaptureDelivered(event, atMs);
   }
 }
 

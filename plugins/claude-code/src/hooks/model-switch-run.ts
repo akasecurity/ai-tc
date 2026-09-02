@@ -6,8 +6,11 @@
 //
 // The seams are the gateway, the emitter and the clock. Everything else is
 // ordinary logic and is exercised directly.
+import { randomUUID } from 'node:crypto';
+
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
-import { recordSessionModel } from '@akasecurity/plugin-sdk';
+import { buildModelRefusalEvent, recordSessionModel } from '@akasecurity/plugin-sdk';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 
 import { decidePreModelSwitch, type PreModelSwitchOutput } from './model-guard.ts';
 
@@ -18,6 +21,9 @@ export interface PreModelSwitchDeps {
   emit: (output: PreModelSwitchOutput) => Promise<void>;
   /** Surfaces a redirected (symlinked) home once per session, on stderr. */
   warnIfStoreRedirected: (config: PluginConfig, sessionId: string | undefined) => void;
+  /** Injected so a test can pin the recorded id and timestamp. */
+  newId?: () => string;
+  now?: () => Date;
 }
 
 /**
@@ -44,18 +50,41 @@ export async function runPreModelSwitch(
   const gateway = deps.openGateway();
   if (gateway === null) return false;
 
+  // Closed at each exit below rather than in a `finally` here: the refusal path
+  // needs the gateway still open to record the event it is about to emit.
   let prohibited: readonly string[] | undefined;
   try {
     prohibited = (await gateway.getPolicyBundle()).prohibitedModels;
-  } finally {
+  } catch {
     await gateway.close();
+    return false;
   }
 
   const decision = decidePreModelSwitch(toModel, prohibited);
   if (decision !== null) {
+    // Best-effort, and swallowed: a refusal that cannot be written down is still
+    // a refusal, so a failed write must not reach the entry's outer catch and
+    // turn this deny into a fail-open allow.
+    try {
+      await gateway.recordAuditEvent(
+        buildModelRefusalEvent({
+          id: (deps.newId ?? randomUUID)(),
+          sessionId,
+          model: toModel,
+          seam: 'switch',
+          sourceTool: SOURCE_TOOL.ClaudeCode,
+          occurredAt: (deps.now ?? (() => new Date()))().toISOString(),
+        }),
+      );
+    } catch {
+      // Swallowed on purpose — see above.
+    }
+    await gateway.close();
     await deps.emit(decision);
     return true;
   }
+
+  await gateway.close();
 
   // ALLOWED — so this is the authoritative moment the session's model becomes
   // `to_model`, and recording it here is what lets user-prompt-submit decide

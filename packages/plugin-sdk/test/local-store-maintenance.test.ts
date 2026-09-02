@@ -9,6 +9,7 @@ const maintenance: LocalStoreMaintenance = {
   recordProjectFiles: () => Promise.resolve(),
   reconcileWorktreeProjects: () => Promise.resolve(),
   staleBinaryNotice: () => null,
+  markCaptureDelivered: () => undefined,
 };
 
 function gatewayWith(extra: object): DataGateway {
@@ -25,7 +26,7 @@ describe('offersMaintenance', () => {
 
   it('rejects ONLY the omitted member, leaving the others offered', () => {
     // The property the session-start gate rests on: one absent member must not
-    // withdraw the other four. An all-or-nothing predicate would answer false
+    // withdraw the others. An all-or-nothing predicate would answer false
     // for every name here, so this is what separates the two designs.
     for (const omitted of MEMBERS) {
       const partial = Object.fromEntries(

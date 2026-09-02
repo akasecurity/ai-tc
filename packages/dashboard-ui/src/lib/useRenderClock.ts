@@ -2,13 +2,20 @@
 import { useMemo, useSyncExternalStore } from 'react';
 
 /**
- * How often the clock re-reads after hydration.
+ * How often the clock re-reads while the tab is in front.
  *
  * The smallest unit these labels render is a minute (`relativeTime` rounds
  * `deltaSec / 60`), so ticking faster than that only buys renders nobody can
  * see. Ticking AT a minute would leave a label up to a whole minute stale,
  * which is the unit itself; half of it bounds the visible lag at 30s for two
  * renders a minute.
+ *
+ * That bound holds only in front. Browsers throttle timers in a backgrounded
+ * tab to a minute or worse, so the interval alone would let a tab someone
+ * comes back to show a label — and, on the detail route, a revoke form gated
+ * on a stale `active` — from before they left. The visibility listener below
+ * is what bounds the returning case at "as soon as you look at it", which is
+ * the case this hook exists for.
  */
 export const CLOCK_TICK_MS = 30_000;
 
@@ -37,6 +44,12 @@ function createClockStore(tickMs: number, serverInstant: number): ClockStore {
     for (const listener of listeners) listener();
   };
 
+  // Only on the way back TO visible. Publishing as a tab is hidden would spend
+  // a render nobody can see, which is what the throttle is for.
+  const onVisibilityChange = (): void => {
+    if (document.visibilityState === 'visible') publish();
+  };
+
   return {
     subscribe(onChange: () => void): () => void {
       listeners.add(onChange);
@@ -51,12 +64,17 @@ function createClockStore(tickMs: number, serverInstant: number): ClockStore {
         // what turns this into a render.
         now = Date.now();
         timer = setInterval(publish, tickMs);
+        // A backgrounded tab has its timers throttled, so the interval above
+        // stops bounding anything the moment someone switches away. Catching
+        // the return is what keeps the first thing they see current.
+        document.addEventListener('visibilitychange', onVisibilityChange);
       }
       return () => {
         listeners.delete(onChange);
         if (listeners.size === 0 && timer !== undefined) {
           clearInterval(timer);
           timer = undefined;
+          document.removeEventListener('visibilitychange', onVisibilityChange);
         }
       };
     },

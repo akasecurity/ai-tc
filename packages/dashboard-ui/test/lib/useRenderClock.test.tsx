@@ -96,6 +96,55 @@ describe('useRenderClock', () => {
     expect(seen.at(-1)).toBe(AMBIENT + CLOCK_TICK_MS);
   });
 
+  // Simulates the throttled case: time passes, but the interval does NOT fire,
+  // which is what a backgrounded tab actually looks like.
+  function backgroundFor(ms: number): void {
+    vi.setSystemTime(Date.now() + ms);
+  }
+
+  function setVisibility(state: 'visible' | 'hidden'): void {
+    Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
+  }
+
+  it('republishes on return to a visible tab, which a throttled interval would not', () => {
+    const seen: number[] = [];
+    const root = createRoot(document.createElement('div'));
+    act(() => {
+      root.render(<Probe seen={seen} />);
+    });
+    const beforeLeaving = seen.at(-1);
+
+    // Ten minutes of a backgrounded tab, with the interval throttled to
+    // nothing — the interval alone would still be reporting the old instant.
+    backgroundFor(10 * 60 * 1000);
+    expect(seen.at(-1)).toBe(beforeLeaving);
+
+    setVisibility('visible');
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    expect(seen.at(-1)).toBe(AMBIENT + 10 * 60 * 1000);
+  });
+
+  it('does not spend a render while the tab is still hidden', () => {
+    const seen: number[] = [];
+    const root = createRoot(document.createElement('div'));
+    act(() => {
+      root.render(<Probe seen={seen} />);
+    });
+    const settled = seen.length;
+
+    backgroundFor(10 * 60 * 1000);
+    setVisibility('hidden');
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    expect(seen).toHaveLength(settled);
+    setVisibility('visible');
+  });
+
   it('stops on unmount, so a torn-down page leaves no interval behind', () => {
     const seen: number[] = [];
     const root = createRoot(document.createElement('div'));
@@ -113,5 +162,34 @@ describe('useRenderClock', () => {
 
     expect(seen).toHaveLength(settled);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('takes its visibility listener down with it', () => {
+    // Asserted on the REGISTRATION rather than on a render, because a render
+    // cannot see this: React deletes its own store listener on unmount, so a
+    // leaked `visibilitychange` handler still publishes into an empty listener
+    // set and moves nothing observable. Dropping the removeEventListener leaves
+    // every behavioural assertion in this file green — verified — so the
+    // symmetry is the only thing that catches it.
+    const addSpy = vi.spyOn(document, 'addEventListener');
+    const removeSpy = vi.spyOn(document, 'removeEventListener');
+    const visibilityHandlers = (spy: typeof addSpy): unknown[] =>
+      spy.mock.calls.filter(([type]) => type === 'visibilitychange').map(([, handler]) => handler);
+
+    const seen: number[] = [];
+    const root = createRoot(document.createElement('div'));
+    act(() => {
+      root.render(<Probe seen={seen} />);
+    });
+    expect(visibilityHandlers(addSpy)).toHaveLength(1);
+
+    act(() => {
+      root.unmount();
+    });
+
+    expect(visibilityHandlers(removeSpy)).toEqual(visibilityHandlers(addSpy));
+
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
   });
 });

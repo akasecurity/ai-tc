@@ -2,10 +2,16 @@
 //
 // dashboard-ui pins that ExceptionDetailView measures its labels — and gates
 // the revoke form — against whatever instant it is handed. Neither that suite
-// nor the view itself can see the two lines that supply one: the `renderedAt`
-// [id]/page.tsx captures on the server, and the `renderedAt={now}` this client
-// hands down. Drop either and the view falls back to the browser's clock,
-// which is the mismatch the prop exists to prevent, and nothing else goes red.
+// nor the view itself can see the line that supplies one: the `renderedAt={now}`
+// this client hands down. Drop it and the view falls back to the browser's
+// clock, which is the mismatch the prop exists to prevent.
+//
+// The other two links in that chain are held elsewhere, and deliberately not
+// here: the instant `[id]/page.tsx` captures is a REQUIRED prop, so dropping it
+// is a typecheck failure rather than a red test; and the client's call to
+// `useRenderClock` is invisible to this file, because a static render reads the
+// hook's server snapshot and so cannot tell it from a bare `renderedAt` —
+// exceptions-clock-liveness.test.ts is what covers that.
 //
 // The stake here is higher than on the list route. `exceptionState` decides
 // whether the revoke form renders at all, so a grant whose expiry falls

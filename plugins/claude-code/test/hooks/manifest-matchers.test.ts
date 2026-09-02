@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { SUBAGENT_TOOLS } from '../../src/hooks/model-guard.ts';
 import { SCANNED_TOOL_NAMES } from '../../src/hooks/pre-tool-use-fields.ts';
 
 interface HooksManifest {
@@ -37,30 +38,41 @@ function matcherFor(event: string): RegExp {
 }
 
 describe('the PreToolUse matcher selects every tool the hook can act on', () => {
-  it('matches each tool that has scannable fields', () => {
-    // DERIVED from the field table rather than listed here, which is the whole
-    // point: a tool added there and forgotten in the manifest fails this
-    // without anyone remembering to extend a list.
+  it('matches each tool in the static field table', () => {
+    // DERIVED rather than listed here, which is the whole point: a tool added
+    // to that table and forgotten in the manifest fails this without anyone
+    // remembering to extend a list. It speaks only for the STATIC table —
+    // MultiEdit and the mcp__* family are dynamic handlers and are named
+    // explicitly below instead.
     const matcher = matcherFor('PreToolUse');
     const missed = SCANNED_TOOL_NAMES.filter((tool) => !matcher.test(tool));
     expect(missed, 'tools the hook is never spawned for').toEqual([]);
   });
 
-  it('matches the subagent spawn tool under both of its names', () => {
-    // Pinned by name as well as through the table above, because the model
-    // guard reads `Agent` whether or not it has scannable fields — the two
-    // reasons this tool must be matched are independent, and the table only
-    // covers one of them.
+  it('matches every tool the model guard treats as a subagent spawn', () => {
+    // DERIVED from the guard's own set, not restated. A rename has to reach
+    // three places — that set, the field table and this matcher — and a test
+    // cross-checking only two of them leaves the third for a human to notice,
+    // which is exactly how `Task` outlived the rename.
     const matcher = matcherFor('PreToolUse');
-    expect(matcher.test('Agent'), 'the current spelling').toBe(true);
-    expect(matcher.test('Task'), 'the spelling older harnesses send').toBe(true);
+    const missed = [...SUBAGENT_TOOLS].filter((tool) => !matcher.test(tool));
+    expect(missed, 'spawn tools the guard can never see').toEqual([]);
+    expect(SUBAGENT_TOOLS.has('Agent'), 'the current spelling is in the set').toBe(true);
   });
 
-  it('still matches an MCP tool, and does not match an unrelated one', () => {
+  it('matches the dynamic handlers the static table cannot speak for', () => {
+    // MultiEdit and mcp__* reach fields through their own branches, so they are
+    // absent from SCANNED_TOOL_NAMES and the derivation above says nothing
+    // about them.
+    const matcher = matcherFor('PreToolUse');
+    expect(matcher.test('MultiEdit')).toBe(true);
+    expect(matcher.test('mcp__server__tool')).toBe(true);
+  });
+
+  it('does not match an unrelated tool', () => {
     // The control: a matcher rewritten to `.*` would pass every assertion above
     // while removing the bound the hook's own cost argument rests on.
     const matcher = matcherFor('PreToolUse');
-    expect(matcher.test('mcp__server__tool')).toBe(true);
     expect(matcher.test('Read')).toBe(false);
     expect(matcher.test('Glob')).toBe(false);
   });

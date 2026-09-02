@@ -7,13 +7,16 @@
 // The three refusals answer DIFFERENT hooks in DIFFERENT vocabularies, which is
 // the one thing to get right here — see each function's own note.
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 import type { DataGateway } from '@akasecurity/plugin-sdk';
 import {
   buildModelRefusalEvent,
   decideProhibitedModelTurn,
   isModelProhibited,
-  isSpawnModelProhibited,
+  matchProhibitedSpawnModel,
   modelFromTranscript,
   prohibitedModelMessage,
   readSessionModel,
@@ -190,8 +193,8 @@ export async function handleProhibitedTurn(
 //
 // Neither seam above can reach this. A subagent turn is not a user prompt and
 // not a switch, and both of those resolve the PARENT session's model — which is
-// exactly the model a spawn is overriding. So a session on an approved model
-// could run unbounded work on a prohibited one, refused nowhere.
+// exactly the model a spawn overrides. So a session on an approved model could
+// run unbounded work on a prohibited one, refused nowhere.
 // ---------------------------------------------------------------------------
 
 /**
@@ -202,89 +205,151 @@ export async function handleProhibitedTurn(
  * boundary came to be unguarded in the first place — the manifest matcher went
  * on listing `Task` long after the harness had stopped sending it, so the hook
  * never ran here at all and every check inside it was dead code.
+ *
+ * EXPORTED so the manifest test derives its spawn case from this set rather
+ * than restating it. There are three places a rename has to reach — this set,
+ * the field table and the manifest matcher — and a test that cross-checks only
+ * two of them leaves the third to be noticed by a human.
  */
-const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
+export const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
 
-/** The spawn's requested model, or undefined when it names none. */
-function requestedSpawnModel(
-  toolName: string,
-  toolInput: Record<string, unknown>,
+/** A subagent_type safe to resolve as a filename. */
+const SAFE_SUBAGENT_TYPE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+/**
+ * The `model:` a subagent definition pins, or undefined.
+ *
+ * Read from the agent's own markdown frontmatter, project directory first and
+ * then the user one, which is the order the harness resolves them in.
+ *
+ * `subagent_type` is caller-chosen, so it is refused unless it is a plain
+ * name: joined unchecked it addresses any file on disk, and this runs on a
+ * hook path in the user's own checkout.
+ *
+ * Bounded and silent — an unreadable or absent definition is simply no answer.
+ */
+function modelFromAgentDefinition(
+  subagentType: string | undefined,
+  cwd: string | undefined,
 ): string | undefined {
-  if (!SUBAGENT_TOOLS.has(toolName)) return undefined;
-  const requested = toolInput.model;
-  return typeof requested === 'string' && requested !== '' ? requested : undefined;
+  if (subagentType === undefined || !SAFE_SUBAGENT_TYPE.test(subagentType)) return undefined;
+  const roots = [cwd, homedir()].filter((r): r is string => r !== undefined && r !== '');
+  for (const root of roots) {
+    try {
+      const raw = readFileSync(join(root, '.claude', 'agents', `${subagentType}.md`), 'utf8');
+      const lines = raw.split('\n');
+      if (lines[0]?.trim() !== '---') continue;
+      for (const line of lines.slice(1)) {
+        if (line.trim() === '---') break;
+        const sep = line.indexOf(':');
+        if (sep === -1) continue;
+        if (line.slice(0, sep).trim() !== 'model') continue;
+        const value = line
+          .slice(sep + 1)
+          .trim()
+          .replace(/^['"]|['"]$/g, '');
+        if (value !== '') return value;
+      }
+    } catch {
+      // No definition here — try the next root.
+    }
+  }
+  return undefined;
 }
 
 /**
- * Deny a subagent spawn onto a prohibited model; otherwise say nothing.
+ * The model a spawn will actually run on, as far as this hook can tell.
+ *
+ * THE ORDER IS THE HARNESS'S, and getting it wrong is a bypass rather than a
+ * detail: an explicit `model` argument wins, else the agent definition's own
+ * `model:` frontmatter, else the parent's. Only that last case is the one the
+ * switch and turn seams have already vetted, so only that one returns undefined
+ * and is allowed here. Treating an absent argument as "inherits the parent"
+ * would leave a repo-local `.claude/agents/<type>.md` — an ordinary writable
+ * file — naming a prohibited model that nothing checks.
+ */
+export function resolveSpawnModel(
+  toolInput: Record<string, unknown>,
+  cwd: string | undefined,
+): string | undefined {
+  const explicit = toolInput.model;
+  if (typeof explicit === 'string' && explicit !== '') return explicit;
+  const subagentType = toolInput.subagent_type;
+  return modelFromAgentDefinition(typeof subagentType === 'string' ? subagentType : undefined, cwd);
+}
+
+/**
+ * Deny a spawn onto a prohibited model; otherwise say nothing.
  *
  * PreToolUse vocabulary — the hook this actually runs in. It looks identical to
  * `PreModelSwitchOutput` and is not: each harness event honors only its own
  * `hookEventName`, so the two are interchangeable right up until one silently
  * allows.
  *
- * A spawn naming NO model inherits the parent's, which the switch and turn
- * seams have already vetted, so it is not a second decision to take and returns
- * null. Null likewise for a tool that is not a spawn, a non-string model, an
- * empty prohibition list, and a model that is simply not prohibited.
+ * Returns the MATCHED prohibited id alongside the output, so the caller records
+ * the id the prohibition was keyed on rather than the caller's spelling.
  */
 export function decideSubagentSpawn(
-  toolName: string,
-  toolInput: Record<string, unknown>,
+  requested: string | undefined,
   prohibitedModels: readonly string[] | undefined,
-): PreToolUseDenyOutput | null {
-  const requested = requestedSpawnModel(toolName, toolInput);
-  if (requested === undefined) return null;
-  if (!isSpawnModelProhibited(requested, prohibitedModels)) return null;
+): { output: PreToolUseDenyOutput; matched: string } | null {
+  if (requested === undefined || requested === '') return null;
+  const matched = matchProhibitedSpawnModel(requested, prohibitedModels);
+  if (matched === undefined) return null;
   return {
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: 'deny',
-      permissionDecisionReason: prohibitedModelMessage(requested, 'spawn'),
+    matched,
+    output: {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: prohibitedModelMessage(requested, 'spawn'),
+      },
     },
   };
 }
 
 /**
- * The whole spawn step: decide, and on a refusal record it, close and emit.
+ * The whole spawn step: decide, and on a refusal record it, emit and close.
  * Returns true when the spawn was refused and the caller must stop.
  *
  * Opens its own gateway and owns its lifecycle, because it runs BEFORE
  * pre-tool-use has opened one: a spawn carries no scannable field, so the scan
- * path returns early and everything it sets up happens too late to be borrowed
- * here.
+ * path returns early and everything it sets up happens too late to be borrowed.
  *
- * The gateway is opened only once a spawn has actually named a model, so the
- * ordinary tool call — every Bash, Edit and MCP leaf the matcher also spawns
- * this hook for — pays nothing for this seam.
+ * BUNDLE FIRST, then the model. With no prohibition list there is nothing to
+ * enforce, and resolving the model would be a file read spent to reach the same
+ * allow — the same ordering `refuseProhibitedTurn` uses for the same reason.
  *
- * TOTAL AND FAIL-OPEN, like its two siblings: any failure returns false and the
- * call proceeds to the ordinary path.
+ * TOTAL AND FAIL-OPEN: any failure returns false and the call proceeds.
  */
 export async function handleSubagentSpawn(
   openGateway: () => Pick<DataGateway, 'getPolicyBundle' | 'recordAuditEvent' | 'close'> | null,
   toolName: string,
   toolInput: Record<string, unknown>,
   sessionId: string | undefined,
+  cwd: string | undefined,
   emit: (output: PreToolUseDenyOutput) => Promise<void>,
 ): Promise<boolean> {
-  const requested = requestedSpawnModel(toolName, toolInput);
-  if (requested === undefined) return false;
+  if (!SUBAGENT_TOOLS.has(toolName)) return false;
 
   const gateway = openGateway();
   if (gateway === null) return false;
 
-  // Closed at each exit rather than in a `finally`: the refusal path needs it
-  // still open to record the event it is about to emit.
-  let decision: PreToolUseDenyOutput | null;
+  let decision: { output: PreToolUseDenyOutput; matched: string } | null;
+  let requested: string | undefined;
   try {
     const { prohibitedModels } = await gateway.getPolicyBundle();
-    decision = decideSubagentSpawn(toolName, toolInput, prohibitedModels);
+    if (prohibitedModels === undefined || prohibitedModels.length === 0) {
+      await gateway.close();
+      return false;
+    }
+    requested = resolveSpawnModel(toolInput, cwd);
+    decision = decideSubagentSpawn(requested, prohibitedModels);
   } catch {
     await gateway.close();
     return false;
   }
-  if (decision === null) {
+  if (decision === null || requested === undefined) {
     await gateway.close();
     return false;
   }
@@ -293,12 +358,17 @@ export async function handleSubagentSpawn(
   // theirs: a refusal that cannot be written down is still a refusal, and
   // letting a failed write reach the entry's outer catch would turn this deny
   // into a fail-open allow.
+  //
+  // `model` is the MATCHED id, not the caller's spelling, so an operator
+  // filtering on the prohibited id sees this refusal beside the switch and turn
+  // ones; the spelling rides along as `requested_model`.
   try {
     await gateway.recordAuditEvent(
       buildModelRefusalEvent({
         id: randomUUID(),
         sessionId,
-        model: requested,
+        model: decision.matched,
+        requestedModel: requested,
         seam: 'spawn',
         sourceTool: SOURCE_TOOL.ClaudeCode,
         occurredAt: new Date().toISOString(),
@@ -307,7 +377,16 @@ export async function handleSubagentSpawn(
   } catch {
     // Swallowed on purpose — see above.
   }
-  await gateway.close();
-  await emit(decision);
+
+  // EMITTED BEFORE THE CLOSE. The refusal is already decided, and `close()`
+  // can throw on a handle it cannot close — that rejection would escape to the
+  // entry's outer catch and leave empty stdout, which this host reads as no
+  // opinion. A bookkeeping failure must not discard a deny.
+  await emit(decision.output);
+  try {
+    await gateway.close();
+  } catch {
+    // Same reason the audit write above is swallowed.
+  }
   return true;
 }

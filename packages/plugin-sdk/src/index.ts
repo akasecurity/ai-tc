@@ -63,7 +63,7 @@ export {
   codexModelFromRecord,
   decideProhibitedModelTurn,
   isModelProhibited,
-  isSpawnModelProhibited,
+  matchProhibitedSpawnModel,
   modelFromTranscript,
   modelFromTranscriptTail,
   normalizeModelId,

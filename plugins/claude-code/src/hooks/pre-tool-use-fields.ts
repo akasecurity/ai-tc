@@ -134,19 +134,25 @@ function multiEditFields(toolInput: Record<string, unknown>): ScannableField[] {
 }
 
 /**
+ * The tools whose scannable fields come from the STATIC table above.
+ *
+ * Not every tool this hook covers: `MultiEdit` and the `mcp__*` family are
+ * handled by the dynamic branches below and appear here in neither case. So a
+ * manifest check derived from this catches a tool added to the table and
+ * forgotten in the matcher, and nothing about a dynamic handler — which is why
+ * the tools reached that way are named in the manifest test directly.
+ *
+ * Exported for that check: a tool named here that the matcher does not select
+ * is a tool the hook is never spawned for, which looks exactly like a tool with
+ * nothing to scan.
+ */
+export const SCANNED_TOOL_NAMES: readonly string[] = Object.keys(STATIC_FIELDS);
+
+/**
  * The scannable fields of a tool's input, each addressing a non-empty string.
  * Empty for a tool this hook has no coverage for, which the caller treats as
  * "no opinion" before opening the store.
  */
-/**
- * Every tool this hook has scannable fields for.
- *
- * Exported so the manifest matcher can be checked against it rather than read:
- * a tool named here that the matcher does not select is a tool the hook is
- * never spawned for, which looks exactly like a tool with nothing to scan.
- */
-export const SCANNED_TOOL_NAMES: readonly string[] = Object.keys(STATIC_FIELDS);
-
 export function scannableInputFields(
   toolName: string,
   toolInput: Record<string, unknown>,

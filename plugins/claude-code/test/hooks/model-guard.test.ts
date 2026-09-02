@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,6 +10,7 @@ import {
   decideSubagentSpawn,
   handleSubagentSpawn,
   resolveSessionModel,
+  resolveSpawnModel,
 } from '../../src/hooks/model-guard.ts';
 
 let dir: string;
@@ -82,54 +83,83 @@ describe('resolveSessionModel', () => {
 // The spawn seam. Neither seam above can reach a subagent: a subagent turn is
 // not a user prompt and not a switch, and both of those resolve the PARENT's
 // model — which is exactly the model a spawn overrides. So without this a
-// session on an approved model runs unbounded work on a prohibited one.
+// The spawn seam. Neither seam above can reach a subagent: a subagent turn is
+// not a user prompt and not a switch, and both resolve the PARENT's model —
+// which is exactly the model a spawn overrides.
+describe('resolveSpawnModel', () => {
+  function writeAgent(root: string, name: string, body: string): void {
+    mkdirSync(join(root, '.claude', 'agents'), { recursive: true });
+    writeFileSync(join(root, '.claude', 'agents', `${name}.md`), body, 'utf8');
+  }
+
+  it('prefers an explicit model argument', () => {
+    writeAgent(dir, 'helper', '---\nmodel: haiku\n---\nbody');
+    expect(resolveSpawnModel({ model: 'opus', subagent_type: 'helper' }, dir)).toBe('opus');
+  });
+
+  it("falls back to the agent definition's frontmatter", () => {
+    // The bypass this closes. An absent `model` argument does NOT mean the
+    // spawn inherits the vetted parent — the harness resolves the agent
+    // definition first, and that definition is an ordinary writable repo file.
+    writeAgent(dir, 'helper', '---\nname: helper\nmodel: haiku\n---\nbody');
+    expect(resolveSpawnModel({ subagent_type: 'helper' }, dir)).toBe('haiku');
+  });
+
+  it('returns undefined when nothing names a model — the genuine inherit', () => {
+    writeAgent(dir, 'helper', '---\nname: helper\n---\nbody');
+    expect(resolveSpawnModel({ subagent_type: 'helper' }, dir)).toBeUndefined();
+    expect(resolveSpawnModel({}, dir)).toBeUndefined();
+  });
+
+  it('refuses a subagent_type that is not a plain name', () => {
+    // Caller-chosen and joined into a path: unchecked it addresses any file on
+    // disk, from a hook running inside the user's own checkout.
+    writeAgent(dir, 'helper', '---\nmodel: haiku\n---\nbody');
+    expect(resolveSpawnModel({ subagent_type: '../agents/helper' }, dir)).toBeUndefined();
+    expect(resolveSpawnModel({ subagent_type: '/etc/passwd' }, dir)).toBeUndefined();
+  });
+
+  it('says nothing when the definition is absent or unreadable', () => {
+    expect(resolveSpawnModel({ subagent_type: 'missing' }, dir)).toBeUndefined();
+    expect(resolveSpawnModel({ subagent_type: 'helper' }, undefined)).toBeUndefined();
+  });
+});
+
 describe('decideSubagentSpawn', () => {
-  const PROHIBITED = ['claude-sonnet-5'];
+  const PROHIBITED = ['claude-opus-5'];
 
-  it('denies a spawn onto a prohibited model, in PreToolUse vocabulary', () => {
-    // The shape is the substantive claim, as it is for the switch seam above:
-    // PreModelSwitch's output is structurally identical apart from
-    // `hookEventName`, and the host honors only the one naming its own event.
-    const out = decideSubagentSpawn('Agent', { model: 'claude-sonnet-5' }, PROHIBITED);
-    expect(out?.hookSpecificOutput.hookEventName).toBe('PreToolUse');
-    expect(out?.hookSpecificOutput.permissionDecision).toBe('deny');
-  });
-
-  it('denies the tier word an Agent call actually carries', () => {
-    // The live spelling. Matching only ids leaves the seam blind to the single
-    // value the harness ever sends here.
-    const out = decideSubagentSpawn('Agent', { model: 'sonnet' }, PROHIBITED);
-    expect(out?.hookSpecificOutput.permissionDecision).toBe('deny');
-    expect(out?.hookSpecificOutput.permissionDecisionReason).toContain('subagent');
-  });
-
-  it('denies under the older Task spelling too', () => {
-    expect(decideSubagentSpawn('Task', { model: 'sonnet' }, PROHIBITED)).not.toBeNull();
+  it('denies in PreToolUse vocabulary and returns the matched id', () => {
+    // The shape is the substantive claim: PreModelSwitch's output is
+    // structurally identical apart from `hookEventName`, and the host honors
+    // only the one naming its own event.
+    const out = decideSubagentSpawn('opus', PROHIBITED);
+    expect(out?.output.hookSpecificOutput.hookEventName).toBe('PreToolUse');
+    expect(out?.output.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(out?.matched, 'the id the prohibition was keyed on').toBe('claude-opus-5');
+    expect(out?.output.hookSpecificOutput.permissionDecisionReason).toContain('subagent');
   });
 
   it.each([
-    ['a spawn that names no model — it inherits the vetted parent', 'Agent', {}],
-    ['an explicit inherit', 'Agent', { model: 'inherit' }],
-    ['a non-string model', 'Agent', { model: 5 }],
-    ['an allowed tier', 'Agent', { model: 'opus' }],
-    ['a tool that is not a spawn', 'Bash', { model: 'sonnet' }],
-  ])('has no opinion on %s', (_label, tool, input) => {
-    expect(decideSubagentSpawn(tool, input as Record<string, unknown>, PROHIBITED)).toBeNull();
+    ['no model at all', undefined],
+    ['an allowed tier', 'sonnet'],
+    ['an unrelated id', 'claude-sonnet-5'],
+  ])('has no opinion on %s', (_label, requested) => {
+    expect(decideSubagentSpawn(requested, PROHIBITED)).toBeNull();
   });
 
   it('has no opinion when nothing is prohibited', () => {
-    expect(decideSubagentSpawn('Agent', { model: 'sonnet' }, undefined)).toBeNull();
-    expect(decideSubagentSpawn('Agent', { model: 'sonnet' }, [])).toBeNull();
+    expect(decideSubagentSpawn('opus', undefined)).toBeNull();
+    expect(decideSubagentSpawn('opus', [])).toBeNull();
   });
 });
 
 describe('handleSubagentSpawn', () => {
-  function gatewayWith(prohibited: string[] | undefined) {
+  function gatewayWith(prohibited: string[] | undefined, onClose?: () => void) {
     const recorded: unknown[] = [];
-    let closed = false;
+    const order: string[] = [];
     return {
       recorded,
-      wasClosed: () => closed,
+      order,
       gateway: {
         getPolicyBundle: () => Promise.resolve({ prohibitedModels: prohibited }),
         recordAuditEvent: (e: unknown) => {
@@ -137,22 +167,25 @@ describe('handleSubagentSpawn', () => {
           return Promise.resolve();
         },
         close: () => {
-          closed = true;
+          order.push('close');
+          onClose?.();
           return Promise.resolve();
         },
       },
     };
   }
 
-  it('refuses, records the refusal, and closes the gateway', async () => {
-    const g = gatewayWith(['claude-sonnet-5']);
+  it('refuses, and records the MATCHED id with the caller spelling beside it', async () => {
+    const g = gatewayWith(['claude-opus-5']);
     const emitted: unknown[] = [];
     const stop = await handleSubagentSpawn(
       () => g.gateway as never,
       'Agent',
-      { model: 'sonnet' },
+      { model: 'opus' },
       's1',
+      dir,
       async (o) => {
+        g.order.push('emit');
         emitted.push(o);
         await Promise.resolve();
       },
@@ -160,19 +193,75 @@ describe('handleSubagentSpawn', () => {
 
     expect(stop).toBe(true);
     expect(emitted).toHaveLength(1);
-    expect(g.wasClosed()).toBe(true);
-    // The audit row is what lets an operator tell enforcement from silence, and
-    // it carries the seam so a spawn refusal is distinguishable from a switch.
-    expect(g.recorded).toHaveLength(1);
+    // An operator filtering on the prohibited id must see this refusal beside
+    // the switch and turn ones, which recording `opus` would prevent.
     expect((g.recorded[0] as { attributes: Record<string, unknown> }).attributes).toMatchObject({
-      model: 'sonnet',
+      model: 'claude-opus-5',
+      requested_model: 'opus',
       refusal_seam: 'spawn',
     });
   });
 
-  it('opens NOTHING for a call that is not a spawn naming a model', async () => {
-    // The cost argument for putting this ahead of the scan: every Bash, Edit
-    // and MCP leaf crosses this line too, and must not pay a store open.
+  it('EMITS before it closes, so a close failure cannot discard the deny', async () => {
+    // `close()` can throw on a handle it cannot close. Emitting after it would
+    // let that rejection escape to the entry's outer catch and leave empty
+    // stdout — which this host reads as no opinion, i.e. allow.
+    const g = gatewayWith(['claude-opus-5']);
+    await handleSubagentSpawn(
+      () => g.gateway as never,
+      'Agent',
+      { model: 'opus' },
+      's1',
+      dir,
+      async () => {
+        g.order.push('emit');
+        await Promise.resolve();
+      },
+    );
+    expect(g.order).toEqual(['emit', 'close']);
+  });
+
+  it('still refuses when the close throws', async () => {
+    const emitted: unknown[] = [];
+    const stop = await handleSubagentSpawn(
+      () =>
+        ({
+          getPolicyBundle: () => Promise.resolve({ prohibitedModels: ['claude-opus-5'] }),
+          recordAuditEvent: () => Promise.resolve(),
+          close: () => Promise.reject(new Error('cannot close')),
+        }) as never,
+      'Agent',
+      { model: 'opus' },
+      's1',
+      dir,
+      async (o) => {
+        emitted.push(o);
+        await Promise.resolve();
+      },
+    );
+    expect(stop).toBe(true);
+    expect(emitted).toHaveLength(1);
+  });
+
+  it('refuses a spawn whose MODEL COMES FROM THE AGENT DEFINITION', async () => {
+    // End to end for the bypass: no `model` argument anywhere in the call.
+    mkdirSync(join(dir, '.claude', 'agents'), { recursive: true });
+    writeFileSync(join(dir, '.claude', 'agents', 'helper.md'), '---\nmodel: opus\n---\n', 'utf8');
+    const g = gatewayWith(['claude-opus-5']);
+    const stop = await handleSubagentSpawn(
+      () => g.gateway as never,
+      'Agent',
+      { subagent_type: 'helper', prompt: 'go' },
+      's1',
+      dir,
+      () => Promise.resolve(),
+    );
+    expect(stop).toBe(true);
+  });
+
+  it('opens NOTHING for a call that is not a spawn tool', async () => {
+    // Every Bash, Edit and MCP leaf crosses this line too and must not pay a
+    // store open.
     let opened = 0;
     const stop = await handleSubagentSpawn(
       () => {
@@ -182,65 +271,66 @@ describe('handleSubagentSpawn', () => {
       'Bash',
       { command: 'ls' },
       's1',
+      dir,
       () => Promise.resolve(),
     );
     expect(stop).toBe(false);
     expect(opened).toBe(0);
   });
 
-  it('allows and closes when the model is not prohibited', async () => {
-    const g = gatewayWith(['claude-opus-5']);
+  it('reads NO agent definition when the organization prohibits nothing', async () => {
+    // Bundle first: with an empty list there is nothing to enforce, and
+    // resolving the model would be a file read spent to reach the same allow.
+    mkdirSync(join(dir, '.claude', 'agents'), { recursive: true });
+    writeFileSync(join(dir, '.claude', 'agents', 'helper.md'), '---\nmodel: opus\n---\n', 'utf8');
+    const g = gatewayWith([]);
     const stop = await handleSubagentSpawn(
       () => g.gateway as never,
       'Agent',
-      { model: 'sonnet' },
+      { subagent_type: 'helper' },
       's1',
+      dir,
       () => Promise.resolve(),
     );
     expect(stop).toBe(false);
-    expect(g.wasClosed(), 'no leaked handle on the allow path').toBe(true);
+    expect(g.order, 'the gateway was still closed').toEqual(['close']);
   });
 
-  it('fails OPEN when the store cannot be opened', async () => {
-    const stop = await handleSubagentSpawn(
-      () => null,
-      'Agent',
-      { model: 'sonnet' },
-      's1',
-      () => Promise.resolve(),
-    );
-    expect(stop).toBe(false);
-  });
-
-  it('fails OPEN when the bundle will not load', async () => {
-    const stop = await handleSubagentSpawn(
+  it.each([
+    ['the store cannot be opened', () => null],
+    [
+      'the bundle will not load',
       () =>
         ({
           getPolicyBundle: () => Promise.reject(new Error('nope')),
           close: () => Promise.resolve(),
         }) as never,
+    ],
+  ])('fails OPEN when %s', async (_label, open) => {
+    const stop = await handleSubagentSpawn(
+      open,
       'Agent',
-      { model: 'sonnet' },
+      { model: 'opus' },
       's1',
+      dir,
       () => Promise.resolve(),
     );
     expect(stop).toBe(false);
   });
 
   it('still refuses when the refusal cannot be recorded', async () => {
-    // A refusal that cannot be written down is still a refusal — the one way an
-    // audit trail could leave a session LESS governed than before it existed.
     const emitted: unknown[] = [];
     const stop = await handleSubagentSpawn(
       () =>
         ({
-          getPolicyBundle: () => Promise.resolve({ prohibitedModels: ['claude-sonnet-5'] }),
+          getPolicyBundle: () => Promise.resolve({ prohibitedModels: ['claude-opus-5'] }),
           recordAuditEvent: () => Promise.reject(new Error('store full')),
           close: () => Promise.resolve(),
         }) as never,
       'Agent',
-      { model: 'sonnet' },
+      { model: 'opus' },
       's1',
+      dir,
       async (o) => {
         emitted.push(o);
         await Promise.resolve();

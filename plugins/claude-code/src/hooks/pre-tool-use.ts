@@ -69,14 +69,16 @@ async function main(): Promise<void> {
   // turn is neither a user prompt nor a model switch, and both of those resolve
   // the PARENT's model, which is exactly what a spawn overrides.
   //
-  // `handleSubagentSpawn` opens nothing until the call really is a spawn naming
-  // a model, so the ordinary tool call pays one set lookup for this.
+  // `handleSubagentSpawn` opens nothing unless the call really is a spawn, and
+  // reads no agent definition unless the organization prohibits something, so
+  // the ordinary tool call pays one set lookup for this.
   if (
     await handleSubagentSpawn(
       () => openGatewayOrNull(loadConfigOnce()),
       toolName,
       toolInput,
       sessionId,
+      getString(input, 'cwd'),
       emit,
     )
   ) {

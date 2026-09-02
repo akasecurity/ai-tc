@@ -28,6 +28,7 @@ import {
   ClassTag,
   DestMark,
   MethodTag,
+  StatusTag,
   TemplatePill,
   TemplateUrl,
   TransportTag,
@@ -130,6 +131,9 @@ function GroupRow({
         <TrustTag trust={d.trust} />
       </TableCell>
       <TableCell>
+        <StatusTag status={d.status} isCustom={d.isCustom} />
+      </TableCell>
+      <TableCell>
         <div className="flex flex-wrap gap-1.5">
           {d.transports.map((t) => (
             <TransportTag key={t} transport={t} />
@@ -170,7 +174,9 @@ function EndpointRow({
       )}
     >
       <TableCell className="w-9" />
-      <TableCell colSpan={2}>
+      {/* Destination + Trust + Status: all three are destination-level, so the
+          endpoint's own cell spans them rather than rendering blanks. */}
+      <TableCell colSpan={3}>
         <div className="flex min-w-0 items-center gap-2.5 pl-1.5 py-1">
           <span className="h-3.5 w-3.5 shrink-0 rounded-bl border-b-[1.5px] border-l-[1.5px] border-border-strong" />
           <MethodTag method={ep.method} />
@@ -213,6 +219,7 @@ export function DataSharesTableView({
           <TableHead className="w-9" />
           <TableHead>Destination</TableHead>
           <TableHead>Trust</TableHead>
+          <TableHead>Status</TableHead>
           <TableHead>Transport</TableHead>
           <TableHead>Data sent</TableHead>
           <TableHead>Footprint</TableHead>

@@ -1046,6 +1046,16 @@ function ensureHistorySyncTable(db: DatabaseSync): void {
   if (!columnNames(db, 'history_sync').includes('backlog_before')) {
     db.exec('ALTER TABLE history_sync ADD COLUMN backlog_before integer');
   }
+  // The CAPTURE lane's floor, which is not `backlog_before` and must not move
+  // with it. `backlog_before` steps forward on a re-attach so the detached
+  // window becomes structural backlog; the capture lane reads the other side of
+  // its boundary, so stepping it forward would put every capture the live path
+  // failed to deliver during the PREVIOUS attached period below the new floor —
+  // matched by neither lane, never sent, never skipped, never counted. This one
+  // is set when a deployment is first attached to and left alone afterwards.
+  if (!columnNames(db, 'history_sync').includes('capture_floor')) {
+    db.exec('ALTER TABLE history_sync ADD COLUMN capture_floor integer');
+  }
 }
 
 // Idempotent installer for the installed_packs write gate (canonical source:

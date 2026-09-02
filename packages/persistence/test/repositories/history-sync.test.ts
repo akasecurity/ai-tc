@@ -320,6 +320,8 @@ describe('SqliteHistorySyncRepository — the backlog boundary', () => {
     expect(db.historySync.deployment()).toEqual({
       fingerprint: 'fingerprint-a',
       backlogBefore: T0,
+      // Set from the same instant on a deployment change, and left alone after.
+      captureFloor: T0,
     });
   });
 
@@ -359,6 +361,10 @@ describe('SqliteHistorySyncRepository — closing the attached period', () => {
     expect(db.historySync.deployment()).toEqual({
       fingerprint: 'fp',
       backlogBefore: undefined,
+      // A detach releases the STRUCTURAL boundary only. The capture floor is the
+      // first attachment to this deployment and survives, or a re-attach would
+      // step it over everything the last attached period left owed.
+      captureFloor: T0,
     });
   });
 

@@ -54,7 +54,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     const before = Date.now();
     const res = await saveSettings({
       historicalAccess: 'session-only',
-      modelJudgeConsent: false,
+      modelJudgeConsent: 'revoked',
       historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
@@ -77,6 +77,27 @@ describe('saveSettings — vault-consent grant and revocation', () => {
   // `aka status` paused line and `aka sync-history`'s stale branch, leaving a
   // user who did opt in told that they never did. 'granted' is worse: it
   // re-consents to a widened payload nobody affirmed.
+  // The model-judge grant, same rule. Left as an unconditional boolean this is
+  // deleted fleet-wide on everyone's next unrelated save the moment
+  // MODEL_JUDGE_PAYLOAD_VERSION is bumped — and today every save rewrites its
+  // acknowledgedAt, so the record of when consent was given drifts forward on
+  // edits that had nothing to do with it.
+  it("leaves the model-judge grant and its acknowledgedAt alone on 'unchanged'", async () => {
+    const { applyOnboarding } = await import('@akasecurity/persistence');
+    const granted = { acknowledgedAt: '2020-01-01T00:00:00.000Z', payloadVersion: 1 };
+    applyOnboarding({ modelJudgeConsent: granted }, join(home, '.aka'));
+
+    await saveSettings({
+      historicalAccess: 'session-only',
+      modelJudgeConsent: 'unchanged',
+      historySyncConsent: 'unchanged',
+      vaultConsent: 'off',
+      vaultInlineReveal: 'full',
+    });
+
+    expect(readWorkspaceSettings().modelJudgeConsent).toEqual(granted);
+  });
+
   it("leaves a stale grant exactly as it was when the row is 'unchanged'", async () => {
     const stale = {
       acknowledgedAt: '2020-01-01T00:00:00.000Z',
@@ -96,7 +117,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
 
     const res = await saveSettings({
       historicalAccess: 'session-only',
-      modelJudgeConsent: false,
+      modelJudgeConsent: 'revoked',
       historySyncConsent: 'unchanged',
       vaultConsent: 'off',
       // A real unrelated edit, or the save proves nothing.
@@ -128,7 +149,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
 
     await saveSettings({
       historicalAccess: 'session-only',
-      modelJudgeConsent: false,
+      modelJudgeConsent: 'revoked',
       historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
@@ -140,7 +161,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
   it("keeps the original acknowledgedAt when 'on' is saved again", async () => {
     await saveSettings({
       historicalAccess: 'session-only',
-      modelJudgeConsent: false,
+      modelJudgeConsent: 'revoked',
       historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
@@ -155,7 +176,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
     const res = await saveSettings({
       historicalAccess: 'session-only',
-      modelJudgeConsent: false,
+      modelJudgeConsent: 'revoked',
       historySyncConsent: 'revoked',
       vaultConsent: 'on',
       // The unrelated edit. It has to be a field that really changes, or the
@@ -172,7 +193,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
   it("removes the field from the persisted file on 'off'", async () => {
     await saveSettings({
       historicalAccess: 'session-only',
-      modelJudgeConsent: false,
+      modelJudgeConsent: 'revoked',
       historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
@@ -181,7 +202,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
 
     const res = await saveSettings({
       historicalAccess: 'session-only',
-      modelJudgeConsent: false,
+      modelJudgeConsent: 'revoked',
       historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
@@ -199,7 +220,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
   it('rejects an unknown consent value and leaves the file untouched', async () => {
     await saveSettings({
       historicalAccess: 'session-only',
-      modelJudgeConsent: false,
+      modelJudgeConsent: 'revoked',
       historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
@@ -208,7 +229,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
 
     const res = await saveSettings({
       historicalAccess: 'session-only',
-      modelJudgeConsent: false,
+      modelJudgeConsent: 'revoked',
       historySyncConsent: 'revoked',
       vaultConsent: 'granted',
       vaultInlineReveal: 'masked',
@@ -224,7 +245,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     const forged = { acknowledgedAt: '2001-01-01T00:00:00.000Z', version: VAULT_CONSENT_VERSION };
     const res = await saveSettings({
       historicalAccess: 'session-only',
-      modelJudgeConsent: false,
+      modelJudgeConsent: 'revoked',
       historySyncConsent: 'revoked',
       vaultConsent: forged as unknown as string,
       vaultInlineReveal: 'masked',
@@ -261,7 +282,7 @@ describe('stale-grant re-consent and inline reveal', () => {
     );
     const result = await saveSettings({
       historicalAccess: 'session-only',
-      modelJudgeConsent: false,
+      modelJudgeConsent: 'revoked',
       historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
@@ -275,7 +296,7 @@ describe('stale-grant re-consent and inline reveal', () => {
   it('persists a valid inline-reveal mode and rejects junk', async () => {
     const ok = await saveSettings({
       historicalAccess: 'session-only',
-      modelJudgeConsent: false,
+      modelJudgeConsent: 'revoked',
       historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'full',
@@ -285,7 +306,7 @@ describe('stale-grant re-consent and inline reveal', () => {
 
     const bad = await saveSettings({
       historicalAccess: 'session-only',
-      modelJudgeConsent: false,
+      modelJudgeConsent: 'revoked',
       historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'loud',

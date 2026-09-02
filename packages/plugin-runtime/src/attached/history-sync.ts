@@ -123,6 +123,13 @@ export interface HistorySyncResult {
    */
   capturesPending: boolean;
   /**
+   * Captures this pass gave up on permanently.
+   *
+   * Reported separately because `counts.skipped` filters to structural rows, so
+   * a capture stamped -1 — gone for good — would otherwise appear on no surface.
+   */
+  capturesSkipped: number;
+  /**
    * The ledger's totals after the pass — the AUTHORITATIVE progress.
    *
    * Returned rather than left for the caller to re-read, because the caller
@@ -244,6 +251,18 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
       backlogBefore = recorded.backlogBefore;
     }
 
+    // The CAPTURE lane's floor, read after the branch above has written it. Not
+    // `backlogBefore`: that steps forward on a re-attach so the detached window
+    // becomes structural backlog, and the capture lane reads the other side of
+    // its boundary — so using it would put every capture the live path failed to
+    // deliver during the PREVIOUS attached period below the floor, where the
+    // structural lane's type filter excludes it too. Matched by neither lane,
+    // never sent, never skipped, never counted, while status reads complete.
+    //
+    // Falls back to `backlogBefore` for a store written before the column
+    // existed, which is the same instant on every machine that has attached once.
+    const captureFloor = ledger.deployment().captureFloor ?? backlogBefore;
+
     const pid = process.pid;
     if (!ledger.claim(pid, hostname(), now(), HISTORY_LEASE_STALE_MS)) return null;
 
@@ -301,6 +320,7 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
         budgetMs,
         pid,
         backlogBefore,
+        captureFloor,
       });
     } finally {
       ledger.release(pid);
@@ -334,6 +354,14 @@ interface DrainDeps {
   pid: number;
   /** Rows at or after this instant belong to the live path, not to this drain. */
   backlogBefore: number;
+  /**
+   * The capture lane's lower bound — the FIRST attachment to this deployment.
+   *
+   * Deliberately not `backlogBefore`: the two lanes read opposite sides of a
+   * boundary, so a re-attach stepping that one forward would skip every capture
+   * the previous attached period left owed. See runHistorySync.
+   */
+  captureFloor: number;
 }
 
 /** Why one row's send stopped: the pass continues, skips it, or ends. */
@@ -357,6 +385,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   const structuralDeadline = Math.min(deadline, startedAt + d.budgetMs * STRUCTURAL_BUDGET_SHARE);
   let sent = 0;
   let skipped = 0;
+  let capturesSkipped = 0;
   let lastHeartbeat = startedAt;
 
   /**
@@ -452,6 +481,10 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     const captures = await drainCaptures(d, deadline, beat);
     sent += captures.sent;
     skipped += captures.skipped;
+    // Tracked apart from `skipped` as well as inside it: the pass total mixes
+    // both lanes, and the caller needs the capture half on its own because the
+    // ledger's own `counts.skipped` cannot see it.
+    capturesSkipped += captures.skipped;
     if (captures.stopped !== undefined) outcome = captures.stopped;
   }
 
@@ -470,7 +503,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   if (
     outcome === 'ok' &&
     d.now() < deadline &&
-    d.ledger.pendingCaptureRows(1, d.backlogBefore, d.now() - CAPTURE_GRACE_MS).length === 0
+    d.ledger.pendingCaptureRows(1, d.captureFloor, d.now() - CAPTURE_GRACE_MS).length === 0
   ) {
     outcome = await drainStructural(deadline);
   }
@@ -485,7 +518,8 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     // LIMIT 1 — this asks "is anything owed", never "how much", so it must not
     // pay for a count over the capture grain on every pass.
     capturesPending:
-      d.ledger.pendingCaptureRows(1, d.backlogBefore, d.now() - CAPTURE_GRACE_MS).length > 0,
+      d.ledger.pendingCaptureRows(1, d.captureFloor, d.now() - CAPTURE_GRACE_MS).length > 0,
+    capturesSkipped,
     counts: d.ledger.counts(d.backlogBefore),
     atMs: d.now(),
   };
@@ -546,7 +580,7 @@ async function drainCaptures(
     // history of prompts on the wire under copy that promises the opposite.
     const rows = d.ledger.pendingCaptureRows(
       CAPTURE_BATCH_SIZE,
-      d.backlogBefore,
+      d.captureFloor,
       d.now() - CAPTURE_GRACE_MS,
     );
     if (rows.length === 0) return { sent, skipped };
@@ -643,7 +677,24 @@ async function sendCaptureChunk(
     // reading "delivered" for rows that were not. Under-counting costs a
     // redundant resend the receiver's id-dedup absorbs; over-counting is silent
     // data loss, so the unread case has to fall on the resend side.
-    if (settled < chunk.length) return { sent: 0, skipped: 0, stopped: 'unreachable' };
+    if (settled < chunk.length) {
+      // ISOLATE, exactly as a rejection does, rather than abandoning the batch.
+      // Returning here was safe but made no progress: the read has no cursor, so
+      // a deployment that consistently under-accepts (one capping at 50, say)
+      // re-reads the same rows next pass, under-accepts again, and wedges the
+      // lane for ever while reporting a reachable deployment as unreachable.
+      //
+      // Stamping `settled` rows is not available — the ack is an AGGREGATE and
+      // names none of them, so which ones settled is unknowable at this size.
+      // Splitting is what makes it knowable: at length 1 the answer is
+      // unambiguous, and every row the deployment will take gets taken.
+      if (chunk.length > 1) return await isolate(d, chunk, beat);
+      // A single row the deployment accepted the request for and then took
+      // nothing of. Not a rejection — nothing threw — so it is not skippable
+      // without inventing a verdict the deployment never gave. Stop, and leave
+      // it owed.
+      return { sent: 0, skipped: 0, stopped: 'unreachable' };
+    }
     d.ledger.markSynced(
       chunk.map((c) => c.id),
       d.now(),
@@ -659,6 +710,24 @@ async function sendCaptureChunk(
       d.ledger.markSkipped([only.id]);
       return { sent: 0, skipped: 1 };
     }
+    return await isolate(d, chunk, beat);
+  }
+}
+
+/**
+ * Re-send a batch one row at a time.
+ *
+ * Shared by the two answers that name no row — a rejection on the merits, and an
+ * ack that took only some of the batch. Both are aggregate verdicts over a body
+ * that has to be taken apart before anything can be said about a particular row,
+ * and neither may cost the rows that were fine.
+ */
+async function isolate(
+  d: DrainDeps,
+  chunk: readonly { id: string; event: IngestEvent }[],
+  beat: () => void,
+): Promise<ChunkResult> {
+  {
     let sent = 0;
     let skipped = 0;
     for (const [index, one] of chunk.entries()) {

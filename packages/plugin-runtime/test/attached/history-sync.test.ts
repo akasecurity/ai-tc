@@ -936,21 +936,45 @@ describe('runHistorySync — the capture lane', () => {
   // accepted/duplicates only to be non-negative, so a deployment this plugin
   // does not ship may answer 40 for a batch of 100 — and stamping all 100 would
   // lose 60 rows for ever with the ledger reading "delivered".
-  it('does not stamp a batch the deployment only partly took', async () => {
+  // A deployment that under-accepts is not an outage, and must not be treated as
+  // one: the read has no cursor, so abandoning the batch means re-reading the
+  // same rows next pass, under-accepting again, and wedging the lane for ever
+  // while status blames a deployment that is reachable and answering. The ack
+  // names no row, so the batch is split until the answer is unambiguous.
+  it('isolates a partly-taken batch instead of wedging the lane', async () => {
     attach({ grantFor: ENDPOINT });
     seedCaptures([{ id: 'cap-1' }, { id: 'cap-2' }]);
 
+    const delivered: string[] = [];
     await run({
       sendBatch: () => Promise.resolve(),
-      // Two offered, one taken.
-      sendCaptures: () => Promise.resolve({ settled: 1 }),
+      // Caps at one per request, whatever it is offered.
+      sendCaptures: (events: readonly IngestEvent[]) => {
+        if (events.length > 1) return Promise.resolve({ settled: 1 });
+        delivered.push(...events.map((e) => e.content));
+        return Promise.resolve({ settled: events.length });
+      },
     });
 
-    expect(
-      ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))
-        .map((r) => r.id)
-        .sort(),
-    ).toEqual(['cap-1', 'cap-2']);
+    expect(delivered.sort()).toEqual(['text of cap-1', 'text of cap-2']);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
+  });
+
+  // The floor under that: a SINGLE row the deployment takes nothing of is not
+  // stampable — the ack gave no verdict to skip on — so it stays owed and the
+  // pass stops rather than inventing one.
+  it('leaves a single row owed when the deployment takes none of it', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }]);
+
+    await run({
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: () => Promise.resolve({ settled: 0 }),
+    });
+
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL)).map((r) => r.id)).toEqual([
+      'cap-1',
+    ]);
   });
 
   // A blip is what a retry ladder is for. Returning on the first 'retry' verdict
@@ -1025,6 +1049,42 @@ describe('runHistorySync — the capture lane', () => {
     expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL)).map((r) => r.id)).toEqual([
       'cap-pre',
     ]);
+  });
+
+  // THE DETACH → RE-ATTACH GAP. A re-attach steps the STRUCTURAL boundary
+  // forward so the detached window becomes backlog. If the capture lane took its
+  // floor from that same number, every capture the live path failed to deliver
+  // during the PREVIOUS attached period would fall below it — and above the
+  // structural lane's type filter — so it would be matched by neither lane:
+  // never sent, never skipped, never counted, with status reading complete.
+  it('still owes captures from an earlier attached period after a re-attach', async () => {
+    attach({ grantFor: ENDPOINT });
+    // Recorded while attached the FIRST time, and never delivered.
+    seedCaptures([{ id: 'cap-old' }]);
+    // The first pass freezes the boundary for this deployment.
+    await run({
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: () => Promise.resolve({ settled: 0 }),
+    });
+
+    // Detach releases the structural boundary, then a re-attach LATER moves it
+    // forward — past the capture recorded above.
+    ledger((db) => {
+      db.historySync.closeAttachedWindow(Date.parse(AT), T0);
+    });
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: new Date(T0 - 60_000).toISOString() },
+      },
+      home,
+    );
+
+    const l = lanes();
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    // Still owed to the same deployment, and delivered.
+    expect(l.captures.map((c) => c.content)).toEqual(['text of cap-old']);
   });
 
   // The consent gate is the whole reason payload v2 exists: without a valid

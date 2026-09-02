@@ -57,9 +57,24 @@ export const HistorySyncConsentChoice = z
   .meta({ id: 'HistorySyncConsentChoice' });
 export type HistorySyncConsentChoice = z.infer<typeof HistorySyncConsentChoice>;
 
+/**
+ * The model-judge answer, three states for the reason HistorySyncConsentChoice
+ * gives — this form submits every field on every save, so an untouched row must
+ * be able to say "leave it alone".
+ *
+ * Left as a boolean this grant is deleted fleet-wide on everyone's next
+ * unrelated save the moment MODEL_JUDGE_PAYLOAD_VERSION is bumped, and today
+ * every save rewrites its acknowledgedAt — so the record of when consent was
+ * actually given drifts forward on edits that had nothing to do with it.
+ */
+export const ModelJudgeConsentChoice = z
+  .enum(['granted', 'revoked', 'unchanged'])
+  .meta({ id: 'ModelJudgeConsentChoice' });
+export type ModelJudgeConsentChoice = z.infer<typeof ModelJudgeConsentChoice>;
+
 export const SaveSettingsInput = z.object({
   historicalAccess: z.string(),
-  modelJudgeConsent: z.boolean(),
+  modelJudgeConsent: ModelJudgeConsentChoice,
   historySyncConsent: HistorySyncConsentChoice,
   vaultConsent: z.string(),
   vaultInlineReveal: z.string(),

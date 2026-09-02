@@ -4,6 +4,7 @@ import type {
   HistorySyncConsentChoice,
   ManagedContext,
   ManagedSettingKey,
+  ModelJudgeConsentChoice,
   WorkspaceSettings,
 } from '@akasecurity/schema';
 import {
@@ -444,7 +445,7 @@ export interface WorkspaceSettingsFormViewProps {
   // HANDLING_SECTION_DESCRIPTION.
   onSave: (
     changes: Pick<WorkspaceSettings, 'historicalAccess' | 'vaultInlineReveal'> & {
-      modelJudgeConsent: boolean;
+      modelJudgeConsent: ModelJudgeConsentChoice;
       // THREE answers, not two — see HistorySyncConsentChoice. 'unchanged' is
       // what an unrelated save sends, so it asserts nothing about this grant.
       historySyncConsent: HistorySyncConsentChoice;
@@ -502,6 +503,13 @@ export function WorkspaceSettingsFormView({
     ? 'granted'
     : 'revoked';
   const [modelJudge, setModelJudge] = useState<ModelJudgeChoice>(initialModelJudge);
+  // Tracked for the same reason as the history-sync row below: this form submits
+  // every field on every save, so an untouched row must be able to say so.
+  const [modelJudgeTouched, setModelJudgeTouched] = useState(false);
+  const answerModelJudge = (choice: ModelJudgeChoice): void => {
+    setModelJudgeTouched(true);
+    setModelJudge(choice);
+  };
   // VALIDITY, not presence — and the vault row's shape is deliberately NOT
   // copied here, because the two grants fail in opposite directions.
   //
@@ -564,7 +572,14 @@ export function WorkspaceSettingsFormView({
     // A stale grant renders as 'on' but authorizes nothing; keeping 'on'
     // selected and saving is the documented one-save re-consent, so staleness
     // itself must enable Save.
-    (vaultConsent === 'on' && vaultConsentStale(settings.vaultConsent));
+    (vaultConsent === 'on' && vaultConsentStale(settings.vaultConsent)) ||
+    // TOUCHED, not changed. A stale grant seeds 'revoked', so re-affirming
+    // 'Not shared' matches the seed and moves no comparison above — which left
+    // the Paused badge with no way to be dismissed from this page at all: Save
+    // stayed disabled however the user answered. Any deliberate answer on this
+    // row is an edit, because the row's stored state and its seed disagree.
+    historySyncTouched ||
+    modelJudgeTouched;
 
   return (
     <div className="flex max-w-4xl flex-col gap-7">
@@ -611,7 +626,7 @@ export function WorkspaceSettingsFormView({
           name="modelJudgeConsent"
           choices={MODEL_JUDGE_CHOICES}
           value={modelJudge}
-          onChange={setModelJudge}
+          onChange={answerModelJudge}
           managed={lockOn('modelJudgeConsent')}
           notice={
             <p className="mb-3 text-xs text-text-3" data-slot="model-judge-disclosure">
@@ -689,7 +704,16 @@ export function WorkspaceSettingsFormView({
               historicalAccess,
               // Just the answers — the server stamps the acknowledgement times
               // and the versions the grants are recorded against.
-              modelJudgeConsent: modelJudge === 'granted',
+              // Same three answers as the history-sync row, and for the same
+              // reason. Left as an unconditional boolean this deletes the grant
+              // fleet-wide on everyone's next unrelated save the moment
+              // MODEL_JUDGE_PAYLOAD_VERSION is bumped — and today it rewrites
+              // acknowledgedAt on edits that had nothing to do with it.
+              modelJudgeConsent: modelJudgeTouched
+                ? modelJudge === 'granted'
+                  ? 'granted'
+                  : 'revoked'
+                : 'unchanged',
               // UNTOUCHED means unchanged, not 'no'. The stale case is why: this
               // form submits every field on every save, so asserting a boolean
               // here made an unrelated edit either re-consent to a widened

@@ -41,7 +41,13 @@ export async function runHistorySyncPass(base: string = defaultDataDir()): Promi
       lastPassAtMs: result.atMs,
       sentTotal: result.counts.sent,
       pendingTotal: result.counts.pending,
-      skippedTotal: result.counts.skipped,
+      // BOTH lanes again. `counts.skipped` filters to structural rows, so a
+      // capture `rebuildCapture` refused — stamped -1 and dropped for ever —
+      // was counted on no surface at all. Silence is the right shape for a
+      // TRANSIENT failure everywhere else in this repo; this one is terminal,
+      // so it owes a number. `result.skipped` is the pass's own tally and
+      // carries both lanes, hence the sum with the ledger's lifetime total.
+      skippedTotal: result.counts.skipped + result.capturesSkipped,
       // The first pass that ran is when this machine started sending, and it
       // keeps that answer across every later pass.
       startedAtMs: previous?.startedAtMs ?? result.atMs,
@@ -52,7 +58,14 @@ export async function runHistorySyncPass(base: string = defaultDataDir()): Promi
       // 'filling' after reading 'complete'. This keeps its original meaning
       // either way — the first moment this machine owed the deployment nothing —
       // which is why it is pinned rather than recomputed.
-      completedAtMs: done ? (previous?.completedAtMs ?? result.atMs) : null,
+      // WRITTEN ONCE, on the false→true transition, and never cleared. Under v1
+      // this was monotone because the structural lane only ever drained; the
+      // capture lane is what makes `done` flap, and clearing on every flap would
+      // erase the pin and re-stamp it on the next catch-up — so a consumer
+      // reading "when this machine first caught up" would get the most recent
+      // one instead. Carrying the previous value through the false case is what
+      // keeps the original meaning.
+      completedAtMs: previous?.completedAtMs ?? (done ? result.atMs : null),
     });
   } catch {
     // Nothing to report to and nowhere to report it.

@@ -315,12 +315,14 @@ export class SqliteHistorySyncRepository {
     );
 
     this.fingerprintStmt = db.prepare(
-      `SELECT endpoint_fingerprint AS fingerprint, backlog_before AS backlogBefore
+      `SELECT endpoint_fingerprint AS fingerprint, backlog_before AS backlogBefore,
+              capture_floor AS captureFloor
          FROM history_sync WHERE id = 1`,
     );
     this.setFingerprintStmt = db.prepare(
       `UPDATE history_sync
-          SET endpoint_fingerprint = :fingerprint, backlog_before = :backlogBefore
+          SET endpoint_fingerprint = :fingerprint, backlog_before = :backlogBefore,
+              capture_floor = :backlogBefore
         WHERE id = 1`,
     );
     // Permanent skips are NOT re-armed: a row that failed to rebuild locally
@@ -380,8 +382,15 @@ export class SqliteHistorySyncRepository {
     this.releaseBoundaryStmt = db.prepare(
       `UPDATE history_sync SET backlog_before = NULL WHERE id = 1`,
     );
+    // The structural boundary moves; the capture floor is filled only if it has
+    // never been set. COALESCE rather than a second statement, so a re-attach
+    // cannot step the capture lane's floor over rows the last attachment left
+    // owed — see ensureHistorySyncTable for what that would cost.
     this.freezeBoundaryStmt = db.prepare(
-      `UPDATE history_sync SET backlog_before = :backlogBefore WHERE id = 1`,
+      `UPDATE history_sync
+          SET backlog_before = :backlogBefore,
+              capture_floor = COALESCE(capture_floor, :backlogBefore)
+        WHERE id = 1`,
     );
 
     this.leaseStmt = db.prepare(
@@ -568,13 +577,29 @@ export class SqliteHistorySyncRepository {
    * write off the gate path matters because the gate runs on every pass while a
    * write has to take the database's write lock.
    */
-  deployment(): { fingerprint: string | undefined; backlogBefore: number | undefined } {
-    const row = getRow<{ fingerprint: string | null; backlogBefore: number | null }>(
-      this.fingerprintStmt,
-    );
+  deployment(): {
+    fingerprint: string | undefined;
+    backlogBefore: number | undefined;
+    /**
+     * The capture lane's floor — the FIRST attachment to this deployment.
+     *
+     * Separate from `backlogBefore` because the two lanes read opposite sides of
+     * a boundary, so one number cannot serve both: the structural boundary steps
+     * forward on a re-attach to take the detached window in as backlog, and the
+     * capture lane reading `>= that` would then skip everything the previous
+     * attached period left owed.
+     */
+    captureFloor: number | undefined;
+  } {
+    const row = getRow<{
+      fingerprint: string | null;
+      backlogBefore: number | null;
+      captureFloor: number | null;
+    }>(this.fingerprintStmt);
     return {
       fingerprint: row?.fingerprint ?? undefined,
       backlogBefore: row?.backlogBefore ?? undefined,
+      captureFloor: row?.captureFloor ?? undefined,
     };
   }
 

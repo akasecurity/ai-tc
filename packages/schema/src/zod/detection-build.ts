@@ -6,8 +6,6 @@
 // Callers supply already-read rows (summaries / a row with parsed rules) and the
 // findings-30d count they computed against their own store; these builders only
 // shape them into the @akasecurity/schema contract types.
-import { z } from 'zod';
-
 import type {
   DetectionDetail,
   DetectionListItem,
@@ -35,6 +33,17 @@ function optional<K extends string, T>(
 ): Partial<Record<K, T>> {
   if (raw === undefined || !parsed.success || parsed.data === undefined) return {};
   return { [key]: parsed.data } as Record<K, T>;
+}
+
+/**
+ * `examples` is a plain `string[]`, checked with a type guard rather than a Zod
+ * schema. This module is reached from the plugin bundle, and a Zod array built at
+ * module scope is an un-annotated top-level call a bundler cannot tree-shake,
+ * while one built inside this function would be reconstructed per rule. A guard
+ * costs neither and says exactly as much about a list of strings.
+ */
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 }
 
 // ─── Inputs ──────────────────────────────────────────────────────────────────
@@ -143,7 +152,11 @@ export function rowToDetectionDetail(
           r.postValidators,
         ),
         ...optional('requiresNearby', RequiresNearby.safeParse(r.requiresNearby), r.requiresNearby),
-        ...optional('examples', z.array(z.string()).safeParse(r.examples), r.examples),
+        ...optional(
+          'examples',
+          { success: isStringArray(r.examples), data: r.examples },
+          r.examples,
+        ),
       },
     ];
   });

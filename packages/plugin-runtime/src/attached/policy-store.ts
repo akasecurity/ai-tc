@@ -83,7 +83,17 @@ export function createPolicyStore(dir: string = dataDir()) {
       // organization's raise-only floor until a sync lands — enforcement lost in
       // order to repair enforcement — and a body missing a field this build
       // understands is still every rule and policy the device had a moment ago.
-      const etag = record.shapeId === POLICY_BUNDLE_SHAPE_ID ? stored : undefined;
+      //
+      // A stamp naming MORE than this build is replayable, not a mismatch. Such
+      // a record was written by a wider build and already carries everything
+      // this one declares, so its validator describes a representation this
+      // build has no reason to refetch — and treating it as a mismatch would
+      // make the narrower build pull the whole bundle unconditionally every
+      // window for the life of the install, which is the cheap-poll-into-full-
+      // transfer cost the transport refuses at length.
+      const replayable =
+        record.shapeId === POLICY_BUNDLE_SHAPE_ID || knowsMoreThanThisBuild(record.shapeId);
+      const etag = replayable ? stored : undefined;
       return { bundle, fetchedAtMs, ...(etag === undefined ? {} : { etag }) };
     } catch {
       // Fail-open: an unreadable or corrupt cache behaves like no cache
@@ -91,15 +101,6 @@ export function createPolicyStore(dir: string = dataDir()) {
     }
   }
 
-  /**
-   * Persist the bundle and the validator that confirmed it.
-   *
-   * `etag` is a second parameter rather than the caller handing over a whole
-   * `StoredPolicyBundle` so that `fetchedAtMs` keeps a single writer here —
-   * every caller stamping its own clock is how two cache entries end up
-   * disagreeing about what "fresh" means. The 304 arm expresses itself by
-   * passing the bundle it already holds back in with the new etag.
-   */
   /**
    * Whether `shapeId` names strictly MORE bundle fields than this build has.
    *
@@ -115,55 +116,25 @@ export function createPolicyStore(dir: string = dataDir()) {
     return theirs.size > ours.length && ours.every((key) => theirs.has(key));
   }
 
-  async function write(bundle: PolicyBundle, etag?: string): Promise<void> {
-    await ensureDataDir(dir);
-    // A build that understands FEWER fields does not get to flatten a record a
-    // wider one wrote.
-    //
-    // One `~/.aka` serves every host plugin on the machine — the data dir has no
-    // per-host segment — and they are separately published packages that upgrade
-    // on their own schedules, so a narrower build sharing this cache is the
-    // ordinary state of a machine during a rollout, not an edge case. Its pull
-    // parses the full body with its own schema, drops what it has never heard
-    // of, and would write that back; the wider build then reads a body missing
-    // a field it does understand and has to spend another pull recovering it,
-    // which the shared sync throttle can hold off for the length of its window.
-    // Two builds then take turns narrowing and repairing the same file.
-    //
-    // Skipping the write outright — rather than writing this bundle under the
-    // older stamp, or keeping the old body with the new validator — is what
-    // keeps the record self-consistent: the stored etag goes on describing the
-    // stored bytes, so the wider build's next pull replays a validator that
-    // still matches what it holds and the control plane answers 200 the moment
-    // there is anything new. Nothing is lost by returning here, because the
-    // caller cannot represent the fields already on disk.
-    //
-    // Two overlapping children can still interleave read and publish. That race
-    // is benign and is not worth a lock: the publish below is atomic, so the
-    // loser's bytes are whole, and a narrowing that does slip through is exactly
-    // what `read` above withholds the validator for.
+  /** The record currently on disk, unvalidated, or null when there is none. */
+  async function priorRecord(): Promise<Record<string, unknown> | null> {
     try {
-      const prior: unknown = JSON.parse(await readFile(file, 'utf8'));
-      if (
-        typeof prior === 'object' &&
-        prior !== null &&
-        knowsMoreThanThisBuild((prior as { shapeId?: unknown }).shapeId)
-      ) {
-        return;
-      }
+      const parsed: unknown = JSON.parse(await readFile(file, 'utf8'));
+      return typeof parsed === 'object' && parsed !== null
+        ? (parsed as Record<string, unknown>)
+        : null;
     } catch {
-      // No cache, or one this build cannot read — either way there is nothing
-      // wider to protect, and the write proceeds.
+      return null;
     }
-    const stored: StoredPolicyBundle = {
-      bundle,
-      fetchedAtMs: Date.now(),
-      // Stamped on EVERY write, the 304 arm's included: that arm hands back the
-      // bundle it already holds, and the point of the stamp is to describe the
-      // build that last narrowed those bytes, which is this one.
-      shapeId: POLICY_BUNDLE_SHAPE_ID,
-      ...(etag === undefined ? {} : { etag }),
-    };
+  }
+
+  /**
+   * Publish one record atomically.
+   *
+   * Shared by both arms of `write` so the tmp-and-rename reasoning below is
+   * stated once and neither arm can drift into a plain overwrite.
+   */
+  async function publishRecord(record: StoredPolicyBundle): Promise<void> {
     // Per-write suffix, not a fixed `${file}.tmp` — the same reasoning as
     // posture-store.ts and forward-policy.ts, which this file was the last in
     // the package not to follow. Two sync children can overlap (the throttle
@@ -180,7 +151,7 @@ export function createPolicyStore(dir: string = dataDir()) {
     const tmp = `${file}.${randomUUID()}.tmp`;
     try {
       // 0600: the policy bundle can carry org-specific rules and custom keywords
-      await writeFile(tmp, JSON.stringify(stored), {
+      await writeFile(tmp, JSON.stringify(record), {
         encoding: 'utf8',
         mode: DATA_FILE_MODE,
         flag: 'wx',
@@ -197,6 +168,74 @@ export function createPolicyStore(dir: string = dataDir()) {
       await rm(tmp, { force: true }).catch(() => undefined);
       throw err;
     }
+  }
+
+  /**
+   * Persist the bundle and the validator that confirmed it.
+   *
+   * `etag` is a second parameter rather than the caller handing over a whole
+   * `StoredPolicyBundle` so that `fetchedAtMs` keeps a single writer here —
+   * every caller stamping its own clock is how two cache entries end up
+   * disagreeing about what "fresh" means. The 304 arm expresses itself by
+   * passing the bundle it already holds back in with the new etag.
+   */
+  async function write(bundle: PolicyBundle, etag?: string): Promise<void> {
+    await ensureDataDir(dir);
+
+    // A build that understands FEWER fields does not get to flatten a record a
+    // wider one wrote.
+    //
+    // One `~/.aka` serves every host plugin on the machine — the data dir has no
+    // per-host segment — and they are separately published packages that upgrade
+    // on their own schedules, so a narrower build sharing this cache is the
+    // ordinary state of a machine during a rollout, not an edge case. Its pull
+    // parses the full body with its own schema, drops what it has never heard
+    // of, and would write that back; the wider build would then have to spend
+    // another pull recovering a field it does understand, which the shared sync
+    // throttle can hold off for a whole window. Two builds would take turns
+    // narrowing and repairing one file.
+    //
+    // Two overlapping children can still interleave this read and the publish.
+    // That race is benign and is not worth a lock: the publish is atomic, so the
+    // loser's bytes are whole, and a narrowing that does slip through is exactly
+    // what `read` withholds the validator for.
+    const prior = await priorRecord();
+    if (prior !== null && knowsMoreThanThisBuild(prior.shapeId)) {
+      // The wider body STAYS. What still advances is freshness, and only when
+      // the representation is the one this pull just confirmed: an equal
+      // `version` means the bytes already on disk ARE what this validator
+      // describes, so pairing them is self-consistent rather than the stale
+      // body under a fresh tag that would strand the wider build on a 304.
+      //
+      // Without this the record is never rewritten at all, and `fetchedAtMs`
+      // freezes the moment the wider plugin is removed — status would render an
+      // ever-growing "fetched N ago" and the posture report would tell the
+      // control plane the device had stopped syncing while it was in fact
+      // syncing successfully every window.
+      //
+      // When the versions differ the prior etag is stale anyway and pairing it
+      // with the old body would be exactly that mistake, so nothing is written
+      // and the wider build's own conditional pull repairs it.
+      const priorVersion = (prior.bundle as { version?: unknown } | undefined)?.version;
+      if (priorVersion === bundle.version) {
+        await publishRecord({
+          ...(prior as unknown as StoredPolicyBundle),
+          fetchedAtMs: Date.now(),
+          ...(etag === undefined ? {} : { etag }),
+        });
+      }
+      return;
+    }
+
+    await publishRecord({
+      bundle,
+      fetchedAtMs: Date.now(),
+      // Stamped on EVERY write, the 304 arm's included: that arm hands back the
+      // bundle it already holds, and the point of the stamp is to describe the
+      // build that last narrowed those bytes, which is this one.
+      shapeId: POLICY_BUNDLE_SHAPE_ID,
+      ...(etag === undefined ? {} : { etag }),
+    });
   }
 
   return { read, write, file };

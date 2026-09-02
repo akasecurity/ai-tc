@@ -158,11 +158,30 @@ export type PolicyBundle = z.infer<typeof PolicyBundle>;
  * narrowed, and pay a single unconditional refetch instead of being told
  * forever that nothing has changed.
  *
- * Keys, not their types. Fields here get ADDED; a field renamed to nothing or
- * retyped under an unchanged name is not a case this separates, and claiming
- * otherwise would make it read as a schema checksum, which it is not.
+ * NESTED KEYS ARE INCLUDED, and the top level alone would not have been enough.
+ * `Policy` and `ExceptionBundleEntry` are plain objects, so Zod narrows them
+ * exactly as it narrows the bundle — while `policies` and `exceptions` stay one
+ * unchanged key each. A build that widens `Policy` therefore moves no top-level
+ * key, its stamp reads as a match, and the same 304 replays the same narrowed
+ * policies: the identical trap one level down. `Policy.provenance` is the
+ * worked example, and it decides whether a device may locally re-assign a rule
+ * the deployment has authored.
+ *
+ * `Rule` is deliberately absent. It is a `strictObject`, so a widened rule
+ * fails the parse outright instead of being narrowed in silence — a loud
+ * failure needs no stamp to detect it.
+ *
+ * Keys, not their types. Fields here get ADDED; a field retyped under an
+ * unchanged name at a depth this does not walk is not a case it separates, and
+ * claiming otherwise would make it read as a schema checksum, which it is not.
  */
-export const POLICY_BUNDLE_SHAPE_ID: string = Object.keys(PolicyBundle.shape).sort().join(',');
+export const POLICY_BUNDLE_SHAPE_ID: string = [
+  ...Object.keys(PolicyBundle.shape),
+  ...Object.keys(Policy.shape).map((key) => `policies.${key}`),
+  ...Object.keys(ExceptionBundleEntry.shape).map((key) => `exceptions.${key}`),
+]
+  .sort()
+  .join(',');
 
 // Enforcement-coverage denominators use this, NOT DEFAULT_ACTIONS: 'config'
 // findings only observe (see above), so a config policy can never be "covered"

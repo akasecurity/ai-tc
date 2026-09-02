@@ -284,3 +284,75 @@ describe('a narrower build does not flatten a wider record', () => {
     expect((await store.read())?.bundle.version).toBe('v2');
   });
 });
+
+// Declining to narrow a record is only half the answer. The narrower build runs
+// every window for the life of the install, so what it does on the way past
+// decides whether the device keeps polling cheaply and keeps reporting itself
+// as alive — or downloads the whole bundle forever while its console says it
+// stopped syncing.
+describe('a narrower build stays a good citizen of a wider record', () => {
+  const CACHE = 'policy-cache.json';
+  const WIDER = [...POLICY_BUNDLE_SHAPE_ID.split(','), 'zzzFutureField'].sort().join(',');
+
+  async function record(d: string): Promise<Record<string, unknown>> {
+    return JSON.parse(await readFile(join(d, CACHE), 'utf8')) as Record<string, unknown>;
+  }
+
+  async function restamp(d: string, shapeId: string): Promise<void> {
+    const file = join(d, CACHE);
+    const r = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
+    r.shapeId = shapeId;
+    await writeFile(file, JSON.stringify(r), 'utf8');
+  }
+
+  it('REPLAYS the validator of a record that knows more than it does', async () => {
+    // Without this the narrower build sends no If-None-Match every window and
+    // the control plane answers with the whole bundle each time — the cheap
+    // poll turned into a scheduled full transfer. A wider record already
+    // carries everything this build declares, so its validator is one this
+    // build has no reason to refetch against.
+    const d = await dir();
+    const store = createPolicyStore(d);
+    await store.write(bundle('v1'), 'W/"wide"');
+    await restamp(d, WIDER);
+    expect((await store.read())?.etag).toBe('W/"wide"');
+  });
+
+  it('advances freshness when the version it fetched is the one on disk', async () => {
+    // The wider body stays and the record still moves: an equal `version` means
+    // the bytes on disk ARE what this validator describes. Without it
+    // `fetchedAtMs` freezes the moment the wider plugin is removed, and the
+    // device reports itself as having stopped syncing while it is syncing.
+    const d = await dir();
+    const store = createPolicyStore(d);
+    await store.write(bundle('same'), 'W/"old"');
+    await restamp(d, WIDER);
+    const before = (await record(d)).fetchedAtMs as number;
+    await new Promise((r) => setTimeout(r, 2));
+
+    await store.write(bundle('same'), 'W/"new"');
+
+    const after = await record(d);
+    expect(after.shapeId, "the wider build's stamp is untouched").toBe(WIDER);
+    expect((after.bundle as { version: string }).version, 'the wider body stays').toBe('same');
+    expect(after.etag, 'the confirmed validator is adopted').toBe('W/"new"');
+    expect(after.fetchedAtMs as number, 'freshness advanced').toBeGreaterThan(before);
+  });
+
+  it('writes NOTHING when the version it fetched differs from the one on disk', async () => {
+    // Pairing a stale body with a fresh validator is the one mistake that would
+    // strand the wider build on a 304 against bytes the server has moved past.
+    // Leaving the record alone keeps it self-consistent, and the wider build's
+    // own conditional pull repairs it.
+    const d = await dir();
+    const store = createPolicyStore(d);
+    await store.write(bundle('old'), 'W/"old"');
+    await restamp(d, WIDER);
+
+    await store.write(bundle('new'), 'W/"new"');
+
+    const after = await record(d);
+    expect((after.bundle as { version: string }).version).toBe('old');
+    expect(after.etag, 'still describes the body beside it').toBe('W/"old"');
+  });
+});

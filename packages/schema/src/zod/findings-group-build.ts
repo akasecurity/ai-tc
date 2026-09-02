@@ -526,6 +526,10 @@ function buildHaystack(g: FindingGroup, extra?: string): string {
     ...g.instances.map((i) => i.file),
     ...g.instances.map((i) => (i.toolName ? `via ${i.toolName}` : '')),
     ...g.instances.map((i) => i.id),
+    // The people: the whole group's list when the store folded one, plus the
+    // preview's own — the two overlap, and a haystack does not mind.
+    ...(g.users ?? []).map((u) => u.name),
+    ...g.instances.map((i) => i.user?.name ?? ''),
     ...(extra === undefined ? [] : [extra]),
   ]
     .join(' ')

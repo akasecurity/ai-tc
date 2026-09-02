@@ -76,6 +76,10 @@ export default async function ExceptionsPage({
   // under an older key (or under a key that is now missing) is unapprovable
   // already, so counting it would overstate the loss.
   const approvableBlocked = retained.filter((b) => isBlockedRowApprovable(b, keyState)).length;
+  // A relative label must be calculated against the exact same instant during
+  // SSR and hydration; otherwise crossing a minute boundary can change its text.
+  // eslint-disable-next-line react-hooks/purity -- serialized to the client for hydration parity
+  const renderedAt = Date.now();
 
   return (
     <ExceptionsClient
@@ -86,6 +90,7 @@ export default async function ExceptionsPage({
       keyState={keyState}
       activePermanent={activePermanent}
       approvableBlocked={approvableBlocked}
+      renderedAt={renderedAt}
     />
   );
 }

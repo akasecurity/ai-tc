@@ -18,6 +18,7 @@ import type { FloorRule, PackPolicyFloor } from '../policy-floor.ts';
 import {
   controlPlanePolicyFloor,
   openControlPlaneFloors,
+  packEnablementRefusal,
   policyAssignmentRefusal,
   PolicyFloorError,
 } from '../policy-floor.ts';
@@ -762,8 +763,27 @@ export class SqliteInstalledPacksRepository implements InstalledPacksReadPort {
     return Number(res.changes) > 0;
   }
 
-  /** Enable or disable one installed pack. */
+  /**
+   * Enable or disable one installed pack.
+   *
+   * On an ATTACHED machine a detection the organization's bundle governs at all
+   * may not be switched OFF here — see packEnablementRefusal for why that is not
+   * merely another point below the floor, and why re-enabling stays open. Like
+   * the assignment above, the check belongs at this write path rather than on a
+   * surface: this is the one device-local writer of the column, and a refusal
+   * that lived in a page would leave the CLI free.
+   */
   setEnabled(namespace: string, packId: string, enabled: boolean): boolean {
+    const floor = this.policyFloor(namespace, packId);
+    if (floor !== null) {
+      const refusal = packEnablementRefusal(enabled, floor);
+      if (refusal !== null) {
+        // No archetype was asked for, so `attempted` is null. The floor is
+        // still carried, because a surface reporting this wants to name what
+        // the organization requires of the detection it just kept switched on.
+        throw new PolicyFloorError(`${namespace}/${packId}`, null, floor.floor, refusal);
+      }
+    }
     const res = this.db
       .prepare(
         `UPDATE installed_packs SET enabled = :enabled, updated_at = :now

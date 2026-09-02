@@ -101,6 +101,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'normalizeHost',
   'openLocalDatabase',
   'overlayManagedSettings',
+  'packEnablementRefusal',
   'policyAssignmentRefusal',
   'promptId',
   'readCachedPolicyBundle',

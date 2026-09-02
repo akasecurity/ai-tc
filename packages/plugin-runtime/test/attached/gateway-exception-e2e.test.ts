@@ -121,6 +121,7 @@ function makeLocalStore(opts: {
     staleBinaryNotice: () => null,
     markCaptureDelivered: () => undefined,
     markCaptureOwed: () => undefined,
+    markAuditEventsDelivered: () => undefined,
   };
 }
 

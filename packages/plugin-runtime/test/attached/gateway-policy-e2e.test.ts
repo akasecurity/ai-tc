@@ -147,6 +147,7 @@ function makeLocalStore(bundle: PolicyBundle): DataGateway & LocalStoreMaintenan
     staleBinaryNotice: () => null,
     markCaptureDelivered: () => undefined,
     markCaptureOwed: () => undefined,
+    markAuditEventsDelivered: () => undefined,
   };
 }
 

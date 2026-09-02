@@ -447,6 +447,16 @@ export class StandaloneDataGateway implements DataGateway, LocalStoreMaintenance
     this.db.markCaptureDelivered(event, atMs);
   }
 
+  // Implemented, not stubbed, for the same reason its sibling above is: the
+  // attached gateway is a DECORATOR over an instance of this class
+  // (`attached/factory.ts` builds one and passes it as `deps.local`), so every
+  // stamp the live forward makes lands here with a non-empty array. This is the
+  // production write path for that feature, not a shape-satisfying no-op — a
+  // machine that is merely standalone simply never calls it.
+  markAuditEventsDelivered(events: readonly AuditEventInput[], atMs: number): void {
+    this.db.markAuditEventsDelivered(events, atMs);
+  }
+
   staleBinaryNotice(currentVersion: string): string | null {
     try {
       // newestRecordedBinary() maxes across ALL recorders (plugin + aka-cli), and

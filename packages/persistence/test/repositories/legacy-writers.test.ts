@@ -34,6 +34,13 @@
 //      runtime merges the control plane's bundle over the local one raise-only
 //      on every hook, so the weaker row is clamped back before it decides
 //      anything.
+//   5. installed_packs.enabled is APP-guarded, not gated, in the same shape and
+//      with a NARROWER bound: the current repository refuses to switch off a
+//      pack the control plane governs at all, and the trigger does not cover
+//      that column either. A raw pre-guard writer can still disable the row,
+//      and unlike the assignment above the raise-only merge cannot clamp it
+//      back — the merge re-supplies an ACTION for a rule, not the rule, and a
+//      disabled pack contributes no rules at all.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -352,5 +359,79 @@ describe('legacy policy_id writer vs installed_packs (floor boundary)', () => {
     expect(db.installedPacks.setPolicy('aka', 'secrets', 'monitor')).toBe(true);
     db.close();
     expect(policyIdRow('secrets')).toBe('monitor');
+  });
+});
+
+// ─── Invariant 5: enabled is app-guarded, not gated ──────────────────────────
+
+// ╔═══════════════════════════════════════════════════════════════════════╗
+// ║ DO NOT EDIT — PINNED ARTIFACT. Vendored VERBATIM from setEnabled. The   ║
+// ║ guard added in front of it changed no byte of the statement, so this is ║
+// ║ what every shipped generation executes — pre-guard ones with nothing in ║
+// ║ front. Any reformat silently voids the guarantee while the test stays   ║
+// ║ green.                                                                  ║
+// ╚═══════════════════════════════════════════════════════════════════════╝
+const LEGACY_PACK_ENABLE = `UPDATE installed_packs SET enabled = :enabled, updated_at = :now
+         WHERE namespace = :namespace AND pack_id = :packId`;
+
+function enabledRow(packId: string): boolean {
+  const raw = new DatabaseSync(join(store.dataDir, DB_FILENAME));
+  const row = raw.prepare(`SELECT enabled FROM installed_packs WHERE pack_id = ?`).get(packId) as
+    { enabled: number } | undefined;
+  raw.close();
+  return row?.enabled === 1;
+}
+
+describe('legacy enabled writer vs installed_packs (governed-pack boundary)', () => {
+  it('the CURRENT repository refuses to switch off a governed detection', () => {
+    attachWithSecretBlockFloor();
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+
+    expect(() => db.installedPacks.setEnabled('aka', 'secrets', false)).toThrow(PolicyFloorError);
+    // Re-enabling stays open, so the guard is a direction and not a freeze.
+    expect(db.installedPacks.setEnabled('aka', 'secrets', true)).toBe(true);
+    db.close();
+    expect(enabledRow('secrets')).toBe(true);
+  });
+
+  it('a RAW legacy switch-off can still disable the row — the documented, bounded gap', () => {
+    // The migration 0006 write gate is BEFORE UPDATE OF version, name,
+    // rules_json, so it does not cover this column either, and nothing at the
+    // database level stops a pre-guard writer. The bound is NARROWER than the
+    // policy_id one and worth stating plainly: a disabled pack contributes no
+    // rules to the local bundle, and the attached runtime's raise-only merge
+    // re-supplies an action for a rule rather than the rule itself — so where
+    // the cached bundle carries no rules of its own, this really does stop the
+    // detection firing until something switches it back on. What holds the line
+    // is that every current writer goes through the repository.
+    attachWithSecretBlockFloor();
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    db.close();
+
+    const legacy = new DatabaseSync(join(store.dataDir, DB_FILENAME));
+    try {
+      legacy.prepare(LEGACY_PACK_ENABLE).run({
+        enabled: 0,
+        now: Date.now(),
+        namespace: 'aka',
+        packId: 'secrets',
+      });
+    } finally {
+      legacy.close();
+    }
+    expect(enabledRow('secrets')).toBe(false); // the gap
+    // And the bound the gate does hold: the pack's content is untouched, so the
+    // rules are still there to be re-enabled.
+    expect(installedRow('secrets')).toEqual({ version: '2.0.0', rules: 1 });
+  });
+
+  it('a raw switch-off stays open on a machine no control plane governs', () => {
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    expect(db.installedPacks.setEnabled('aka', 'secrets', false)).toBe(true);
+    db.close();
+    expect(enabledRow('secrets')).toBe(false);
   });
 });

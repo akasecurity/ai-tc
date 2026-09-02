@@ -11,6 +11,7 @@ const maintenance: LocalStoreMaintenance = {
   staleBinaryNotice: () => null,
   markCaptureDelivered: () => undefined,
   markCaptureOwed: () => undefined,
+  markAuditEventsDelivered: () => undefined,
 };
 
 function gatewayWith(extra: object): DataGateway {
@@ -54,7 +55,7 @@ describe('offersMaintenance', () => {
 });
 
 describe('hasLocalStoreMaintenance', () => {
-  it('accepts a gateway offering all five members', () => {
+  it('accepts a gateway offering every member', () => {
     expect(hasLocalStoreMaintenance(gatewayWith(maintenance))).toBe(true);
   });
 

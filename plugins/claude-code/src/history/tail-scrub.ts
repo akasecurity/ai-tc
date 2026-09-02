@@ -17,10 +17,14 @@
  * span it cannot vault degrades to the one-way `[REDACTED:CATEGORY]`
  * placeholder, so a fault destroys residue rather than leaking it. The one
  * tokenizer outcome treated as a fault HERE is the unclassifiable blanket
- * (a changed line with no pointers and no degraded spans — the tokenizer could
- * not tell secret from clean): rewriting whole transcript lines to a blanket
- * placeholder would destroy the user's transcript, so the scrub aborts with
- * the file untouched instead.
+ * (a changed line the tokenizer accounted for in NONE of its three counts —
+ * it could not tell secret from clean): rewriting whole transcript lines to a
+ * blanket placeholder would destroy the user's transcript, so the scrub aborts
+ * with the file untouched instead. All three counts have to be read, not just
+ * the first two: a span the caller's pack policy said to strike one-way is
+ * reported as `redacted`, mints no pointer and degrades nothing, so reading
+ * two counts would abort the whole file on every line a Redact (non-vault)
+ * detection legitimately rewrote.
  */
 import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 
@@ -39,7 +43,16 @@ export interface TailScrubDeps {
   tokenizeText(
     text: string,
     opts?: { findings?: unknown[] },
-  ): Promise<{ text: string; pointers: string[]; degraded: { category: string }[] }>;
+  ): Promise<{
+    text: string;
+    pointers: string[];
+    degraded: { category: string }[];
+    // Spans struck one-way because policy said Redact rather than Redact &
+    // Vault. Required, not optional: it is the third reading the blanket test
+    // below depends on, and a tokenizer that omits it would silently put every
+    // policy-struck line back under the abort.
+    redacted: { category: string }[];
+  }>;
   // The artifact roots whose contained files may be rewritten in place.
   scope: ReturnType<typeof platformRedactionScope>;
   // Whole-file read cap in bytes; a larger file is skipped (null). Defaults to
@@ -79,9 +92,17 @@ export async function scrubTranscriptTail(
       if (line === '') continue;
       const result = await deps.tokenizeText(line);
       if (result.text === line) continue;
-      // A changed line that minted no pointer and degraded no span is the
-      // tokenizer's unclassifiable blanket — abort rather than destroy lines.
-      if (result.pointers.length === 0 && result.degraded.length === 0) return null;
+      // A changed line the tokenizer accounted for in none of its three
+      // counts is the unclassifiable blanket — abort rather than destroy
+      // lines. A policy-struck span lands in `redacted`, which is why that
+      // count belongs in the test: it is a deliberate rewrite, not a blanket.
+      if (
+        result.pointers.length === 0 &&
+        result.degraded.length === 0 &&
+        result.redacted.length === 0
+      ) {
+        return null;
+      }
       lines[i] = result.text;
       rewritten += 1;
     }

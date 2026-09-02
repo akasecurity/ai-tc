@@ -1,9 +1,16 @@
 'use server';
 
+import { PolicyFloorError } from '@akasecurity/persistence';
 import { BuiltinPolicyId, splitDetectionId } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
 import { db } from '../../lib/db';
+import {
+  DETECTION_POLICY_INVALID,
+  DETECTION_POLICY_MISSING,
+  DETECTION_POLICY_WRITE_ERROR,
+  policyFloorRefusal,
+} from '../../lib/detection-refusals';
 
 // Per-detection enforcement-policy assignment and enable/disable, persisted to
 // the local store. Server Actions call the persistence write facade (off the
@@ -13,17 +20,59 @@ import { db } from '../../lib/db';
 // The local-store writes + revalidatePath are synchronous, but Next.js requires
 // every 'use server' export to be async — hence the require-await disables below.
 
-/** Assign one of the built-in enforcement policies to a detection. */
+/**
+ * The outcome of a policy assignment, in terms the client can render.
+ *
+ * This RETURNS a refusal rather than throwing one, for the reason every
+ * mutating action on this dashboard does: a rejected Server Action escalates to
+ * the route error boundary and replaces the whole page. But it also no longer
+ * returns NOTHING, which is what it used to do — a write refused by the control
+ * plane's floor left the picker showing the choice the user made, the store
+ * holding a different one, and enforcement applying a third. A refusal nobody
+ * can see is indistinguishable from a picker that ignores you.
+ */
+export interface SetDetectionPolicyResult {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Assign one of the built-in enforcement policies to a detection.
+ *
+ * On an ATTACHED machine the store refuses an assignment below what the
+ * organization's policy requires, and refuses any re-assignment at all for a
+ * detection the organization has written a policy for. Those arrive as
+ * PolicyFloorError and are reported as the organization's decision — never as a
+ * failure, because retrying cannot help and the user has done nothing wrong.
+ */
 // eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
-export async function setDetectionPolicy(id: string, policyId: string): Promise<void> {
+export async function setDetectionPolicy(
+  id: string,
+  policyId: string,
+): Promise<SetDetectionPolicyResult> {
   const parts = splitDetectionId(id);
-  if (!parts) return;
-  // Defensive: the picker only emits built-in ids, but setPolicy THROWS on an
-  // unknown one and the caller can't observe a rejected Server Action — validate
-  // here and no-op on anything unexpected instead of crashing the action.
-  if (!BuiltinPolicyId.safeParse(policyId).success) return;
-  db().installedPacks.setPolicy(parts.namespace, parts.packId, policyId);
+  // Both malformed inputs answer with the same sentence: only a stale or
+  // hand-made client sends either, the remedy for both is a reload, and neither
+  // message may quote what was sent.
+  if (!parts) return { ok: false, error: DETECTION_POLICY_INVALID };
+  // The picker only emits built-in ids, but setPolicy throws a plain Error on an
+  // unknown one — validate first so that branch stays a crash-shaped fault
+  // rather than a routine input answer.
+  if (!BuiltinPolicyId.safeParse(policyId).success) {
+    return { ok: false, error: DETECTION_POLICY_INVALID };
+  }
+  let written: boolean;
+  try {
+    written = db().installedPacks.setPolicy(parts.namespace, parts.packId, policyId);
+  } catch (error) {
+    if (error instanceof PolicyFloorError) return { ok: false, error: policyFloorRefusal(error) };
+    return { ok: false, error: DETECTION_POLICY_WRITE_ERROR };
+  }
   revalidatePath('/detections');
+  // No row changed: the pack this page rendered is not installed any more. Said
+  // plainly, because the revalidated page below is about to stop showing it and
+  // an unexplained disappearance reads as the write having broken something.
+  return written ? { ok: true } : { ok: false, error: DETECTION_POLICY_MISSING };
 }
 
 /** Enable or disable a detection. */

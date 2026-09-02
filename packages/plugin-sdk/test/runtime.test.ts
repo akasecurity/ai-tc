@@ -7,6 +7,7 @@ import type { PolicyBundle, Rule, WorkspaceSettings } from '@akasecurity/schema'
 import { describe, expect, it } from 'vitest';
 
 import type { CaptureRecord, DataGateway } from '../src/data-gateway.ts';
+import { contentHashOf } from '../src/events.ts';
 import { registerRulePack } from '../src/rule-packs.ts';
 import { createPluginRuntime } from '../src/runtime.ts';
 
@@ -30,6 +31,28 @@ registerRulePack('test-pack', [
     severity: 'medium',
     matcher: { type: 'keyword', keywords: ['PII_MARKER'] },
     examples: ['PII_MARKER'],
+  },
+  // Two markers whose spans PARTIALLY overlap on the text below — neither
+  // contains the other, and each carries bytes the other does not. That is the
+  // shape redact()'s region folding has to survive; a containment pair would
+  // pass whether or not the folding worked.
+  {
+    specVersion: 1,
+    id: 'test/overlap-left',
+    name: 'Test overlap left',
+    category: 'secret',
+    severity: 'critical',
+    matcher: { type: 'keyword', keywords: ['AAA_BBB'] },
+    examples: ['AAA_BBB'],
+  },
+  {
+    specVersion: 1,
+    id: 'test/overlap-right',
+    name: 'Test overlap right',
+    category: 'pii',
+    severity: 'low',
+    matcher: { type: 'keyword', keywords: ['BBB_CCC'] },
+    examples: ['BBB_CCC'],
   },
 ]);
 
@@ -329,6 +352,73 @@ describe('rulesComplete — the bundle rules replace the compiled-in packs', () 
   });
 });
 
+// The collapse across a capture's findings used to index a hand-listed
+// worst-first array private to the runtime; it now asks the one schema ladder.
+// The orderings are the same fact, so the only thing worth pinning is that the
+// fact did not move: strongest wins, whichever finding carries it.
+describe('decision collapse — strongest action wins', () => {
+  const rungs = [
+    { weaker: 'allow', stronger: 'log' },
+    { weaker: 'log', stronger: 'warn' },
+    { weaker: 'warn', stronger: 'redact' },
+    { weaker: 'redact', stronger: 'block' },
+  ] as const;
+
+  for (const { weaker, stronger } of rungs) {
+    it(`picks ${stronger} over ${weaker}, whichever finding carries it`, async () => {
+      // Run it both ways round: the collapse must not depend on the order the
+      // scan happened to emit the findings in.
+      for (const [secretAction, piiAction] of [
+        [stronger, weaker],
+        [weaker, stronger],
+      ] as const) {
+        const b = bundle();
+        b.policies = [
+          {
+            id: randomUUID(),
+            scope: 'global',
+            target: { ruleId: 'test/secret-marker' },
+            action: secretAction,
+            enabled: true,
+          },
+          {
+            id: randomUUID(),
+            scope: 'global',
+            target: { ruleId: 'test/pii-marker' },
+            action: piiAction,
+            enabled: true,
+          },
+        ];
+        const rt = createPluginRuntime(fakeGateway(b), settings());
+        const result = await rt.processText('deploy with SECRET_MARKER and PII_MARKER now');
+        await rt.close();
+        expect(result.action).toBe(stronger);
+      }
+    });
+  }
+
+  it("floors at 'log' when every finding resolved to allow", async () => {
+    // 'allow' is weaker than the floor the collapse starts from, so a capture
+    // made entirely of allowed findings still reports the benign 'log' — an
+    // allowed value is recorded, never announced as an enforcement decision.
+    const b = bundle();
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { category: 'secret' },
+        action: 'allow',
+        enabled: true,
+      },
+    ];
+    const rt = createPluginRuntime(fakeGateway(b), settings());
+    const result = await rt.processText('deploy with SECRET_MARKER now');
+    await rt.close();
+    expect(result.action).toBe('log');
+    expect(result.findings).toHaveLength(1);
+  });
+});
+
 describe('capture', () => {
   it('records the event + masked findings and returns the same decision', async () => {
     const gw = fakeGateway(bundle());
@@ -348,9 +438,125 @@ describe('capture', () => {
     expect(record?.findings[0]?.actionTaken).toBe('warn');
     // The raw secret is masked before it reaches the gateway.
     expect(record?.findings[0]?.maskedMatch).not.toContain('SECRET_MARKER');
-    // Stored content has the secret masked; content_hash is of the original.
-    expect(record?.event.content).not.toContain('SECRET_MARKER');
-    expect(record?.event.content).toContain('[REDACTED:SECRET]');
+    // Warn only warns: the value crossed intact, so the stored record shows it
+    // intact. Masking here would describe a stricter capture than the one that
+    // happened. content_hash is of the original either way.
+    expect(record?.event.content).toBe('deploy with SECRET_MARKER now');
+    expect(record?.event.contentHash).toBe(contentHashOf('deploy with SECRET_MARKER now'));
+  });
+
+  it('masks the at-rest content only for findings whose own action is redact or stronger', async () => {
+    const b = bundle();
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'test/secret-marker' },
+        action: 'redact',
+        enabled: true,
+      },
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'test/pii-marker' },
+        action: 'log',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
+    const rt = createPluginRuntime(gw, settings());
+    const text = 'deploy with SECRET_MARKER and PII_MARKER now';
+    await rt.capture({ kind: 'prompt', sourceTool: 'claude-code', text });
+    await rt.close();
+
+    const content = gw.records[0]?.event.content;
+    // The redacted detection's span is gone...
+    expect(content).not.toContain('SECRET_MARKER');
+    // ...and the positive control on the SAME bytes: a Monitor detection was
+    // asked to log the value, not strip it, so its span is still there. Without
+    // this the absence assertion above would also pass on an empty string.
+    expect(content).toContain('PII_MARKER');
+    expect(content).toContain('[REDACTED:SECRET]');
+    // Hashed over the ORIGINAL, whatever was masked.
+    expect(gw.records[0]?.event.contentHash).toBe(contentHashOf(text));
+  });
+
+  it('masks a block-action finding at rest — block outranks redact', async () => {
+    const b = bundle();
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'test/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
+    const rt = createPluginRuntime(gw, settings());
+    await rt.capture({
+      kind: 'prompt',
+      sourceTool: 'claude-code',
+      text: 'deploy with SECRET_MARKER now',
+    });
+    await rt.close();
+
+    const content = gw.records[0]?.event.content;
+    expect(content).not.toContain('SECRET_MARKER');
+    // Positive control on the same bytes: the surrounding text survived, so the
+    // absence above is a mask and not an empty or wholesale-destroyed record.
+    expect(content).toContain('deploy with ');
+    expect(content).toContain('[REDACTED:SECRET]');
+  });
+
+  // engine.redact() folds OVERLAPPING findings into one region covering their
+  // union, so narrowing the input to the redact-or-stronger findings could in
+  // principle leave a masked span only PARTLY covered — a security regression
+  // that would read as a smaller placeholder. It cannot: every finding handed
+  // to redact() lies wholly inside a region, and dropping the log-action
+  // neighbour only shrinks the region back to the masked span itself.
+  it('fully masks a redact-action span that overlaps a log-action span', async () => {
+    const b = bundle();
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'test/overlap-left' },
+        action: 'redact',
+        enabled: true,
+      },
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'test/overlap-right' },
+        action: 'log',
+        enabled: true,
+      },
+    ];
+    const gw = fakeGateway(b);
+    const rt = createPluginRuntime(gw, settings());
+    // 'AAA_BBB' spans [2,9) and 'BBB_CCC' spans [6,13): they share 'BBB' and
+    // each keeps bytes of its own.
+    const text = 'x AAA_BBB_CCC y';
+    const result = await rt.capture({ kind: 'prompt', sourceTool: 'claude-code', text });
+    await rt.close();
+
+    // Both rules matched, at their own actions.
+    const byRule = new Map(gw.records[0]?.findings.map((f) => [f.ruleId, f.actionTaken] as const));
+    expect(byRule.get('test/overlap-left')).toBe('redact');
+    expect(byRule.get('test/overlap-right')).toBe('log');
+    const content = gw.records[0]?.event.content;
+    // Not one character of the redact-action span survives — neither its own
+    // head 'AAA' nor the 'BBB' it shares with the log-action span.
+    expect(content).not.toContain('AAA');
+    expect(content).not.toContain('BBB');
+    expect(content).toContain('[REDACTED:SECRET]');
+    // Positive controls on the same bytes: the record is a real masked capture
+    // rather than an empty or wholesale-destroyed one, the log-action span's
+    // own tail survived, and the capture itself did redact.
+    expect(content).toContain('x ');
+    expect(content).toContain('_CCC y');
+    expect(result.action).toBe('redact');
   });
 
   it('records each finding at its own action, not the capture-wide decision', async () => {

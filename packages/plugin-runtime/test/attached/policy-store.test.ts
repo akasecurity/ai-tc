@@ -2,7 +2,7 @@ import { mkdtemp, readdir, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { PolicyBundle } from '@akasecurity/schema';
+import type { Policy, PolicyBundle } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { createPolicyStore } from '../../src/attached/policy-store.ts';
@@ -18,6 +18,20 @@ const bundle = (version: string): PolicyBundle => ({
   customKeywords: [],
   fetchedAt: '2026-08-19T00:00:00.000Z',
 });
+
+// A policy as the control plane authored it, rather than an expansion of a
+// built-in archetype. Spelled out here because what this file checks is which
+// of its fields survive `PolicyBundle.parse`.
+const POLICY: Policy = {
+  id: '0b3f5f6e-6c1a-4a4f-9a2e-6c9d1f0c9a11',
+  scope: 'global',
+  target: { category: 'secret' },
+  action: 'block',
+  enabled: true,
+  kind: 'custom',
+};
+
+const authored = (version: string): PolicyBundle => ({ ...bundle(version), policies: [POLICY] });
 
 // policy-cache.json is the only thing standing between an attached device and
 // enforcing local-only. A torn or missing cache is fail-open by design — read()
@@ -81,5 +95,47 @@ describe('the policy cache publishes atomically', () => {
     const store = createPolicyStore(d);
     await writeFile(store.file, '{ this is not json', 'utf8');
     await expect(store.read()).resolves.toBeNull();
+  });
+
+  /**
+   * `read()` parses through `PolicyBundle`, and Zod STRIPS what the shape does
+   * not declare. So every field a policy carries across this cache is only ever
+   * present because the schema names it — a field the control plane sends and
+   * the schema has not heard of reaches disk and then vanishes on the way back,
+   * with nothing anywhere reporting a loss.
+   *
+   * `kind` is the one whose loss is silent AND consequential: it marks a policy
+   * as AUTHORED against the deployment, which is what locks the rules it targets
+   * out of local re-assignment. A device that reads the bundle back without it
+   * goes on enforcing the action while quietly handing the override back.
+   */
+  it("keeps a policy's authored `kind` across the round trip", async () => {
+    const d = await dir();
+    const store = createPolicyStore(d);
+    await store.write(authored('v1'));
+    const got = await store.read();
+    expect(got?.bundle.policies[0]?.kind).toBe('custom');
+  });
+
+  it('leaves `kind` absent when the producer sent none', async () => {
+    // The control for the case above: absent must stay absent rather than being
+    // defaulted to a marker nobody sent. `kind` absent reads as 'builtin', and a
+    // builtin policy is the one a device MAY still re-assign locally.
+    const d = await dir();
+    const store = createPolicyStore(d);
+    // Built by OMISSION rather than by setting `kind: undefined`, which under
+    // exactOptionalPropertyTypes is a different value from an absent key — and
+    // an absent key is what an older producer actually sends.
+    const builtinPolicy: Policy = {
+      id: POLICY.id,
+      scope: POLICY.scope,
+      target: POLICY.target,
+      action: POLICY.action,
+      enabled: POLICY.enabled,
+    };
+    await store.write({ ...bundle('v1'), policies: [builtinPolicy] });
+    const got = await store.read();
+    expect(got?.bundle.policies).toHaveLength(1);
+    expect(got?.bundle.policies[0]?.kind).toBeUndefined();
   });
 });

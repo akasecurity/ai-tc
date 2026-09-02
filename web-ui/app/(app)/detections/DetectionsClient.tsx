@@ -2,6 +2,7 @@
 
 import {
   DetectionDetailView,
+  type DetectionPolicyFloor,
   DetectionsListView,
   MatcherModal,
   provenanceState,
@@ -21,6 +22,14 @@ import {
   setDetectionPolicy,
 } from './actions';
 import { buildDetectionsParams } from './filters';
+
+// Fallbacks for the two ways a policy write can fail without the action naming
+// a reason: a result that says not-ok and carries no message, and a call that
+// never returned one at all. Both are faults rather than refusals, so both say
+// what the user can do about it.
+const DEFAULT_POLICY_ERROR = 'That change could not be saved.';
+const TRANSPORT_POLICY_ERROR =
+  'That change could not be sent — check that the dashboard is still running and try again.';
 
 // Tabs: updates come from the available_packs mirror (what the running
 // plugin/CLI ships); there is no local custom/customized rule model.
@@ -47,12 +56,19 @@ export function DetectionsClient({
   filter,
   query: initialQuery,
   selectedId,
+  floors,
 }: {
   list: ListDetectionsResponse;
   detail: DetectionDetail | null;
   filter: string;
   query: string;
   selectedId: string;
+  /**
+   * Per-detection control-plane constraints, computed on the server (they need
+   * the local store) and keyed by detection id. Empty on a standalone machine,
+   * which is every install that has not attached.
+   */
+  floors: Record<string, DetectionPolicyFloor>;
 }) {
   const pathname = usePathname();
   // Navigation transition (filter/search/selection pushes) — distinct from the
@@ -69,6 +85,11 @@ export function DetectionsClient({
   // modal's confirm as "Updating…"/disabled while a mere enable-toggle or
   // policy change is in flight (and vice versa).
   const [isUpdating, startUpdate] = useTransition();
+  // A policy write the store refused, in the words the user reads. Held here
+  // rather than swallowed in the action, because the store's floor means a
+  // click can legitimately fail — and a picker that snaps back with nothing on
+  // screen is the defect this state exists to close.
+  const [policyError, setPolicyError] = useState<string | null>(null);
 
   // id → latest version, for the per-row amber update badges. Derived straight
   // from the list items (the store sets latestVersion only when a newer
@@ -78,6 +99,10 @@ export function DetectionsClient({
     for (const i of list.items) if (i.latestVersion) m.set(i.id, i.latestVersion);
     return m;
   }, [list.items]);
+
+  // The server sends a plain record (functions and Maps are not what a Server
+  // Component should be trusted to hand across); the list view wants it keyed.
+  const floorsById = useMemo(() => new Map(Object.entries(floors)), [floors]);
 
   const buildUrl = useCallback(
     (opts: { filter: string; q: string; id?: string }) => {
@@ -131,10 +156,15 @@ export function DetectionsClient({
           }}
           onSelect={(id) => {
             setEditRuleId(null);
+            // The refusal belongs to the detection that produced it; carrying it
+            // to the next one would attribute an organization's constraint to a
+            // detection that is not under it.
+            setPolicyError(null);
             push({ filter, q: query, id });
           }}
           filterTabs={OSS_TABS}
           updatesById={updatesById}
+          floorsById={floorsById}
         />
 
         {/* detail */}
@@ -158,9 +188,21 @@ export function DetectionsClient({
                   void setDetectionEnabled(detail.id, !detail.enabled);
                 });
               }}
+              policyFloor={floors[detail.id] ?? null}
+              policyError={policyError}
               onChangePolicy={(policyId) => {
-                startTransition(() => {
-                  void setDetectionPolicy(detail.id, policyId);
+                startTransition(async () => {
+                  try {
+                    const result = await setDetectionPolicy(detail.id, policyId);
+                    setPolicyError(result.ok ? null : (result.error ?? DEFAULT_POLICY_ERROR));
+                  } catch {
+                    // The action is written to RETURN a refusal rather than
+                    // throw, but the CALL can still reject — a dropped
+                    // connection, a framework fault — and an unhandled rejection
+                    // inside a transition takes the page to the route error
+                    // boundary over something a retry would clear.
+                    setPolicyError(TRANSPORT_POLICY_ERROR);
+                  }
                 });
               }}
               onOpenUpdate={

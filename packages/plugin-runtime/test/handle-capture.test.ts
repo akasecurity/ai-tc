@@ -53,9 +53,10 @@ describe('handleCapture (standalone)', () => {
       { kind: 'prompt', sourceTool: 'claude-code', text },
       config(dir),
     );
-    // The bundled secrets pack is unassigned, so it monitors (log) by default —
-    // but at-rest masking is independent of the enforcement action: a detected
-    // secret is always stored masked, whatever the policy decides.
+    // The bundled secrets pack is unassigned, so it monitors (log) by default.
+    // At-rest masking FOLLOWS that decision rather than overriding it: only a
+    // span whose own action was redact or stronger is masked in the stored
+    // content, so a monitored detection is recorded exactly as it crossed.
     expect(result.action).toBe('log');
 
     const db = new DatabaseSync(join(dir, 'aka.db'));
@@ -74,9 +75,11 @@ describe('handleCapture (standalone)', () => {
     };
     db.close();
 
-    // Stored content has the secret masked; the original is recoverable only as a hash.
-    expect(row.content).not.toContain(AWS_EXAMPLE_KEY);
-    expect(row.content).toContain('[REDACTED:SECRET]');
+    // Monitored, so the stored content is the capture verbatim — no placeholder
+    // stands in for a value nothing was going to strip. The hash is over the
+    // original either way, so dedup is unaffected by what masking did or did not do.
+    expect(row.content).toBe(text);
+    expect(row.content).not.toContain('[REDACTED:SECRET]');
     expect(row.content_hash).toBe(createHash('sha256').update(text).digest('hex'));
   });
 

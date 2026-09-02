@@ -135,6 +135,16 @@ function hasValidVaultConsent(base: string | undefined): boolean {
 // Any fault yields an empty map (plain strike), never a throw: the glue is
 // built to never surface raw or throw, and this guard is belt-and-braces on
 // top of that.
+//
+// Deliberately NOT filtered by the assigned pack policy, unlike the automatic
+// paths (the hooks, and the transcript scrub behind them). Those are the pack
+// acting on its own, where Monitor has to mean the value is only logged. This
+// is the user reading a list of their own surfaced secrets and asking for these
+// ones to be struck — an instruction about specific values, not an enforcement
+// decision — and a Redact button that silently declined to strike what it was
+// pointed at would be a worse answer than the policy it was honouring. Monitor
+// still governs what reached the list: it stops nothing from being detected and
+// surfaced, which is exactly what makes it a choice the user can act on here.
 async function buildPointerReplacements(
   recovered: readonly RecoveredTarget[],
   base: string | undefined,

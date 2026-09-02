@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { join, sep } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import type {
@@ -340,7 +340,7 @@ function backupLegacyStore(db: DatabaseSync, file: string): string {
  * handle, which is the Windows file lock this exists to prevent — so the guard
  * is one window over the whole sequence rather than one per known thrower.
  */
-function openAndInitialize(file: string) {
+function openAndInitialize(file: string, base: string) {
   let db = openWithPragmas(file);
   try {
     // A legacy (tenant-bearing) aka.db can't be migrated forward onto the
@@ -366,7 +366,11 @@ function openAndInitialize(file: string) {
     tightenPerms(file);
 
     const policies = new SqlitePoliciesRepository(db);
-    const installedPacks = new SqliteInstalledPacksRepository(db);
+    // The layout base, so the pack-policy write path can see whether this
+    // machine is attached and what its control plane requires. See
+    // SqliteInstalledPacksRepository's constructor for why it is optional there
+    // and threaded from here.
+    const installedPacks = new SqliteInstalledPacksRepository(db, base);
     const repositories = {
       events: new SqliteEventsRepository(db),
       findings: new SqliteFindingsRepository(db),
@@ -439,7 +443,13 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     inspectionDefinitions,
     inspectionFindings,
     configInventory,
-  } = openAndInitialize(file);
+  } = openAndInitialize(
+    file,
+    // `dir` is always `<base>/data` — every caller resolves it through
+    // `dataDir()` — so its parent is the `~/.aka` base the layout splits into
+    // settings/ and data/, and the pack-policy floor needs both halves.
+    dirname(dir),
+  );
 
   function recordCapture(event: IngestEvent, detected: DetectedFindingWithKey[]): void {
     // Fail-open: dropping telemetry is acceptable; breaking the host session

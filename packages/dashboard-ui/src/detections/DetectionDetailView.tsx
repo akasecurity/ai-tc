@@ -9,6 +9,12 @@
 //   - unavailablePolicies : ids this host can render but not assign, each with a
 //     reason. Interactive AND restricted is a real combination — a control plane
 //     that writes policy but cannot deliver a reversible archetype to a device.
+//   - policyFloor     : what an attached machine's organization requires for THIS
+//     detection. Folded into the same restricted set, so the options offered are
+//     the options the store will accept.
+//   - policyError     : a write the store refused, in the user's words. Rendered
+//     at the control that produced it, because a refusal reported nowhere is
+//     indistinguishable from a picker that quietly ignores you.
 //   - onOpenUpdate    : present + update available ⇒ Update button in the provenance
 import type { DetectionDetail, DetectionRule } from '@akasecurity/schema';
 import { Button, SeverityBadge, Switch, toneColors } from '@akasecurity/ui-kit';
@@ -17,13 +23,12 @@ import type { ReactNode } from 'react';
 import type { IconComponent } from '../lib/icons.ts';
 import { SectionLabel } from '../shared/DetailFields.tsx';
 import { ChevronRightIcon, MoreVertIcon, PlusIcon } from '../shared/icons.tsx';
+import { CATEGORY_LABEL, MATCHER_META, matcherSummary, policyMeta } from './meta.ts';
 import {
-  CATEGORY_LABEL,
-  MATCHER_META,
-  matcherSummary,
-  PLACEHOLDER_POLICY,
-  policyMeta,
-} from './meta.ts';
+  type DetectionPolicyFloor,
+  effectivePolicyId,
+  unavailableUnderFloor,
+} from './policy-floor.ts';
 import { PolicyPicker } from './PolicyPicker.tsx';
 import { ProvenanceBlock } from './ProvenanceBlock.tsx';
 
@@ -77,6 +82,8 @@ export function DetectionDetailView({
   onToggleEnabled,
   onChangePolicy,
   unavailablePolicies,
+  policyFloor,
+  policyError,
   onOpenUpdate,
   onRecheck,
   unknownHint,
@@ -90,6 +97,16 @@ export function DetectionDetailView({
    * PolicyPicker. A host that knows of no restriction omits it.
    */
   unavailablePolicies?: Readonly<Record<string, string>> | undefined;
+  /**
+   * The control-plane constraint on this detection, or null/absent when the
+   * machine is its own authority. Restricts the picker to the archetypes the
+   * local store will actually accept — a machine may raise its organization's
+   * requirement, never lower it, and a detection the organization has written a
+   * policy for is not re-assignable here at all.
+   */
+  policyFloor?: DetectionPolicyFloor | null | undefined;
+  /** A refused or failed policy write, already worded for the reader. */
+  policyError?: string | null | undefined;
   onOpenUpdate?: (() => void) | undefined;
   // Re-read the update state in place (the OSS web-ui's "Check again" for the
   // unknown provenance state); omitted by apps with their own refresh flow.
@@ -98,9 +115,22 @@ export function DetectionDetailView({
   // the "how an inventory gets recorded" hint differs per app.
   unknownHint?: ReactNode;
 }) {
-  const policyId = d.policyId ?? PLACEHOLDER_POLICY;
+  // What is ENFORCED, not merely what is stored: a store written before this
+  // machine was attached can hold an assignment weaker than the organization
+  // requires, and enforcement raises it. The description card below explains the
+  // archetype the picker shows as selected, so the two must be the same one.
+  const policyId = effectivePolicyId(d.policyId, policyFloor);
   const policy = policyMeta(policyId);
   const PolicyMetaIcon = policy.icon;
+  // Two sources of restriction, merged rather than chosen between: a host can
+  // both be unable to deliver an archetype AND be under an organization's floor.
+  // Undefined when neither restricts anything, so an unconstrained detection
+  // renders the control it rendered before either prop existed.
+  const floorRestrictions = unavailableUnderFloor(policyFloor);
+  const restricted =
+    unavailablePolicies === undefined && floorRestrictions === undefined
+      ? undefined
+      : { ...unavailablePolicies, ...floorRestrictions };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -162,11 +192,15 @@ export function DetectionDetailView({
             <SectionLabel>Enforcement policy</SectionLabel>
             <span className="text-xs text-text-3">applied to every matching request</span>
           </div>
-          <PolicyPicker
-            value={policyId}
-            onChange={onChangePolicy}
-            unavailable={unavailablePolicies}
-          />
+          <PolicyPicker value={policyId} onChange={onChangePolicy} unavailable={restricted} />
+          {policyError && (
+            // At the control, not in a page-level banner: the user's next move is
+            // to pick something else, and a message they have to go and find
+            // reads as the page failing rather than as this choice being refused.
+            <p className="mt-2 text-xs text-sev-critical-ink" data-slot="policy-write-error">
+              {policyError}
+            </p>
+          )}
           <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-border bg-surface-2 px-3 py-2.5">
             <PolicyMetaIcon
               aria-hidden

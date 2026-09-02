@@ -794,6 +794,124 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     expect(merged.rulesComplete).toBeUndefined();
   });
 
+  // ── the authored-policy marker ────────────────────────────────────────────
+  // `kind: 'custom'` marks a policy as AUTHORED against the deployment rather
+  // than expanded from a built-in archetype, and the device reads it in exactly
+  // one direction: the rules such a policy targets are not locally
+  // re-assignable. That is a refusal it can only ADD, which is what puts it on
+  // the `prohibitedModels` side of the honour/drop line rather than the
+  // `reversibleRuleIds` side.
+  //
+  // The merge emits policies by SPREAD, so the marker survives by construction
+  // — including at the two sites that rebuild a policy around a stronger
+  // action. Asserted rather than left to the spread, because losing it is the
+  // silent failure: the action goes on being enforced while the local override
+  // the organization authored away quietly comes back.
+
+  it('keeps the authored marker on a tenant-only policy that passes through', async () => {
+    const calls: Calls = { order: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
+    });
+    const { gateway } = build({
+      local,
+      readCachedBundle: () =>
+        // Already at the compiled-in floor for `secret`, so nothing rebuilds it.
+        Promise.resolve(bundle([{ ...policy({ category: 'secret' }, 'block'), kind: 'custom' }])),
+    });
+    const merged = await gateway.getPolicyBundle();
+    expect(merged.policies).toHaveLength(1);
+    expect(merged.policies[0]?.action).toBe('block');
+    expect(merged.policies[0]?.kind).toBe('custom');
+  });
+
+  it('keeps it when the FLOOR CLAMP rebuilds the tenant policy', async () => {
+    // The first rebuild site: a tenant-only policy below the compiled-in floor
+    // is re-emitted as `{ ...policy, action: floor }`. DEFAULT_ACTIONS.secret is
+    // 'warn', so 'log' is rebuilt and the marker has to ride the spread.
+    const calls: Calls = { order: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
+    });
+    const { gateway } = build({
+      local,
+      readCachedBundle: () =>
+        Promise.resolve(bundle([{ ...policy({ category: 'secret' }, 'log'), kind: 'custom' }])),
+    });
+    const merged = await gateway.getPolicyBundle();
+    expect(merged.policies[0]?.action).toBe('warn');
+    expect(merged.policies[0]?.kind).toBe('custom');
+  });
+
+  it('keeps it when a tenant category policy RAISES a local ruleId policy', async () => {
+    // The second rebuild site, and the one on the LOCAL side: a local ruleId
+    // policy weaker than what the tenant enforces for that rule's category is
+    // re-emitted as `{ ...policy, action: remoteFloor }`. The marker asserted
+    // here is the LOCAL policy's own — the rebuild must not launder it away
+    // either, since a device that forgets which of its policies were authored
+    // has lost the lock for all of them.
+    const RULE = 'marketplace/authored-secret';
+    const calls: Calls = { order: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() =>
+        Promise.resolve(
+          bundle([{ ...policy({ ruleId: RULE }, 'log'), kind: 'custom' }], {
+            version: 'local',
+            rules: [wireRule(RULE, 'secret')],
+          }),
+        ),
+      ),
+    });
+    const { gateway } = build({
+      local,
+      readCachedBundle: () => Promise.resolve(bundle([policy({ category: 'secret' }, 'block')])),
+    });
+    const merged = await gateway.getPolicyBundle();
+    const rulePolicy = merged.policies.find(
+      (p) => 'ruleId' in p.target && p.target.ruleId === RULE,
+    );
+    expect(rulePolicy?.action).toBe('block');
+    expect(rulePolicy?.kind).toBe('custom');
+  });
+
+  it('keeps it on the STRONGER side when both sides contend for one target', async () => {
+    const calls: Calls = { order: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() =>
+        Promise.resolve(bundle([policy({ category: 'pii' }, 'warn')], { version: 'local' })),
+      ),
+    });
+    const { gateway } = build({
+      local,
+      readCachedBundle: () =>
+        Promise.resolve(bundle([{ ...policy({ category: 'pii' }, 'block'), kind: 'custom' }])),
+    });
+    const merged = await gateway.getPolicyBundle();
+    const pii = merged.policies.filter((p) => 'category' in p.target && p.target.category === 'pii');
+    expect(pii).toHaveLength(1);
+    expect(pii[0]?.action).toBe('block');
+    expect(pii[0]?.kind).toBe('custom');
+  });
+
+  it('invents no marker for a policy neither side authored', async () => {
+    // The control. Every assertion above would also pass if the merge stamped
+    // `kind: 'custom'` onto everything it touched — which would lock a device
+    // out of re-assigning packs no one ever authored a policy for.
+    const calls: Calls = { order: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() =>
+        Promise.resolve(bundle([policy({ category: 'secret' }, 'warn')], { version: 'local' })),
+      ),
+    });
+    const { gateway } = build({
+      local,
+      readCachedBundle: () => Promise.resolve(bundle([policy({ category: 'secret' }, 'block')])),
+    });
+    const merged = await gateway.getPolicyBundle();
+    expect(merged.policies).toHaveLength(1);
+    expect(merged.policies[0]?.kind).toBeUndefined();
+  });
+
   it('carries disabled policies through rather than dropping them', async () => {
     const calls: Calls = { order: [] };
     const local = makeLocal(calls, {

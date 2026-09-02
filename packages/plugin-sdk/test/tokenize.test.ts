@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,11 +10,14 @@ import {
   EXCEPTION_KEY_FILENAME,
   openLocalDatabase,
 } from '@akasecurity/persistence';
+import type { ActionTaken } from '@akasecurity/schema';
 import { PointerToken, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { dataDir } from '../src/data-dir.ts';
+import type { PolicyResolver } from '../src/policy-resolver.ts';
+import { createPolicyResolver } from '../src/policy-resolver.ts';
 import type { VaultCore, VaultGlue } from '../src/tokenize.ts';
 import { createVaultGlue, POINTER_UNAVAILABLE_TEXT } from '../src/tokenize.ts';
 
@@ -207,7 +211,12 @@ describe('vault glue', () => {
 
     it('returns clean text untouched', async () => {
       const result = await glue.tokenizeText('nothing sensitive here', { findings: [] });
-      expect(result).toEqual({ text: 'nothing sensitive here', pointers: [], degraded: [] });
+      expect(result).toEqual({
+        text: 'nothing sensitive here',
+        pointers: [],
+        degraded: [],
+        redacted: [],
+      });
     });
 
     it('reports each degraded group truthfully', async () => {
@@ -237,6 +246,161 @@ describe('vault glue', () => {
         reason: 'explicit-reveal',
       });
       expect(back.text).toContain(SECRET);
+    });
+  });
+
+  // The self-scan is the entry with no findings of its own, so without a policy
+  // it rewrites — and vaults — every span the rules match, whatever the pack was
+  // assigned. That is the leak: a detection asked only to log a value ends up
+  // with a recoverable copy of it under ~/.aka.
+  describe('tokenizeText — policy-aware self-scan', () => {
+    // A resolver that records what it was asked, so the tests can assert the
+    // glue resolves each finding by its OWN rule and category rather than
+    // deciding once for the text.
+    function spyResolver(
+      actionFor: (ruleId: string, category: string) => ActionTaken,
+      isReversible: (ruleId: string) => boolean = () => false,
+    ): PolicyResolver & { asked: { ruleId: string; category: string }[] } {
+      const asked: { ruleId: string; category: string }[] = [];
+      return {
+        asked,
+        actionFor: (ruleId, category) => {
+          asked.push({ ruleId, category });
+          return actionFor(ruleId, category);
+        },
+        isReversible,
+      };
+    }
+
+    it('leaves a monitored span alone — no rewrite, no pointer, nothing vaulted', async () => {
+      const text = `aws_access_key_id = ${SECRET}`;
+      const resolver = spyResolver(() => 'log');
+      const result = await glue.tokenizeText(text, { resolver });
+
+      // The text is returned byte-identical: Monitor logs, it does not strip.
+      expect(result.text).toBe(text);
+      expect(result.pointers).toEqual([]);
+      expect(result.degraded).toEqual([]);
+      expect(result.redacted).toEqual([]);
+      // Positive control on the same bytes: the scan really did find the value,
+      // so the untouched text above is a policy decision and not an empty scan.
+      expect(resolver.asked.length).toBeGreaterThan(0);
+      expect(resolver.asked[0]?.category).toBe('secret');
+      const unfiltered = await glue.tokenizeText(text);
+      expect(unfiltered.text).not.toContain(SECRET);
+      expect(unfiltered.pointers.length).toBeGreaterThan(0);
+    });
+
+    it('destroys a redact-action span one-way and reports it as `redacted`, not `degraded`', async () => {
+      const text = `aws_access_key_id = ${SECRET}`;
+      const result = await glue.tokenizeText(text, {
+        resolver: spyResolver(
+          () => 'redact',
+          () => false,
+        ),
+      });
+
+      expect(result.text).not.toContain(SECRET);
+      // Positive control on the same bytes: the surrounding text survived, so
+      // the absence above is this span being destroyed and not a blanket.
+      expect(result.text).toContain('aws_access_key_id = ');
+      expect(result.pointers).toEqual([]);
+      // Nothing was downgraded — the policy said destroy, and it was destroyed.
+      expect(result.degraded).toEqual([]);
+      expect(result.redacted).toEqual([{ category: 'secret' }]);
+    });
+
+    it('vaults a redact-action span only when the resolver also calls it reversible', async () => {
+      const text = `aws_access_key_id = ${SECRET}`;
+      const result = await glue.tokenizeText(text, {
+        resolver: spyResolver(
+          () => 'redact',
+          () => true,
+        ),
+      });
+
+      expect(result.text).not.toContain(SECRET);
+      expect(result.text).toContain('aws_access_key_id = ');
+      expect(result.pointers).toHaveLength(1);
+      expect(result.redacted).toEqual([]);
+      expect(result.degraded).toEqual([]);
+      // Recoverable, which is the whole difference Redact & Vault buys.
+      const back = await glue.detokenizeText(result.text, {
+        target: 'human',
+        reason: 'explicit-reveal',
+      });
+      expect(back.text).toContain(SECRET);
+    });
+
+    it('a block-action span is stripped too — block outranks redact', async () => {
+      const text = `aws_access_key_id = ${SECRET}`;
+      const result = await glue.tokenizeText(text, { resolver: spyResolver(() => 'block') });
+      expect(result.text).not.toContain(SECRET);
+      expect(result.text).toContain('aws_access_key_id = ');
+      expect(result.redacted).toEqual([{ category: 'secret' }]);
+    });
+
+    it('resolves through a real bundle: a category policy governs the self-scan', async () => {
+      const text = `aws_access_key_id = ${SECRET}`;
+      const monitored = createPolicyResolver({
+        version: 'test',
+        policies: [
+          {
+            id: randomUUID(),
+            scope: 'global',
+            target: { category: 'secret' },
+            action: 'log',
+            enabled: true,
+          },
+        ],
+        customKeywords: [],
+        fetchedAt: new Date().toISOString(),
+      });
+      expect((await glue.tokenizeText(text, { resolver: monitored })).text).toBe(text);
+    });
+
+    it("never widens a caller's own findings — those arrive already resolved", async () => {
+      const text = `key=${SECRET} end`;
+      const supplied = [finding({ span: { start: 4, end: 4 + SECRET.length } })];
+      // The resolver would have filtered this span out had it been a self-scan.
+      const result = await glue.tokenizeText(text, {
+        findings: supplied,
+        resolver: spyResolver(
+          () => 'log',
+          () => true,
+        ),
+      });
+      // Honoured as given: the span is rewritten, and the resolver supplied the
+      // reversibility the caller did not pass.
+      expect(result.text).not.toContain(SECRET);
+      expect(result.text).toContain('key=');
+      expect(result.pointers).toHaveLength(1);
+    });
+
+    it('an explicit `reversible` set wins over the resolver for supplied findings', async () => {
+      const text = `key=${SECRET} end`;
+      const supplied = [finding({ span: { start: 4, end: 4 + SECRET.length } })];
+      const result = await glue.tokenizeText(text, {
+        findings: supplied,
+        reversible: new Set(),
+        resolver: spyResolver(
+          () => 'redact',
+          () => true,
+        ),
+      });
+      expect(result.text).not.toContain(SECRET);
+      expect(result.text).toContain('key=');
+      expect(result.pointers).toEqual([]);
+      expect(result.redacted).toEqual([{ category: 'secret' }]);
+    });
+
+    it('with no resolver, a self-scan keeps its historical vault-everything behaviour', async () => {
+      const text = `aws_access_key_id = ${SECRET}`;
+      const result = await glue.tokenizeText(text);
+      expect(result.text).not.toContain(SECRET);
+      expect(result.text).toContain('aws_access_key_id = ');
+      expect(result.pointers.length).toBeGreaterThan(0);
+      expect(result.redacted).toEqual([]);
     });
   });
 

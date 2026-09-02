@@ -34,10 +34,11 @@ import type {
   VaultDerefReason,
   VaultSightingKind,
 } from '@akasecurity/schema';
-import { isVaultConsentValid, pointerTokenScanner } from '@akasecurity/schema';
+import { isActionAtLeast, isVaultConsentValid, pointerTokenScanner } from '@akasecurity/schema';
 
 import { dataDir } from './data-dir.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
+import type { PolicyResolver } from './policy-resolver.ts';
 import { registerBundledPacks } from './rule-packs.ts';
 
 // The one-way placeholder for a span that could not (or must not) be vaulted —
@@ -56,8 +57,18 @@ export interface TokenizeTextResult {
   pointers: PointerToken[];
   // Spans that were destroyed one-way instead of vaulted (overlap groups, stale
   // spans, vault faults, consent absent) — the truthful record a caller needs
-  // before telling anyone a value is recoverable.
+  // before telling anyone a value is recoverable. `degraded` means "we meant to
+  // vault this and could not", so a span destroyed BY POLICY is not one of
+  // these; it is a `redacted` entry below.
   degraded: { category: string }[];
+  // Spans destroyed one-way because the detection that matched chose Redact
+  // rather than Redact & Vault. Nothing went wrong here, which is why these are
+  // kept apart from `degraded` — but they still have to be COUNTED, because a
+  // caller distinguishing a deliberate rewrite from the tokenizer's
+  // unclassifiable blanket has only the two counts to go on: text that changed
+  // while both are empty is the blanket, and a policy-filtered rewrite that
+  // reported nothing here would be mistaken for it on every line.
+  redacted: { category: string }[];
 }
 
 // Human-target only, and deliberately so. This entry applies ONE option set to
@@ -145,6 +156,18 @@ export interface VaultGlue {
       // predating the per-detection archetype meant. Every span is rewritten
       // either way; this decides only whether the value behind it survives.
       reversible?: ReadonlySet<MatchResult>;
+      // The caller's pack policy, for a call that has no findings of its own.
+      // Without it a self-scan rewrites — and vaults — every span it finds,
+      // which mints a recoverable copy of a value whose detection may only have
+      // been asked to log it. With it, the self-scan is narrowed to the spans
+      // policy actually authorizes rewriting, and reversibility is read from
+      // the same bundle rather than defaulted to keep-all.
+      //
+      // It never widens a caller's own `findings`: those were already resolved
+      // upstream, and re-resolving them here would be a second reading of the
+      // same bundle. Against supplied findings the resolver only fills in
+      // `reversible` when the caller passed none.
+      resolver?: PolicyResolver;
     },
   ): Promise<TokenizeTextResult>;
   tokenizeValue(
@@ -281,26 +304,50 @@ class SecretVaultGlue implements VaultGlue {
       findings?: MatchResult[];
       sighting?: TokenizeSighting;
       reversible?: ReadonlySet<MatchResult>;
+      resolver?: PolicyResolver;
     },
   ): Promise<TokenizeTextResult> {
     try {
-      const findings = opts?.findings ?? this.#selfScan(text);
+      const supplied = opts?.findings;
+      const resolver = opts?.resolver;
+      const scanned = supplied ?? this.#selfScan(text);
+      // A self-scan that failed outright cannot tell secret from clean; the
+      // only safe output is the blanket the mask path also emits.
+      if (scanned === null) {
+        return { text: '[REDACTED]', pointers: [], degraded: [], redacted: [] };
+      }
+      // A self-scan finds every span the rules match, and this loop rewrites
+      // every span it is handed — so without a policy to narrow it, a detection
+      // assigned Monitor or Warn has its value stripped and vaulted on the
+      // strength of having matched at all. Narrow it to the spans whose own
+      // action is redact or stronger; a caller's OWN findings arrive already
+      // resolved and are honoured as given.
+      const findings =
+        supplied === undefined && resolver !== undefined
+          ? scanned.filter((f) =>
+              isActionAtLeast(resolver.actionFor(f.ruleId, f.category), 'redact'),
+            )
+          : scanned;
       // Which of those findings the policy said to KEEP. Absent means "all of
       // them", which is what every caller predating the per-detection Redact &
       // Vault archetype meant. Present means the rewrite is mixed: every span
       // below is still replaced — the difference is only whether the value
-      // behind it survives as recoverable ciphertext or is destroyed.
-      const reversible = opts?.reversible;
+      // behind it survives as recoverable ciphertext or is destroyed. A
+      // resolver answers this from the same bundle that decided the action,
+      // and is what a self-scan has instead of keep-all.
+      let reversible = opts?.reversible;
+      if (resolver !== undefined && (supplied === undefined || reversible === undefined)) {
+        reversible = new Set(findings.filter((f) => resolver.isReversible(f.ruleId)));
+      }
+      const reversibleSet = reversible;
       const keeps = (finding: MatchResult): boolean =>
-        reversible === undefined || reversible.has(finding);
-      // A self-scan that failed outright cannot tell secret from clean; the
-      // only safe output is the blanket the mask path also emits.
-      if (findings === null) return { text: '[REDACTED]', pointers: [], degraded: [] };
-      if (findings.length === 0) return { text, pointers: [], degraded: [] };
+        reversibleSet === undefined || reversibleSet.has(finding);
+      if (findings.length === 0) return { text, pointers: [], degraded: [], redacted: [] };
 
       const groups = groupSpans(text, findings);
       const pointers: PointerToken[] = [];
       const degraded: { category: string }[] = [];
+      const redacted: { category: string }[] = [];
       let out = text;
       // Back to front, so earlier offsets stay valid as later spans change width.
       for (const group of [...groups].reverse()) {
@@ -320,9 +367,12 @@ class SecretVaultGlue implements VaultGlue {
           // The detection that matched chose one-way Redact. Destroy it here
           // rather than skipping the span: skipping would leave the raw value
           // in `out`, since this loop IS the rewrite for every enforced span.
-          // Not counted as `degraded` either — nothing was downgraded, this is
-          // the policy being carried out.
+          // Counted as `redacted` and not as `degraded` — nothing was
+          // downgraded, this is the policy being carried out — but counted,
+          // because a caller looking at a changed text with neither count set
+          // reads it as the unclassifiable blanket.
           replacement = redactedPlaceholder(finding.category);
+          redacted.unshift({ category: finding.category });
         } else {
           replacement = await this.tokenizeValue(finding.rawMatch, {
             ruleId: finding.ruleId,
@@ -347,10 +397,10 @@ class SecretVaultGlue implements VaultGlue {
           }
         }
       }
-      return { text: out, pointers, degraded };
+      return { text: out, pointers, degraded, redacted };
     } catch {
       // The unknown failure could have left raw spans in place; destroy them.
-      return { text: '[REDACTED]', pointers: [], degraded: [] };
+      return { text: '[REDACTED]', pointers: [], degraded: [], redacted: [] };
     }
   }
 
@@ -644,7 +694,11 @@ function glue(): VaultGlue {
 /** {@link VaultGlue.tokenizeText} over the default ~/.aka vault. */
 export function tokenizeText(
   text: string,
-  opts?: { findings?: MatchResult[]; reversible?: ReadonlySet<MatchResult> },
+  opts?: {
+    findings?: MatchResult[];
+    reversible?: ReadonlySet<MatchResult>;
+    resolver?: PolicyResolver;
+  },
 ): Promise<TokenizeTextResult> {
   return glue().tokenizeText(text, opts);
 }

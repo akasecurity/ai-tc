@@ -7,12 +7,11 @@ import type {
   DetectedFindingWithKey,
   EventMetadata,
   ExceptionBundleEntry,
-  Policy,
   Rule,
   SourceTool,
   WorkspaceSettings,
 } from '@akasecurity/schema';
-import { DEFAULT_ACTIONS } from '@akasecurity/schema';
+import { isActionAtLeast, strongerAction } from '@akasecurity/schema';
 
 import type { DataGateway } from './data-gateway.ts';
 import { buildIngestEvent, contentHashOf } from './events.ts';
@@ -24,6 +23,8 @@ import { createGuardedScanner } from './guarded-scan.ts';
 import type { IsolatedScanner, IsolatedScanOptions } from './isolated-scan.ts';
 import { createIsolatedScanner } from './isolated-scan.ts';
 import { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';
+import type { PolicyResolver } from './policy-resolver.ts';
+import { createPolicyResolver } from './policy-resolver.ts';
 import { registerBundledPacks } from './rule-packs.ts';
 import { filterUnsafeRules, ruleProbeKey } from './rule-quarantine.ts';
 import type { BlockedDetectionRef, CaptureInput, CaptureResult } from './types.ts';
@@ -32,9 +33,6 @@ import type { BlockedDetectionRef, CaptureInput, CaptureResult } from './types.t
 // every block/redact decision down to warn. Disabled — per-category policy
 // rows are the sole authority over block/redact/warn/log.
 const ENFORCEMENT_CEILING_ENABLED = false as boolean;
-
-// Worst-first ordering for collapsing multiple findings into one decision.
-const ACTION_PRIORITY: ActionTaken[] = ['block', 'redact', 'warn', 'log', 'allow'];
 
 /**
  * Start of an added-latency measurement, or `undefined` if the clock could not
@@ -127,9 +125,12 @@ let bundlesPacked = false;
  * without an explicit policy).
  *
  * Masking happens here (not in the data layer): `capture` turns raw matches into
- * already-masked DetectedFinding[] before handing them to the gateway, so the
- * data boundary never sees a secret. Every method is async and fully fail-open.
- * The caller owns the gateway's lifetime and must `await close()`.
+ * already-masked DetectedFinding[] before handing them to the gateway, so no
+ * FINDING row ever carries a raw value. The event's stored content is a
+ * separate question with a different answer — it mirrors what actually crossed,
+ * masking only the spans whose own action was redact or stronger (see
+ * `storedContent` below). Every method is async and fully fail-open. The caller
+ * owns the gateway's lifetime and must `await close()`.
  *
  * Detection exceptions: between scan and the action collapse, findings whose
  * resolved action is block/redact are matched against the bundle's exception
@@ -152,7 +153,6 @@ export function createPluginRuntime(
   }
   const policyMode = settings.policy;
   const dataDir = opts?.dataDir;
-  let policies: Policy[] = [];
   let rules: Rule[] = [];
   // Runs the scan under a hard wall-clock bound when the ruleset carries any
   // pulled/custom-pack rule, and in-process otherwise. Built once the ruleset
@@ -160,17 +160,18 @@ export function createPluginRuntime(
   let scanner: GuardedScanner | undefined;
   let bundleExceptions: ExceptionBundleEntry[] = [];
   let initialized = false;
-  // Resolution indexes built ONCE from the bundle (see ensureInitialized): the
-  // standalone-complete bundle now carries one policy PER RULE (~100+), and
-  // resolveAction runs 2–4× per finding on the hot hook path, so a linear scan
-  // per call would be O(policies) each time. First-write-wins mirrors the old
-  // `.find` order (explicit DB ruleId policies precede pack-derived ones).
-  const ruleActionIndex = new Map<string, ActionTaken>();
-  const categoryActionIndex = new Map<string, ActionTaken>();
-  // Rule ids whose pack chose Redact & Vault. Reassigned wholesale on each
-  // bundle load rather than mutated, so a re-initialised runtime cannot inherit
-  // a stale membership from the previous bundle.
-  let reversibleRuleIndex: ReadonlySet<string> = new Set<string>();
+  // The bundle's enforcement decisions, read through the one shared resolver
+  // (see policy-resolver.ts) and rebuilt wholesale in ensureInitialized, so a
+  // re-initialised runtime cannot inherit a stale index from a previous bundle.
+  // Seeded over an empty bundle rather than left undefined: a lookup that
+  // somehow precedes initialisation then falls to the per-category default
+  // through the SAME code path, instead of a second fallback written here.
+  let resolver: PolicyResolver = createPolicyResolver({
+    version: '',
+    policies: [],
+    customKeywords: [],
+    fetchedAt: '',
+  });
 
   // Pull the policy bundle once per runtime: cache its policies for action
   // resolution and compose the effective ruleset. When the bundle marks its
@@ -182,21 +183,7 @@ export function createPluginRuntime(
   async function ensureInitialized(): Promise<void> {
     if (initialized) return;
     const bundle = await gateway.getPolicyBundle();
-    policies = bundle.policies;
-    // Index enabled policies once, first-write-wins so the earliest matching
-    // policy takes precedence exactly as the previous `.find` scans did.
-    for (const p of policies) {
-      if (!p.enabled) continue;
-      if ('ruleId' in p.target) {
-        if (!ruleActionIndex.has(p.target.ruleId)) ruleActionIndex.set(p.target.ruleId, p.action);
-      } else if (!categoryActionIndex.has(p.target.category)) {
-        categoryActionIndex.set(p.target.category, p.action);
-      }
-    }
-    // The reversibility axis rides beside the policies rather than on them (see
-    // PolicyBundle.reversibleRuleIds). An absent field means an older producer,
-    // and the empty set it yields is the pre-existing one-way behaviour.
-    reversibleRuleIndex = new Set(bundle.reversibleRuleIds ?? []);
+    resolver = createPolicyResolver(bundle);
     // The compiled-in bundled packs are already proven safe by the CI
     // adversarial battery on every commit, so they bypass the runtime timing
     // gate entirely — whether they arrive via getLoadedRules() or because the
@@ -294,19 +281,11 @@ export function createPluginRuntime(
     return cachedKey;
   }
 
+  // Rule-over-category-over-default resolution, from the bundle the runtime
+  // pulled. The rule itself lives in policy-resolver.ts so the vault glue and
+  // the at-rest mask read the same bundle the same way.
   function resolveAction(ruleId: string, category: string): ActionTaken {
-    // A per-rule policy — the per-detection Monitor/Warn/Redact/Block assignment
-    // the standalone gateway synthesizes from installed_packs.policy_id — wins
-    // over the category default, so a detection set to Monitor actually stops
-    // enforcing rather than falling through to DEFAULT_ACTIONS (secret → warn).
-    // O(1) via the indexes built in ensureInitialized.
-    const byRule = ruleActionIndex.get(ruleId);
-    if (byRule !== undefined) return byRule;
-    const byCategory = categoryActionIndex.get(category);
-    if (byCategory !== undefined) return byCategory;
-    // category is an arbitrary string; treat the lookup as possibly-missing so the 'log' fallback stays reachable.
-    const fallback = (DEFAULT_ACTIONS as Partial<Record<string, ActionTaken>>)[category];
-    return fallback ?? 'log';
+    return resolver.actionFor(ruleId, category);
   }
 
   // The action that applies to ONE finding: an excepted finding's action is
@@ -351,8 +330,7 @@ export function createPluginRuntime(
     // and never needs to re-apply it here.
     let worst: ActionTaken = 'log';
     for (const finding of findings) {
-      const action = actionFor(finding);
-      if (ACTION_PRIORITY.indexOf(action) < ACTION_PRIORITY.indexOf(worst)) worst = action;
+      worst = strongerAction(worst, actionFor(finding));
     }
 
     if (worst === 'block') return { action: 'block', text: null, findings };
@@ -367,7 +345,7 @@ export function createPluginRuntime(
       // assigned Redact & Vault whose finding resolved to some OTHER action
       // (an exception downgraded it to 'allow', a category policy floored it)
       // cannot be vaulted — only a value actually being stripped is ever kept.
-      const reversibleFindings = redactFindings.filter((f) => reversibleRuleIndex.has(f.ruleId));
+      const reversibleFindings = redactFindings.filter((f) => resolver.isReversible(f.ruleId));
       return {
         action: 'redact',
         text: redact(text, redactFindings),
@@ -618,16 +596,36 @@ export function createPluginRuntime(
     // store with benign events. The live hook path keeps the default 'always'.
     if (opts.persist === 'with-findings' && decision.findings.length === 0) return decision;
     try {
-      // Secrets-at-rest: persist the text with EVERY finding's span masked —
-      // excepted findings included; an exception changes enforcement, never
-      // at-rest hygiene — and keep content_hash of the ORIGINAL so dedup has
-      // a stable fingerprint. Only detected spans are masked: content outside
-      // them is stored as-is in the local store, protected by file permissions,
-      // not encryption (e.g. a keyword rule whose span covers only the key
-      // label leaves the value after it in the stored content).
+      // Secrets-at-rest: persist the text with the span of every finding whose
+      // OWN action is redact or stronger masked, and keep content_hash of the
+      // ORIGINAL so dedup has a stable fingerprint. The filter resolves each
+      // finding exactly as the audit trail below does (actionForFinding), so
+      // the stored record mirrors what actually crossed rather than describing
+      // a stricter capture than the one that happened: a detection assigned
+      // Monitor or Warn was asked to log the value, not to strip it, and a
+      // finding an EXCEPTION downgraded to 'allow' is the user's own decision
+      // about that specific value — masking it here would hide from them the
+      // thing they approved. A block-action finding is masked, since block
+      // outranks redact and nothing was allowed to cross at all.
+      //
+      // Only detected spans are masked either way: content outside them is
+      // stored as-is in the local store, protected by file permissions, not
+      // encryption (e.g. a keyword rule whose span covers only the key label
+      // leaves the value after it in the stored content).
+      //
+      // `redact` folds OVERLAPPING findings into one region spanning their
+      // union, so a masked span that overlaps an unmasked one is still covered
+      // end to end — every finding handed to it lies wholly inside a region.
+      // Filtering can only SHRINK a region, never leave part of a masked
+      // finding standing.
       const contentHash = contentHashOf(input.text);
+      // Total over ActionTaken and free of anything that can throw — it runs
+      // inside the catch-all below, where a fault would cost the row entirely.
+      const maskedFindings = decision.findings.filter((match) =>
+        isActionAtLeast(actionForFinding(match, excepted), 'redact'),
+      );
       const storedContent =
-        decision.findings.length > 0 ? redact(input.text, decision.findings) : input.text;
+        maskedFindings.length > 0 ? redact(input.text, maskedFindings) : input.text;
       // Stamp the applied exception ids onto the persisted event so the trail
       // shows WHY an enforced category passed (a declared EventMetadata field).
       // The measurement is read HERE, immediately before the event is built,
@@ -666,7 +664,8 @@ export function createPluginRuntime(
       const isAtRest = input.kind === 'code_change' && filePath !== undefined;
       const findingKeyFingerprintKey = isAtRest ? keyForLedger() : null;
       const findingKeyFpCache = new Map<MatchResult, string>();
-      // Mask the real secret here — the raw value never reaches the gateway/DB.
+      // Mask the real secret here — no finding row ever carries the raw value,
+      // whatever the action resolved to and whatever the stored content shows.
       // Every finding is recorded with the action that actually applied to IT —
       // its own policy resolution, or 'allow' when a grant excepted it — not the
       // capture's collapsed decision, so the findings table stays the one

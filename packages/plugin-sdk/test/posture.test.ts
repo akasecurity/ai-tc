@@ -73,6 +73,38 @@ describe('detectPostureChanges', () => {
     expect(changes).toEqual([]);
   });
 
+  // The differ ranks actions through the same ladder the enforcement collapse
+  // uses, so the two cannot come to disagree about which of a pair enforces
+  // more. Every adjacent rung is exercised: a pair swapped either way must be
+  // a downgrade in exactly one direction.
+  it('ranks every adjacent rung of the ladder the same way in both directions', () => {
+    const rungs: [ActionTaken, BuiltinPolicyId][] = [
+      ['log', 'monitor'],
+      ['warn', 'warn'],
+      ['redact', 'redact'],
+      ['block', 'block'],
+    ];
+    for (let i = 0; i < rungs.length - 1; i += 1) {
+      const weaker = rungs[i];
+      const stronger = rungs[i + 1];
+      if (weaker === undefined || stronger === undefined) throw new Error('bad rung table');
+      // stronger → weaker weakens enforcement.
+      expect(
+        detectPostureChanges(
+          { secret: weaker[1] },
+          { secret: { action: stronger[0], enabled: true } },
+        ),
+      ).toEqual([{ category: 'secret', from: stronger[0], to: weaker[0], kind: 'downgrade' }]);
+      // weaker → stronger does not.
+      expect(
+        detectPostureChanges(
+          { secret: stronger[1] },
+          { secret: { action: weaker[0], enabled: true } },
+        ),
+      ).toEqual([]);
+    }
+  });
+
   it('an upgrade (proposed stronger than existing, already enabled) is not flagged', () => {
     const changes = detectPostureChanges(
       { secret: 'block' },

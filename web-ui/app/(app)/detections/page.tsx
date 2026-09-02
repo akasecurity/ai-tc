@@ -1,4 +1,5 @@
 import {
+  type DetectionPolicyFloor,
   PageHead,
   showsVaultDrift,
   type SummaryStatItem,
@@ -8,7 +9,8 @@ import {
   type VaultDriftState,
 } from '@akasecurity/dashboard-ui';
 import { readWorkspaceSettings } from '@akasecurity/persistence';
-import { isVaultConsentValid } from '@akasecurity/schema';
+import type { DetectionListItem } from '@akasecurity/schema';
+import { isAttached, isVaultConsentValid } from '@akasecurity/schema';
 
 import { ActivityIcon, BracesIcon, ListIcon, ShieldCheckIcon } from '../../components/icons';
 import { db } from '../../lib/db';
@@ -56,6 +58,11 @@ export default async function DetectionsPage({
   // Fail-open like every other read on this page: if any part of it throws, the
   // page renders without the notice rather than not at all.
   const vaultDrift = await readVaultDrift(store);
+
+  // What this machine's organization requires per detection, if anything. The
+  // store computes it and functions cannot cross into the browser, so what goes
+  // down is a plain record of the two facts each answer carries.
+  const floors = readPolicyFloors(store, list.items);
 
   // Honor the pinned ?id when it's still in the filtered list; otherwise default
   // to the first row so the detail pane is never empty when detections exist.
@@ -116,9 +123,46 @@ export default async function DetectionsPage({
         filter={filter}
         query={query}
         selectedId={selectedId}
+        floors={floors}
       />
     </div>
   );
+}
+
+/**
+ * The control-plane floor on each listed detection, keyed by detection id.
+ *
+ * Detections the organization says nothing about are simply absent, so a
+ * standalone machine sends an empty record and every surface downstream renders
+ * exactly as it did before this existed.
+ *
+ * The attachment check up front is not redundant with the per-pack read — that
+ * one answers null for an unattached machine too. It is there because the
+ * per-pack read re-opens settings.json and the cached bundle EACH time, and a
+ * page listing thirty detections would pay for sixty file reads to learn what
+ * one read already settles for the overwhelmingly common case.
+ *
+ * Fail-open like every other read on this page: a store or a settings file that
+ * cannot answer must render the page without the constraint rather than not at
+ * all. The store is still the authority on the write, so a floor missing from
+ * this record costs a refusal the user can read, never an assignment that
+ * silently sticks.
+ */
+function readPolicyFloors(
+  store: ReturnType<typeof db>,
+  items: readonly DetectionListItem[],
+): Record<string, DetectionPolicyFloor> {
+  try {
+    if (!isAttached(readWorkspaceSettings())) return {};
+    const floors: Record<string, DetectionPolicyFloor> = {};
+    for (const item of items) {
+      const floor = store.installedPacks.policyFloor(item.namespace, item.packId);
+      if (floor !== null) floors[item.id] = floor;
+    }
+    return floors;
+  } catch {
+    return {};
+  }
 }
 
 // The three facts showsVaultDrift needs, each read defensively: a store that

@@ -14,14 +14,20 @@ import { isVaultConsentValid, PointerToken } from '@akasecurity/schema';
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 import type { Prompter } from '../lib/prompter.ts';
 import { terminalPrompter } from '../lib/prompter.ts';
+import { runPrune } from './vault-prune.ts';
 
-const VAULT_HELP = `Reveal a vaulted secret by its pointer (every reveal is audited).
+const VAULT_HELP = `Inspect and unwind the local secret vault.
 
 Resolve a pointer:   aka vault show '[[aka:...]]'    prints the raw value
+Undo out-of-policy:  aka vault prune                 dry run; --apply performs it
 
 The pointer is the [[aka:...]] token that replaced a detected value. Quote it —
 the double brackets are shell syntax otherwise. Each successful reveal writes an
 audit row (reason: explicit-reveal) to the local store.
+
+prune is the other direction: it restores the pointers a detection that may
+NOT vault once wrote into your transcripts, and then deletes those entries.
+Run 'aka vault prune --help' for what it does and does not cover.
 
 Flags:
   --home <dir>        alternate AKA home (default: ~/.aka)
@@ -93,6 +99,7 @@ async function runShow(argv: string[], io: Prompter): Promise<void> {
 
 const VERBS: Record<string, (argv: string[], io: Prompter) => Promise<void>> = {
   show: runShow,
+  prune: runPrune,
 };
 
 /**

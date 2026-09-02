@@ -1,5 +1,5 @@
 import type { ActionTaken, BuiltinPolicyId, DetectionCategory } from '@akasecurity/schema';
-import { builtinPolicyToAction, severityFloorPosture } from '@akasecurity/schema';
+import { actionRank, builtinPolicyToAction, severityFloorPosture } from '@akasecurity/schema';
 
 export { severityFloorPosture };
 
@@ -25,9 +25,6 @@ export function applyCategoryPosture(
   }
 }
 
-// Worst-to-best action rank (index 0 = strongest).
-const ACTION_RANK: ActionTaken[] = ['block', 'redact', 'warn', 'log', 'allow'];
-
 export interface PostureChange {
   category: DetectionCategory;
   from: ActionTaken;
@@ -50,7 +47,10 @@ export function detectPostureChanges(
     const current = existing[category];
     if (!current) continue;
     const to = builtinPolicyToAction(policyId);
-    if (ACTION_RANK.indexOf(to) > ACTION_RANK.indexOf(current.action)) {
+    // Weaker than what is already stored — the one enforcement-strength ladder
+    // decides that, so this differ and the runtime's collapse can never come to
+    // disagree about which of two actions enforces more.
+    if (actionRank(to) < actionRank(current.action)) {
       changes.push({ category, from: current.action, to, kind: 'downgrade' });
     } else if (!current.enabled) {
       changes.push({ category, from: current.action, to, kind: 're-enable' });

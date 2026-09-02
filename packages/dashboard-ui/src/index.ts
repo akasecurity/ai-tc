@@ -157,6 +157,13 @@ export {
   provenanceState,
   PUBLISHER_META,
 } from './detections/meta.ts';
+export {
+  type DetectionPolicyFloor,
+  effectivePolicyId,
+  isPolicyGoverned,
+  policyFloorReason,
+  unavailableUnderFloor,
+} from './detections/policy-floor.ts';
 export { PolicyPicker } from './detections/PolicyPicker.tsx';
 export { ProvenanceBlock } from './detections/ProvenanceBlock.tsx';
 export { UpdateModal } from './detections/UpdateModal.tsx';

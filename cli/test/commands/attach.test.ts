@@ -71,10 +71,30 @@ let exits: number[];
 
 const verify = () => Promise.resolve({ tenantName: 'Example Org', userEmail: 'dev@example.com' });
 
+/**
+ * A deployment that does not offer browser approval.
+ *
+ * Every case in this file is about the KEY path — the prompt, the write, the
+ * rollback — and `aka attach` now tries the interactive path first. Stubbing it
+ * as not-offered is what a pre-device-flow deployment does, so these cases
+ * exercise the same fall-through a real one produces rather than reaching for
+ * a socket the no-network guard would refuse.
+ *
+ * The interactive path has its own suite (attach-device.test.ts), and the
+ * PREFERENCE between the two is asserted below rather than assumed here.
+ */
+const notOffered = () => Promise.resolve({ kind: 'not-offered' as const });
+
 const deps = (io: ReturnType<typeof scriptedPrompter>) => ({
   base,
   prompter: io,
   verify,
+  deviceAttach: notOffered,
+  // UNMANAGED, stated rather than inherited. The administrative overlay lives
+  // at absolute system paths that a temp home cannot redirect, so without this
+  // every case here reads whatever the machine running it is enrolled in — and
+  // a developer whose own laptop is managed sees six unrelated failures.
+  managedSettings: null,
   exit: (code: number) => exits.push(code),
 });
 
@@ -234,20 +254,38 @@ describe('the --home flag every other command honours', () => {
     // cleared the user's ACTUAL machine while appearing to touch a throwaway.
     // `deps.base` is not passed here on purpose — the flag has to be what
     // resolves the home.
+    // `base` is omitted on purpose — the FLAG has to be what resolves the home,
+    // which is the whole point of the case. The other two seams are still
+    // supplied, and both are load-bearing rather than tidiness:
+    //
+    //   `deviceAttach` — without it the real browser-approval probe runs and
+    //   opens a socket to ENDPOINT. That is a live network call from a unit
+    //   test: the no-network guard fails the run for it, and correctly, since
+    //   the probe's own catch then swallows the refusal. This case is about the
+    //   --home flag and has no business exercising the device flow at all.
+    //
+    //   `managedSettings` — the administrative overlay lives at absolute system
+    //   paths a temp home cannot redirect, so without it this reads whatever the
+    //   machine is enrolled in. On a managed laptop that pins `runMode:
+    //   attached`, which makes the FIRST assertion below pass no matter what
+    //   attach wrote — an assertion passing for the wrong reason, which is
+    //   worse than one failing.
+    const stubbed = { deviceAttach: notOffered, managedSettings: null, exit: () => undefined };
+
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
     await runAttach(['--url', ENDPOINT, '--home', base, '--no-sync-history'], {
+      ...stubbed,
       prompter: io,
       verify,
-      exit: () => undefined,
     });
     expect(readWorkspaceSettings(base).runMode).toBe('attached');
 
     const out = scriptedPrompter({ interactive: true });
-    await runStatus(['--home', base], { prompter: out, exit: () => undefined });
+    await runStatus(['--home', base], { ...stubbed, prompter: out });
     expect(out.output()).toContain(ENDPOINT);
 
     const off = scriptedPrompter({ interactive: true });
-    runDetach(['--home', base], { prompter: off, exit: () => undefined });
+    runDetach(['--home', base], { ...stubbed, prompter: off });
     expect(readWorkspaceSettings(base).runMode).toBe('standalone');
   });
 

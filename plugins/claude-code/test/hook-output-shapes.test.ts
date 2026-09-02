@@ -41,6 +41,12 @@ const TOP_LEVEL_SHAPES = ['decision', 'systemMessage'] as const;
  */
 const SHAPE_FIELD_BY_EVENT = {
   PreToolUse: 'permissionDecision',
+  // Same field name as PreToolUse above, and not a duplicate to be collapsed:
+  // the two are separate variants carrying separate `hookEventName`s, and the
+  // host honors only the one matching the event it fired. The set assertion
+  // below dedupes the spans, so the doc names the field once while pairing it
+  // with both hooks.
+  PreModelSwitch: 'permissionDecision',
   PostToolUse: 'updatedToolOutput',
   MessageDisplay: 'displayContent',
   SessionStart: 'additionalContext',

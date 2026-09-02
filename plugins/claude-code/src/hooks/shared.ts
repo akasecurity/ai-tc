@@ -5,6 +5,7 @@
 import { resolveRepo } from '@akasecurity/plugin-sdk';
 import type { EventMetadata } from '@akasecurity/schema';
 
+import type { PreModelSwitchOutput } from './model-guard.ts';
 import type { PreToolUseOutput } from './pre-tool-use-decision.ts';
 
 // An 'error' event on an EventEmitter with no listener throws — and because it
@@ -76,6 +77,7 @@ export type HookOutput =
   // can object: it is a silent downgrade rather than a cleanup.
   | { systemMessage: string }
   | PreToolUseOutput
+  | PreModelSwitchOutput
   | {
       hookSpecificOutput: {
         hookEventName: 'PostToolUse';

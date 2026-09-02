@@ -43,6 +43,20 @@ interface HookCase {
   readonly validPayload: (home: string) => string;
 }
 
+/**
+ * Hooks that never open the local store IN-PROCESS, so no `aka.db` appears
+ * under the home they ran against.
+ *
+ * `stop` only triggers a detached reconcile child. `post-model-switch` records
+ * the session's new model to a small file and makes no decision, so it needs no
+ * policy bundle and deliberately opens nothing — a post-action event on the
+ * session's path should cost one small write.
+ *
+ * A set rather than a name comparison, so adding a third such hook is a listing
+ * rather than an `||` chain nobody re-reads.
+ */
+const NON_STORE_HOOKS: ReadonlySet<string> = new Set(['stop', 'post-model-switch']);
+
 const HOOKS: readonly HookCase[] = [
   {
     name: 'session-start',
@@ -96,7 +110,37 @@ const HOOKS: readonly HookCase[] = [
       }),
   },
   {
-    // Unlike the other four hooks, stop.ts never opens the store in-process —
+    // Opens the store to read the prohibition list off the policy bundle, so
+    // the corrupt-store / read-only-home rows below exercise something real —
+    // and a refused switch is the one place this plugin can stop a model
+    // choice, so a hook that dies rather than failing open would be felt.
+    name: 'pre-model-switch',
+    validPayload: (home) =>
+      JSON.stringify({
+        session_id: SESSION_ID,
+        cwd: projectDir(home),
+        hook_event_name: 'PreModelSwitch',
+        from_model: 'claude-sonnet-4-5',
+        to_model: 'claude-opus-5',
+      }),
+  },
+  {
+    // Like stop.ts below, this one never opens the store: it records the
+    // session's new model to a small file and nothing else. Its two
+    // store-condition rows therefore verify the process fails open (which it
+    // does unconditionally), not that a bad store is observed.
+    name: 'post-model-switch',
+    validPayload: (home) =>
+      JSON.stringify({
+        session_id: SESSION_ID,
+        cwd: projectDir(home),
+        hook_event_name: 'PostModelSwitch',
+        from_model: 'claude-sonnet-4-5',
+        to_model: 'claude-opus-5',
+      }),
+  },
+  {
+    // Unlike the store-opening hooks above, stop.ts never opens the store in-process —
     // it only triggers a detached, unref'd reconcile.js worker. Its two
     // store-condition rows below still verify the PARENT process fails open
     // (which it does unconditionally), not that a corrupt/read-only store is
@@ -321,7 +365,7 @@ describe('fail-open: a hostile (symlinked) home never breaks a hook', () => {
           // marker write creates that directory, so a directory check here would
           // be satisfied by the code under test rather than by the redirection.
           // `stop` opens no store, so it is the one hook with nothing to land.
-          if (hook.name !== 'stop') {
+          if (!NON_STORE_HOOKS.has(hook.name)) {
             expect(existsSync(join(victim, 'data', 'aka.db'))).toBe(true);
           }
         });

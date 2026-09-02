@@ -136,6 +136,14 @@ anthropic.model('claude-haiku-4-5', {
   on: [...CLAUDE_RESELLERS],
 });
 
+// Retired but still reported. The pricing page no longer lists it, so its rate
+// is unknown — which reads as $0 spend, flagged estimated, rather than as a
+// wrong figure.
+anthropic.model('claude-sonnet-3-7', {
+  name: 'Claude Sonnet 3.7',
+  on: [...CLAUDE_RESELLERS],
+});
+
 // ─── OpenAI ──────────────────────────────────────────────────────────────────
 // Prices: developers.openai.com/api/docs/pricing. Context windows:
 // learn.microsoft.com/en-us/azure/ai-foundry/openai/concepts/models.
@@ -269,6 +277,41 @@ openai.model('gpt-5-nano', {
   on: [...OPENAI_RESELLERS],
 });
 
+// Prior-generation OpenAI models still reported by deployments. Kept so they
+// resolve to a real vendor rather than the Unknown fallback; context windows
+// are not on the pricing page and are recorded as unknown.
+openai.model('gpt-4.1', {
+  name: 'GPT-4.1',
+  price: tokenPrice(2, 8, { cacheRead: 0.5 }),
+  on: [...OPENAI_RESELLERS],
+});
+
+openai.model('gpt-4o', {
+  name: 'GPT-4o',
+  price: tokenPrice(2.5, 10, { cacheRead: 1.25 }),
+  on: [...OPENAI_RESELLERS],
+});
+
+openai.model('gpt-4o-mini', {
+  name: 'GPT-4o mini',
+  price: tokenPrice(0.15, 0.6, { cacheRead: 0.075 }),
+  on: [...OPENAI_RESELLERS],
+});
+
+openai.model('gpt-4-turbo', {
+  name: 'GPT-4 Turbo',
+  price: tokenPrice(10, 30),
+  aliases: ['gpt-4-turbo-2024-04-09'],
+  on: [...OPENAI_RESELLERS],
+});
+
+openai.model('o3', {
+  name: 'o3',
+  capability: 'reasoning',
+  price: tokenPrice(2, 8, { cacheRead: 0.5 }),
+  on: [...OPENAI_RESELLERS],
+});
+
 // Open-weight OpenAI models, served only by third parties.
 openai.model('gpt-oss-120b', {
   name: 'GPT-OSS 120B',
@@ -367,6 +410,10 @@ google.model('gemini-2.5-flash-lite', {
   on: ['vertex'],
 });
 
+// Off Google's current pricing page; identity resolves, rate is unknown.
+google.model('gemini-1-5-pro', { name: 'Gemini 1.5 Pro', on: ['vertex'] });
+google.model('gemini-1-5-flash', { name: 'Gemini 1.5 Flash', on: ['vertex'] });
+
 // ─── xAI ─────────────────────────────────────────────────────────────────────
 // Prices + context: docs.x.ai/docs/models. Every text model tiers at 200K input.
 // Training: docs.x.ai/developers/faq/security — API inputs and outputs are not
@@ -463,6 +510,15 @@ deepseek.model('deepseek-v4-pro', {
   on: ['bedrock', 'together', 'fireworks', 'openrouter'],
 });
 
+// Off DeepSeek's current pricing page; served on third-party hosts.
+deepseek.model('deepseek-r1', {
+  name: 'DeepSeek R1',
+  capability: 'reasoning',
+  openWeights: true,
+  defaultHosting: 'local',
+  on: ['bedrock', 'together', 'fireworks', 'openrouter', 'ollama', 'local'],
+});
+
 // ─── Cohere ──────────────────────────────────────────────────────────────────
 // Context windows: docs.cohere.com/docs/models. Current-generation prices are
 // not published (the reasoning tier is sales-priced), so they are unknown.
@@ -506,6 +562,8 @@ cohere.model('command-r-plus-08-2024', {
   ctx: 128_000,
   maxOut: 4_000,
   price: tokenPrice(2.5, 10),
+  // The undated form is what deployments report; the live id carries the date.
+  aliases: ['command-r-plus'],
   on: ['bedrock'],
 });
 
@@ -584,7 +642,20 @@ amazon.model('nova-2-lite', {
   on: ['bedrock'],
 });
 
-// Mistral's wire model ids are not published alongside its pricing (the pricing
+const mistral = vendor('mistral', {
+  family: { id: 'mistral', name: 'Mistral' },
+  openWeights: true,
+  retention: 'unknown',
+  defaultHosting: 'local',
+});
+
+// Absent from Mistral's current model list; survives on third-party hosts.
+mistral.model('mixtral-8x7b', {
+  name: 'Mixtral 8x7B',
+  on: [...OPEN_WEIGHT_HOSTS],
+});
+
+// The rest of Mistral's wire model ids are not published alongside its pricing (the pricing
 // page uses display names and version tags), so no Mistral entries are declared
 // rather than declaring ids that would not resolve.
 
@@ -596,6 +667,7 @@ export const MODEL_ENTRIES: readonly ModelEntry[] = Object.freeze([
   ...xai.models(),
   ...deepseek.models(),
   ...cohere.models(),
+  ...mistral.models(),
   ...meta.models(),
   ...alibaba.models(),
   ...amazon.models(),

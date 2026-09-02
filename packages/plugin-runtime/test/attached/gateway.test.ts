@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { toolCallId } from '@akasecurity/persistence';
 import type { DataGateway, LocalStoreMaintenance } from '@akasecurity/plugin-sdk';
 import { hasLocalStoreMaintenance } from '@akasecurity/plugin-sdk';
 import type {
@@ -725,6 +726,38 @@ describe('the batch budget records what it discards', () => {
 });
 
 describe('the live forward stamps what it delivered', () => {
+  it('stamps only the items that succeeded within a MIXED batch', async () => {
+    // The per-item half of the rule, which nothing else in this file reaches.
+    // `deadForward` short-circuits before the client, and the budget test's
+    // forward returns ok for every item — so `if (forwarded.ok)` is only ever
+    // driven with a CONSTANT predicate. Delete the `if` and push
+    // unconditionally, and both of those stay green. This alternates.
+    let call = 0;
+    const forward: ForwardPolicy = {
+      run: async (op: () => Promise<unknown>) => {
+        call += 1;
+        const ok = call % 2 === 1;
+        if (ok) {
+          await op();
+          return { ok: true } as ForwardResult<unknown>;
+        }
+        return { ok: false, reason: 'unreachable' } as ForwardResult<unknown>;
+      },
+    } as unknown as ForwardPolicy;
+
+    const calls: Calls = { order: [], delivered: [] };
+    const { gateway } = build({ forward, local: makeLocal(calls) });
+    await gateway.recordToolCalls([
+      toolCallInput('odd-1'),
+      toolCallInput('even-2'),
+      toolCallInput('odd-3'),
+      toolCallInput('even-4'),
+    ]);
+
+    // Exactly the 1st and 3rd — the ones whose forward returned ok.
+    expect(calls.delivered).toEqual([toolCallId('s', 'odd-1'), toolCallId('s', 'odd-3')]);
+  });
+
   /**
    * The gap `HistorySyncPartition`'s docblock named: a structural row the live
    * path forwarded SUCCESSFULLY was never stamped by anything, so it stayed NULL
@@ -803,8 +836,11 @@ describe('the live forward stamps what it delivered', () => {
     // opposite bug.
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.length).toBeLessThan(40);
-    // Exactly what landed, and nothing the deadline discarded.
-    expect(calls.delivered).toHaveLength(seen.length);
+    // IDENTITY, not count. `toHaveLength(seen.length)` would pass if the
+    // accumulator had stamped the wrong ids — the first N inputs rather than the
+    // N that came back `ok`. Those coincide here, which is exactly why a length
+    // assertion cannot tell them apart; this pins the join the whole PR rests on.
+    expect(calls.delivered).toEqual(seen.map((e) => (e as AuditEventInput).id));
   });
 });
 

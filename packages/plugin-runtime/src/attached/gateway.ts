@@ -636,8 +636,11 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     const deadline = Date.now() + BATCH_FORWARD_BUDGET_MS;
     // WHAT LANDED IS STAMPED, and stamped once for the whole batch rather than
     // per item: `markSynced` takes the write lock for the set, and a serial loop
-    // that took it per row would pay that cost on the store's most numerous
-    // table while a hook waits. Accumulated rather than stamped inline because
+    // would take and release it per row on the store's most numerous table. NOT
+    // because a hook is waiting — BATCH_FORWARD_BUDGET_MS's docblock retracts
+    // that claim explicitly, and this path runs in the detached reconcile child.
+    // What it buys is a shorter lock hold against the hooks writing CONCURRENTLY
+    // with that child. Accumulated rather than stamped inline because
     // both exits below must settle it — the deadline exit especially, since a
     // batch that drops its tail still delivered its head, and returning without
     // stamping would leave exactly the rows that DID arrive reading as owed.
@@ -660,11 +663,26 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
         if (forwarded.ok) delivered.push(event);
       }
     } finally {
-      // `finally`, not a line before each exit: `forward.run` is documented never
-      // to throw, but this method's contract is that the caller's local write is
-      // already committed and correct, so a stamp lost to an unexpected throw
-      // here would silently re-offer rows the deployment already holds.
-      this.deps.local.markAuditEventsDelivered(delivered, Date.now());
+      // `finally`, not a line before each exit: the deadline path RETURNS from
+      // inside the try, and a stamp after the loop would be skipped by exactly
+      // that return — leaving the rows that DID arrive reading as owed, on the
+      // slow-plane machine this all exists for.
+      //
+      // Caught, because this is now the only call on the path the "never throws"
+      // argument does not cover. `forward.run` is contracted not to throw and
+      // `toEvent`/`reKeyForForward` sit inside the try; a throw HERE would
+      // convert both exits — the deadline return included — into a rejection out
+      // of `recordLlmCalls`/`recordToolCalls`, which the reconciler reads as a
+      // failed local pass and drops. `deps.local` is typed as the interface, and
+      // `LocalStoreMaintenance.markAuditEventsDelivered` promises that it stamps,
+      // not that it swallows, so the guarantee has to be structural here rather
+      // than inherited from today's implementation.
+      try {
+        this.deps.local.markAuditEventsDelivered(delivered, Date.now());
+      } catch {
+        // A lost stamp costs a redundant resend the receiver's id-dedup absorbs.
+        // Breaking the pass costs the whole batch.
+      }
     }
   }
 
@@ -710,9 +728,16 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   // local store.
   async recordConfigScan(record: ConfigScanRecord): Promise<void> {
     await this.deps.local.recordConfigScan(record);
-    await this.deps.forward.run(() =>
+    const forwarded = await this.deps.forward.run(() =>
       this.deps.client.recordAuditEvent(reKeyForForward(record.scanEvent, this.remoteInventory)),
     );
+    // Stamped like the other three, though `config_scan` is in NEITHER drain's
+    // type list today, so no read counts it and nothing re-offers it. That is
+    // exactly why it is stamped: the rule this class follows is that the write
+    // site records what was delivered and the READ decides what it counts, and a
+    // call site exempted because it happens to be inert is the one that reads as
+    // owed for ever on the day its type joins a lane.
+    if (forwarded.ok) this.deps.local.markAuditEventsDelivered([record.scanEvent], Date.now());
   }
 
   async recordBlockedDetection(entry: BlockedDetectionInput): Promise<void> {
@@ -946,10 +971,10 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   //
   // Implementing these is what actually closes the skipped-local-maintenance
   // gap: the OSS structural guard `hasLocalStoreMaintenance()` is satisfied by
-  // any object carrying all five, so the composite qualifies and SessionStart
+  // any object carrying them all, so the composite qualifies and SessionStart
   // runs maintenance on the device's real store.
   //
-  // ⚠ Three of the six are SYNCHRONOUS and must stay that way. `handle-session-start`
+  // ⚠ Several of them are SYNCHRONOUS and must stay that way. `handle-session-start`
   // calls `capWarnEraEnforcement` without `await` and uses `staleBinaryNotice`'s
   // return value directly; declaring them `async` here would hand those call
   // sites a Promise and silently break both.

@@ -16,12 +16,22 @@ import type {
 } from '@akasecurity/schema';
 import {
   captureDefinitionVersion,
+  EventKind,
   isoToEpochMillis,
   toCaptureAttributes,
   toCaptureDefinitionInput,
 } from '@akasecurity/schema';
 
 import { captureId } from './ids.ts';
+
+/**
+ * The capture GRAIN — the event kinds whose row carries `content`.
+ *
+ * Read only by `markAuditEventsDelivered`, to keep the structural stamp off the
+ * capture lane's rows. Built from `EventKind.options` so it cannot drift from
+ * the enum the capture path is defined by.
+ */
+const CAPTURE_GRAIN: ReadonlySet<string> = new Set<string>(EventKind.options);
 import {
   backupPath,
   discardStore,
@@ -504,10 +514,27 @@ export function openLocalDatabase(dir: string): LocalDatabase {
   // Fail-open like every other write here: a stamp that does not land costs a
   // redundant resend the receiver's id-dedup absorbs, never the session.
   function markAuditEventsDelivered(events: readonly AuditEventInput[], atMs: number): void {
-    if (events.length === 0) return;
+    // CAPTURE-GRAIN ROWS ARE REFUSED, and this is the guard rather than a
+    // convention. `synced_at` serves two disjoint lanes off one column —
+    // `pendingRows` reads the structural types, `pendingCaptureRows` reads the
+    // capture ones — and both filter `synced_at IS NULL`. `recordAuditEvent`
+    // accepts any `AuditEventType`, so a capture-grain event routed through it
+    // would be stamped here on a forward that carried no `content`, and the
+    // capture drain would never offer that row again: silent, permanent loss of
+    // the text, with no error and a row that reads healthy. That is precisely
+    // why `markCaptureDelivered` is a separate method, and this is what keeps
+    // the two as separable as their docblocks claim.
+    //
+    // Derived from `EventKind` rather than from the drain's own
+    // `OUTBOX_CAPTURE_EVENT_TYPES`: that one is module-private and deliberately
+    // three kinds, while capture GRAIN is all four. Excluding by grain is the
+    // wider, safer side of that difference — `code_change` is in neither lane
+    // today, and a stamp on it would be exactly as wrong the day it joins one.
+    const stampable = events.filter((event) => !CAPTURE_GRAIN.has(event.eventType));
+    if (stampable.length === 0) return;
     failOpenTransaction(db, () => {
       historySync.markSynced(
-        events.map((event) => event.id),
+        stampable.map((event) => event.id),
         atMs,
       );
     });

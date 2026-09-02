@@ -440,9 +440,12 @@ export class StandaloneDataGateway implements DataGateway, LocalStoreMaintenance
     this.db.markCaptureDelivered(event, atMs);
   }
 
-  // Present so the standalone gateway still satisfies LocalStoreMaintenance,
-  // and a no-op in effect rather than by omission: nothing forwards here, so
-  // `delivered` is only ever the empty set the store returns early on.
+  // Implemented, not stubbed, for the same reason its sibling above is: the
+  // attached gateway is a DECORATOR over an instance of this class
+  // (`attached/factory.ts` builds one and passes it as `deps.local`), so every
+  // stamp the live forward makes lands here with a non-empty array. This is the
+  // production write path for that feature, not a shape-satisfying no-op — a
+  // machine that is merely standalone simply never calls it.
   markAuditEventsDelivered(events: readonly AuditEventInput[], atMs: number): void {
     this.db.markAuditEventsDelivered(events, atMs);
   }

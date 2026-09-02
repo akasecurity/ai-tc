@@ -102,10 +102,24 @@ export interface HistorySyncCounts {
  *
  * `queued` no longer over-counts the rows it used to. A structural row the live
  * path forwarded successfully is now stamped at the forward site through
- * `markAuditEventsDelivered`, so it leaves this bucket; what stays is what the
- * deployment genuinely has not been given — including every row the batch
- * budget discarded (`forwardBatch`), which is the case this read exists to make
- * visible and which nothing else on the device can see.
+ * `markAuditEventsDelivered`, so it leaves this bucket — including, by its
+ * absence, every row the batch budget discarded (`forwardBatch`), which is the
+ * case this read exists to make visible and which nothing else on the device
+ * can see.
+ *
+ * STILL READ IT AS "not known to have been delivered", NOT as "undelivered".
+ * The stamp closed the largest residue, not the last one, and three survive it:
+ *   - A forward that TIMED OUT BUT LANDED. `withTimeout` is a bare
+ *     `Promise.race` with no abort, and the transport's own deadline is far
+ *     longer than `FORWARD_BUDGET_MS`, so `run` can return `{ok:false}` while
+ *     the request is still in flight and still acceptable.
+ *   - `ensureSessionRoot` STUBS. `recordCapture` and the standalone
+ *     `recordAuditEvent` both plant a `session` row — structural, counted here —
+ *     that no forward path ever sends, so this stamp never reaches it. It leaves
+ *     `queued` only when an authoritative root later forwards successfully.
+ *   - A permanent `invalid-request`. Deterministic, and the structural drain
+ *     bounds on `started_at < backlogBefore`, so a post-attach row is never
+ *     re-offered by anything: undeliverable for ever, yet reading as queued.
  *
  * Two caveats survive, and neither is closed here. `inProgress` is structurally
  * always 0 until `claimRows`/`releaseStaleClaims` gain a caller — they have

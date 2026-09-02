@@ -210,7 +210,7 @@ export interface DataGateway {
  * implementation with a store to maintain. A gateway that has none simply does
  * not provide them, and callers skip the work.
  *
- * Two members are synchronous — they complete inside a single store
+ * Some members are synchronous — they complete inside a single store
  * transaction and have nothing to await.
  */
 export interface LocalStoreMaintenance {
@@ -257,9 +257,17 @@ export interface LocalStoreMaintenance {
    * the id the plane stores verbatim — but taking the event keeps the rule
    * uniform across both stamps rather than making this one the exception.
    *
-   * Deliberately NOT filtered by `eventType` here. This records what was
-   * delivered; which types a read COUNTS is `STRUCTURAL_EVENT_TYPES`' decision,
-   * and duplicating that list at the write site is how the two drift.
+   * Which types a read COUNTS is `STRUCTURAL_EVENT_TYPES`' decision, and
+   * duplicating that list here is how the two drift — so this does not filter by
+   * the counting list. It does refuse ONE thing, and that is a lane boundary
+   * rather than a copy of a read's predicate: CAPTURE-GRAIN events are not
+   * stampable here. `synced_at` is one column serving two disjoint drains that
+   * both filter `synced_at IS NULL`, and `recordAuditEvent` accepts any
+   * `AuditEventType` — so a capture routed through it would be stamped on a
+   * forward that carried no `content`, and the capture drain would never offer
+   * that row again. That is silent, permanent loss of the text, and it is why
+   * `markCaptureDelivered` is a separate method. The implementation enforces it;
+   * a caller does not have to know.
    */
   markAuditEventsDelivered(events: readonly AuditEventInput[], atMs: number): void;
 }
@@ -284,7 +292,7 @@ const LOCAL_STORE_MAINTENANCE_MEMBERS: Record<keyof LocalStoreMaintenance, true>
  * the member qualifies, including a wrapper that forwards it to an inner
  * gateway.
  *
- * Per member rather than all-or-nothing, because the five passes are
+ * Per member rather than all-or-nothing, because the passes are
  * unrelated — a retention purge, a one-shot legacy cap, a file-tree commit, a
  * read-model repair, a version nudge — and an implementation that owns a store
  * has every reason to supply some and not others. Gating the group on the full

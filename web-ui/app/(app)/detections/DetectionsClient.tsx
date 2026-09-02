@@ -23,12 +23,13 @@ import {
 } from './actions';
 import { buildDetectionsParams } from './filters';
 
-// Fallbacks for the two ways a policy write can fail without the action naming
-// a reason: a result that says not-ok and carries no message, and a call that
+// Fallbacks for the two ways a write can fail without the action naming a
+// reason: a result that says not-ok and carries no message, and a call that
 // never returned one at all. Both are faults rather than refusals, so both say
-// what the user can do about it.
-const DEFAULT_POLICY_ERROR = 'That change could not be saved.';
-const TRANSPORT_POLICY_ERROR =
+// what the user can do about it. Shared by both writes on this page, which fail
+// in the same two ways.
+const DEFAULT_WRITE_ERROR = 'That change could not be saved.';
+const TRANSPORT_WRITE_ERROR =
   'That change could not be sent — check that the dashboard is still running and try again.';
 
 // Tabs: updates come from the available_packs mirror (what the running
@@ -90,6 +91,11 @@ export function DetectionsClient({
   // click can legitimately fail — and a picker that snaps back with nothing on
   // screen is the defect this state exists to close.
   const [policyError, setPolicyError] = useState<string | null>(null);
+  // The same for the enable/disable write, and separate from it: the two are
+  // different refusals about different controls, and one state would show the
+  // organization's reason for keeping a detection running underneath the
+  // picker, which never refused anything.
+  const [enabledError, setEnabledError] = useState<string | null>(null);
 
   // id → latest version, for the per-row amber update badges. Derived straight
   // from the list items (the store sets latestVersion only when a newer
@@ -156,10 +162,11 @@ export function DetectionsClient({
           }}
           onSelect={(id) => {
             setEditRuleId(null);
-            // The refusal belongs to the detection that produced it; carrying it
-            // to the next one would attribute an organization's constraint to a
-            // detection that is not under it.
+            // The refusals belong to the detection that produced them; carrying
+            // one to the next detection would attribute an organization's
+            // constraint to a detection that is not under it.
             setPolicyError(null);
+            setEnabledError(null);
             push({ filter, q: query, id });
           }}
           filterTabs={OSS_TABS}
@@ -184,24 +191,35 @@ export function DetectionsClient({
                 // would jump to a different detection and look like the toggle hit the
                 // wrong one.
                 push({ filter, q: query, id: detail.id });
-                startTransition(() => {
-                  void setDetectionEnabled(detail.id, !detail.enabled);
+                startTransition(async () => {
+                  try {
+                    const result = await setDetectionEnabled(detail.id, !detail.enabled);
+                    setEnabledError(result.ok ? null : (result.error ?? DEFAULT_WRITE_ERROR));
+                  } catch {
+                    // Same reasoning as the policy write below: the action
+                    // RETURNS its refusals, but the call itself can still
+                    // reject, and an unhandled rejection inside a transition
+                    // takes the page to the route error boundary over something
+                    // a retry would clear.
+                    setEnabledError(TRANSPORT_WRITE_ERROR);
+                  }
                 });
               }}
               policyFloor={floors[detail.id] ?? null}
               policyError={policyError}
+              enabledError={enabledError}
               onChangePolicy={(policyId) => {
                 startTransition(async () => {
                   try {
                     const result = await setDetectionPolicy(detail.id, policyId);
-                    setPolicyError(result.ok ? null : (result.error ?? DEFAULT_POLICY_ERROR));
+                    setPolicyError(result.ok ? null : (result.error ?? DEFAULT_WRITE_ERROR));
                   } catch {
                     // The action is written to RETURN a refusal rather than
                     // throw, but the CALL can still reject — a dropped
                     // connection, a framework fault — and an unhandled rejection
                     // inside a transition takes the page to the route error
                     // boundary over something a retry would clear.
-                    setPolicyError(TRANSPORT_POLICY_ERROR);
+                    setPolicyError(TRANSPORT_WRITE_ERROR);
                   }
                 });
               }}

@@ -20,9 +20,9 @@ import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { setDetectionPolicy } from '../../app/(app)/detections/actions.ts';
 import { db } from '../../app/lib/db.ts';
 import {
+  DETECTION_MISSING,
   DETECTION_POLICY_INVALID,
-  DETECTION_POLICY_MISSING,
-  DETECTION_POLICY_WRITE_ERROR,
+  DETECTION_WRITE_ERROR,
   policyFloorRefusal,
 } from '../../app/lib/detection-refusals.ts';
 import { ECHO_RUN, expectNoEchoOf } from '../helpers/no-echo.ts';
@@ -276,7 +276,7 @@ describe('setDetectionPolicy on input it cannot act on', () => {
   it('says so when the detection is not installed here', async () => {
     // No pack seeded at all: the write changes no row.
     const result = await expectNoRejection(() => setDetectionPolicy(DETECTION_ID, 'block'));
-    expect(result).toEqual({ ok: false, error: DETECTION_POLICY_MISSING });
+    expect(result).toEqual({ ok: false, error: DETECTION_MISSING });
   });
 });
 
@@ -301,7 +301,7 @@ class ForeignPolicyFloorError extends Error {
 
 describe('setDetectionPolicy when the refusal arrives from another copy of the class', () => {
   it("still reports it as the organization's decision, not a broken store", async () => {
-    // An identity check would fail here and answer DETECTION_POLICY_WRITE_ERROR,
+    // An identity check would fail here and answer DETECTION_WRITE_ERROR,
     // which tells the user to retry and to check that ~/.aka is writable — a
     // permission problem they do not have, while never learning that their
     // organization set the policy. The refusal is therefore read by its fields.
@@ -311,7 +311,7 @@ describe('setDetectionPolicy when the refusal arrives from another copy of the c
     });
     const result = await expectNoRejection(() => setDetectionPolicy(DETECTION_ID, 'monitor'));
     expect(result.error).toBe(policyFloorRefusal({ floor: 'block', refusal: 'floor' }));
-    expect(result.error).not.toBe(DETECTION_POLICY_WRITE_ERROR);
+    expect(result.error).not.toBe(DETECTION_WRITE_ERROR);
     expect(result.ok).toBe(false);
   });
 
@@ -325,6 +325,6 @@ describe('setDetectionPolicy when the refusal arrives from another copy of the c
       throw new Error('SQLITE_BUSY: database is locked');
     });
     const result = await expectNoRejection(() => setDetectionPolicy(DETECTION_ID, 'monitor'));
-    expect(result).toEqual({ ok: false, error: DETECTION_POLICY_WRITE_ERROR });
+    expect(result).toEqual({ ok: false, error: DETECTION_WRITE_ERROR });
   });
 });

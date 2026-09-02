@@ -89,6 +89,7 @@ export {
 export type { FloorRule, PackPolicyFloor, PolicyFloorRefusal } from './policy-floor.ts';
 export {
   controlPlanePolicyFloor,
+  packEnablementRefusal,
   policyAssignmentRefusal,
   PolicyFloorError,
   readCachedPolicyBundle,

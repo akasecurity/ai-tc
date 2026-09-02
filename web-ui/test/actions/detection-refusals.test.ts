@@ -1,12 +1,15 @@
-import { policyFloorReason } from '@akasecurity/dashboard-ui';
+import { DETECTION_STAYS_ON_REASON, policyFloorReason } from '@akasecurity/dashboard-ui';
 import { PolicyFloorError } from '@akasecurity/persistence';
 import { describe, expect, it } from 'vitest';
 
 import {
   asPolicyFloorRefusal,
+  DETECTION_ID_INVALID,
+  DETECTION_MISSING,
   DETECTION_POLICY_INVALID,
-  DETECTION_POLICY_MISSING,
-  DETECTION_POLICY_WRITE_ERROR,
+  DETECTION_STAYS_ON_REFUSAL,
+  DETECTION_WRITE_ERROR,
+  isControlPlaneRefusal,
   policyFloorRefusal,
 } from '../../app/lib/detection-refusals.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
@@ -52,7 +55,7 @@ describe('policyFloorRefusal', () => {
     for (const refusal of ['floor', 'lock'] as const) {
       const message = policyFloorRefusal({ floor: 'block', refusal });
       expect(message).not.toMatch(/error|failed|try again/i);
-      expect(message).not.toBe(DETECTION_POLICY_WRITE_ERROR);
+      expect(message).not.toBe(DETECTION_WRITE_ERROR);
     }
   });
 
@@ -66,24 +69,54 @@ describe('policyFloorRefusal', () => {
   });
 });
 
-describe('the four refusals are distinguishable', () => {
+describe('DETECTION_STAYS_ON_REFUSAL', () => {
+  it('says the change was not saved', () => {
+    // The one fact the constraint itself does not carry. Without it the reader
+    // is left guessing whether the detection is now off.
+    expect(DETECTION_STAYS_ON_REFUSAL).toMatch(/not saved/i);
+  });
+
+  it('reuses the sentence the toggle already showed', () => {
+    // One rule, one wording — the toggle withholds the choice with this before
+    // the click, exactly as the picker does with the floor's own sentence.
+    expect(DETECTION_STAYS_ON_REFUSAL).toContain(DETECTION_STAYS_ON_REASON);
+  });
+
+  it('says the detection can still be raised', () => {
+    // The remedy this refusal leaves open, and the whole reason it is not the
+    // lock's sentence: enforcement may still be strengthened here.
+    expect(DETECTION_STAYS_ON_REFUSAL).toMatch(/stronger/i);
+  });
+
+  it('does not read as a fault the user should retry', () => {
+    // Retrying cannot help, and the user has done nothing wrong.
+    expect(DETECTION_STAYS_ON_REFUSAL).not.toMatch(/error|failed|try again/i);
+    expect(DETECTION_STAYS_ON_REFUSAL).not.toBe(DETECTION_WRITE_ERROR);
+  });
+});
+
+describe('every refusal is distinguishable', () => {
   it('no two produce the same message', () => {
     // They mean different things and have different remedies: pick something
-    // stronger, ask your administrator, reload, or the store is broken.
+    // stronger, raise it instead of switching it off, ask your administrator,
+    // reload, or the store is broken.
     const messages = new Set([
       policyFloorRefusal({ floor: 'warn', refusal: 'floor' }),
       policyFloorRefusal({ floor: 'warn', refusal: 'lock' }),
+      DETECTION_STAYS_ON_REFUSAL,
       DETECTION_POLICY_INVALID,
-      DETECTION_POLICY_MISSING,
-      DETECTION_POLICY_WRITE_ERROR,
+      DETECTION_ID_INVALID,
+      DETECTION_MISSING,
+      DETECTION_WRITE_ERROR,
     ]);
-    expect(messages.size).toBe(5);
+    expect(messages.size).toBe(7);
   });
 
-  it('the two faults tell the user what to do about them', () => {
+  it('the faults tell the user what to do about them', () => {
     expect(DETECTION_POLICY_INVALID).toMatch(/reload/i);
-    expect(DETECTION_POLICY_MISSING).toMatch(/reload/i);
-    expect(DETECTION_POLICY_WRITE_ERROR).toMatch(/try again/i);
+    expect(DETECTION_ID_INVALID).toMatch(/reload/i);
+    expect(DETECTION_MISSING).toMatch(/reload/i);
+    expect(DETECTION_WRITE_ERROR).toMatch(/try again/i);
   });
 });
 
@@ -106,6 +139,44 @@ class ForeignPolicyFloorError extends Error {
     this.refusal = refusal;
   }
 }
+
+describe('isControlPlaneRefusal', () => {
+  it("reads the store's own refusal, and a copy `instanceof` would miss", () => {
+    // The enable path asks only this question: was this the organization's
+    // decision? It quotes no archetype, so it validates none — and it must
+    // still see the refusal through a second copy of the class, for the same
+    // reason the assignment path does.
+    expect(
+      isControlPlaneRefusal(new PolicyFloorError('aka/pack', 'monitor', 'block', 'floor')),
+    ).toBe(true);
+    const copy = new ForeignPolicyFloorError('warn', 'lock');
+    expect(copy instanceof PolicyFloorError).toBe(false);
+    expect(isControlPlaneRefusal(copy)).toBe(true);
+  });
+
+  it('turns away a genuine store fault', () => {
+    // The other half of the same read. A write that failed for a real reason
+    // must keep the message that tells the user to retry, or every fault would
+    // come out as somebody else's decision.
+    for (const candidate of [
+      null,
+      undefined,
+      'PolicyFloorError',
+      new Error('SQLITE_BUSY: database is locked'),
+      { name: 'ManagedFieldError' },
+    ] as unknown[]) {
+      expect(isControlPlaneRefusal(candidate), JSON.stringify(candidate ?? null)).toBe(false);
+    }
+  });
+
+  it('accepts a refusal carrying no archetype at all', () => {
+    // Deliberately weaker than asPolicyFloorRefusal, and this is the case that
+    // says so: the enable refusal's sentence quotes nothing from the error, so
+    // demanding a floor it never reads would report the organization's decision
+    // as a broken store.
+    expect(isControlPlaneRefusal({ name: 'PolicyFloorError' })).toBe(true);
+  });
+});
 
 describe('asPolicyFloorRefusal', () => {
   it("reads the store's own refusal", () => {

@@ -796,6 +796,23 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
         ruleCategoryMap(cached.rules, local.rules),
       ),
       customKeywords: [...local.customKeywords, ...cached.customKeywords],
+      // TAKEN FROM THE CACHE, unlike the two fields below — and the asymmetry
+      // is the point, so it is argued rather than asserted.
+      //
+      // What makes `rulesComplete` and `reversibleRuleIds` unsafe to honor is
+      // that each can only ever RELAX enforcement, so honoring one would hand
+      // anything able to write policy-cache.json a kill switch. A prohibition
+      // inverts that: it can only ever ADD a refusal, so there is no relaxation
+      // to grant. The capability it would give a cache-writer is to block the
+      // user's own sessions — available far more cheaply to anyone who can
+      // already write into that directory, by deleting the plugin.
+      //
+      // Local contributes nothing, so this is the organization's list or none:
+      // a machine with no control plane has no governance decision to carry,
+      // and the spread above would otherwise drop the field silently — which is
+      // exactly what it did, leaving the whole control inert on every device
+      // while every test around it stayed green.
+      prohibitedModels: cached.prohibitedModels,
       // `rulesComplete` is a STANDALONE-ONLY signal (the user's local installed
       // snapshot) and is taken from the LOCAL bundle only — never from the wire
       // or the on-disk cache. Honoring a cached one would hand the control plane, or

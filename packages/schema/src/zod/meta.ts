@@ -50,6 +50,13 @@ export const AuditEventType = z
     // 'tool_call' is the reconciler's structural row for every call, while
     // 'tool_use' exists only where a hook enforced against the arguments.
     'tool_use',
+    // One row per model REFUSAL: a switch onto a prohibited model that was
+    // denied, or a turn refused because the session was already running on one.
+    // A structural row like the ones above rather than a capture — it carries
+    // the model that was refused and nothing the user typed, because what is
+    // worth recording about a governance decision is the decision, and prompt
+    // text is the thing this product exists to keep from travelling.
+    'model_refusal',
     // One row per config-inventory scan, hung off the session root. It is the
     // fact the posture inspection findings reference (findings require an
     // audit_event_id), and its started_at is the "scanned Nm ago" the read

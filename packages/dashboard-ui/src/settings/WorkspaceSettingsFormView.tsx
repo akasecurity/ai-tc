@@ -1,5 +1,10 @@
 'use client';
-import type { ManagedContext, ManagedSettingKey, WorkspaceSettings } from '@akasecurity/schema';
+import type {
+  CredentialState,
+  ManagedContext,
+  ManagedSettingKey,
+  WorkspaceSettings,
+} from '@akasecurity/schema';
 import {
   controlPlaneName,
   isAttached,
@@ -431,6 +436,13 @@ export interface WorkspaceSettingsFormViewProps {
   // state read-only rather than offering an action that cannot complete.
   onAttach?: (endpoint: string, label: string, accessKey: string) => void;
   onDetach?: () => void;
+  // Whether the credential half of the attachment is usable, read locally by
+  // the host (`readControlPlaneCredentialState`). OPTIONAL, and its absence
+  // means "not reported" rather than "fine": a host that cannot read the file
+  // leaves the surface exactly as it was instead of accusing a working machine
+  // of being broken. Ignored entirely while standalone, where having no
+  // credential is the ordinary state and not a fault.
+  credentialState?: CredentialState;
   // Where "Configure detections" points. Injected rather than hardcoded so this
   // package stays router-agnostic.
   detectionsHref?: string;
@@ -454,6 +466,7 @@ export function WorkspaceSettingsFormView({
   onSave,
   onAttach,
   onDetach,
+  credentialState,
   detectionsHref = '/detections',
   busy,
   error,
@@ -504,6 +517,7 @@ export function WorkspaceSettingsFormView({
       <SettingGroup title="Connection">
         <ConnectionRow
           settings={settings}
+          credentialState={credentialState}
           managedLabel={lockOn('runMode')}
           onAttach={onAttach}
           onDetach={onDetach}
@@ -677,6 +691,69 @@ export const CONNECTION_UNAVAILABLE_NOTICE =
   'This view cannot change the connection. Attach from the AKA dashboard, or with `aka attach` in ' +
   'a terminal.';
 
+// ─── When the stored connection is not a working one ─────────────────────────
+//
+// `runMode: 'attached'` is half an attachment. The other half is a usable
+// credential file, and a machine that has lost one sends and receives nothing
+// while every stored field still says "Attached" — the state `canAttach` above
+// exists to stop a user creating, and which they can still arrive at by other
+// routes: a hand-edited settings.json, an administrator repointing the endpoint
+// through a managed overlay, a restored home directory.
+//
+// WHY THIS IS HONEST TO SHOW when a handshake would not be. Every other caution
+// in this section is about not claiming knowledge of the far end — see
+// CONNECTION_ATTACHED_DESCRIPTION, which deliberately says nothing about
+// whether the deployment is reachable. This is a different kind of fact: the
+// credential is a file on THIS disk, read locally, and "there is no usable key
+// here" is something the page can see for itself. It reports the local half and
+// still says nothing about the remote one.
+//
+// The badge follows VAULT_STALE_BADGE's precedent: the row's stored answer and
+// what is actually happening disagree, so the badge has to carry the
+// contradiction rather than repeat the stored answer as if it were the outcome.
+export const CONNECTION_INACTIVE_BADGE = 'Not connected';
+
+export const CONNECTION_CREDENTIAL_MISSING_NOTICE =
+  'This machine is registered, but there is no access key stored on it — so nothing is being ' +
+  'sent or received. Attach it again to restore the connection.';
+
+// ONE message for four reasons (`untrusted-file`, `unreadable`, `malformed`,
+// `unsafe-endpoint`). A user cannot act differently on any of them — the fix is
+// to attach again in every case — and naming the distinction would describe our
+// parser rather than their machine.
+export const CONNECTION_CREDENTIAL_UNUSABLE_NOTICE =
+  'This machine is registered, but the access key stored on it cannot be used — so nothing is ' +
+  'being sent or received. Attach it again to replace it.';
+
+/**
+ * The mismatch notice, which has to name both endpoints.
+ *
+ * The only unusable reason a user can act on in two directions: re-attach
+ * against the endpoint the settings now name, or put the old endpoint back.
+ * Neither instruction can be written without saying which endpoint is which, so
+ * this is a function where its neighbours are constants.
+ */
+export function connectionEndpointMismatchNotice(
+  credentialEndpoint: string,
+  settingsEndpoint: string,
+): string {
+  return (
+    `This machine is set to ${settingsEndpoint}, but the access key stored on it was issued for ` +
+    `${credentialEndpoint} — so nothing is being sent or received. Attach it again to ` +
+    `${settingsEndpoint}, or point it back at ${credentialEndpoint}.`
+  );
+}
+
+/** The notice for a state, or null when there is nothing wrong to report. */
+function credentialNotice(state: CredentialState | undefined): string | null {
+  if (state === undefined || state.usable) return null;
+  if (state.reason === 'absent') return CONNECTION_CREDENTIAL_MISSING_NOTICE;
+  if (state.reason === 'endpoint-mismatch') {
+    return connectionEndpointMismatchNotice(state.credentialEndpoint, state.settingsEndpoint);
+  }
+  return CONNECTION_CREDENTIAL_UNUSABLE_NOTICE;
+}
+
 export const DETACH_LABEL = 'Detach';
 
 export const DETACH_EXPLANATION =
@@ -745,12 +822,14 @@ export const DETACH_MANAGED_NOTICE =
 
 function ConnectionRow({
   settings,
+  credentialState,
   managedLabel,
   onAttach,
   onDetach,
   busy,
 }: {
   settings: WorkspaceSettings;
+  credentialState?: CredentialState | undefined;
   managedLabel?: string | undefined;
   onAttach?: ((endpoint: string, label: string, accessKey: string) => void) | undefined;
   onDetach?: (() => void) | undefined;
@@ -763,6 +842,10 @@ function ConnectionRow({
   const [accessKey, setAccessKey] = useState('');
   const attached = isAttached(settings);
   const locked = managedLabel !== undefined;
+  // Only meaningful for an attached machine: a standalone one is not missing a
+  // credential, it is not supposed to have one, and reporting absence there
+  // would turn the ordinary state into a fault.
+  const notice = attached ? credentialNotice(credentialState) : null;
 
   return (
     <div className="px-4 py-3" data-slot="connection-row">
@@ -781,14 +864,28 @@ function ConnectionRow({
         <span
           className={cn(
             'shrink-0 rounded-full px-2 py-0.5 text-xs font-medium',
-            attached ? 'bg-teal-fill text-teal-ink' : 'bg-surface-2 text-text-3',
+            notice !== null
+              ? 'bg-sev-high-fill text-sev-high-ink'
+              : attached
+                ? 'bg-teal-fill text-teal-ink'
+                : 'bg-surface-2 text-text-3',
           )}
           data-slot="run-mode-badge"
         >
-          {attached ? CONNECTION_ATTACHED_LABEL : CONNECTION_STANDALONE_LABEL}
+          {notice !== null
+            ? CONNECTION_INACTIVE_BADGE
+            : attached
+              ? CONNECTION_ATTACHED_LABEL
+              : CONNECTION_STANDALONE_LABEL}
           {locked && ' · locked'}
         </span>
       </div>
+
+      {notice !== null && (
+        <p className="mt-3 text-xs text-sev-high-ink" data-slot="connection-credential-notice">
+          {notice}
+        </p>
+      )}
 
       {attached && (
         <p className="mt-3 text-xs text-text-3" data-slot="connection-forwarding">

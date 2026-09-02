@@ -332,12 +332,12 @@ describe('the release fixture', () => {
     expect(magicOf(path).startsWith(GZIP)).toBe(true);
   });
 
-  // Skipped only where no PowerShell exists, since Compress-Archive is what
-  // writes a zip. Both hosted Linux and macOS runners ship `pwsh`, so this runs
-  // on all three CI legs rather than only the Windows one — which is the whole
-  // point: the platform that gets this wrong is the platform that is NOT
-  // Windows.
-  it.skipIf(PS === undefined)('writes a real zip for a win32 triple on any host', () => {
+  // No longer gated on a PowerShell, and that is a real widening rather than
+  // tidying: off Windows the zip is written by stored-zip.ts, so this runs on
+  // every host including one with no pwsh at all. The platform that gets a
+  // win32 fixture wrong is the platform that is NOT Windows, so the case that
+  // catches it should be the one that never skips.
+  it('writes a real zip for a win32 triple on any host', () => {
     const path = writeArchive(root, {
       version: FIXTURE_VERSION,
       triple: 'win32-x64',

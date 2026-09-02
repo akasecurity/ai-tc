@@ -699,11 +699,18 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      nothing: the client is constructed only once both halves of
                      an attachment are present and agree)
 @akasecurity/remote         → @akasecurity/schema, zod
-                     (the control-plane transport: the six routes an attached
-                     machine is scoped to, and the ONLY package in this
+                     (the control-plane transport, and the ONLY package in this
                      workspace permitted to open a socket — see §4. `src/http.ts`
                      is the one module inside it that sends; everything else
-                     builds requests and parses answers)
+                     builds requests and parses answers.
+                     TWO clients, split by whether the caller holds a credential.
+                     `createRemoteClient` speaks the seven routes an ATTACHED
+                     machine is scoped to and requires a key. `createAttachClient`
+                     speaks the two anonymous routes a machine uses to OBTAIN one
+                     and holds none — a separate factory rather than an optional
+                     key, so a caller cannot reach any other route without a
+                     credential, since that client cannot express one. The exact
+                     export set is pinned by test/public-surface.test.ts)
 @akasecurity/plugin-sdk     → @akasecurity/detections, persistence, schema
                      (provider resolution for the session-root snapshot reads the host env
                      directly at SessionStart — `provider.ts` for Claude Code,
@@ -766,7 +773,7 @@ changes. The gaps that exist today:
 **Cross-cutting rules:**
 
 - No `process.env` reads except the sites that explicitly opt out of `n/no-process-env` — §3 tables them, and deliberately is not restated here: a second copy of that list is how the count drifted last time.
-- No `fetch()` and no transport module anywhere except `@akasecurity/remote`, which reaches only the deployment a machine's own settings name and only once it has been attached on purpose (§4). Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly — none of them acquires DATA over a network. Two of them, `cli` and `web-ui`, do take `@akasecurity/remote` for the attach verb alone: one `whoami` round trip that proves a key before an attachment is written. It acquires no store data and happens only when a human is attaching, which is why it does not add an egress path to §4.
+- No `fetch()` and no transport module anywhere except `@akasecurity/remote`, which reaches only the deployment a machine's own settings name and only once it has been attached on purpose (§4). Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly — none of them acquires DATA over a network. Two of them, `cli` and `web-ui`, do take `@akasecurity/remote` for the attach verb alone. For a pasted key that is one `whoami` round trip, which proves the key before an attachment is written. The browser-approval path adds two more, both **unauthenticated** because the caller has no credential yet and obtaining one is the point: a grant POST, then a poll of `POST /v1/attach/token` on an interval the deployment sets, until somebody decides or the grant lapses — and then the same `whoami`. None of it acquires store data, and all of it happens only while a human is attaching, which is why it does not add an egress path to §4.
 - Drizzle is imported **only** by `@akasecurity/schema`, which uses it to _define_ the local-store and registry schemas. Packages that read the store do so via `node:sqlite` through `@akasecurity/persistence` — they must not import Drizzle.
 - The graph above lists **runtime** edges. Test suites may additionally take `@akasecurity/plugin-sdk` as a **dev-only** dependency for fixture seeding — the bundled detection packs (`bundledDetections()` / `registerBundledPacks`) live only there, so a test that must seed `installed_packs` or the engine registry needs it. Both `cli` and `web-ui` do this in their exception tests. A dev-only test dependency is not a runtime package-wall crossing.
 

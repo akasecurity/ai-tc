@@ -153,6 +153,7 @@ const noopClient = (): AttachedClient => ({
   ingestInventory: () => Promise.resolve({}),
   recordAuditEvent: () => Promise.resolve(),
   reportStorePosture: () => Promise.resolve({}),
+  recordProjectEgress: () => Promise.resolve({}),
 });
 
 const passthrough = (): ForwardPolicy => ({

@@ -7,11 +7,16 @@ export {
   clearAttachmentDerivedState,
   POLICY_CACHE_FILENAME,
 } from './attached-derived.ts';
-export type { CredentialState, CredentialUnusableReason } from './control-plane-credential.ts';
+export type {
+  CredentialFileRead,
+  CredentialState,
+  CredentialUnusableReason,
+} from './control-plane-credential.ts';
 export {
   controlPlaneCredentialPath,
   isSafeEndpoint,
   readControlPlaneCredential,
+  readControlPlaneCredentialFile,
   readControlPlaneCredentialState,
   removeControlPlaneCredential,
   writeControlPlaneCredential,
@@ -38,6 +43,7 @@ export type { LocalHistoryPreview } from './history-preview.ts';
 export { readLocalHistoryPreview } from './history-preview.ts';
 export {
   captureId,
+  captureWireId,
   classifiedDataId,
   inspectionDefinitionId,
   inspectionFindingId,
@@ -143,8 +149,10 @@ export type { VaultDerefInsert, VaultRow, VaultRowInsert } from './repositories/
 export { SqliteSecretVaultRepository } from './repositories/secret-vault.ts';
 export { SqliteSecurityRepository } from './repositories/security.ts';
 export {
+  capHits,
   MAX_EGRESS_CALL_SITES_PER_PROJECT,
   SqliteSharesRepository,
+  withoutDroppedFiles,
 } from './repositories/shares.ts';
 export { SqliteSourceProjectRepository } from './repositories/source-project.ts';
 export { compareBinaryVersions } from './semver.ts';

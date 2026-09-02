@@ -61,8 +61,10 @@ const PUBLIC_VALUE_EXPORTS = [
   'base32Decode',
   'base32Encode',
   'bindingInput',
+  'capHits',
   'capWarnEraEnforcementOnce',
   'captureId',
+  'captureWireId',
   'classifiedDataId',
   'clearAttachmentDerivedState',
   'compareBinaryVersions',
@@ -99,6 +101,10 @@ const PUBLIC_VALUE_EXPORTS = [
   'overlayManagedSettings',
   'promptId',
   'readControlPlaneCredential',
+  // The WIDE read. Exported deliberately and named so it cannot be reached by
+  // accident: it returns a bearer credential, unlike the state reader beside
+  // it, and belongs only to server-side callers.
+  'readControlPlaneCredentialFile',
   'readControlPlaneCredentialState',
   'readEffectiveSettings',
   'readFingerprintKey',
@@ -120,6 +126,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'toolCallId',
   'verifyPointerTag',
   'withFileLock',
+  'withoutDroppedFiles',
   'writeControlPlaneCredential',
   'writeOwnerOnlyFileSync',
 ];

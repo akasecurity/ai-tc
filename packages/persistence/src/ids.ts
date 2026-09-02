@@ -140,6 +140,68 @@ export function captureId(
   );
 }
 
+// Renders 16 bytes of a hex digest as a UUIDv8 (RFC 9562 §5.8 — the version
+// reserved for custom, non-random layouts, which is exactly what a digest is).
+// The version and variant nibbles are overwritten rather than appended: a UUID
+// carries them at fixed positions, so a raw digest slice is NOT a valid UUID and
+// a validator that checks either field would reject it.
+function uuidFromDigest(digest: string): string {
+  const h = digest.slice(0, 32);
+  // Version 8 — says "derived, not random" to anyone reading the id.
+  const version = '8';
+  // Variant 10xx: keep the low two bits of the nibble, force the high two.
+  const variant = ((Number.parseInt(h.charAt(16), 16) & 0b0011) | 0b1000).toString(16);
+  // charAt/slice rather than indexing: an indexed read is `string | undefined`
+  // here, and neither escape from that (`!` or `as string`) is allowed by lint.
+  const b = h.slice(0, 12) + version + h.slice(13, 16) + variant + h.slice(17, 32);
+  return `${b.slice(0, 8)}-${b.slice(8, 12)}-${b.slice(12, 16)}-${b.slice(16, 20)}-${b.slice(20, 32)}`;
+}
+
+// The id a capture is SENT under, derived from the identity `captureId` already
+// keys its row on. Two ids for one capture is not duplication — the local row is
+// keyed by a 64-hex digest and the wire needs a `guid` — but they must be two
+// renderings of ONE identity, and this is the function that makes them so.
+//
+// It replaces a `randomUUID()` minted per capture and then discarded, which had
+// two consequences worth stating because each is a bug the derivation removes:
+//
+//  1. A stored capture could not be matched to what was sent, because the wire
+//     id was never persisted. There was no id to mark delivered.
+//  2. A capture rebuilt from its row would be sent under a NEW id every attempt,
+//     so the receiver's id-dedup could not suppress a retry — the one mechanism
+//     that makes redelivery safe.
+//
+// What it does NOT do is keep byte-identical captures apart, and reading it that
+// way is the mistake to avoid. The tuple carries no timestamp and no nonce, so
+// identical content in one session at one path is ONE capture BY DEFINITION OF
+// THE KEY — and that is the point rather than a concession: `recordCapture` keys
+// the row on the same tuple with INSERT OR IGNORE, so the local timeline has
+// shown one for as long as this key has existed. Deriving the wire id from that
+// same tuple makes the wire AGREE with the store instead of diverging from it,
+// which is the property actually being bought — an id that means the same thing
+// on both sides. What the scoping adds is where the collapse STOPS: identical
+// content in two different sessions, or at two different paths, stays two
+// captures, which dedup on `contentHash` alone would not have preserved.
+//
+// One live-path behaviour changes with it, named here rather than left to be
+// discovered: a repeated identical prompt — `yes`, `continue`, `run the tests`,
+// the ordinary shape of a session — used to reach a deployment as two random-id
+// events, and now arrives as one. That matches what the local store has always
+// shown for it, which is why it is the correct outcome and not a lost capture.
+//
+// Callers must pass the SAME tuple `captureId` receives for that capture. The
+// two are derived from one digest here so that stays true by construction;
+// pinned by `is the SAME digest captureId returns, only re-rendered` in
+// test/ids.test.ts, and across the seam by `derives the id from the tuple the
+// local row is keyed on` in plugin-sdk's test/build-ingest-event.test.ts.
+export function captureWireId(
+  sessionId: string | null,
+  contentHash: string,
+  filePath: string | null = null,
+): string {
+  return uuidFromDigest(captureId(sessionId, contentHash, filePath));
+}
+
 // Data Shares dimensions — id derivations for share destinations,
 // endpoints, and call-sites. Structurally stable (fixed prefixes, fixed
 // canonicalIdentity join order) so a future local-store egress scan derives

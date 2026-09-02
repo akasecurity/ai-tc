@@ -307,13 +307,8 @@ describe('handleSubagentSpawn', () => {
         }) as never,
     ],
   ])('fails OPEN when %s', async (_label, open) => {
-    const stop = await handleSubagentSpawn(
-      open,
-      'Agent',
-      { model: 'opus' },
-      's1',
-      dir,
-      () => Promise.resolve(),
+    const stop = await handleSubagentSpawn(open, 'Agent', { model: 'opus' }, 's1', dir, () =>
+      Promise.resolve(),
     );
     expect(stop).toBe(false);
   });

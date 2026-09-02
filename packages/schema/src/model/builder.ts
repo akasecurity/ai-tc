@@ -30,6 +30,7 @@
 import type {
   DataRetention,
   ModelCapability,
+  ModelSeen,
   VendorTrainingPolicy,
 } from './governance.ts';
 import type { ModelPrice } from './pricing.ts';
@@ -82,6 +83,15 @@ export interface ModelEntry {
    * estimated wherever it is rendered.
    */
   defaultHosting: ModelHosting;
+  /**
+   * Whether this is a model a deployment would deliberately onboard, or one
+   * that is only ever reached by traffic. A legacy model nobody selects on
+   * purpose is `'discovered'`, which puts it in the review queue.
+   *
+   * Curated rather than derived: being IN the catalog says the model is known,
+   * not that anyone chose it.
+   */
+  seen: ModelSeen;
 }
 
 /** Vendor-level defaults every model from this vendor inherits. */
@@ -129,6 +139,8 @@ export interface ModelSpec {
   /** Curated hosting band for an id that names no platform. Defaults to the
    * vendor's own endpoint's band, or `'gateway'` for a vendor with none. */
   defaultHosting?: ModelHosting;
+  /** Defaults to `'managed'`; `'discovered'` for a model only traffic reaches. */
+  seen?: ModelSeen;
 }
 
 function normalizeRef(ref: PlatformRef): PlatformSpec {
@@ -221,6 +233,7 @@ export class ModelVendorBuilder {
       training: this.defaults.training ?? null,
       platforms,
       defaultHosting,
+      seen: spec.seen ?? 'managed',
     };
 
     this.entries.push(entry);

@@ -300,6 +300,8 @@ openai.model('gpt-4o-mini', {
 
 openai.model('gpt-4-turbo', {
   name: 'GPT-4 Turbo',
+  // A legacy model reached by traffic, never deliberately onboarded.
+  seen: 'discovered',
   price: tokenPrice(10, 30),
   aliases: ['gpt-4-turbo-2024-04-09'],
   on: [...OPENAI_RESELLERS],
@@ -513,6 +515,7 @@ deepseek.model('deepseek-v4-pro', {
 // Off DeepSeek's current pricing page; served on third-party hosts.
 deepseek.model('deepseek-r1', {
   name: 'DeepSeek R1',
+  seen: 'discovered',
   capability: 'reasoning',
   openWeights: true,
   defaultHosting: 'local',
@@ -652,6 +655,7 @@ const mistral = vendor('mistral', {
 // Absent from Mistral's current model list; survives on third-party hosts.
 mistral.model('mixtral-8x7b', {
   name: 'Mixtral 8x7B',
+  seen: 'discovered',
   on: [...OPEN_WEIGHT_HOSTS],
 });
 

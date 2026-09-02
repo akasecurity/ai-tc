@@ -144,7 +144,7 @@ export {
 export { DetectionDetailView } from './detections/DetectionDetailView.tsx';
 // Stat-strip icon reused by the detections page.
 export { DETECTION_FILTER_TABS, DetectionsListView } from './detections/DetectionsListView.tsx';
-export { MatcherModal } from './detections/MatcherModal.tsx';
+export { MatcherModal, RuleInspectorBody } from './detections/MatcherModal.tsx';
 export {
   CATEGORY_LABEL as DETECTION_CATEGORY_LABEL,
   MATCHER_META,

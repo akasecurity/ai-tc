@@ -13,7 +13,13 @@
 // a grant that can only fail server-side once the server re-reads the ledger.
 //
 // So this renders the component for real and asserts per row.
-import type { BlockedDetectionDescriptor, FingerprintKeyState } from '@akasecurity/schema';
+import type {
+  BlockedDetectionDescriptor,
+  DetectionException,
+  ExceptionDescriptor,
+  FingerprintKeyState,
+} from '@akasecurity/schema';
+import { toExceptionDescriptor } from '@akasecurity/schema';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
@@ -34,6 +40,33 @@ const CURRENT_VERSION = 4;
 const FRESH = 'blk-fresh';
 const STALE = 'blk-stale';
 const REFERENCES = [FRESH, STALE] as const;
+
+function exceptionRow(overrides: Partial<DetectionException>): ExceptionDescriptor {
+  return toExceptionDescriptor({
+    id: '7d9f7a4e-1111-4222-8333-444455556666',
+    ruleId: 'secrets/aws-access-key',
+    category: 'secret',
+    valueFingerprint: 'a'.repeat(64),
+    keyVersion: CURRENT_VERSION,
+    maskedValue: 'A****Z',
+    capability: 'suppress',
+    scope: 'temporary',
+    expiresAt: null,
+    maxUses: null,
+    useCount: 0,
+    lastUsedAt: null,
+    justification: 'test fixture',
+    conditions: null,
+    createdBy: 'tester',
+    createdVia: 'web-add',
+    createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-01T00:00:00.000Z',
+    revokedAt: null,
+    revokedBy: null,
+    revokeReason: null,
+    ...overrides,
+  });
+}
 
 function blockedRow(reference: string, keyVersion: number): BlockedDetectionDescriptor {
   return {
@@ -125,5 +158,44 @@ describe('the exceptions client asks blockedRowBlockReason per row', () => {
       expect(approveIsDisabled(rowMarkup(markup, reference))).toBe(true);
       expect(rowMarkup(markup, reference)).toContain('do not delete the key');
     }
+  });
+});
+
+describe('the exceptions client threads renderedAt into the blocked ledger', () => {
+  it('renders the blocked-at label against the SSR instant, not the ambient clock', () => {
+    // Pins the one line this PR actually adds — `renderedAt={renderedAt}` on
+    // BlockedLedgerView in ExceptionsClient.tsx. Delete it and relativeTime
+    // falls back to Date.now(), which would not read "30 minutes ago" for a
+    // fixture blocked at 2026-08-01T00:00 and rendered at 2026-08-01T00:30.
+    const markup = render({ status: 'present', version: CURRENT_VERSION });
+    expect(markup).toContain('30 minutes ago');
+  });
+});
+
+describe('the exceptions client threads renderedAt into the exceptions table', () => {
+  it('renders the expiry label against the SSR instant, not the ambient clock', () => {
+    // Mirrors the ledger pin above, for the sibling this PR also wires:
+    // `renderedAt={renderedAt}` on ExceptionsTableView in ExceptionsClient.tsx.
+    // Delete it and relativeTime falls back to Date.now(), which would not
+    // read "in 30 minutes" for a grant expiring 2026-08-01T01:00 when rendered
+    // at 2026-08-01T00:30.
+    const markup = renderToStaticMarkup(
+      createElement(
+        NavigationTransitionProvider,
+        null,
+        createElement(ExceptionsClient, {
+          items: [exceptionRow({ expiresAt: '2026-08-01T01:00:00.000Z' })],
+          blocked: [],
+          includeTerminal: false,
+          blockedWindow: '30m' as const,
+          keyState: { status: 'present', version: CURRENT_VERSION },
+          activePermanent: [],
+          approvableBlocked: 0,
+          renderedAt: Date.parse('2026-08-01T00:30:00.000Z'),
+        }),
+      ),
+    );
+
+    expect(markup).toContain('in 30 minutes');
   });
 });

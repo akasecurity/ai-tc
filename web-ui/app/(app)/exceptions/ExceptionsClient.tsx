@@ -182,6 +182,7 @@ export function ExceptionsClient({
           onSelect={(id) => {
             pushUrl(`/exceptions/${id.slice(0, 8)}`);
           }}
+          renderedAt={renderedAt}
         />
       </div>
 

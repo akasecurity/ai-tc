@@ -158,16 +158,42 @@ export function instanceLocationLabel(instance: FindingInstance): string {
   return '—';
 }
 
+/**
+ * What the User column actually asserts.
+ *
+ * Attribution is the principal that INGESTED the capturing event — the session
+ * user, or the OWNER of the api key that posted it. For a per-developer key
+ * that is the developer; for an org-level ingest key (CI, a server-side
+ * producer) it is whoever minted the key, so the column names the key's owner
+ * rather than whoever ran the job.
+ *
+ * Stated on the surface rather than only in the backend's repository docblock:
+ * a header reading a bare "User" on a security dashboard is read as "the person
+ * who did this", and naming someone who did not run the job is worse than
+ * naming nobody.
+ */
+export const USER_COLUMN_TITLE =
+  'Ingested by — the session user, or the owner of the api key that posted the event. An org-level ingest key names the key’s owner, not whoever ran the job.';
+
 /** The findings table's column identity + header, in display order. */
 export interface FindingColumn {
-  id: 'severity' | 'subtype' | 'sources' | 'locations' | 'action' | 'status' | 'latest';
+  id: 'severity' | 'subtype' | 'sources' | 'user' | 'locations' | 'action' | 'status' | 'latest';
   header: string;
+  /** Hover/assistive disclosure for a header whose one-word label under-states
+   * what the column means — see USER_COLUMN_TITLE. */
+  title?: string;
 }
 
+/**
+ * Every column the findings table can render. `user` reads
+ * `FindingInstance.user`, which only a store that attributes findings to
+ * people sets — a caller over a single-user store omits that column.
+ */
 export const FINDINGS_COLUMNS: FindingColumn[] = [
   { id: 'severity', header: 'Severity' },
   { id: 'subtype', header: 'Type' },
   { id: 'sources', header: 'Sources' },
+  { id: 'user', header: 'User', title: USER_COLUMN_TITLE },
   { id: 'locations', header: 'Locations' },
   { id: 'action', header: 'Action' },
   { id: 'status', header: 'Status' },

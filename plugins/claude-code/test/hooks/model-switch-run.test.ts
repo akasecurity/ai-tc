@@ -33,14 +33,55 @@ afterAll(() => {
 const config = (): PluginConfig => ({ dataDir: dir }) as unknown as PluginConfig;
 
 /** A gateway stubbed down to the one read these paths perform. */
-function gatewayWith(prohibited: string[] | undefined, onClose = vi.fn()): DataGateway {
+function gatewayWith(
+  prohibited: string[] | undefined,
+  onClose = vi.fn(),
+  recordAuditEvent: (event: unknown) => Promise<void> = () => Promise.resolve(),
+): DataGateway {
   return {
     getPolicyBundle: () =>
       Promise.resolve({ prohibitedModels: prohibited } as unknown as Awaited<
         ReturnType<DataGateway['getPolicyBundle']>
       >),
+    recordAuditEvent,
     close: onClose,
   } as unknown as DataGateway;
+}
+
+/** One recorded audit row, in the shape these assertions read. */
+interface RecordedEvent {
+  eventType: string;
+  attributes: Record<string, unknown>;
+}
+
+/**
+ * The one row a refusal is expected to record.
+ *
+ * Narrows by construction rather than by an assertion — both `!` and `as` are
+ * refused here — and states the cardinality while it is at it: two rows for one
+ * refusal would be a defect these assertions would otherwise read straight past.
+ */
+function onlyEvent(events: readonly RecordedEvent[]): RecordedEvent {
+  const [first, ...rest] = events;
+  if (first === undefined || rest.length > 0) {
+    throw new Error(`expected exactly one recorded event, got ${String(events.length)}`);
+  }
+  return first;
+}
+
+/** A recorder plus the rows it captured, typed so no mock tuple is indexed. */
+function recorder(): {
+  fn: (event: unknown) => Promise<void>;
+  events: RecordedEvent[];
+} {
+  const events: RecordedEvent[] = [];
+  return {
+    fn: (event: unknown) => {
+      events.push(event as RecordedEvent);
+      return Promise.resolve();
+    },
+    events,
+  };
 }
 
 describe('runPreModelSwitch', () => {
@@ -115,6 +156,55 @@ describe('runPreModelSwitch', () => {
   });
 });
 
+describe('runPreModelSwitch records the refusal', () => {
+  it('writes a model_refusal naming the model and the switch seam', async () => {
+    const rec = recorder();
+    await runPreModelSwitch({}, 'claude-opus-5', 's1', {
+      config: config(),
+      openGateway: () => gatewayWith(['claude-opus-5'], vi.fn(), rec.fn),
+      emit: vi.fn(() => Promise.resolve()),
+      warnIfStoreRedirected: vi.fn(),
+      newId: () => 'evt-1',
+      now: () => new Date('2026-09-02T10:30:00.000Z'),
+    });
+    const event = onlyEvent(rec.events);
+    expect(event.eventType).toBe('model_refusal');
+    expect(event.attributes.model).toBe('claude-opus-5');
+    expect(event.attributes.refusal_seam).toBe('switch');
+  });
+
+  it('records nothing when the switch is ALLOWED', async () => {
+    const rec = recorder();
+    await runPreModelSwitch({}, 'claude-sonnet-4-5', 's1', {
+      config: config(),
+      openGateway: () => gatewayWith(['claude-opus-5'], vi.fn(), rec.fn),
+      emit: vi.fn(() => Promise.resolve()),
+      warnIfStoreRedirected: vi.fn(),
+    });
+    expect(rec.events).toHaveLength(0);
+  });
+
+  it('still refuses when the refusal cannot be recorded', async () => {
+    // The failure this must never have: a write that throws reaching the entry's
+    // outer catch would turn a deny into a fail-open allow, leaving the session
+    // LESS governed than before the audit trail existed.
+    const emit = vi.fn(() => Promise.resolve());
+    const refused = await runPreModelSwitch({}, 'claude-opus-5', 's1', {
+      config: config(),
+      openGateway: () =>
+        gatewayWith(
+          ['claude-opus-5'],
+          vi.fn(),
+          vi.fn(() => Promise.reject(new Error('store gone'))),
+        ),
+      emit,
+      warnIfStoreRedirected: vi.fn(),
+    });
+    expect(refused).toBe(true);
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('runPostModelSwitch', () => {
   it('records the model the harness switched to', () => {
     runPostModelSwitch('s1', 'claude-opus-5', {
@@ -134,8 +224,11 @@ describe('refuseProhibitedTurn', () => {
   it('refuses a turn on a model the marker says is prohibited', async () => {
     recordSessionModel(dir, 's1', 'claude-opus-5');
     const out = await refuseProhibitedTurn(gatewayWith(['claude-opus-5']), dir, 's1', undefined);
-    expect(out?.decision).toBe('block');
-    expect(out?.reason).toContain('claude-opus-5');
+    expect(out?.decision.decision).toBe('block');
+    expect(out?.decision.reason).toContain('claude-opus-5');
+    // The model rides back with the verdict so the audit row and the message
+    // the user sees can never disagree about which model was refused.
+    expect(out?.model).toBe('claude-opus-5');
   });
 
   it('falls back to the transcript when no marker covers the session', async () => {
@@ -204,5 +297,52 @@ describe('handleProhibitedTurn', () => {
     expect(stop).toBe(false);
     expect(close).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleProhibitedTurn records the refusal', () => {
+  it('writes a model_refusal naming the TURN seam', async () => {
+    recordSessionModel(dir, 's1', 'claude-opus-5');
+    const rec = recorder();
+    await handleProhibitedTurn(
+      gatewayWith(['claude-opus-5'], vi.fn(), rec.fn),
+      dir,
+      's1',
+      undefined,
+      () => Promise.resolve(),
+    );
+    const event = onlyEvent(rec.events);
+    expect(event.eventType).toBe('model_refusal');
+    expect(event.attributes.model).toBe('claude-opus-5');
+    // The seam is what separates this from the switch refusal in the same
+    // session — an operator asking "was it prevented, or contained?" reads it.
+    expect(event.attributes.refusal_seam).toBe('turn');
+  });
+
+  it('still refuses when the refusal cannot be recorded', async () => {
+    // A write that throws must not reach the entry's outer catch, which would
+    // turn the block into a fail-open allow.
+    recordSessionModel(dir, 's1', 'claude-opus-5');
+    const emitted: unknown[] = [];
+    const stop = await handleProhibitedTurn(
+      gatewayWith(['claude-opus-5'], vi.fn(), () => Promise.reject(new Error('store gone'))),
+      dir,
+      's1',
+      undefined,
+      (output) => {
+        emitted.push(output);
+        return Promise.resolve();
+      },
+    );
+    expect(stop).toBe(true);
+    expect(emitted).toHaveLength(1);
+  });
+
+  it('records nothing when the turn is allowed', async () => {
+    const rec = recorder();
+    await handleProhibitedTurn(gatewayWith([], vi.fn(), rec.fn), dir, 's1', undefined, () =>
+      Promise.resolve(),
+    );
+    expect(rec.events).toHaveLength(0);
   });
 });

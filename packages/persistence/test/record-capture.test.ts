@@ -680,3 +680,54 @@ describe('recordCapture — at-rest path disambiguation', () => {
     db.close();
   });
 });
+
+// The live forward's half of the outbox: a delivered capture is stamped, an
+// undelivered one is not, and "not stamped" is what makes a row outstanding.
+describe('markCaptureDelivered', () => {
+  const syncedAt = (db: DatabaseSync, id: string): number | null =>
+    (
+      db.prepare(`SELECT synced_at AS s FROM audit_events WHERE id = ?`).get(id) as {
+        s: number | null;
+      }
+    ).s;
+
+  it('stamps the row recordCapture wrote, found by the same tuple', () => {
+    // The join the whole design rests on: the stamp has to land on the row the
+    // write created. Derived here from the tuple rather than read back from the
+    // insert, so a change to either derivation fails this instead of silently
+    // stamping nothing — an UPDATE that matches no row reports success.
+    const db = store.open();
+    const ev = event({ metadata: { sessionId: 's-1' }, contentHash: 'hash-live' });
+    db.recordCapture(ev, []);
+    const id = captureId('s-1', 'hash-live', null);
+
+    expect(syncedAt(raw(), id)).toBeNull();
+    db.markCaptureDelivered(ev, 1_700_000_000_000);
+    expect(syncedAt(raw(), id)).toBe(1_700_000_000_000);
+  });
+
+  it('leaves every other capture outstanding', () => {
+    // Scoped to the one event, not the session and not the store: two prompts
+    // in one session are two deliveries, and stamping a batch because one of
+    // them landed is how an outbox loses events.
+    const db = store.open();
+    const delivered = event({ metadata: { sessionId: 's-2' }, contentHash: 'hash-a' });
+    const outstanding = event({ metadata: { sessionId: 's-2' }, contentHash: 'hash-b' });
+    db.recordCapture(delivered, []);
+    db.recordCapture(outstanding, []);
+
+    db.markCaptureDelivered(delivered, 1_700_000_000_000);
+    expect(syncedAt(raw(), captureId('s-2', 'hash-a', null))).toBe(1_700_000_000_000);
+    expect(syncedAt(raw(), captureId('s-2', 'hash-b', null))).toBeNull();
+  });
+
+  it('is fail-open on a capture that was never written', () => {
+    // A stamp for a row that does not exist must not throw: the forward already
+    // succeeded, the session is live, and there is nothing left to salvage by
+    // raising here.
+    const db = store.open();
+    expect(() => {
+      db.markCaptureDelivered(event({ contentHash: 'never-stored' }), 1);
+    }).not.toThrow();
+  });
+});

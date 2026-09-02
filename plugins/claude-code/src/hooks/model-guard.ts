@@ -6,13 +6,18 @@
 //
 // The two refusals answer DIFFERENT hooks in DIFFERENT vocabularies, which is
 // the one thing to get right here — see each function's own note.
+import { randomUUID } from 'node:crypto';
+
 import type { DataGateway } from '@akasecurity/plugin-sdk';
 import {
+  buildModelRefusalEvent,
+  decideProhibitedModelTurn,
   isModelProhibited,
   modelFromTranscript,
   prohibitedModelMessage,
   readSessionModel,
 } from '@akasecurity/plugin-sdk';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 
 // PreModelSwitch answers in the SAME permission vocabulary as PreToolUse —
 // `permissionDecision: 'deny'` with a reason — rather than UserPromptSubmit's
@@ -83,27 +88,6 @@ export function resolveSessionModel(
 }
 
 /**
- * Refuse a turn whose session is running on a prohibited model.
- *
- * UserPromptSubmit's own shape — top-level `{decision:'block'}`, NOT
- * PreModelSwitch's `permissionDecision` above. The harness reads a different
- * field per event, so the two decisions in this file deliberately return
- * different types rather than one shared shape.
- *
- * Null (allow) for every uncertain case, same rule as the switch decision: an
- * unresolvable model is ignorance, and this control never blocks on ignorance.
- */
-export function decideProhibitedModelTurn(
-  model: string | undefined,
-  prohibitedModels: readonly string[] | undefined,
-): { decision: 'block'; reason: string } | null {
-  // Narrowed first, for the reason the switch decision above spells out.
-  if (model === undefined || model === '') return null;
-  if (!isModelProhibited(model, prohibitedModels)) return null;
-  return { decision: 'block', reason: prohibitedModelMessage(model, 'turn') };
-}
-
-/**
  * Resolve the session's model against the bundle's prohibition list, and return
  * the refusal when there is one.
  *
@@ -120,17 +104,20 @@ export async function refuseProhibitedTurn(
   dataDir: string,
   sessionId: string | undefined,
   transcriptPath: string | undefined,
-): Promise<{ decision: 'block'; reason: string } | null> {
+): Promise<{ decision: { decision: 'block'; reason: string }; model: string } | null> {
   try {
     const { prohibitedModels } = await gateway.getPolicyBundle();
     // Bundle FIRST: with no prohibition list there is nothing to enforce, and
     // resolving the model would be a transcript read spent to reach the same
     // allow.
     if (prohibitedModels === undefined || prohibitedModels.length === 0) return null;
-    return decideProhibitedModelTurn(
-      resolveSessionModel(dataDir, sessionId, transcriptPath),
-      prohibitedModels,
-    );
+    const model = resolveSessionModel(dataDir, sessionId, transcriptPath);
+    const decision = decideProhibitedModelTurn(model, prohibitedModels);
+    // The model rides back with the verdict so the caller records WHICH model
+    // was refused without resolving it twice — and so the audit row and the
+    // message the user sees can never disagree about it. `model` is defined
+    // whenever a decision exists: the decision returns null for an absent one.
+    return decision === null || model === undefined ? null : { decision, model };
   } catch {
     return null;
   }
@@ -149,7 +136,7 @@ export async function refuseProhibitedTurn(
  * stdout contract and testable without one.
  */
 export async function handleProhibitedTurn(
-  gateway: Pick<DataGateway, 'getPolicyBundle' | 'close'>,
+  gateway: Pick<DataGateway, 'getPolicyBundle' | 'recordAuditEvent' | 'close'>,
   dataDir: string,
   sessionId: string | undefined,
   transcriptPath: string | undefined,
@@ -157,9 +144,28 @@ export async function handleProhibitedTurn(
 ): Promise<boolean> {
   const blocked = await refuseProhibitedTurn(gateway, dataDir, sessionId, transcriptPath);
   if (blocked === null) return false;
+  // Recorded while the gateway is still open, and best-effort: a refusal that
+  // cannot be written down is still a refusal, so a failed write must not reach
+  // the entry's outer catch and turn this block into a fail-open allow — the one
+  // way an audit trail could leave a session LESS governed than before it
+  // existed.
+  try {
+    await gateway.recordAuditEvent(
+      buildModelRefusalEvent({
+        id: randomUUID(),
+        sessionId,
+        model: blocked.model,
+        seam: 'turn',
+        sourceTool: SOURCE_TOOL.ClaudeCode,
+        occurredAt: new Date().toISOString(),
+      }),
+    );
+  } catch {
+    // Swallowed on purpose — see above.
+  }
   // Closed here rather than left to the caller's runtime `finally`, which the
   // refusal path never reaches.
   await gateway.close();
-  await emit(blocked);
+  await emit(blocked.decision);
   return true;
 }

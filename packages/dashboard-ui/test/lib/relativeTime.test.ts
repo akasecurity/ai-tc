@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { relativeTimeShort } from '../../src/lib/relativeTime.ts';
+import { relativeTime, relativeTimeShort } from '../../src/lib/relativeTime.ts';
 
 // Anchor "now" so the age math is deterministic regardless of when the suite runs.
 const NOW = new Date('2026-06-21T12:00:00Z');
@@ -40,5 +40,14 @@ describe('relativeTimeShort', () => {
   it('returns "" for missing or unparseable input', () => {
     expect(relativeTimeShort(undefined)).toBe('');
     expect(relativeTimeShort('not-a-date')).toBe('');
+  });
+});
+
+describe('relativeTime', () => {
+  it('uses a supplied render time instead of the current clock', () => {
+    const blockedAt = new Date(NOW.getTime() - 29 * MIN - 29 * SEC).toISOString();
+
+    expect(relativeTime(blockedAt, NOW.getTime())).toBe('29 minutes ago');
+    expect(relativeTime(blockedAt, NOW.getTime() + 2 * SEC)).toBe('30 minutes ago');
   });
 });

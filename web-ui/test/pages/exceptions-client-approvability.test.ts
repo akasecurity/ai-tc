@@ -64,6 +64,7 @@ function render(keyState: FingerprintKeyState): string {
         keyState,
         activePermanent: [],
         approvableBlocked: 1,
+        renderedAt: Date.parse('2026-08-01T00:30:00.000Z'),
       }),
     ),
   );

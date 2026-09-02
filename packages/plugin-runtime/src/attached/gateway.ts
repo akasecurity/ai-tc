@@ -478,6 +478,20 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     // is keyed on, so the retry arrives under the id the first attempt used.
     if (forwarded.ok && forwarded.value.accepted + forwarded.value.duplicates > 0) {
       this.deps.local.markCaptureDelivered(record.event, Date.now());
+    } else {
+      // NOT delivered, so the organization's copy was not made and the drain
+      // owes this row. Marked HERE because this is the only place that knows:
+      // being attached, having run the forward, and having no confirmation are
+      // all facts of this call, and none of them can be recovered later from a
+      // timestamp. A capture recorded while DETACHED never reaches this method,
+      // which is exactly why the drain can stop reasoning about time windows —
+      // and why it can no longer ship a detached machine's three weeks of
+      // prompts on its next re-attach.
+      //
+      // Every non-delivery outcome takes this branch on purpose — timeout,
+      // refusal, breaker-open, and a 200 that took nothing. The row is owed in
+      // all four; what differs is only how soon a retry is worth making.
+      this.deps.local.markCaptureOwed(record.event);
     }
   }
 
@@ -1007,6 +1021,10 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   // Delegated like the rest, and SYNCHRONOUS for the reason the note above
   // gives: `recordCapture` calls it after the forward has already settled, on a
   // path that has nothing left to await.
+  markCaptureOwed(event: IngestEvent): void {
+    this.deps.local.markCaptureOwed(event);
+  }
+
   markCaptureDelivered(event: IngestEvent, atMs: number): void {
     this.deps.local.markCaptureDelivered(event, atMs);
   }

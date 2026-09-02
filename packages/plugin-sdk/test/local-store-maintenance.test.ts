@@ -10,6 +10,7 @@ const maintenance: LocalStoreMaintenance = {
   reconcileWorktreeProjects: () => Promise.resolve(),
   staleBinaryNotice: () => null,
   markCaptureDelivered: () => undefined,
+  markCaptureOwed: () => undefined,
   markAuditEventsDelivered: () => undefined,
 };
 

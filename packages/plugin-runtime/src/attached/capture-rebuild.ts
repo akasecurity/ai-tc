@@ -1,6 +1,6 @@
 import { captureWireId } from '@akasecurity/persistence';
-import type { AuditEventRow, EventMetadata, IngestEvent } from '@akasecurity/schema';
-import { EventKind, SourceTool } from '@akasecurity/schema';
+import type { AuditEventRow, EventMetadata } from '@akasecurity/schema';
+import { EventKind, IngestEvent, SourceTool } from '@akasecurity/schema';
 
 /**
  * One stored capture row → the wire event the outbox owes the deployment.
@@ -84,7 +84,24 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
     // reporting a number no session experienced.
   };
 
-  return {
+  // VALIDATED, not merely assembled, and this is the difference between a row
+  // that is skipped here and one that retires the whole lane.
+  //
+  // Several attribute values are constrained on the wire in ways the local
+  // column is not: `correlationId` is a uuid and `traceId` is 32 hex chars,
+  // while the attributes bag is free-form JSON that older builds, a migration,
+  // or a hand edit can have left anything in. An event that fails those
+  // constraints is refused by the deployment with a 400 — and because the drain
+  // reads the head of the unstamped set with no cursor, that same row would be
+  // rebuilt into the same rejected body on every pass, for ever, taking every
+  // capture behind it down with it.
+  //
+  // So the check happens HERE, where the answer is "this row can never be
+  // expressed" and the caller already knows what to do with that: skip it once
+  // and move on. Returning the PARSED value rather than the input also makes the
+  // declared return type honest — what leaves this function has been through the
+  // schema, not merely shaped like it.
+  const parsed = IngestEvent.safeParse({
     id: captureWireId(rootSessionId, contentHash, filePath ?? null),
     sourceTool: sourceTool.data,
     kind: kind.data,
@@ -92,7 +109,8 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
     contentHash,
     content,
     metadata,
-  };
+  });
+  return parsed.success ? parsed.data : undefined;
 }
 
 function isoOrUndefined(epochMs: number): string | undefined {

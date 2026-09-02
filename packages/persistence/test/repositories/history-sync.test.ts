@@ -500,6 +500,36 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
 // missing root), no backlog boundary (an undelivered capture is owed whenever it
 // was recorded), and `content` retained (it is the reason the lane exists).
 describe('SqliteHistorySyncRepository — captures the outbox still owes', () => {
+  // code_change is a capture kind and is deliberately NOT drained. Its only
+  // writers are the scanners, its content is a COMPLETE source file (gitignored
+  // scratch included), and it has never been offered to the live path — so
+  // draining it would be first-time egress of whole proprietary files under copy
+  // that names prompts, replies and tool results. Pinned here because adding it
+  // back is one word, and nothing else in the tree would notice.
+  it('never offers a code_change, whatever else is owed', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-scan',
+      eventType: 'code_change',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(MINUTE),
+      content: 'the entire contents of a source file',
+      contentHash: 'd'.repeat(64),
+    });
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-prompt2',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(2 * MINUTE),
+      content: 'a prompt',
+    });
+
+    expect(db.historySync.pendingCaptureRows(10, 0, ALL).map((r) => r.id)).toEqual(['s-1-prompt2']);
+  });
+
   it('offers unstamped captures oldest first, and no structural rows', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);

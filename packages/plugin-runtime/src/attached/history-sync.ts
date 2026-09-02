@@ -472,31 +472,86 @@ async function drainCaptures(
     }
     if (ready.length === 0) continue;
 
-    let ack: { settled: number };
-    try {
-      ack = await d.sendCaptures(ready.map((r) => r.event));
-    } catch {
-      // Unreachable or refused. Everything stays pending by doing nothing, and
-      // the next pass repeats this one — the same contract the structural lane
-      // keeps for a failed send.
-      return { sent, skipped, stopped: 'unreachable' };
-    }
+    const result = await sendCaptureChunk(d, ready, beat);
+    sent += result.sent;
+    skipped += result.skipped;
+    if (result.stopped !== undefined) return { sent, skipped, stopped: result.stopped };
 
-    if (ack.settled <= 0) {
-      // The call returned without taking anything. Stamping here would lose the
-      // batch silently; stopping leaves it owed.
-      return { sent, skipped, stopped: 'unreachable' };
-    }
-
-    d.ledger.markSynced(
-      ready.map((r) => r.id),
-      d.now(),
-    );
-    sent += ready.length;
+    // Nothing sent and nothing skipped would mean the loop re-reads the same
+    // head and calls the same failing send for ever. It cannot happen —
+    // sendCaptureChunk either settles, skips, or stops — but the read has no
+    // cursor, so the one shape that could stall is worth refusing outright
+    // rather than trusting a caller three levels down to keep the invariant.
+    if (result.sent === 0 && result.skipped === 0) return { sent, skipped, stopped: 'unreachable' };
 
     beat();
     await d.sleep(PACE_INTERVAL_MS);
   }
+}
+
+/**
+ * Send one batch of captures, isolating a permanent rejection rather than
+ * retrying it for ever.
+ *
+ * The structural lane learned this the same way: a batch ack is an AGGREGATE, so
+ * a rejection names no row. Re-sending the identical body fails identically, and
+ * marking the whole batch skipped would discard as many as 99 good rows for one
+ * bad one. The capture lane is MORE exposed than the structural one, not less —
+ * its batches are twice the size, every row carries user text, and
+ * `ingestEvents` does no outbound validation of its own — and its read has no
+ * cursor, so a rejected row stays the head of every future page. Without this,
+ * one bad row silently retires the whole lane while status reports 'unreachable'.
+ */
+async function sendCaptureChunk(
+  d: DrainDeps,
+  chunk: readonly { id: string; event: IngestEvent }[],
+  beat: () => void,
+): Promise<ChunkResult> {
+  let settled: number;
+  try {
+    const ack = await d.sendCaptures(chunk.map((c) => c.event));
+    settled = ack.settled;
+  } catch (err) {
+    const verdict = classify(err);
+    // Terminal for the whole pass: the credential is gone, and every later row
+    // would fail the same way.
+    if (verdict === 'refused') return { sent: 0, skipped: 0, stopped: 'refused' };
+    // Might not repeat. Everything stays pending by doing nothing.
+    if (verdict === 'retry') return { sent: 0, skipped: 0, stopped: 'unreachable' };
+
+    // Rejected on its merits (400/413/422, or a body this client refused to
+    // send). One row is at fault and the answer does not say which.
+    const only = chunk.length === 1 ? chunk[0] : undefined;
+    if (only !== undefined) {
+      d.ledger.markSkipped([only.id]);
+      return { sent: 0, skipped: 1 };
+    }
+    let sent = 0;
+    let skipped = 0;
+    for (const [index, one] of chunk.entries()) {
+      // PACED like every other request, for the reason the structural lane
+      // gives: the isolation pass must not burst one request per row at the
+      // moment the deployment has just refused something, on a credential this
+      // job shares with the live forwarding.
+      if (index > 0) await d.sleep(PACE_INTERVAL_MS);
+      beat();
+      const single = await sendCaptureChunk(d, [one], beat);
+      sent += single.sent;
+      skipped += single.skipped;
+      if (single.stopped !== undefined) return { sent, skipped, stopped: single.stopped };
+    }
+    return { sent, skipped };
+  }
+
+  // The call returned without taking anything. Stamping would lose the batch
+  // silently; stopping leaves it owed.
+  if (settled <= 0) return { sent: 0, skipped: 0, stopped: 'unreachable' };
+
+  d.ledger.markSynced(
+    chunk.map((c) => c.id),
+    d.now(),
+  );
+  return { sent: chunk.length, skipped: 0 };
 }
 
 /**

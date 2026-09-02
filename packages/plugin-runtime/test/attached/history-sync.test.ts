@@ -771,6 +771,91 @@ describe('runHistorySync — the capture lane', () => {
     ]);
   });
 
+  // THE STALL. The capture read has no cursor: it re-reads the head of the
+  // unstamped set every time. So a row the deployment rejects on its merits is
+  // the head of every future page on every future pass, and treating that
+  // rejection as an outage retires the lane for good while status says only
+  // 'unreachable'. The structural lane isolates for exactly this reason; this
+  // one has to as well, and is MORE exposed — bigger batches, user text in every
+  // row, and no outbound validation in ingestEvents.
+  it('isolates a permanently-rejected capture rather than stalling the lane', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-bad' }, { id: 'cap-good' }]);
+
+    const delivered: string[] = [];
+    const result = await run({
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: (events: readonly IngestEvent[]) => {
+        if (events.some((e) => e.content === 'text of cap-bad')) {
+          return Promise.reject(new RemoteRequestError(400));
+        }
+        delivered.push(...events.map((e) => e.content));
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+
+    // Asserted on the CAPTURE lane, not on `result.sent` — seedCaptures writes a
+    // session root, which is a structural row the other lane also delivers, so
+    // the pass total counts work this test is not about.
+    expect(delivered).toEqual(['text of cap-good']);
+    expect(result?.skipped).toBe(1);
+    // Neither row is offered again: one settled, one permanently skipped. That
+    // is what stops the next pass re-reading this same rejected page.
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
+  });
+
+  // A dead credential is terminal for the pass, not one bad row: every later
+  // capture would fail the same way, and skipping them would be data loss.
+  it('stops the pass on a refused credential without skipping anything', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }, { id: 'cap-2' }]);
+
+    const result = await run({
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: () => Promise.reject(new RemoteRequestError(403)),
+    });
+
+    expect(result?.skipped).toBe(0);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toHaveLength(2);
+  });
+
+  // An attribute the wire constrains more tightly than the column does — a
+  // correlation_id that is not a uuid — must be caught HERE, not by a 400 the
+  // cursorless read would replay for ever.
+  it('skips a capture whose stored attributes cannot satisfy the wire shape', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }]);
+    // Rewrite the row's bag to carry a non-uuid correlation id.
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.auditEvents.insertAuditEvent({
+        id: 'cap-legacy',
+        eventType: 'prompt',
+        rootSessionId: 'cap-session',
+        parentId: 'cap-session',
+        startedAt: new Date(T0 - 3_600_000).toISOString(),
+        content: 'legacy text',
+        contentHash: 'c'.repeat(64),
+        attributes: { source_tool: 'claude-code', correlation_id: 'legacy-7' },
+      });
+    } finally {
+      db.close();
+    }
+
+    const sent: IngestEvent[] = [];
+    await run({
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: (events: readonly IngestEvent[]) => {
+        sent.push(...events);
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+
+    // The good row went; the legacy one never reached the wire at all.
+    expect(sent.map((e) => e.content)).toEqual(['text of cap-1']);
+    expect(ledger((db2) => db2.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
+  });
+
   // THE PRE-ATTACH BOUND, and it is a privacy assertion rather than a scoping
   // one. The disclosure says the pre-attach half of the grant sends "the record
   // of activity" and that only what a live send could not deliver carries its

@@ -36,8 +36,28 @@ const TYPE_LIST = STRUCTURAL_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
  * `content` key, so captures would arrive stripped of the text that is their
  * whole point, be stamped delivered, and never be offered again — while the
  * route that received them wrote every other field to disk for keeps.
+ *
+ * `code_change` IS A CAPTURE KIND AND IS DELIBERATELY ABSENT HERE. No hook
+ * writes one — the only two writers are the scanners (local-ops' fs-scan, behind
+ * `aka scan` and the dashboard's folder scan, and packages/scanner's worktree
+ * scan) — and its `content` is the COMPLETE SOURCE FILE, redacted only at
+ * detected spans, gitignored scratch included. Two things follow, each
+ * disqualifying on its own:
+ *
+ *   It is not what the grant describes. Every disclosure surface enumerates the
+ *   text-carrying payload as a prompt, an assistant reply or a tool result.
+ *   Whole proprietary source files appear in none of them.
+ *
+ *   It would not be a RETRY. fs-scan takes a LocalDatabase and calls
+ *   recordCapture directly, never through AttachedDataGateway, so those rows
+ *   have never been offered to the live path at any release. Draining them is
+ *   first-time egress, under copy saying this setting only decides whether an
+ *   undelivered item is kept or dropped.
+ *
+ * Adding it is one word here — and it is a product decision that owes its own
+ * disclosure, not a completeness fix.
  */
-export const CAPTURE_EVENT_TYPES = ['prompt', 'response', 'code_change', 'tool_use'] as const;
+export const CAPTURE_EVENT_TYPES = ['prompt', 'response', 'tool_use'] as const;
 
 const CAPTURE_TYPE_LIST = CAPTURE_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
 

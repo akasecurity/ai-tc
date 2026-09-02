@@ -377,6 +377,16 @@ describe('matchProhibitedSpawnModel', () => {
     );
   });
 
+  it('scans EVERY occurrence, not just the first', () => {
+    // `indexOf` stops at the first hit. Here the first sits inside a longer
+    // token (no boundary) and the second is a real one, so stopping early
+    // reports no match and a crafted spelling becomes an allow. The
+    // `claude-opus-45` case below passes either way and cannot catch this.
+    expect(matchProhibitedSpawnModel('claude-opus-51-claude-opus-5', PROHIBITED)).toBe(
+      'claude-opus-5',
+    );
+  });
+
   it('does not let one id swallow a longer one at a non-boundary', () => {
     // The boundary is what keeps the containment rule from over-reaching:
     // `claude-opus-45` merely starts with `claude-opus-4`.

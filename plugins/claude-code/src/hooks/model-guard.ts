@@ -7,9 +7,9 @@
 // The three refusals answer DIFFERENT hooks in DIFFERENT vocabularies, which is
 // the one thing to get right here — see each function's own note.
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { DataGateway } from '@akasecurity/plugin-sdk';
 import {
@@ -217,14 +217,46 @@ export const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
 const SAFE_SUBAGENT_TYPE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 /**
+ * The nearest ancestor of `from` that holds a `.claude/agents/` directory.
+ *
+ * The hook payload's `cwd` is not the project root: a session working in a
+ * subdirectory of the repo has no `.claude/` beneath it, so joining `cwd`
+ * directly misses the project definition and falls through to the user one —
+ * which is the right ORDER over the wrong first root.
+ *
+ * Bounded two ways: a fixed number of levels, and never past the user's home,
+ * so the walk cannot wander into the user root and consult it twice.
+ */
+function projectAgentsRoot(from: string | undefined): string | undefined {
+  if (from === undefined || from === '') return undefined;
+  const home = homedir();
+  let dir = from;
+  for (let depth = 0; depth < 24; depth += 1) {
+    if (dir === home) return undefined;
+    try {
+      if (statSync(join(dir, '.claude', 'agents')).isDirectory()) return dir;
+    } catch {
+      // Not here — keep walking.
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+  return undefined;
+}
+
+/**
  * The `model:` a subagent definition pins, or undefined.
  *
- * Read from the agent's own markdown frontmatter, project directory first and
- * then the user one, which is the order the harness resolves them in.
+ * Read from the agent's own markdown frontmatter, project root first and then
+ * the user one, which is the order the harness resolves them in.
  *
  * `subagent_type` is caller-chosen, so it is refused unless it is a plain
  * name: joined unchecked it addresses any file on disk, and this runs on a
- * hook path in the user's own checkout.
+ * hook path in the user's own checkout. A name this rejects yields no answer
+ * and therefore ALLOWS — a separator-bearing type (a plugin's `plugin:agent`)
+ * is outside this seam's reach, deliberately, because a refusal built on a
+ * path this code would not resolve is a refusal on ignorance.
  *
  * Bounded and silent — an unreadable or absent definition is simply no answer.
  */
@@ -233,7 +265,9 @@ function modelFromAgentDefinition(
   cwd: string | undefined,
 ): string | undefined {
   if (subagentType === undefined || !SAFE_SUBAGENT_TYPE.test(subagentType)) return undefined;
-  const roots = [cwd, homedir()].filter((r): r is string => r !== undefined && r !== '');
+  const roots = [projectAgentsRoot(cwd), homedir()].filter(
+    (r): r is string => r !== undefined && r !== '',
+  );
   for (const root of roots) {
     try {
       const raw = readFileSync(join(root, '.claude', 'agents', `${subagentType}.md`), 'utf8');
@@ -262,11 +296,19 @@ function modelFromAgentDefinition(
  *
  * THE ORDER IS THE HARNESS'S, and getting it wrong is a bypass rather than a
  * detail: an explicit `model` argument wins, else the agent definition's own
- * `model:` frontmatter, else the parent's. Only that last case is the one the
- * switch and turn seams have already vetted, so only that one returns undefined
- * and is allowed here. Treating an absent argument as "inherits the parent"
- * would leave a repo-local `.claude/agents/<type>.md` — an ordinary writable
- * file — naming a prohibited model that nothing checks.
+ * `model:` frontmatter, else the CONFIGURED DEFAULT SUBAGENT MODEL, else the
+ * parent's. Only that last one is what the switch and turn seams have vetted.
+ *
+ * THE CEILING: this resolves the first two and not the third. Undefined here
+ * therefore means "the default or the parent", not "the parent", and on a
+ * machine with a default subagent model configured a spawn naming no model is
+ * unrefused — as is `model: 'default'`, which the inherit words treat the same
+ * way for the same reason. Closing it means reading the harness's own settings,
+ * a shape this package does not own.
+ *
+ * Treating an absent argument as "inherits the parent" outright would be worse
+ * still: it would leave a repo-local `.claude/agents/<type>.md` — an ordinary
+ * writable file — naming a prohibited model that nothing checks.
  */
 export function resolveSpawnModel(
   toolInput: Record<string, unknown>,

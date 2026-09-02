@@ -79,10 +79,14 @@ export function isModelProhibited(
 }
 
 /**
- * Words that mean "whatever the parent is on" rather than naming a model.
+ * Words that name no model of their own.
  *
- * They resolve to the session's own model, which the switch and turn seams have
- * already vetted, so a spawn carrying one is not a second decision to take.
+ * `inherit` is the parent's, which the switch and turn seams have already
+ * vetted. `default` is NOT: it names the harness's configured default subagent
+ * model, which falls back to the parent only when none is configured. Both are
+ * allowed here for the same reason — this package cannot read that setting — so
+ * `default` is a known ceiling rather than a vetted case. `resolveSpawnModel`
+ * in the Claude Code plugin carries the same limit and states it.
  */
 const SPAWN_INHERIT_WORDS: ReadonlySet<string> = new Set(['inherit', 'default']);
 
@@ -148,12 +152,23 @@ export function matchProhibitedSpawnModel(
   return prohibited.find((p) => {
     const base = normalizeModelId(p);
     if (base === '') return false;
-    const at = needle.indexOf(base);
-    if (at === -1) return false;
-    return (
-      isBoundary(at === 0 ? '' : needle.charAt(at - 1)) &&
-      isBoundary(needle.charAt(at + base.length))
-    );
+    // EVERY occurrence, not the first. A base that appears twice — once inside
+    // a longer token and once at a real boundary — must match on the second,
+    // and stopping at the first turns a crafted spelling into an allow. The
+    // string is caller-chosen, which is the premise this whole function rests
+    // on, so "the harness would reject that spelling anyway" is the same
+    // reasoning that made an exact matcher look safe here to begin with.
+    let at = needle.indexOf(base);
+    while (at !== -1) {
+      if (
+        isBoundary(at === 0 ? '' : needle.charAt(at - 1)) &&
+        isBoundary(needle.charAt(at + base.length))
+      ) {
+        return true;
+      }
+      at = needle.indexOf(base, at + 1);
+    }
+    return false;
   });
 }
 

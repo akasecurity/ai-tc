@@ -119,6 +119,16 @@ describe('resolveSpawnModel', () => {
     expect(resolveSpawnModel({ subagent_type: 'crlf' }, dir)).toBe('haiku');
   });
 
+  it('finds a definition from a SUBDIRECTORY of the project', () => {
+    // The hook payload's cwd is not the project root. A session working in a
+    // package of a monorepo has no `.claude/` beneath it, so joining cwd
+    // directly missed the project definition and fell through to the user one.
+    writeAgent(dir, 'helper', '---\nmodel: haiku\n---\nbody');
+    const deep = join(dir, 'packages', 'schema', 'src');
+    mkdirSync(deep, { recursive: true });
+    expect(resolveSpawnModel({ subagent_type: 'helper' }, deep)).toBe('haiku');
+  });
+
   it('refuses a subagent_type that is not a plain name', () => {
     // Caller-chosen and joined into a path: unchecked it addresses any file on
     // disk, from a hook running inside the user's own checkout.

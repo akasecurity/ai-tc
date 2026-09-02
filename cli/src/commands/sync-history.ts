@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 
 import { applyOnboarding, readWorkspaceSettings } from '@akasecurity/persistence';
+import type { HistorySyncPassReport } from '@akasecurity/plugin-runtime';
 import { runHistorySyncPass } from '@akasecurity/plugin-runtime';
 import type { HistorySyncConsent, WorkspaceSettings } from '@akasecurity/schema';
 import {
@@ -90,8 +91,8 @@ export async function runSyncHistory(argv: string[], deps: SyncHistoryDeps = {})
   if (values.on === true || values.off === true) {
     if (values.run !== true) return;
     // Re-read: the pass reads the grant that was just written.
-    await runHistorySyncPass(base);
-    io.out(`${describe(readWorkspaceSettings(base))}\n`);
+    const report = await runHistorySyncPass(base);
+    io.out(`${reportLine(report)}\n${describe(readWorkspaceSettings(base))}\n`);
     return;
   }
   if (values.run === true) {
@@ -99,11 +100,51 @@ export async function runSyncHistory(argv: string[], deps: SyncHistoryDeps = {})
     // script beside it, and its single-executable build makes `process.execPath`
     // the `aka` binary rather than node — so a spawn from here would fail
     // silently, which is the one outcome a command called `--run` must not have.
-    await runHistorySyncPass(base);
-    io.out(`${describe(readWorkspaceSettings(base))}\n`);
+    const report = await runHistorySyncPass(base);
+    io.out(`${reportLine(report)}\n${describe(readWorkspaceSettings(base))}\n`);
     return;
   }
   io.out(`${describe(settings)}\n`);
+}
+
+/**
+ * What the pass did, in one line.
+ *
+ * `--run` used to print only the consent sentence, which is the same before and
+ * after a pass and is silent about seven different ways of doing nothing. Each
+ * line below names the remedy where there is one, because "nothing happened" is
+ * the answer a user is trying to get past.
+ *
+ * Total over the union: a report this does not recognise still prints something
+ * rather than falling through to an empty line.
+ */
+function reportLine(report: HistorySyncPassReport): string {
+  switch (report) {
+    case 'ok':
+      return 'This pass sent what was waiting.';
+    case 'interrupted':
+      return 'This pass sent some of what was waiting; run it again to continue.';
+    case 'unreachable':
+      return 'This pass could not reach the deployment. Nothing was sent; it stays queued.';
+    case 'refused':
+      return 'This pass was refused by the deployment. Re-attach with `aka attach --url <url>`.';
+    case 'not-attached':
+      return 'This pass did nothing: there is no deployment to send to.';
+    case 'no-consent':
+      return 'This pass did nothing: sending existing activity is switched off.';
+    case 'credential-unusable':
+      return 'This pass did nothing: the stored credential cannot be used. Re-attach to repair it.';
+    case 'breaker-open':
+      return 'This pass did nothing: forwarding is paused after repeated failures, and resumes on its own.';
+    case 'attachment-unreadable':
+      return 'This pass did nothing: the recorded attachment time is unreadable. Re-attach to repair it.';
+    case 'already-running':
+      return 'This pass did nothing: another pass is already running.';
+    case 'failed':
+      return 'This pass could not complete. Nothing was lost; it stays queued for the next one.';
+    default:
+      return 'This pass sent nothing.';
+  }
 }
 
 function grant(

@@ -102,7 +102,37 @@ const STRUCTURAL_BUDGET_SHARE = 0.7;
  */
 const BATCH_SIZE = AUDIT_EVENT_BATCH_MAX;
 
+/**
+ * Why a pass did not run.
+ *
+ * An ENUM, for the reason `forward-policy.ts` keeps `lastFailure` one and
+ * `history-state.ts` repeats: these values are RENDERED, and a free-form string
+ * built from a caught error can carry the endpoint, a header echo, or a fragment
+ * of the body. Nothing here is derived from a response.
+ *
+ * Every member is a different instruction to a human, which is the whole point:
+ * `no-consent` is answered by `aka sync-history --on`, `credential-unusable` by
+ * re-attaching, `already-running` by waiting, and `breaker-open` by neither.
+ * They were all one bare `null` before, so the command a user reaches for when
+ * nothing is syncing could not say which of seven things had happened.
+ */
+export type HistorySyncSkipReason =
+  | 'not-attached'
+  | 'no-consent'
+  | 'credential-unusable'
+  | 'breaker-open'
+  | 'attachment-unreadable'
+  | 'already-running'
+  | 'failed';
+
+/** A pass that made no attempt, and why. */
+export interface HistorySyncSkipped {
+  attempted: false;
+  reason: HistorySyncSkipReason;
+}
+
 export interface HistorySyncResult {
+  attempted: true;
   outcome: HistorySyncOutcome;
   /** Rows accepted in THIS pass. */
   sent: number;
@@ -169,7 +199,14 @@ export function endpointFingerprint(endpoint: string): string {
  * which the receiving side settles on the row id; the other order would lose the
  * row silently.
  */
-export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistorySyncResult | null> {
+const skipped = (reason: HistorySyncSkipReason): HistorySyncSkipped => ({
+  attempted: false,
+  reason,
+});
+
+export async function runHistorySync(
+  deps: RunHistorySyncDeps,
+): Promise<HistorySyncResult | HistorySyncSkipped> {
   const now = deps.now ?? ((): number => Date.now());
   const sleep =
     deps.sleep ?? ((ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)));
@@ -179,15 +216,17 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
   let db: LocalDatabase | undefined;
   try {
     const settings = readWorkspaceSettings(deps.base);
-    if (!isAttached(settings)) return null;
+    if (!isAttached(settings)) return skipped('not-attached');
     const connection = settings.controlPlane;
-    if (connection === undefined) return null;
-    if (!isHistorySyncConsentValid(settings.historySyncConsent, connection.endpoint)) return null;
+    if (connection === undefined) return skipped('not-attached');
+    if (!isHistorySyncConsentValid(settings.historySyncConsent, connection.endpoint)) {
+      return skipped('no-consent');
+    }
 
     // The WIDE read: the client below needs the key itself, and this runs in
     // the plugin's own process rather than anywhere a browser can see.
     const state = readControlPlaneCredentialFile(deps.settingsDir, connection);
-    if (!state.usable) return null;
+    if (!state.usable) return skipped('credential-unusable');
 
     // READ-ONLY. A long-running child must never write the breaker: its view of
     // plane health would overwrite the hook path's, and the hook path is the one
@@ -203,7 +242,9 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
     // indefinitely by a breaker refusing nothing.
     const nowMs = now();
     const openedAtMs = readForwardHealth(deps.dataDir, nowMs)?.openedAtMs ?? null;
-    if (openedAtMs !== null && nowMs - openedAtMs < BREAKER_COOLDOWN_MS) return null;
+    if (openedAtMs !== null && nowMs - openedAtMs < BREAKER_COOLDOWN_MS) {
+      return skipped('breaker-open');
+    }
 
     db = (deps.openStore ?? openLocalDatabase)(deps.dataDir);
     const ledger = db.historySync;
@@ -216,7 +257,7 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
     // overwrite those resolved ids with nothing, degrading a join that was
     // already correct.
     const attachedAtMs = Date.parse(connection.attachedAt);
-    if (!Number.isFinite(attachedAtMs)) return null;
+    if (!Number.isFinite(attachedAtMs)) return skipped('attachment-unreadable');
 
     // A change of deployment invalidates every stamp: rows delivered to the
     // place this machine has left are undelivered as far as this one is
@@ -245,7 +286,9 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
     }
 
     const pid = process.pid;
-    if (!ledger.claim(pid, hostname(), now(), HISTORY_LEASE_STALE_MS)) return null;
+    if (!ledger.claim(pid, hostname(), now(), HISTORY_LEASE_STALE_MS)) {
+      return skipped('already-running');
+    }
 
     // ONE client, two senders. The lanes differ only in the route they take and
     // the shape they carry; sharing the client keeps them on one connection,
@@ -308,7 +351,9 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
   } catch {
     // Nothing to report to and nowhere to report it. The ledger is unchanged
     // for anything not acknowledged, so the next pass repeats this one's work.
-    return null;
+    // `failed` rather than a message: the caught value is the one thing here
+    // that could carry a URL or a body fragment into a rendered line.
+    return skipped('failed');
   } finally {
     try {
       db?.close();
@@ -479,6 +524,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     outcome = 'interrupted';
   }
   return {
+    attempted: true,
     outcome,
     sent,
     skipped,

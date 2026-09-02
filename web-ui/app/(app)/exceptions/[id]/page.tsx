@@ -47,7 +47,15 @@ export default async function ExceptionDetailPage({ params }: { params: Promise<
       </div>
       {/* Projected to the fingerprint-free descriptor at the server boundary —
           the keyed valueFingerprint must never reach the browser. */}
-      <ExceptionDetailClient exception={toExceptionDescriptor(exception)} />
+      <ExceptionDetailClient
+        exception={toExceptionDescriptor(exception)}
+        // A relative label — and the lifecycle state that decides whether the
+        // revoke form renders at all — must be calculated against the exact
+        // same instant during SSR and hydration; otherwise crossing a boundary
+        // between the two changes the text, or the form itself.
+        // eslint-disable-next-line react-hooks/purity -- serialized to the client for hydration parity
+        renderedAt={Date.now()}
+      />
     </div>
   );
 }

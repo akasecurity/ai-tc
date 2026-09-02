@@ -160,14 +160,20 @@ export function instanceLocationLabel(instance: FindingInstance): string {
 
 /** The findings table's column identity + header, in display order. */
 export interface FindingColumn {
-  id: 'severity' | 'subtype' | 'sources' | 'locations' | 'action' | 'status' | 'latest';
+  id: 'severity' | 'subtype' | 'sources' | 'user' | 'locations' | 'action' | 'status' | 'latest';
   header: string;
 }
 
+/**
+ * Every column the findings table can render. `user` reads
+ * `FindingInstance.user`, which only a store that attributes findings to
+ * people sets — a caller over a single-user store omits that column.
+ */
 export const FINDINGS_COLUMNS: FindingColumn[] = [
   { id: 'severity', header: 'Severity' },
   { id: 'subtype', header: 'Type' },
   { id: 'sources', header: 'Sources' },
+  { id: 'user', header: 'User' },
   { id: 'locations', header: 'Locations' },
   { id: 'action', header: 'Action' },
   { id: 'status', header: 'Status' },

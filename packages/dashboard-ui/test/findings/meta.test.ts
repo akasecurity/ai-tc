@@ -12,6 +12,7 @@ import {
   filterInstancesByStatus,
   FINDING_STATUS_META,
   FINDING_STATUSES,
+  FINDINGS_COLUMNS,
   findingStatusMeta,
   SEVERITIES,
 } from '../../src/findings/meta.ts';
@@ -30,6 +31,22 @@ function buildInstance(id: string, status?: FindingStatus): FindingInstance {
     ...(status ? { status } : {}),
   };
 }
+
+describe('FINDINGS_COLUMNS', () => {
+  it('lists every column the table renders, User between Sources and Locations', () => {
+    expect(FINDINGS_COLUMNS.map((c) => c.id)).toEqual([
+      'severity',
+      'subtype',
+      'sources',
+      'user',
+      'locations',
+      'action',
+      'status',
+      'latest',
+    ]);
+    expect(FINDINGS_COLUMNS.find((c) => c.id === 'user')?.header).toBe('User');
+  });
+});
 
 describe('categoryStyle', () => {
   it('returns the tinted classes for a known category', () => {

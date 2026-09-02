@@ -209,6 +209,29 @@ describe('buildFindingGroups tool attribution', () => {
   });
 });
 
+describe('buildFindingGroups user attribution', () => {
+  const alice = { id: 'u-alice', name: 'alice@example.com' };
+  const bob = { id: 'u-bob', name: 'bob@example.com' };
+  const attributed: GroupableFindingRow[] = [
+    { ...statusRow('a1', 'aws-key'), user: alice },
+    { ...statusRow('a2', 'aws-key'), user: bob },
+    { ...statusRow('a3', 'aws-key'), user: alice },
+  ];
+
+  it('carries user onto the instance and folds the distinct users onto the group', () => {
+    const groups = buildFindingGroups(attributed);
+    expect(groups[0]?.instances.map((i) => i.user)).toEqual([alice, bob, alice]);
+    // Dedup by id, first occurrence first.
+    expect(groups[0]?.users).toEqual([alice, bob]);
+  });
+
+  it('omits user and users when no row carries one', () => {
+    const groups = buildFindingGroups(rows);
+    expect(groups[0]?.instances[0]).not.toHaveProperty('user');
+    expect(groups[0]).not.toHaveProperty('users');
+  });
+});
+
 describe('buildFindingGroups', () => {
   const groups = buildFindingGroups(rows);
   const awsKey = groups.find((g) => g.id === 'aws-key');

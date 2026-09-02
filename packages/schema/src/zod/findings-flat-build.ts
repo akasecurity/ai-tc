@@ -206,6 +206,7 @@ export function toInstanceDetail(row: FlatFindingRow): FindingInstanceDetail {
     ...(row.toolName === undefined ? {} : { toolName: row.toolName }),
     eventId: row.eventId,
     ...(row.sessionId === undefined ? {} : { sessionId: row.sessionId }),
+    ...(row.user === undefined ? {} : { user: row.user }),
     action: toApiAction(row.actionTaken),
     detectedAt: row.occurredAt,
     confidence: row.confidence,

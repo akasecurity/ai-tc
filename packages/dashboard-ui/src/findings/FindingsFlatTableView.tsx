@@ -29,12 +29,22 @@ import {
   instanceLocationLabel,
 } from './meta.ts';
 import { ProviderTag } from './ProviderChips.tsx';
+import { UserCell } from './UserCell.tsx';
 
-type FlatColumnId = 'severity' | 'type' | 'sources' | 'location' | 'action' | 'status' | 'latest';
+type FlatColumnId =
+  | 'severity'
+  | 'type'
+  | 'sources'
+  | 'user'
+  | 'location'
+  | 'action'
+  | 'status'
+  | 'latest';
 
 const FINDING_COLUMN_CLASS: Record<FlatColumnId, string> = {
   severity: 'min-w-[110px] whitespace-nowrap',
   sources: 'min-w-[140px] whitespace-nowrap',
+  user: 'min-w-[140px]',
   action: 'min-w-[130px] whitespace-nowrap',
   status: 'min-w-[110px] whitespace-nowrap',
   latest: 'min-w-[100px] whitespace-nowrap',
@@ -68,10 +78,17 @@ export function FindingsFlatTableView({
   total,
   isLoading = false,
   emptyState,
+  showUserColumn = false,
 }: {
   items: FindingInstanceDetail[];
   /** The row rendered as selected ('' for none). */
   selectedId?: string;
+  /**
+   * Render the User column, which reads each row's `user`. Off by default:
+   * only a store that attributes findings to people sets that field, and a
+   * single-user store would show a column of dashes.
+   */
+  showUserColumn?: boolean;
   onSelect: (instance: FindingInstanceDetail) => void;
   /** Absent ⇒ no pagination footer, however the has*Page flags read. */
   onNextPage?: () => void;
@@ -106,6 +123,9 @@ export function FindingsFlatTableView({
                 <TableHead className={FINDING_COLUMN_CLASS.severity}>Severity</TableHead>
                 <TableHead className={FINDING_COLUMN_CLASS.type}>Type</TableHead>
                 <TableHead className={FINDING_COLUMN_CLASS.sources}>Source</TableHead>
+                {showUserColumn && (
+                  <TableHead className={FINDING_COLUMN_CLASS.user}>User</TableHead>
+                )}
                 <TableHead className={FINDING_COLUMN_CLASS.location}>Location</TableHead>
                 <TableHead className={FINDING_COLUMN_CLASS.action}>Action</TableHead>
                 <TableHead className={FINDING_COLUMN_CLASS.status}>Status</TableHead>
@@ -150,6 +170,11 @@ export function FindingsFlatTableView({
                     <TableCell className={FINDING_COLUMN_CLASS.sources}>
                       <ProviderTag provider={instance.provider} />
                     </TableCell>
+                    {showUserColumn && (
+                      <TableCell className={FINDING_COLUMN_CLASS.user}>
+                        <UserCell user={instance.user} />
+                      </TableCell>
+                    )}
                     <TableCell className={FINDING_COLUMN_CLASS.location}>
                       <div className="min-w-0">
                         <div className="font-mono text-xs text-text-2 wrap-anywhere">

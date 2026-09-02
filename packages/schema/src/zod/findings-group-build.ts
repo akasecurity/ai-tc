@@ -16,6 +16,7 @@ import type {
   FindingInstance,
   FindingProvider,
   FindingStatus,
+  FindingUser,
   Severity,
 } from './finding.ts';
 // Value import: the fallback below validates against the enum itself, so a member
@@ -169,6 +170,9 @@ export interface GroupableFindingRow {
   // when it has one. Optional/absent for callers that do not project them.
   eventId?: string;
   sessionId?: string;
+  // Who the event is attributed to. Optional/absent for a single-user store,
+  // which has no one to attribute a finding to.
+  user?: FindingUser;
 }
 
 // Group-level status precedence: open dominates, then handled, then dismissed,
@@ -345,12 +349,23 @@ export function buildFindingGroups(
         ...(r.toolName === undefined ? {} : { toolName: r.toolName }),
         ...(r.eventId === undefined ? {} : { eventId: r.eventId }),
         ...(r.sessionId === undefined ? {} : { sessionId: r.sessionId }),
+        ...(r.user === undefined ? {} : { user: r.user }),
         action: toApiAction(effectiveDbAction),
         detectedAt: r.occurredAt,
         confidence: r.confidence,
         status: r.status,
       };
     });
+
+    // users: the distinct people among the rows, dedup by id preserving order
+    // of first occurrence (newest-first). Omitted when no row carries one.
+    const seenUsers = new Set<string>();
+    const users: FindingUser[] = [];
+    for (const i of instances) {
+      if (i.user === undefined || seenUsers.has(i.user.id)) continue;
+      seenUsers.add(i.user.id);
+      users.push(i.user);
+    }
 
     // Every fold below reads the whole group: from the store's aggregate when
     // one is supplied (the rows are then only a preview), else from the rows.
@@ -423,6 +438,7 @@ export function buildFindingGroups(
       latestDetectedAt,
       instances,
       status,
+      ...(users.length > 0 ? { users } : {}),
     };
 
     // Prime the whole-group caches while the aggregate is in hand: `instances`

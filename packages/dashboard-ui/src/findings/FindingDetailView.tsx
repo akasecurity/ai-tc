@@ -146,6 +146,12 @@ export function FindingDetailView({
             <MetaItem label="Confidence">
               <Confidence confidence={instance.confidence} />
             </MetaItem>
+            {/* Only a store that attributes findings to people sets `user`. */}
+            {instance.user !== undefined && (
+              <MetaItem label="User">
+                <span className="text-xs wrap-break-word">{instance.user.name}</span>
+              </MetaItem>
+            )}
           </div>
         )}
 

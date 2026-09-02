@@ -33,11 +33,13 @@ import {
   type Selection,
 } from './meta.ts';
 import { ProviderChips, ProviderTag } from './ProviderChips.tsx';
+import { UserCell, UsersCell } from './UserCell.tsx';
 
 const FINDING_COLUMN_CLASS: Record<FindingColumn['id'], string> = {
   severity: 'min-w-[110px] whitespace-nowrap',
   subtype: '',
   sources: 'min-w-[140px] whitespace-nowrap',
+  user: 'min-w-[140px]',
   locations: '',
   action: 'min-w-[130px] whitespace-nowrap',
   status: 'min-w-[110px] whitespace-nowrap',
@@ -328,6 +330,7 @@ const GROUP_CELL: Record<FindingColumn['id'], (g: FindingGroup) => ReactNode> = 
   severity: (g) => <SeverityBadge severity={g.severity} />,
   subtype: (g) => <TypeCell finding={g} />,
   sources: (g) => <ProviderChips ids={g.providers} />,
+  user: (g) => <UsersCell users={g.users} />,
   locations: (g) => <span className="text-text-3">{g.instanceCount} locations</span>,
   action: (g) => <AggregateActionTag aggregateAction={g.aggregateAction} />,
   status: (g) => <StatusCell status={g.status} />,
@@ -350,6 +353,7 @@ const INSTANCE_CELL: Record<
     </div>
   ),
   sources: (_g, i) => <ProviderTag provider={i.provider} />,
+  user: (_g, i) => <UserCell user={i.user} />,
   locations: (_g, i) => (
     <span className="font-mono text-xs text-text-3 wrap-anywhere">{instanceLocationLabel(i)}</span>
   ),

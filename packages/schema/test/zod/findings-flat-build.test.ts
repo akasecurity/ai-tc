@@ -170,6 +170,12 @@ describe('toInstanceDetail', () => {
     expect(toInstanceDetail(row()).sessionId).toBeUndefined();
     expect(toInstanceDetail(row()).eventId).toBe('e1');
   });
+
+  it('carries the attributed user and omits an absent one', () => {
+    const user = { id: 'u1', name: 'alice@example.com' };
+    expect(toInstanceDetail(row({ user })).user).toEqual(user);
+    expect(toInstanceDetail(row())).not.toHaveProperty('user');
+  });
 });
 
 describe('compareFindingGroupOrder', () => {

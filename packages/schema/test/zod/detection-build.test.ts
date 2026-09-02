@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import type { OriginEnum } from '../../src/zod/detection.ts';
 import type { DetectionRowInput, DetectionSummaryInput } from '../../src/zod/detection-build.ts';
 import {
   buildDetectionsList,
@@ -203,6 +204,51 @@ describe('detection origin', () => {
         null,
       ).origin,
     ).toBe('library');
+  });
+
+  // Nothing parses these inputs — they are rows a caller read out of its own
+  // store — so a value outside the enum is reachable from a store written by a
+  // newer build or edited by hand. Passed through, it reaches the dashboard's
+  // `ORIGIN_META[origin]`, which is `undefined`, and the Detections page dies on
+  // the first property read. It must read as 'library', the same as absent.
+  it('reads an origin outside the enum as library', () => {
+    const foreign = 'forked' as OriginEnum;
+
+    expect(summaryToDetectionListItem(summary({ origin: foreign })).origin).toBe('library');
+    expect(
+      rowToDetectionDetail(
+        {
+          ...row([rule('secrets/x', { type: 'regex', pattern: 'x', flags: 'g' })]),
+          origin: foreign,
+        },
+        0,
+        null,
+      ).origin,
+    ).toBe('library');
+  });
+
+  // The membership test reads own properties only: an inherited key is a string
+  // that indexes the vocabulary truthily and is not a member of it.
+  it('reads an inherited key as library rather than as a member', () => {
+    expect(
+      summaryToDetectionListItem(summary({ origin: 'constructor' as OriginEnum })).origin,
+    ).toBe('library');
+  });
+
+  // Counted, not just mapped: a foreign origin must land in a bucket rather than
+  // fall out of the totals, or the tabs stop adding up to `all`.
+  it('counts an origin outside the enum as library', () => {
+    const { counts } = buildDetectionsList(
+      [
+        summary({ packId: 'a', origin: 'forked' as OriginEnum }),
+        summary({ packId: 'b', origin: 'custom' }),
+      ],
+      { filter: 'all' },
+    );
+
+    expect(counts.library).toBe(1);
+    expect(counts.custom).toBe(1);
+    expect(counts.library + counts.custom).toBe(counts.all);
   });
 
   it('counts library and custom separately, and they partition the whole set', () => {

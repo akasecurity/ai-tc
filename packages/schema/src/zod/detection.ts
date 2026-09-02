@@ -62,7 +62,8 @@ export type DetectionCounts = z.infer<typeof DetectionCounts>;
 // A single item in the detections read's response.
 // `id` is the un-encoded "namespace/packId" slug (clients encode it for detail/update).
 // `update` is always null on list (lazy-computed on detail only to avoid N registry calls).
-// `origin` is always "library" in v1.
+// `origin` is 'library' for a pack installed from the registry and 'custom' for
+// one authored here — see OriginEnum. Same field, same meaning, on DetectionDetail.
 export const DetectionListItem = z
   .object({
     id: z.string(),

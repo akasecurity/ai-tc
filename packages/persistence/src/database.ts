@@ -173,6 +173,12 @@ export interface LocalDatabase {
   // or a bad row rolls back and is swallowed — dropping telemetry never breaks
   // a session.
   recordCapture(event: IngestEvent, findings: DetectedFindingWithKey[]): void;
+  // Stamp a capture the LIVE forward already delivered, so the outbox does not
+  // offer it again. Keyed on the same tuple `recordCapture` writes the row
+  // under, and settled through the same statement a drain uses, so the two
+  // delivery paths leave a row in one indistinguishable state. Attached mode
+  // only — nothing forwards in standalone, so nothing stamps. Fail-open.
+  markCaptureDelivered(event: IngestEvent, atMs: number): void;
   // Idempotent upsert of the session's host/harness/account/project dimensions
   // by content-addressed id, in one transaction. Returns the resolved ids to
   // stamp onto the Session audit row. Fail-open: returns {} if the DB is
@@ -441,6 +447,35 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     configInventory,
   } = openAndInitialize(file);
 
+  // The one derivation of a capture's row id, shared by the write and the
+  // delivery stamp below. Spelled once rather than at each call site: the id is
+  // the join between a stored row and the id it is SENT under (see
+  // `captureWireId`), and two copies of a four-part tuple is exactly the shape
+  // that drifts silently — the stamp would land on no row and the outbox would
+  // resend for ever, with nothing failing.
+  function captureRowId(event: IngestEvent): string {
+    return captureId(
+      event.metadata?.sessionId ?? null,
+      event.contentHash,
+      event.metadata?.filePath ?? null,
+    );
+  }
+
+  // Record that the LIVE path already delivered this capture, so the outbox
+  // does not offer it again.
+  //
+  // Written through the same statement the drain settles with, so a row
+  // delivered live and a row delivered by a drain are indistinguishable
+  // afterwards — one delivery state, not two. Fail-open like every other write
+  // here: a stamp that does not land costs a redundant resend, which the
+  // receiver's id-dedup absorbs because the wire id is derived from this very
+  // tuple, and never costs the session.
+  function markCaptureDelivered(event: IngestEvent, atMs: number): void {
+    failOpenTransaction(db, () => {
+      historySync.markSynced([captureRowId(event)], atMs);
+    });
+  }
+
   function recordCapture(event: IngestEvent, detected: DetectedFindingWithKey[]): void {
     // Fail-open: dropping telemetry is acceptable; breaking the host session
     // is not. A locked/corrupt DB or a bad row leaves the session untouched.
@@ -461,11 +496,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
       // byte-identical content stay two rows (see captureId). All four capture
       // kinds (prompt/response/code_change/tool_use) map onto AuditEventType as
       // themselves — see the superset invariant documented there.
-      const auditEventId = captureId(
-        sessionId ?? null,
-        event.contentHash,
-        event.metadata?.filePath ?? null,
-      );
+      const auditEventId = captureRowId(event);
       auditEvents.insertAuditEvent({
         id: auditEventId,
         eventType: event.kind,
@@ -713,6 +744,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     inspectionDefinitions,
     inspectionFindings,
     recordCapture,
+    markCaptureDelivered,
     ensureInventory,
     recordConfigScan,
     recordProjectFiles,

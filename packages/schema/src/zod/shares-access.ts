@@ -59,16 +59,20 @@ export function isCustomDecision(
 }
 
 // ---------------------------------------------------------------------------
-// Review posture (independent of any decision override)
+// Review posture
 // ---------------------------------------------------------------------------
 
 /**
  * Derives the posture review reasons for a destination: `raw_ip` when trust is
  * 'ip', `unverified_domain` when trust is 'unverified', `plaintext_transport`
  * when at least one endpoint uses an unencrypted transport ('http' or 'ws';
- * 'https' and 'wss' are encrypted). Independent of any egress decision
- * override — this is posture, not decision (an `allow` override still leaves
- * `needsReview: true` when the underlying posture is risky).
+ * 'https' and 'wss' are encrypted).
+ *
+ * Independent of any egress decision override, and stays that way: these are
+ * the reasons a destination WAS flagged, and blocking it does not stop it
+ * being a raw IP. The reasons remain worth showing on a decided destination —
+ * it is the review FLAG that clears, in `buildReviewInfo` one layer up, not
+ * the explanation.
  */
 export function deriveReviewReasons(
   trust: ShareTrustLevel,
@@ -81,10 +85,35 @@ export function deriveReviewReasons(
   return reasons;
 }
 
-/** Builds the `{ needsReview, reasons }` object from the derived reasons. */
-export function buildReviewInfo(trust: ShareTrustLevel, transports: Transport[]): ReviewInfo {
+/**
+ * Builds the `{ needsReview, reasons }` object: the reasons a destination is
+ * flagged, plus whether an operator still has to look at it.
+ *
+ * `needsReview` is a WORK QUEUE, not a posture readout — the "Needs review N"
+ * banner is the register's to-do list. A queue an operator cannot empty by
+ * acting is decoration, so writing an egress decision takes the destination
+ * out of it while the reasons stay to say why it was ever in.
+ *
+ * `decided` is "an override row exists", NOT `isCustomDecision`. The two part
+ * company on exactly the case that matters: a 'recognized' destination flagged
+ * only for `plaintext_transport` already defaults to 'allowed', so an explicit
+ * `allow` on it resolves to the same status and `isCustomDecision` reports
+ * false. Keyed on that, the one destination an operator has deliberately
+ * cleared would sit in the queue forever — the very failure this argument
+ * exists to fix.
+ *
+ * The argument is required rather than defaulted because there are two engines
+ * deriving this posture (this fold, and the SQL aggregates behind the KPI
+ * tiles) and they have drifted before. A caller that has not thought about the
+ * decision should fail to compile, not silently inherit a default.
+ */
+export function buildReviewInfo(
+  trust: ShareTrustLevel,
+  transports: Transport[],
+  decided: boolean,
+): ReviewInfo {
   const reasons = deriveReviewReasons(trust, transports);
-  return { needsReview: reasons.length > 0, reasons };
+  return { needsReview: reasons.length > 0 && !decided, reasons };
 }
 
 // ---------------------------------------------------------------------------

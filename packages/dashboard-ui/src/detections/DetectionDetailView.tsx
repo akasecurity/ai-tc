@@ -15,18 +15,23 @@
 //   - policyError     : a write the store refused, in the user's words. Rendered
 //     at the control that produced it, because a refusal reported nowhere is
 //     indistinguishable from a picker that quietly ignores you.
+//   - enabledError    : the same, for the enable/disable toggle. Its own message
+//     rather than the picker's, because a refusal shown at the wrong control
+//     attributes the organization's constraint to a choice it never touched.
 //   - onOpenUpdate    : present + update available ⇒ Update button in the provenance
 import type { DetectionDetail, DetectionRule } from '@akasecurity/schema';
 import { Button, SeverityBadge, Switch, toneColors } from '@akasecurity/ui-kit';
-import type { ReactNode } from 'react';
+import { type ReactNode, useId } from 'react';
 
 import type { IconComponent } from '../lib/icons.ts';
 import { SectionLabel } from '../shared/DetailFields.tsx';
 import { ChevronRightIcon, MoreVertIcon, PlusIcon } from '../shared/icons.tsx';
 import { CATEGORY_LABEL, MATCHER_META, matcherSummary, policyMeta } from './meta.ts';
 import {
+  DETECTION_STAYS_ON_REASON,
   type DetectionPolicyFloor,
   effectivePolicyId,
+  isDisableRefused,
   unavailableUnderFloor,
 } from './policy-floor.ts';
 import { PolicyPicker } from './PolicyPicker.tsx';
@@ -84,6 +89,7 @@ export function DetectionDetailView({
   unavailablePolicies,
   policyFloor,
   policyError,
+  enabledError,
   onOpenUpdate,
   onRecheck,
   unknownHint,
@@ -107,6 +113,8 @@ export function DetectionDetailView({
   policyFloor?: DetectionPolicyFloor | null | undefined;
   /** A refused or failed policy write, already worded for the reader. */
   policyError?: string | null | undefined;
+  /** The same, for a refused or failed enable/disable write. */
+  enabledError?: string | null | undefined;
   onOpenUpdate?: (() => void) | undefined;
   // Re-read the update state in place (the OSS web-ui's "Check again" for the
   // unknown provenance state); omitted by apps with their own refresh flow.
@@ -131,6 +139,15 @@ export function DetectionDetailView({
     unavailablePolicies === undefined && floorRestrictions === undefined
       ? undefined
       : { ...unavailablePolicies, ...floorRestrictions };
+  // A governed detection may not be switched off — "not running" is below every
+  // archetype, so the organization naming it at all is what settles this (see
+  // isDisableRefused). Gated on the host having a write path at the toggle too:
+  // a read-only pane must not sprout a reason for a control it does not offer,
+  // exactly as the picker does not look restricted when it has no onChange.
+  const staysOn = onToggleEnabled !== undefined && isDisableRefused(d.enabled, policyFloor);
+  // Two panes on one page must not mint the same id; this one is the anchor the
+  // Switch's aria-describedby points at.
+  const staysOnId = useId();
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -159,7 +176,23 @@ export function DetectionDetailView({
               {onToggleEnabled && (
                 <Switch
                   checked={d.enabled}
-                  onCheckedChange={onToggleEnabled}
+                  // Inert rather than absent when the organization requires this
+                  // detection to keep running: the handler is omitted (spread
+                  // rather than passed as undefined, which the prop's type does
+                  // not take), so activation does nothing — but no NATIVE
+                  // `disabled` goes on, because that would take the control out
+                  // of the tab order, and the whole point of leaving it there is
+                  // that the reason reaches whoever reaches for it. Same
+                  // contract as the picker's unassignable archetypes.
+                  {...(staysOn ? {} : { onCheckedChange: onToggleEnabled })}
+                  aria-disabled={staysOn || undefined}
+                  // Points at the line below the header, so the reason is
+                  // announced AT the control rather than as prose to go and find.
+                  aria-describedby={staysOn ? staysOnId : undefined}
+                  // The reason travels with the control as well, so a pointer
+                  // user gets it without reading ahead.
+                  title={staysOn ? DETECTION_STAYS_ON_REASON : undefined}
+                  className={staysOn ? 'cursor-not-allowed opacity-50' : undefined}
                   aria-label={d.enabled ? 'Disable detection' : 'Enable detection'}
                 />
               )}
@@ -175,6 +208,24 @@ export function DetectionDetailView({
             </Button>
           </div>
         </div>
+        {staysOn && (
+          // Full width under the header rather than beside the toggle: a tooltip
+          // is invisible on touch and unreliable for assistive tech, and the
+          // sentence does not fit the shrink-0 column the control sits in. This
+          // is the accessible copy `aria-describedby` above points at.
+          <p id={staysOnId} className="mt-2 text-xs text-text-3" data-slot="enabled-locked-reason">
+            {DETECTION_STAYS_ON_REASON}
+          </p>
+        )}
+        {enabledError && (
+          // At the control that produced it, like the picker's own refusal —
+          // the toggle is where the user acted, and a message they have to go
+          // and find reads as the page failing rather than as this change being
+          // refused.
+          <p className="mt-2 text-xs text-sev-critical-ink" data-slot="enabled-write-error">
+            {enabledError}
+          </p>
+        )}
       </div>
 
       {/* scroll body */}

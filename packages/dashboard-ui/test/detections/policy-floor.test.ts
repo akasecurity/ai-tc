@@ -4,7 +4,9 @@ import { describe, expect, it } from 'vitest';
 import { policyMeta } from '../../src/detections/meta.ts';
 import type { DetectionPolicyFloor } from '../../src/detections/policy-floor.ts';
 import {
+  DETECTION_STAYS_ON_REASON,
   effectivePolicyId,
+  isDisableRefused,
   isPolicyGoverned,
   policyFloorReason,
   unavailableUnderFloor,
@@ -175,5 +177,65 @@ describe('DetectionPolicyFloor', () => {
     // And the decisions actually run off that value, rather than off a shape
     // this test built for itself.
     expect(Object.keys(unavailableUnderFloor(asProp) ?? {}).sort()).toEqual(['monitor', 'warn']);
+  });
+});
+
+describe('isDisableRefused', () => {
+  it('refuses nothing on a machine nothing manages', () => {
+    // Every OSS install that has not attached. The toggle must come out of this
+    // module exactly as live as it was before any of it existed.
+    expect(isDisableRefused(true, null)).toBe(false);
+    expect(isDisableRefused(true, undefined)).toBe(false);
+  });
+
+  it('refuses the switch-off under EVERY floor, the weakest included', () => {
+    // The whole difference from the picker's question. There the floor names a
+    // rung and the archetypes below it are restricted; here "off" is below the
+    // ladder, so what matters is that the organization spoke for this detection
+    // at all.
+    for (const id of KNOWN_BUILTIN_IDS) {
+      expect(isDisableRefused(true, floor({ floor: id })), `a floor of '${id}'`).toBe(true);
+    }
+  });
+
+  it('parts company with the picker exactly at a Monitor floor', () => {
+    // The case that would be missed by reusing unavailableUnderFloor: a floor of
+    // Monitor forbids no ASSIGNMENT, and still forbids switching the detection
+    // off. Both halves asserted, so this cannot pass by both being empty.
+    expect(unavailableUnderFloor(floor({ floor: 'monitor' }))).toBeUndefined();
+    expect(isDisableRefused(true, floor({ floor: 'monitor' }))).toBe(true);
+  });
+
+  it('never refuses a re-enable, locked or not', () => {
+    // Re-enabling moves toward what the organization asked for. A store can hold
+    // a detection switched off from before any of this existed, and withholding
+    // the toggle there would leave it stuck off with nothing able to turn it
+    // back on.
+    for (const locked of [false, true]) {
+      expect(isDisableRefused(false, floor({ locked })), `locked: ${String(locked)}`).toBe(false);
+    }
+  });
+});
+
+describe('DETECTION_STAYS_ON_REASON', () => {
+  it('names whose decision it is and what is still open', () => {
+    // A user who is not told the organization decided this goes looking for a
+    // broken toggle; one who is not told enforcement can still be raised reads
+    // the whole detection as out of their hands.
+    expect(DETECTION_STAYS_ON_REASON).toMatch(/organization/i);
+    expect(DETECTION_STAYS_ON_REASON).toMatch(/stronger/i);
+  });
+
+  it('does not read as a fault to retry', () => {
+    expect(DETECTION_STAYS_ON_REASON).not.toMatch(/error|failed|try again/i);
+  });
+
+  it("is not the picker's sentence", () => {
+    // Different constraints with different remedies. Collapsing them would tell
+    // someone whose detection may not be switched off to go and pick a stronger
+    // archetype, which is not what was refused.
+    for (const locked of [false, true]) {
+      expect(DETECTION_STAYS_ON_REASON).not.toBe(policyFloorReason(floor({ locked })));
+    }
   });
 });

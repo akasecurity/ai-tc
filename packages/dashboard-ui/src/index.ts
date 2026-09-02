@@ -159,8 +159,10 @@ export {
   PUBLISHER_META,
 } from './detections/meta.ts';
 export {
+  DETECTION_STAYS_ON_REASON,
   type DetectionPolicyFloor,
   effectivePolicyId,
+  isDisableRefused,
   isPolicyGoverned,
   policyFloorReason,
   unavailableUnderFloor,

@@ -134,3 +134,47 @@ export function isPolicyGoverned(
   if (!floor) return false;
   return floor.locked || effectivePolicyId(assigned, floor) !== (assigned ?? PLACEHOLDER_POLICY);
 }
+
+/**
+ * The sentence a user reads when switching a detection off is not theirs to
+ * decide.
+ *
+ * ONE sentence, where the picker's reason has two, because this constraint has
+ * one shape. A detection that does not run supplies no rules, no per-rule
+ * actions and no reversibility, which is weaker than every archetype the
+ * organization could have asked for — including the weakest — so whether it
+ * named a floor or authored the answer outright makes no difference to what may
+ * happen here.
+ *
+ * Worded beside the constraint it describes, like policyFloorReason, so the
+ * toggle that withholds the choice before the click and the refusal a write
+ * that got through anyway reports afterwards are one sentence rather than two
+ * descriptions of one rule.
+ */
+export const DETECTION_STAYS_ON_REASON =
+  'Your organization requires this detection to stay on, so it cannot be turned ' +
+  'off on this machine. You can still give it a stronger enforcement policy here.';
+
+/**
+ * Whether switching this detection off is a choice the machine no longer has.
+ *
+ * ANY floor forbids it, including a floor of Monitor — which is what makes this
+ * a different question from the picker's. There the floor names a rung and the
+ * archetypes below it are the restricted ones; here "off" sits below the whole
+ * ladder, so the question is not which rung the organization asked for but
+ * whether it spoke for this detection at all. A pack the organization's bundle
+ * never names carries no floor, so this constrains exactly the detections it
+ * speaks for and nothing else.
+ *
+ * Only what is currently ON, and deliberately: re-enabling is always allowed —
+ * it is the direction the floor exists to protect — and a store can hold a
+ * detection switched off before any of this existed, exactly as it can hold an
+ * assignment below the floor. Withholding the toggle there would leave a
+ * governed detection stuck off with nothing able to turn it back on.
+ */
+export function isDisableRefused(
+  enabled: boolean,
+  floor: DetectionPolicyFloor | null | undefined,
+): boolean {
+  return enabled && Boolean(floor);
+}

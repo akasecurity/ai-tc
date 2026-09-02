@@ -127,6 +127,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'hasPointer',
   'isCurrentKeyVersion',
   'isModelProhibited',
+  'isSpawnModelProhibited',
   'isVendoredPath',
   'loadConfig',
   'loadOrCreateFingerprintKey',

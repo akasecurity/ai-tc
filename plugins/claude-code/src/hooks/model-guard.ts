@@ -1,10 +1,10 @@
-// Prohibited-model governance, decision-only: the two refusals this feature can
-// make and the model resolution they share. Pure logic plus bounded reads, so it
-// unit-tests without a hook process — hook ENTRY files run main() on import and
-// must never be imported by tests (the same split as pre-tool-use-decision.ts
-// and user-prompt-submit-decision.ts).
+// Prohibited-model governance, decision-only: the three refusals this feature
+// can make and the model resolution they share. Pure logic plus bounded reads,
+// so it unit-tests without a hook process — hook ENTRY files run main() on
+// import and must never be imported by tests (the same split as
+// pre-tool-use-decision.ts and user-prompt-submit-decision.ts).
 //
-// The two refusals answer DIFFERENT hooks in DIFFERENT vocabularies, which is
+// The three refusals answer DIFFERENT hooks in DIFFERENT vocabularies, which is
 // the one thing to get right here — see each function's own note.
 import { randomUUID } from 'node:crypto';
 
@@ -13,11 +13,26 @@ import {
   buildModelRefusalEvent,
   decideProhibitedModelTurn,
   isModelProhibited,
+  isSpawnModelProhibited,
   modelFromTranscript,
   prohibitedModelMessage,
   readSessionModel,
 } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
+
+import type { PreToolUseOutput } from './pre-tool-use-decision.ts';
+
+/**
+ * The one arm of `PreToolUseOutput` this seam can produce.
+ *
+ * Narrower than the union on purpose: a spawn refusal is only ever a deny, and
+ * saying so is what lets a caller read the decision without narrowing a shape
+ * that also admits an allow-with-rewrite and a bare systemMessage.
+ */
+export type PreToolUseDenyOutput = Extract<
+  PreToolUseOutput,
+  { hookSpecificOutput: { permissionDecision: 'deny' } }
+>;
 
 // PreModelSwitch answers in the SAME permission vocabulary as PreToolUse —
 // `permissionDecision: 'deny'` with a reason — rather than UserPromptSubmit's
@@ -167,5 +182,132 @@ export async function handleProhibitedTurn(
   // refusal path never reaches.
   await gateway.close();
   await emit(blocked.decision);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// The spawn seam: a SUBAGENT asked to run on a prohibited model.
+//
+// Neither seam above can reach this. A subagent turn is not a user prompt and
+// not a switch, and both of those resolve the PARENT session's model — which is
+// exactly the model a spawn is overriding. So a session on an approved model
+// could run unbounded work on a prohibited one, refused nowhere.
+// ---------------------------------------------------------------------------
+
+/**
+ * The tools that start a subagent.
+ *
+ * BOTH spellings, because the harness renamed this tool: older builds send
+ * `Task`, current ones send `Agent`. Naming only one of them is how this
+ * boundary came to be unguarded in the first place — the manifest matcher went
+ * on listing `Task` long after the harness had stopped sending it, so the hook
+ * never ran here at all and every check inside it was dead code.
+ */
+const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
+
+/** The spawn's requested model, or undefined when it names none. */
+function requestedSpawnModel(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+): string | undefined {
+  if (!SUBAGENT_TOOLS.has(toolName)) return undefined;
+  const requested = toolInput.model;
+  return typeof requested === 'string' && requested !== '' ? requested : undefined;
+}
+
+/**
+ * Deny a subagent spawn onto a prohibited model; otherwise say nothing.
+ *
+ * PreToolUse vocabulary — the hook this actually runs in. It looks identical to
+ * `PreModelSwitchOutput` and is not: each harness event honors only its own
+ * `hookEventName`, so the two are interchangeable right up until one silently
+ * allows.
+ *
+ * A spawn naming NO model inherits the parent's, which the switch and turn
+ * seams have already vetted, so it is not a second decision to take and returns
+ * null. Null likewise for a tool that is not a spawn, a non-string model, an
+ * empty prohibition list, and a model that is simply not prohibited.
+ */
+export function decideSubagentSpawn(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  prohibitedModels: readonly string[] | undefined,
+): PreToolUseDenyOutput | null {
+  const requested = requestedSpawnModel(toolName, toolInput);
+  if (requested === undefined) return null;
+  if (!isSpawnModelProhibited(requested, prohibitedModels)) return null;
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: prohibitedModelMessage(requested, 'spawn'),
+    },
+  };
+}
+
+/**
+ * The whole spawn step: decide, and on a refusal record it, close and emit.
+ * Returns true when the spawn was refused and the caller must stop.
+ *
+ * Opens its own gateway and owns its lifecycle, because it runs BEFORE
+ * pre-tool-use has opened one: a spawn carries no scannable field, so the scan
+ * path returns early and everything it sets up happens too late to be borrowed
+ * here.
+ *
+ * The gateway is opened only once a spawn has actually named a model, so the
+ * ordinary tool call — every Bash, Edit and MCP leaf the matcher also spawns
+ * this hook for — pays nothing for this seam.
+ *
+ * TOTAL AND FAIL-OPEN, like its two siblings: any failure returns false and the
+ * call proceeds to the ordinary path.
+ */
+export async function handleSubagentSpawn(
+  openGateway: () => Pick<DataGateway, 'getPolicyBundle' | 'recordAuditEvent' | 'close'> | null,
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  sessionId: string | undefined,
+  emit: (output: PreToolUseDenyOutput) => Promise<void>,
+): Promise<boolean> {
+  const requested = requestedSpawnModel(toolName, toolInput);
+  if (requested === undefined) return false;
+
+  const gateway = openGateway();
+  if (gateway === null) return false;
+
+  // Closed at each exit rather than in a `finally`: the refusal path needs it
+  // still open to record the event it is about to emit.
+  let decision: PreToolUseDenyOutput | null;
+  try {
+    const { prohibitedModels } = await gateway.getPolicyBundle();
+    decision = decideSubagentSpawn(toolName, toolInput, prohibitedModels);
+  } catch {
+    await gateway.close();
+    return false;
+  }
+  if (decision === null) {
+    await gateway.close();
+    return false;
+  }
+
+  // Best-effort and swallowed, for the same reason the other two seams swallow
+  // theirs: a refusal that cannot be written down is still a refusal, and
+  // letting a failed write reach the entry's outer catch would turn this deny
+  // into a fail-open allow.
+  try {
+    await gateway.recordAuditEvent(
+      buildModelRefusalEvent({
+        id: randomUUID(),
+        sessionId,
+        model: requested,
+        seam: 'spawn',
+        sourceTool: SOURCE_TOOL.ClaudeCode,
+        occurredAt: new Date().toISOString(),
+      }),
+    );
+  } catch {
+    // Swallowed on purpose — see above.
+  }
+  await gateway.close();
+  await emit(decision);
   return true;
 }

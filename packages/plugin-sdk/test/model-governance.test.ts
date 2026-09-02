@@ -10,6 +10,7 @@ import {
   codexModelFromRecord,
   decideProhibitedModelTurn,
   isModelProhibited,
+  isSpawnModelProhibited,
   modelFromTranscript,
   modelFromTranscriptTail,
   normalizeModelId,
@@ -334,5 +335,73 @@ describe('buildModelRefusalEvent', () => {
 
   it('records the turn seam distinctly from the switch seam', () => {
     expect(buildModelRefusalEvent({ ...base, seam: 'turn' }).attributes.refusal_seam).toBe('turn');
+  });
+});
+
+// A subagent spawn names its model in a vocabulary nothing else here speaks.
+// The Agent tool's `model` input carries a TIER word — `sonnet` — which the
+// harness resolves itself and which therefore never reaches a transcript, so
+// there is no id for the exact comparison every other seam makes.
+describe('isSpawnModelProhibited', () => {
+  const PROHIBITED = ['claude-sonnet-5', 'claude-haiku-4-5-20251001'];
+
+  it('refuses an explicit prohibited id, exactly as the other seams do', () => {
+    expect(isSpawnModelProhibited('claude-sonnet-5', PROHIBITED)).toBe(true);
+    // Still folds a dated build onto its base, same as isModelProhibited.
+    expect(isSpawnModelProhibited('claude-haiku-4-5', PROHIBITED)).toBe(true);
+  });
+
+  it('refuses the TIER WORD the harness actually sends', () => {
+    // The live spelling: an Agent call carries `model: "sonnet"`, never
+    // `claude-sonnet-5`. Matching only the id leaves the seam blind to the one
+    // value it will ever be given.
+    expect(isSpawnModelProhibited('sonnet', PROHIBITED)).toBe(true);
+    expect(isSpawnModelProhibited('haiku', PROHIBITED)).toBe(true);
+  });
+
+  it('allows a tier the organization has not prohibited', () => {
+    // The control that keeps the tier rule from degenerating into "refuse every
+    // shorthand": opus is not on the list, so the tier word for it is allowed.
+    expect(isSpawnModelProhibited('opus', PROHIBITED)).toBe(false);
+  });
+
+  it('allows the inherit words — the parent model is already vetted', () => {
+    // A spawn that inherits runs on the session's own model, which the switch
+    // and turn seams have already decided about. Refusing here would be a second
+    // verdict on one decision, and it would fire on sessions that are compliant.
+    expect(isSpawnModelProhibited('inherit', PROHIBITED)).toBe(false);
+    expect(isSpawnModelProhibited('default', PROHIBITED)).toBe(false);
+  });
+
+  it.each([
+    ['an empty request', '', PROHIBITED],
+    ['an unknown model', 'some-model-nobody-catalogued', PROHIBITED],
+    ['no prohibition list', 'sonnet', undefined],
+    ['an empty prohibition list', 'sonnet', []],
+  ])('allows on %s — knowledge, never ignorance', (_label, requested, prohibited) => {
+    expect(isSpawnModelProhibited(requested, prohibited)).toBe(false);
+  });
+
+  it('does not read a tier out of an unrelated vendor id', () => {
+    // `tierOf` scans hyphen segments, so this pins that a vendor id merely
+    // CONTAINING a tier-like substring does not collapse onto it.
+    expect(isSpawnModelProhibited('sonnet', ['gpt-4-turbo'])).toBe(false);
+    expect(isSpawnModelProhibited('haiku', ['claude-sonnet-5'])).toBe(false);
+  });
+});
+
+describe('prohibitedModelMessage names the right remedy per seam', () => {
+  it('sends a spawn refusal to the subagent argument, not to /model', () => {
+    // A spawn is refused on an argument the caller chose, so pointing them at
+    // /model would name a control that cannot fix it.
+    const message = prohibitedModelMessage('sonnet', 'spawn');
+    expect(message).toContain('Cannot start a subagent on sonnet');
+    expect(message).toContain('Name an approved model on the subagent');
+    expect(message).not.toContain('/model');
+  });
+
+  it('still sends switch and turn refusals to /model', () => {
+    expect(prohibitedModelMessage('claude-sonnet-5', 'switch')).toContain('/model');
+    expect(prohibitedModelMessage('claude-sonnet-5', 'turn')).toContain('/model');
   });
 });

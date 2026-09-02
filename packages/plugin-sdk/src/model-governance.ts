@@ -79,6 +79,62 @@ export function isModelProhibited(
 }
 
 /**
+ * The tier words a subagent spawn may name in place of a model id.
+ *
+ * A spawn's `model` input is not the vocabulary the rest of this module deals
+ * in: the harness accepts a TIER — `sonnet`, `opus`, `haiku` — and resolves it
+ * itself to whichever build of that tier it currently ships. That string never
+ * reaches a transcript, so nothing downstream can fold it to an id.
+ */
+const SPAWN_TIER_WORDS: ReadonlySet<string> = new Set(['opus', 'sonnet', 'haiku']);
+
+/**
+ * Words that mean "whatever the parent is on" rather than naming a model.
+ *
+ * They resolve to the session's own model, which the switch and turn seams have
+ * already vetted, so a spawn carrying one is not a second decision to take.
+ */
+const SPAWN_INHERIT_WORDS: ReadonlySet<string> = new Set(['inherit', 'default']);
+
+/** The tier an Anthropic-shaped id belongs to, or undefined for anything else. */
+function tierOf(normalized: string): string | undefined {
+  return normalized.split('-').find((segment) => SPAWN_TIER_WORDS.has(segment));
+}
+
+/**
+ * Whether a subagent spawn's requested model is prohibited.
+ *
+ * Two vocabularies arrive here and only one of them is an id. An explicit id is
+ * compared exactly as everywhere else. A TIER WORD is compared by tier: it is
+ * prohibited when the organization has prohibited ANY model of that tier.
+ *
+ * That is a deliberate widening, and it is the one place this control does not
+ * wait for an exact match. The request names no version, so there is no id to
+ * compare — but "the user asked for a Sonnet and the organization has
+ * prohibited a Sonnet" is knowledge, not ignorance, and the alternative is a
+ * seam that cannot see the only spelling the harness actually sends. The cost
+ * is stated rather than hidden: an organization that prohibits one build of a
+ * tier also refuses the bare tier word, and the refusal says which model it
+ * matched so the user can name an approved one instead.
+ *
+ * False for every genuinely unknown case — an empty request, an empty list, an
+ * inherit word, and any string that is neither a prohibited id nor a tier.
+ */
+export function isSpawnModelProhibited(
+  requested: string | undefined,
+  prohibited: readonly string[] | undefined,
+): boolean {
+  if (requested === undefined || requested === '') return false;
+  if (prohibited === undefined || prohibited.length === 0) return false;
+  const needle = normalizeModelId(requested);
+  if (needle === '') return false;
+  if (SPAWN_INHERIT_WORDS.has(needle)) return false;
+  if (isModelProhibited(requested, prohibited)) return true;
+  if (!SPAWN_TIER_WORDS.has(needle)) return false;
+  return prohibited.some((p) => tierOf(normalizeModelId(p)) === needle);
+}
+
+/**
  * Record the model a session is running on.
  *
  * Best-effort and silent: this is a governance CONVENIENCE (it saves the
@@ -269,14 +325,22 @@ export function modelFromTranscript(transcriptPath: string | undefined): string 
  * claim the call was intercepted: nothing here sits in the network path, and
  * saying otherwise would overstate the control.
  */
-export function prohibitedModelMessage(model: string, action: 'switch' | 'turn'): string {
+export function prohibitedModelMessage(model: string, action: 'switch' | 'turn' | 'spawn'): string {
   const subject =
     action === 'switch'
       ? `Cannot switch to ${model}`
-      : `This session is running on ${model}, which cannot be used`;
+      : action === 'spawn'
+        ? `Cannot start a subagent on ${model}`
+        : `This session is running on ${model}, which cannot be used`;
+  // The remedy differs by seam: a spawn is refused on an argument the caller
+  // chose, so pointing it at /model would name the wrong control.
+  const remedy =
+    action === 'spawn'
+      ? 'Name an approved model on the subagent'
+      : 'Switch to an approved model with /model';
   return (
     `${subject} — your organization has prohibited this model. ` +
-    `Switch to an approved model with /model, or ask an administrator to change ` +
+    `${remedy}, or ask an administrator to change ` +
     `its status in AKA under Govern → LLM Providers.`
   );
 }
@@ -309,8 +373,11 @@ export function decideProhibitedModelTurn(
   return { decision: 'block', reason: prohibitedModelMessage(model, 'turn') };
 }
 
-/** Which seam refused: a model switch, or a turn already running on one. */
-export type RefusalSeam = 'switch' | 'turn';
+/**
+ * Which seam refused: a model switch, a turn already running on one, or a
+ * subagent spawn asking for one.
+ */
+export type RefusalSeam = 'switch' | 'turn' | 'spawn';
 
 /**
  * The audit row for one refusal.

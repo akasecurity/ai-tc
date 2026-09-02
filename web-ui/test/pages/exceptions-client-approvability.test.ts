@@ -13,6 +13,13 @@
 // a grant that can only fail server-side once the server re-reads the ledger.
 //
 // So this renders the component for real and asserts per row.
+//
+// It covers the route's other host-side wiring too: the `renderedAt` the page
+// captures once on the server and hands to both child views, so their relative
+// labels are computed against that one instant rather than against whatever the
+// browser's clock says at hydration. Same shape of gap — dashboard-ui pins that
+// each view USES the instant it is given, and only a render from here can see
+// that the host actually gives it one.
 import type {
   BlockedDetectionDescriptor,
   DetectionException,
@@ -163,7 +170,7 @@ describe('the exceptions client asks blockedRowBlockReason per row', () => {
 
 describe('the exceptions client threads renderedAt into the blocked ledger', () => {
   it('renders the blocked-at label against the SSR instant, not the ambient clock', () => {
-    // Pins the one line this PR actually adds — `renderedAt={renderedAt}` on
+    // Pins the host-side wiring — `renderedAt={renderedAt}` on
     // BlockedLedgerView in ExceptionsClient.tsx. Delete it and relativeTime
     // falls back to Date.now(), which would not read "30 minutes ago" for a
     // fixture blocked at 2026-08-01T00:00 and rendered at 2026-08-01T00:30.
@@ -174,7 +181,7 @@ describe('the exceptions client threads renderedAt into the blocked ledger', () 
 
 describe('the exceptions client threads renderedAt into the exceptions table', () => {
   it('renders the expiry label against the SSR instant, not the ambient clock', () => {
-    // Mirrors the ledger pin above, for the sibling this PR also wires:
+    // Mirrors the ledger pin above, for the sibling view on the same route:
     // `renderedAt={renderedAt}` on ExceptionsTableView in ExceptionsClient.tsx.
     // Delete it and relativeTime falls back to Date.now(), which would not
     // read "in 30 minutes" for a grant expiring 2026-08-01T01:00 when rendered

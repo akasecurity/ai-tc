@@ -68,11 +68,11 @@ describe('ExceptionsTableView capability badge', () => {
 });
 
 describe('ExceptionsTableView threads renderedAt, not the ambient clock', () => {
-  // The ambient clock sits an hour past both the fixture's expiresAt and the
-  // renderedAt instant this suite passes in, so a row that fell back to
-  // Date.now() would report a different age AND a different lifecycle state
-  // than one that honors the SSR instant — the same class of mismatch
-  // BlockedLedgerView.renderedAt exists to prevent, one level over.
+  // The ambient clock is set an hour past renderedAt, and past every fixture
+  // instant below it, so a row that fell back to Date.now() would report a
+  // different age AND a different lifecycle state than one that honors the SSR
+  // instant — the same class of mismatch BlockedLedgerView.renderedAt exists to
+  // prevent, one level over.
   const RENDERED_AT = Date.parse('2026-07-05T00:00:00.000Z');
 
   beforeEach(() => {

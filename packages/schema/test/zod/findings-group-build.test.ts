@@ -7,6 +7,7 @@ import {
   buildFindingGroups,
   computeFindingFacets,
   countInstancesByStatus,
+  type FindingGroupAggregate,
   type GroupableFindingRow,
   sortFindingGroups,
   toApiAction,
@@ -206,6 +207,58 @@ describe('buildFindingGroups tool attribution', () => {
     const groups = buildFindingGroups(toolAttributedRows);
     expect(applyFindingFilters(groups, { q: 'via bash' })).toHaveLength(1);
     expect(applyFindingFilters(groups, { q: 'via webfetch' })).toHaveLength(0);
+  });
+});
+
+describe('buildFindingGroups user attribution', () => {
+  const alice = { id: 'u-alice', name: 'alice@example.com' };
+  const bob = { id: 'u-bob', name: 'bob@example.com' };
+  const attributed: GroupableFindingRow[] = [
+    { ...statusRow('a1', 'aws-key'), user: alice },
+    { ...statusRow('a2', 'aws-key'), user: bob },
+    { ...statusRow('a3', 'aws-key'), user: alice },
+  ];
+
+  it('carries user onto the instance and folds the distinct users onto the group', () => {
+    const groups = buildFindingGroups(attributed);
+    expect(groups[0]?.instances.map((i) => i.user)).toEqual([alice, bob, alice]);
+    // Dedup by id, first occurrence first.
+    expect(groups[0]?.users).toEqual([alice, bob]);
+  });
+
+  it('omits user and users when no row carries one', () => {
+    const groups = buildFindingGroups(rows);
+    expect(groups[0]?.instances[0]).not.toHaveProperty('user');
+    expect(groups[0]).not.toHaveProperty('users');
+  });
+
+  const aggregate: FindingGroupAggregate = {
+    instanceCount: 40,
+    sourceTools: ['claude-code'],
+    actionsTaken: ['block'],
+    statusInputs: [],
+    latestDetectedAt: '2026-01-03T00:00:00.000Z',
+  };
+
+  it('reads users from the aggregate, sorted, when one is supplied', () => {
+    // The preview rows are all Alice's; the aggregate knows the whole group.
+    const carol = { id: 'u-carol', name: 'carol@example.com' };
+    const preview: GroupableFindingRow[] = [
+      { ...statusRow('a1', 'aws-key'), user: alice },
+      { ...statusRow('a3', 'aws-key'), user: alice },
+    ];
+    const groups = buildFindingGroups(preview, {
+      aggregates: new Map([['aws-key', { ...aggregate, users: [carol, bob, alice] }]]),
+    });
+    expect(groups[0]?.users).toEqual([alice, bob, carol]);
+  });
+
+  it('carries no users when the aggregate supplies none, rather than folding the preview', () => {
+    const groups = buildFindingGroups(attributed, {
+      aggregates: new Map([['aws-key', aggregate]]),
+    });
+    expect(groups[0]?.instances[0]?.user).toEqual(alice);
+    expect(groups[0]).not.toHaveProperty('users');
   });
 });
 

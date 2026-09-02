@@ -16,6 +16,7 @@ import type {
   FindingInstance,
   FindingProvider,
   FindingStatus,
+  FindingUser,
   Severity,
 } from './finding.ts';
 // Value import: the fallback below validates against the enum itself, so a member
@@ -169,6 +170,9 @@ export interface GroupableFindingRow {
   // when it has one. Optional/absent for callers that do not project them.
   eventId?: string;
   sessionId?: string;
+  // Who the event is attributed to. Optional/absent for a single-user store,
+  // which has no one to attribute a finding to.
+  user?: FindingUser;
 }
 
 // Group-level status precedence: open dominates, then handled, then dismissed,
@@ -237,6 +241,23 @@ export function deriveFindingStatus(row: {
   return 'open';
 }
 
+/** The distinct people among a group's rows, by id, first occurrence first. */
+function distinctUsers(instances: FindingInstance[]): FindingUser[] {
+  const seen = new Set<string>();
+  const users: FindingUser[] = [];
+  for (const i of instances) {
+    if (i.user === undefined || seen.has(i.user.id)) continue;
+    seen.add(i.user.id);
+    users.push(i.user);
+  }
+  return users;
+}
+
+/** A stable order for a store-supplied user list: by label, then id. */
+function sortUsers(users: FindingUser[]): FindingUser[] {
+  return [...users].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+}
+
 /**
  * A group's folds computed over ALL of its instances by the caller's store
  * (SQL-side aggregation), for stores too large to group row-by-row in memory.
@@ -244,8 +265,8 @@ export function deriveFindingStatus(row: {
  * When an aggregate is supplied for a ruleId, `rows` may carry only a bounded
  * PREVIEW of that group's newest instances: the preview still populates
  * `instances`, but every fold that must see the whole group — instanceCount,
- * providers, aggregateAction, status, latestDetectedAt, and the free-text
- * haystack — is derived from the aggregate instead.
+ * providers, aggregateAction, status, latestDetectedAt, users, and the
+ * free-text haystack — is derived from the aggregate instead.
  *
  * The raw DB values are passed through UNMAPPED (sourceTools, actionsTaken,
  * statusInputs) and translated here by the same mappers the row path uses, so
@@ -273,6 +294,14 @@ export interface FindingGroupAggregate {
   }[];
   /** Max occurredAt (ISO) across ALL instances. */
   latestDetectedAt: string;
+  /**
+   * The distinct people across ALL instances, already resolved to display
+   * labels by the store. Optional: a store that attributes findings to no one
+   * leaves it out, and the group then carries no `users` at all — never a fold
+   * over the preview rows, which would name the preview's people as the
+   * group's.
+   */
+  users?: FindingUser[];
   /**
    * Instance-level free text (the group's distinct repos/files/toolNames)
    * across ALL instances, folded into the search haystack so `q` still matches
@@ -345,6 +374,7 @@ export function buildFindingGroups(
         ...(r.toolName === undefined ? {} : { toolName: r.toolName }),
         ...(r.eventId === undefined ? {} : { eventId: r.eventId }),
         ...(r.sessionId === undefined ? {} : { sessionId: r.sessionId }),
+        ...(r.user === undefined ? {} : { user: r.user }),
         action: toApiAction(effectiveDbAction),
         detectedAt: r.occurredAt,
         confidence: r.confidence,
@@ -355,6 +385,16 @@ export function buildFindingGroups(
     // Every fold below reads the whole group: from the store's aggregate when
     // one is supplied (the rows are then only a preview), else from the rows.
     const agg = aggregates?.get(ruleId);
+
+    // users: the distinct people across the whole group. From the aggregate
+    // when one is supplied — sorted, as providers are below, because a store's
+    // own dedup order need not be stable between identical requests and the
+    // cell renders in array order. With an aggregate that carries no users the
+    // group carries none: the rows are only a preview, and a fold over them
+    // would name the preview's people as the group's. Without an aggregate the
+    // rows are the whole group, so fold them, dedup by id, first occurrence
+    // first (newest-first).
+    const users: FindingUser[] = agg ? sortUsers(agg.users ?? []) : distinctUsers(instances);
 
     // latestDetectedAt: ISO strings sort lexically, so string max works.
     const latestDetectedAt =
@@ -423,6 +463,7 @@ export function buildFindingGroups(
       latestDetectedAt,
       instances,
       status,
+      ...(users.length > 0 ? { users } : {}),
     };
 
     // Prime the whole-group caches while the aggregate is in hand: `instances`

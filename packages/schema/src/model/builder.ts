@@ -141,6 +141,15 @@ export interface ModelSpec {
   defaultHosting?: ModelHosting;
   /** Defaults to `'managed'`; `'discovered'` for a model only traffic reaches. */
   seen?: ModelSeen;
+  /**
+   * Whether the vendor's own endpoint serves this model. Defaults to `true`.
+   *
+   * Set `false` for open weights a vendor publishes but does not host — the
+   * builder would otherwise give the model a first-party offering the vendor
+   * does not actually provide, and a surface enumerating `platforms` would
+   * list it.
+   */
+  firstParty?: boolean;
 }
 
 function normalizeRef(ref: PlatformRef): PlatformSpec {
@@ -171,7 +180,7 @@ export class ModelVendorBuilder {
    */
   model(id: string, spec: ModelSpec): ModelEntry {
     const family = spec.family ?? this.defaults.family ?? { id, name: spec.name };
-    const ownPlatform = firstPartyPlatformFor(this.vendor);
+    const ownPlatform = spec.firstParty === false ? null : firstPartyPlatformFor(this.vendor);
     const openWeights = spec.openWeights ?? this.defaults.openWeights ?? false;
     const vendorRegion = spec.region ?? this.defaults.region ?? null;
     const vendorRetention = spec.retention ?? this.defaults.retention ?? 'unknown';
@@ -181,14 +190,17 @@ export class ModelVendorBuilder {
     // The vendor's own endpoint, when it has one. This is the only platform
     // that may carry `spec.price` and the vendor's retention posture.
     if (ownPlatform !== null) {
-      platforms.set(ownPlatform, {
-        platform: ownPlatform,
-        hosting: hostingFor(ownPlatform),
-        firstParty: true,
-        price: spec.price ?? null,
-        retention: vendorRetention,
-        region: vendorRegion,
-      });
+      platforms.set(
+        ownPlatform,
+        Object.freeze({
+          platform: ownPlatform,
+          hosting: hostingFor(ownPlatform),
+          firstParty: true,
+          price: spec.price ?? null,
+          retention: vendorRetention,
+          region: vendorRegion,
+        }),
+      );
     }
 
     for (const ref of spec.on ?? []) {
@@ -201,15 +213,19 @@ export class ModelVendorBuilder {
       // are safe to assert without a per-platform price page.
       const isSelfHosted = hosting === 'local';
 
-      platforms.set(platform, {
+      platforms.set(
         platform,
-        hosting,
-        firstParty,
-        price: price ?? (isSelfHosted ? ZERO_PRICE : firstParty ? (spec.price ?? null) : null),
-        retention:
-          retention ?? (isSelfHosted ? 'on_infrastructure' : firstParty ? vendorRetention : 'unknown'),
-        region: region === undefined ? (firstParty ? vendorRegion : null) : region,
-      });
+        Object.freeze({
+          platform,
+          hosting,
+          firstParty,
+          price: price ?? (isSelfHosted ? ZERO_PRICE : firstParty ? (spec.price ?? null) : null),
+          retention:
+            retention ??
+            (isSelfHosted ? 'on_infrastructure' : firstParty ? vendorRetention : 'unknown'),
+          region: region === undefined ? (firstParty ? vendorRegion : null) : region,
+        }),
+      );
     }
 
     // A vendor with a first-party endpoint answers this from that endpoint; a
@@ -218,6 +234,19 @@ export class ModelVendorBuilder {
       spec.defaultHosting ??
       this.defaults.defaultHosting ??
       (ownPlatform === null ? 'gateway' : hostingFor(ownPlatform));
+
+    // A stated price that reached no offering is a silent loss: the model reads
+    // as "cost unknown" forever, indistinguishable from the deliberate
+    // reseller-unpriced case this builder is built around. That happens when
+    // the vendor has no first-party platform (or was never added to the
+    // first-party table), so it is refused rather than dropped.
+    if (spec.price !== undefined && ![...platforms.values()].some((o) => o.price === spec.price)) {
+      throw new Error(
+        `${id}: a first-party price was declared but no platform can carry it — ` +
+          `vendor '${this.vendor}' has no first-party endpoint. Price the serving ` +
+          `platform explicitly via the object form of \`on\`.`,
+      );
+    }
 
     const entry: ModelEntry = {
       id,
@@ -235,6 +264,14 @@ export class ModelVendorBuilder {
       defaultHosting,
       seen: spec.seen ?? 'managed',
     };
+
+    // Frozen so a consumer cannot rewrite a curated fact for the whole process.
+    // `platforms` is a Map, which `Object.freeze` cannot seal — a determined
+    // cast can still call `.set` on it. Everything reachable through it is
+    // frozen, so an accidental write fails; a deliberate one is out of scope
+    // for a value type and would need a wrapper on this read path.
+    Object.freeze(entry);
+    Object.freeze(entry.aliases);
 
     this.entries.push(entry);
     return entry;

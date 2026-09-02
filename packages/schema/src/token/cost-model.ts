@@ -27,34 +27,12 @@
 import { MODEL_INDEX } from '../model/catalog.ts';
 import type { ModelPrice } from '../model/pricing.ts';
 import { costOf, ZERO_PRICE } from '../model/pricing.ts';
-import { ModelPlatform } from '../model/providers.ts';
+import type { ModelPlatform } from '../model/providers.ts';
+import { hostingFor } from '../model/providers.ts';
 import { resolveModel } from '../model/resolve.ts';
+import type { CostUsage } from './cost-usage.ts';
 
-/**
- * The token-usage bag a cost is derived from. Every field is optional: non-
- * Anthropic providers return only a subset (the Anthropic-specific cache/web
- * fields simply come back absent), so a missing field contributes nothing to the
- * cost rather than failing the whole computation.
- */
-export interface CostUsage {
-  /** Uncached input tokens billed at the model's full input rate. */
-  inputTokens?: number;
-  /** Output (completion) tokens. */
-  outputTokens?: number;
-  /** Tokens written to the 1-hour ephemeral cache (`cache_creation.ephemeral_1h_input_tokens`). */
-  cacheWrite1hTokens?: number;
-  /** Tokens written to the 5-minute ephemeral cache (`cache_creation.ephemeral_5m_input_tokens`). */
-  cacheWrite5mTokens?: number;
-  /** Tokens read from cache (`cache_read_input_tokens`) — priced far below input. */
-  cacheReadTokens?: number;
-  /** Server-side web-search requests (`server_tool_use.web_search_requests`) — billed per request. */
-  webSearchRequests?: number;
-  /**
-   * Service tier (`usage.service_tier`): standard/batch/priority. Selects a
-   * price multiplier (e.g. batch is discounted). Unknown tiers fall back to 1×.
-   */
-  serviceTier?: string;
-}
+export type { CostUsage };
 
 /**
  * The read-time cost seam. Implementations turn a token-usage bag for a given
@@ -77,23 +55,90 @@ export interface CostModel {
 }
 
 /**
- * Map a stored provider string onto a catalog platform. Unrecognised providers
- * stay unmapped, which resolves to an unknown price rather than a guessed one.
+ * The provider strings the capture path actually stores, mapped onto catalog
+ * platforms.
+ *
+ * The two vocabularies are NOT spelled alike and must not be assumed to be:
+ * the resolvers record `'google'` where the catalog's first-party Google
+ * platform is `'google-ai'`, and `'gateway'` names no single platform at all.
+ * A provider with no entry here resolves to no platform, so its cost is
+ * unknown rather than priced against a lookalike.
+ *
+ * A plain Map rather than a schema parse: this runs once per priced leaf on the
+ * read path, and a lookup allocates nothing where a parse allocates a result
+ * object and, on the miss path, an issue array.
  */
-function platformFor(provider: string): ModelPlatform | null {
-  const parsed = ModelPlatform.safeParse(provider.trim().toLowerCase());
-  return parsed.success ? parsed.data : null;
+const PROVIDER_PLATFORM: ReadonlyMap<string, ModelPlatform> = new Map([
+  ['anthropic', 'anthropic'],
+  ['openai', 'openai'],
+  // The resolvers' spelling for Google's first-party API.
+  ['google', 'google-ai'],
+  ['google-ai', 'google-ai'],
+  ['bedrock', 'bedrock'],
+  ['vertex', 'vertex'],
+  ['azure', 'azure'],
+  ['foundry', 'foundry'],
+  ['mistral', 'mistral'],
+  ['deepseek', 'deepseek'],
+  ['xai', 'xai'],
+  ['cohere', 'cohere'],
+  ['together', 'together'],
+  ['fireworks', 'fireworks'],
+  ['groq', 'groq'],
+  ['openrouter', 'openrouter'],
+  ['ollama', 'ollama'],
+  ['local', 'local'],
+]);
+
+/**
+ * Providers deliberately carried as unpriceable rather than mapped.
+ *
+ * `gateway` names a class of hosts, not one of them, so it cannot select a
+ * price; `unknown` is the resolver's own miss. Listed explicitly so a test can
+ * assert every stored provider is either mapped or knowingly here, and a
+ * resolver inventing a fourth spelling is caught rather than silently unpriced.
+ */
+export const UNPRICEABLE_PROVIDERS: readonly string[] = Object.freeze([
+  'gateway',
+  'unknown',
+  'cli',
+  'api',
+]);
+
+/**
+ * The catalog platform a stored provider string names, or `null`.
+ *
+ * Exported so a test can assert that every provider the resolvers can record
+ * is either mapped here or listed in `UNPRICEABLE_PROVIDERS` — the seam that
+ * decides whether any of the catalog's prices are reachable at all.
+ */
+export function platformForProvider(provider: string): ModelPlatform | null {
+  return PROVIDER_PLATFORM.get(provider.trim().toLowerCase()) ?? null;
 }
 
-/** True when a platform runs on the caller's own hardware. */
+/**
+ * True when a provider runs on the caller's own hardware.
+ *
+ * Asks `providers.ts` rather than matching literals, so the platform → hosting
+ * band table stays the one place that decides this. A third local platform
+ * added there is local here too, instead of the builder and the cost model
+ * disagreeing with no test able to see it.
+ */
 function isLocalProvider(provider: string): boolean {
-  const p = provider.trim().toLowerCase();
-  return p === 'ollama' || p === 'local';
+  const platform = platformForProvider(provider);
+  return platform !== null && hostingFor(platform) === 'local';
 }
 
 /**
  * The price for a `(provider, model)` pair, or `null` when the catalog carries
  * no verified rate for that platform.
+ *
+ * When the model ID ITSELF names a platform, that wins over the provider
+ * string. A Bedrock-shaped id (`us.anthropic.claude-opus-5`) says where the
+ * call was served no matter what the session's provider snapshot claims, and
+ * pricing it at Anthropic-direct rates because the snapshot said `'anthropic'`
+ * is the substitution this module exists to prevent — the one Bedrock pair
+ * anyone has checked bills at 2x first-party.
  */
 function priceFor(provider: string, model: string): ModelPrice | null {
   if (isLocalProvider(provider)) return ZERO_PRICE;
@@ -101,7 +146,7 @@ function priceFor(provider: string, model: string): ModelPrice | null {
   const resolved = resolveModel(model, MODEL_INDEX);
   if (resolved.entry === null) return null;
 
-  const platform = platformFor(provider);
+  const platform = resolved.platform ?? platformForProvider(provider);
   if (platform === null) return null;
 
   return resolved.entry.platforms.get(platform)?.price ?? null;

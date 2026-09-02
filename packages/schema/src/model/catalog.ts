@@ -318,6 +318,8 @@ openai.model('o3', {
 openai.model('gpt-oss-120b', {
   name: 'GPT-OSS 120B',
   openWeights: true,
+  // Published weights; OpenAI's own API does not serve them.
+  firstParty: false,
   retention: 'unknown',
   defaultHosting: 'local',
   on: ['together', 'fireworks', 'groq', 'openrouter', 'bedrock', 'ollama', 'local'],
@@ -326,6 +328,8 @@ openai.model('gpt-oss-120b', {
 openai.model('gpt-oss-20b', {
   name: 'GPT-OSS 20B',
   openWeights: true,
+  // Published weights; OpenAI's own API does not serve them.
+  firstParty: false,
   retention: 'unknown',
   defaultHosting: 'local',
   on: ['together', 'fireworks', 'groq', 'openrouter', 'ollama', 'local'],

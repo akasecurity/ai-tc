@@ -3,16 +3,19 @@ import { describe, expect, it } from 'vitest';
 import {
   anthropicPrice,
   buildModelIndex,
+  defaultCostModel,
   hostingFor,
   isFirstParty,
   MODEL_ENTRIES,
   MODEL_INDEX,
   ModelPlatform,
   ModelVendor,
+  platformForProvider,
   resolveModel,
   resolveTrainsOnData,
   stripPlatformDecorations,
   UNDECLARED_TRAINING,
+  UNPRICEABLE_PROVIDERS,
   vendor,
   ZERO_PRICE,
 } from '../../src/index.ts';
@@ -276,10 +279,12 @@ describe('catalog data', () => {
 
   it('carries the non-uniform Anthropic cache-read rates', () => {
     // Fable 5.1 reads cache at 0.025x base input; the rest of the family at 0.1x.
-    expect(MODEL_INDEX.byId.get('claude-fable-5-1')?.platforms.get('anthropic')?.price?.cacheRead).toBe(
-      0.25,
-    );
-    expect(MODEL_INDEX.byId.get('claude-fable-5')?.platforms.get('anthropic')?.price?.cacheRead).toBe(1);
+    expect(
+      MODEL_INDEX.byId.get('claude-fable-5-1')?.platforms.get('anthropic')?.price?.cacheRead,
+    ).toBe(0.25);
+    expect(
+      MODEL_INDEX.byId.get('claude-fable-5')?.platforms.get('anthropic')?.price?.cacheRead,
+    ).toBe(1);
   });
 
   it('leaves every reseller offering unpriced', () => {
@@ -296,5 +301,97 @@ describe('catalog data', () => {
     for (const entry of MODEL_ENTRIES) {
       expect(resolveModel(entry.id, index).entry?.id, entry.id).toBe(entry.id);
     }
+  });
+});
+
+describe('the provider vocabulary the product actually stores', () => {
+  // Every provider string a resolver can record, from the three resolver
+  // vocabularies plus the miss values. These are what reach `costFor`, and they
+  // are NOT spelled like `ModelPlatform` — `google` against `google-ai` is the
+  // gap this case exists to hold closed.
+  const STORED_PROVIDERS = [
+    // provider.ts — Provider
+    'anthropic',
+    'bedrock',
+    'vertex',
+    'gateway',
+    // provider-codex.ts — CodexProvider
+    'openai',
+    // provider-antigravity.ts — AntigravityProvider
+    'google',
+    // resolver miss values
+    'unknown',
+  ];
+
+  it.each(STORED_PROVIDERS)('maps %s onto a platform, or declares it unpriceable', (provider) => {
+    // One or the other, never neither. A provider that is silently unmapped
+    // leaves every model it serves unpriced while the catalog carries a rate —
+    // which is exactly how `google` shipped unreachable.
+    const mapped = platformForProvider(provider) !== null;
+    const declaredUnpriceable = UNPRICEABLE_PROVIDERS.includes(provider);
+    expect(mapped || declaredUnpriceable, provider).toBe(true);
+  });
+
+  it('prices a Gemini call from the provider string the resolver records', () => {
+    // Regression: `google` is what gets stored; `google-ai` is the catalog's
+    // spelling. Keying only off the catalog's left every Gemini rollup unpriced.
+    expect(
+      defaultCostModel.costFor({
+        provider: 'google',
+        model: 'gemini-2.5-pro',
+        usage: { inputTokens: 1_000 },
+      }),
+    ).toBeCloseTo(0.00125, 10);
+  });
+
+  it('does not price a Bedrock-shaped id at first-party rates', () => {
+    // The id names Bedrock whatever the session's provider snapshot claims,
+    // and Bedrock's own rate is not carried.
+    expect(
+      defaultCostModel.costFor({
+        provider: 'anthropic',
+        model: 'us.anthropic.claude-opus-5',
+        usage: { inputTokens: 1_000_000 },
+      }),
+    ).toBeNull();
+  });
+});
+
+describe('long-context pricing', () => {
+  it('re-prices the whole request at the band rate above the threshold', () => {
+    // Gemini 2.5 Pro is $1.25/MTok at or below 200K and $2.50 above it, and the
+    // band applies to the entire request rather than the excess.
+    const under = defaultCostModel.costFor({
+      provider: 'google',
+      model: 'gemini-2.5-pro',
+      usage: { inputTokens: 100_000 },
+    });
+    const over = defaultCostModel.costFor({
+      provider: 'google',
+      model: 'gemini-2.5-pro',
+      usage: { inputTokens: 300_000 },
+    });
+    expect(under).toBeCloseTo(0.125, 10);
+    expect(over).toBeCloseTo(0.75, 10);
+  });
+
+  it('returns unknown when the band rate itself is unpublished', () => {
+    // OpenAI publishes the 272K threshold but not the rate above it. A definite
+    // figure there would be the sub-threshold price reported as the total.
+    expect(
+      defaultCostModel.costFor({
+        provider: 'openai',
+        model: 'gpt-5.5',
+        usage: { inputTokens: 400_000 },
+      }),
+    ).toBeNull();
+    // Not vacuous: the same model prices normally below the threshold.
+    expect(
+      defaultCostModel.costFor({
+        provider: 'openai',
+        model: 'gpt-5.5',
+        usage: { inputTokens: 100_000 },
+      }),
+    ).toBeCloseTo(0.5, 10);
   });
 });

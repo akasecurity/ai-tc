@@ -13,6 +13,8 @@
 //      platform's own price page.
 import { z } from 'zod';
 
+import type { CostUsage } from '../token/cost-usage.ts';
+
 /**
  * A second rate band that applies once a request's INPUT crosses `thresholdInputTokens`.
  *
@@ -64,7 +66,7 @@ export const WEB_SEARCH_PER_REQUEST = 0.01;
  * and is re-verified on each price update.
  */
 export function anthropicPrice(input: number, output: number, cacheRead: number): ModelPrice {
-  return {
+  return Object.freeze({
     input,
     output,
     longContext: null, // flat across the full window on every current Claude
@@ -72,7 +74,7 @@ export function anthropicPrice(input: number, output: number, cacheRead: number)
     cacheWrite1h: input * 2,
     cacheRead,
     webSearch: WEB_SEARCH_PER_REQUEST,
-  };
+  });
 }
 
 /**
@@ -85,15 +87,15 @@ export function tokenPrice(
   output: number,
   options: { cacheRead?: number; longContext?: LongContextTier } = {},
 ): ModelPrice {
-  return {
+  return Object.freeze({
     input,
     output,
-    longContext: options.longContext ?? null,
+    longContext: options.longContext === undefined ? null : Object.freeze(options.longContext),
     cacheWrite5m: null,
     cacheWrite1h: null,
     cacheRead: options.cacheRead ?? null,
     webSearch: null,
-  };
+  });
 }
 
 /**
@@ -125,17 +127,6 @@ export function serviceTierMultiplier(tier: string | undefined): number {
   return SERVICE_TIER_MULTIPLIERS.get(tier) ?? 1;
 }
 
-/** The token components a cost is derived from. */
-export interface PricedUsage {
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheWrite1hTokens?: number;
-  cacheWrite5mTokens?: number;
-  cacheReadTokens?: number;
-  webSearchRequests?: number;
-  serviceTier?: string;
-}
-
 /**
  * Cost in USD for a usage bag at a given price, or `null` when the price
  * carries no verified rate for a column the usage actually bills against.
@@ -145,14 +136,27 @@ export interface PricedUsage {
  * undercounted — a partial sum reported as a total is a number nobody checked.
  * A column the usage does not touch contributes nothing either way.
  */
-export function costOf(price: ModelPrice, usage: PricedUsage): number | null {
+export function costOf(price: ModelPrice, usage: CostUsage): number | null {
   const metered: readonly (readonly [number, number | null])[] = [
     [usage.cacheWrite1hTokens ?? 0, price.cacheWrite1h],
     [usage.cacheWrite5mTokens ?? 0, price.cacheWrite5m],
     [usage.cacheReadTokens ?? 0, price.cacheRead],
   ];
 
-  let tokenCost = (usage.inputTokens ?? 0) * price.input + (usage.outputTokens ?? 0) * price.output;
+  // Above the threshold the band rate applies to the WHOLE request, not just
+  // the tokens past it, so input and output are re-priced rather than split.
+  // A null band rate is an unread rate: the request bills at a price we do not
+  // have, so the cost is unknown rather than the sub-threshold figure.
+  const band =
+    price.longContext !== null && (usage.inputTokens ?? 0) > price.longContext.thresholdInputTokens
+      ? price.longContext
+      : null;
+  if (band !== null && (band.input === null || band.output === null)) return null;
+
+  const inputRate = band?.input ?? price.input;
+  const outputRate = band?.output ?? price.output;
+
+  let tokenCost = (usage.inputTokens ?? 0) * inputRate + (usage.outputTokens ?? 0) * outputRate;
   for (const [tokens, rate] of metered) {
     if (tokens === 0) continue;
     if (rate === null) return null;

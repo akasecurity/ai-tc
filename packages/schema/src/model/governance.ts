@@ -139,8 +139,11 @@ export const UNDECLARED_TRAINING: TrainingDeclaration = Object.freeze({
  *  3. On a first-party endpoint the vendor's per-tier policy applies, selected
  *     by the declared tier. An undeclared tier is `'unknown'`: we cannot tell an
  *     API key from a consumer subscription by looking at a model id.
- *  4. A declared control flips the tier default in the direction its
- *     `TrainingControl` allows.
+ *  4. A declared control flips the CONSUMER tier's default in the direction its
+ *     `TrainingControl` allows. It applies to no other tier: `consumerControl`
+ *     describes the consumer tier only, and `VendorTrainingPolicy` carries no
+ *     equivalent for the API tier, so there is nothing legitimate for an
+ *     api/enterprise declaration to consult.
  */
 export function resolveTrainsOnData(input: {
   hosting: ModelHostingLike;
@@ -169,7 +172,8 @@ export function resolveTrainsOnData(input: {
   if (tierDefault === 'unknown') return 'unknown';
 
   // (4) An exercised control flips the default the one way its control allows.
-  if (declaration.controlExercised === true) {
+  // Consumer tier only — see rule 4 above.
+  if (declaration.tier === 'consumer' && declaration.controlExercised === true) {
     if (policy.consumerControl === 'opt-in') return 'yes';
     if (policy.consumerControl === 'opt-out') return 'no';
   }

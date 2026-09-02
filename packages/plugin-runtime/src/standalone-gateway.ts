@@ -440,6 +440,13 @@ export class StandaloneDataGateway implements DataGateway, LocalStoreMaintenance
     this.db.markCaptureDelivered(event, atMs);
   }
 
+  // Present so the standalone gateway still satisfies LocalStoreMaintenance,
+  // and a no-op in effect rather than by omission: nothing forwards here, so
+  // `delivered` is only ever the empty set the store returns early on.
+  markAuditEventsDelivered(events: readonly AuditEventInput[], atMs: number): void {
+    this.db.markAuditEventsDelivered(events, atMs);
+  }
+
   staleBinaryNotice(currentVersion: string): string | null {
     try {
       // newestRecordedBinary() maxes across ALL recorders (plugin + aka-cli), and

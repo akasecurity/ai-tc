@@ -241,11 +241,32 @@ export interface LocalStoreMaintenance {
    * derive it differently and stamp a row that does not exist.
    */
   markCaptureDelivered(event: IngestEvent, atMs: number): void;
+  /**
+   * Stamp structural events the live forward already delivered.
+   *
+   * The sibling of `markCaptureDelivered` for the lane the partition actually
+   * counts. Without it a `session`/`llm_call`/`tool_call` row the live path
+   * forwarded SUCCESSFULLY stays NULL — indistinguishable from one the batch
+   * budget discarded — so `queued` reads as "recorded since attach" rather than
+   * "owed", which is what `HistorySyncPartition`'s docblock says out loud.
+   *
+   * Takes the EVENTS, not row ids, for the same reason its sibling does: the
+   * caller hands over the very objects it forwarded, so no second derivation of
+   * an id exists to drift from the first. Unlike a capture the id needs no
+   * derivation at all — `AuditEventInput.id` IS the local row's primary key and
+   * the id the plane stores verbatim — but taking the event keeps the rule
+   * uniform across both stamps rather than making this one the exception.
+   *
+   * Deliberately NOT filtered by `eventType` here. This records what was
+   * delivered; which types a read COUNTS is `STRUCTURAL_EVENT_TYPES`' decision,
+   * and duplicating that list at the write site is how the two drift.
+   */
+  markAuditEventsDelivered(events: readonly AuditEventInput[], atMs: number): void;
 }
 
 // The member names, derived from the interface rather than restated: a
 // `Record` keyed on `keyof LocalStoreMaintenance` fails to compile until a
-// sixth member added above is listed here too, so the two cannot drift.
+// member added above is listed here too, so the two cannot drift.
 const LOCAL_STORE_MAINTENANCE_MEMBERS: Record<keyof LocalStoreMaintenance, true> = {
   sweepTerminalExceptions: true,
   capWarnEraEnforcement: true,
@@ -253,6 +274,7 @@ const LOCAL_STORE_MAINTENANCE_MEMBERS: Record<keyof LocalStoreMaintenance, true>
   reconcileWorktreeProjects: true,
   staleBinaryNotice: true,
   markCaptureDelivered: true,
+  markAuditEventsDelivered: true,
 };
 
 /**

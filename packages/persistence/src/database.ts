@@ -3,6 +3,7 @@ import { dirname, join, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import type {
+  AuditEventInput,
   ConfigInventoryReport,
   ConfigScanRecord,
   DetectedFindingWithKey,
@@ -179,6 +180,12 @@ export interface LocalDatabase {
   // delivery paths leave a row in one indistinguishable state. Attached mode
   // only — nothing forwards in standalone, so nothing stamps. Fail-open.
   markCaptureDelivered(event: IngestEvent, atMs: number): void;
+  // Stamp structural events the LIVE forward already delivered — the sibling of
+  // markCaptureDelivered for the lane `partition()` counts. Without it a
+  // successfully forwarded session/llm_call/tool_call row is indistinguishable
+  // from one that was dropped. Settled through the same statement a drain uses.
+  // Attached mode only. Fail-open.
+  markAuditEventsDelivered(events: readonly AuditEventInput[], atMs: number): void;
   // Idempotent upsert of the session's host/harness/account/project dimensions
   // by content-addressed id, in one transaction. Returns the resolved ids to
   // stamp onto the Session audit row. Fail-open: returns {} if the DB is
@@ -486,6 +493,26 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     });
   }
 
+  // Record that the LIVE path already delivered these structural events.
+  //
+  // No id derivation: `AuditEventInput.id` is the primary key the local write
+  // used and the id `pgAuditValues` stores verbatim, so the row, the wire and
+  // this stamp share one id space. Batched into a single transaction because a
+  // forwarded batch settles as a unit and N transactions on the store's most
+  // numerous table is a cost the session pays.
+  //
+  // Fail-open like every other write here: a stamp that does not land costs a
+  // redundant resend the receiver's id-dedup absorbs, never the session.
+  function markAuditEventsDelivered(events: readonly AuditEventInput[], atMs: number): void {
+    if (events.length === 0) return;
+    failOpenTransaction(db, () => {
+      historySync.markSynced(
+        events.map((event) => event.id),
+        atMs,
+      );
+    });
+  }
+
   function recordCapture(event: IngestEvent, detected: DetectedFindingWithKey[]): void {
     // Fail-open: dropping telemetry is acceptable; breaking the host session
     // is not. A locked/corrupt DB or a bad row leaves the session untouched.
@@ -755,6 +782,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     inspectionFindings,
     recordCapture,
     markCaptureDelivered,
+    markAuditEventsDelivered,
     ensureInventory,
     recordConfigScan,
     recordProjectFiles,

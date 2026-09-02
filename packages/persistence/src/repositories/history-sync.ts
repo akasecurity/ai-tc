@@ -100,12 +100,19 @@ export interface HistorySyncCounts {
  * rows, so the stamp is invisible to it by construction. The stamp exists for a
  * capture drain to read; it is not a fix for this read.
  *
- * `queued` therefore still OVER-COUNTS on an attached machine, and by the same
- * rows it always did: a structural row the live path forwarded successfully
- * (`recordToolCalls`) is never stamped by anything, so it stays NULL and reads
- * as owed. Closing that needs a stamp on the structural forward, which no path
- * does today. Read `queued` as "not known to have been delivered", not as
- * "undelivered".
+ * `queued` no longer over-counts the rows it used to. A structural row the live
+ * path forwarded successfully is now stamped at the forward site through
+ * `markAuditEventsDelivered`, so it leaves this bucket; what stays is what the
+ * deployment genuinely has not been given — including every row the batch
+ * budget discarded (`forwardBatch`), which is the case this read exists to make
+ * visible and which nothing else on the device can see.
+ *
+ * Two caveats survive, and neither is closed here. `inProgress` is structurally
+ * always 0 until `claimRows`/`releaseStaleClaims` gain a caller — they have
+ * none. And `failed` counts a SKIP, not a failed attempt: `classify` returns
+ * `'skip'` for both a local rebuild defect and a deployment's 400/413/422, while
+ * a transient network failure leaves the row NULL and reads as queued, which is
+ * correct — it is still owed.
  */
 export interface HistorySyncPartition {
   queued: number;

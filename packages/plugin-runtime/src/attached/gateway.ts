@@ -580,9 +580,15 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     event: AuditEventInput & { inspections?: ToolCallInspection[] },
   ): Promise<void> {
     await this.deps.local.recordAuditEvent(event);
-    await this.deps.forward.run(() =>
+    const forwarded = await this.deps.forward.run(() =>
       this.deps.client.recordAuditEvent(reKeyForForward(event, this.remoteInventory)),
     );
+    // The stamp is outside the local write's transaction, for the reason
+    // `recordCapture` gives: the write is authoritative and commits whatever the
+    // network does; only once the forward settles is there anything true to
+    // record. `recordAuditEvent` resolves void, so `ok` IS the settlement — the
+    // client throws on any non-2xx and `run` converts that to `ok: false`.
+    if (forwarded.ok) this.deps.local.markAuditEventsDelivered([event], Date.now());
   }
 
   // Attached `llm_call` is written locally by the inner gateway, then routed to
@@ -592,11 +598,15 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   // which would write the event to the local store a second time.
   async recordLlmCall(input: LlmCallInput): Promise<void> {
     await this.deps.local.recordLlmCall(input);
-    await this.deps.forward.run(() =>
-      this.deps.client.recordAuditEvent(
-        reKeyForForward(llmAuditEvent(input), this.remoteInventory),
-      ),
+    // Built ONCE and used for both the wire and the stamp. Two calls to
+    // `llmAuditEvent` would be two derivations of the same id, which is the
+    // drift `markAuditEventsDelivered` takes the event rather than an id to
+    // prevent.
+    const event = llmAuditEvent(input);
+    const forwarded = await this.deps.forward.run(() =>
+      this.deps.client.recordAuditEvent(reKeyForForward(event, this.remoteInventory)),
     );
+    if (forwarded.ok) this.deps.local.markAuditEventsDelivered([event], Date.now());
   }
 
   /**
@@ -624,17 +634,37 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     toEvent: (input: T) => AuditEventInput & { inspections?: ToolCallInspection[] },
   ): Promise<void> {
     const deadline = Date.now() + BATCH_FORWARD_BUDGET_MS;
-    for (let i = 0; i < inputs.length; i += 1) {
-      const now = Date.now();
-      if (now >= deadline) {
-        // The remainder, not one item: everything from here on is discarded.
-        recordForwardDrops(this.deps.dataDir, inputs.length - i, now);
-        return;
+    // WHAT LANDED IS STAMPED, and stamped once for the whole batch rather than
+    // per item: `markSynced` takes the write lock for the set, and a serial loop
+    // that took it per row would pay that cost on the store's most numerous
+    // table while a hook waits. Accumulated rather than stamped inline because
+    // both exits below must settle it — the deadline exit especially, since a
+    // batch that drops its tail still delivered its head, and returning without
+    // stamping would leave exactly the rows that DID arrive reading as owed.
+    const delivered: AuditEventInput[] = [];
+    try {
+      for (let i = 0; i < inputs.length; i += 1) {
+        const now = Date.now();
+        if (now >= deadline) {
+          // The remainder, not one item: everything from here on is discarded.
+          recordForwardDrops(this.deps.dataDir, inputs.length - i, now);
+          return;
+        }
+        const input = inputs[i] as T;
+        // Built once per item, then shared by the wire and the stamp — see
+        // recordLlmCall for why a second derivation is the thing to avoid.
+        const event = toEvent(input);
+        const forwarded = await this.deps.forward.run(() =>
+          this.deps.client.recordAuditEvent(reKeyForForward(event, this.remoteInventory)),
+        );
+        if (forwarded.ok) delivered.push(event);
       }
-      const input = inputs[i] as T;
-      await this.deps.forward.run(() =>
-        this.deps.client.recordAuditEvent(reKeyForForward(toEvent(input), this.remoteInventory)),
-      );
+    } finally {
+      // `finally`, not a line before each exit: `forward.run` is documented never
+      // to throw, but this method's contract is that the caller's local write is
+      // already committed and correct, so a stamp lost to an unexpected throw
+      // here would silently re-offer rows the deployment already holds.
+      this.deps.local.markAuditEventsDelivered(delivered, Date.now());
     }
   }
 
@@ -954,6 +984,10 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   // path that has nothing left to await.
   markCaptureDelivered(event: IngestEvent, atMs: number): void {
     this.deps.local.markCaptureDelivered(event, atMs);
+  }
+
+  markAuditEventsDelivered(events: readonly AuditEventInput[], atMs: number): void {
+    this.deps.local.markAuditEventsDelivered(events, atMs);
   }
 }
 

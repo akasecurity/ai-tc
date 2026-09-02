@@ -744,6 +744,15 @@ function rawRow(db: ReturnType<typeof openLocalDatabase>, id: string): RawAuditR
 }
 
 describe('recordAuditEvent plants the session root it FKs onto', () => {
+  // There is deliberately NO case for the `event.rootSessionId !== event.id`
+  // skip. Nothing at this seam can falsify it: the upsert is fill-the-stub, so
+  // planting a stub for a row that is its own root writes the SAME row — same
+  // id, same event_type — and the store cannot tell the two behaviours apart.
+  // A case asserting the row still reads 'session' passes with the guard
+  // deleted, which is a green tick over a claim nothing checked. The guard is a
+  // saved statement, not a safety property; its reason lives in the comment
+  // beside it.
+
   // The failure this covers is SILENT and lands exactly where the evidence
   // matters most. `root_session_id` is a self-FK, and INSERT OR IGNORE does not
   // suppress a foreign-key violation — so a session-scoped row written before
@@ -776,27 +785,6 @@ describe('recordAuditEvent plants the session root it FKs onto', () => {
       expect(row?.root_session_id).toBe('session-that-never-started');
       // And the stub root itself exists, which is what the FK needed.
       expect(rawRow(check, 'session-that-never-started')?.event_type).toBe('session');
-    } finally {
-      check.close();
-    }
-  });
-
-  it('does not plant a stub for a row that IS its own root', async () => {
-    // SessionStart writes the root with `id === rootSessionId`; planting first
-    // would be a wasted statement. The fill-the-stub upsert means it would not
-    // shadow the real row either — this pins the cheaper path, not a safety one.
-    const gateway = new StandaloneDataGateway(dir);
-    await gateway.recordAuditEvent({
-      id: 'session-1',
-      eventType: 'session',
-      startedAt: '2026-09-02T10:30:00.000Z',
-      rootSessionId: 'session-1',
-    });
-    await gateway.close();
-
-    const check = openLocalDatabase(dir);
-    try {
-      expect(rawRow(check, 'session-1')?.event_type).toBe('session');
     } finally {
       check.close();
     }

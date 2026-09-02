@@ -67,10 +67,12 @@ describe('SqliteSharesRepository over the sample dataset', () => {
       destinations: 6,
       endpoints: 8,
       callSites: 9,
-      // The three risky-trust destinations: the raw IP and the two unverified
-      // domains. The corpus's only plaintext endpoint is the IP's `http` one —
-      // the external destination's `wss` stream is secure and must not count.
-      needsReview: 3,
+      // Three destinations carry risky posture — the raw IP and the two
+      // unverified domains — but the seed's IP already carries an explicit
+      // block, and a decided destination is off the queue. The corpus's only
+      // plaintext endpoint is that IP's `http` one; the external destination's
+      // `wss` stream is secure and must not count either way.
+      needsReview: 2,
       insecure: 1,
       byKind: { provider: 2, internal: 2, external: 1, ip: 1 },
       byTrust: { recognized: 2, internal: 1, unverified: 2, ip: 1 },
@@ -107,11 +109,13 @@ describe('SqliteSharesRepository over the sample dataset', () => {
     expect(prometheus?.callSiteCount).toBe(3);
     expect(prometheus?.review.needsReview).toBe(false);
 
-    // The raw-IP destination carries an explicit block decision in the seed.
+    // The raw-IP destination carries an explicit block decision in the seed —
+    // so it is off the review queue, while the reasons it was flagged for stay
+    // on the row. Blocking a raw IP does not stop it being one.
     const ip = all.find((d) => d.kind === 'ip');
     expect(ip?.status).toBe('blocked');
     expect(ip?.isCustom).toBe(true);
-    expect(ip?.review.needsReview).toBe(true);
+    expect(ip?.review.needsReview).toBe(false);
     expect(ip?.review.reasons).toEqual(['raw_ip', 'plaintext_transport']);
     expect(ip?.network).toEqual({ port: 8080, geo: 'Unknown · AS63949 Akamai/Linode', ptr: null });
   });
@@ -135,6 +139,15 @@ describe('SqliteSharesRepository over the sample dataset', () => {
   });
 
   it('orders the needs-review strip by severity (raw_ip before unverified)', async () => {
+    // The seed ships the raw IP already blocked, and a decided destination is
+    // off the queue — which would leave this test with no raw_ip to sort and
+    // quietly stop proving its own name. Clear that decision so all three are
+    // in play and the severity ranking is what is under test.
+    const { groups } = await shares.listDestinations({ groupBy: 'destination', review: false });
+    const ipId = groups.flatMap((g) => g.items).find((d) => d.kind === 'ip')?.id;
+    expect(ipId).toBeDefined();
+    expect(shares.setEgressDecision(ipId ?? '', null)).toBe(true);
+
     const { items } = await shares.needsReview();
     // Equal severity falls back to most-recently-seen first, so the external
     // destination (45 min) precedes acme-partner (300 min).
@@ -304,6 +317,99 @@ describe('plaintext transports (http and ws)', () => {
     const { items } = await shares.needsReview();
     expect(items.map((d) => d.host)).toEqual(['ws.example.com']);
     expect(items[0]?.review.reasons).toEqual(['plaintext_transport']);
+  });
+});
+
+/**
+ * The banner is the register's work queue, so acting on an item has to remove
+ * it. Two engines derive that: `stats().needsReview` in SQL, and
+ * `buildReviewInfo` per destination behind `needsReview()`. They have drifted
+ * before — a destination wearing a review badge while the KPI tile above it
+ * counted zero — so every case here asserts BOTH, never one.
+ */
+describe('a decided destination leaves the review queue', () => {
+  /** A destination flagged for review by a plaintext endpoint, and nothing else. */
+  function flaggedDestination(host: string): string {
+    const id = insertScanDestination(host);
+    insertScanEndpoint(id, 'http', `http://${host}/collect`);
+    return id;
+  }
+
+  it('is counted and listed while undecided', async () => {
+    flaggedDestination('undecided.example.com');
+    expect((await shares.stats()).needsReview).toBe(1);
+    expect((await shares.needsReview()).items.map((d) => d.host)).toEqual([
+      'undecided.example.com',
+    ]);
+  });
+
+  it('drops out of both the count and the list once blocked', async () => {
+    const id = flaggedDestination('blocked.example.com');
+    expect(shares.setEgressDecision(id, 'block')).toBe(true);
+
+    expect((await shares.stats()).needsReview).toBe(0);
+    expect((await shares.needsReview()).items).toEqual([]);
+  });
+
+  it('drops out on an allow that matches the trust default, where isCustom is false', async () => {
+    // The case a `!isCustom` rule cannot express: 'recognized' already resolves
+    // to 'allowed', so this decision changes no status and reports isCustom
+    // false — yet an operator has plainly dealt with the row. Keyed on
+    // isCustom, it would sit in the queue forever.
+    const id = flaggedDestination('redundant-allow.example.com');
+    expect(shares.setEgressDecision(id, 'allow')).toBe(true);
+
+    const { groups } = await shares.listDestinations({ groupBy: 'destination', review: false });
+    const row = groups.flatMap((g) => g.items).find((d) => d.id === id);
+    expect(row?.isCustom).toBe(false);
+    expect(row?.review.needsReview).toBe(false);
+    expect((await shares.stats()).needsReview).toBe(0);
+    expect((await shares.needsReview()).items).toEqual([]);
+  });
+
+  it('keeps the reasons it was flagged for', async () => {
+    const id = flaggedDestination('reasons.example.com');
+    shares.setEgressDecision(id, 'block');
+
+    const { groups } = await shares.listDestinations({ groupBy: 'destination', review: false });
+    const row = groups.flatMap((g) => g.items).find((d) => d.id === id);
+    expect(row?.review).toEqual({ needsReview: false, reasons: ['plaintext_transport'] });
+  });
+
+  it('honours a host-keyed override parked on another destination', async () => {
+    // stats() re-states OVERRIDE_JOIN's host-or-id semantics as a NOT EXISTS.
+    // A host row alone — the arm that survives the destination being pruned
+    // and re-detected — has to count as decided in the aggregate too, or the
+    // count and the list disagree for exactly the rows the host key exists for.
+    const id = flaggedDestination('host-keyed.example.com');
+    const other = insertScanDestination('other-host.example.com');
+    insertOverride(other, 'host-keyed.example.com', 'block');
+
+    const { groups } = await shares.listDestinations({ groupBy: 'destination', review: false });
+    expect(groups.flatMap((g) => g.items).find((d) => d.id === id)?.status).toBe('blocked');
+    expect((await shares.stats()).needsReview).toBe(0);
+    expect((await shares.needsReview()).items).toEqual([]);
+  });
+
+  it('returns to the queue when the decision is cleared', async () => {
+    const id = flaggedDestination('reset.example.com');
+    shares.setEgressDecision(id, 'block');
+    expect((await shares.stats()).needsReview).toBe(0);
+
+    expect(shares.setEgressDecision(id, null)).toBe(true);
+    expect((await shares.stats()).needsReview).toBe(1);
+    expect((await shares.needsReview()).items.map((d) => d.host)).toEqual(['reset.example.com']);
+  });
+
+  it('does not let one decision clear an undecided neighbour', async () => {
+    const decided = flaggedDestination('decided.example.com');
+    flaggedDestination('still-open.example.com');
+    shares.setEgressDecision(decided, 'block');
+
+    expect((await shares.stats()).needsReview).toBe(1);
+    expect((await shares.needsReview()).items.map((d) => d.host)).toEqual([
+      'still-open.example.com',
+    ]);
   });
 });
 

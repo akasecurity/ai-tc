@@ -225,7 +225,7 @@ function buildSummary(dest: DestRow, endpoints: EndpointRow[]): ShareDestination
     callSiteCount,
     transports: distinctTransports(transports),
     dataClasses: distinctDataClasses(dataClasses),
-    review: buildReviewInfo(dest.trust, transports),
+    review: buildReviewInfo(dest.trust, transports, dest.overrideDecision !== null),
     network: dest.kind === 'provider' ? null : parseNetwork(dest.networkJson),
     endpoints: endpoints.map(toEndpointSummary),
   };
@@ -261,7 +261,7 @@ function buildDetail(
     lastSeen: new Date(lastSeenMs).toISOString(),
     transports: distinctTransports(transports),
     dataClasses: distinctDataClasses(endpoints.map((e) => e.dataClass)),
-    review: buildReviewInfo(dest.trust, transports),
+    review: buildReviewInfo(dest.trust, transports, dest.overrideDecision !== null),
     network: dest.kind === 'provider' ? null : parseNetwork(dest.networkJson),
     note: dest.note,
     endpoints: endpoints.map((ep) => ({
@@ -292,13 +292,23 @@ export class SqliteSharesRepository implements SharesReadPort {
       `SELECT count(DISTINCT destination_id) AS n FROM share_endpoint
        WHERE transport IN ${PLAINTEXT_TRANSPORT_SQL}`,
     );
+    // Mirrors buildReviewInfo: flagged posture MINUS anything an operator has
+    // already decided. The NOT EXISTS repeats OVERRIDE_JOIN's host-or-id
+    // semantics — a row on either arm is a decision, which is exactly
+    // `COALESCE(oh.decision, ol.decision) IS NOT NULL` there. Note the posture
+    // OR is now parenthesised: without the parens `AND NOT EXISTS` would bind
+    // to the right operand alone and the trust half would stop being filtered.
     const needsReview = countScalar(
       this.db,
       `SELECT count(DISTINCT d.id) AS n
        FROM share_destination d
        LEFT JOIN share_endpoint e ON e.destination_id = d.id
          AND e.transport IN ${PLAINTEXT_TRANSPORT_SQL}
-       WHERE d.trust IN ('unverified', 'ip') OR e.id IS NOT NULL`,
+       WHERE (d.trust IN ('unverified', 'ip') OR e.id IS NOT NULL)
+         AND NOT EXISTS (
+           SELECT 1 FROM egress_decision_override o
+           WHERE o.host = d.host OR (o.destination_id = d.id AND o.host IS NULL)
+         )`,
     );
 
     const kindCounts = countBy(
@@ -818,6 +828,11 @@ export class SqliteSharesRepository implements SharesReadPort {
     if (reviewOnly) {
       // Cheap pre-filter mirroring deriveReviewReasons: risky trust, or any
       // plaintext endpoint. EXISTS (not a join) so it never fans out rows.
+      // Deliberately NOT narrowed by the decision override too: this is a
+      // superset and buildReviewInfo stays authoritative, so a decided
+      // destination is built and dropped by the filter in needsReview() rather
+      // than by a second copy of the override semantics that could drift from
+      // it. The rows are already fetched; the cost is one summary each.
       conditions.push(
         `(d.trust IN ('unverified', 'ip')
           OR EXISTS (SELECT 1 FROM share_endpoint re

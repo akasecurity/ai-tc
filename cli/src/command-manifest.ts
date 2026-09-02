@@ -49,9 +49,9 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
   },
   {
     name: 'vault',
-    argHint: '[show]',
-    summary: 'Reveal a vaulted secret by its pointer (every reveal is audited)',
-    args: ['show'],
+    argHint: '[show|prune]',
+    summary: 'Reveal a vaulted secret, or undo vaulting the policy does not allow',
+    args: ['show', 'prune'],
   },
   {
     name: 'attach',

@@ -25,13 +25,26 @@
 //      recordInventory generation that writes it (alpha.6+). A raw legacy
 //      writer bypassing that guard can at worst mis-advertise an update; it
 //      cannot change what scans.
+//   4. installed_packs.policy_id is APP-guarded, not gated: on an attached
+//      machine the current repository refuses to write a pack below what the
+//      control plane requires, and the trigger above deliberately does not
+//      cover the column (BEFORE UPDATE OF version, name, rules_json). So a raw
+//      pre-floor writer can still store a weaker assignment — an accepted,
+//      bounded gap, because the assignment is not what enforces: the attached
+//      runtime merges the control plane's bundle over the local one raise-only
+//      on every hook, so the weaker row is clamped back before it decides
+//      anything.
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import type { InstalledPackInput, Rule } from '@akasecurity/schema';
+import type { InstalledPackInput, Policy, PolicyBundle, Rule } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { POLICY_CACHE_FILENAME } from '../../src/attached-derived.ts';
 import { DB_FILENAME } from '../../src/paths.ts';
+import { PolicyFloorError } from '../../src/policy-floor.ts';
+import { SETTINGS_FILENAME } from '../../src/settings.ts';
 import { useTempStore } from '../helpers/temp-store.ts';
 
 // The temp tree is the harness's; the raw connections below are deliberately
@@ -231,5 +244,113 @@ describe('legacy alpha.6 mirror upsert vs available_packs (downgrade guard bound
     });
     expect(mirrorRow('secrets')).toEqual({ version: '2.0.0', rules: 1 }); // the gap
     expect(installedRow('secrets')).toEqual({ version: '2.5.0', rules: 2 }); // the bound
+  });
+});
+
+// ─── Invariant 4: policy_id is app-guarded, not gated ────────────────────────
+
+// ╔═══════════════════════════════════════════════════════════════════════╗
+// ║ DO NOT EDIT — PINNED ARTIFACT. Vendored VERBATIM from the pre-floor     ║
+// ║ setPolicy. Byte-exactness with what shipped binaries execute is the     ║
+// ║ guarantee; any reformat silently voids it while the test stays green.   ║
+// ╚═══════════════════════════════════════════════════════════════════════╝
+const LEGACY_POLICY_ASSIGN = `UPDATE installed_packs SET policy_id = :policyId, updated_at = :now
+         WHERE namespace = :namespace AND pack_id = :packId`;
+
+// Attach the temp machine and give it a control plane that demands Block for
+// every secret rule — the smallest bundle that makes a floor exist at all.
+function attachWithSecretBlockFloor(): void {
+  mkdirSync(store.settingsDir, { recursive: true });
+  writeFileSync(
+    join(store.settingsDir, SETTINGS_FILENAME),
+    JSON.stringify({
+      specVersion: 1,
+      runMode: 'attached',
+      controlPlane: {
+        endpoint: 'https://cp.example.internal',
+        attachedAt: new Date(0).toISOString(),
+      },
+    }),
+  );
+  const blockSecrets: Policy = {
+    id: '00000000-0000-4000-8000-00000000f100',
+    scope: 'global',
+    target: { category: 'secret' },
+    action: 'block',
+    enabled: true,
+  };
+  const bundle: PolicyBundle = {
+    version: '1',
+    policies: [blockSecrets],
+    customKeywords: [],
+    fetchedAt: new Date(0).toISOString(),
+  };
+  writeFileSync(
+    join(store.dataDir, POLICY_CACHE_FILENAME),
+    JSON.stringify({ bundle, fetchedAtMs: 0 }),
+  );
+}
+
+function policyIdRow(packId: string): string | null {
+  const raw = new DatabaseSync(join(store.dataDir, DB_FILENAME));
+  const row = raw
+    .prepare(`SELECT policy_id AS policyId FROM installed_packs WHERE pack_id = ?`)
+    .get(packId) as { policyId: string | null } | undefined;
+  raw.close();
+  return row?.policyId ?? null;
+}
+
+describe('legacy policy_id writer vs installed_packs (floor boundary)', () => {
+  it('the CURRENT repository refuses a below-floor assignment (the app-level guard holds)', () => {
+    attachWithSecretBlockFloor();
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    db.installedPacks.setPolicy('aka', 'secrets', 'block');
+
+    expect(() => db.installedPacks.setPolicy('aka', 'secrets', 'monitor')).toThrow(
+      PolicyFloorError,
+    );
+    db.close();
+    expect(policyIdRow('secrets')).toBe('block');
+  });
+
+  it('a RAW pre-floor assignment can still downgrade the row — the documented, bounded gap', () => {
+    // The write gate covers version/name/rules_json only, so nothing at the
+    // DATABASE level stops this, and nothing could: an app-level guard does not
+    // bind code already on disk. The bound is that the row is not the
+    // enforcement — an attached runtime re-derives the effective action from
+    // the control plane's bundle raise-only on every hook, so the downgraded
+    // row cannot weaken what actually runs.
+    attachWithSecretBlockFloor();
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    db.installedPacks.setPolicy('aka', 'secrets', 'block');
+    db.close();
+
+    const legacy = new DatabaseSync(join(store.dataDir, DB_FILENAME));
+    try {
+      legacy.prepare(LEGACY_POLICY_ASSIGN).run({
+        policyId: 'monitor',
+        now: Date.now(),
+        namespace: 'aka',
+        packId: 'secrets',
+      });
+    } finally {
+      legacy.close();
+    }
+    expect(policyIdRow('secrets')).toBe('monitor'); // the gap
+    // And the bound: the pack's own content is untouched, so the ruleset the
+    // control plane's bundle is merged against is exactly what it was.
+    expect(installedRow('secrets')).toEqual({ version: '2.0.0', rules: 1 });
+  });
+
+  it('a raw assignment stays open on a machine no control plane governs', () => {
+    // No settings descriptor, no cache: the floor exists only for an attached
+    // machine, and a standalone one keeps the assignment entirely its own.
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', '2.0.0', ['secrets/aws'])]);
+    expect(db.installedPacks.setPolicy('aka', 'secrets', 'monitor')).toBe(true);
+    db.close();
+    expect(policyIdRow('secrets')).toBe('monitor');
   });
 });

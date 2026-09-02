@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ExceptionBundleEntry } from './exception.ts';
 import type { ActionTaken, DetectionCategory, Severity } from './finding.ts';
 import {
+  ACTION_TAKEN_KEYS,
   ActionTaken as ActionTakenSchema,
   DetectionCategory as DetectionCategorySchema,
 } from './finding.ts';
@@ -30,6 +31,21 @@ export const PolicyTarget = z
   .meta({ id: 'PolicyTarget' });
 export type PolicyTarget = z.infer<typeof PolicyTarget>;
 
+// Which built-in policy ARCHETYPE catalog entry a row is — the axis
+// PolicyListItem and PolicyDetail below are keyed on, and the one the
+// policy-catalog list port filters by.
+export const PolicyKind = z.enum(['builtin', 'custom']).meta({ id: 'PolicyKind' });
+export type PolicyKind = z.infer<typeof PolicyKind>;
+
+// Whether a bundle row's target was AUTHORED against this deployment, or is a
+// built-in expansion the producer synthesized. A SEPARATE axis from PolicyKind
+// above, and it carries its own name for that reason: the two answer different
+// questions, and a device-side lock keys on this one, so a shared component
+// name would let a consumer read the archetype answer as the provenance answer.
+// Declared above `Policy` because `Policy` carries it.
+export const PolicyProvenance = z.enum(['builtin', 'authored']).meta({ id: 'PolicyProvenance' });
+export type PolicyProvenance = z.infer<typeof PolicyProvenance>;
+
 // The canonical policy shape, and the component named 'Policy'. The local store
 // and the wire PolicyBundle use it directly, and it backs the policies contract.
 // Carries no scoping columns — a policy is identified by its own id.
@@ -44,6 +60,26 @@ export const Policy = z
     // Display name — optional so older policy rows without name still parse.
     // Added for the findings API (policy.name column migration).
     name: z.string().optional(),
+    // Whether an AUTHORED policy governs this row's target — not a claim about
+    // which row this is. A producer that collapses several rows onto one target
+    // must carry the marker onto whichever row survives, or the collapse decides
+    // the answer; a survivor may therefore be a built-in expansion still marked
+    // 'authored' because an authored sibling targeted the same thing.
+    // Optional so an older producer — and an older on-disk cache — still parses;
+    // absent reads as 'builtin', which is the behaviour that predates the field.
+    //
+    // Deliberately NOT `kind`/PolicyKind: that name and that enum answer which
+    // built-in archetype catalog entry a policy is, which every catalog surface
+    // reads and which a caller may state. This one is a statement the PRODUCER
+    // of a bundle makes about a row, and only the bundle builder ever stamps it
+    // — the CRUD routes neither accept nor set it.
+    //
+    // A device consumes this in exactly one direction: an 'authored' policy
+    // arriving from a control plane marks the rules it targets as not
+    // locally re-assignable. That can only ever ADD a refusal, never relax one,
+    // which is what makes it safe to honour from an unsigned cache — the same
+    // test `prohibitedModels` passes and `reversibleRuleIds` fails.
+    provenance: PolicyProvenance.optional(),
   })
   .meta({ id: 'Policy' });
 export type Policy = z.infer<typeof Policy>;
@@ -140,9 +176,6 @@ export function severityFloorPosture(): Record<DetectionCategory, 'warn' | 'moni
 
 // ─── M1: Built-in policy catalog (read-only) ────────────────────────────────
 
-export const PolicyKind = z.enum(['builtin', 'custom']).meta({ id: 'PolicyKind' });
-export type PolicyKind = z.infer<typeof PolicyKind>;
-
 // Single source of truth for the built-in policy ids, declared in display order
 // (monitor → warn → redact → vault → block, least → most restrictive). This one runtime
 // array feeds the Zod enum (BuiltinPolicyId), PATCH membership validation, the
@@ -235,6 +268,123 @@ export type CategoryExpressibleId = Exclude<BuiltinPolicyId, ReversibleBuiltinId
 export function builtinPolicyToAction(id: BuiltinPolicyId): ActionTaken {
   return BUILTIN_POLICY_SPECS[id].action;
 }
+
+// ─── The one enforcement-strength ladder ────────────────────────────────────
+//
+// WEAKEST → STRONGEST, each stored action exactly once. Three private copies of
+// this ordering existed before it was named here (a worst-first array in the
+// runtime's decision collapse, an identical one in the posture differ, and a
+// rank map in the attached-mode merge); they are the same fact and now derive
+// from this.
+//
+// Built in two halves rather than listed, for the reason the catalog itself is:
+//
+//   1. The PALETTE half is `KNOWN_BUILTIN_IDS` mapped through the catalog's own
+//      `builtinPolicyToAction`, so a change to an archetype's action moves the
+//      ladder with it. The mapping is MANY-TO-ONE — 'redact' and 'vault' share
+//      `action: 'redact'` and differ only on the reversibility axis — so the
+//      Set dedupe is load-bearing, not tidying: a repeated rung would make
+//      `indexOf` answer with the first and leave the second unreachable.
+//   2. Everything ActionTaken carries that the palette cannot express sits
+//      BELOW the palette, derived by set difference rather than listed. That
+//      keeps the ladder total over the enum BY CONSTRUCTION, and it means an
+//      ActionTaken member added later lands at the weakest rung — where it
+//      cannot quietly outrank enforcement nobody has ranked it against.
+//
+// Today that is ['allow', 'log', 'warn', 'redact', 'block'].
+const PALETTE_WEAKEST_FIRST: readonly ActionTaken[] = [
+  ...new Set(KNOWN_BUILTIN_IDS.map(builtinPolicyToAction)),
+];
+
+const BELOW_PALETTE: readonly ActionTaken[] = ACTION_TAKEN_KEYS.filter(
+  (action) => !PALETTE_WEAKEST_FIRST.includes(action),
+);
+
+export const ACTION_STRENGTH_ORDER: readonly ActionTaken[] = [
+  ...BELOW_PALETTE,
+  ...PALETTE_WEAKEST_FIRST,
+];
+
+/**
+ * How strong an action is; higher is more restrictive. Index into
+ * ACTION_STRENGTH_ORDER, so it moves with the catalog.
+ *
+ * Takes `string`, not `ActionTaken`, deliberately: an action can arrive from a
+ * store column with no enum constraint, and an unrecognised one must rank BELOW
+ * every real action (-1) rather than throw or be coerced. A comparison against
+ * an unknown then reads "weaker than anything", which is the only answer that
+ * cannot silently license enforcement the value never asked for.
+ */
+export function actionRank(action: string): number {
+  return ACTION_STRENGTH_ORDER.indexOf(action as ActionTaken);
+}
+
+/** Whether `action` is at least as restrictive as `floor`. */
+export function isActionAtLeast(action: string, floor: ActionTaken): boolean {
+  return actionRank(action) >= actionRank(floor);
+}
+
+/** The stronger of two actions. */
+export function strongerAction(a: ActionTaken, b: ActionTaken): ActionTaken {
+  return actionRank(a) >= actionRank(b) ? a : b;
+}
+
+/**
+ * The weakest built-in archetype whose action is at least `floor` — the inverse
+ * of `builtinPolicyToAction`, used to state a per-detection floor in the terms
+ * the user actually picks from.
+ *
+ * Walks KNOWN_BUILTIN_IDS in its declared least → most order and takes the
+ * first match, so 'redact' wins over 'vault' where both satisfy the floor: the
+ * two share an action and differ only on custody, and a floor is a statement
+ * about ENFORCEMENT, never a demand that a value be retained. Returns 'block'
+ * when nothing satisfies the floor, which cannot happen while 'block' is the
+ * strongest archetype but keeps the function total.
+ */
+export function weakestBuiltinAtLeast(floor: ActionTaken): BuiltinPolicyId {
+  return (
+    KNOWN_BUILTIN_IDS.find((id) => isActionAtLeast(builtinPolicyToAction(id), floor)) ?? 'block'
+  );
+}
+
+/**
+ * What a connected control plane imposes on ONE installed pack ("detection").
+ *
+ * Computed by the local store — it needs the machine's settings and its rule
+ * snapshot — and then read by surfaces that never touch the store: the pack
+ * picker greys out what is below the floor, the list marks what the
+ * organization decided. Declared HERE because it is the whole of what crosses
+ * between them, and a second declaration on the far side would agree only for
+ * as long as someone kept it agreeing — a field added to one side compiles on
+ * both while the other quietly drops it.
+ *
+ * The absence of a constraint is `null` at every call site, never a member of
+ * this shape: a machine nothing manages has no floor, and modelling that as a
+ * floor of Monitor would put an organizational statement on screen where the
+ * organization made none.
+ */
+export const PackPolicyFloor = z
+  .object({
+    /**
+     * The weakest archetype the device may assign. Stated as a BuiltinPolicyId
+     * rather than a raw ActionTaken because that is the vocabulary the user
+     * picks from — a floor a UI cannot name is one it cannot explain.
+     */
+    floor: BuiltinPolicyId,
+    /**
+     * True when the organization AUTHORED a policy governing this pack rather
+     * than stating a minimum: it gave the answer, so the pack is not
+     * re-assignable locally in either direction.
+     */
+    locked: z.boolean(),
+  })
+  // Deliberately NO `.meta({ id })`, for the reason the vault shapes carry: an
+  // id registers the schema globally and a swagger setup emits it as an OpenAPI
+  // component. This is what an attached DEVICE computes for itself from a bundle
+  // it already holds — no route serves it, so publishing it would advertise a
+  // component the API never returns.
+  .describe('PackPolicyFloor');
+export type PackPolicyFloor = z.infer<typeof PackPolicyFloor>;
 
 // The archetypes a per-CATEGORY policy row can actually express.
 //

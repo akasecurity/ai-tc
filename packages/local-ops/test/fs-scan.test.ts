@@ -10,10 +10,12 @@ import {
   loadOrCreateFingerprintKey,
   openLocalDatabase,
 } from '@akasecurity/persistence';
-import type { Rule } from '@akasecurity/schema';
+import type { ActionTaken, Rule, Span } from '@akasecurity/schema';
+import { ACTION_STRENGTH_ORDER, DEFAULT_ACTIONS } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTrees } from '../../../test/helpers/remove-tree.ts';
+import type { ScanPathResult } from '../src/fs-scan.ts';
 import { collectFiles, scanPathIntoStore } from '../src/fs-scan.ts';
 import { migratedStore } from './helpers/store-templates.ts';
 
@@ -44,6 +46,12 @@ const RULES: Rule[] = [
     matcher: { type: 'regex', pattern: 'AKIA[0-9A-Z]{16}', flags: 'g' },
   },
 ];
+
+// A pack assignment that actually enforces. At-rest masking follows the RESOLVED
+// action, and this rule's category fallback is DEFAULT_ACTIONS.secret ('warn'),
+// which only logs — so every test asserting the stored file was rewritten has to
+// state the enforcing assignment rather than inherit it.
+const REDACTING: ReadonlyMap<string, ActionTaken> = new Map([['test/aws-key', 'redact']]);
 
 // The raw at-rest audit-event rows, straight from the store file — the tests
 // assert on what actually hit disk, independent of any read port. Constrained
@@ -255,7 +263,11 @@ describe('scanPathIntoStore', () => {
 
     const db = openLocalDatabase(store);
     try {
-      const result = await scanPathIntoStore(db, root, { rules: RULES, sourceTool: 'cli' });
+      const result = await scanPathIntoStore(db, root, {
+        rules: RULES,
+        sourceTool: 'cli',
+        ruleActions: REDACTING,
+      });
       expect(result.scanned).toBe(2);
       expect(result.findings).toBe(1);
       // Per-file detail (the --format json surface) carries only store-safe
@@ -264,9 +276,12 @@ describe('scanPathIntoStore', () => {
       expect(result.files[0]?.path).toBe(join(root, 'app.ts'));
       expect(result.files[0]?.findings[0]?.maskedMatch).not.toBe(SECRET);
 
-      // The raw secret never lands on disk: the event content is redacted and
-      // the finding stores only a masked preview.
+      // Under an enforcing pack assignment the raw secret never lands on disk:
+      // the event content is redacted and the finding stores only a masked
+      // preview. (A Monitor/Warn assignment stores the text as read — that is
+      // the at-rest-floor suite below.)
       const [event] = storedEvents(store);
+      expect(event?.content).toContain('[REDACTED:SECRET]'); // positive control
       expect(event?.content).not.toContain(SECRET);
       const findings = await db.findings.recentFindings({ limit: 10 });
       const recorded = findings.find((f) => f.ruleId === 'test/aws-key');
@@ -456,6 +471,12 @@ describe('scanPathIntoStore — pointer shield', () => {
     },
   ];
 
+  // Same reason as REDACTING above: the stored rewrite only happens for a pack
+  // assignment at redact or stronger.
+  const HOSTILE_REDACTING: ReadonlyMap<string, ActionTaken> = new Map([
+    ['shield-test/base32-run', 'redact'],
+  ]);
+
   it('reports a real secret beside a pointer (correct span) and nothing inside the pointer', async () => {
     const content = `token = ${POINTER}\nkey = '${SECRET}'\n`;
     writeFileSync(join(root, 'app.ts'), content);
@@ -464,7 +485,10 @@ describe('scanPathIntoStore — pointer shield', () => {
 
     const db = openLocalDatabase(store);
     try {
-      const result = await scanPathIntoStore(db, root, { rules: HOSTILE_RULES });
+      const result = await scanPathIntoStore(db, root, {
+        rules: HOSTILE_RULES,
+        ruleActions: HOSTILE_REDACTING,
+      });
       expect(result.findings).toBe(1);
       const finding = result.files[0]?.findings[0];
       expect(finding).toBeDefined();
@@ -635,6 +659,193 @@ describe('scanPathIntoStore — egress collection', () => {
       const result = await scanPathIntoStore(db, root, { rules: [] });
       expect(result.egress.files).toHaveLength(1);
       expect(result.egress.files[0]?.vendored).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('scanPathIntoStore — at-rest masking follows the resolved action', () => {
+  // The stored copy of a file is rewritten only where enforcement reaches: a
+  // pack assigned Monitor or Warn logs a match and does nothing else to the
+  // value. This is the same floor the live capture path applies to the same
+  // column, so a folder scan and a live session agree about one store.
+  //
+  // Spelled as a literal table rather than re-derived with isActionAtLeast,
+  // which would only restate the implementation. The exhaustiveness check below
+  // is what keeps a new rung of the ladder from arriving unstated.
+  const MASKS_AT_REST: Record<ActionTaken, boolean> = {
+    allow: false,
+    log: false,
+    warn: false,
+    redact: true,
+    block: true,
+  };
+
+  const SOURCE = `const key = '${SECRET}';\n`;
+  // What `redact` leaves when it masks the key's own span and nothing wider.
+  const KEY_MASKED = `const key = '[REDACTED:SECRET]';\n`;
+
+  it('states an expectation for every rung of the strength ladder', () => {
+    expect(Object.keys(MASKS_AT_REST).sort()).toEqual([...ACTION_STRENGTH_ORDER].sort());
+  });
+
+  it.each(ACTION_STRENGTH_ORDER)(
+    'a %s assignment rewrites the stored file only at the floor',
+    async (action) => {
+      writeFileSync(join(root, 'app.ts'), SOURCE);
+      const db = openLocalDatabase(store);
+      try {
+        await scanPathIntoStore(db, root, {
+          rules: RULES,
+          ruleActions: new Map([['test/aws-key', action]]),
+        });
+        const [event] = storedEvents(store);
+        // Positive control on the very bytes the absence assertion reads: a row
+        // exists and it is the file we wrote, so neither branch can pass on
+        // nothing.
+        expect(event?.content).toContain('const key =');
+        if (MASKS_AT_REST[action]) {
+          expect(event?.content).toBe(KEY_MASKED);
+          expect(event?.content).not.toContain(SECRET);
+        } else {
+          // Logged and nothing more — the stored copy is byte-identical to the
+          // file, raw value included. That is the decision, not an oversight.
+          expect(event?.content).toBe(SOURCE);
+        }
+        const findings = await db.findings.recentFindings({ limit: 10 });
+        expect(findings.find((f) => f.ruleId === 'test/aws-key')?.actionTaken).toBe(action);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it('applies the same floor to the per-category fallback', async () => {
+    writeFileSync(join(root, 'app.ts'), SOURCE);
+    const db = openLocalDatabase(store);
+    try {
+      // No ruleActions at all — the fallback path. `secret` floors to warn,
+      // which is below redact, so an unassigned pack observes and rewrites
+      // nothing. Asserted here rather than assumed: if the fallback ever moves
+      // to redact-or-stronger this case says so instead of silently flipping.
+      expect(DEFAULT_ACTIONS.secret).toBe('warn');
+      await scanPathIntoStore(db, root, { rules: RULES });
+      const [event] = storedEvents(store);
+      expect(event?.content).toBe(SOURCE);
+      const findings = await db.findings.recentFindings({ limit: 10 });
+      expect(findings.find((f) => f.ruleId === 'test/aws-key')?.actionTaken).toBe('warn');
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('scanPathIntoStore — overlapping spans across the enforcement floor', () => {
+  // `redact` folds overlapping findings into ONE disjoint region, so filtering
+  // its input by action changes which spans merge. These cases pin the part
+  // that must not change: the enforced span is covered end to end whatever its
+  // neighbours resolve to.
+  const overlappingRule = (id: string, pattern: string): Rule => ({
+    specVersion: 1,
+    id,
+    name: `Overlapping fixture (${id})`,
+    category: 'custom',
+    severity: 'low',
+    matcher: { type: 'regex', pattern, flags: 'g' },
+  });
+
+  // Starts BEFORE the key and ends inside it.
+  const TAIL_RULES: Rule[] = [...RULES, overlappingRule('test/overlaps-tail', "key = 'AKIA")];
+  // Starts before the key and ends after it — the key's span sits wholly inside.
+  const ENCLOSING_RULES: Rule[] = [
+    ...RULES,
+    overlappingRule('test/encloses', "'AKIA[0-9A-Z]{16}';"),
+  ];
+
+  const SOURCE = `const key = '${SECRET}';\n`;
+
+  /**
+   * The key's span and its overlapping neighbour's, by rule id. Throws when
+   * either fixture rule did not fire: an absent span would make every overlap
+   * comparison below read `undefined` and prove nothing about merging.
+   */
+  function spansOf(result: ScanPathResult): { key: Span; other: Span } {
+    const findings = result.files[0]?.findings ?? [];
+    const key = findings.find((f) => f.ruleId === 'test/aws-key')?.span;
+    const other = findings.find((f) => f.ruleId !== 'test/aws-key')?.span;
+    if (!key || !other) throw new Error('expected both fixture rules to fire on the same file');
+    return { key, other };
+  }
+
+  it('masks a redact span in full where a log-only span overlaps its head', async () => {
+    writeFileSync(join(root, 'app.ts'), SOURCE);
+    const db = openLocalDatabase(store);
+    try {
+      const result = await scanPathIntoStore(db, root, {
+        rules: TAIL_RULES,
+        ruleActions: new Map<string, ActionTaken>([
+          ['test/aws-key', 'redact'],
+          ['test/overlaps-tail', 'log'],
+        ]),
+      });
+      // Without a real overlap the case proves nothing about merging.
+      const { key, other } = spansOf(result);
+      expect(other.start).toBeLessThan(key.start);
+      expect(other.end).toBeGreaterThan(key.start);
+      expect(other.end).toBeLessThan(key.end);
+
+      const [event] = storedEvents(store);
+      // The enforced span is masked end to end. The log-only bytes that used to
+      // ride into the merged region (`key = '`) are stored as they were read —
+      // logging never licensed rewriting them.
+      expect(event?.content).toBe(`const key = '[REDACTED:SECRET]';\n`);
+      expect(event?.content).not.toContain(SECRET);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('masks a redact span in full where a log-only span encloses it', async () => {
+    writeFileSync(join(root, 'app.ts'), SOURCE);
+    const db = openLocalDatabase(store);
+    try {
+      const result = await scanPathIntoStore(db, root, {
+        rules: ENCLOSING_RULES,
+        ruleActions: new Map<string, ActionTaken>([
+          ['test/aws-key', 'redact'],
+          ['test/encloses', 'log'],
+        ]),
+      });
+      const { key, other } = spansOf(result);
+      expect(other.start).toBeLessThan(key.start);
+      expect(other.end).toBeGreaterThan(key.end);
+
+      const [event] = storedEvents(store);
+      expect(event?.content).toBe(`const key = '[REDACTED:SECRET]';\n`);
+      expect(event?.content).not.toContain(SECRET);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('still merges two overlapping spans when BOTH are enforced', async () => {
+    writeFileSync(join(root, 'app.ts'), SOURCE);
+    const db = openLocalDatabase(store);
+    try {
+      await scanPathIntoStore(db, root, {
+        rules: TAIL_RULES,
+        ruleActions: new Map<string, ActionTaken>([
+          ['test/aws-key', 'redact'],
+          ['test/overlaps-tail', 'block'],
+        ]),
+      });
+      const [event] = storedEvents(store);
+      // One region spanning the union of both spans — the control for the two
+      // cases above, which would read identically if filtering had broken
+      // merging outright rather than narrowing it.
+      expect(event?.content).toBe(`const [REDACTED:SECRET]';\n`);
+      expect(event?.content).not.toContain(SECRET);
     } finally {
       db.close();
     }

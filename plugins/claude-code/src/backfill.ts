@@ -16,13 +16,17 @@
  */
 import { fileURLToPath } from 'node:url';
 
+import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import {
+  createPolicyResolver,
   createVaultGlue,
+  type DataGateway,
   type FingerprintKey,
   fingerprintValue,
   loadConfig,
   loadOrCreateFingerprintKey,
   type PluginConfig,
+  type PolicyResolver,
 } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, TriageHit } from '@akasecurity/schema';
 import { TRIAGE_STATUSES } from '@akasecurity/setup-wizard';
@@ -85,7 +89,9 @@ export interface BackfillDeps {
   // the host session id.
   guard?: Pick<HistoryWalkOptions, 'excludeSessionId' | 'beforeMs' | 'dir'>;
   // At-rest scrub of one visited transcript file (test seam). Defaults to the
-  // real tokenizing rewriter over a vault glue built once per run.
+  // real tokenizing rewriter over a vault glue built once per run — which is
+  // itself absent when the machine's pack policy cannot be read, and then
+  // nothing is scrubbed at all (see buildTranscriptScrubber).
   scrubFile?: (filePath: string) => Promise<{ rewritten: number } | null>;
 }
 
@@ -172,26 +178,32 @@ export async function runBackfill(deps: BackfillDeps): Promise<void> {
       // Token backfill is best-effort; the live Stop-hook pass recovers it.
     }
 
-    // At-rest scrub of the history just walked: every visited transcript is
-    // rewritten so detected secrets become recoverable vault pointers. Runs
-    // only when BOTH grants hold — historical access got us here, and vault
-    // consent authorizes keeping recoverable copies. Pointer spans are
+    // At-rest scrub of the history just walked: transcripts are rewritten so
+    // the secrets ENFORCEMENT would have struck become recoverable vault
+    // pointers. Three things have to agree. Historical access got us here;
+    // vault consent authorizes keeping recoverable copies; and the machine's
+    // own pack policy decides which spans may be touched at all, so a detection
+    // the user assigned Monitor is left exactly where it is. Pointer spans are
     // invisible to detection, so a re-run finds nothing to rewrite. Entirely
     // best-effort: a scrub fault never fails the backfill.
     let scrubbedFiles = 0;
     if (isVaultConsentValid(cfg.settings.vaultConsent) && summary.visitedFiles.length > 0) {
       try {
-        const scrubFile = deps.scrubFile ?? buildTranscriptScrubber();
-        for (const file of summary.visitedFiles) {
-          try {
-            const result = await scrubFile(file);
-            if (result !== null && result.rewritten > 0) scrubbedFiles += 1;
-          } catch {
-            // One bad file must not stop the rest.
+        // null ⇒ policy is unreadable, so nothing may be rewritten. Skipping
+        // the whole pass is the safe direction here; see buildTranscriptScrubber.
+        const scrubFile = deps.scrubFile ?? (await buildTranscriptScrubber(cfg));
+        if (scrubFile !== null) {
+          for (const file of summary.visitedFiles) {
+            try {
+              const result = await scrubFile(file);
+              if (result !== null && result.rewritten > 0) scrubbedFiles += 1;
+            } catch {
+              // One bad file must not stop the rest.
+            }
           }
         }
       } catch {
-        // Glue construction failed — history stays as scanned.
+        // Scrubber construction failed — history stays as scanned.
       }
     }
 
@@ -239,17 +251,63 @@ export async function runBackfill(deps: BackfillDeps): Promise<void> {
 }
 
 // The production scrub dependency: one vault glue for the whole pass, the
-// remediation scope guard for containment. Built lazily so an unconsented run
+// remediation scope guard for containment, and the machine's own pack policy
+// deciding which spans may be rewritten. Built lazily so an unconsented run
 // never constructs the vault.
-function buildTranscriptScrubber(): (filePath: string) => Promise<{ rewritten: number } | null> {
+//
+// The resolver is load-bearing rather than an enhancement. Without one the glue
+// self-scans and rewrites — and vaults — every span the bundled rules match, so
+// a detection the user assigned Monitor has its value lifted out of the user's
+// own transcripts and kept as recoverable ciphertext on the strength of having
+// matched at all.
+//
+// Which is why an unreadable bundle returns null and scrubs NOTHING. Reverting
+// to a policy-blind scrub would be the very behaviour this replaced, and the
+// two failures are not symmetric: a transcript left byte-identical is a scrub
+// the next run repeats, while a transcript rewritten against a policy nobody
+// authored is a change to the user's files that no later pass can undo.
+async function buildTranscriptScrubber(
+  cfg: PluginConfig,
+): Promise<((filePath: string) => Promise<{ rewritten: number } | null>) | null> {
+  const resolver = await readPolicyResolver(cfg);
+  if (resolver === null) return null;
   const glue = createVaultGlue();
   const scope = platformRedactionScope();
   return (filePath) =>
     scrubTranscriptTail(filePath, {
       tokenizeText: (text) =>
-        glue.tokenizeText(text, { sighting: { location: filePath, kind: 'transcript' } }),
+        glue.tokenizeText(text, {
+          resolver,
+          sighting: { location: filePath, kind: 'transcript' },
+        }),
       scope,
     });
+}
+
+// The pack policy this machine enforces with, or null if it cannot be read.
+// Opens a gateway of its own — the backfill holds none at this point — and
+// releases it before the sweep, which walks every visited file and needs no
+// store.
+async function readPolicyResolver(cfg: PluginConfig): Promise<PolicyResolver | null> {
+  let gateway: DataGateway;
+  try {
+    gateway = resolveDataGateway(cfg);
+  } catch {
+    return null;
+  }
+  try {
+    return createPolicyResolver(await gateway.getPolicyBundle());
+  } catch {
+    return null;
+  } finally {
+    // A close fault is bookkeeping and must not discard a bundle already in
+    // hand, so it is swallowed separately from the read above.
+    try {
+      await gateway.close();
+    } catch {
+      // nothing left to release
+    }
+  }
 }
 
 // Guard so importing the exported helpers in tests never runs the CLI.

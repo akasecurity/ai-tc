@@ -252,6 +252,121 @@ describe('SqliteSecretVaultRepository.purgeAll', () => {
   });
 });
 
+// The provenance marker: the row's record that a PERSON asked for this value to
+// be replaced, rather than a pack enforcing its assignment. It matters here
+// rather than in the caller because one value is ONE row — every path that
+// vaults the same value lands on it — so the store is the only place that can
+// keep the two statements from overwriting each other.
+describe('SqliteSecretVaultRepository.upsert — userAuthorized', () => {
+  it('defaults to false, which is what an enforcing path writes', () => {
+    expect(vault.upsert(entry(), NOW).row.userAuthorized).toBe(false);
+    // And a row written before the column existed reads the same way: the
+    // migration's default is the enforcing path, not the user one.
+    expect(vault.byPointerId('pointer-a')?.userAuthorized).toBe(false);
+  });
+
+  it('records the marker when the user path mints the row', () => {
+    const minted = vault.upsert(entry({ userAuthorized: true }), NOW);
+
+    expect(minted.minted).toBe(true);
+    expect(minted.row.userAuthorized).toBe(true);
+    expect(vault.byPointerId('pointer-a')?.userAuthorized).toBe(true);
+  });
+
+  it('sets the marker when the user strikes a value already vaulted automatically', () => {
+    vault.upsert(entry(), NOW);
+
+    // Same value, so the same row — this is the shape the surfaced-secrets
+    // Redact button produces for a value the transcript scrub had already taken.
+    const struck = vault.upsert(entry({ userAuthorized: true }), NOW + 1_000);
+
+    expect(struck.minted).toBe(false);
+    expect(struck.row.userAuthorized).toBe(true);
+    expect(struck.row.occurrenceCount).toBe(2);
+  });
+
+  it('keeps the marker when an automatic path vaults the same value afterwards', () => {
+    vault.upsert(entry({ userAuthorized: true }), NOW);
+
+    // The sticky half, and the one an ordinary assignment would break: this
+    // call carries no marker, and assigning it would erase what the user said.
+    const again = vault.upsert(entry(), NOW + 1_000);
+
+    expect(again.row.userAuthorized).toBe(true);
+    expect(vault.byPointerId('pointer-a')?.userAuthorized).toBe(true);
+    // The control on the same call: it really did write, so the assertion above
+    // is not passing because nothing happened.
+    expect(again.row.occurrenceCount).toBe(2);
+    expect(again.row.lastSeen).toBe(NOW + 1_000);
+  });
+
+  it('leaves the marker of a neighbouring value alone', () => {
+    vault.upsert(entry({ userAuthorized: true }), NOW);
+    vault.upsert(entry({ pointerId: 'pointer-b', valueFingerprint: FINGERPRINT_B }), NOW);
+
+    expect(vault.byPointerId('pointer-a')?.userAuthorized).toBe(true);
+    expect(vault.byPointerId('pointer-b')?.userAuthorized).toBe(false);
+  });
+});
+
+describe('SqliteSecretVaultRepository.deleteByPointerIds', () => {
+  it('destroys only the named entries and leaves the deref audit standing', () => {
+    vault.upsert(entry(), NOW);
+    vault.upsert(entry({ pointerId: 'pointer-b', valueFingerprint: FINGERPRINT_B }), NOW);
+    vault.recordDeref({
+      id: randomUUID(),
+      pointerId: 'pointer-a',
+      at: NOW,
+      target: 'human',
+      reason: 'remediation',
+      outcome: 'revealed',
+    });
+
+    expect(vault.deleteByPointerIds(['pointer-a'])).toEqual(['pointer-a']);
+    expect(vault.byPointerId('pointer-a')).toBeNull();
+    // The scope is the whole point: everything not named survives.
+    expect(vault.byPointerId('pointer-b')).not.toBeNull();
+    expect(vault.countEntries()).toBe(1);
+    // Same rule as the purge: the record that a de-reference happened outlives
+    // the value it was against.
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM secret_vault_deref').get()).toMatchObject({
+      n: 1,
+    });
+  });
+
+  it('reports only rows that were really there, and takes an empty set', () => {
+    vault.upsert(entry(), NOW);
+
+    expect(vault.deleteByPointerIds([])).toEqual([]);
+    expect(vault.countEntries()).toBe(1);
+    // An id the store does not hold is not an error — a caller assembling a set
+    // from an earlier read may name one that has since gone. It is also not
+    // part of the answer: the caller's next act is an audit row per destroyed
+    // entry, and a purge recorded for a row this call did not destroy is a
+    // false record of destruction. `pointer-a` alongside it is the positive
+    // control — the id that WAS there still comes back.
+    expect(vault.deleteByPointerIds(['pointer-a', 'pointer-ghost'])).toEqual(['pointer-a']);
+    expect(vault.countEntries()).toBe(0);
+  });
+
+  it('leaves every row standing when one delete in the set throws', () => {
+    vault.upsert(entry(), NOW);
+    vault.upsert(entry({ pointerId: 'pointer-b', valueFingerprint: FINGERPRINT_B }), NOW);
+
+    // A pointer id node:sqlite refuses to bind at all: the run throws partway
+    // through the loop, after the first delete has already executed. Without
+    // one transaction over the set that first row is gone and the caller is
+    // told nothing. (A number would bind cleanly — SQLite columns carry no type
+    // affinity here — and simply match nothing.)
+    expect(() => vault.deleteByPointerIds(['pointer-a', {} as unknown as string])).toThrow();
+
+    expect(vault.countEntries()).toBe(2);
+    expect(vault.byPointerId('pointer-a')).not.toBeNull();
+    // The failure must not strand an open transaction on the handle either.
+    expect(raw.isTransaction).toBe(false);
+  });
+});
+
 // The inventory's revealable badge and the actual crossing must share ONE
 // definition of "an active reveal grant". The crossing (activeRevealGrant)
 // fails closed on a grant with conditions — the reveal path does not evaluate

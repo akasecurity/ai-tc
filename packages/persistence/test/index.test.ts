@@ -27,6 +27,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'MAX_EGRESS_CALL_SITES_PER_PROJECT',
   'ManagedFieldError',
   'POLICY_CACHE_FILENAME',
+  'PolicyFloorError',
   'SETTINGS_FILENAME',
   'STRUCTURAL_EVENT_TYPES',
   'SecretVault',
@@ -70,6 +71,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'compareBinaryVersions',
   'computeFindingKey',
   'controlPlaneCredentialPath',
+  'controlPlanePolicyFloor',
   'createKeyProvider',
   'createOwnerOnlyFileSync',
   'dataDir',
@@ -99,7 +101,9 @@ const PUBLIC_VALUE_EXPORTS = [
   'normalizeHost',
   'openLocalDatabase',
   'overlayManagedSettings',
+  'policyAssignmentRefusal',
   'promptId',
+  'readCachedPolicyBundle',
   'readControlPlaneCredential',
   // The WIDE read. Exported deliberately and named so it cannot be reached by
   // accident: it returns a bearer credential, unlike the state reader beside

@@ -54,9 +54,11 @@ Promote any detection from monitor to warn, redact, or block from the dashboard,
 
 `ai-tc` keeps what it records in a local SQLite store at `~/.aka/data/aka.db`, with your settings beside it under `~/.aka/settings`. There is no database server to run and no schema to manage — the CLI, the plugin, and the dashboard all read and write that one file.
 
-That store is a running log of your agent sessions: prompts, responses, tool calls. Only the spans a rule flags are masked; the rest is kept verbatim and unencrypted, so `aka.db` builds up a full local record of what your agent saw. On macOS and Linux the store directories are created owner-only (`0700`) and the files are written `0600`. Those permissions are the only at-rest control there is, and they do nothing on Windows.
+That store is a running log of your agent sessions: prompts, responses, tool calls. What gets masked in it follows the policy you assigned the detection that flagged the span: a flagged span is masked at rest only where that policy is redact or block. Under monitor or warn the value is stored as it was seen, and everything outside a flagged span is stored verbatim and unencrypted either way. Every detection ships on monitor, so on a default install nothing is masked at all and `aka.db` builds up a full local record of what your agent saw, raw secrets included; promoting a detection changes what is stored from then on, not what is already there. Files read by `aka scan` are stored under the same rule. On macOS and Linux the store directories are created owner-only (`0700`) and the files are written `0600`. Those permissions are the only at-rest control there is, and they do nothing on Windows.
 
-**[SECURITY.md](SECURITY.md)** has the full picture — every file the store spans, what to do on Windows, and how to report a vulnerability.
+That stored content is also what an attached machine sends. `aka attach` registers a machine against a control plane your organization runs — not a service AKA operates — and from then on the plugin forwards each captured event to that deployment as it stored it, so the masking rule above is also the rule for what crosses the network: under monitor or warn the matched value reaches that deployment unmasked, and promoting the detection to redact or block masks it before it is stored and so before it is sent. Every detection ships on monitor, so on an attached machine that is the default posture rather than an edge case. A machine you have not attached forwards none of this.[^egress]
+
+**[SECURITY.md](SECURITY.md)** has the full picture — every file the store spans, what an attached machine forwards, what to do on Windows, and how to report a vulnerability.
 
 ## Install
 

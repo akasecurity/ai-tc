@@ -124,6 +124,50 @@ describe('runHistorySyncPass', () => {
     expect(state?.completedAtMs).not.toBeNull();
   });
 
+  // skippedTotal is the only place a PERMANENTLY dropped capture is reported, and
+  // it has to be a lifetime figure: it sits beside sentTotal and pendingTotal,
+  // both of which are. Built from a per-pass delta it announced a terminal loss
+  // once and then dropped it while the rows stayed gone — so the second pass
+  // here, with nothing left to skip, is the half that matters.
+  it('reports a permanently skipped capture, and keeps reporting it', async () => {
+    attachWithGrant();
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.auditEvents.ensureSessionRoot('s-1', AT);
+      db.auditEvents.insertAuditEvent({
+        id: 's-1-prompt',
+        eventType: 'prompt',
+        rootSessionId: 's-1',
+        parentId: 's-1',
+        startedAt: new Date(Date.parse(AT) + 60_000).toISOString(),
+        content: 'a prompt that can never be expressed',
+        contentHash: 'c'.repeat(64),
+        // No source_tool: required on the wire, so rebuildCapture refuses the
+        // row and the drain skips it permanently.
+        attributes: {},
+      });
+      db.historySync.markCaptureOwed('s-1-prompt');
+    } finally {
+      db.close();
+    }
+
+    await runHistorySyncPass(home, {
+      sleep: () => Promise.resolve(),
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: () => Promise.resolve({ settled: 0 }),
+    });
+    expect(readHistorySyncState(dataDirOf(home))?.skippedTotal).toBe(1);
+
+    // A second pass with nothing to skip. A per-pass delta would report 0 here
+    // while the row stayed gone for ever.
+    await runHistorySyncPass(home, {
+      sleep: () => Promise.resolve(),
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: () => Promise.resolve({ settled: 0 }),
+    });
+    expect(readHistorySyncState(dataDirOf(home))?.skippedTotal).toBe(1);
+  });
+
   // completedAtMs is the FIRST moment this machine owed the deployment nothing,
   // and it has to survive `done` going false again. Under v1 that never happened
   // — the structural lane only ever drained — but the capture lane's subject

@@ -507,9 +507,28 @@ export function openLocalDatabase(dir: string): LocalDatabase {
 
   // The other half of the same decision: the live forward ran and did NOT
   // confirm delivery, so the organization's copy was not made and this row is
-  // owed. Fail-open like its sibling — a marker that does not land costs the row
-  // its place in the outbox, which is the same loss the pre-outbox behaviour had
-  // and never costs the session.
+  // owed.
+  //
+  // Fail-open, like every write here — but its failure is NOT its sibling's. A
+  // lost `markCaptureDelivered` costs a redundant resend the receiver's id-dedup
+  // absorbs; a lost `markCaptureOwed` costs the ROW, permanently and invisibly,
+  // because nothing else will ever mark it. Two things sharpen that rather than
+  // soften it:
+  //
+  //   The loss is CORRELATED with the condition. busy_timeout is 2s and the
+  //   drain child holds the write lock across a batch, so contention peaks
+  //   during exactly the outage that produces owed rows — many hooks marking
+  //   while a drain runs — and each SQLITE_BUSY there turns a recoverable row
+  //   into an invisible one.
+  //
+  //   A kill between the local commit and this call does the same. The forward
+  //   sits between them under an 800ms budget, so a SIGKILL in that window — a
+  //   user interrupt, a harness timeout — leaves the row unmarked for ever.
+  //
+  // Failing CLOSED is not available: §1 forbids a hook that breaks the session,
+  // and this runs on the decision path. What is available is not pretending the
+  // window is not there, which is why it is written down here rather than in a
+  // review thread.
   function markCaptureOwed(event: IngestEvent): void {
     failOpenTransaction(db, () => {
       historySync.markCaptureOwed(captureRowId(event));

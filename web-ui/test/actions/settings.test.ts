@@ -70,14 +70,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     expect(acknowledged).toBeLessThanOrEqual(Date.now());
   });
 
-  // THE UNTOUCHED CASE, and the reason the answer is three-state. The form
-  // submits every field on every save, so with a boolean an unrelated edit had to
-  // assert something about this grant — and both assertions are wrong for a STALE
-  // one. 'revoked' deletes the record and with it the paused badge, the
-  // `aka status` paused line and `aka sync-history`'s stale branch, leaving a
-  // user who did opt in told that they never did. 'granted' is worse: it
-  // re-consents to a widened payload nobody affirmed.
-  // The model-judge grant, same rule. Left as an unconditional boolean this is
+  // The model-judge grant. Left as an unconditional boolean this is
   // deleted fleet-wide on everyone's next unrelated save the moment
   // MODEL_JUDGE_PAYLOAD_VERSION is bumped — and today every save rewrites its
   // acknowledgedAt, so the record of when consent was given drifts forward on
@@ -87,17 +80,31 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     const granted = { acknowledgedAt: '2020-01-01T00:00:00.000Z', payloadVersion: 1 };
     applyOnboarding({ modelJudgeConsent: granted }, join(home, '.aka'));
 
-    await saveSettings({
+    const res = await saveSettings({
       historicalAccess: 'session-only',
       modelJudgeConsent: 'unchanged',
       historySyncConsent: 'unchanged',
       vaultConsent: 'off',
+      // A real unrelated edit, so this is a save that had to do something.
       vaultInlineReveal: 'full',
     });
 
+    // THE POSITIVE CONTROL. Without it every assertion below is satisfied by a
+    // save that was REFUSED — a malformed payload, a schema that stopped
+    // accepting 'unchanged', a failed write — because those leave the seeded
+    // grant untouched too, which is exactly what is being asserted.
+    expect(res.ok).toBe(true);
+    expect(readWorkspaceSettings().vaultInlineReveal).toBe('full');
     expect(readWorkspaceSettings().modelJudgeConsent).toEqual(granted);
   });
 
+  // THE UNTOUCHED CASE, and the reason the answer is three-state. The form
+  // submits every field on every save, so with a boolean an unrelated edit had to
+  // assert something about this grant — and both assertions are wrong for a STALE
+  // one. 'revoked' deletes the record and with it the paused badge, the
+  // `aka status` paused line and `aka sync-history`'s stale branch, leaving a
+  // user who did opt in told that they never did. 'granted' is worse: it
+  // re-consents to a widened payload nobody affirmed.
   it("leaves a stale grant exactly as it was when the row is 'unchanged'", async () => {
     const stale = {
       acknowledgedAt: '2020-01-01T00:00:00.000Z',

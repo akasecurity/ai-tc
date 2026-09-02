@@ -220,6 +220,60 @@ describe('SqliteHistorySyncRepository — which deployment the stamps are for', 
     expect(db.historySync.counts(ALL)).toMatchObject({ pending: 3, sent: 0 });
   });
 
+  // THE DEPLOYMENT-CHANGE LEAK. `outbox_owed` says "a live forward owed this
+  // row" — and the forward that owed it belonged to the OLD deployment. Left
+  // set, the drain reads it as owed to the new one and ships the old
+  // deployment's prompts, with their text, somewhere they were never sent. That
+  // is the same leak the removed floor was reset to prevent, so a set-only
+  // marker would have been worse than the bound it replaced.
+  it('disowns capture markers when the deployment changes', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    // Attach to A FIRST, then let a forward under A mark the row — the real
+    // order, and the one that matters: a marker written before any attachment
+    // belongs to nobody and is cleared by the same statement.
+    db.historySync.rearmFor('fingerprint-a', ALL);
+    db.historySync.markCaptureOwed('s-1-prompt');
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+
+    db.historySync.rearmFor('fingerprint-b', ALL);
+
+    // Owed to nobody now: only a live forward under the NEW deployment can mark
+    // it again, and that forward has not run.
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+    // ...while the structural rows the new deployment IS entitled to came back.
+    expect(db.historySync.counts(ALL)).toMatchObject({ pending: 3 });
+  });
+
+  // The other side of that rule, and the one I only found by breaking it: this
+  // method ALSO runs the first time a machine attaches at all (no fingerprint →
+  // A), and the markers on disk then were written by A's own live path earlier
+  // in the same session. Disowning those empties the outbox at the moment it
+  // starts filling — every capture the live path already failed to deliver,
+  // dropped, silently.
+  it('keeps capture markers on a first attach, which is not a change', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+
+    // No previous deployment: the markers belong to this one.
+    db.historySync.rearmFor('fingerprint-a', ALL);
+
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+  });
+
+  // Re-attaching to the SAME deployment is not a change either — the recipient
+  // is unchanged, so what it is owed is unchanged.
+  it('keeps capture markers when the same deployment is re-recorded', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.rearmFor('fingerprint-a', ALL);
+    db.historySync.markCaptureOwed('s-1-prompt');
+
+    db.historySync.rearmFor('fingerprint-a', ALL);
+
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+  });
+
   // A row that could not be rebuilt locally fails the same way anywhere, so
   // pointing at a new deployment must not resurrect it.
   it('leaves permanently skipped rows skipped across a change of deployment', () => {
@@ -691,6 +745,21 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     // one is a planner decision worth noticing if it changes.
     expect(plan).toContain('idx_audit_type_t');
     expect(plan).not.toContain('SCAN audit_events');
+  });
+
+  // The CAPTURE drain's read, which has no lower bound on started_at and so has
+  // nothing to stop a walk without an index of its own. Its "is anything owed?"
+  // form runs three times a pass over a table with no retention policy.
+  it('finds owed captures on the partial index rather than scanning', () => {
+    const plan = planFor((ledger) => ledger.pendingCaptureRows(1, ALL));
+    expect(plan).toContain('idx_audit_outbox_owed');
+    expect(plan).not.toContain('SCAN audit_events');
+    // A temp B-tree for the ORDER BY REMAINS, and is not what this index is for:
+    // `event_type IN (…)` is several seeks, so the order cannot come straight
+    // off any index of this shape — the pre-existing one sorts too. What the
+    // partial index changes is WHAT is sorted. Its entries are owed rows only,
+    // so both the seek and the sort are bounded by the outbox rather than by
+    // every unsettled capture in a table with no retention policy.
   });
 
   // The one WRITE in this block, and the reason it needs its own index.

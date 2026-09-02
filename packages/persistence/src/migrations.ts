@@ -965,6 +965,21 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
   // re-attached. A capture recorded while detached never passes through the
   // attached gateway, so it is never marked, and the window it sits in stops
   // being something anyone has to reason about.
+  //
+  // NO BACKFILL, and refusing one is the decision rather than an omission. A
+  // store upgrading from the window-based drain carries rows that design
+  // considered owed and this one cannot: nothing recorded whether a forward was
+  // ever attempted for them. The only column that could seed this is
+  // `backlog_before`, and seeding from it would re-import the DETACHED window —
+  // the precise leak the marker exists to close, reintroduced by the migration
+  // that closes it. So those rows stay unmarked and are never sent.
+  //
+  // The cost is real and worth naming: on a machine attached today, captures the
+  // live path already failed to deliver are dropped from the outbox by this
+  // upgrade, and `capturesPending` reads false, so status reports the machine as
+  // caught up while the deployment never receives them. That is the safe
+  // direction — it sends nothing the grant did not cover — but it is a loss, and
+  // silent.
   if (!columns.includes('outbox_owed')) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN outbox_owed integer`);
   }
@@ -974,14 +989,40 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
   // grain. With all four columns present the planner answers it from the index
   // alone (a covering index, no table access), which is what this exists for.
   //
-  // The drain's own reads are NOT the reason for it: they bound on started_at
-  // directly after event_type, and `idx_audit_type_t` already puts those two
-  // adjacent, so the planner prefers it and is right to. Both plans are pinned
-  // in the ledger's tests, because a column order that stops working stops
-  // working silently.
+  // The STRUCTURAL drain's reads are not the reason for it: they bound on
+  // started_at directly after event_type, and `idx_audit_type_t` already puts
+  // those two adjacent, so the planner prefers it and is right to. The CAPTURE
+  // drain's read is not served by it either, and gets its own index below. Every
+  // plan is pinned in the ledger's tests, because a column order that stops
+  // working stops working silently.
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_audit_events_sync
        ON audit_events (event_type, synced_at, sync_claimed_at, started_at)`,
+  );
+  // The CAPTURE drain's read, which has no lower bound to stop a walk.
+  //
+  // Its predicate is `outbox_owed = 1` plus the capture types, ordered by
+  // started_at — and `outbox_owed` leads no other index, so without this the
+  // "is anything owed?" probe (LIMIT 1, three call sites a pass) tests every
+  // unsettled capture row in a table that has no retention policy. On the
+  // machine this design is aimed at — one that ran detached and accumulated
+  // capture rows — that is exactly the set that grows without bound.
+  //
+  // PARTIAL for the reason the sweep's index below is: an owed row exists only
+  // between a failed forward and the drain that settles it, so the index stays a
+  // handful of entries wide however large the store gets, and the writes that
+  // never touch the column — nearly all of them — do not maintain it at all.
+  //
+  // Its COLUMNS mirror idx_audit_events_sync deliberately, and that is what makes
+  // the planner take it: with fewer, it prices the wider index higher and picks
+  // that one instead, leaving this dead. The order by still costs a temp B-tree
+  // — `event_type IN (…)` is several seeks, so no index of this shape answers it
+  // — but what is seeked and sorted is then the outbox rather than every
+  // unsettled capture in the store. Both facts are pinned in the ledger's plan
+  // tests, because an index nothing chooses is write cost with no read benefit.
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_audit_outbox_owed
+       ON audit_events (event_type, synced_at, sync_claimed_at, started_at) WHERE outbox_owed = 1`,
   );
   // The stale-claim sweep cannot use the index above: that one leads with
   // `event_type`, and the sweep's predicate never mentions it, so the planner

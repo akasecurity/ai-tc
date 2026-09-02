@@ -227,6 +227,7 @@ export class SqliteHistorySyncRepository {
   private readonly captureRowsStmt: StatementSync;
   private readonly markOwedStmt: StatementSync;
   private readonly captureSkipCountStmt: StatementSync;
+  private readonly disownCapturesStmt: StatementSync;
   private readonly partitionStmt: StatementSync;
   private readonly claimRowStmt: StatementSync;
   private readonly releaseRowStmt: StatementSync;
@@ -381,23 +382,31 @@ export class SqliteHistorySyncRepository {
     );
     // Permanent skips are NOT re-armed: a row that failed to rebuild locally
     // fails the same way against any deployment.
-    // STRUCTURAL ONLY, and the capture half is deliberately absent — it was
-    // added here and then removed, so the reasoning is worth keeping.
+    // STRUCTURAL ONLY, and the capture half is handled by disownCapturesStmt
+    // below rather than here — the two lanes discard different things.
     //
     // Re-arming exists because a stamp records that ONE deployment received a
-    // row, and the next one has not. That argument holds for the structural
-    // lane, which reads `started_at < :before` and so re-drains the rows the
-    // re-arm just cleared. It does NOT hold for captures, which read the other
-    // side of the same boundary (`started_at >= :since`): every row a
-    // deployment change re-arms was recorded before the new attachment, so the
-    // capture lane would never offer one again. Widening this achieved nothing
-    // but un-stamping delivered rows for ever.
+    // row, and the next one has not. For the structural lane that means clearing
+    // `synced_at`, so those rows are offered to the new deployment again.
     //
-    // And re-offering them would be WRONG, which is why the fix is to narrow
-    // rather than to loosen the bound. A capture recorded under deployment A is
-    // pre-attach relative to B, and the grant says the pre-attach half sends the
-    // record of activity, not its text. B is entitled to the structural rows —
-    // which it gets, because those DO re-arm — and not to the prompts.
+    // The capture lane wants the opposite of that, which is why it is a separate
+    // statement rather than a wider WHERE:
+    //
+    // A capture recorded under deployment A is pre-attach relative to B, and the
+    // grant says the pre-attach half sends the record of activity, not its text.
+    // B is entitled to the structural rows — which it gets, because those DO
+    // re-arm above — and not to the prompts.
+    //
+    // The marker is what carries that now, so it is CLEARED rather than left:
+    // `outbox_owed` says "a live forward owed this row", and the forward that
+    // owed it was A's. Left set, the drain would read it as owed to B and ship
+    // A's prompts, with their text, to a deployment that never saw them —
+    // exactly the leak the removed floor was reset to prevent. Set-only would
+    // have made this marker worse than the bound it replaced.
+    this.disownCapturesStmt = db.prepare(
+      `UPDATE audit_events SET outbox_owed = NULL
+        WHERE outbox_owed IS NOT NULL AND event_type IN (${CAPTURE_TYPE_LIST})`,
+    );
     this.rearmStmt = db.prepare(
       `UPDATE audit_events SET synced_at = NULL
         WHERE synced_at > 0 AND event_type IN (${TYPE_LIST})`,
@@ -672,7 +681,20 @@ export class SqliteHistorySyncRepository {
     withTransaction(
       this.db,
       () => {
+        // Read BEFORE the overwrite: whether a PREVIOUS deployment existed is
+        // what decides the capture half, and this is the last moment it is
+        // knowable.
+        const previous = getRow<{ fingerprint: string | null }>(this.fingerprintStmt)?.fingerprint;
         this.rearmStmt.run();
+        // ONLY on a change BETWEEN deployments, never on a first attach. This
+        // method also runs the first time a machine attaches at all
+        // (`undefined` → A), and there the markers on disk were written by A's
+        // own live path earlier in the same session — disowning them would
+        // silently empty the outbox at the moment it started filling. What must
+        // be disowned is a marker the PREVIOUS deployment's forward wrote.
+        if (previous !== null && previous !== undefined && previous !== fingerprint) {
+          this.disownCapturesStmt.run();
+        }
         this.setFingerprintStmt.run({ fingerprint, backlogBefore });
       },
       'IMMEDIATE',

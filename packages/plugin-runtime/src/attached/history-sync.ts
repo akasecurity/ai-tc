@@ -444,7 +444,17 @@ async function drainCaptures(
     // iteration stamped or skipped everything it took, so the unstamped set has
     // shrunk and the next page is simply the new head of it. An offset over a
     // set being mutated underneath would step past rows.
-    const rows = d.ledger.pendingCaptureRows(CAPTURE_BATCH_SIZE, d.now() - CAPTURE_GRACE_MS);
+    // `backlogBefore` is the attachment boundary, and this lane reads the side of
+    // it the structural lane does not: captures recorded FROM the attachment
+    // onwards, which the live path owed and did not deliver. Older captures are
+    // pre-attach history and belong to the structural lane, which sends them
+    // without their text — draining them here would put a machine's whole local
+    // history of prompts on the wire under copy that promises the opposite.
+    const rows = d.ledger.pendingCaptureRows(
+      CAPTURE_BATCH_SIZE,
+      d.backlogBefore,
+      d.now() - CAPTURE_GRACE_MS,
+    );
     if (rows.length === 0) return { sent, skipped };
 
     const ready: { id: string; event: IngestEvent }[] = [];

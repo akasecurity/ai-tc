@@ -49,9 +49,12 @@ const seedRows = (sessions = 1): void => {
 /**
  * Capture rows, which the structural seeder deliberately does not write.
  *
- * `startedAt` is well before T0 so the drain's grace window (which holds back
- * anything newer than now - 30s, leaving it to the live path) does not hide
- * them. One test overrides it precisely to exercise that window.
+ * `startedAt` has to land inside a window with a bound at each end: AFTER the
+ * attachment (AT), because the lane deliberately ignores pre-attach captures —
+ * those are the structural lane's subject and travel without their text — and
+ * before now - 30s, so the grace window does not hold them back for the live
+ * path. An hour before T0 satisfies both. Two tests override it to exercise each
+ * bound.
  */
 const seedCaptures = (
   rows: readonly { id: string; content?: string | undefined; sourceTool?: string; atMs?: number }[],
@@ -65,7 +68,7 @@ const seedCaptures = (
         eventType: 'prompt',
         rootSessionId: 'cap-session',
         parentId: 'cap-session',
-        startedAt: new Date(row.atMs ?? T0 - 86_000_000).toISOString(),
+        startedAt: new Date(row.atMs ?? T0 - 3_600_000).toISOString(),
         // `content` omitted entirely for the unexpressible-row case: the input
         // shape is `z.string().optional()`, so undefined is how a row arrives
         // without text — null would not parse.
@@ -690,7 +693,7 @@ describe('runHistorySync — the capture lane', () => {
     await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
 
     expect(l.captures.map((c) => c.content)).toEqual(['text of cap-1']);
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
   });
 
   // THE ROUTING RULE. A capture on the structural lane reaches a route that
@@ -719,7 +722,7 @@ describe('runHistorySync — the capture lane', () => {
       sendCaptures: () => Promise.resolve({ settled: 0 }),
     });
 
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL)).map((r) => r.id)).toEqual([
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL)).map((r) => r.id)).toEqual([
       'cap-1',
     ]);
   });
@@ -733,7 +736,7 @@ describe('runHistorySync — the capture lane', () => {
       sendCaptures: () => Promise.reject(new Error('unreachable')),
     });
 
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL)).map((r) => r.id)).toEqual([
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL)).map((r) => r.id)).toEqual([
       'cap-1',
     ]);
   });
@@ -750,7 +753,7 @@ describe('runHistorySync — the capture lane', () => {
     await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
 
     expect(l.captures.map((c) => c.content)).toEqual(['text of cap-good']);
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
   });
 
   // The grace window leaves a just-recorded capture to the live path, so the
@@ -763,8 +766,31 @@ describe('runHistorySync — the capture lane', () => {
     await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
 
     expect(l.captures).toEqual([]);
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL)).map((r) => r.id)).toEqual([
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL)).map((r) => r.id)).toEqual([
       'cap-fresh',
+    ]);
+  });
+
+  // THE PRE-ATTACH BOUND, and it is a privacy assertion rather than a scoping
+  // one. The disclosure says the pre-attach half of the grant sends "the record
+  // of activity" and that only what a live send could not deliver carries its
+  // TEXT. Without this bound a first attach would drain the machine's entire
+  // local history of prompts, text and all, under copy promising the opposite —
+  // and every other test here would stay green, because they all seed inside the
+  // window.
+  it('never drains a capture recorded before the machine attached', async () => {
+    attach({ grantFor: ENDPOINT });
+    const beforeAttach = Date.parse(AT) - 60_000;
+    seedCaptures([{ id: 'cap-pre', atMs: beforeAttach }, { id: 'cap-post' }]);
+    const l = lanes();
+
+    await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
+
+    expect(l.captures.map((c) => c.content)).toEqual(['text of cap-post']);
+    // It is not skipped either — it stays owed, and the structural lane is what
+    // covers that period, without the text.
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL)).map((r) => r.id)).toEqual([
+      'cap-pre',
     ]);
   });
 
@@ -778,6 +804,6 @@ describe('runHistorySync — the capture lane', () => {
     await expect(run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures })).resolves.toBeNull();
 
     expect(l.captures).toEqual([]);
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toHaveLength(1);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toHaveLength(1);
   });
 });

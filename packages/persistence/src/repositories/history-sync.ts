@@ -209,19 +209,30 @@ export class SqliteHistorySyncRepository {
     // absorbed rather than rejected; the structural lane pages by session only
     // because /v1/audit-events stubs nothing and its foreign keys are real.
     //
-    // `:before` here is a GRACE WINDOW, not the backlog boundary the structural
-    // lane uses. Every unstamped capture is owed, whenever it was recorded — a
-    // capture the live path dropped ten seconds ago is exactly what the outbox
-    // exists for. What the window buys is not correctness but quiet: it keeps
-    // this pass off rows the live forward is probably still mid-flight on. A row
-    // sent twice is harmless (the receiver dedups on an id derived from the
-    // row's own tuple), so the window may be small.
+    // TWO bounds, and they are not the structural lane's.
+    //
+    // `:since` is the attachment boundary, and it is the INVERSE of how the
+    // structural lane uses one. There, rows BEFORE the boundary are the backlog
+    // to drain and rows after belong to the live path. Here, rows after it are
+    // the ones the live path was supposed to deliver — so an unstamped one is
+    // precisely what the outbox owes — and rows BEFORE it are pre-attach
+    // history, which is the structural lane's subject and travels WITHOUT
+    // `content`. Dropping this bound would drain a machine's entire local
+    // history of prompts, text and all, on its first attach: covered by no
+    // disclosure, since the copy says the pre-attach half sends the record of
+    // activity only.
+    //
+    // `:before` is a GRACE WINDOW rather than a boundary. It buys quiet, not
+    // correctness: it keeps this pass off rows the live forward is probably
+    // still mid-flight on. A row sent twice is harmless — the receiver dedups on
+    // an id derived from the row's own tuple — so it may be small.
     this.captureRowsStmt = db.prepare(
       `SELECT ${ROW_COLUMNS}
          FROM audit_events
         WHERE synced_at IS NULL
           AND sync_claimed_at IS NULL
           AND event_type IN (${CAPTURE_TYPE_LIST})
+          AND started_at >= :since
           AND started_at < :before
         ORDER BY started_at
         LIMIT :limit`,
@@ -396,12 +407,14 @@ export class SqliteHistorySyncRepository {
   /**
    * Captures this machine still owes the deployment, oldest first.
    *
-   * `before` is a grace window (see captureRowsStmt), not the structural lane's
-   * backlog boundary: a capture is owed whenever it was recorded, because the
-   * reason it is here is that no live forward delivered it.
+   * `since` is the attachment boundary — only captures from the period this
+   * machine was attached, because those are the ones a live forward owed and
+   * failed to deliver. Anything older is pre-attach history, which travels on
+   * the structural lane without its text. `before` is the grace window. See
+   * captureRowsStmt for why the two bounds point the way they do.
    */
-  pendingCaptureRows(limit: number, before: number): AuditEventRow[] {
-    return allRows<AuditEventRow>(this.captureRowsStmt, { limit, before });
+  pendingCaptureRows(limit: number, since: number, before: number): AuditEventRow[] {
+    return allRows<AuditEventRow>(this.captureRowsStmt, { limit, since, before });
   }
 
   /** Record delivery. Called only AFTER the far side has accepted the rows. */

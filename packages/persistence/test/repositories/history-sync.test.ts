@@ -177,12 +177,12 @@ describe('SqliteHistorySyncRepository — which deployment the stamps are for', 
     db.historySync.rearmFor('fingerprint-a', ALL);
     // The live path stamps a capture through this same statement.
     db.historySync.markSynced(['s-1-prompt'], T0);
-    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+    expect(db.historySync.pendingCaptureRows(10, 0, ALL)).toEqual([]);
 
     db.historySync.rearmFor('fingerprint-b', ALL);
 
     // Owed to the new deployment again, text and all.
-    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+    expect(db.historySync.pendingCaptureRows(10, 0, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
   });
 
   // A row that could not be rebuilt locally fails the same way anywhere, so
@@ -504,7 +504,7 @@ describe('SqliteHistorySyncRepository — captures the outbox still owes', () =>
     const db = store.open();
     seedSession(db, 's-1', 0);
     seedSession(db, 's-2', 10 * MINUTE);
-    const rows = db.historySync.pendingCaptureRows(10, ALL);
+    const rows = db.historySync.pendingCaptureRows(10, 0, ALL);
     expect(rows.map((r) => r.id)).toEqual(['s-1-prompt', 's-2-prompt']);
     // The structural rows belong to the other lane and must not appear here.
     expect(rows.every((r) => r.eventType === 'prompt')).toBe(true);
@@ -515,21 +515,21 @@ describe('SqliteHistorySyncRepository — captures the outbox still owes', () =>
   it('carries the captured text', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
-    expect(db.historySync.pendingCaptureRows(10, ALL)[0]?.content).toBe('the text of a prompt');
+    expect(db.historySync.pendingCaptureRows(10, 0, ALL)[0]?.content).toBe('the text of a prompt');
   });
 
   it('does not offer a capture the live path already stamped', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
     db.historySync.markSynced(['s-1-prompt'], T0);
-    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+    expect(db.historySync.pendingCaptureRows(10, 0, ALL)).toEqual([]);
   });
 
   it('does not offer a capture another pass has claimed', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
     db.historySync.claimRows(['s-1-prompt'], T0);
-    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+    expect(db.historySync.pendingCaptureRows(10, 0, ALL)).toEqual([]);
   });
 
   // The grace window is what keeps this pass off rows the live forward is
@@ -539,8 +539,8 @@ describe('SqliteHistorySyncRepository — captures the outbox still owes', () =>
     const db = store.open();
     seedSession(db, 's-1', 0);
     // seedSession writes its prompt at T0 + 3 minutes.
-    expect(db.historySync.pendingCaptureRows(10, T0 + 2 * MINUTE)).toEqual([]);
-    expect(db.historySync.pendingCaptureRows(10, T0 + 4 * MINUTE).map((r) => r.id)).toEqual([
+    expect(db.historySync.pendingCaptureRows(10, 0, T0 + 2 * MINUTE)).toEqual([]);
+    expect(db.historySync.pendingCaptureRows(10, 0, T0 + 4 * MINUTE).map((r) => r.id)).toEqual([
       's-1-prompt',
     ]);
   });
@@ -549,7 +549,7 @@ describe('SqliteHistorySyncRepository — captures the outbox still owes', () =>
     const db = store.open();
     seedSession(db, 's-1', 0);
     seedSession(db, 's-2', 10 * MINUTE);
-    expect(db.historySync.pendingCaptureRows(1, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+    expect(db.historySync.pendingCaptureRows(1, 0, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
   });
 });
 

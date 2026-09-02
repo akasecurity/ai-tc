@@ -383,10 +383,15 @@ describe('writes are local-FIRST, then forwarded', () => {
     // it regressed: a breaker-open forward never reached the backend, so the
     // row must stay outstanding for a later drain. A stamp here would mark it
     // delivered and it would never be sent again.
-    // The forward fake keeps its own tape; `calls` is the one the LOCAL fake
-    // writes to, which is where the stamp would show up.
-    const { gateway, calls } = build({ forward: deadForward({ order: [] }) });
+    // Two tapes, because the forward fake is built before `build()` makes its
+    // own: `forwardCalls` is the fake's, `calls` is the LOCAL fake's, and the
+    // stamp would show up on the second. Both are asserted for the reason the
+    // {0,0} case below spells out — a stamp that is missing because nothing was
+    // forwarded proves nothing, so the forward is pinned as having been reached.
+    const forwardCalls: Calls = { order: [] };
+    const { gateway, calls } = build({ forward: deadForward(forwardCalls) });
     await gateway.recordCapture({ event: event('e1'), findings: [] });
+    expect(forwardCalls.order).toContain('forward.skipped');
     expect(calls.order).toContain('local.recordCapture');
     expect(calls.order).not.toContain('local.markCaptureDelivered');
   });
@@ -421,6 +426,12 @@ describe('writes are local-FIRST, then forwarded', () => {
       ),
     });
     await gateway.recordCapture({ event: event('e1'), findings: [] });
+    // Both assertions below are satisfied by a run that never forwarded at all
+    // — `recordCapture` comes first regardless, and the stamp is an ABSENCE. So
+    // the forward is pinned as having happened, or this case cannot tell
+    // "declined to stamp a {0,0}" from "nothing was sent", which is exactly the
+    // reading that would keep it green with the guard gone.
+    expect(calls.order).toContain('forward.run');
     expect(calls.order).toContain('local.recordCapture');
     expect(calls.order).not.toContain('local.markCaptureDelivered');
   });

@@ -1,8 +1,8 @@
-// The control-plane floor at the ONE device-local write path for a detection's
-// policy assignment. Every case here drives a real store in a real temp `~/.aka`
-// with a real settings.json and a real policy-cache.json, because the whole
-// subject is how those three files combine — a stubbed reader would assert the
-// wiring this suite exists to check.
+// The control-plane floor at the device-local write paths a detection has: its
+// policy assignment, and whether it runs at all. Every case here drives a real
+// store in a real temp `~/.aka` with a real settings.json and a real
+// policy-cache.json, because the whole subject is how those three files combine
+// — a stubbed reader would assert the wiring this suite exists to check.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -10,7 +10,11 @@ import type { InstalledPackInput, Policy, PolicyBundle, Rule } from '@akasecurit
 import { describe, expect, it } from 'vitest';
 
 import { POLICY_CACHE_FILENAME } from '../src/attached-derived.ts';
-import { controlPlanePolicyFloor, PolicyFloorError } from '../src/policy-floor.ts';
+import {
+  controlPlanePolicyFloor,
+  packEnablementRefusal,
+  PolicyFloorError,
+} from '../src/policy-floor.ts';
 import { SETTINGS_FILENAME } from '../src/settings.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 
@@ -460,5 +464,190 @@ describe('controlPlanePolicyFloor', () => {
         store.home,
       ),
     ).toEqual({ floor: 'monitor', locked: false });
+  });
+});
+
+/** Whether the pack's row is switched on, read outside the repository. */
+function storedEnabled(packId: string): boolean {
+  const raw = store.openRaw();
+  const row = raw.prepare(`SELECT enabled FROM installed_packs WHERE pack_id = ?`).get(packId) as
+    { enabled: number } | undefined;
+  raw.close();
+  return row?.enabled === 1;
+}
+
+describe('control-plane floor on setEnabled', () => {
+  it('refuses to switch OFF a detection the control plane governs', () => {
+    // Disabling is not a weaker archetype, it is the absence of one: a disabled
+    // pack contributes no rules, so nothing is left for the floor to be stated
+    // over. And unlike a below-floor assignment, the runtime's raise-only merge
+    // cannot paper over it — a bundle carrying policies but no rules has no
+    // rule to re-supply.
+    writeAttachedSettings();
+    writePolicyCache([policy({ target: { category: 'secret' }, action: 'warn' })]);
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', [rule('secrets/aws')])]);
+
+    let caught: unknown;
+    try {
+      db.installedPacks.setEnabled('aka', 'secrets', false);
+    } catch (err) {
+      caught = err;
+    }
+    db.close();
+
+    expect(caught).toBeInstanceOf(PolicyFloorError);
+    const error = caught as PolicyFloorError;
+    expect(error.pack).toBe('aka/secrets');
+    // No archetype was asked for, and the floor is carried so a surface can say
+    // what the organization requires of the detection it kept switched on.
+    expect(error.attempted).toBeNull();
+    expect(error.floor).toBe('warn');
+    expect(error.refusal).toBe('disable');
+    // A refusal, not a substitution: the row is exactly as it was.
+    expect(storedEnabled('secrets')).toBe(true);
+  });
+
+  it('refuses the switch-off even under a MONITOR floor, which forbids no assignment', () => {
+    // The weakest floor there is: every archetype satisfies it, so the
+    // assignment guard refuses nothing here. Not running is still below it, and
+    // that is the whole reason this constraint cannot be expressed as a point on
+    // the action ladder.
+    writeAttachedSettings();
+    writePolicyCache([policy({ target: { category: 'secret' }, action: 'log' })]);
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', [rule('secrets/aws')])]);
+
+    expect(db.installedPacks.policyFloor('aka', 'secrets')).toEqual({
+      floor: 'monitor',
+      locked: false,
+    });
+    expect(db.installedPacks.setPolicy('aka', 'secrets', 'monitor')).toBe(true);
+    expect(() => db.installedPacks.setEnabled('aka', 'secrets', false)).toThrow(PolicyFloorError);
+    db.close();
+    expect(storedEnabled('secrets')).toBe(true);
+  });
+
+  it('refuses to switch off a LOCKED detection', () => {
+    writeAttachedSettings();
+    writePolicyCache([
+      policy({ target: { ruleId: 'secrets/aws' }, action: 'redact', provenance: 'authored' }),
+    ]);
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', [rule('secrets/aws')])]);
+
+    let caught: unknown;
+    try {
+      db.installedPacks.setEnabled('aka', 'secrets', false);
+    } catch (err) {
+      caught = err;
+    }
+    db.close();
+
+    // 'disable' rather than 'lock': what was refused is the switch-off, and a
+    // reader told their organization "set the policy" would go looking for a
+    // picker they never opened.
+    expect((caught as PolicyFloorError).refusal).toBe('disable');
+    expect(storedEnabled('secrets')).toBe(true);
+  });
+
+  it('leaves a detection the bundle never names free to be switched off', () => {
+    writeAttachedSettings();
+    writePolicyCache([policy({ target: { category: 'pii' }, action: 'block' })]);
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', [rule('secrets/aws')])]);
+
+    expect(db.installedPacks.policyFloor('aka', 'secrets')).toBeNull();
+    expect(db.installedPacks.setEnabled('aka', 'secrets', false)).toBe(true);
+    db.close();
+    expect(storedEnabled('secrets')).toBe(false);
+  });
+
+  it('always allows a RE-ENABLE, including of a locked detection', () => {
+    // The realistic route to a governed pack that is switched off: it was
+    // switched off while the machine was its own authority, and then attached.
+    // Re-enabling moves toward what the organization asked for, so it stays the
+    // device's to do — a lock is over which archetype the pack carries, not
+    // over whether it runs.
+    writeStandaloneSettings();
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', [rule('secrets/aws')])]);
+    expect(db.installedPacks.setEnabled('aka', 'secrets', false)).toBe(true);
+
+    writeAttachedSettings();
+    writePolicyCache([
+      policy({ target: { ruleId: 'secrets/aws' }, action: 'block', provenance: 'authored' }),
+    ]);
+    expect(db.installedPacks.policyFloor('aka', 'secrets')?.locked).toBe(true);
+
+    expect(db.installedPacks.setEnabled('aka', 'secrets', true)).toBe(true);
+    // …and it is still switched on afterwards, so the guard cannot be satisfied
+    // by refusing everything.
+    expect(() => db.installedPacks.setEnabled('aka', 'secrets', false)).toThrow(PolicyFloorError);
+    db.close();
+    expect(storedEnabled('secrets')).toBe(true);
+  });
+
+  it('re-enabling a governed detection is not refused for being a write at all', () => {
+    writeAttachedSettings();
+    writePolicyCache([policy({ target: { category: 'secret' }, action: 'block' })]);
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', [rule('secrets/aws')])]);
+
+    // Already on, so this is the no-op direction — it must still be permitted,
+    // and must still report that the row matched.
+    expect(db.installedPacks.setEnabled('aka', 'secrets', true)).toBe(true);
+    db.close();
+    expect(storedEnabled('secrets')).toBe(true);
+  });
+
+  it('imposes nothing on a machine that is not attached, even with a cache left behind', () => {
+    writeStandaloneSettings();
+    writePolicyCache([policy({ target: { category: 'secret' }, action: 'block' })]);
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', [rule('secrets/aws')])]);
+
+    expect(db.installedPacks.setEnabled('aka', 'secrets', false)).toBe(true);
+    db.close();
+    expect(storedEnabled('secrets')).toBe(false);
+  });
+
+  it('imposes nothing when the machine has no cached bundle yet', () => {
+    writeAttachedSettings();
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', [rule('secrets/aws')])]);
+
+    expect(db.installedPacks.setEnabled('aka', 'secrets', false)).toBe(true);
+    db.close();
+    expect(storedEnabled('secrets')).toBe(false);
+  });
+
+  it('still reports a no-such-detection rather than refusing it', () => {
+    // The guard runs first, and a pack that is not installed contributes no
+    // rules and so carries no floor — so the answer stays "nothing matched",
+    // which is what a caller distinguishes an edit from.
+    writeAttachedSettings();
+    writePolicyCache([policy({ target: { category: 'secret' }, action: 'block' })]);
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', [rule('secrets/aws')])]);
+
+    expect(db.installedPacks.setEnabled('aka', 'missing', false)).toBe(false);
+    db.close();
+  });
+});
+
+describe('packEnablementRefusal', () => {
+  it('refuses a disable under any floor and permits every enable', () => {
+    for (const locked of [false, true]) {
+      for (const floor of ['monitor', 'warn', 'redact', 'block', 'vault'] as const) {
+        expect(packEnablementRefusal(false, { floor, locked })).toBe('disable');
+        expect(packEnablementRefusal(true, { floor, locked })).toBeNull();
+      }
+    }
+  });
+
+  it('refuses nothing where there is no floor', () => {
+    expect(packEnablementRefusal(false, null)).toBeNull();
+    expect(packEnablementRefusal(true, null)).toBeNull();
   });
 });

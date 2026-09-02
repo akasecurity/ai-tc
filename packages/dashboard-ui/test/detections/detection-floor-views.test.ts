@@ -7,7 +7,7 @@ import { DetectionDetailView } from '../../src/detections/DetectionDetailView.ts
 import { DetectionsListView } from '../../src/detections/DetectionsListView.tsx';
 import { policyMeta } from '../../src/detections/meta.ts';
 import type { DetectionPolicyFloor } from '../../src/detections/policy-floor.ts';
-import { policyFloorReason } from '../../src/detections/policy-floor.ts';
+import { DETECTION_STAYS_ON_REASON, policyFloorReason } from '../../src/detections/policy-floor.ts';
 
 // The two surfaces that used to disagree with enforcement, driven end to end
 // from the serializable floor a host hands them.
@@ -80,6 +80,23 @@ function buttonTags(html: string): string[] {
     .split('<button')
     .slice(1)
     .map((chunk) => chunk.slice(0, chunk.indexOf('>')));
+}
+
+/**
+ * The opening tag of the enable/disable Switch, which renders as a <button> of
+ * its own. Picked out by slot rather than by position: the pane carries other
+ * buttons — the picker's five archetypes, "Add rule" — and an assertion aimed
+ * at the wrong one would pass whatever this control emitted.
+ */
+function switchTag(html: string): string {
+  const tag = buttonTags(html).find((t) => t.includes('data-slot="switch"'));
+  expect(tag, 'the pane rendered no enable/disable switch at all').toBeDefined();
+  return tag ?? '';
+}
+
+/** The same pane with a host that can actually write the enabled state. */
+function toggleable(props: Partial<Parameters<typeof DetectionDetailView>[0]> = {}): string {
+  return detail({ onToggleEnabled: () => undefined, ...props });
 }
 
 function list(floorsById?: ReadonlyMap<string, DetectionPolicyFloor>): string {
@@ -175,6 +192,85 @@ describe('DetectionDetailView under a control-plane floor', () => {
     expect(html.match(/data-unavailable/g)?.length).toBe(2);
     expect(html).toContain('Not available on this machine.');
     expect(html).toContain(policyFloorReason(WARN_FLOOR));
+  });
+});
+
+describe('the enable toggle under a control-plane floor', () => {
+  it('renders byte-identically when no floor and no refusal are supplied', () => {
+    // The standalone machine again, at the other control. It must not pick up an
+    // aria-disabled switch, a reason line, or a message.
+    expect(toggleable({ policyFloor: null })).toBe(toggleable());
+    expect(toggleable({ enabledError: null })).toBe(toggleable());
+  });
+
+  it('withholds the switch-off without taking it out of the tab order', () => {
+    const html = toggleable({ policyFloor: WARN_FLOOR });
+    // aria, never the native attribute — the same contract the picker's
+    // unassignable archetypes keep, and for the same reason: a natively
+    // disabled control leaves the tab order, so the reason never reaches a
+    // keyboard or screen-reader user. Asserted precisely, because
+    // `toContain('disabled')` matches the aria form too.
+    expect(switchTag(html)).toContain('aria-disabled="true"');
+    expect(switchTag(html)).not.toContain(' disabled=""');
+    // Positive control on the same control: unconstrained, it carries neither.
+    expect(switchTag(toggleable())).not.toContain('aria-disabled');
+  });
+
+  it('says why, in a line the switch points at', () => {
+    const html = toggleable({ policyFloor: WARN_FLOOR });
+    expect(html).toContain(DETECTION_STAYS_ON_REASON);
+    expect(html).toContain('data-slot="enabled-locked-reason"');
+    // The reason travels on the control as well, for a pointer user.
+    expect(switchTag(html)).toContain(`title="${DETECTION_STAYS_ON_REASON}"`);
+    const describedBy = /aria-describedby="([^"]+)"/.exec(switchTag(html));
+    expect(describedBy, 'the withheld switch describes nothing').not.toBeNull();
+    // And it points at an element that is really in the markup — an id
+    // referencing nothing announces nothing, and reads identically here.
+    expect(html).toMatch(
+      new RegExp(`id="${describedBy?.[1] ?? ''}"[^>]*data-slot="enabled-locked-reason"`),
+    );
+  });
+
+  it('withholds it under a Monitor floor too, where the picker restricts nothing', () => {
+    // "Off" is below every archetype, so the weakest floor still forbids it.
+    // Both halves asserted on one rendering, so this cannot pass by the pane
+    // having rendered neither control.
+    const html = toggleable({ policyFloor: { floor: 'monitor', locked: false } });
+    expect(switchTag(html)).toContain('aria-disabled="true"');
+    expect(html).not.toContain('data-unavailable');
+  });
+
+  it('leaves a governed detection that is already off free to be turned back on', () => {
+    // Re-enabling moves toward what the organization asked for. A store can hold
+    // a detection switched off from before this refusal existed, and withholding
+    // the toggle there would leave it stuck off.
+    const html = toggleable({ d: { ...DETAIL, enabled: false }, policyFloor: LOCKED });
+    expect(switchTag(html)).not.toContain('aria-disabled');
+    expect(html).not.toContain('data-slot="enabled-locked-reason"');
+  });
+
+  it('does not make a read-only pane look restricted', () => {
+    // No onToggleEnabled is a different statement — this host offers no
+    // enable/disable at all, not that the organization withheld one. It must not
+    // sprout a reason for a control that is not there.
+    const html = detail({ policyFloor: LOCKED });
+    expect(html).not.toContain('data-slot="switch"');
+    expect(html).not.toContain('data-slot="enabled-locked-reason"');
+  });
+
+  it('renders a refused toggle at the toggle, not under the picker', () => {
+    // The two refusals are about different controls. Reporting this one under
+    // the picker would attribute the organization's constraint to a choice it
+    // never touched.
+    const message = 'That change was not saved.';
+    const html = toggleable({ enabledError: message });
+    expect(html).toContain('data-slot="enabled-write-error"');
+    expect(html).toContain(message);
+    expect(html).not.toContain('data-slot="policy-write-error"');
+    // And the picker's own refusal still lands at the picker.
+    const other = toggleable({ policyError: message });
+    expect(other).toContain('data-slot="policy-write-error"');
+    expect(other).not.toContain('data-slot="enabled-write-error"');
   });
 });
 

@@ -5,19 +5,23 @@
  * entirely the user's. On an attached one the organization's bundle is a FLOOR:
  * the device may raise a pack above what the control plane asks for, but never
  * set one below it, and a pack whose answer the organization has AUTHORED is not
- * locally re-assignable at all. Both constraints come from what the bundle
- * actually says — a pack it never reaches stays entirely the user's, exactly as
- * on a standalone machine.
+ * locally re-assignable at all. A pack the bundle governs at ALL may not be
+ * switched OFF either, whatever archetype it carries — switching a detection off
+ * sits below every one of them, so it is the one move no floor could ever
+ * permit. All three constraints come from what the bundle actually says — a pack
+ * it never reaches stays entirely the user's, exactly as on a standalone
+ * machine.
  *
  * Two properties make that floor honest rather than decorative:
  *
- *   It is computed HERE, below the one write path, not on the surface that
- *   renders the picker. A refusal that lived in the dashboard would leave the
- *   CLI and every other local caller writing whatever they liked, and the
+ *   It is computed HERE, below the device-local write paths, not on the surface
+ *   that renders the picker. A refusal that lived in the dashboard would leave
+ *   the CLI and every other local caller writing whatever they liked, and the
  *   attached runtime's raise-only merge would then be silently papering over a
  *   stored assignment the user believes is in force. That merge stays where it
  *   is — it is the second line of defence, and it is the only one that binds a
- *   store written before this refusal existed.
+ *   store written before this refusal existed. It does not reach the switch-off,
+ *   which is why that one is refused here or nowhere.
  *
  *   It refuses by THROWING (see PolicyFloorError). Writing a different value
  *   than the caller asked for would leave a user staring at a picker that
@@ -52,8 +56,20 @@ export interface FloorRule {
   readonly category: string;
 }
 
-/** Why an assignment was refused: the pack is below the floor, or it is locked. */
-export type PolicyFloorRefusal = 'floor' | 'lock';
+/**
+ * Why a device-local write to a governed pack was refused.
+ *
+ * Three members rather than two, because the three have different remedies and
+ * a reader who cannot tell them apart takes the wrong one. `floor` says the
+ * archetype asked for is too weak — pick a stronger one. `lock` says no
+ * archetype is available, because the organization wrote this detection's
+ * answer. `disable` is not about an archetype at all: the write was a switch-off
+ * of a governed detection, and the remedy is neither of the other two's. Folding
+ * it into `floor` would send someone to a picker they never opened; folding it
+ * into `lock` would claim the organization had set a policy it may only have
+ * stated a minimum for.
+ */
+export type PolicyFloorRefusal = 'floor' | 'lock' | 'disable';
 
 /**
  * What the control plane imposes on ONE installed pack.
@@ -65,8 +81,36 @@ export type PolicyFloorRefusal = 'floor' | 'lock';
 export type { PackPolicyFloor };
 
 /**
- * A refused pack-policy assignment, carrying everything a surface needs to say
- * why without re-deriving it.
+ * One sentence per refusal, each naming the organization as the author of the
+ * constraint. These reach a user — through a CLI's stderr as readily as through
+ * a page — so none of them may read as a product fault or as this machine
+ * having decided anything.
+ */
+function refusalMessage(
+  pack: string,
+  attempted: BuiltinPolicyId | null,
+  floor: BuiltinPolicyId,
+  refusal: PolicyFloorRefusal,
+): string {
+  switch (refusal) {
+    case 'lock':
+      return `refusing to re-assign '${pack}': its policy is set by the connected control plane`;
+    case 'disable':
+      // Deliberately says nothing about the floor: what forbids this is that
+      // the control plane governs the detection at all, and quoting a minimum
+      // here would invite the reader to satisfy it and try again.
+      return `refusing to disable '${pack}': it is governed by the connected control plane`;
+    case 'floor':
+      return (
+        `refusing to set '${pack}' to '${attempted ?? 'unassigned'}': the connected control ` +
+        `plane requires at least '${floor}'`
+      );
+  }
+}
+
+/**
+ * A refused device-local write to a governed pack, carrying everything a
+ * surface needs to say why without re-deriving it.
  *
  * Modelled on ManagedFieldError, and for the same reason: a caller that cannot
  * distinguish "you may not write this" from "the write failed" has to report
@@ -74,9 +118,12 @@ export type { PackPolicyFloor };
  * as a bug in the product rather than a decision by the user's own organization.
  */
 export class PolicyFloorError extends Error {
-  /** `namespace/packId` of the detection whose assignment was refused. */
+  /** `namespace/packId` of the detection whose write was refused. */
   readonly pack: string;
-  /** What the caller asked for; null is the "clear the assignment" write. */
+  /**
+   * The archetype the caller asked for, or null when the write named none —
+   * clearing the assignment, or switching the detection off.
+   */
   readonly attempted: BuiltinPolicyId | null;
   /** The weakest archetype the control plane permits for this pack. */
   readonly floor: BuiltinPolicyId;
@@ -88,12 +135,7 @@ export class PolicyFloorError extends Error {
     floor: BuiltinPolicyId,
     refusal: PolicyFloorRefusal,
   ) {
-    super(
-      refusal === 'lock'
-        ? `refusing to re-assign '${pack}': its policy is set by the connected control plane`
-        : `refusing to set '${pack}' to '${attempted ?? 'unassigned'}': the connected control ` +
-            `plane requires at least '${floor}'`,
-    );
+    super(refusalMessage(pack, attempted, floor, refusal));
     this.name = 'PolicyFloorError';
     this.pack = pack;
     this.attempted = attempted;
@@ -314,4 +356,35 @@ export function policyAssignmentRefusal(
   return isActionAtLeast(builtinPolicyToAction(effective), builtinPolicyToAction(floor.floor))
     ? null
     : 'floor';
+}
+
+/**
+ * Why a pack under `floor` may not be switched to `enabled`, or null when it
+ * may be.
+ *
+ * The asymmetry is the whole content: a DISABLE is refused for every governed
+ * pack, whatever archetype the floor names, and a RE-ENABLE is never refused.
+ * Disabling is not a weaker archetype, it is the absence of one — a disabled
+ * pack contributes no rules to the local bundle at all, so the per-rule actions
+ * the floor is stated over stop existing rather than being lowered. And what
+ * covers a stored assignment that slipped below the floor does not cover this:
+ * the attached runtime's raise-only merge re-supplies an ACTION for a rule, not
+ * the rule itself, so a bundle carrying policies but no rules (`rules` is
+ * optional on PolicyBundle) leaves a locally disabled detection simply not
+ * running, with nothing left to clamp. Re-enabling moves toward what the
+ * organization asked for and is therefore always the device's to do — including
+ * for a LOCKED pack, whose lock is over which archetype the pack carries and
+ * says nothing about whether it runs.
+ *
+ * Unlike `policyAssignmentRefusal` this also takes the ABSENCE of a floor and
+ * answers null for it, so a surface holding an optional floor per row need not
+ * spell that case out. Stated here rather than at the write path so what greys
+ * the switch out and what throws cannot disagree about which way is open.
+ */
+export function packEnablementRefusal(
+  enabled: boolean,
+  floor: PackPolicyFloor | null,
+): PolicyFloorRefusal | null {
+  if (floor === null || enabled) return null;
+  return 'disable';
 }

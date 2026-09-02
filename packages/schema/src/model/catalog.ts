@@ -274,6 +274,7 @@ openai.model('gpt-oss-120b', {
   name: 'GPT-OSS 120B',
   openWeights: true,
   retention: 'unknown',
+  defaultHosting: 'local',
   on: ['together', 'fireworks', 'groq', 'openrouter', 'bedrock', 'ollama', 'local'],
 });
 
@@ -281,6 +282,7 @@ openai.model('gpt-oss-20b', {
   name: 'GPT-OSS 20B',
   openWeights: true,
   retention: 'unknown',
+  defaultHosting: 'local',
   on: ['together', 'fireworks', 'groq', 'openrouter', 'ollama', 'local'],
 });
 
@@ -516,6 +518,9 @@ const meta = vendor('meta', {
   family: { id: 'llama', name: 'Llama' },
   openWeights: true,
   retention: 'unknown',
+  // Curated: an id like `llama-3-1-70b` names no platform, and these weights
+  // are most often run on the caller's own hardware in this context.
+  defaultHosting: 'local',
 });
 
 const OPEN_WEIGHT_HOSTS = [
@@ -550,6 +555,7 @@ const alibaba = vendor('alibaba', {
   family: { id: 'qwen', name: 'Qwen' },
   openWeights: true,
   retention: 'unknown',
+  defaultHosting: 'local',
 });
 
 alibaba.model('qwen-3-235b', {

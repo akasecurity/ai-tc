@@ -72,6 +72,16 @@ export interface ModelEntry {
   training: VendorTrainingPolicy | null;
   /** Every platform known to serve this model, keyed by platform. */
   platforms: ReadonlyMap<ModelPlatform, PlatformOffering>;
+  /**
+   * The hosting band to assume when an observed id names no platform.
+   *
+   * A first-party model resolves to its own endpoint's band. An open-weights
+   * model has no first-party endpoint and its id alone does not say whether it
+   * ran on a third-party host or the caller's own hardware, so the band is a
+   * CURATED call rather than a derived one — declared per model, and marked
+   * estimated wherever it is rendered.
+   */
+  defaultHosting: ModelHosting;
 }
 
 /** Vendor-level defaults every model from this vendor inherits. */
@@ -82,6 +92,7 @@ export interface VendorDefaults {
   retention?: DataRetention;
   training?: VendorTrainingPolicy;
   openWeights?: boolean;
+  defaultHosting?: ModelHosting;
 }
 
 /** A reseller/host entry with explicit overrides, for when its terms ARE known. */
@@ -115,6 +126,9 @@ export interface ModelSpec {
   openWeights?: boolean;
   retention?: DataRetention;
   region?: string | null;
+  /** Curated hosting band for an id that names no platform. Defaults to the
+   * vendor's own endpoint's band, or `'gateway'` for a vendor with none. */
+  defaultHosting?: ModelHosting;
 }
 
 function normalizeRef(ref: PlatformRef): PlatformSpec {
@@ -186,6 +200,13 @@ export class ModelVendorBuilder {
       });
     }
 
+    // A vendor with a first-party endpoint answers this from that endpoint; a
+    // vendor without one must state it, since the id carries no platform.
+    const defaultHosting: ModelHosting =
+      spec.defaultHosting ??
+      this.defaults.defaultHosting ??
+      (ownPlatform === null ? 'gateway' : hostingFor(ownPlatform));
+
     const entry: ModelEntry = {
       id,
       vendor: this.vendor,
@@ -199,6 +220,7 @@ export class ModelVendorBuilder {
       aliases: Object.freeze([...(spec.aliases ?? [])]),
       training: this.defaults.training ?? null,
       platforms,
+      defaultHosting,
     };
 
     this.entries.push(entry);

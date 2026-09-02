@@ -5,6 +5,7 @@ import {
   defaultWorkspaceSettings,
   HISTORY_SYNC_PAYLOAD_VERSION,
   isAttached,
+  isHistorySyncConsentStale,
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
   MODEL_JUDGE_PAYLOAD_VERSION,
@@ -244,14 +245,18 @@ describe('isModelJudgeConsentValid', () => {
   });
 });
 
-describe('isHistorySyncConsentValid', () => {
-  const ENDPOINT = 'https://plane.example.com';
-  const consent = (payloadVersion: number, endpoint = ENDPOINT) => ({
-    acknowledgedAt: ISO,
-    payloadVersion,
-    endpoint,
-  });
+// Shared by both history-sync predicates below. One definition rather than two:
+// `isHistorySyncConsentStale` is specified against `isHistorySyncConsentValid`
+// (a strict subset of its falsity), so a second, drifting fixture would let the
+// two suites disagree about what the same grant IS while both stayed green.
+const ENDPOINT = 'https://plane.example.com';
+const consent = (payloadVersion: number, endpoint = ENDPOINT) => ({
+  acknowledgedAt: ISO,
+  payloadVersion,
+  endpoint,
+});
 
+describe('isHistorySyncConsentValid', () => {
   it('is false when no consent has been recorded', () => {
     expect(isHistorySyncConsentValid(undefined, ENDPOINT)).toBe(false);
   });
@@ -295,5 +300,100 @@ describe('isHistorySyncConsentValid', () => {
       },
     });
     expect(isHistorySyncConsentValid(parsed.historySyncConsent, ENDPOINT)).toBe(true);
+  });
+});
+
+// Staleness is what a settings surface offers to heal in ONE save. It is a
+// strict subset of invalidity, and the gap between the two is the whole point:
+// an invalid grant naming another deployment must never be offered as a
+// re-consent, because accepting would start sending this machine's activity
+// somewhere the user never chose.
+// A TRIPWIRE, not a tautology, and the distinction is the point.
+//
+// Every other test in this file is written RELATIVE to the constant
+// (`HISTORY_SYNC_PAYLOAD_VERSION - 1`, `+ 1`), which is correct for testing the
+// predicates and useless for guarding a bump: the whole suite stays green when
+// the number changes. That is not hypothetical — it is exactly how v1 shipped
+// with no guard tying it to what it discloses, and the sibling model-judge
+// consent grew a real payload-derived guard (plugins/claude-code's
+// FOOTNOTE_DISCLOSURE, keyed on TriageHit.shape) only after a field crossed to
+// the model API with the workspace fully green.
+//
+// The disclosure here has no single Zod shape to derive from — it is four pieces
+// of hand-written prose in three packages — so this pins the literal instead and
+// makes the failure message carry the checklist. Bumping the constant WILL fail
+// this test; the fix is to re-read every surface below, confirm each still
+// describes what the new payload sends, and then update the number here.
+//
+//   oss/cli/src/commands/attach.ts        askAboutHistory — the grant prompt
+//   oss/cli/src/commands/sync-history.ts  grant/revoke/describe output
+//   oss/packages/dashboard-ui/src/settings/WorkspaceSettingsFormView.tsx
+//                                         HISTORY_SYNC_SECTION_DESCRIPTION,
+//                                         HISTORY_SYNC_CHOICES,
+//                                         HISTORY_SYNC_STALE_NOTICE
+//   oss/README.md                         the [^egress] footnote
+//
+// v2 widened the subject from the pre-attach backlog to everything the machine
+// still owes its deployment, which brought CAPTURE rows — and their prompt,
+// reply and tool-result TEXT — inside the grant for the first time.
+describe('the payload version and its disclosure move together', () => {
+  it('fails on a bump so the copy gets re-read', () => {
+    expect(HISTORY_SYNC_PAYLOAD_VERSION).toBe(2);
+  });
+});
+
+describe('isHistorySyncConsentStale', () => {
+  it('is false when no consent has been recorded', () => {
+    expect(isHistorySyncConsentStale(undefined, ENDPOINT)).toBe(false);
+  });
+
+  it('is false when the machine is not attached to any endpoint', () => {
+    expect(isHistorySyncConsentStale(consent(HISTORY_SYNC_PAYLOAD_VERSION - 1), undefined)).toBe(
+      false,
+    );
+  });
+
+  // The healable case: same deployment, older payload.
+  it('is true for an older payload recorded against this same deployment', () => {
+    expect(isHistorySyncConsentStale(consent(HISTORY_SYNC_PAYLOAD_VERSION - 1), ENDPOINT)).toBe(
+      true,
+    );
+  });
+
+  // A current grant is not stale — nothing to re-ask.
+  it('is false for a grant that already covers the current payload', () => {
+    expect(isHistorySyncConsentStale(consent(HISTORY_SYNC_PAYLOAD_VERSION), ENDPOINT)).toBe(false);
+  });
+
+  // THE SAFETY PROPERTY. Both clauses are wrong at once — old payload AND a
+  // different deployment — and the endpoint must dominate. If this returned
+  // true, a settings form would render "re-consent to keep sharing" for a grant
+  // given to somebody else's deployment, and one save would honour it.
+  it('is false when the grant names a different deployment, even with an old payload', () => {
+    const elsewhere = consent(HISTORY_SYNC_PAYLOAD_VERSION - 1, 'https://other.example.com');
+    expect(isHistorySyncConsentStale(elsewhere, ENDPOINT)).toBe(false);
+    // ...and it is invalid too, so it reads as no grant rather than as stale.
+    expect(isHistorySyncConsentValid(elsewhere, ENDPOINT)).toBe(false);
+  });
+
+  it('is false for a current payload recorded against a different deployment', () => {
+    const elsewhere = consent(HISTORY_SYNC_PAYLOAD_VERSION, 'https://other.example.com');
+    expect(isHistorySyncConsentStale(elsewhere, ENDPOINT)).toBe(false);
+  });
+
+  // Staleness never overlaps validity: every grant is at most one of the two.
+  it('is never true at the same time as validity', () => {
+    for (const version of [
+      HISTORY_SYNC_PAYLOAD_VERSION - 1,
+      HISTORY_SYNC_PAYLOAD_VERSION,
+      HISTORY_SYNC_PAYLOAD_VERSION + 1,
+    ]) {
+      for (const endpoint of [ENDPOINT, 'https://other.example.com']) {
+        const c = consent(version, endpoint);
+        expect(
+          isHistorySyncConsentValid(c, ENDPOINT) && isHistorySyncConsentStale(c, ENDPOINT),
+        ).toBe(false);
+      }
+    }
   });
 });

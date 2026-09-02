@@ -9,6 +9,7 @@ import {
   controlPlaneName,
   isAttached,
   isFieldManaged,
+  isHistorySyncConsentStale,
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
   isVaultConsentValid,
@@ -105,31 +106,46 @@ export const MODEL_JUDGE_CHOICES: Choice<ModelJudgeChoice>[] = [
 // and separate again from historical access, which governs local READING.
 type HistorySyncChoice = 'granted' | 'revoked';
 
-export const HISTORY_SYNC_SECTION_LABEL = 'Existing activity history';
+export const HISTORY_SYNC_SECTION_LABEL = 'Unsent activity';
 
 export const HISTORY_SYNC_SECTION_DESCRIPTION =
-  'Whether the activity already recorded on this machine before it attached may be sent to the ' +
-  'deployment it is attached to. What that covers is the record of activity: which sessions ran ' +
-  'and when, in which project, repo and branch, token usage and model per call, which tools were ' +
-  'called with their inputs truncated and every detected secret already masked, and what was ' +
-  'detected in those inputs. Prompts and assistant replies are not sent and stay on this ' +
-  'machine. Sending happens in the background over later sessions. Revoking stops what has not ' +
-  'been sent; it cannot recall what has.';
+  'Whether activity this machine has not delivered to the deployment it is attached to may be ' +
+  'sent later. Two kinds qualify: what was already recorded before it attached, and anything a ' +
+  'live send could not deliver because the deployment was unreachable or refused the ' +
+  'credential. The first is the record of activity only: which sessions ran and when, in which ' +
+  'project, repo and branch, token usage and model per call, which tools were called with their ' +
+  'inputs truncated and every detected secret already masked, and what was detected in those ' +
+  'inputs. The second is what was captured, and for a prompt, an assistant reply or a tool ' +
+  'result that INCLUDES ITS TEXT — every secret this machine detected is masked first, the rest ' +
+  'is sent as written. Live sending is part of being attached and this setting does not change ' +
+  'it: declining means an undelivered item is dropped rather than kept and retried. Sending ' +
+  'happens in the background over later sessions. Revoking stops what has not been sent; it ' +
+  'cannot recall what has.';
 
 export const HISTORY_SYNC_CHOICES: Choice<HistorySyncChoice>[] = [
   {
     value: 'revoked',
     label: 'Not shared',
     description:
-      'Activity recorded before this machine attached stays on it (default — never assumed).',
+      'Anything not delivered live is dropped, as it was before this setting existed (default — never assumed).',
   },
   {
     value: 'granted',
     label: 'Shared',
     description:
-      'The record of activity from before this machine attached may be sent to that deployment — never the prompts or replies themselves.',
+      'Undelivered activity may be sent later — including the text of captured prompts, replies and tool results, with detected secrets masked.',
   },
 ];
+
+// The one-word form of HISTORY_SYNC_STALE_NOTICE, for the collapsed summary —
+// same reason as VAULT_STALE_BADGE: the row shows the STORED answer ("Shared"),
+// which is not what is happening, so the summary carries the contradiction.
+export const HISTORY_SYNC_STALE_BADGE = 'Paused';
+
+export const HISTORY_SYNC_STALE_NOTICE =
+  'Your grant was recorded against an older version of this setting, which did not cover the ' +
+  'text of captured prompts, replies and tool results — sending is paused until you re-consent. ' +
+  'Saving with "Shared" selected re-consents to the current version.';
 
 // This is a custody change from one-way redaction: with the grant, a detected
 // value survives as recoverable ciphertext instead of being destroyed. The form
@@ -485,13 +501,28 @@ export function WorkspaceSettingsFormView({
   // Validity, not presence, for the same reason as the model-judge grant — and
   // here validity also depends on WHICH deployment is on file, so a grant given
   // for a previous one renders as not shared.
-  const initialHistorySync: HistorySyncChoice = isHistorySyncConsentValid(
+  // Presence-for-THIS-deployment, not validity — the same shape as the vault row
+  // above, and for the same reason: a stale grant is an answer the user really
+  // gave, so the row shows it and badges it as paused rather than silently
+  // flipping to 'Not shared' and inviting a save that deletes it.
+  //
+  // The disjunct is deliberately `valid || stale` rather than "a grant exists":
+  // `isHistorySyncConsentStale` is false for a grant naming a DIFFERENT
+  // deployment, so one of those still renders 'Not shared'. Re-consenting in
+  // place must never be offered for a grant the user gave to somebody else's
+  // endpoint.
+  const initialHistorySync: HistorySyncChoice =
+    isHistorySyncConsentValid(settings.historySyncConsent, settings.controlPlane?.endpoint) ||
+    isHistorySyncConsentStale(settings.historySyncConsent, settings.controlPlane?.endpoint)
+      ? 'granted'
+      : 'revoked';
+  const [historySync, setHistorySync] = useState<HistorySyncChoice>(initialHistorySync);
+  // Read once: the row's badge, its default-open state and `dirty` must all
+  // agree about staleness, and three separate calls could not disagree loudly.
+  const historySyncStale = isHistorySyncConsentStale(
     settings.historySyncConsent,
     settings.controlPlane?.endpoint,
-  )
-    ? 'granted'
-    : 'revoked';
-  const [historySync, setHistorySync] = useState<HistorySyncChoice>(initialHistorySync);
+  );
   const [vaultConsent, setVaultConsent] = useState(vaultChoiceOf(settings.vaultConsent));
   const [inlineReveal, setInlineReveal] = useState(settings.vaultInlineReveal);
 
@@ -510,7 +541,15 @@ export function WorkspaceSettingsFormView({
     // A stale grant renders as 'on' but authorizes nothing; keeping 'on'
     // selected and saving is the documented one-save re-consent, so staleness
     // itself must enable Save.
-    (vaultConsent === 'on' && vaultConsentStale(settings.vaultConsent));
+    (vaultConsent === 'on' && vaultConsentStale(settings.vaultConsent)) ||
+    // Same rule as the vault clause above, and it is what stops a payload bump
+    // from DESTROYING a grant. After a bump `initialHistorySync` derives
+    // 'revoked', so `historySync !== initialHistorySync` is false and this form
+    // is not dirty from the grant alone — but any unrelated save still submits
+    // `historySyncConsent: false`, which the server action maps to `undefined`
+    // and deletes the record, acknowledgedAt included. Staleness must enable
+    // Save so the row is a live re-consent rather than a silent deletion.
+    (historySync === 'granted' && historySyncStale);
 
   return (
     <div className="flex max-w-4xl flex-col gap-7">
@@ -568,15 +607,27 @@ export function WorkspaceSettingsFormView({
         {isAttached(settings) && (
           <SettingRow
             label={HISTORY_SYNC_SECTION_LABEL}
-            description="Whether activity recorded before attaching may be sent to that deployment."
+            description="Whether activity this machine has not delivered may be sent later."
             name="historySyncConsent"
             choices={HISTORY_SYNC_CHOICES}
             value={historySync}
             onChange={setHistorySync}
+            alert={historySyncStale ? HISTORY_SYNC_STALE_BADGE : undefined}
+            defaultOpen={historySyncStale}
             notice={
-              <p className="mb-3 text-xs text-text-3" data-slot="history-sync-disclosure">
-                {HISTORY_SYNC_SECTION_DESCRIPTION}
-              </p>
+              <>
+                {historySyncStale && (
+                  <p
+                    className="mb-3 text-xs text-sev-high-ink"
+                    data-slot="history-sync-stale-notice"
+                  >
+                    {HISTORY_SYNC_STALE_NOTICE}
+                  </p>
+                )}
+                <p className="mb-3 text-xs text-text-3" data-slot="history-sync-disclosure">
+                  {HISTORY_SYNC_SECTION_DESCRIPTION}
+                </p>
+              </>
             }
           />
         )}

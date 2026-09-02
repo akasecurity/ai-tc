@@ -434,13 +434,23 @@ describe('existing-history consent', () => {
     expect(consentOf()).toBeUndefined();
   });
 
+  // The assertions are on the SUBSTANCE, not on headings. This prompt is the
+  // only place many users will ever read what the grant covers, and the payload
+  // it describes widened at v2 to include captured text — so the test pins the
+  // three things that make the answer informed: what always goes, the fact that
+  // an undelivered capture carries its TEXT, and what declining actually costs.
+  // A heading match would have stayed green through exactly that widening.
   it('says what it is asking about before it asks', async () => {
     seedHistory();
     const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
     await runAttach(['--url', ENDPOINT], deps(io));
     const shown = io.output();
     expect(shown).toContain('What that sends:');
-    expect(shown).toContain('What it does not:');
+    // The v2 widening, stated where the user is deciding.
+    expect(shown).toContain('INCLUDES ITS TEXT');
+    expect(shown).toContain('masked');
+    // Declining must not read as "this turns off sending" — it does not.
+    expect(shown).toContain('Saying no does not stop live sending');
     expect(shown).toContain('cannot be');
     expectNoEchoOf(shown, KEY);
   });

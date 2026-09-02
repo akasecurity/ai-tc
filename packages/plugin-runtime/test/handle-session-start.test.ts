@@ -634,7 +634,7 @@ describe('handleSessionStart — local-store maintenance capability', () => {
     writeFileSync(join(cwd, 'main.ts'), '');
     const inner = new StandaloneDataGateway(dir, bundledDetections());
     const calls: string[] = [];
-    // Exactly ONE member omitted. Omitting all five makes every assertion below
+    // Exactly ONE member omitted. Omitting them all makes every assertion below
     // vacuous: a name that is not on the gateway can never reach `calls`, so
     // `not.toContain` holds whether the gate fires, is inverted, or is deleted.
     // With four still recording, the four positives bind the per-member gate

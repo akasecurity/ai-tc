@@ -250,8 +250,8 @@ export type ForwardFailureReason = ControlPlaneFailure | 'breaker-open' | 'inval
  * `ok: false` is still not an error. G1 is unchanged and is the reason this is a
  * RESULT and not a throw: every caller has already completed its local write and
  * must return that result whatever the control plane did. The union widens what a
- * caller MAY observe; it obliges none of them to observe anything, and six of
- * the seven call sites in `attached-gateway.ts` still discard it outright.
+ * caller MAY observe; it obliges none of them to observe anything, and several
+ * call sites in `attached-gateway.ts` still discard it outright.
  */
 export type ForwardResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -399,7 +399,7 @@ export function createForwardPolicy(deps: ForwardPolicyDeps): ForwardPolicy {
       } catch (err) {
         // The one place the failure is still in hand. Classified HERE rather
         // than by the caller, because this is also the only place that can
-        // write it down — six of the seven call sites drop the result, and the
+        // write it down — most call sites drop the result, and the
         // reader that needs it (`/aka:status`) runs in a different process
         // minutes or days later.
         //

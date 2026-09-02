@@ -119,8 +119,8 @@ export async function handleSessionStart(
       // just-written session root down with it.
       await recordConfigInventory(gateway, input.sessionId, input.cwd, input.homeDir);
       // Best-effort store maintenance. Each pass is gated on ITS OWN member
-      // rather than on the whole capability: the five are unrelated, so a
-      // gateway supplying four of them must still get those four run — gating
+      // rather than on the whole capability: they are unrelated, so a gateway
+      // supplying only some of them must still get those run — gating
       // the group would drop the retention purge because some unrelated member
       // is absent, and every pass here is swallowed, so nothing would say so.
       //

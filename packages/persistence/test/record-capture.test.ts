@@ -7,11 +7,11 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
-import type { DetectedFindingWithKey, IngestEvent } from '@akasecurity/schema';
+import type { DetectedFindingWithKey, IngestEvent, LlmCallInput } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { schemaObjectExists } from '../src/db/migrations/introspection.ts';
-import { captureId } from '../src/ids.ts';
+import { captureId, llmCallId } from '../src/ids.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 
 const store = useTempStore('aka-record-capture-', { migrated: true });
@@ -678,6 +678,140 @@ describe('recordCapture — at-rest path disambiguation', () => {
     ).toBe(1);
     r.close();
     db.close();
+  });
+});
+
+// The STRUCTURAL half of the same seam. Kept beside markCaptureDelivered
+// deliberately: the two stamps share one column across two disjoint drains, and
+// the boundary between them is only testable where both are in view.
+describe('markAuditEventsDelivered', () => {
+  const syncedAt = (db: DatabaseSync, id: string): number | null =>
+    (
+      db.prepare(`SELECT synced_at AS s FROM audit_events WHERE id = ?`).get(id) as {
+        s: number | null;
+      }
+    ).s;
+
+  const llmCall = (sessionId: string, messageId: string): LlmCallInput => ({
+    sessionId,
+    messageId,
+    parentId: sessionId,
+    rootSessionId: sessionId,
+    startedAt: '2026-01-01T00:00:00.000Z',
+    attributes: { model: 'claude-opus-5', provider: 'anthropic' },
+  });
+
+  it('stamps the row insertLlmCall wrote, found by the same derivation', () => {
+    // THE PREMISE THE WHOLE FEATURE RESTS ON, and the only place it is executed
+    // against a real row. The attached gateway builds the forwarded event's id
+    // with `llmCallId(sessionId, messageId)`; `insertLlmCall` derives the local
+    // primary key from the same function. If those ever diverge the UPDATE
+    // matches nothing — and a SQLite UPDATE matching no rows is not an error, so
+    // every fake-backed suite would stay green while the outbox silently went on
+    // over-counting. Derived here rather than read back from the insert, so a
+    // change to either side fails HERE.
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-llm', '2026-01-01T00:00:00.000Z');
+    db.auditEvents.insertLlmCall(llmCall('s-llm', 'm-1'));
+    const id = llmCallId('s-llm', 'm-1');
+
+    expect(syncedAt(raw(), id)).toBeNull();
+    db.markAuditEventsDelivered(
+      [{ id, eventType: 'llm_call', startedAt: '2026-01-01T00:00:00.000Z' }],
+      1_700_000_000_000,
+    );
+    expect(syncedAt(raw(), id)).toBe(1_700_000_000_000);
+  });
+
+  it('leaves every other structural row outstanding', () => {
+    // Scoped to the events handed in, not the session: a batch whose head landed
+    // and whose tail the budget dropped must stamp only the head.
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-batch', '2026-01-01T00:00:00.000Z');
+    db.auditEvents.insertLlmCall(llmCall('s-batch', 'm-a'));
+    db.auditEvents.insertLlmCall(llmCall('s-batch', 'm-b'));
+
+    db.markAuditEventsDelivered(
+      [
+        {
+          id: llmCallId('s-batch', 'm-a'),
+          eventType: 'llm_call',
+          startedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      1_700_000_000_000,
+    );
+    expect(syncedAt(raw(), llmCallId('s-batch', 'm-a'))).toBe(1_700_000_000_000);
+    expect(syncedAt(raw(), llmCallId('s-batch', 'm-b'))).toBeNull();
+  });
+
+  it('moves the row out of `queued` and into `synced` in the partition', () => {
+    // The read this exists to make honest. Asserted through partition() rather
+    // than through the column, because the column being set is not the claim —
+    // the claim is that the bucket a surface renders actually moves.
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-part', '2026-01-01T00:00:00.000Z');
+    db.auditEvents.insertLlmCall(llmCall('s-part', 'm-1'));
+    // The session root is structural too, so it is counted alongside the leaf.
+    expect(db.historySync.partition()).toMatchObject({ queued: 2, synced: 0 });
+
+    db.markAuditEventsDelivered(
+      [
+        {
+          id: llmCallId('s-part', 'm-1'),
+          eventType: 'llm_call',
+          startedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      1_700_000_000_000,
+    );
+    expect(db.historySync.partition()).toMatchObject({ queued: 1, synced: 1 });
+  });
+
+  it('REFUSES a capture-grain row, leaving it for the capture drain', () => {
+    // The lane boundary, and the reason this method filters at all.
+    // `recordAuditEvent` accepts any AuditEventType, so a capture routed through
+    // it would otherwise be stamped on a forward that carried no `content` — and
+    // `pendingCaptureRows` filters `synced_at IS NULL`, so the capture drain
+    // would never offer that row again. Silent, permanent loss of the text.
+    const db = store.open();
+    const ev = event({ metadata: { sessionId: 's-cap' }, contentHash: 'hash-cap' });
+    db.recordCapture(ev, []);
+    const id = captureId('s-cap', 'hash-cap', null);
+
+    db.markAuditEventsDelivered(
+      [{ id, eventType: 'prompt', startedAt: '2026-01-01T00:00:00.000Z' }],
+      1_700_000_000_000,
+    );
+    expect(syncedAt(raw(), id)).toBeNull();
+  });
+
+  it('stamps the structural rows of a MIXED batch and refuses the capture ones', () => {
+    // The partial case the filter has to get right: an all-capture batch is
+    // caught by the early return, so only a mixed one drives the predicate.
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-mix', '2026-01-01T00:00:00.000Z');
+    db.auditEvents.insertLlmCall(llmCall('s-mix', 'm-1'));
+    const cap = event({ metadata: { sessionId: 's-mix' }, contentHash: 'hash-mix' });
+    db.recordCapture(cap, []);
+
+    db.markAuditEventsDelivered(
+      [
+        {
+          id: llmCallId('s-mix', 'm-1'),
+          eventType: 'llm_call',
+          startedAt: '2026-01-01T00:00:00.000Z',
+        },
+        {
+          id: captureId('s-mix', 'hash-mix', null),
+          eventType: 'prompt',
+          startedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      1_700_000_000_000,
+    );
+    expect(syncedAt(raw(), llmCallId('s-mix', 'm-1'))).toBe(1_700_000_000_000);
+    expect(syncedAt(raw(), captureId('s-mix', 'hash-mix', null))).toBeNull();
   });
 });
 

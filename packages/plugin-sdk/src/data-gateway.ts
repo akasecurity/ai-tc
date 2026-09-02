@@ -228,6 +228,19 @@ export interface LocalStoreMaintenance {
   ): Promise<void>;
   /** The stale-session notice, or null when this session is current. */
   staleBinaryNotice(currentVersion: string): string | null;
+  /**
+   * Stamp a capture the live forward already delivered.
+   *
+   * On this interface rather than `DataGateway` because it is meaningless in
+   * standalone: nothing forwards there, so nothing is ever delivered and
+   * nothing stamps. It is the attached decorator that needs the local store to
+   * hold delivery state, which is exactly what this surface is for.
+   *
+   * Takes the EVENT, not a row id. The id is derived from the event inside the
+   * store, by the one function the write already uses, so a caller cannot
+   * derive it differently and stamp a row that does not exist.
+   */
+  markCaptureDelivered(event: IngestEvent, atMs: number): void;
 }
 
 // The member names, derived from the interface rather than restated: a
@@ -239,6 +252,7 @@ const LOCAL_STORE_MAINTENANCE_MEMBERS: Record<keyof LocalStoreMaintenance, true>
   recordProjectFiles: true,
   reconcileWorktreeProjects: true,
   staleBinaryNotice: true,
+  markCaptureDelivered: true,
 };
 
 /**

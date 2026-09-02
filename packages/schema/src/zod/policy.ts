@@ -83,6 +83,19 @@ export const PolicyBundle = z
     // the rule's own spec version. NOT the bundle version above — see
     // installedRuleset's ruleVersions for the source of truth.
     ruleVersions: z.record(z.string(), z.string()).optional(),
+    // Model ids (the raw `model` string a harness reports, e.g.
+    // `claude-opus-4-1`) the tenant has PROHIBITED. The plugin refuses to switch
+    // a session onto one (PreModelSwitch) and refuses a turn that would run on
+    // one (UserPromptSubmit). Optional so an older backend — and an older
+    // on-disk cache — still parses; consumers read `?? []`, which is the
+    // unenforced behaviour that predates this field and the safe direction to
+    // default.
+    //
+    // Ids, not display names: the governance decision is keyed on the exact
+    // string the harness reports (`model_status_override.versionId` in the
+    // control plane), so no name resolution stands between the decision and the
+    // comparison.
+    prohibitedModels: z.array(z.string()).optional(),
     customKeywords: z.array(z.string()),
     fetchedAt: z.iso.datetime(),
   })

@@ -56,6 +56,20 @@ export {
 } from './isolated-scan.ts';
 export type { ScanFinding } from './mask.ts';
 export { maskText, scanText } from './mask.ts';
+export type { ModelFromRecord, RefusalSeam } from './model-governance.ts';
+export {
+  buildModelRefusalEvent,
+  claudeCodeModelFromRecord,
+  codexModelFromRecord,
+  decideProhibitedModelTurn,
+  isModelProhibited,
+  modelFromTranscript,
+  modelFromTranscriptTail,
+  normalizeModelId,
+  prohibitedModelMessage,
+  readSessionModel,
+  recordSessionModel,
+} from './model-governance.ts';
 export { claimOnboardingNudge, claimSessionStart } from './nudge.ts';
 export type { NonGitProject } from './paths.ts';
 export { resolveNonGitProject, toPosix } from './paths.ts';

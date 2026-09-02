@@ -41,9 +41,10 @@ field that never crosses the wire; the internal fallback `handleCapture` returns
 throws is `{ action: 'log' }`, and `'allow'` is only ever assigned to an **excepted** finding.
 Emitting a real opinion means writing one JSON object to stdout via `emit()`
 (`plugins/claude-code/src/hooks/shared.ts`), which takes the `HookOutput` union rather than
-`unknown`, so a payload outside that union cannot reach the wire at all. Its six shapes are
+`unknown`, so a payload outside that union cannot reach the wire at all. Its seven shapes are
 `decision` and `systemMessage` at the top level, plus one `hookSpecificOutput` per hook —
-`PreToolUse`'s `permissionDecision`, `PostToolUse`'s `updatedToolOutput`, `MessageDisplay`'s
+`PreToolUse`'s `permissionDecision`, `PreModelSwitch`'s `permissionDecision`, `PostToolUse`'s
+`updatedToolOutput`, `MessageDisplay`'s
 `displayContent` and `SessionStart`'s `additionalContext`. The write is awaited, because
 `process.exit` does not flush a pending pipe write and a truncated object reads as invalid JSON,
 passing the original payload through unscanned.

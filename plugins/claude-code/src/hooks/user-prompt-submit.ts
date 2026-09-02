@@ -18,6 +18,13 @@
  * lives in user-prompt-submit-decision.ts, which is importable and unit-tested;
  * this file is the I/O around it.
  *
+ * It is also where a session already RUNNING on a prohibited model is contained:
+ * PreModelSwitch refuses a switch onto one, but a session can start on a
+ * prohibited model, or have one restored on resume, without any switch passing
+ * through that hook. Neither point blocks an LLM API call — no hook fires around
+ * the request — so what the two enforce together is that a governed session does
+ * not RUN on a prohibited model.
+ *
  * This is also the first-run nudge point: on a clean prompt from a machine that
  * hasn't completed `/aka:setup`, surface a one-line pointer to it (fail-open
  * defaults are already in effect, so the nudge is informational, not blocking).
@@ -36,6 +43,7 @@ import {
 import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { writeClipboard } from './clipboard.ts';
+import { handleProhibitedTurn } from './model-guard.ts';
 import { ONBOARDING_NUDGE } from './onboarding-nudge.ts';
 import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
 import {
@@ -71,6 +79,24 @@ async function main(): Promise<void> {
     }
     return;
   }
+  // PROHIBITED-MODEL CONTAINMENT, ahead of the scan on purpose. It is the
+  // cheaper verdict (two small local reads against a detection pass over the
+  // whole prompt) and the stronger one: if this turn cannot run at all, what the
+  // prompt contains no longer changes the outcome. Running it first also means a
+  // throw inside the scan path cannot skip it. The decision itself is
+  // `refuseProhibitedTurn`, which is importable and fail-open throughout.
+  if (
+    await handleProhibitedTurn(
+      gateway,
+      config.dataDir,
+      sessionId,
+      input === null ? undefined : getString(input, 'transcript_path'),
+      emit,
+    )
+  ) {
+    return;
+  }
+
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
   let result: CaptureResult;
   try {

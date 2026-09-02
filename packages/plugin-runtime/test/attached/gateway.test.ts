@@ -68,6 +68,7 @@ const MAINTENANCE_METHODS = [
   'recordProjectFiles',
   'reconcileWorktreeProjects',
   'staleBinaryNotice',
+  'markCaptureDelivered',
 ] as const;
 type MissingMaintenance = Exclude<
   keyof LocalStoreMaintenance,
@@ -84,7 +85,7 @@ interface Calls {
 }
 
 /**
- * A recording stand-in for the inner local gateway. Two of the five maintenance
+ * A recording stand-in for the inner local gateway. Three of the six maintenance
  * members are SYNCHRONOUS on the real port and are synchronous here too — a
  * fake that returned promises for them would hide exactly the bug the composite
  * has to avoid.
@@ -146,6 +147,9 @@ function makeLocal(calls: Calls, overrides: Partial<DataGateway & LocalStoreMain
     calls.order.push('local.staleBinaryNotice');
     return 'a notice';
   });
+  base.markCaptureDelivered = vi.fn(() => {
+    calls.order.push('local.markCaptureDelivered');
+  });
   return Object.assign(base, overrides) as unknown as DataGateway & LocalStoreMaintenance;
 }
 
@@ -153,7 +157,11 @@ function makeClient(calls: Calls, overrides: Partial<AttachedClient> = {}): Atta
   return {
     ingestEvents: vi.fn(() => {
       calls.order.push('client.ingestEvents');
-      return Promise.resolve({ accepted: 1 } as never);
+      // A COMPLETE ack. `IngestAck` carries both counts and the real client
+      // zod-parses the response, so a fake missing `duplicates` is not a
+      // lenient fixture — it is a shape the product cannot produce, and it
+      // made `accepted + duplicates` NaN in every case that reads the ack.
+      return Promise.resolve({ accepted: 1, duplicates: 0 } as never);
     }),
     ingestInventory: vi.fn(() => {
       calls.order.push('client.ingestInventory');
@@ -359,6 +367,77 @@ describe('writes are local-FIRST, then forwarded', () => {
     await expect(
       gateway.recordCapture({ event: event('e'), findings: [] }),
     ).resolves.toBeUndefined();
+  });
+
+  it('stamps the capture delivered ONLY after the forward succeeds', async () => {
+    // The queue is the local store: `synced_at` set means the organization's
+    // copy was made, NULL means it is still owed. The stamp is what closes a
+    // row, so it has to be ordered strictly after the forward reports success —
+    // stamping before would mark a row delivered that a timeout was about to
+    // lose.
+    const { gateway, calls } = build();
+    await gateway.recordCapture({ event: event('e1'), findings: [] });
+    expect(calls.order.indexOf('forward.run')).toBeLessThan(
+      calls.order.indexOf('local.markCaptureDelivered'),
+    );
+  });
+
+  it('leaves an undelivered capture unstamped, which is what queues it', async () => {
+    // The whole of the outbox, and the case that would silently lose events if
+    // it regressed: a breaker-open forward never reached the backend, so the
+    // row must stay outstanding for a later drain. A stamp here would mark it
+    // delivered and it would never be sent again.
+    // Two tapes, because the forward fake is built before `build()` makes its
+    // own: `forwardCalls` is the fake's, `calls` is the LOCAL fake's, and the
+    // stamp would show up on the second. Both are asserted for the reason the
+    // {0,0} case below spells out — a stamp that is missing because nothing was
+    // forwarded proves nothing, so the forward is pinned as having been reached.
+    const forwardCalls: Calls = { order: [] };
+    const { gateway, calls } = build({ forward: deadForward(forwardCalls) });
+    await gateway.recordCapture({ event: event('e1'), findings: [] });
+    expect(forwardCalls.order).toContain('forward.skipped');
+    expect(calls.order).toContain('local.recordCapture');
+    expect(calls.order).not.toContain('local.markCaptureDelivered');
+  });
+
+  it('stamps a capture the plane already had, reported as a duplicate', async () => {
+    // A duplicate is the receiver's id-dedup recognising a resend, which means
+    // the plane HAS the row. Treating it as undelivered would leave the capture
+    // outstanding for ever, resent on every pass and deduped every time.
+    const { gateway, calls } = build({
+      client: makeClient(
+        { order: [] },
+        {
+          ingestEvents: vi.fn(() => Promise.resolve({ accepted: 0, duplicates: 1 })),
+        },
+      ),
+    });
+    await gateway.recordCapture({ event: event('e1'), findings: [] });
+    expect(calls.order).toContain('local.markCaptureDelivered');
+  });
+
+  it('does NOT stamp a 200 that accepted nothing', async () => {
+    // `ok` says the call completed and parsed, not that the plane took the
+    // event. An ack of {0,0} took nothing, and stamping on it is the one
+    // failure mode on this path that loses a row instead of resending it —
+    // the direction the whole "queued is what is owed" invariant rests on.
+    const { gateway, calls } = build({
+      client: makeClient(
+        { order: [] },
+        {
+          ingestEvents: vi.fn(() => Promise.resolve({ accepted: 0, duplicates: 0 })),
+        },
+      ),
+    });
+    await gateway.recordCapture({ event: event('e1'), findings: [] });
+    // Both assertions below are satisfied by a run that never forwarded at all
+    // — `recordCapture` comes first regardless, and the stamp is an ABSENCE. So
+    // the forward is pinned as having happened, or this case cannot tell
+    // "declined to stamp a {0,0}" from "nothing was sent", which is exactly the
+    // reading that would keep it green with the guard gone.
+    expect(calls.order).toContain('forward.run');
+    expect(calls.order).toContain('local.recordCapture');
+    expect(calls.order).not.toContain('local.markCaptureDelivered');
   });
 
   it('a forward that REJECTS is contained — the local write still stands', async () => {
@@ -741,6 +820,42 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     // order it is read in — and it is the stronger, local one.
     expect(secret).toHaveLength(1);
     expect(secret[0]?.action).toBe('block');
+  });
+
+  it('DOES carry prohibitedModels from the cache — a restriction, not a relaxation', async () => {
+    // The merge below returns an EXPLICIT field list over `...local`, so a field
+    // the organization's bundle carries and this list omits is dropped in
+    // silence. That is what happened: the prohibition reached the cache on
+    // every attached device and never reached the hook that enforces it, so the
+    // whole control was inert while every test around it stayed green.
+    //
+    // Taking it is safe for the reason the two fields below are not: a
+    // prohibition can only ADD a refusal, so there is no relaxation to hand a
+    // cache-writer. What it could do is block the user's own sessions, which
+    // anyone able to write into that directory can already do far more cheaply
+    // by deleting the plugin.
+    const calls: Calls = { order: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
+    });
+    const { gateway } = build({
+      local,
+      readCachedBundle: () => Promise.resolve(bundle([], { prohibitedModels: ['claude-opus-5'] })),
+    });
+    const merged = await gateway.getPolicyBundle();
+    expect(merged.prohibitedModels).toEqual(['claude-opus-5']);
+  });
+
+  it('leaves prohibitedModels absent when the organization prohibits nothing', async () => {
+    // The control: a standalone bundle carries no prohibitions, so the merge
+    // must not invent an empty list that reads as an enforced decision.
+    const calls: Calls = { order: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
+    });
+    const { gateway } = build({ local, readCachedBundle: () => Promise.resolve(bundle([])) });
+    const merged = await gateway.getPolicyBundle();
+    expect(merged.prohibitedModels).toBeUndefined();
   });
 
   it('never takes rulesComplete from the cache — that would be a detection kill-switch', async () => {

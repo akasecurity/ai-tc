@@ -9,8 +9,15 @@ import {
 } from '@akasecurity/persistence';
 import { createRemoteClient } from '@akasecurity/remote';
 import type { RecordAuditEventRequest } from '@akasecurity/schema';
-import { AUDIT_EVENT_BATCH_MAX, isAttached, isHistorySyncConsentValid } from '@akasecurity/schema';
+import type { IngestEvent } from '@akasecurity/schema';
+import {
+  AUDIT_EVENT_BATCH_MAX,
+  INGEST_BATCH_MAX,
+  isAttached,
+  isHistorySyncConsentValid,
+} from '@akasecurity/schema';
 
+import { rebuildCapture } from './capture-rebuild.ts';
 import { BREAKER_COOLDOWN_MS, readForwardHealth } from './forward-policy.ts';
 import { rebuildAuditEvent } from './history-rebuild.ts';
 import type { HistorySyncOutcome } from './history-state.ts';
@@ -60,6 +67,21 @@ const SESSION_PAGE = 25;
 const ROW_PAGE = 200;
 
 /**
+ * How long a capture is left to the live path before the outbox claims it.
+ *
+ * Not a correctness boundary — an undelivered capture is owed however new it is,
+ * and a row sent twice is absorbed by the receiver's id-dedup because the wire
+ * id is derived from the row's own tuple. This only keeps the drain off rows the
+ * live forward is plausibly still in flight on, so the common case stays one
+ * send. Comfortably longer than the decision-path budget the live send runs
+ * under.
+ */
+const CAPTURE_GRACE_MS = 30_000;
+
+/** Captures per request, taken from the wire shape's own bound (see BATCH_SIZE). */
+const CAPTURE_BATCH_SIZE = INGEST_BATCH_MAX;
+
+/**
  * How many events ride one request.
  *
  * The single largest lever on how long a backlog takes: this work is round-trip
@@ -96,6 +118,8 @@ export interface RunHistorySyncDeps {
   passBudgetMs?: number;
   openStore?: (dataDir: string) => LocalDatabase;
   sendBatch?: (events: readonly RecordAuditEventRequest[]) => Promise<void>;
+  /** Injected alongside sendBatch in tests; the capture lane's route. */
+  sendCaptures?: (events: readonly IngestEvent[]) => Promise<{ settled: number }>;
 }
 
 /** sha256 of the endpoint. Nothing reads the address back; only sameness matters. */
@@ -198,23 +222,49 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
     const pid = process.pid;
     if (!ledger.claim(pid, hostname(), now(), HISTORY_LEASE_STALE_MS)) return null;
 
+    // ONE client, two senders. The lanes differ only in the route they take and
+    // the shape they carry; sharing the client keeps them on one connection,
+    // one timeout and — the part that matters — one credential read. A second
+    // `createRemoteClient` here would be a second place to get that wrong.
+    const client =
+      deps.sendBatch !== undefined && deps.sendCaptures !== undefined
+        ? undefined
+        : createRemoteClient({
+            endpoint: connection.endpoint,
+            apiKey: state.credential.apiKey,
+            timeoutMs: HISTORY_REQUEST_TIMEOUT_MS,
+          });
+
     const send =
       deps.sendBatch ??
-      (() => {
-        const client = createRemoteClient({
-          endpoint: connection.endpoint,
-          apiKey: state.credential.apiKey,
-          timeoutMs: HISTORY_REQUEST_TIMEOUT_MS,
-        });
-        return async (events: readonly RecordAuditEventRequest[]): Promise<void> => {
-          // The client falls back to one request per event against a deployment
-          // that predates the batch route, so this call is correct against both.
-          await client.recordAuditEvents(events);
-        };
-      })();
+      (async (events: readonly RecordAuditEventRequest[]): Promise<void> => {
+        // The client falls back to one request per event against a deployment
+        // that predates the batch route, so this call is correct against both.
+        await client?.recordAuditEvents(events);
+      });
+
+    const sendCaptures =
+      deps.sendCaptures ??
+      (async (events: readonly IngestEvent[]): Promise<{ settled: number }> => {
+        const ack = await client?.ingestEvents({ events: [...events] });
+        // `accepted + duplicates` is delivery — the same rule the live forward
+        // stamps on. A duplicate IS a delivery: the receiver recognising a
+        // resend by its id is exactly the outcome a reproduced id is for.
+        return { settled: (ack?.accepted ?? 0) + (ack?.duplicates ?? 0) };
+      });
 
     try {
-      return await drain({ ledger, send, now, sleep, random, budgetMs, pid, backlogBefore });
+      return await drain({
+        ledger,
+        send,
+        sendCaptures,
+        now,
+        sleep,
+        random,
+        budgetMs,
+        pid,
+        backlogBefore,
+      });
     } finally {
       ledger.release(pid);
     }
@@ -234,6 +284,12 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
 interface DrainDeps {
   ledger: LocalDatabase['historySync'];
   send: (events: readonly RecordAuditEventRequest[]) => Promise<void>;
+  /**
+   * The CAPTURE lane's sender — a different route from `send`, never a variant
+   * of it. Returns how many the deployment took, so the caller can tell "your
+   * batch landed" from "the call returned". See drainCaptures.
+   */
+  sendCaptures: (events: readonly IngestEvent[]) => Promise<{ settled: number }>;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   random: () => number;
@@ -322,6 +378,19 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     }
   }
 
+  // THE CAPTURE LANE, second and deliberately so. The structural rows are what
+  // make a session legible on the receiving side — a capture whose session has
+  // no root is stubbed rather than rejected, but it is a stub until the root
+  // arrives, and draining captures first would leave a deployment full of them.
+  // Both lanes settle through the same statement, so the order costs nothing
+  // else.
+  if (outcome === 'ok') {
+    const captures = await drainCaptures(d, deadline, beat);
+    sent += captures.sent;
+    skipped += captures.skipped;
+    if (captures.stopped !== undefined) outcome = captures.stopped;
+  }
+
   if (outcome === 'ok' && d.now() >= deadline && d.ledger.counts(d.backlogBefore).pending > 0) {
     outcome = 'interrupted';
   }
@@ -333,6 +402,91 @@ interface ChunkResult {
   skipped: number;
   /** Set when the pass must stop; everything else stays pending. */
   stopped?: HistorySyncOutcome;
+}
+
+/**
+ * Drain the captures this machine still owes — the half of the outbox that
+ * carries text.
+ *
+ * Flat and time-ordered, with no session grouping, because /v1/events stubs a
+ * missing session root on the leaf's own id. The structural lane pages by
+ * session only because its route stubs nothing and its foreign keys are real.
+ *
+ * NO `dedupe` FLAG on the batch, and that is load-bearing rather than an
+ * omission. `dedupe: 'content-hash'` would reject any event whose hash the
+ * tenant has already seen, and two genuinely separate prompts can be
+ * byte-identical — a user asking "why?" twice is two events on the timeline.
+ * Id-dedup always applies and is the one this lane needs: the id is reproduced
+ * from the row's own tuple, so a redelivery collapses and a distinct capture
+ * does not.
+ *
+ * SETTLEMENT IS PER BATCH, which the route earns: ingest is atomic per request,
+ * so an ack covers every event in it and no per-row verdict is needed. What the
+ * ack must show is that the deployment actually took them — `accepted +
+ * duplicates`, exactly the rule the live forward stamps on. A `{accepted: 0,
+ * duplicates: 0}` answer stamps NOTHING and the rows stay owed; today's backend
+ * cannot produce one, but the wire contract permits it and this plugin talks to
+ * deployments it does not ship. The unread case costs a redundant resend, never
+ * a silently dropped row.
+ */
+async function drainCaptures(
+  d: DrainDeps,
+  deadline: number,
+  beat: () => void,
+): Promise<ChunkResult> {
+  let sent = 0;
+  let skipped = 0;
+
+  for (;;) {
+    if (d.now() >= deadline) return { sent, skipped, stopped: 'interrupted' };
+
+    // Re-read each time rather than paging with an offset: the previous
+    // iteration stamped or skipped everything it took, so the unstamped set has
+    // shrunk and the next page is simply the new head of it. An offset over a
+    // set being mutated underneath would step past rows.
+    const rows = d.ledger.pendingCaptureRows(CAPTURE_BATCH_SIZE, d.now() - CAPTURE_GRACE_MS);
+    if (rows.length === 0) return { sent, skipped };
+
+    const ready: { id: string; event: IngestEvent }[] = [];
+    for (const row of rows) {
+      const event = rebuildCapture(row);
+      if (event === undefined) {
+        // A local defect, not an outage. Retrying for ever would stall the lane
+        // behind one unexpressible row — and because this read has no cursor,
+        // that row would be the head of every subsequent page.
+        d.ledger.markSkipped([row.id]);
+        skipped += 1;
+        continue;
+      }
+      ready.push({ id: row.id, event });
+    }
+    if (ready.length === 0) continue;
+
+    let ack: { settled: number };
+    try {
+      ack = await d.sendCaptures(ready.map((r) => r.event));
+    } catch {
+      // Unreachable or refused. Everything stays pending by doing nothing, and
+      // the next pass repeats this one — the same contract the structural lane
+      // keeps for a failed send.
+      return { sent, skipped, stopped: 'unreachable' };
+    }
+
+    if (ack.settled <= 0) {
+      // The call returned without taking anything. Stamping here would lose the
+      // batch silently; stopping leaves it owed.
+      return { sent, skipped, stopped: 'unreachable' };
+    }
+
+    d.ledger.markSynced(
+      ready.map((r) => r.id),
+      d.now(),
+    );
+    sent += ready.length;
+
+    beat();
+    await d.sleep(PACE_INTERVAL_MS);
+  }
 }
 
 /**

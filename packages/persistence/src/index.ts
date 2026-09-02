@@ -124,6 +124,7 @@ export type {
   HistorySyncLease,
 } from './repositories/history-sync.ts';
 export {
+  CAPTURE_EVENT_TYPES,
   SqliteHistorySyncRepository,
   STRUCTURAL_EVENT_TYPES,
 } from './repositories/history-sync.ts';

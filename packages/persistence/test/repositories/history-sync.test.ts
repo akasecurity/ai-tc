@@ -167,6 +167,24 @@ describe('SqliteHistorySyncRepository — which deployment the stamps are for', 
     expect(db.historySync.counts(ALL)).toMatchObject({ pending: 3, sent: 0 });
   });
 
+  // The capture half of the same rule, and it had no coverage: `rearmStmt` was
+  // structural-only, so a capture stamped delivered to deployment A survived
+  // attaching to B and was never offered to it. The ledger read "delivered",
+  // which made the hole permanent AND invisible — the worst pair.
+  it('re-arms delivered CAPTURES when the deployment changes', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.rearmFor('fingerprint-a', ALL);
+    // The live path stamps a capture through this same statement.
+    db.historySync.markSynced(['s-1-prompt'], T0);
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+
+    db.historySync.rearmFor('fingerprint-b', ALL);
+
+    // Owed to the new deployment again, text and all.
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+  });
+
   // A row that could not be rebuilt locally fails the same way anywhere, so
   // pointing at a new deployment must not resurrect it.
   it('leaves permanently skipped rows skipped across a change of deployment', () => {
@@ -474,6 +492,64 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
     // seedSession writes a prompt row too. Until the drain can carry content
     // safely, it is not part of the tracked set and must not appear here.
     expect(db.historySync.partition().total).toBe(3);
+  });
+});
+
+// The capture lane's read. Everything here is about what the STRUCTURAL reader
+// deliberately does not do: no session grouping (the /v1/events route stubs a
+// missing root), no backlog boundary (an undelivered capture is owed whenever it
+// was recorded), and `content` retained (it is the reason the lane exists).
+describe('SqliteHistorySyncRepository — captures the outbox still owes', () => {
+  it('offers unstamped captures oldest first, and no structural rows', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    seedSession(db, 's-2', 10 * MINUTE);
+    const rows = db.historySync.pendingCaptureRows(10, ALL);
+    expect(rows.map((r) => r.id)).toEqual(['s-1-prompt', 's-2-prompt']);
+    // The structural rows belong to the other lane and must not appear here.
+    expect(rows.every((r) => r.eventType === 'prompt')).toBe(true);
+  });
+
+  // The whole point of the lane: the text rides along. rebuildAuditEvent drops
+  // `content` for the structural route; this reader must not.
+  it('carries the captured text', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    expect(db.historySync.pendingCaptureRows(10, ALL)[0]?.content).toBe('the text of a prompt');
+  });
+
+  it('does not offer a capture the live path already stamped', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.markSynced(['s-1-prompt'], T0);
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+  });
+
+  it('does not offer a capture another pass has claimed', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.claimRows(['s-1-prompt'], T0);
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+  });
+
+  // The grace window is what keeps this pass off rows the live forward is
+  // probably still sending. It is a quietness measure, not a correctness one —
+  // but it has to actually bound the read.
+  it('holds back a capture newer than the grace window', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    // seedSession writes its prompt at T0 + 3 minutes.
+    expect(db.historySync.pendingCaptureRows(10, T0 + 2 * MINUTE)).toEqual([]);
+    expect(db.historySync.pendingCaptureRows(10, T0 + 4 * MINUTE).map((r) => r.id)).toEqual([
+      's-1-prompt',
+    ]);
+  });
+
+  it('pages', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    seedSession(db, 's-2', 10 * MINUTE);
+    expect(db.historySync.pendingCaptureRows(1, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
   });
 });
 

@@ -17,6 +17,30 @@ export const STRUCTURAL_EVENT_TYPES = ['session', 'llm_call', 'tool_call'] as co
 
 const TYPE_LIST = STRUCTURAL_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
 
+/**
+ * The capture grain — the rows STRUCTURAL_EVENT_TYPES exists to keep out.
+ *
+ * A SEPARATE list, deliberately, and never merged into the one above. The two
+ * lanes are not two settings of one drain: they carry different wire shapes to
+ * different routes, and only one of them may carry `content`.
+ *
+ *   structural → RecordAuditEventRequest → POST /v1/audit-events
+ *                The receiver PERSISTS `content` verbatim, so rebuildAuditEvent
+ *                drops it and this lane must never carry a capture.
+ *   capture    → IngestEvent            → POST /v1/events
+ *                The receiver scans `content` in memory and stores NULL, so this
+ *                is the only route a prompt's text may take.
+ *
+ * Widening the structural list to "just include captures" is therefore not a
+ * shortcut, it is a data leak with a green test suite: rebuildAuditEvent has no
+ * `content` key, so captures would arrive stripped of the text that is their
+ * whole point, be stamped delivered, and never be offered again — while the
+ * route that received them wrote every other field to disk for keeps.
+ */
+export const CAPTURE_EVENT_TYPES = ['prompt', 'response', 'code_change', 'tool_use'] as const;
+
+const CAPTURE_TYPE_LIST = CAPTURE_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
+
 /** `synced_at` values that are not a delivery time. */
 const SKIPPED = -1;
 
@@ -142,6 +166,7 @@ export class SqliteHistorySyncRepository {
   private readonly closeWindowStmt: StatementSync;
   private readonly releaseBoundaryStmt: StatementSync;
   private readonly freezeBoundaryStmt: StatementSync;
+  private readonly captureRowsStmt: StatementSync;
   private readonly partitionStmt: StatementSync;
   private readonly claimRowStmt: StatementSync;
   private readonly releaseRowStmt: StatementSync;
@@ -175,6 +200,30 @@ export class SqliteHistorySyncRepository {
           AND started_at < :before
           AND COALESCE(root_session_id, id) = :sessionId
         ORDER BY (event_type = 'session') DESC, started_at
+        LIMIT :limit`,
+    );
+
+    // Captures, flat and oldest first — NOT grouped by session, and that is a
+    // property of the route rather than an oversight. /v1/events stubs a missing
+    // session root on the leaf's own id, so a capture that overtakes its root is
+    // absorbed rather than rejected; the structural lane pages by session only
+    // because /v1/audit-events stubs nothing and its foreign keys are real.
+    //
+    // `:before` here is a GRACE WINDOW, not the backlog boundary the structural
+    // lane uses. Every unstamped capture is owed, whenever it was recorded — a
+    // capture the live path dropped ten seconds ago is exactly what the outbox
+    // exists for. What the window buys is not correctness but quiet: it keeps
+    // this pass off rows the live forward is probably still mid-flight on. A row
+    // sent twice is harmless (the receiver dedups on an id derived from the
+    // row's own tuple), so the window may be small.
+    this.captureRowsStmt = db.prepare(
+      `SELECT ${ROW_COLUMNS}
+         FROM audit_events
+        WHERE synced_at IS NULL
+          AND sync_claimed_at IS NULL
+          AND event_type IN (${CAPTURE_TYPE_LIST})
+          AND started_at < :before
+        ORDER BY started_at
         LIMIT :limit`,
     );
 
@@ -237,9 +286,15 @@ export class SqliteHistorySyncRepository {
     );
     // Permanent skips are NOT re-armed: a row that failed to rebuild locally
     // fails the same way against any deployment.
+    // BOTH lanes, and the capture half is not optional. A delivery stamp records
+    // that one deployment received a row; re-arming exists because the next
+    // deployment has not. Left structural-only, a capture stamped for deployment
+    // A would survive attaching to B and never be offered to it — a silent,
+    // permanent hole in the new deployment's copy, growing with every re-attach,
+    // and invisible because the ledger reads "delivered".
     this.rearmStmt = db.prepare(
       `UPDATE audit_events SET synced_at = NULL
-        WHERE synced_at > 0 AND event_type IN (${TYPE_LIST})`,
+        WHERE synced_at > 0 AND event_type IN (${TYPE_LIST}, ${CAPTURE_TYPE_LIST})`,
     );
 
     // A heartbeat in the FUTURE counts as stale. A backwards clock correction
@@ -336,6 +391,17 @@ export class SqliteHistorySyncRepository {
   /** One session's undelivered structural rows within the backlog, root first. */
   pendingRows(sessionId: string, limit: number, before: number): AuditEventRow[] {
     return allRows<AuditEventRow>(this.rowsStmt, { sessionId, limit, before });
+  }
+
+  /**
+   * Captures this machine still owes the deployment, oldest first.
+   *
+   * `before` is a grace window (see captureRowsStmt), not the structural lane's
+   * backlog boundary: a capture is owed whenever it was recorded, because the
+   * reason it is here is that no live forward delivered it.
+   */
+  pendingCaptureRows(limit: number, before: number): AuditEventRow[] {
+    return allRows<AuditEventRow>(this.captureRowsStmt, { limit, before });
   }
 
   /** Record delivery. Called only AFTER the far side has accepted the rows. */

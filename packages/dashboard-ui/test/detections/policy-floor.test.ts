@@ -1,4 +1,4 @@
-import { KNOWN_BUILTIN_IDS } from '@akasecurity/schema';
+import { KNOWN_BUILTIN_IDS, PackPolicyFloor } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { policyMeta } from '../../src/detections/meta.ts';
@@ -156,5 +156,24 @@ describe('isPolicyGoverned', () => {
     // The value is right and the decision is still not this machine's. A row
     // that looked ordinary would send the user to the picker to find that out.
     expect(isPolicyGoverned('warn', floor({ floor: 'warn', locked: true }))).toBe(true);
+  });
+});
+
+describe('DetectionPolicyFloor', () => {
+  it('is the schema shape the store states its answer in, not a look-alike', () => {
+    // The floor is computed on the server — it needs the local store and the
+    // machine's settings — and arrives here as a plain prop. That hand-off is
+    // only verbatim while the two names denote ONE shape: the assignments below
+    // are the pin, and either of them stops compiling the moment a side grows a
+    // field the other does not have. A separate declaration would have kept the
+    // views compiling while dropping it.
+    const fromStore = PackPolicyFloor.parse({ floor: 'redact', locked: false });
+    const asProp: DetectionPolicyFloor = fromStore;
+    const backToStore: PackPolicyFloor = asProp;
+
+    expect(backToStore).toEqual(fromStore);
+    // And the decisions actually run off that value, rather than off a shape
+    // this test built for itself.
+    expect(Object.keys(unavailableUnderFloor(asProp) ?? {}).sort()).toEqual(['monitor', 'warn']);
   });
 });

@@ -1,9 +1,13 @@
 import {
+  chmodSync,
+  existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -397,9 +401,22 @@ describe('redactLeakedKeys', () => {
   });
 
   describe('.aka-redact.tmp cleanup', () => {
+    // A pid no platform can hand out: Linux caps `pid_max` at 2^22 and macOS at
+    // 99999, so `kill(pid, 0)` answers ESRCH here rather than racing some real
+    // process. That makes "a killed earlier run" a fixture rather than a gamble
+    // on pid reuse.
+    const DEAD_PID = 1_073_741_823;
+
+    // The temp path this module mints for `artifact` when it runs as `pid`.
+    function tempName(artifact: string, pid: number): string {
+      return `${artifact}.${String(pid)}.aka-redact.tmp`;
+    }
+
     // Entries left behind matching the atomic-write sibling-temp-file naming.
     function orphanedTmpEntries(dir: string): string[] {
-      return readdirSync(dir).filter((entry) => entry.endsWith('.aka-redact.tmp'));
+      return readdirSync(dir)
+        .filter((entry) => entry.endsWith('.aka-redact.tmp'))
+        .sort();
     }
 
     it('leaves no .aka-redact.tmp sibling after a successful redaction', () => {
@@ -423,10 +440,11 @@ describe('redactLeakedKeys', () => {
       writeFileSync(transcriptFile, originalContent);
 
       // Pre-create a DIRECTORY at the exact sibling temp path the atomic write
-      // uses, so `writeFileSync(tmpPath, content)` throws EISDIR instead of
-      // writing — a deterministic, OS-level way to force the write/rename step
-      // to fail without touching the original file at all.
-      const tmpPath = `${transcriptFile}.aka-redact.tmp`;
+      // uses. The sweep leaves it (a directory is not something this module
+      // wrote) and the exclusive create then refuses to publish through it — a
+      // deterministic, OS-level way to force the write/rename step to fail
+      // without touching the original file at all.
+      const tmpPath = tempName(transcriptFile, process.pid);
       mkdirSync(tmpPath);
 
       const count = redactLeakedKeys(
@@ -441,6 +459,138 @@ describe('redactLeakedKeys', () => {
       expect(orphanedTmpEntries(transcriptRoot)).toEqual([]);
       // The atomic-write guarantee: the original artifact is untouched.
       expect(readFileSync(transcriptFile, 'utf8')).toBe(originalContent);
+    });
+
+    it('sweeps the copy a killed earlier run stranded beside the artifact', () => {
+      const transcriptFile = join(transcriptRoot, 'session.jsonl');
+      writeFileSync(transcriptFile, `leaked ${TRANSCRIPT_KEY} here`);
+      // A temp a run that died between the write and the rename left behind: a
+      // whole copy of the transcript that nothing else would ever remove.
+      const stranded = tempName(transcriptFile, DEAD_PID);
+      writeFileSync(stranded, `stranded copy ${TRANSCRIPT_KEY} here`);
+
+      const count = redactLeakedKeys(
+        [{ where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY }],
+        scope,
+      );
+
+      expect(count).toBe(1);
+      expect(existsSync(stranded)).toBe(false);
+      expect(orphanedTmpEntries(transcriptRoot)).toEqual([]);
+    });
+
+    it('sweeps a stranded copy even when this pass strikes nothing', () => {
+      const transcriptFile = join(transcriptRoot, 'session.jsonl');
+      const originalContent = 'nothing leaked here';
+      writeFileSync(transcriptFile, originalContent);
+      const stranded = tempName(transcriptFile, DEAD_PID);
+      writeFileSync(stranded, `stranded copy ${TRANSCRIPT_KEY} here`);
+
+      const count = redactLeakedKeys(
+        [{ where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY }],
+        scope,
+      );
+
+      // The artifact stays byte-identical — the sweep runs on every artifact the
+      // pass opens, not only on the ones it goes on to rewrite.
+      expect(count).toBe(0);
+      expect(readFileSync(transcriptFile, 'utf8')).toBe(originalContent);
+      expect(existsSync(stranded)).toBe(false);
+    });
+
+    it("leaves a live run's temp file alone", () => {
+      const transcriptFile = join(transcriptRoot, 'session.jsonl');
+      writeFileSync(transcriptFile, `leaked ${TRANSCRIPT_KEY} here`);
+      // The parent of this test process is alive by construction, so its temp is
+      // work in progress rather than a leftover — sweeping it would delete
+      // another run's bytes out from under its own rename.
+      const live = tempName(transcriptFile, process.ppid);
+      writeFileSync(live, 'in flight');
+
+      redactLeakedKeys([{ where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY }], scope);
+
+      expect(readFileSync(live, 'utf8')).toBe('in flight');
+    });
+
+    it('never removes a sibling it did not name', () => {
+      const transcriptFile = join(transcriptRoot, 'session.jsonl');
+      writeFileSync(transcriptFile, `leaked ${TRANSCRIPT_KEY} here`);
+      const bystanders = [
+        // The pid-free shape: nothing this module mints.
+        `${transcriptFile}.aka-redact.tmp`,
+        `${transcriptFile}.notapid.aka-redact.tmp`,
+        `${transcriptFile}. 7.aka-redact.tmp`,
+        // A temp belonging to a DIFFERENT artifact in the same directory.
+        tempName(join(transcriptRoot, 'other.jsonl'), DEAD_PID),
+        // The suffix has to end the name, not merely appear in it.
+        `${tempName(transcriptFile, DEAD_PID)}.bak`,
+      ];
+      for (const path of bystanders) writeFileSync(path, 'not ours');
+
+      redactLeakedKeys([{ where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY }], scope);
+
+      for (const path of bystanders) expect(existsSync(path)).toBe(true);
+    });
+
+    it('refuses to publish through a symlink planted at its temp path', (ctx) => {
+      if (process.platform === 'win32') {
+        ctx.skip('unprivileged symlink creation is not available on Windows');
+      }
+      const transcriptFile = join(transcriptRoot, 'session.jsonl');
+      const originalContent = `leaked ${TRANSCRIPT_KEY} here`;
+      writeFileSync(transcriptFile, originalContent);
+      // A file outside every artifact root, standing in for whatever a planted
+      // link would aim at. Following the link would copy this artifact's whole
+      // contents over it and then rename the link itself over the artifact.
+      const outside = join(projectRoot, 'notes.txt');
+      writeFileSync(outside, 'untouched');
+      symlinkSync(outside, tempName(transcriptFile, process.pid));
+
+      const count = redactLeakedKeys(
+        [{ where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY }],
+        scope,
+      );
+
+      // Doubt at the temp path comes out as "did nothing": no write, no count.
+      expect(count).toBe(0);
+      expect(readFileSync(outside, 'utf8')).toBe('untouched');
+      expect(readFileSync(transcriptFile, 'utf8')).toBe(originalContent);
+      expect(lstatSync(transcriptFile).isSymbolicLink()).toBe(false);
+      expect(orphanedTmpEntries(transcriptRoot)).toEqual([]);
+    });
+
+    it('clears a leftover carrying its own pid rather than writing through it', (ctx) => {
+      if (process.platform === 'win32') ctx.skip('POSIX permission bits');
+      const transcriptFile = join(transcriptRoot, 'session.jsonl');
+      writeFileSync(transcriptFile, `leaked ${TRANSCRIPT_KEY} here`, { mode: 0o600 });
+      // The one temp path this process would pick, left behind by an earlier
+      // process that happened to carry the same pid. Writing through it would
+      // publish the artifact with the leftover's permission bits, since a write
+      // applies its mode only when it CREATES the file.
+      writeFileSync(tempName(transcriptFile, process.pid), 'stale', { mode: 0o644 });
+
+      const count = redactLeakedKeys(
+        [{ where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY }],
+        scope,
+      );
+
+      expect(count).toBe(1);
+      expect(readFileSync(transcriptFile, 'utf8')).toContain('[REDACTED:SECRET]');
+      expect(statSync(transcriptFile).mode & 0o777).toBe(0o600);
+      expect(orphanedTmpEntries(transcriptRoot)).toEqual([]);
+    });
+
+    it('publishes the redacted artifact with the permission bits it had', (ctx) => {
+      if (process.platform === 'win32') ctx.skip('POSIX permission bits');
+      const transcriptFile = join(transcriptRoot, 'session.jsonl');
+      writeFileSync(transcriptFile, `leaked ${TRANSCRIPT_KEY} here`);
+      chmodSync(transcriptFile, 0o600);
+
+      redactLeakedKeys([{ where: { filePath: transcriptFile }, rawValue: TRANSCRIPT_KEY }], scope);
+
+      // The rewrite is published by renaming a fresh file over the artifact, so
+      // an owner-only transcript must not come back at the umask default.
+      expect(statSync(transcriptFile).mode & 0o777).toBe(0o600);
     });
   });
 });

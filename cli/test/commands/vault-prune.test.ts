@@ -172,6 +172,26 @@ function purgeDerefCount(): number {
   }
 }
 
+// Every `remediation` audit row for one pointer, oldest first, as
+// `<outcome>` strings — the trail this verb's reveals and its aborts both write
+// into.
+function remediationTrail(pointerId: string): string[] {
+  const raw = new DatabaseSync(dbPath(home), { readOnly: true });
+  try {
+    return (
+      raw
+        .prepare(
+          `SELECT outcome FROM secret_vault_deref
+            WHERE pointer_id = :pointerId AND reason = 'remediation'
+            ORDER BY rowid`,
+        )
+        .all({ pointerId }) as { outcome: string }[]
+    ).map((r) => r.outcome);
+  } finally {
+    raw.close();
+  }
+}
+
 // One JSONL transcript line carrying the pointer inside a JSON string, which is
 // the shape the at-rest scrub leaves behind.
 function transcriptLine(pointer: string): string {
@@ -415,6 +435,61 @@ describe('aka vault prune', () => {
     expect(io.output()).toContain('restoring would break a record in this file');
     expect(io.output()).toContain('Deleting them would leave their pointers permanently');
     expectNoEchoOf(io.output(), UNSPLICEABLE_RAW);
+
+    // And the trail says the same thing the disk does. The reveal really
+    // happened — the value was opened to decide the splice — so the row for it
+    // stands; the row after it says that reveal produced no restore. Without
+    // the second one the audit claims a value was revealed out of a file that
+    // was never touched, for an entry still sitting in the vault.
+    expect(remediationTrail(pointerId)).toEqual(['revealed', 'unavailable']);
+  });
+
+  it('stamps the trail when the rewrite aborts after the splice was computed', async () => {
+    installPack('code-context', 'code-context/file-path', 'code_context', 'monitor');
+    const { pointer, pointerId } = await vaultValue(
+      MONITOR_RAW,
+      'code-context/file-path',
+      'code_context',
+    );
+    recordSighting(pointerId, transcript, 'transcript');
+    writeFileSync(transcript, `${transcriptLine(pointer)}\n`);
+    const before = readFileSync(transcript, 'utf8');
+
+    // A DIRECTORY sitting on the temp path the rewrite publishes through. The
+    // sweep removes only regular files, so it survives, and the exclusive
+    // create then fails — an abort reached AFTER the reveal and after the whole
+    // splice was computed, which is the half `restoreText`'s own refusals
+    // cannot reach. (A file there would simply be swept: it carries this
+    // process's own pid.)
+    mkdirSync(`${transcript}.${String(process.pid)}.aka-prune.tmp`);
+
+    const io = scriptedIo();
+    await runVault(['prune', '--apply', '--home', home, '--user-home', userHome], io);
+
+    expect(readFileSync(transcript, 'utf8')).toBe(before);
+    expect(vaultRowCount()).toBe(1);
+    expect(io.output()).toContain('ABORTED');
+    expect(io.output()).toContain('the rewrite could not be written');
+    expect(remediationTrail(pointerId)).toEqual(['revealed', 'unavailable']);
+    expectNoEchoOf(io.output(), MONITOR_RAW);
+  });
+
+  it('writes no abort stamp when the restore actually lands', async () => {
+    installPack('code-context', 'code-context/file-path', 'code_context', 'monitor');
+    const { pointer, pointerId } = await vaultValue(
+      MONITOR_RAW,
+      'code-context/file-path',
+      'code_context',
+    );
+    recordSighting(pointerId, transcript, 'transcript');
+    writeFileSync(transcript, `${transcriptLine(pointer)}\n`);
+
+    await runVault(['prune', '--apply', '--home', home, '--user-home', userHome], scriptedIo());
+
+    // The control on the case above: a reveal that DID restore leaves the one
+    // row it earned, so the stamp cannot be written unconditionally.
+    expect(readFileSync(transcript, 'utf8')).toContain(MONITOR_RAW);
+    expect(remediationTrail(pointerId)).toEqual(['revealed']);
   });
 
   it('leaves an in-policy entry and its pointer alone', async () => {
@@ -492,6 +567,30 @@ describe('aka vault prune', () => {
     expect(vaultRowCount()).toBe(1);
     expect(io.output()).toContain('1 sighted on a prompt / tool-input / tool-output surface');
     expect(io.output()).toContain('The sighting ledger is best-effort');
+  });
+
+  it('never deletes an out-of-policy entry that has no sighting', async () => {
+    installPack('code-context', 'code-context/file-path', 'code_context', 'monitor');
+    // Vaulted with no sighting recorded anywhere — the shape the surfaced-secret
+    // Redact button leaves behind, which vaults on the user's own instruction
+    // whatever the pack was assigned. `selectOutOfPolicy` reads the ruleset,
+    // finds `log`, and files this entry as out of policy; the ONLY thing that
+    // saves it from being restored and deleted is that the prune refuses an
+    // entry with no sighting. Nothing states that coupling, so it is pinned
+    // here: give that path a sighting and this goes red rather than silently
+    // undoing a strike the user asked for.
+    const { pointerId } = await vaultValue(MONITOR_RAW, 'code-context/file-path', 'code_context');
+
+    const io = scriptedIo();
+    await runVault(['prune', '--apply', '--home', home, '--user-home', userHome], io);
+
+    expect(io.output()).toContain('out of policy            1');
+    expect(io.output()).toContain('1 with no recorded sighting at all');
+    expect(io.output()).toContain('deleted 0 vault entries');
+    expect(vaultRowCount()).toBe(1);
+    // Nothing was revealed for it either: an unsighted entry names no file, so
+    // the restore pass never opens one.
+    expect(remediationTrail(pointerId)).toEqual([]);
   });
 
   it('prints its own help without touching the store', async () => {

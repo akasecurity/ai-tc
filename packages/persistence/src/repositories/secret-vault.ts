@@ -226,6 +226,7 @@ export class SqliteSecretVaultRepository {
   private readonly listStmt: StatementSync;
   private readonly replaceCiphertextStmt: StatementSync;
   private readonly refreshFingerprintStmt: StatementSync;
+  private readonly deleteByPointerStmt: StatementSync;
   private readonly derefStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
@@ -265,6 +266,9 @@ export class SqliteSecretVaultRepository {
       `UPDATE secret_vault
        SET value_fingerprint = :valueFingerprint, fingerprint_key_version = :fingerprintKeyVersion
        WHERE pointer_id = :pointerId`,
+    );
+    this.deleteByPointerStmt = db.prepare(
+      `DELETE FROM secret_vault WHERE pointer_id = :pointerId`,
     );
     this.derefStmt = db.prepare(
       `INSERT INTO secret_vault_deref (id, pointer_id, at, target, reason, outcome, grant_id, pointer_count)
@@ -386,6 +390,34 @@ export class SqliteSecretVaultRepository {
       'IMMEDIATE',
     );
     return destroyed;
+  }
+
+  /**
+   * Destroy the named entries and report how many rows went — the scoped
+   * counterpart to `purgeAll`, for a caller that has already put those specific
+   * values back where they came from. Ids the store does not hold are counted
+   * as nothing, so a set assembled from a stale read is not an error. The deref
+   * audit is left alone, exactly as the purge leaves it.
+   *
+   * One transaction over the whole set rather than a statement per id: the
+   * caller hands this the result of a restore pass it has completed, and a
+   * fault partway through must leave the vault as it was found rather than
+   * destroying a prefix of it. The vault holds the only copy of what a pointer
+   * stands for, so half a delete is not a state anything can recover from.
+   */
+  deleteByPointerIds(pointerIds: readonly string[]): number {
+    if (pointerIds.length === 0) return 0;
+    let deleted = 0;
+    withTransaction(
+      this.db,
+      () => {
+        for (const pointerId of pointerIds) {
+          deleted += Number(this.deleteByPointerStmt.run({ pointerId }).changes);
+        }
+      },
+      'IMMEDIATE',
+    );
+    return deleted;
   }
 
   /**

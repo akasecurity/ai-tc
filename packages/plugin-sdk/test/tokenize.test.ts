@@ -394,6 +394,29 @@ describe('vault glue', () => {
       expect(result.redacted).toEqual([{ category: 'secret' }]);
     });
 
+    // Same rule where the caller has no findings of its own: the resolver only
+    // ever FILLS IN `reversible`, so a set the caller did pass still stands.
+    // The self-scan mints its own MatchResult objects, which this set cannot
+    // hold — so it reads as "keep nothing", every enforced span is destroyed
+    // instead of vaulted, and the caller's statement errs toward not retaining
+    // a value rather than being dropped for one derived behind its back.
+    it("an explicit `reversible` set wins over the resolver for a self-scan too", async () => {
+      const text = `aws_access_key_id = ${SECRET}`;
+      const result = await glue.tokenizeText(text, {
+        reversible: new Set(),
+        resolver: spyResolver(
+          () => 'redact',
+          () => true,
+        ),
+      });
+      expect(result.text).not.toContain(SECRET);
+      // Positive control: the surrounding bytes survived, so the absence above
+      // is this span being destroyed and not the blanket a failure emits.
+      expect(result.text).toContain('aws_access_key_id = ');
+      expect(result.pointers).toEqual([]);
+      expect(result.redacted).toEqual([{ category: 'secret' }]);
+    });
+
     it('with no resolver, a self-scan keeps its historical vault-everything behaviour', async () => {
       const text = `aws_access_key_id = ${SECRET}`;
       const result = await glue.tokenizeText(text);

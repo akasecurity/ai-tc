@@ -252,6 +252,60 @@ describe('SqliteSecretVaultRepository.purgeAll', () => {
   });
 });
 
+describe('SqliteSecretVaultRepository.deleteByPointerIds', () => {
+  it('destroys only the named entries and leaves the deref audit standing', () => {
+    vault.upsert(entry(), NOW);
+    vault.upsert(entry({ pointerId: 'pointer-b', valueFingerprint: FINGERPRINT_B }), NOW);
+    vault.recordDeref({
+      id: randomUUID(),
+      pointerId: 'pointer-a',
+      at: NOW,
+      target: 'human',
+      reason: 'remediation',
+      outcome: 'revealed',
+    });
+
+    expect(vault.deleteByPointerIds(['pointer-a'])).toBe(1);
+    expect(vault.byPointerId('pointer-a')).toBeNull();
+    // The scope is the whole point: everything not named survives.
+    expect(vault.byPointerId('pointer-b')).not.toBeNull();
+    expect(vault.countEntries()).toBe(1);
+    // Same rule as the purge: the record that a de-reference happened outlives
+    // the value it was against.
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM secret_vault_deref').get()).toMatchObject({
+      n: 1,
+    });
+  });
+
+  it('counts only rows that were really there, and takes an empty set', () => {
+    vault.upsert(entry(), NOW);
+
+    expect(vault.deleteByPointerIds([])).toBe(0);
+    expect(vault.countEntries()).toBe(1);
+    // An id the store does not hold is not an error — a caller assembling a set
+    // from an earlier read may name one that has since gone.
+    expect(vault.deleteByPointerIds(['pointer-a', 'pointer-ghost'])).toBe(1);
+    expect(vault.countEntries()).toBe(0);
+  });
+
+  it('leaves every row standing when one delete in the set throws', () => {
+    vault.upsert(entry(), NOW);
+    vault.upsert(entry({ pointerId: 'pointer-b', valueFingerprint: FINGERPRINT_B }), NOW);
+
+    // A pointer id node:sqlite refuses to bind at all: the run throws partway
+    // through the loop, after the first delete has already executed. Without
+    // one transaction over the set that first row is gone and the caller is
+    // told nothing. (A number would bind cleanly — SQLite columns carry no type
+    // affinity here — and simply match nothing.)
+    expect(() => vault.deleteByPointerIds(['pointer-a', {} as unknown as string])).toThrow();
+
+    expect(vault.countEntries()).toBe(2);
+    expect(vault.byPointerId('pointer-a')).not.toBeNull();
+    // The failure must not strand an open transaction on the handle either.
+    expect(raw.isTransaction).toBe(false);
+  });
+});
+
 // The inventory's revealable badge and the actual crossing must share ONE
 // definition of "an active reveal grant". The crossing (activeRevealGrant)
 // fails closed on a grant with conditions — the reveal path does not evaluate

@@ -21,10 +21,25 @@
  *
  * IO is node:fs only — no store access, no network, no detection engine. Reads and
  * writes are best-effort per file: an unreadable or vanished artifact is skipped so
- * one bad file cannot abort the sweep of the rest.
+ * one bad file cannot abort the sweep of the rest. The single call outside node:fs
+ * is `process.kill(pid, 0)` — a signal that is never sent, asked only to tell a
+ * crashed run's leftover temp file from a live run's work in progress.
+ *
+ * This module runs on a fail-open hook path, so nothing here throws: every
+ * filesystem call it makes on its own initiative (the temp sweep especially) is
+ * best-effort, and a step that cannot run leaves the redaction to carry on.
  */
-import { readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { isAbsolute, relative, resolve } from 'node:path';
+import {
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import type { MaskedFindingLocation } from '@akasecurity/schema';
 
@@ -126,6 +141,73 @@ export function resolveRedactableArtifact(filePath: string, scope: RedactionScop
   return scope.artifactRoots.some((root) => isWithinRoot(realTarget, root)) ? realTarget : null;
 }
 
+// The sibling this module writes before it renames, named
+// `<artifact>.<pid>.aka-redact.tmp`.
+//
+// The pid is what makes the name per-process: two runs never share an inode, so
+// neither can publish the other's half-written bytes, and neither can inherit a
+// leftover's permission bits (`writeFileSync` applies `mode` only when it
+// CREATES). It is also the only thing that lets a later run tell a crashed run's
+// leftover from a live run's work in progress.
+const TMP_SUFFIX = '.aka-redact.tmp';
+
+function tempPathFor(realPath: string): string {
+  return `${realPath}.${String(process.pid)}${TMP_SUFFIX}`;
+}
+
+// True unless the OS says no such process. EPERM means a process that exists and
+// is not ours — a live run, so its temp is not ours to sweep.
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+/**
+ * Delete temp files an earlier, killed run stranded beside this artifact.
+ *
+ * A process killed between the write and the rename leaves a file holding a
+ * whole copy of the artifact — the redacted text, but also every other line of
+ * the transcript around it — and nothing else would ever remove it.
+ *
+ * Deliberately the narrowest sweep that can do that, because it deletes: only
+ * siblings of THIS artifact, only names this module itself mints (the exact
+ * `<basename>.<digits>.aka-redact.tmp` shape — the trailing dot on the prefix
+ * keeps the artifact itself from ever matching), only regular files, and only
+ * when the pid in the name names no living process. A concurrent run's temp is
+ * therefore left alone; our own pid needs no liveness check, since the process
+ * asking is the one that would be using it.
+ */
+function sweepStrandedTemps(realPath: string): void {
+  const dir = dirname(realPath);
+  const prefix = `${basename(realPath)}.`;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return; // best-effort: a directory we cannot list sweeps nothing
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith(TMP_SUFFIX)) continue;
+    const pidPart = name.slice(prefix.length, name.length - TMP_SUFFIX.length);
+    if (!/^\d+$/.test(pidPart)) continue;
+    const pid = Number(pidPart);
+    if (pid !== process.pid && isProcessAlive(pid)) continue;
+    try {
+      const stranded = join(dir, name);
+      // lstat, and regular files only: a symlink or a directory wearing this
+      // name is not something this module wrote, so it is not ours to remove.
+      if (!lstatSync(stranded).isFile()) continue;
+      rmSync(stranded, { force: true });
+    } catch {
+      // best-effort — a sweep that cannot run must not stop the redaction.
+    }
+  }
+}
+
 // The detailed outcome of a redaction sweep: the real count (same figure
 // `redactLeakedKeys` returns) plus exactly which input targets were struck —
 // so a caller that needs to know which specific findings remain unredacted
@@ -178,11 +260,20 @@ export function redactLeakedKeysDetailed(
   const struck: RedactionTarget[] = [];
   for (const [filePath, fileTargets] of byFile) {
     let content: string;
+    let mode: number;
     try {
+      // The artifact's own permission bits, captured with the read: the rewrite
+      // is published by renaming a fresh file over it, so without them a 0600
+      // transcript would come back at the umask default.
+      mode = statSync(filePath).mode & 0o777;
       content = readFileSync(filePath, 'utf8');
     } catch {
       continue; // unreadable or vanished artifact — skip, don't abort the batch
     }
+    // Before the strike loop, so every artifact this pass opens gets an earlier
+    // run's stranded copy cleared even when nothing here turns out to match. It
+    // never touches the artifact itself, which stays byte-identical.
+    sweepStrandedTemps(filePath);
     const struckHere: RedactionTarget[] = [];
     let pointeredHere = 0;
     // rawValue → the replacement actually applied to this file, so a sibling
@@ -221,12 +312,19 @@ export function redactLeakedKeysDetailed(
       if (replacement !== REDACTED_PLACEHOLDER) pointeredHere += 1;
     }
     if (struckHere.length === 0) continue;
-    // Write atomically: a full write to a sibling temp file, then rename over the
-    // original (rename is atomic on the same filesystem). A crash mid-write leaves
-    // the original transcript intact rather than truncated.
-    const tmpPath = `${filePath}.aka-redact.tmp`;
+    // Write atomically: a full write to a per-process sibling temp file, then
+    // rename over the original (rename is atomic on the same filesystem). A crash
+    // mid-write leaves the original transcript intact rather than truncated.
+    const tmpPath = tempPathFor(filePath);
     try {
-      writeFileSync(tmpPath, content);
+      // `wx` (O_EXCL) is what makes the mode binding: it creates the temp or
+      // fails, so the bytes can never land in an inode someone else's mode
+      // already decided, and it refuses to follow a symlink planted at the path
+      // — which would otherwise send this artifact's whole contents wherever the
+      // link pointed and then rename the link itself over the artifact. Anything
+      // already sitting there — a directory, a leftover the sweep would not
+      // touch — is doubt, and doubt leaves the artifact untouched.
+      writeFileSync(tmpPath, content, { mode, flag: 'wx' });
       renameSync(tmpPath, filePath);
     } catch {
       try {

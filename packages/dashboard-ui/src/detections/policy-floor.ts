@@ -11,9 +11,10 @@
 //
 // Everything here is a PURE function of a serializable descriptor. The floor is
 // computed on the server (it needs the local store and the machine's settings),
-// so the only thing that crosses into the browser is the two facts below, and
-// the decisions that follow from them are made in one place for both the picker
-// and the list.
+// so the only thing that crosses into the browser is the small schema shape this
+// module aliases, and the decisions that follow from it are made in one place
+// for both the picker and the list.
+import type { PackPolicyFloor } from '@akasecurity/schema';
 import {
   BuiltinPolicyId,
   builtinPolicyToAction,
@@ -26,20 +27,15 @@ import { PLACEHOLDER_POLICY, policyMeta } from './meta.ts';
 /**
  * The constraint one detection is under, or the absence of one.
  *
- * Structurally what the local store reports for an installed pack, restated
- * here because these views may not import the store: they take props and
- * nothing else. Keeping the two shapes identical is what lets a host forward
- * the store's answer verbatim rather than translating it.
+ * An ALIAS of the schema shape, not a restatement of it: what these views must
+ * not import is the store, and the schema is not the store — it is the contract
+ * the store's answer is stated in. Aliasing is what makes forwarding that answer
+ * verbatim structural rather than a resemblance someone has to keep true; a
+ * field added to the shape reaches the views instead of being silently dropped
+ * on the way in. The name is local because these views speak of detections,
+ * where the store speaks of the packs they install from.
  */
-export interface DetectionPolicyFloor {
-  /** The weakest archetype the organization permits for this detection. */
-  readonly floor: BuiltinPolicyId;
-  /**
-   * True when the organization has written a policy for this detection rather
-   * than a minimum — it stated the answer, so there is nothing to choose.
-   */
-  readonly locked: boolean;
-}
+export type DetectionPolicyFloor = PackPolicyFloor;
 
 /**
  * The sentence a user reads when a choice is not theirs to make.

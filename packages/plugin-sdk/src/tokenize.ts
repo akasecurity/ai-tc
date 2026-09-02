@@ -165,8 +165,9 @@ export interface VaultGlue {
       //
       // It never widens a caller's own `findings`: those were already resolved
       // upstream, and re-resolving them here would be a second reading of the
-      // same bundle. Against supplied findings the resolver only fills in
-      // `reversible` when the caller passed none.
+      // same bundle. For the same reason it only ever FILLS IN `reversible` —
+      // when the caller passed none. A caller that passed one has stated the
+      // answer, findings of its own or not, and it stands.
       resolver?: PolicyResolver;
     },
   ): Promise<TokenizeTextResult>;
@@ -335,8 +336,16 @@ class SecretVaultGlue implements VaultGlue {
       // behind it survives as recoverable ciphertext or is destroyed. A
       // resolver answers this from the same bundle that decided the action,
       // and is what a self-scan has instead of keep-all.
+      //
+      // The resolver only FILLS IN that answer: a caller that passed a set of
+      // its own has already stated it, and re-deriving one here would overrule
+      // the caller with a second reading of a bundle it already read. That
+      // holds whether or not the caller also passed findings — a set that
+      // matches nothing in play means "keep nothing", and keeping nothing is
+      // the direction that destroys values rather than minting recoverable
+      // copies of them.
       let reversible = opts?.reversible;
-      if (resolver !== undefined && (supplied === undefined || reversible === undefined)) {
+      if (resolver !== undefined && reversible === undefined) {
         reversible = new Set(findings.filter((f) => resolver.isReversible(f.ruleId)));
       }
       const reversibleSet = reversible;

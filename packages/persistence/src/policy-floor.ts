@@ -4,8 +4,10 @@
  * On a standalone machine the per-detection Monitor/Warn/Redact/Block choice is
  * entirely the user's. On an attached one the organization's bundle is a FLOOR:
  * the device may raise a pack above what the control plane asks for, but never
- * set one below it, and a pack the organization has AUTHORED a policy for is not
- * locally re-assignable at all.
+ * set one below it, and a pack whose answer the organization has AUTHORED is not
+ * locally re-assignable at all. Both constraints come from what the bundle
+ * actually says — a pack it never reaches stays entirely the user's, exactly as
+ * on a standalone machine.
  *
  * Two properties make that floor honest rather than decorative:
  *
@@ -24,10 +26,9 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import type { ActionTaken, BuiltinPolicyId, Policy } from '@akasecurity/schema';
+import type { ActionTaken, BuiltinPolicyId, PackPolicyFloor, Policy } from '@akasecurity/schema';
 import {
   builtinPolicyToAction,
-  DEFAULT_ACTIONS,
   DEFAULT_PACK_POLICY_ID,
   isActionAtLeast,
   isAttached,
@@ -54,22 +55,14 @@ export interface FloorRule {
 /** Why an assignment was refused: the pack is below the floor, or it is locked. */
 export type PolicyFloorRefusal = 'floor' | 'lock';
 
-/** What the control plane imposes on ONE installed pack. */
-export interface PackPolicyFloor {
-  /**
-   * The weakest built-in archetype the device may assign. Stated as a
-   * BuiltinPolicyId rather than a raw action because that is the vocabulary the
-   * user actually picks from — a floor a UI cannot name is one it cannot
-   * explain.
-   */
-  readonly floor: BuiltinPolicyId;
-  /**
-   * True when an AUTHORED control-plane policy governs one of this pack's
-   * rules. Such a pack is not re-assignable locally at all, in either
-   * direction: the organization did not state a minimum, it stated the answer.
-   */
-  readonly locked: boolean;
-}
+/**
+ * What the control plane imposes on ONE installed pack.
+ *
+ * Re-exported from the schema rather than declared, because the surfaces that
+ * render this constraint receive it as a plain prop and must be reading the
+ * same shape this module produces — see `PackPolicyFloor` there.
+ */
+export type { PackPolicyFloor };
 
 /**
  * A refused pack-policy assignment, carrying everything a surface needs to say
@@ -159,24 +152,54 @@ function indexEnabled(policies: readonly Policy[]): {
 }
 
 /**
- * Whether an AUTHORED remote policy reaches any of this pack's rules.
+ * Whether an AUTHORED remote policy decides THIS pack's answer.
  *
- * Scans EVERY enabled policy rather than the first-write-wins index above: an
+ * Scans EVERY enabled policy rather than the first-write-wins index: an
  * authored policy sitting behind a built-in one on the same key still expresses
  * the organization's decision about this detection, and reading only the
  * index's winner would let the ordering of a bundle decide whether a pack is
- * locked. Erring toward locked only ever adds a refusal, never relaxes one.
+ * locked.
+ *
+ * The two target kinds do NOT lock alike, because they do not say the same
+ * thing about a pack:
+ *
+ *   A ruleId-targeted authored policy names a rule this pack owns. There is
+ *   nothing left to interpret — the organization wrote the answer for this
+ *   detection, so it locks.
+ *
+ *   A category-targeted one names a taxonomy, and a category spans many packs
+ *   (secret → secrets, secrets-infra, and anything a user pulled or wrote
+ *   themselves). Read as a lock on membership alone, one authored
+ *   `{ category: 'secret' }` would take the Detections page away for every pack
+ *   carrying any secret rule, including packs the control plane has never seen
+ *   — greying out even the archetype already stored, under a message saying the
+ *   organization set it. So it locks only where the bundle demonstrably reaches
+ *   this pack: at least one of the pack's rules is named by RULE id somewhere in
+ *   the bundle. That is the signal that the control plane has this detection in
+ *   hand at all — a pack it governs arrives expanded into one ruleId-targeted
+ *   policy per rule (see PolicyTarget in the schema) — and it is a fact about
+ *   the bundle, not about which policy happens to win the index.
+ *
+ * Note this narrows the LOCK only. A category policy still contributes its
+ * action to the floor for every rule it matches, governed or not: a minimum
+ * stated per category means what it says, and raising above it stays the
+ * device's to do.
  */
-function hasAuthoredPolicy(policies: readonly Policy[], rules: readonly FloorRule[]): boolean {
+function hasAuthoredPolicy(
+  policies: readonly Policy[],
+  rules: readonly FloorRule[],
+  byRuleId: ReadonlyMap<string, ActionTaken>,
+): boolean {
   const ruleIds = new Set(rules.map((rule) => rule.id));
   const categories = new Set(rules.map((rule) => rule.category));
+  const bundleNamesPack = rules.some((rule) => byRuleId.has(rule.id));
   return policies.some((policy) => {
     // `kind` is optional on the wire and absent reads as 'builtin' — an older
     // producer never authored anything, so it can never lock.
     if (!policy.enabled || policy.kind !== 'custom') return false;
     return 'ruleId' in policy.target
       ? ruleIds.has(policy.target.ruleId)
-      : categories.has(policy.target.category);
+      : bundleNamesPack && categories.has(policy.target.category);
   });
 }
 
@@ -184,20 +207,29 @@ function hasAuthoredPolicy(policies: readonly Policy[], rules: readonly FloorRul
  * The floor the connected control plane imposes on one installed pack, or null
  * when it imposes none.
  *
- * Null on three counts, all of which mean "this machine is its own authority":
- * the pack contributes no rules for a policy to reach; the machine is not
- * attached; or there is no usable cached bundle. The attachment gate is checked
- * even though detach deletes the cache — a leftover file (an interrupted
- * detach, a restored backup, a hand copy) must not go on governing a machine
- * nothing manages any more, and the settings descriptor is the fact that says
- * whether anything does.
+ * Null on four counts, all of which mean "this machine is its own authority":
+ * the pack contributes no rules for a policy to reach; no remote policy names
+ * any rule it does contribute; the machine is not attached; or there is no
+ * usable cached bundle. The attachment gate is checked even though detach
+ * deletes the cache — a leftover file (an interrupted detach, a restored
+ * backup, a hand copy) must not go on governing a machine nothing manages any
+ * more, and the settings descriptor is the fact that says whether anything does.
  *
- * Resolution per rule mirrors the runtime's: a ruleId-targeted policy beats a
- * category-targeted one, and a rule no policy names falls back to the
- * compiled-in DEFAULT_ACTIONS for its category. The pack's floor is the
- * STRONGEST across its rules, because one pack carries one assignment and the
- * weaker choice would leave the rule the organization cares most about
- * under-enforced.
+ * ONLY AN ACTUAL REMOTE POLICY RAISES THE FLOOR. Per rule that is a
+ * ruleId-targeted policy, else a category-targeted one — the runtime's own
+ * precedence, so the two cannot disagree about which policy won — and a rule
+ * the bundle does not name at all contributes NOTHING. It deliberately does not
+ * fall through to the compiled-in DEFAULT_ACTIONS the way the runtime's
+ * resolution does, because a floor is a claim about what the ORGANIZATION
+ * requires, and the compiled-in default is precisely the part the organization
+ * did not say. Falling through made every attached machine refuse Monitor for
+ * every secret pack the bundle never mentioned, citing a Warn the control plane
+ * had not asked for — while what ran for that pack was Monitor, since the
+ * runtime's raise-only merge has no remote action to raise to either.
+ *
+ * The pack's floor is the STRONGEST across the rules a policy does name,
+ * because one pack carries one assignment and the weaker choice would leave the
+ * rule the organization cares most about under-enforced.
  *
  * Note the runtime additionally clamps a remote policy UP to DEFAULT_ACTIONS
  * before enforcing it. This does not, so a bundle that names a rule with
@@ -243,22 +275,23 @@ function resolveFloor(
   policies: readonly Policy[],
   { byRuleId, byCategory }: ReturnType<typeof indexEnabled>,
 ): PackPolicyFloor | null {
-  if (rules.length === 0) return null;
   let action: ActionTaken | null = null;
   for (const rule of rules) {
-    // The category comes from a stored snapshot and is therefore an arbitrary
-    // string here; treat the lookup as possibly-missing so an unrecognised one
-    // lands on the same 'log' fallback the runtime uses rather than undefined.
-    const defaults = DEFAULT_ACTIONS as Partial<Record<string, ActionTaken>>;
-    const resolved =
-      byRuleId.get(rule.id) ?? byCategory.get(rule.category) ?? defaults[rule.category] ?? 'log';
+    // Both lookups may miss — a rule the bundle does not name, or a category
+    // string a stored snapshot carries that no policy targets. A miss is not a
+    // fallback here; it is the absence of anything to impose.
+    const resolved = byRuleId.get(rule.id) ?? byCategory.get(rule.category);
+    if (resolved === undefined) continue;
     action = action === null ? resolved : strongerAction(action, resolved);
   }
+  // Nothing remote reached a single rule of this pack, so there is no floor —
+  // and no lock either: an authored policy that matched would have landed in one
+  // of the two indexes and left `action` set.
+  if (action === null) return null;
 
   return {
-    // `action` is non-null: the empty-rules case returned above.
-    floor: weakestBuiltinAtLeast(action ?? 'log'),
-    locked: hasAuthoredPolicy(policies, rules),
+    floor: weakestBuiltinAtLeast(action),
+    locked: hasAuthoredPolicy(policies, rules, byRuleId),
   };
 }
 

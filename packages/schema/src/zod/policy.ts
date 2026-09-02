@@ -331,6 +331,40 @@ export function weakestBuiltinAtLeast(floor: ActionTaken): BuiltinPolicyId {
   );
 }
 
+/**
+ * What a connected control plane imposes on ONE installed pack ("detection").
+ *
+ * Computed by the local store — it needs the machine's settings and its rule
+ * snapshot — and then read by surfaces that never touch the store: the pack
+ * picker greys out what is below the floor, the list marks what the
+ * organization decided. Declared HERE because it is the whole of what crosses
+ * between them, and a second declaration on the far side would agree only for
+ * as long as someone kept it agreeing — a field added to one side compiles on
+ * both while the other quietly drops it.
+ *
+ * The absence of a constraint is `null` at every call site, never a member of
+ * this shape: a machine nothing manages has no floor, and modelling that as a
+ * floor of Monitor would put an organizational statement on screen where the
+ * organization made none.
+ */
+export const PackPolicyFloor = z
+  .object({
+    /**
+     * The weakest archetype the device may assign. Stated as a BuiltinPolicyId
+     * rather than a raw ActionTaken because that is the vocabulary the user
+     * picks from — a floor a UI cannot name is one it cannot explain.
+     */
+    floor: BuiltinPolicyId,
+    /**
+     * True when the organization AUTHORED a policy governing this pack rather
+     * than stating a minimum: it gave the answer, so the pack is not
+     * re-assignable locally in either direction.
+     */
+    locked: z.boolean(),
+  })
+  .meta({ id: 'PackPolicyFloor' });
+export type PackPolicyFloor = z.infer<typeof PackPolicyFloor>;
+
 // The archetypes a per-CATEGORY policy row can actually express.
 //
 // That row stores an ActionTaken — the enforcement verb alone — so an archetype

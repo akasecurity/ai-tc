@@ -201,20 +201,52 @@ describe('control-plane floor on setPolicy', () => {
   it('ignores a DISABLED remote policy, which the runtime never indexes either', () => {
     writeAttachedSettings();
     writePolicyCache([
+      // Ahead of the enabled row on the same key, so if disabled rows were
+      // indexed this one would WIN first-write-wins and the floor would be block.
       policy({ target: { category: 'secret' }, action: 'block', enabled: false }),
-      // Something enabled, so the bundle is not vacuously empty.
-      policy({ target: { category: 'pii' }, action: 'block' }),
+      policy({ target: { category: 'secret' }, action: 'warn' }),
     ]);
     const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', [rule('secrets/aws')])]);
 
-    // Falls through to DEFAULT_ACTIONS.secret ('warn'), not the disabled block.
+    expect(db.installedPacks.policyFloor('aka', 'secrets')).toEqual({
+      floor: 'warn',
+      locked: false,
+    });
     expect(() => db.installedPacks.setPolicy('aka', 'secrets', 'monitor')).toThrow(
       PolicyFloorError,
     );
     expect(db.installedPacks.setPolicy('aka', 'secrets', 'warn')).toBe(true);
     db.close();
     expect(storedPolicyId('secrets')).toBe('warn');
+  });
+
+  it('imposes NOTHING on a pack no remote policy names', () => {
+    // The bundle is about other detections entirely. A pack it never reaches is
+    // the user's, exactly as on a standalone machine — the compiled-in category
+    // default is not something the organization asked for, and enforcement does
+    // not raise this pack either.
+    writeAttachedSettings();
+    writePolicyCache([policy({ target: { category: 'pii' }, action: 'block' })]);
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', [rule('secrets/aws')])]);
+
+    expect(db.installedPacks.policyFloor('aka', 'secrets')).toBeNull();
+    expect(db.installedPacks.setPolicy('aka', 'secrets', 'monitor')).toBe(true);
+    db.close();
+    expect(storedPolicyId('secrets')).toBe('monitor');
+  });
+
+  it('imposes nothing at all when the bundle carries no policies', () => {
+    writeAttachedSettings();
+    writePolicyCache([]);
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('secrets', [rule('secrets/aws')])]);
+
+    expect(db.installedPacks.policyFloor('aka', 'secrets')).toBeNull();
+    expect(db.installedPacks.setPolicy('aka', 'secrets', 'monitor')).toBe(true);
+    db.close();
+    expect(storedPolicyId('secrets')).toBe('monitor');
   });
 
   it('refuses ANY re-assignment of a pack a custom-kind remote policy targets', () => {
@@ -240,14 +272,47 @@ describe('control-plane floor on setPolicy', () => {
     expect(storedPolicyId('secrets')).toBeNull();
   });
 
-  it('locks through the CATEGORY too, not only a named rule id', () => {
+  it('locks through the CATEGORY on a pack the bundle names by rule id', () => {
+    // The ruleId row is how a governed pack arrives — the bundle builder
+    // expands each pack's assignment into one per rule it owns — so its
+    // presence is what says the control plane has this detection in hand. With
+    // it, the authored category policy is a statement about THIS pack.
     writeAttachedSettings();
-    writePolicyCache([policy({ target: { category: 'secret' }, action: 'warn', kind: 'custom' })]);
+    writePolicyCache([
+      policy({ target: { ruleId: 'secrets/aws' }, action: 'warn' }),
+      policy({ target: { category: 'secret' }, action: 'warn', kind: 'custom' }),
+    ]);
     const db = store.open();
     db.installedPacks.recordInventory([pack('secrets', [rule('secrets/aws')])]);
 
+    expect(db.installedPacks.policyFloor('aka', 'secrets')?.locked).toBe(true);
     expect(() => db.installedPacks.setPolicy('aka', 'secrets', 'block')).toThrow(PolicyFloorError);
     db.close();
+  });
+
+  it('does NOT lock a pack the bundle never names, on category membership alone', () => {
+    // A category spans many packs, including ones the user pulled or wrote
+    // themselves that the control plane has never seen. Locking on membership
+    // would take the whole Detections page away — every pack owning any secret
+    // rule, greyed out under a message saying the organization set it. The
+    // authored policy still floors the pack; it just does not own its answer.
+    writeAttachedSettings();
+    writePolicyCache([policy({ target: { category: 'secret' }, action: 'warn', kind: 'custom' })]);
+    const db = store.open();
+    db.installedPacks.recordInventory([pack('home-grown', [rule('home-grown/token')])]);
+
+    expect(db.installedPacks.policyFloor('aka', 'home-grown')).toEqual({
+      floor: 'warn',
+      locked: false,
+    });
+    // Raising above the stated minimum stays the device's to do…
+    expect(db.installedPacks.setPolicy('aka', 'home-grown', 'block')).toBe(true);
+    // …and the minimum itself is still refused from below.
+    expect(() => db.installedPacks.setPolicy('aka', 'home-grown', 'monitor')).toThrow(
+      PolicyFloorError,
+    );
+    db.close();
+    expect(storedPolicyId('home-grown')).toBe('block');
   });
 
   it('leaves a pack alone when the custom policy targets a category it does not own', () => {
@@ -355,21 +420,41 @@ describe('controlPlanePolicyFloor', () => {
     ).toEqual({ floor: 'redact', locked: false });
   });
 
-  it('falls back to the compiled-in category default for a rule no policy names', () => {
+  it('reports no floor for a rule no remote policy names', () => {
     writeAttachedSettings();
     writePolicyCache([policy({ target: { category: 'pii' }, action: 'block' })]);
-    // DEFAULT_ACTIONS.secret is 'warn' — nothing remote names this rule or its
-    // category, and the compiled-in default is what the runtime would resolve.
-    expect(
-      controlPlanePolicyFloor([{ id: 'secrets/aws', category: 'secret' }], store.home),
-    ).toEqual({ floor: 'warn', locked: false });
+    // DEFAULT_ACTIONS.secret is 'warn', and reporting that here would state a
+    // requirement the control plane never made — and one stronger than what
+    // this machine actually enforces for the pack.
+    expect(controlPlanePolicyFloor([{ id: 'secrets/aws', category: 'secret' }], store.home)).toBe(
+      null,
+    );
   });
 
-  it('imposes no floor for a category nothing recognises', () => {
+  it('reports no floor for a category nothing recognises', () => {
     writeAttachedSettings();
     writePolicyCache([policy({ target: { category: 'secret' }, action: 'block' })]);
+    expect(controlPlanePolicyFloor([{ id: 'x/y', category: 'not-a-category' }], store.home)).toBe(
+      null,
+    );
+  });
+
+  it('takes the floor from the rules a policy names, ignoring the pack rules it does not', () => {
+    writeAttachedSettings();
+    writePolicyCache([policy({ target: { ruleId: 'secrets/gh' }, action: 'log' })]);
+    // One of the two rules is named, with something WEAKER than what
+    // DEFAULT_ACTIONS.secret ('warn') would have contributed for the other. The
+    // unnamed rule contributes nothing, so the answer is the named rule's alone
+    // — dragging the default in would raise this to Warn on a bundle that asked
+    // for log.
     expect(
-      controlPlanePolicyFloor([{ id: 'x/y', category: 'not-a-category' }], store.home),
+      controlPlanePolicyFloor(
+        [
+          { id: 'secrets/aws', category: 'secret' },
+          { id: 'secrets/gh', category: 'secret' },
+        ],
+        store.home,
+      ),
     ).toEqual({ floor: 'monitor', locked: false });
   });
 });

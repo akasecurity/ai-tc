@@ -73,6 +73,25 @@ describe('detectPostureChanges', () => {
     expect(changes).toEqual([]);
   });
 
+  // The stored action comes from a column with no enum constraint, so a row a
+  // newer build wrote can carry an action this one cannot place on the ladder.
+  // The ladder ranks that below everything — the reading the enforcement gates
+  // need — but this differ warns a PERSON, and it must not answer "no change
+  // here" to a comparison it was unable to make. Both directions are asserted,
+  // because a rank of -1 would otherwise make the second case pass for the
+  // wrong reason.
+  it('flags a downgrade when the stored action is one this build cannot rank', () => {
+    const stored = 'quarantine' as ActionTaken;
+    const strongest: BuiltinPolicyId = 'block';
+    const weakest: BuiltinPolicyId = 'monitor';
+    expect(
+      detectPostureChanges({ secret: strongest }, { secret: { action: stored, enabled: true } }),
+    ).toEqual([{ category: 'secret', from: stored, to: 'block', kind: 'downgrade' }]);
+    expect(
+      detectPostureChanges({ secret: weakest }, { secret: { action: stored, enabled: true } }),
+    ).toEqual([{ category: 'secret', from: stored, to: 'log', kind: 'downgrade' }]);
+  });
+
   // The differ ranks actions through the same ladder the enforcement collapse
   // uses, so the two cannot come to disagree about which of a pair enforces
   // more. Every adjacent rung is exercised: a pair swapped either way must be

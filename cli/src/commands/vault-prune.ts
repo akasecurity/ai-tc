@@ -12,9 +12,10 @@
  * DELETE LAST. The vault holds the only remaining copy of the plaintext, so a
  * pointer whose row is deleted before its transcript is rewritten can never be
  * resolved again — the transcript would be left reading as an unresolvable
- * token where a file path used to be. `deleteEntries` is therefore reachable
- * only from the far side of the restore pass, and the list it is handed is
- * derived from what that pass actually CLEARED, never from the selection alone.
+ * token where a file path used to be. The store's scoped delete is therefore
+ * reachable only from the far side of the restore pass, and the list it is
+ * handed is derived from what that pass actually CLEARED, never from the
+ * selection alone.
  *
  * Because it writes recovered PLAINTEXT back to disk, the verb is dry-run by
  * default (`--apply` performs it), it rewrites only files whose real path is
@@ -22,14 +23,12 @@
  * leaves that file byte-identical and everything sighted in it in the vault.
  */
 import { randomUUID } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
 import { parseArgs } from 'node:util';
 
 import type { LocalDatabase, VaultRow } from '@akasecurity/persistence';
 import {
   createKeyProvider,
   dataDir,
-  dbPath,
   keysDir,
   openLocalDatabase,
   readWorkspaceSettings,
@@ -108,6 +107,20 @@ export interface PolicySelection {
  * be held. Reading absence as "below redact" would empty the vault of
  * everything a user merely toggled off, and that deletion does not come back.
  * Absence is counted and reported instead.
+ *
+ * ONE VAULTING PATH THIS SPLIT CANNOT SEE, and the coupling that saves it. A
+ * value the user pointed at on a surfaced-secrets list is vaulted whatever its
+ * pack was assigned, because that is an instruction about specific values and
+ * not the pack enforcing anything. Nothing on the row records that a person
+ * asked, so an entry minted that way reads here as out of policy — the ruleset
+ * says `log`, which is exactly what it said when the value was struck. It
+ * escapes the prune only downstream: that path records no SIGHTING, and phase 2
+ * refuses to delete an entry with none. So the protection is a property of the
+ * OTHER path's bookkeeping rather than of anything stated here, and giving it a
+ * sighting would restore and delete the very values a user asked to have
+ * struck. The pin is in the CLI suite ("never deletes an out-of-policy entry
+ * that has no sighting"); the fix is a provenance marker on the row, which the
+ * row shape does not carry yet.
  */
 export function selectOutOfPolicy(
   rows: readonly VaultRow[],
@@ -301,24 +314,36 @@ async function restoreText(
 }
 
 /**
- * Delete vault rows by pointer id.
+ * Record, for each pointer a file's transform revealed, that the restore it was
+ * revealed FOR did not happen.
  *
- * The vault repository owns no per-row delete — its only destructive verb is
- * the all-or-nothing purge — so this runs one scoped statement over a second
- * handle on the same store file, opened here, used for exactly this, and closed
- * again. The caller's own handle stays the door for everything else.
+ * `detokenize` writes its `revealed` row the instant it opens a row's
+ * ciphertext, and every check that can still abort the file sits after that: a
+ * splice that breaks a JSON record, a pointer that survived the rewrite, a
+ * transcript that grew between the read and the rename. Left alone, the trail
+ * would carry a reveal against a file that is byte-identical and an entry that
+ * is still vaulted — the same false record the dry run refuses to write.
+ *
+ * Two ways to make the trail agree with the disk, and the reveal cannot be the
+ * one deferred: every route to a plaintext this verb can call audits before it
+ * returns, so holding the row back until after the rename is not something the
+ * caller can choose. The abort is stamped instead. Both halves are true of what
+ * happened — the process really did hold the value, and the restore it was for
+ * really did deliver nothing — so a reader of the trail sees the reveal and, at
+ * the same pointer, a `remediation` row whose outcome says nothing came of it.
+ * `unavailable` is the outcome the purge trail already uses for a pointer that
+ * resolves to nothing usable; a reveal is not `refused`.
  */
-function deleteEntries(base: string, pointerIds: readonly string[]): number {
-  if (pointerIds.length === 0) return 0;
-  const raw = new DatabaseSync(dbPath(base));
-  try {
-    raw.exec('PRAGMA busy_timeout = 2000');
-    const stmt = raw.prepare('DELETE FROM secret_vault WHERE pointer_id = :pointerId');
-    let deleted = 0;
-    for (const pointerId of pointerIds) deleted += Number(stmt.run({ pointerId }).changes);
-    return deleted;
-  } finally {
-    raw.close();
+function stampUnrestored(db: LocalDatabase, pointerIds: readonly string[]): void {
+  for (const pointerId of pointerIds) {
+    db.secretVault.recordDeref({
+      id: randomUUID(),
+      pointerId,
+      at: Date.now(),
+      target: 'human',
+      reason: 'remediation',
+      outcome: 'unavailable',
+    });
   }
 }
 
@@ -448,15 +473,25 @@ export async function runPrune(argv: string[], io: Prompter): Promise<void> {
       // `unattributable` is captured from the transform because the bytes the
       // rewrite actually acts on are the ones it read itself, under its own
       // stat — re-reading here to look would be asking a different file.
+      // `revealed` is captured the same way and for the abort trail below.
       let unattributable = 0;
+      const revealed: string[] = [];
       const outcome = await rewriteContainedFile(realPath, async (text) => {
         const analysis = await analyse(text);
         unattributable = analysis.unattributable;
+        revealed.length = 0;
         return await restoreText(text, analysis.hits, async (token) => {
           const value = await vault.detokenize(token, { target: 'human', reason: 'remediation' });
-          return typeof value === 'string' ? value : null;
+          if (typeof value !== 'string') return null;
+          const entry = analysis.hits.get(token);
+          if (entry !== undefined) revealed.push(entry.pointerId);
+          return value;
         });
       });
+
+      // The rewrite did not land, so every reveal it audited above stands for a
+      // restore that never happened. Say so, against the same pointers.
+      if (outcome.status !== 'rewritten') stampUnrestored(db, revealed);
 
       if (outcome.status === 'aborted') {
         reports.push({
@@ -506,10 +541,7 @@ export async function runPrune(argv: string[], io: Prompter): Promise<void> {
 
     out.push('');
     if (apply) {
-      const deleted = deleteEntries(
-        base,
-        prunable.map((e) => e.pointerId),
-      );
+      const deleted = db.secretVault.deleteByPointerIds(prunable.map((e) => e.pointerId));
       for (const entry of prunable) {
         // The purge trail outlives the values, exactly as the vault's own purge
         // does: the record that entries were destroyed has to survive them.

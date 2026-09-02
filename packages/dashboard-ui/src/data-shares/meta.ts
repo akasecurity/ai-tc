@@ -7,6 +7,7 @@
 import type {
   DataClass,
   DestinationKind,
+  EgressStatus,
   ReviewReason,
   ShareTrustLevel,
   Transport,
@@ -30,6 +31,7 @@ import {
   PulseIcon,
   RouteIcon,
   ShieldCheckIcon,
+  SlashCircleIcon,
   UploadIcon,
   UserIcon,
 } from '../shared/icons.tsx';
@@ -89,6 +91,29 @@ export const TRUST_META: Record<ShareTrustLevel, TrustMeta> = {
   internal: { label: 'Your organization', tone: 'primary', icon: ShieldCheckIcon },
   unverified: { label: 'Unverified domain', tone: 'high', icon: AlertIcon },
   ip: { label: 'Raw IP address', tone: 'critical', icon: AlertOctagonIcon },
+};
+
+// ─── Egress status ───────────────────────────────────────────────────────────
+
+export interface EgressStatusMeta {
+  label: string;
+  tone: Tone;
+  icon: IconComponent;
+}
+
+/**
+ * Effective egress state — the DECISION, where TRUST_META describes the input
+ * SIGNAL. The two are routinely different and that is the point: a destination
+ * an operator has blocked still reads 'Unverified domain' under trust, because
+ * blocking it did not make it verified. `status` already resolves any override
+ * over the trust default, so these three entries cover every row; whether an
+ * operator PUT it there is `isCustom`, which is not a state of its own and so
+ * is not a key here.
+ */
+export const EGRESS_STATUS_META: Record<EgressStatus, EgressStatusMeta> = {
+  allowed: { label: 'Allowed', tone: 'success', icon: CheckCircleIcon },
+  blocked: { label: 'Blocked', tone: 'critical', icon: SlashCircleIcon },
+  review: { label: 'Needs review', tone: 'high', icon: AlertIcon },
 };
 
 // ─── Kind grouping ───────────────────────────────────────────────────────────

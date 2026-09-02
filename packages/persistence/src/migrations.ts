@@ -953,6 +953,21 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
   if (!columns.includes('sync_claimed_at')) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN sync_claimed_at integer`);
   }
+  // Set on a CAPTURE row whose live forward did not confirm delivery, and read
+  // by the outbox drain as the whole of "this row is owed".
+  //
+  // A positive marker rather than a time window, because owed-ness is a fact the
+  // forward path HAS and a timestamp can only approximate. Inferring it from a
+  // lower bound got both directions wrong at once: rows the previous attachment
+  // left owed fell below a boundary a re-attach moved, and — far worse — the
+  // whole DETACHED span sat above it, so a machine that ran three weeks
+  // unattached would have shipped every prompt in them, with text, the moment it
+  // re-attached. A capture recorded while detached never passes through the
+  // attached gateway, so it is never marked, and the window it sits in stops
+  // being something anyone has to reason about.
+  if (!columns.includes('outbox_owed')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN outbox_owed integer`);
+  }
   // For the DELIVERY-STATE read specifically. That one aggregates over every row
   // of the tracked types on each call — a surface showing it re-runs it per
   // render — and `audit_events` is the table captures land in, the numerous
@@ -1045,16 +1060,6 @@ function ensureHistorySyncTable(db: DatabaseSync): void {
   // the column every read below names. Same guard shape as ensureSyncedAtColumn.
   if (!columnNames(db, 'history_sync').includes('backlog_before')) {
     db.exec('ALTER TABLE history_sync ADD COLUMN backlog_before integer');
-  }
-  // The CAPTURE lane's floor, which is not `backlog_before` and must not move
-  // with it. `backlog_before` steps forward on a re-attach so the detached
-  // window becomes structural backlog; the capture lane reads the other side of
-  // its boundary, so stepping it forward would put every capture the live path
-  // failed to deliver during the PREVIOUS attached period below the new floor —
-  // matched by neither lane, never sent, never skipped, never counted. This one
-  // is set when a deployment is first attached to and left alone afterwards.
-  if (!columnNames(db, 'history_sync').includes('capture_floor')) {
-    db.exec('ALTER TABLE history_sync ADD COLUMN capture_floor integer');
   }
 }
 

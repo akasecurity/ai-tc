@@ -179,6 +179,8 @@ export interface LocalDatabase {
   // delivery paths leave a row in one indistinguishable state. Attached mode
   // only — nothing forwards in standalone, so nothing stamps. Fail-open.
   markCaptureDelivered(event: IngestEvent, atMs: number): void;
+  /** Record that a live forward did not deliver this capture, so the drain owes it. */
+  markCaptureOwed(event: IngestEvent): void;
   // Idempotent upsert of the session's host/harness/account/project dimensions
   // by content-addressed id, in one transaction. Returns the resolved ids to
   // stamp onto the Session audit row. Fail-open: returns {} if the DB is
@@ -486,6 +488,17 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     });
   }
 
+  // The other half of the same decision: the live forward ran and did NOT
+  // confirm delivery, so the organization's copy was not made and this row is
+  // owed. Fail-open like its sibling — a marker that does not land costs the row
+  // its place in the outbox, which is the same loss the pre-outbox behaviour had
+  // and never costs the session.
+  function markCaptureOwed(event: IngestEvent): void {
+    failOpenTransaction(db, () => {
+      historySync.markCaptureOwed(captureRowId(event));
+    });
+  }
+
   function recordCapture(event: IngestEvent, detected: DetectedFindingWithKey[]): void {
     // Fail-open: dropping telemetry is acceptable; breaking the host session
     // is not. A locked/corrupt DB or a bad row leaves the session untouched.
@@ -755,6 +768,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     inspectionFindings,
     recordCapture,
     markCaptureDelivered,
+    markCaptureOwed,
     ensureInventory,
     recordConfigScan,
     recordProjectFiles,

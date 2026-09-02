@@ -123,13 +123,6 @@ export interface HistorySyncResult {
    */
   capturesPending: boolean;
   /**
-   * Captures this pass gave up on permanently.
-   *
-   * Reported separately because `counts.skipped` filters to structural rows, so
-   * a capture stamped -1 — gone for good — would otherwise appear on no surface.
-   */
-  capturesSkipped: number;
-  /**
    * The ledger's totals after the pass — the AUTHORITATIVE progress.
    *
    * Returned rather than left for the caller to re-read, because the caller
@@ -251,18 +244,6 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
       backlogBefore = recorded.backlogBefore;
     }
 
-    // The CAPTURE lane's floor, read after the branch above has written it. Not
-    // `backlogBefore`: that steps forward on a re-attach so the detached window
-    // becomes structural backlog, and the capture lane reads the other side of
-    // its boundary — so using it would put every capture the live path failed to
-    // deliver during the PREVIOUS attached period below the floor, where the
-    // structural lane's type filter excludes it too. Matched by neither lane,
-    // never sent, never skipped, never counted, while status reads complete.
-    //
-    // Falls back to `backlogBefore` for a store written before the column
-    // existed, which is the same instant on every machine that has attached once.
-    const captureFloor = ledger.deployment().captureFloor ?? backlogBefore;
-
     const pid = process.pid;
     if (!ledger.claim(pid, hostname(), now(), HISTORY_LEASE_STALE_MS)) return null;
 
@@ -320,7 +301,6 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
         budgetMs,
         pid,
         backlogBefore,
-        captureFloor,
       });
     } finally {
       ledger.release(pid);
@@ -354,14 +334,6 @@ interface DrainDeps {
   pid: number;
   /** Rows at or after this instant belong to the live path, not to this drain. */
   backlogBefore: number;
-  /**
-   * The capture lane's lower bound — the FIRST attachment to this deployment.
-   *
-   * Deliberately not `backlogBefore`: the two lanes read opposite sides of a
-   * boundary, so a re-attach stepping that one forward would skip every capture
-   * the previous attached period left owed. See runHistorySync.
-   */
-  captureFloor: number;
 }
 
 /** Why one row's send stopped: the pass continues, skips it, or ends. */
@@ -385,7 +357,6 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   const structuralDeadline = Math.min(deadline, startedAt + d.budgetMs * STRUCTURAL_BUDGET_SHARE);
   let sent = 0;
   let skipped = 0;
-  let capturesSkipped = 0;
   let lastHeartbeat = startedAt;
 
   /**
@@ -481,10 +452,6 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     const captures = await drainCaptures(d, deadline, beat);
     sent += captures.sent;
     skipped += captures.skipped;
-    // Tracked apart from `skipped` as well as inside it: the pass total mixes
-    // both lanes, and the caller needs the capture half on its own because the
-    // ledger's own `counts.skipped` cannot see it.
-    capturesSkipped += captures.skipped;
     if (captures.stopped !== undefined) outcome = captures.stopped;
   }
 
@@ -503,7 +470,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   if (
     outcome === 'ok' &&
     d.now() < deadline &&
-    d.ledger.pendingCaptureRows(1, d.captureFloor, d.now() - CAPTURE_GRACE_MS).length === 0
+    d.ledger.pendingCaptureRows(1, d.now() - CAPTURE_GRACE_MS).length === 0
   ) {
     outcome = await drainStructural(deadline);
   }
@@ -517,9 +484,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     skipped,
     // LIMIT 1 — this asks "is anything owed", never "how much", so it must not
     // pay for a count over the capture grain on every pass.
-    capturesPending:
-      d.ledger.pendingCaptureRows(1, d.captureFloor, d.now() - CAPTURE_GRACE_MS).length > 0,
-    capturesSkipped,
+    capturesPending: d.ledger.pendingCaptureRows(1, d.now() - CAPTURE_GRACE_MS).length > 0,
     counts: d.ledger.counts(d.backlogBefore),
     atMs: d.now(),
   };
@@ -578,11 +543,7 @@ async function drainCaptures(
     // pre-attach history and belong to the structural lane, which sends them
     // without their text — draining them here would put a machine's whole local
     // history of prompts on the wire under copy that promises the opposite.
-    const rows = d.ledger.pendingCaptureRows(
-      CAPTURE_BATCH_SIZE,
-      d.captureFloor,
-      d.now() - CAPTURE_GRACE_MS,
-    );
+    const rows = d.ledger.pendingCaptureRows(CAPTURE_BATCH_SIZE, d.now() - CAPTURE_GRACE_MS);
     if (rows.length === 0) return { sent, skipped };
 
     const ready: { id: string; event: IngestEvent }[] = [];
@@ -727,23 +688,21 @@ async function isolate(
   chunk: readonly { id: string; event: IngestEvent }[],
   beat: () => void,
 ): Promise<ChunkResult> {
-  {
-    let sent = 0;
-    let skipped = 0;
-    for (const [index, one] of chunk.entries()) {
-      // PACED like every other request, for the reason the structural lane
-      // gives: the isolation pass must not burst one request per row at the
-      // moment the deployment has just refused something, on a credential this
-      // job shares with the live forwarding.
-      if (index > 0) await d.sleep(PACE_INTERVAL_MS);
-      beat();
-      const single = await sendCaptureChunk(d, [one], beat);
-      sent += single.sent;
-      skipped += single.skipped;
-      if (single.stopped !== undefined) return { sent, skipped, stopped: single.stopped };
-    }
-    return { sent, skipped };
+  let sent = 0;
+  let skipped = 0;
+  for (const [index, one] of chunk.entries()) {
+    // PACED like every other request, for the reason the structural lane gives:
+    // the isolation pass must not burst one request per row at the moment the
+    // deployment has just refused something, on a credential this job shares
+    // with the live forwarding.
+    if (index > 0) await d.sleep(PACE_INTERVAL_MS);
+    beat();
+    const single = await sendCaptureChunk(d, [one], beat);
+    sent += single.sent;
+    skipped += single.skipped;
+    if (single.stopped !== undefined) return { sent, skipped, stopped: single.stopped };
   }
+  return { sent, skipped };
 }
 
 /**

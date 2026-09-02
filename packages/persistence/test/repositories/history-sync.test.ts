@@ -42,6 +42,10 @@ function seedSession(db: LocalDatabase, sessionId: string, offsetMs: number): vo
     startedAt: at(offsetMs + 3 * MINUTE),
     content: 'the text of a prompt',
   });
+  // What the attached forward path writes when a live send does not confirm
+  // delivery. Without it the row is one nothing ever attempted, which the drain
+  // deliberately does not offer.
+  db.historySync.markCaptureOwed(`${sessionId}-prompt`);
 }
 
 describe('SqliteHistorySyncRepository — what is pending', () => {
@@ -118,13 +122,40 @@ describe('SqliteHistorySyncRepository — counting', () => {
     db.historySync.markSynced(['s-1'], T0);
     db.historySync.markSkipped(['s-1-llm']);
 
-    // The capture row is in neither total.
-    expect(db.historySync.counts(ALL)).toEqual({ pending: 1, sent: 1, skipped: 1 });
+    // The capture row is in none of the structural three — and `capturesSkipped`
+    // is its own lifetime figure, zero here because nothing skipped a capture.
+    expect(db.historySync.counts(ALL)).toEqual({
+      pending: 1,
+      sent: 1,
+      skipped: 1,
+      capturesSkipped: 0,
+    });
+  });
+
+  // A capture skipped permanently is counted for the LIFE of the store, not for
+  // one pass. The surface renders it beside `sent` and `pending`, both lifetime
+  // figures, so a per-pass tally there would announce a terminal loss once and
+  // then drop it while the rows stayed gone.
+  it('counts a permanently skipped capture, and keeps counting it', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.markSkipped(['s-1-prompt']);
+
+    expect(db.historySync.counts(ALL).capturesSkipped).toBe(1);
+    // Still there on a later read, with nothing else having happened.
+    expect(db.historySync.counts(ALL).capturesSkipped).toBe(1);
+    // ...and it did not leak into the structural tally.
+    expect(db.historySync.counts(ALL).skipped).toBe(0);
   });
 
   it('counts an empty store as nothing rather than throwing', () => {
     const db = store.open();
-    expect(db.historySync.counts(ALL)).toEqual({ pending: 0, sent: 0, skipped: 0 });
+    expect(db.historySync.counts(ALL)).toEqual({
+      pending: 0,
+      sent: 0,
+      skipped: 0,
+      capturesSkipped: 0,
+    });
   });
 
   // A skip is for a row that cannot be rebuilt. It must not be retried, or the
@@ -184,7 +215,7 @@ describe('SqliteHistorySyncRepository — which deployment the stamps are for', 
     db.historySync.rearmFor('fingerprint-b', ALL);
 
     // Still delivered: the new deployment is not owed this text.
-    expect(db.historySync.pendingCaptureRows(10, 0, ALL)).toEqual([]);
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
     // ...while the structural rows it IS owed came back.
     expect(db.historySync.counts(ALL)).toMatchObject({ pending: 3, sent: 0 });
   });
@@ -320,8 +351,6 @@ describe('SqliteHistorySyncRepository — the backlog boundary', () => {
     expect(db.historySync.deployment()).toEqual({
       fingerprint: 'fingerprint-a',
       backlogBefore: T0,
-      // Set from the same instant on a deployment change, and left alone after.
-      captureFloor: T0,
     });
   });
 
@@ -361,10 +390,6 @@ describe('SqliteHistorySyncRepository — closing the attached period', () => {
     expect(db.historySync.deployment()).toEqual({
       fingerprint: 'fp',
       backlogBefore: undefined,
-      // A detach releases the STRUCTURAL boundary only. The capture floor is the
-      // first attachment to this deployment and survives, or a re-attach would
-      // step it over everything the last attached period left owed.
-      captureFloor: T0,
     });
   });
 
@@ -528,6 +553,9 @@ describe('SqliteHistorySyncRepository — captures the outbox still owes', () =>
       content: 'the entire contents of a source file',
       contentHash: 'd'.repeat(64),
     });
+    // Marked owed exactly like a prompt would be, so the exclusion under test is
+    // the KIND filter and not a missing marker.
+    db.historySync.markCaptureOwed('s-1-scan');
     db.auditEvents.insertAuditEvent({
       id: 's-1-prompt2',
       eventType: 'prompt',
@@ -536,15 +564,40 @@ describe('SqliteHistorySyncRepository — captures the outbox still owes', () =>
       startedAt: at(2 * MINUTE),
       content: 'a prompt',
     });
+    db.historySync.markCaptureOwed('s-1-prompt2');
 
-    expect(db.historySync.pendingCaptureRows(10, 0, ALL).map((r) => r.id)).toEqual(['s-1-prompt2']);
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt2']);
+  });
+
+  // THE MARKER IS THE PREDICATE. It replaced a time window that could not state
+  // this in either direction: rows a past attachment left owed fell below a
+  // boundary a re-attach moved, and the entire DETACHED span sat above it — so a
+  // machine that ran three weeks unattached would have shipped every prompt in
+  // them, with text, on re-attaching. A capture nothing marked is one no live
+  // forward ever attempted, and it must never be offered.
+  it('offers only what a live forward marked owed', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    for (const id of ['unattempted', 'owed']) {
+      db.auditEvents.insertAuditEvent({
+        id: `s-1-${id}`,
+        eventType: 'prompt',
+        rootSessionId: 's-1',
+        parentId: 's-1',
+        startedAt: at(MINUTE),
+        content: `text of ${id}`,
+      });
+    }
+    db.historySync.markCaptureOwed('s-1-owed');
+
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-owed']);
   });
 
   it('offers unstamped captures oldest first, and no structural rows', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
     seedSession(db, 's-2', 10 * MINUTE);
-    const rows = db.historySync.pendingCaptureRows(10, 0, ALL);
+    const rows = db.historySync.pendingCaptureRows(10, ALL);
     expect(rows.map((r) => r.id)).toEqual(['s-1-prompt', 's-2-prompt']);
     // The structural rows belong to the other lane and must not appear here.
     expect(rows.every((r) => r.eventType === 'prompt')).toBe(true);
@@ -555,21 +608,21 @@ describe('SqliteHistorySyncRepository — captures the outbox still owes', () =>
   it('carries the captured text', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
-    expect(db.historySync.pendingCaptureRows(10, 0, ALL)[0]?.content).toBe('the text of a prompt');
+    expect(db.historySync.pendingCaptureRows(10, ALL)[0]?.content).toBe('the text of a prompt');
   });
 
   it('does not offer a capture the live path already stamped', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
     db.historySync.markSynced(['s-1-prompt'], T0);
-    expect(db.historySync.pendingCaptureRows(10, 0, ALL)).toEqual([]);
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
   });
 
   it('does not offer a capture another pass has claimed', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
     db.historySync.claimRows(['s-1-prompt'], T0);
-    expect(db.historySync.pendingCaptureRows(10, 0, ALL)).toEqual([]);
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
   });
 
   // The grace window is what keeps this pass off rows the live forward is
@@ -579,8 +632,8 @@ describe('SqliteHistorySyncRepository — captures the outbox still owes', () =>
     const db = store.open();
     seedSession(db, 's-1', 0);
     // seedSession writes its prompt at T0 + 3 minutes.
-    expect(db.historySync.pendingCaptureRows(10, 0, T0 + 2 * MINUTE)).toEqual([]);
-    expect(db.historySync.pendingCaptureRows(10, 0, T0 + 4 * MINUTE).map((r) => r.id)).toEqual([
+    expect(db.historySync.pendingCaptureRows(10, T0 + 2 * MINUTE)).toEqual([]);
+    expect(db.historySync.pendingCaptureRows(10, T0 + 4 * MINUTE).map((r) => r.id)).toEqual([
       's-1-prompt',
     ]);
   });
@@ -589,7 +642,7 @@ describe('SqliteHistorySyncRepository — captures the outbox still owes', () =>
     const db = store.open();
     seedSession(db, 's-1', 0);
     seedSession(db, 's-2', 10 * MINUTE);
-    expect(db.historySync.pendingCaptureRows(1, 0, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+    expect(db.historySync.pendingCaptureRows(1, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
   });
 });
 

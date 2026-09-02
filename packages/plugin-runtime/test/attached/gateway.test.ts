@@ -69,6 +69,7 @@ const MAINTENANCE_METHODS = [
   'reconcileWorktreeProjects',
   'staleBinaryNotice',
   'markCaptureDelivered',
+  'markCaptureOwed',
 ] as const;
 type MissingMaintenance = Exclude<
   keyof LocalStoreMaintenance,
@@ -149,6 +150,9 @@ function makeLocal(calls: Calls, overrides: Partial<DataGateway & LocalStoreMain
   });
   base.markCaptureDelivered = vi.fn(() => {
     calls.order.push('local.markCaptureDelivered');
+  });
+  base.markCaptureOwed = vi.fn(() => {
+    calls.order.push('local.markCaptureOwed');
   });
   return Object.assign(base, overrides) as unknown as DataGateway & LocalStoreMaintenance;
 }

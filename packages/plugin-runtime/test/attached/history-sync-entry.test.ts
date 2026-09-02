@@ -13,7 +13,6 @@ import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
-import { takeBlockedAttempts } from '../../../../test/setup/no-network.ts';
 import {
   historySyncStatePath,
   readHistorySyncState,
@@ -138,11 +137,15 @@ describe('runHistorySyncPass', () => {
     db.close();
 
     await runHistorySyncPass(home);
+    // `not.toBeNull()` is satisfied by undefined, which is exactly what an
+    // unwritten state yields — the case this guard exists to catch.
     const first = readHistorySyncState(dataDirOf(home))?.completedAtMs;
-    expect(first).not.toBeNull();
+    expect(first).toEqual(expect.any(Number));
 
-    // A capture the live path never delivered, recorded after the attachment and
-    // outside the grace window: the next pass has work, so `done` is false.
+    // A capture a live forward tried and failed to deliver — marked owed, which
+    // is what the attached gateway writes and what the drain reads. The next
+    // pass therefore has work, so `done` is false and the branch under test is
+    // the one taken.
     const owed = openLocalDatabase(dataDirOf(home));
     try {
       owed.auditEvents.ensureSessionRoot('s-1', AT);
@@ -156,17 +159,21 @@ describe('runHistorySyncPass', () => {
         contentHash: 'c'.repeat(64),
         attributes: { source_tool: 'claude-code' },
       });
+      owed.historySync.markCaptureOwed('s-1-prompt');
     } finally {
       owed.close();
     }
 
-    // This pass has work, so unlike the first it really tries to send — and the
-    // no-network guard refuses it, which is the point: the row stays owed, so
-    // `done` is false and the false branch of completedAtMs is the one taken.
-    // The refusal is drained deliberately (the guard's one documented seam),
-    // because it is provoked rather than incidental.
-    await runHistorySyncPass(home);
-    expect(takeBlockedAttempts().length).toBeGreaterThan(0);
+    // Driven through the pass's seams rather than the real transport: a send
+    // that fails climbs the retry ladder on real timers, which is seconds of
+    // sleeps against a 20s testTimeout and a flake waiting to happen on a slow
+    // leg. The deployment takes nothing, so the row stays owed and `done` is
+    // false — the branch under test — with no network and no clock involved.
+    await runHistorySyncPass(home, {
+      sleep: () => Promise.resolve(),
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: () => Promise.resolve({ settled: 0 }),
+    });
     const after = readHistorySyncState(dataDirOf(home));
 
     // The pass found work, so the phase flapped back...

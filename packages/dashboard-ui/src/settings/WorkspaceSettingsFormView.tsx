@@ -438,8 +438,8 @@ export interface WorkspaceSettingsFormViewProps {
   managed?: ManagedContext;
   // Both consents are plain answers, not the stored records: acknowledgement
   // timestamps and versions are stamped server-side, so a client-supplied one
-  // would only be discarded. modelJudgeConsent: true grants, false revokes;
-  // historySyncConsent carries a third answer for the untouched case.
+  // would only be discarded. Both carry THREE answers — granted, revoked, and
+  // 'unchanged' for a row this save did not touch.
   //
   // `policy` is deliberately absent. Enforcement is per detection now; see
   // HANDLING_SECTION_DESCRIPTION.
@@ -574,10 +574,12 @@ export function WorkspaceSettingsFormView({
     // itself must enable Save.
     (vaultConsent === 'on' && vaultConsentStale(settings.vaultConsent)) ||
     // TOUCHED, not changed. A stale grant seeds 'revoked', so re-affirming
-    // 'Not shared' matches the seed and moves no comparison above — which left
-    // the Paused badge with no way to be dismissed from this page at all: Save
-    // stayed disabled however the user answered. Any deliberate answer on this
-    // row is an edit, because the row's stored state and its seed disagree.
+    // 'Not shared' matches the seed and moves no comparison above — Save stayed
+    // disabled and the badge could not be dismissed by DECLINING. Selecting
+    // 'Shared' always enabled Save, per the seed's own comment above; the defect
+    // was narrower than "however the user answered" and is worth stating as the
+    // one it was. Any deliberate answer is an edit here, because the row's
+    // stored state and its seed disagree.
     historySyncTouched ||
     modelJudgeTouched;
 

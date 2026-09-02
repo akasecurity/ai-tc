@@ -325,13 +325,16 @@ describe('isHistorySyncConsentValid', () => {
 // this test; the fix is to re-read every surface below, confirm each still
 // describes what the new payload sends, and then update the number here.
 //
-//   oss/cli/src/commands/attach.ts        askAboutHistory — the grant prompt
-//   oss/cli/src/commands/sync-history.ts  grant/revoke/describe output
-//   oss/packages/dashboard-ui/src/settings/WorkspaceSettingsFormView.tsx
-//                                         HISTORY_SYNC_SECTION_DESCRIPTION,
-//                                         HISTORY_SYNC_CHOICES,
-//                                         HISTORY_SYNC_STALE_NOTICE
-//   oss/README.md                         the [^egress] footnote
+//   cli/src/commands/attach.ts        askAboutHistory — the grant prompt
+//   cli/src/commands/sync-history.ts  grant/revoke/describe output
+//   packages/dashboard-ui/src/settings/WorkspaceSettingsFormView.tsx
+//                                     HISTORY_SYNC_SECTION_DESCRIPTION,
+//                                     HISTORY_SYNC_CHOICES,
+//                                     HISTORY_SYNC_STALE_NOTICE
+//   packages/plugin-runtime/src/attached/status.ts
+//                                     historyLines — what `aka status` prints,
+//                                     including the paused-grant branch
+//   README.md                         the [^egress] footnote
 //
 // v2 widened the subject from the pre-attach backlog to everything the machine
 // still owes its deployment, which brought CAPTURE rows — and their prompt,

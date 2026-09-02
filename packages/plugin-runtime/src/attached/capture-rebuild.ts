@@ -1,6 +1,6 @@
 import { captureWireId } from '@akasecurity/persistence';
-import type { AuditEventRow, EventMetadata } from '@akasecurity/schema';
-import { EventKind, IngestEvent, SourceTool } from '@akasecurity/schema';
+import type { AuditEventRow } from '@akasecurity/schema';
+import { EventKind, EventMetadata, IngestEvent, SourceTool } from '@akasecurity/schema';
 
 /**
  * One stored capture row → the wire event the outbox owes the deployment.
@@ -41,7 +41,7 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
   // …and `code_change` is a capture kind this lane still refuses. EventKind
   // admits it, so the check above does not.
   //
-  // Stated HERE as well as in CAPTURE_EVENT_TYPES because the two have to move
+  // Stated HERE as well as in the ledger SQL because the two have to move
   // together. The SQL alone is one word away from sending whole source files —
   // gitignored scratch included, and first-time egress rather than a retry,
   // since fs-scan writes those rows straight to the local store and no live
@@ -74,20 +74,39 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
   const sourceTool = SourceTool.safeParse(attributes.source_tool);
   if (!sourceTool.success) return undefined;
 
+  // PER-FIELD, not per-row. Every attribute below is OPTIONAL on the wire while
+  // the bag they come from is free-form JSON an older build or a hand edit can
+  // have left anything in — `correlationId` is a uuid, `traceId` 32 hex chars,
+  // `turnIndex` a non-negative int. Validating the assembled event as a whole
+  // and skipping what fails would answer "unsendable" with "permanently
+  // skipped": markSkipped writes synced_at = -1, the prompt never reaches the
+  // deployment, and no surface reports that one was dropped — the same data loss
+  // the outbox exists to stop, reached by a different door.
+  //
+  // Dropping the offending FIELD keeps the payload and still yields a body the
+  // deployment cannot 400 on, which is all the stall protection needed.
+  const keep = <T>(
+    value: T,
+    schema: { safeParse: (v: unknown) => { success: boolean } },
+  ): T | undefined => (value !== undefined && schema.safeParse(value).success ? value : undefined);
   const filePath = stringOrUndefined(attributes.file_path);
   const metadata: EventMetadata = {
     ...(rootSessionId === null ? {} : { sessionId: rootSessionId }),
     ...(filePath === undefined ? {} : { filePath }),
-    ...pick(attributes, {
-      repo: 'repo',
-      toolName: 'tool_name',
-      model: 'model',
-      traceId: 'trace_id',
-      correlationId: 'correlation_id',
-    }),
+    ...pick(attributes, { repo: 'repo', toolName: 'tool_name', model: 'model' }),
+    // The two constrained strings, kept only if they satisfy the wire.
+    ...withField('traceId', keep(stringOrUndefined(attributes.trace_id), TRACE_ID)),
+    ...withField(
+      'correlationId',
+      keep(stringOrUndefined(attributes.correlation_id), CORRELATION_ID),
+    ),
     ...(typeof attributes.gitignored === 'boolean' ? { gitignored: attributes.gitignored } : {}),
     ...(typeof attributes.whole_file === 'boolean' ? { wholeFile: attributes.whole_file } : {}),
-    ...(typeof attributes.turn_index === 'number' ? { turnIndex: attributes.turn_index } : {}),
+    ...(typeof attributes.turn_index === 'number' &&
+    Number.isInteger(attributes.turn_index) &&
+    attributes.turn_index >= 0
+      ? { turnIndex: attributes.turn_index }
+      : {}),
     // Carried, unlike inspectionMs below. The live forward sends it, and it is
     // the enforcement audit trail's link back to the grant that authorized a
     // bypass — dropping it would make the same capture mean different things to
@@ -132,6 +151,16 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
   });
   return parsed.success ? parsed.data : undefined;
 }
+
+/** One optional field, present only when it survived validation. */
+function withField(name: string, value: string | undefined): Record<string, string> {
+  return value === undefined ? {} : { [name]: value };
+}
+
+// Taken from EventMetadata's own shape so the two cannot drift: whatever the
+// wire requires of these fields is what is checked here.
+const CORRELATION_ID = EventMetadata.shape.correlationId;
+const TRACE_ID = EventMetadata.shape.traceId;
 
 function isoOrUndefined(epochMs: number): string | undefined {
   if (!Number.isFinite(epochMs)) return undefined;

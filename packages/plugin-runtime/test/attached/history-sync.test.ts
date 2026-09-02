@@ -822,7 +822,7 @@ describe('runHistorySync — the capture lane', () => {
   // An attribute the wire constrains more tightly than the column does — a
   // correlation_id that is not a uuid — must be caught HERE, not by a 400 the
   // cursorless read would replay for ever.
-  it('skips a capture whose stored attributes cannot satisfy the wire shape', async () => {
+  it('drops an unusable optional attribute rather than the capture', async () => {
     attach({ grantFor: ENDPOINT });
     seedCaptures([{ id: 'cap-1' }]);
     // Rewrite the row's bag to carry a non-uuid correlation id.
@@ -851,9 +851,50 @@ describe('runHistorySync — the capture lane', () => {
       },
     });
 
-    // The good row went; the legacy one never reached the wire at all.
-    expect(sent.map((e) => e.content)).toEqual(['text of cap-1']);
+    // BOTH went. The legacy row's payload is what the outbox exists to deliver,
+    // so the unusable OPTIONAL field is dropped and the capture travels — rather
+    // than the row being skipped, which would write synced_at = -1 and put that
+    // prompt permanently out of reach with nothing reporting it.
+    expect(sent.map((e) => e.content).sort()).toEqual(['legacy text', 'text of cap-1']);
+    expect(sent.find((e) => e.content === 'legacy text')?.metadata?.correlationId).toBeUndefined();
     expect(ledger((db2) => db2.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
+  });
+
+  // STARVATION. The capture lane used to run only after the structural loop had
+  // emptied the entire backlog, so on the machines with the largest pre-attach
+  // history the half the user was newly asked about waited weeks behind it. A
+  // reserved slice of the pass budget is what stops that; this drives a
+  // structural backlog too large to finish and requires captures to move anyway.
+  it('drains captures even while a large structural backlog remains', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedRows(40);
+    seedCaptures([{ id: 'cap-1' }]);
+
+    const l = lanes();
+    let clock = T0;
+    await runHistorySync({
+      base: home,
+      settingsDir: settingsDirOf(home),
+      dataDir: dataDirOf(home),
+      // Each structural send burns a large slice of the pass, so the backlog
+      // cannot finish inside it. Before the reserved share, that meant the
+      // capture never went at all.
+      now: () => clock,
+      sleep: () => {
+        clock += 4_000;
+        return Promise.resolve();
+      },
+      random: () => 0,
+      sendBatch: l.sendBatch,
+      sendCaptures: l.sendCaptures,
+    });
+
+    // Positive control: the structural lane really did run and really did not
+    // finish, so this is not a case where captures won by default.
+    expect(l.structural.length).toBeGreaterThan(0);
+    expect(ledger((db) => db.historySync.counts(ALL).pending)).toBeGreaterThan(0);
+    // ...and the capture went regardless.
+    expect(l.captures.map((c) => c.content)).toEqual(['text of cap-1']);
   });
 
   // A PARTIAL ack is not a delivery of the whole batch. IngestAck constrains

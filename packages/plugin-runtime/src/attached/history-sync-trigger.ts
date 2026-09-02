@@ -27,10 +27,15 @@ export const HISTORY_SYNC_SCRIPT_NAME = 'history-sync.js';
 /**
  * How long one pass suppresses the next.
  *
- * Shorter than the policy pull's window because this job has an END: it is
- * draining a finite backlog, and a machine with a large one should get through
- * it in days rather than weeks. Once the backlog is empty the passes are cheap —
- * one query that finds nothing.
+ * Shorter than the policy pull's window because the larger half of this job has
+ * an END: the pre-attach backlog is a finite set, and a machine with a large one
+ * should get through it in days rather than weeks.
+ *
+ * The CAPTURE half does not end. Its subject is whatever the live path failed to
+ * deliver, so it grows with every session that forwards while a deployment is
+ * unreachable, and a pass that finds nothing today can find work tomorrow. So an
+ * empty pass is cheap — two queries that find nothing — rather than a terminal
+ * state, and nothing here may treat a quiet pass as the job being over.
  */
 export const HISTORY_SYNC_THROTTLE_MS = 5 * 60 * 1000;
 

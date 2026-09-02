@@ -37,7 +37,8 @@ const TYPE_LIST = STRUCTURAL_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
  * whole point, be stamped delivered, and never be offered again — while the
  * route that received them wrote every other field to disk for keeps.
  *
- * `code_change` IS A CAPTURE KIND AND IS DELIBERATELY ABSENT HERE. No hook
+ * `code_change` IS A CAPTURE KIND AND IS DELIBERATELY ABSENT from the list
+ * below. No hook
  * writes one — the only two writers are the scanners (local-ops' fs-scan, behind
  * `aka scan` and the dashboard's folder scan, and packages/scanner's worktree
  * scan) — and its `content` is the COMPLETE SOURCE FILE, redacted only at
@@ -57,9 +58,16 @@ const TYPE_LIST = STRUCTURAL_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
  * Adding it is one word here — and it is a product decision that owes its own
  * disclosure, not a completeness fix.
  */
-export const CAPTURE_EVENT_TYPES = ['prompt', 'response', 'tool_use'] as const;
+// MODULE-PRIVATE, and named for the lane rather than for the grain, because
+// `@akasecurity/schema` already exports a `CAPTURE_EVENT_TYPES_SQL` derived from
+// `EventKind` — FOUR kinds, `code_change` included, with the opposite drift
+// policy — and several reads in this very package interpolate it. Exporting a
+// three-kind constant under the neighbouring name would put both on the
+// package's public surface, where a later findings read reaching for the wrong
+// one silently loses `code_change` and under-reports with nothing failing.
+const OUTBOX_CAPTURE_EVENT_TYPES = ['prompt', 'response', 'tool_use'] as const;
 
-const CAPTURE_TYPE_LIST = CAPTURE_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
+const CAPTURE_TYPE_LIST = OUTBOX_CAPTURE_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
 
 /** `synced_at` values that are not a delivery time. */
 const SKIPPED = -1;

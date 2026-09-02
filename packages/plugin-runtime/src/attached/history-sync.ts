@@ -82,6 +82,17 @@ const CAPTURE_GRACE_MS = 30_000;
 const CAPTURE_BATCH_SIZE = INGEST_BATCH_MAX;
 
 /**
+ * The share of one pass the structural lane may spend before it yields.
+ *
+ * Most of it, because the pre-attach backlog is the finite half and finishing it
+ * is what makes later passes cheap. The remainder is what stops the capture lane
+ * being starved behind a backlog measured in days — see drain(). A structural
+ * loop that empties the backlog early hands the rest over, so this costs nothing
+ * on a machine that has caught up.
+ */
+const STRUCTURAL_BUDGET_SHARE = 0.7;
+
+/**
  * How many events ride one request.
  *
  * The single largest lever on how long a backlog takes: this work is round-trip
@@ -331,6 +342,19 @@ type RowVerdict = 'sent' | 'skip' | 'unreachable' | 'refused';
 async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   const startedAt = d.now();
   const deadline = startedAt + d.budgetMs;
+  // A RESERVED SLICE, not an ordering. Running captures after the structural
+  // loop is right within a pass — a capture whose session root has not arrived is
+  // a stub until it does — but that loop exits only when the whole backlog is
+  // gone or the budget is spent, so "second" would mean "not until the entire
+  // pre-attach history has drained". `askAboutHistory` advertises backlogs in
+  // days; passes are capped at 120s and throttled to one per five minutes. So on
+  // exactly the machines with the largest backlog, the half the user was newly
+  // asked about — and the only half where declining means "dropped rather than
+  // kept" — would wait weeks while fresh undelivered captures piled up behind it.
+  //
+  // Structural still goes first and still gets most of the pass. It just cannot
+  // take all of it.
+  const structuralDeadline = Math.min(deadline, startedAt + d.budgetMs * STRUCTURAL_BUDGET_SHARE);
   let sent = 0;
   let skipped = 0;
   let lastHeartbeat = startedAt;
@@ -353,7 +377,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     lastHeartbeat = at;
   };
 
-  outer: while (d.now() < deadline) {
+  outer: while (d.now() < structuralDeadline) {
     const sessions = d.ledger.pendingSessions(SESSION_PAGE, d.backlogBefore);
     if (sessions.length === 0) break;
 
@@ -384,7 +408,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
       // first, so a batch that stayed inside a session cannot deliver a leaf
       // before the root it keys onto; one spanning sessions could.
       for (let i = 0; i < ready.length; i += BATCH_SIZE) {
-        if (d.now() >= deadline) {
+        if (d.now() >= structuralDeadline) {
           outcome = 'interrupted';
           break outer;
         }
@@ -410,6 +434,12 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   // arrives, and draining captures first would leave a deployment full of them.
   // Both lanes settle through the same statement, so the order costs nothing
   // else.
+  // A structural loop that stopped at its own slice has not run out of time, and
+  // must not be reported as though it had: the pass continues here, and the final
+  // check below re-reads the real deadline. Only a stop at the PASS deadline is
+  // an interruption.
+  if (outcome === 'interrupted' && d.now() < deadline) outcome = 'ok';
+
   if (outcome === 'ok') {
     const captures = await drainCaptures(d, deadline, beat);
     sent += captures.sent;
@@ -494,17 +524,24 @@ async function drainCaptures(
     if (rows.length === 0) return { sent, skipped };
 
     const ready: { id: string; event: IngestEvent }[] = [];
+    const unbuildable: string[] = [];
     for (const row of rows) {
       const event = rebuildCapture(row);
       if (event === undefined) {
         // A local defect, not an outage. Retrying for ever would stall the lane
         // behind one unexpressible row — and because this read has no cursor,
         // that row would be the head of every subsequent page.
-        d.ledger.markSkipped([row.id]);
-        skipped += 1;
+        unbuildable.push(row.id);
         continue;
       }
       ready.push({ id: row.id, event });
+    }
+    // ONE write for the page rather than one per row: markSkipped takes a list,
+    // and each call is its own IMMEDIATE transaction competing for the store's
+    // write lock with the live capture path.
+    if (unbuildable.length > 0) {
+      d.ledger.markSkipped(unbuildable);
+      skipped += unbuildable.length;
     }
     if (ready.length === 0) {
       // BEFORE the continue, not after it. Every statement on this path —

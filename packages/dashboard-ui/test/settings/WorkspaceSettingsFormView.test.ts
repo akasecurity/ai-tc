@@ -496,7 +496,7 @@ describe('stale history-sync grant', () => {
       createElement(WorkspaceSettingsFormView, { settings, onSave: () => undefined, busy: false }),
     );
 
-  it('shows the paused badge, an opened row, and an enabled Save', () => {
+  it('shows the paused badge and an opened row, and does NOT pre-assert consent', () => {
     const html = render(
       attached({
         acknowledgedAt: '2020-01-01T00:00:00.000Z',
@@ -510,10 +510,25 @@ describe('stale history-sync grant', () => {
     const rowOpen = staleRow.lastIndexOf('<details');
     expect(staleRow.slice(rowOpen, staleRow.indexOf('>', rowOpen) + 1)).toContain('open');
     expect(html).toContain(HISTORY_SYNC_STALE_BADGE);
-    // The whole point: one save re-consents, so the button cannot start disabled.
+    // THE FAIL-OPEN GUARD. The submit handler asserts whatever this row is
+    // seeded with, so a stale grant seeded 'Shared' would let a user who came to
+    // change something else stamp a fresh v2 grant by clicking Save — silently
+    // re-consenting to a widened payload. It must read 'Not shared' until the
+    // user says otherwise; the badge and notice are what explain why.
+    // Anchored on the choice COPY, because the radios carry no value attribute —
+    // selection is `checked` on the label that holds the description.
+    const grantedCopy = HISTORY_SYNC_CHOICES.find((c) => c.value === 'granted')?.description ?? '';
+    const revokedCopy = HISTORY_SYNC_CHOICES.find((c) => c.value === 'revoked')?.description ?? '';
+    expect(grantedCopy).not.toBe('');
+    const labelHolding = (copy: string): string => {
+      const at = html.indexOf(copy);
+      return html.slice(html.lastIndexOf('<label', at), at);
+    };
+    expect(labelHolding(grantedCopy)).not.toContain('checked');
+    expect(labelHolding(revokedCopy)).toContain('checked');
+    // And the form starts clean, so an untouched Save is not even offered.
     const saveButton = /<button[^>]*>(?:[^<]*Save changes[^<]*)<\/button>/.exec(html)?.[0] ?? '';
-    expect(saveButton).not.toBe('');
-    expect(saveButton).not.toContain('disabled=""');
+    expect(saveButton).toContain('disabled=""');
   });
 
   // THE SAFETY CASE, which the vault row has no analogue for because a vault

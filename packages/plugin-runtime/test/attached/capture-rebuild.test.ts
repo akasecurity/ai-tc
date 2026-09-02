@@ -94,10 +94,53 @@ describe('rebuildCapture', () => {
     expect(rebuildCapture(measured)?.metadata?.inspectionMs).toBeUndefined();
   });
 
+  // An OPTIONAL attribute the wire constrains more tightly than the column does
+  // costs itself, never the capture. Skipping the row instead would write
+  // synced_at = -1 and put that prompt permanently out of reach — the same data
+  // loss the outbox exists to stop, reached by a different door.
+  describe('an unusable optional attribute is dropped, not the row', () => {
+    const withBag = (bag: Record<string, unknown>) =>
+      rebuildCapture(row({ attributes: JSON.stringify({ source_tool: 'claude-code', ...bag }) }));
+
+    it('drops a correlation id that is not a uuid', () => {
+      const event = withBag({ correlation_id: 'legacy-7' });
+      expect(event?.content).toBe('the text of a prompt');
+      expect(event?.metadata?.correlationId).toBeUndefined();
+    });
+
+    it('keeps a correlation id that is a uuid', () => {
+      const id = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+      expect(withBag({ correlation_id: id })?.metadata?.correlationId).toBe(id);
+    });
+
+    it('drops a trace id that is not 32 hex characters', () => {
+      expect(withBag({ trace_id: 'nope' })?.metadata?.traceId).toBeUndefined();
+      expect(withBag({ trace_id: 'a'.repeat(32) })?.metadata?.traceId).toBe('a'.repeat(32));
+    });
+
+    it('drops a negative or fractional turn index', () => {
+      expect(withBag({ turn_index: -1 })?.metadata?.turnIndex).toBeUndefined();
+      expect(withBag({ turn_index: 1.5 })?.metadata?.turnIndex).toBeUndefined();
+      expect(withBag({ turn_index: 3 })?.metadata?.turnIndex).toBe(3);
+    });
+
+    it('carries the exception ids the live forward carries', () => {
+      const ids = ['3f2504e0-4f89-41d3-9a0c-0305e82c3301'];
+      expect(withBag({ exception_ids: ids })?.metadata?.exceptionIds).toEqual(ids);
+    });
+  });
+
   describe('rows that can never be expressed become a permanent skip', () => {
     it('refuses a structural row that strayed onto this lane', () => {
       expect(rebuildCapture(row({ eventType: 'tool_call' }))).toBeUndefined();
       expect(rebuildCapture(row({ eventType: 'session' }))).toBeUndefined();
+    });
+
+    // code_change IS a capture kind, so EventKind admits it and only this
+    // explicit refusal keeps whole source files off the lane. Pinned here as
+    // well as in the ledger's SQL so the two must move together.
+    it('refuses a code_change, which is a capture kind this lane excludes', () => {
+      expect(rebuildCapture(row({ eventType: 'code_change' }))).toBeUndefined();
     });
 
     it('refuses a row with no content or no hash', () => {

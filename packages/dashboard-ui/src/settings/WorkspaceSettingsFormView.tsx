@@ -498,24 +498,35 @@ export function WorkspaceSettingsFormView({
     ? 'granted'
     : 'revoked';
   const [modelJudge, setModelJudge] = useState<ModelJudgeChoice>(initialModelJudge);
-  // Validity, not presence, for the same reason as the model-judge grant — and
-  // here validity also depends on WHICH deployment is on file, so a grant given
-  // for a previous one renders as not shared.
-  // Presence-for-THIS-deployment, not validity — the same shape as the vault row
-  // above, and for the same reason: a stale grant is an answer the user really
-  // gave, so the row shows it and badges it as paused rather than silently
-  // flipping to 'Not shared' and inviting a save that deletes it.
+  // VALIDITY, not presence — and the vault row's shape is deliberately NOT
+  // copied here, because the two grants fail in opposite directions.
   //
-  // The disjunct is deliberately `valid || stale` rather than "a grant exists":
-  // `isHistorySyncConsentStale` is false for a grant naming a DIFFERENT
-  // deployment, so one of those still renders 'Not shared'. Re-consenting in
-  // place must never be offered for a grant the user gave to somebody else's
-  // endpoint.
-  const initialHistorySync: HistorySyncChoice =
-    isHistorySyncConsentValid(settings.historySyncConsent, settings.controlPlane?.endpoint) ||
-    isHistorySyncConsentStale(settings.historySyncConsent, settings.controlPlane?.endpoint)
-      ? 'granted'
-      : 'revoked';
+  // The submit handler sends `historySyncConsent: historySync === 'granted'`
+  // unconditionally, so whatever this seeds is what an unrelated Save asserts.
+  // Seeding a stale grant as 'granted' would therefore let a user who opened
+  // Settings to change something else stamp a fresh v2 grant by clicking Save —
+  // silently re-consenting to a WIDENED payload they never affirmed, on the one
+  // grant whose entire reason to carry a version is that widening re-asks rather
+  // than assumes. That is the failure that matters; the other direction only
+  // discards a grant that already authorizes nothing.
+  //
+  // So a stale grant reads 'Not shared', and the row carries the paused badge
+  // and the notice saying why. Selecting 'Shared' is then an ordinary edit — it
+  // differs from this seed, so it enables Save on its own and re-consents in one
+  // save, with no staleness clause needed in `dirty`. The difference from the
+  // pre-v2 code is not the seed but the badge and notice beside it: before, a
+  // stale grant read 'Not shared' with nothing to explain it.
+  //
+  // Endpoint still matters, and `isHistorySyncConsentStale` is false for a grant
+  // naming a DIFFERENT deployment, so one of those shows no paused badge at all:
+  // re-consenting in place must never be offered for a grant the user gave to
+  // somebody else's endpoint.
+  const initialHistorySync: HistorySyncChoice = isHistorySyncConsentValid(
+    settings.historySyncConsent,
+    settings.controlPlane?.endpoint,
+  )
+    ? 'granted'
+    : 'revoked';
   const [historySync, setHistorySync] = useState<HistorySyncChoice>(initialHistorySync);
   // Read once: the row's badge, its default-open state and `dirty` must all
   // agree about staleness, and three separate calls could not disagree loudly.
@@ -541,15 +552,7 @@ export function WorkspaceSettingsFormView({
     // A stale grant renders as 'on' but authorizes nothing; keeping 'on'
     // selected and saving is the documented one-save re-consent, so staleness
     // itself must enable Save.
-    (vaultConsent === 'on' && vaultConsentStale(settings.vaultConsent)) ||
-    // Same rule as the vault clause above, and it is what stops a payload bump
-    // from DESTROYING a grant. After a bump `initialHistorySync` derives
-    // 'revoked', so `historySync !== initialHistorySync` is false and this form
-    // is not dirty from the grant alone — but any unrelated save still submits
-    // `historySyncConsent: false`, which the server action maps to `undefined`
-    // and deletes the record, acknowledgedAt included. Staleness must enable
-    // Save so the row is a live re-consent rather than a silent deletion.
-    (historySync === 'granted' && historySyncStale);
+    (vaultConsent === 'on' && vaultConsentStale(settings.vaultConsent));
 
   return (
     <div className="flex max-w-4xl flex-col gap-7">

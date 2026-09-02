@@ -4,9 +4,9 @@ import { DetectionCategory } from '../../src/zod/finding.ts';
 import {
   DEFAULT_ACTIONS,
   FULL_ENFORCEMENT_POSTURE,
+  Policy,
   POLICY_BUNDLE_SHAPE_ID,
   PolicyBundle,
-  Policy,
 } from '../../src/zod/policy.ts';
 
 describe('DEFAULT_ACTIONS — severity-floor cold-start values', () => {

@@ -267,9 +267,7 @@ export class SqliteSecretVaultRepository {
        SET value_fingerprint = :valueFingerprint, fingerprint_key_version = :fingerprintKeyVersion
        WHERE pointer_id = :pointerId`,
     );
-    this.deleteByPointerStmt = db.prepare(
-      `DELETE FROM secret_vault WHERE pointer_id = :pointerId`,
-    );
+    this.deleteByPointerStmt = db.prepare(`DELETE FROM secret_vault WHERE pointer_id = :pointerId`);
     this.derefStmt = db.prepare(
       `INSERT INTO secret_vault_deref (id, pointer_id, at, target, reason, outcome, grant_id, pointer_count)
        VALUES (:id, :pointerId, :at, :target, :reason, :outcome, :grantId, :pointerCount)`,

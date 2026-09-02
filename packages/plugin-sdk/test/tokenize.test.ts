@@ -400,7 +400,7 @@ describe('vault glue', () => {
     // hold — so it reads as "keep nothing", every enforced span is destroyed
     // instead of vaulted, and the caller's statement errs toward not retaining
     // a value rather than being dropped for one derived behind its back.
-    it("an explicit `reversible` set wins over the resolver for a self-scan too", async () => {
+    it('an explicit `reversible` set wins over the resolver for a self-scan too', async () => {
       const text = `aws_access_key_id = ${SECRET}`;
       const result = await glue.tokenizeText(text, {
         reversible: new Set(),

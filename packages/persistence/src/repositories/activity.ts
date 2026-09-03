@@ -447,23 +447,32 @@ export class SqliteActivityRepository implements ActivityReadPort {
     //
     // Driven from the rows active in the window, not from the open roots: a
     // root is live iff it started in the window, or a descendant started in
-    // it, or a descendant ended in it — three index ranges, so the read costs
-    // the last thirty minutes of the store. The per-root form it replaces
-    // (`max(...)` over every descendant of every open root) read the whole
-    // table, because on a real store EVERY root is open.
+    // it, or a descendant ended in it — three index ranges, and the outer
+    // query seeks each root the list names by primary key — so the read costs
+    // the last thirty minutes of the store and nothing else. The per-root
+    // form it replaces (`max(...)` over every descendant of every open root)
+    // read the whole table, because on a real store EVERY root is open.
     //
-    // `INDEXED BY` on the two descendant ranges is deliberate. Each column is
-    // also the second column of a (root_session_id, …) index, and the planner
-    // prefers a skip-scan over every root through that one — with or without
-    // ANALYZE statistics — which is the per-root walk again (2.8 ms against
-    // 0.1 ms at 200k captures for the start range). The indexes named are ones
-    // every open store carries, since opening runs the migrations, so the hard
-    // requirement `INDEXED BY` introduces is already met;
-    // test/performance/activity-probe-plans.test.ts pins the plan.
+    // Three `INDEXED BY`s, all deliberate, none of which the planner takes on
+    // its own (the store never runs ANALYZE, so it prices from the schema).
+    // The two descendant ranges: each column is also the second column of a
+    // (root_session_id, …) index, and the planner prefers a skip-scan over
+    // every root through that one, which is the per-root walk again (2.8 ms
+    // against 0.1 ms at 200k captures for the start range). The outer: left
+    // to itself it enumerates every session root through an event-type-led
+    // index and tests each against the list, linear in roots (4.8x across a
+    // ten-fold store), where the list — the last thirty minutes — is tiny and
+    // constant; seeking it by primary key is flat (1.2x) and six times
+    // cheaper. `sqlite_autoindex_audit_events_1` is SQLite's implicit name
+    // for the primary key's index, stable while `id` stays the table's only
+    // primary key and its first autoindex — the timeline probe asserts the
+    // same name. The indexes named are ones every open store carries, since
+    // opening runs the migrations, so the hard requirement `INDEXED BY`
+    // introduces is already met; activity-probe-plans.test.ts pins the plan.
     const liveThreshold = this.now() - LIVE_ACTIVITY_WINDOW_MS;
     const liveNow = countScalar(
       this.db,
-      `SELECT count(*) AS n FROM audit_events s
+      `SELECT count(*) AS n FROM audit_events s INDEXED BY sqlite_autoindex_audit_events_1
            WHERE s.event_type = 'session' AND s.ended_at IS NULL
              AND s.id IN (
                SELECT id FROM audit_events WHERE event_type = 'session' AND started_at >= ?

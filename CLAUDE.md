@@ -1491,10 +1491,14 @@ event-type index to find one session's (17 ms at 50k, growing with the store); i
 store every root is open — the local writer never stamps `ended_at` on a session — so
 "sessions live in the last thirty minutes" read the whole table on every page load: 90 ms at
 200k captures, growing with history. It is driven from the rows active in the window now, as
-three index ranges, and two of them are pinned with `INDEXED BY`: whenever the range column
-is the second column of a `(root_session_id, …)` index the planner prefers a skip-scan over
-every root through that index, and a skip-scan over every root is the walk again (2.8 ms
-against 0.1 ms). The list's per-session rollups read partial indexes over their own kind
+three index ranges and one primary-key seek per root they name, with three `INDEXED BY`s
+the planner takes none of on its own: whenever the range column is the second column of a
+`(root_session_id, …)` index it prefers a skip-scan over every root through that index, and a
+skip-scan over every root is the walk again (2.8 ms against 0.1 ms); and left to itself the
+outer query enumerates every session root through an event-type-led index to test each
+against the list — linear in roots, and invisible inside the `stats` composite because the
+four day-windowed counters shrink faster than it grows (4.8x across a ten-fold store, 1.2x
+pinned to the primary key, whose implicit index name the statement therefore depends on). The list's per-session rollups read partial indexes over their own kind
 (migration 0028), and the last-activity rollup is two seeks per session through `json_each`.
 `activity-page-scale.test.ts` pins the consequence on the real shape (`endedRate: 0`, 2k →
 20k captures: before, `stats` 9.4, the first page 4.5 and the detail pane 3.5 across a

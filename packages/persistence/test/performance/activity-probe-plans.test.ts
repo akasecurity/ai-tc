@@ -60,11 +60,21 @@ const STATS_PROBES: readonly Probe[] = [
   {
     name: 'liveNow',
     statement: (sql) => sql.includes('ended_at IS NULL') && sql.includes('count(*)'),
+    // The three arms through their ranges, AND the outer driven from the list
+    // they produce — by primary key, one seek per root active in the window —
+    // never enumerating every session root in the store to test each against
+    // the list. That outer walk is linear in roots, and it hid inside the
+    // stats composite because the four day-windowed counters shrink faster
+    // than it grows.
     mustUse: [
+      /SEARCH s USING INDEX sqlite_autoindex_audit_events_1 \(id=\?\)/,
       /USING INDEX idx_audit_started_at \(started_at>\?\)/,
       /INDEX idx_audit_ended_at \(ended_at>\?\)/,
     ],
-    mustNotUse: [/CORRELATED SCALAR SUBQUERY/],
+    mustNotUse: [
+      /CORRELATED SCALAR SUBQUERY/,
+      /SEARCH s USING INDEX idx_audit_(type_t|events_sync)/,
+    ],
   },
 ];
 

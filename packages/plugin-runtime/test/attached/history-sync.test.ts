@@ -161,6 +161,10 @@ const ledger = <T>(fn: (db: ReturnType<typeof openLocalDatabase>) => T): T => {
   }
 };
 
+/** A sendBatch that takes everything it is offered — the ordinary case. */
+const sendBatchOk = (events: readonly RecordAuditEventRequest[]): Promise<{ settled: number }> =>
+  Promise.resolve({ settled: events.length });
+
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-history-pass-'));
 });
@@ -221,7 +225,7 @@ describe('runHistorySync — draining', () => {
     const result = await run({
       sendBatch: (events: readonly RecordAuditEventRequest[]) => {
         for (const e of events) sent.push(e.id);
-        return Promise.resolve();
+        return Promise.resolve({ settled: events.length });
       },
     });
 
@@ -241,7 +245,7 @@ describe('runHistorySync — draining', () => {
     await run({
       sendBatch: (events: readonly RecordAuditEventRequest[]) => {
         for (const e of events) sent.push(e.id);
-        return Promise.resolve();
+        return Promise.resolve({ settled: events.length });
       },
     });
 
@@ -251,7 +255,7 @@ describe('runHistorySync — draining', () => {
   it('leaves the claim free for the next pass', async () => {
     attach({ grantFor: ENDPOINT });
     seedRows();
-    await run({ sendBatch: () => Promise.resolve() });
+    await run({ sendBatch: sendBatchOk });
 
     expect(ledger((db) => db.historySync.lease()?.ownerPid)).toBeNull();
   });
@@ -259,7 +263,7 @@ describe('runHistorySync — draining', () => {
   it('does nothing on a second pass once everything has gone', async () => {
     attach({ grantFor: ENDPOINT });
     seedRows();
-    await run({ sendBatch: () => Promise.resolve() });
+    await run({ sendBatch: sendBatchOk });
 
     const again = await run({
       sendBatch: () => Promise.reject(new Error('should not be called')),
@@ -306,9 +310,11 @@ describe('runHistorySync — failures', () => {
     let calls = 0;
 
     await run({
-      sendBatch: () => {
+      sendBatch: (events: readonly RecordAuditEventRequest[]) => {
         calls += 1;
-        return calls < 3 ? Promise.reject(new Error('transient')) : Promise.resolve();
+        return calls < 3
+          ? Promise.reject(new Error('transient'))
+          : Promise.resolve({ settled: events.length });
       },
     });
 
@@ -341,12 +347,62 @@ describe('runHistorySync — failures', () => {
       sendBatch: (events: readonly RecordAuditEventRequest[]) =>
         events.some((e) => e.id.endsWith('-llm'))
           ? Promise.reject(new RemoteRequestError(400))
-          : Promise.resolve(),
+          : Promise.resolve({ settled: events.length }),
     });
 
     expect(attempted(result).sent).toBe(1);
     expect(attempted(result).skipped).toBe(1);
     expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ sent: 1, skipped: 1 });
+  });
+
+  // A PARTIAL ack is not a delivery of the whole batch. `AuditEventBatchAck`'s
+  // `accepted` is an aggregate the wire contract does not tie to the chunk's
+  // own length, so a deployment this plugin does not ship may answer
+  // {accepted: 1} for a batch of 2 — and trusting the call resolving would
+  // stamp both delivered and never re-offer the one that was not. Re-reading
+  // the same rows next pass and under-accepting again would wedge the lane for
+  // ever, so the batch is split until the answer is unambiguous — the
+  // structural twin of the capture lane's equivalent test above.
+  it('recovers a batch the deployment accepted FEWER of than it was sent', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedRows(1); // one session root + one llm_call: a batch of 2
+    const batchSizes: number[] = [];
+    const delivered: string[] = [];
+
+    const result = await run({
+      // Claims only one of the two sent as a batch — which one is not
+      // knowable from the ack, so recovery has to re-send both singly.
+      sendBatch: (events: readonly RecordAuditEventRequest[]) => {
+        batchSizes.push(events.length);
+        if (events.length > 1) return Promise.resolve({ settled: 1 });
+        delivered.push(...events.map((e) => e.id));
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+
+    // The batch attempt happened once, then every row was recovered through
+    // the SAME route one at a time — unlike the live forward path, this lane
+    // has no separate single-event route to fall back to.
+    expect(batchSizes).toEqual([2, 1, 1]);
+    expect(delivered).toEqual(['s-0', 's-0-llm']);
+    expect(attempted(result).outcome).toBe('ok');
+    expect(attempted(result).sent).toBe(2);
+    expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ pending: 0, sent: 2 });
+  });
+
+  // The floor under that: a SINGLE row the deployment answered a 2xx for and
+  // then took nothing of is not stampable — the ack gave no verdict to skip
+  // on, and nothing threw — so it stays owed and the pass stops rather than
+  // inventing a verdict the deployment never gave.
+  it('leaves a single structural row owed when the deployment takes none of it', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedRows(1);
+
+    const result = await run({ sendBatch: () => Promise.resolve({ settled: 0 }) });
+
+    expect(attempted(result).outcome).toBe('unreachable');
+    expect(attempted(result).sent).toBe(0);
+    expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ pending: 2, sent: 0 });
   });
 
   // Hitting the budget PAUSES the drain rather than failing it: the remainder
@@ -367,7 +423,7 @@ describe('runHistorySync — failures', () => {
         return Promise.resolve();
       },
       random: () => 0,
-      sendBatch: () => Promise.resolve(),
+      sendBatch: sendBatchOk,
     });
 
     expect(attempted(result).outcome).toBe('interrupted');
@@ -381,7 +437,7 @@ describe('runHistorySync — changing deployment', () => {
   it('re-arms rows delivered to a previous deployment', async () => {
     attach({ grantFor: ENDPOINT });
     seedRows(1);
-    await run({ sendBatch: () => Promise.resolve() });
+    await run({ sendBatch: sendBatchOk });
     expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ pending: 0, sent: 2 });
 
     // Re-point the machine, and grant for the new place.
@@ -407,7 +463,7 @@ describe('runHistorySync — changing deployment', () => {
     await run({
       sendBatch: (events: readonly RecordAuditEventRequest[]) => {
         for (const e of events) sent.push(e.id);
-        return Promise.resolve();
+        return Promise.resolve({ settled: events.length });
       },
     });
 
@@ -437,7 +493,7 @@ describe('runHistorySync — the backlog boundary', () => {
     await run({
       sendBatch: (events: readonly RecordAuditEventRequest[]) => {
         for (const e of events) sent.push(e.id);
-        return Promise.resolve();
+        return Promise.resolve({ settled: events.length });
       },
     });
 
@@ -455,7 +511,7 @@ describe('runHistorySync — the backlog boundary', () => {
     } finally {
       db.close();
     }
-    await run({ sendBatch: () => Promise.resolve() });
+    await run({ sendBatch: sendBatchOk });
 
     // Rotate: same endpoint, a later attachedAt.
     applyOnboarding(
@@ -469,7 +525,7 @@ describe('runHistorySync — the backlog boundary', () => {
     await run({
       sendBatch: (events: readonly RecordAuditEventRequest[]) => {
         for (const e of events) sent.push(e.id);
-        return Promise.resolve();
+        return Promise.resolve({ settled: events.length });
       },
     });
 
@@ -513,7 +569,7 @@ describe('runHistorySync — reading the deployment right', () => {
       JSON.stringify({ consecutiveFailures: 3, openedAtMs: T0 - 10 * 60_000, lastFailure: null }),
     );
 
-    const result = await run({ sendBatch: () => Promise.resolve() });
+    const result = await run({ sendBatch: sendBatchOk });
 
     expect(attempted(result).sent).toBe(2);
   });
@@ -534,7 +590,7 @@ describe('runHistorySync — reading the deployment right', () => {
       }),
     );
 
-    await expect(run({ sendBatch: () => Promise.resolve() })).resolves.toEqual({
+    await expect(run({ sendBatch: sendBatchOk })).resolves.toEqual({
       attempted: false,
       reason: 'breaker-open',
     });
@@ -576,7 +632,7 @@ describe('runHistorySync — detach and re-attach', () => {
   it('picks up what was recorded while detached', async () => {
     attach({ grantFor: ENDPOINT });
     rootAt('s-pre', '2026-08-20T00:00:00.000Z'); // before the first attach
-    await run({ sendBatch: () => Promise.resolve() });
+    await run({ sendBatch: sendBatchOk });
 
     // Detach: hand the attached period over and release the boundary.
     const db = openLocalDatabase(dataDirOf(home));
@@ -597,7 +653,7 @@ describe('runHistorySync — detach and re-attach', () => {
     await run({
       sendBatch: (events: readonly RecordAuditEventRequest[]) => {
         for (const e of events) sent.push(e.id);
-        return Promise.resolve();
+        return Promise.resolve({ settled: events.length });
       },
     });
 
@@ -610,7 +666,7 @@ describe('runHistorySync — detach and re-attach', () => {
   it('does not re-send what the live path owned while attached', async () => {
     attach({ grantFor: ENDPOINT });
     rootAt('s-live', '2026-08-24T12:00:00.000Z'); // after the attach: live path's
-    await run({ sendBatch: () => Promise.resolve() });
+    await run({ sendBatch: sendBatchOk });
 
     const db = openLocalDatabase(dataDirOf(home));
     try {
@@ -627,7 +683,7 @@ describe('runHistorySync — detach and re-attach', () => {
     await run({
       sendBatch: (events: readonly RecordAuditEventRequest[]) => {
         for (const e of events) sent.push(e.id);
-        return Promise.resolve();
+        return Promise.resolve({ settled: events.length });
       },
     });
 
@@ -639,7 +695,7 @@ describe('runHistorySync — detach and re-attach', () => {
   it('still starts over when the re-attach names a different deployment', async () => {
     attach({ grantFor: ENDPOINT });
     rootAt('s-pre', '2026-08-20T00:00:00.000Z');
-    await run({ sendBatch: () => Promise.resolve() });
+    await run({ sendBatch: sendBatchOk });
 
     applyOnboarding(
       {
@@ -663,7 +719,7 @@ describe('runHistorySync — detach and re-attach', () => {
     await run({
       sendBatch: (events: readonly RecordAuditEventRequest[]) => {
         for (const e of events) sent.push(e.id);
-        return Promise.resolve();
+        return Promise.resolve({ settled: events.length });
       },
     });
 
@@ -688,7 +744,7 @@ describe('runHistorySync — a rotation before the detach', () => {
   // re-sends rows the live path owned.
   it('hands over the whole attached period, not just since the last rotation', async () => {
     attach({ grantFor: ENDPOINT });
-    await run({ sendBatch: () => Promise.resolve() }); // freezes the boundary at AT
+    await run({ sendBatch: sendBatchOk }); // freezes the boundary at AT
 
     // Recorded while attached, BEFORE the rotation: the live path's.
     rootAt('s-first-window', '2026-08-24T12:00:00.000Z');
@@ -698,7 +754,7 @@ describe('runHistorySync — a rotation before the detach', () => {
       { controlPlane: { endpoint: ENDPOINT, attachedAt: '2026-08-24T20:00:00.000Z' } },
       home,
     );
-    await run({ sendBatch: () => Promise.resolve() });
+    await run({ sendBatch: sendBatchOk });
 
     // Detach: hand the attached period over, measured from the boundary.
     const db = openLocalDatabase(dataDirOf(home));
@@ -721,7 +777,7 @@ describe('runHistorySync — a rotation before the detach', () => {
     await run({
       sendBatch: (events: readonly RecordAuditEventRequest[]) => {
         for (const e of events) sent.push(e.id);
-        return Promise.resolve();
+        return Promise.resolve({ settled: events.length });
       },
     });
 
@@ -742,7 +798,7 @@ describe('runHistorySync — the capture lane', () => {
       captures,
       sendBatch: (events: readonly RecordAuditEventRequest[]) => {
         structural.push(...events);
-        return Promise.resolve();
+        return Promise.resolve({ settled: events.length });
       },
       sendCaptures: (events: readonly IngestEvent[]) => {
         captures.push(...events);
@@ -784,7 +840,7 @@ describe('runHistorySync — the capture lane', () => {
     seedCaptures([{ id: 'cap-1' }]);
 
     await run({
-      sendBatch: () => Promise.resolve(),
+      sendBatch: sendBatchOk,
       sendCaptures: () => Promise.resolve({ settled: 0 }),
     });
 
@@ -798,7 +854,7 @@ describe('runHistorySync — the capture lane', () => {
     seedCaptures([{ id: 'cap-1' }]);
 
     await run({
-      sendBatch: () => Promise.resolve(),
+      sendBatch: sendBatchOk,
       sendCaptures: () => Promise.reject(new Error('unreachable')),
     });
 
@@ -850,7 +906,7 @@ describe('runHistorySync — the capture lane', () => {
 
     const delivered: string[] = [];
     const result = await run({
-      sendBatch: () => Promise.resolve(),
+      sendBatch: sendBatchOk,
       sendCaptures: (events: readonly IngestEvent[]) => {
         if (events.some((e) => e.content === 'text of cap-bad')) {
           return Promise.reject(new RemoteRequestError(400));
@@ -877,7 +933,7 @@ describe('runHistorySync — the capture lane', () => {
     seedCaptures([{ id: 'cap-1' }, { id: 'cap-2' }]);
 
     const result = await run({
-      sendBatch: () => Promise.resolve(),
+      sendBatch: sendBatchOk,
       sendCaptures: () => Promise.reject(new RemoteRequestError(403)),
     });
 
@@ -911,7 +967,7 @@ describe('runHistorySync — the capture lane', () => {
 
     const sent: IngestEvent[] = [];
     await run({
-      sendBatch: () => Promise.resolve(),
+      sendBatch: sendBatchOk,
       sendCaptures: (events: readonly IngestEvent[]) => {
         sent.push(...events);
         return Promise.resolve({ settled: events.length });
@@ -1014,7 +1070,7 @@ describe('runHistorySync — the capture lane', () => {
 
     const delivered: string[] = [];
     await run({
-      sendBatch: () => Promise.resolve(),
+      sendBatch: sendBatchOk,
       // Caps at one per request, whatever it is offered.
       sendCaptures: (events: readonly IngestEvent[]) => {
         if (events.length > 1) return Promise.resolve({ settled: 1 });
@@ -1035,7 +1091,7 @@ describe('runHistorySync — the capture lane', () => {
     seedCaptures([{ id: 'cap-1' }]);
 
     await run({
-      sendBatch: () => Promise.resolve(),
+      sendBatch: sendBatchOk,
       sendCaptures: () => Promise.resolve({ settled: 0 }),
     });
 
@@ -1054,7 +1110,7 @@ describe('runHistorySync — the capture lane', () => {
 
     let attempts = 0;
     await run({
-      sendBatch: () => Promise.resolve(),
+      sendBatch: sendBatchOk,
       sendCaptures: (events: readonly IngestEvent[]) => {
         attempts += 1;
         return attempts === 1
@@ -1075,7 +1131,7 @@ describe('runHistorySync — the capture lane', () => {
     seedCaptures([{ id: 'cap-1' }]);
 
     const result = await run({
-      sendBatch: () => Promise.resolve(),
+      sendBatch: sendBatchOk,
       // The deployment takes nothing, so the capture stays owed.
       sendCaptures: () => Promise.resolve({ settled: 0 }),
     });
@@ -1088,7 +1144,7 @@ describe('runHistorySync — the capture lane', () => {
     seedCaptures([{ id: 'cap-1' }]);
 
     const result = await run({
-      sendBatch: () => Promise.resolve(),
+      sendBatch: sendBatchOk,
       sendCaptures: (events: readonly IngestEvent[]) => Promise.resolve({ settled: events.length }),
     });
 

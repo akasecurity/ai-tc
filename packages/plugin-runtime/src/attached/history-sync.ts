@@ -172,7 +172,12 @@ export interface RunHistorySyncDeps {
   random?: () => number;
   passBudgetMs?: number;
   openStore?: (dataDir: string) => LocalDatabase;
-  sendBatch?: (events: readonly RecordAuditEventRequest[]) => Promise<void>;
+  /**
+   * Returns how many of the batch the deployment actually took, not merely
+   * whether the call resolved — see sendChunk, which is what makes that
+   * distinction matter.
+   */
+  sendBatch?: (events: readonly RecordAuditEventRequest[]) => Promise<{ settled: number }>;
   /** Injected alongside sendBatch in tests; the capture lane's route. */
   sendCaptures?: (events: readonly IngestEvent[]) => Promise<{ settled: number }>;
 }
@@ -315,7 +320,7 @@ export async function runHistorySync(
 
     const send =
       deps.sendBatch ??
-      (async (events: readonly RecordAuditEventRequest[]): Promise<void> => {
+      (async (events: readonly RecordAuditEventRequest[]): Promise<{ settled: number }> => {
         // THROWS rather than optional-chains. `client` is undefined only when
         // both senders were injected, in which case this closure is unreachable
         // — but `await client?.recordAuditEvents(...)` would resolve silently if
@@ -331,7 +336,13 @@ export async function runHistorySync(
         // deployment simply drains slower. The live forward is the caller it is
         // wrong for — it bounds the whole call — which is why the client raises
         // by default and each caller says which it is.
-        await client.recordAuditEvents(events, { fallbackToSingleEvents: true });
+        const ack = await client.recordAuditEvents(events, { fallbackToSingleEvents: true });
+        // `accepted` is already the full settlement count for this route — the
+        // upsert settles a duplicate resend silently, so unlike the capture
+        // ack there is no separate `duplicates` term to add in. Returned
+        // rather than discarded, so the caller can tell "the call resolved"
+        // from "the deployment actually took the batch" — see sendChunk.
+        return { settled: ack.accepted };
       });
 
     const sendCaptures =
@@ -385,7 +396,12 @@ export async function runHistorySync(
 
 interface DrainDeps {
   ledger: LocalDatabase['historySync'];
-  send: (events: readonly RecordAuditEventRequest[]) => Promise<void>;
+  /**
+   * The structural lane's sender. Returns how many the deployment took, so
+   * the caller can tell "your batch landed" from "the call returned" — see
+   * sendChunk.
+   */
+  send: (events: readonly RecordAuditEventRequest[]) => Promise<{ settled: number }>;
   /**
    * The CAPTURE lane's sender — a different route from `send`, never a variant
    * of it. Returns how many the deployment took, so the caller can tell "your
@@ -774,9 +790,10 @@ async function isolate(
 /**
  * One capture batch, retried on the failures that might not repeat.
  *
- * The capture twin of `sendWithRetries`, separate only because it has an ack to
- * carry back rather than a bare verdict. Same ladder, same full-jitter backoff,
- * same reason: machines that failed together must not retry together.
+ * The capture twin of `sendWithRetries` — kept separate because the two lanes
+ * carry different event shapes over different routes, not because only one of
+ * them needs an ack back; both do. Same ladder, same full-jitter backoff, same
+ * reason: machines that failed together must not retry together.
  */
 async function sendCapturesWithRetries(
   d: DrainDeps,
@@ -803,34 +820,63 @@ async function sendCapturesWithRetries(
 }
 
 /**
- * Send one batch, and fall back to sending it row by row if it is rejected.
+ * Send one batch, and isolate it row by row when the answer does not cover
+ * the whole thing.
  *
- * The batch ack is an AGGREGATE count — there is no per-item verdict, and a
- * rejection therefore names no row. Re-sending the same batch would fail
- * identically for ever, and marking all of it skipped would discard as many as
- * 49 good rows for one bad one. Isolating costs one request per row of one
- * batch, and only on a path that should not normally be reached: the client
- * validates its own body before sending.
+ * The batch ack is an AGGREGATE count — `AuditEventBatchAck.accepted` is not
+ * tied to the chunk's own length by the wire contract, so a well-formed 2xx
+ * answering `{accepted: 30}` for fifty events is possible. Treating the call
+ * resolving as "delivered" would stamp all fifty synced and never re-offer the
+ * twenty the deployment did not take — that is the defect this guards, and it
+ * is the batch twin of what `sendCaptureChunk` guards on `ingestEvents`'s ack.
+ * A REJECTION is the other aggregate verdict that names no row: re-sending the
+ * identical body fails identically for ever, and marking the whole batch
+ * skipped would discard as many as 49 good rows for one bad one. Both cases
+ * isolate through the same path, one row at a time, and only on a path that
+ * should not normally be reached: the client validates its own body before
+ * sending, and today's backend keeps `accepted` at the chunk's own length on
+ * every return — but this plugin talks to deployments it does not ship.
  */
 async function sendChunk(
   d: DrainDeps,
   chunk: readonly { id: string; event: RecordAuditEventRequest }[],
   beat: () => void,
 ): Promise<ChunkResult> {
-  const verdict = await sendWithRetries(
+  const outcome = await sendWithRetries(
     d,
     chunk.map((c) => c.event),
     beat,
   );
-  if (verdict === 'sent') {
+  if (outcome.verdict === 'sent') {
+    const settled = outcome.settled;
+    // The deployment did not take the whole batch. The comparison is against
+    // `chunk.length`, not against 0 — a 50-row batch answered {accepted: 30}
+    // would otherwise stamp all 50 delivered and never offer the other 20
+    // again, with the ledger reading "delivered" for rows that were not.
+    // Under-counting costs a redundant resend the receiver's id-dedup
+    // absorbs; over-counting is silent data loss, so the unread case has to
+    // fall on the resend side.
+    if (settled < chunk.length) {
+      // ISOLATE, exactly as a rejection does, rather than abandoning the
+      // batch: the read has no cursor, so a deployment that consistently
+      // under-accepts (one capping at 30, say) re-reads the same rows next
+      // pass, under-accepts again, and wedges the lane for ever while
+      // reporting a reachable deployment as unreachable.
+      if (chunk.length > 1) return await isolateStructural(d, chunk, beat);
+      // A single row the deployment accepted the request for and then took
+      // nothing of. Not a rejection — nothing threw — so it is not skippable
+      // without inventing a verdict the deployment never gave. Stop, and
+      // leave it owed.
+      return { sent: 0, skipped: 0, stopped: 'unreachable' };
+    }
     d.ledger.markSynced(
       chunk.map((c) => c.id),
       d.now(),
     );
     return { sent: chunk.length, skipped: 0 };
   }
-  if (verdict === 'refused' || verdict === 'unreachable') {
-    return { sent: 0, skipped: 0, stopped: verdict };
+  if (outcome.verdict === 'refused' || outcome.verdict === 'unreachable') {
+    return { sent: 0, skipped: 0, stopped: outcome.verdict };
   }
   // Rejected on its merits. One row is at fault and the answer does not say
   // which, so find it rather than lose the batch.
@@ -839,6 +885,23 @@ async function sendChunk(
     d.ledger.markSkipped([only.id]);
     return { sent: 0, skipped: 1 };
   }
+  return await isolateStructural(d, chunk, beat);
+}
+
+/**
+ * Re-send a batch one row at a time.
+ *
+ * The structural twin of `isolate`: shared by the two answers that name no
+ * row — a rejection on the merits, and an ack that took only some of the
+ * batch. Both are aggregate verdicts over a body that has to be taken apart
+ * before anything can be said about a particular row, and neither may cost
+ * the rows that were fine.
+ */
+async function isolateStructural(
+  d: DrainDeps,
+  chunk: readonly { id: string; event: RecordAuditEventRequest }[],
+  beat: () => void,
+): Promise<ChunkResult> {
   let sent = 0;
   let skipped = 0;
   for (const [index, one] of chunk.entries()) {
@@ -862,22 +925,26 @@ async function sendChunk(
  *
  * The transport makes no retries by construction and forbids adding one there,
  * so the ladder lives here — where the caller owns the decision and the traffic
- * it produces is bounded by a pass budget rather than by a fail-open hook.
+ * it produces is bounded by a pass budget rather than by a fail-open hook. It
+ * carries the settled count back on success, the structural twin of what
+ * `sendCapturesWithRetries` does for the capture lane, so the caller can tell
+ * "the call resolved" from "the deployment took the whole batch" — see
+ * sendChunk.
  */
 async function sendWithRetries(
   d: DrainDeps,
   events: readonly RecordAuditEventRequest[],
   beat: () => void,
-): Promise<RowVerdict> {
+): Promise<{ verdict: 'sent'; settled: number } | { verdict: Exclude<RowVerdict, 'sent'> }> {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     try {
-      await d.send(events);
-      return 'sent';
+      const { settled } = await d.send(events);
+      return { verdict: 'sent', settled };
     } catch (err) {
       const kind = classify(err);
-      if (kind === 'refused') return 'refused';
-      if (kind === 'skip') return 'skip';
-      if (attempt === MAX_ATTEMPTS - 1) return 'unreachable';
+      if (kind === 'refused') return { verdict: 'refused' };
+      if (kind === 'skip') return { verdict: 'skip' };
+      if (attempt === MAX_ATTEMPTS - 1) return { verdict: 'unreachable' };
       // Full jitter: several machines that failed together must not retry
       // together. The deployment's own retry-after is not available — the
       // transport carries the status alone, deliberately, so that a
@@ -889,7 +956,7 @@ async function sendWithRetries(
       await d.sleep(Math.floor(d.random() * ceiling));
     }
   }
-  return 'unreachable';
+  return { verdict: 'unreachable' };
 }
 
 /**

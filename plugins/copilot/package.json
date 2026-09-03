@@ -20,7 +20,6 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsup",
     "lint": "eslint src test *.config.*",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

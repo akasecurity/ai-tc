@@ -28,12 +28,17 @@ import type { LocalDatabase } from '../../src/database.ts';
 import { UNSAFE_TEST_ONLY_RAW_HANDLE } from '../../src/database.ts';
 import type {
   CaptureCorpusOptions,
+  CorpusRule,
   GeneratedCaptureCorpus,
 } from '../../src/test-fixtures/index.ts';
 import { generateCaptureCorpus } from '../../src/test-fixtures/index.ts';
 
-export { CORPUS_EPOCH_MS, CORPUS_EVENT_SPACING_MS } from '../../src/test-fixtures/index.ts';
-export type { CaptureCorpusOptions, GeneratedCaptureCorpus };
+export {
+  CORPUS_EPOCH_MS,
+  CORPUS_EVENT_SPACING_MS,
+  DEFAULT_CORPUS_RULES,
+} from '../../src/test-fixtures/index.ts';
+export type { CaptureCorpusOptions, CorpusRule, GeneratedCaptureCorpus };
 
 /**
  * The `DatabaseSync` a `LocalDatabase` writes through.

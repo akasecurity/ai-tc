@@ -107,6 +107,12 @@ export default function UpdatesPage() {
     installCommands[agent.id] = manager.installSpawnPlan(ref, source, marketplace).join('\n');
   }
 
+  // Captured once, per this file's own contract ("call once per request"),
+  // rather than inline in the prop below — harmless with the one label this
+  // page derives today, but an inline call is a landmine for whichever
+  // second time-derived value lands on this page next.
+  const renderedAt = renderInstant();
+
   return (
     <div className="px-8 pb-10 pt-7">
       <PageHead
@@ -119,9 +125,7 @@ export default function UpdatesPage() {
         // Resolved to a STRING here rather than in the client component: the
         // label crosses the boundary already formatted, so the browser has
         // nothing to recompute and nothing to disagree with.
-        checkedAt={
-          cache ? relativeTime(new Date(cache.checkedAt).toISOString(), renderInstant()) : null
-        }
+        checkedAt={cache ? relativeTime(new Date(cache.checkedAt).toISOString(), renderedAt) : null}
         commands={commands}
         advisories={advisories}
         installCommands={installCommands}

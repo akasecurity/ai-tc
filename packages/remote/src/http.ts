@@ -52,6 +52,28 @@ export class RemoteRequestError extends Error {
 }
 
 /**
+ * A route this deployment does not serve: a 404 on a path this client knows.
+ *
+ * Its own class, and deliberately NOT a `RemoteRequestError(404)`, because the
+ * two mean opposite things to a caller. A non-2xx says a deployment considered
+ * the request and refused it; this says the deployment predates the route and
+ * never had it to refuse. The first is a failure to count toward a breaker, the
+ * second is a VERSION FACT to act on — and a caller that collapses them into
+ * one reason stops talking to a deployment that is answering every request it
+ * understands.
+ *
+ * What to do about it is the caller's: the answer is always the older route,
+ * but whether there is budget for one request per event is something only the
+ * caller can know. See `recordAuditEvents`.
+ */
+export class RemoteRouteAbsent extends Error {
+  constructor(readonly route: string) {
+    super(`control plane does not serve ${route}`);
+    this.name = 'RemoteRouteAbsent';
+  }
+}
+
+/**
  * A request this client refused to SEND, because the body it was handed does
  * not satisfy the contract the route publishes.
  *

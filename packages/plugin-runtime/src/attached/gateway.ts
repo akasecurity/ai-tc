@@ -72,9 +72,14 @@ export interface AttachedClient {
   // The SAME upsert, up to AUDIT_EVENT_BATCH_MAX at a time in one transaction.
   // Declared here because the object `createRemoteClient` hands this class has
   // carried it all along — only this interface did not say so, which is the
-  // whole reason `forwardBatch` sent one request per event. A deployment that
-  // predates the route answers 404 and the client falls back to the
-  // single-event form itself, so a caller never has to know which it spoke to.
+  // whole reason `forwardBatch` sent one request per event.
+  //
+  // A deployment that predates the route answers 404, and this caller DOES have
+  // to know which it spoke to. The client raises `RemoteRouteAbsent`,
+  // `ForwardPolicy` classifies it as `route-absent`, and `forwardBatch` re-sends
+  // that chunk one at a time. It must NOT be absorbed inside the client here:
+  // the fallback is 50 sequential round trips, and every one of them would be
+  // charged to the single FORWARD_BUDGET_MS wrapping this call.
   recordAuditEvents(
     events: readonly (AuditEventInput & { inspections?: ToolCallInspection[] })[],
   ): Promise<AuditEventBatchAck>;
@@ -696,17 +701,39 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
           delivered.push(...chunk);
           continue;
         }
-        // Only `invalid-request` is worth a second pass, and only one at a time.
-        // It means the CLIENT refused the body before any request went out — a
-        // defect in one event, not an outage — so re-sending singly costs no
-        // network for the good events beyond what the old code already spent,
-        // and isolates the bad one instead of charging its chunk for it. Every
-        // other reason (breaker-open, a refusal, a timeout) applies to the whole
-        // chunk and re-sending it item by item would just spend the budget
+        // TWO reasons are worth a second pass, one at a time, and they are the
+        // two settled BEFORE the control plane refused anything.
+        //
+        // `invalid-request` — the CLIENT refused the body before any request
+        // went out: a defect in one event, not an outage. Re-sending singly
+        // isolates the bad one instead of charging its 49 neighbours for it.
+        //
+        // `route-absent` — the deployment predates the batch route and serves
+        // only the single-event one. The retry IS the compatibility path, and it
+        // has to live HERE rather than inside the client: each single gets its
+        // own FORWARD_BUDGET_MS through `run`, whereas the client's own fallback
+        // would spend 50 sequential round trips inside the ONE budget wrapping
+        // this call — turning a working older deployment into a timeout, three
+        // of those into an open breaker, and every row into a silent drop while
+        // the status surface called an answering deployment down.
+        //
+        // Every other reason (breaker-open, a refusal, a timeout) applies to the
+        // whole chunk; re-sending it item by item would just spend the budget
         // failing 50 more times.
-        if (forwarded.reason !== 'invalid-request') continue;
-        for (const event of chunk) {
-          if (Date.now() >= deadline) break;
+        if (forwarded.reason !== 'invalid-request' && forwarded.reason !== 'route-absent') {
+          continue;
+        }
+        for (const [j, event] of chunk.entries()) {
+          const at = Date.now();
+          if (at >= deadline) {
+            // Counted from HERE, not from the next chunk boundary. The outer
+            // loop's tally starts at `i + AUDIT_EVENT_BATCH_MAX` and would miss
+            // everything this chunk still had — up to 49 events, on exactly the
+            // machine the tally exists for. `return` rather than `break`, so the
+            // outer deadline check cannot count that remainder a second time.
+            recordForwardDrops(this.deps.dataDir, inputs.length - i - j, at);
+            return;
+          }
           const single = await this.deps.forward.run(() =>
             this.deps.client.recordAuditEvent(reKeyForForward(event, this.remoteInventory)),
           );

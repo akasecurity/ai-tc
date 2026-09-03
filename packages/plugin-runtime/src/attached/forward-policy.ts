@@ -28,6 +28,21 @@ function isInvalidRequest(err: unknown): boolean {
 }
 
 /**
+ * A 404 on a route this build knows — the deployment predates it.
+ *
+ * Matched on `name` rather than `instanceof`, exactly as above: this module
+ * classifies whatever the injected client throws, and a fake in a test is not
+ * required to be an instance of anything.
+ */
+function isRouteAbsent(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { name?: unknown }).name === 'RemoteRouteAbsent'
+  );
+}
+
+/**
  * The general forward budget. Looser than the decision-path bound below
  * because these forwards sit behind a local write that has already succeeded —
  * the caller's result is in hand, and this is the organization's copy catching up.
@@ -239,7 +254,8 @@ export interface ForwardPolicyDeps {
  * it would let one local shape bug open the breaker and suppress every
  * unrelated forward while status reported an outage that never happened.
  */
-export type ForwardFailureReason = ControlPlaneFailure | 'breaker-open' | 'invalid-request';
+export type ForwardFailureReason =
+  ControlPlaneFailure | 'breaker-open' | 'invalid-request' | 'route-absent';
 
 /**
  * What one forward did. A DISCRIMINATED UNION rather than `T | null`, because
@@ -416,6 +432,13 @@ export function createForwardPolicy(deps: ForwardPolicyDeps): ForwardPolicy {
         // there. Recording it would move the breaker on evidence the control
         // plane never supplied; see ForwardFailureReason.
         if (isInvalidRequest(err)) return { ok: false, reason: 'invalid-request' };
+        // Beside `invalid-request`, and returned before the breaker write for
+        // the same reason: a 404 on a route is this deployment saying which
+        // version it speaks, not a refusal and not an outage. Counting it would
+        // open the breaker against a deployment answering every request it
+        // understands, and then suppress every unrelated forward for the
+        // cooldown. The caller's remedy is the older route, not to stop trying.
+        if (isRouteAbsent(err)) return { ok: false, reason: 'route-absent' };
 
         const reason = classifyFailure(err);
         const failures = current.consecutiveFailures + 1;

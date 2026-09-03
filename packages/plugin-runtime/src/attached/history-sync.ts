@@ -272,9 +272,13 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
         // sender already fails safe (no ack ⇒ settled 0 ⇒ 'unreachable'); this
         // makes the pair symmetric on purpose rather than by accident.
         if (client === undefined) throw new Error('history sync: no transport');
-        // The client falls back to one request per event against a deployment
-        // that predates the batch route, so this call is correct against both.
-        await client.recordAuditEvents(events);
+        // The fallback to one request per event is OPT-IN, and this is the
+        // caller it is correct for: `HISTORY_REQUEST_TIMEOUT_MS` is charged PER
+        // REQUEST, so 50 sequential sends get 50 budgets and an older
+        // deployment simply drains slower. The live forward is the caller it is
+        // wrong for — it bounds the whole call — which is why the client raises
+        // by default and each caller says which it is.
+        await client.recordAuditEvents(events, { fallbackToSingleEvents: true });
       });
 
     const sendCaptures =

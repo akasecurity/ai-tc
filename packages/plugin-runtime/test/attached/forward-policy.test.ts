@@ -45,6 +45,18 @@ function refusal(status: number): Error & { status: number } {
   });
 }
 
+/**
+ * An error shaped the way the transport raises one for a route a deployment
+ * does not have. Matched by NAME, exactly as the policy matches it — this
+ * module classifies whatever the injected client throws, and a fake is not
+ * required to be an instance of anything.
+ */
+function routeAbsent(): Error {
+  return Object.assign(new Error('control plane does not serve /v1/audit-events/batch'), {
+    name: 'RemoteRouteAbsent',
+  });
+}
+
 /** Drive the breaker to open by failing it THRESHOLD times. */
 async function tripOpen(
   policy: { run: (op: () => Promise<unknown>) => Promise<unknown> },
@@ -292,6 +304,31 @@ describe('createForwardPolicy', () => {
         failed(reason as ForwardFailureReason),
       );
       expect(readForwardHealth(dir, 7)?.lastFailure).toBe(reason);
+    });
+
+    it('a route the deployment does not serve becomes route-absent', async () => {
+      const policy = createForwardPolicy({ dir, now: () => 7 });
+      await expect(policy.run(() => Promise.reject(routeAbsent()))).resolves.toEqual(
+        failed('route-absent'),
+      );
+    });
+
+    it('a route the deployment does not serve never moves the breaker', async () => {
+      // The property the reason exists for. An older deployment answers 404 on
+      // EVERY chunk, so if this counted as a failure the third chunk would open
+      // the breaker and suppress every unrelated forward for the cooldown —
+      // against a deployment that is answering everything it understands. Past
+      // the threshold deliberately: at the threshold alone this would pass on an
+      // off-by-one that still opens on the next chunk.
+      const policy = createForwardPolicy({ dir });
+      for (let i = 0; i < BREAKER_FAILURE_THRESHOLD + 2; i++) {
+        await expect(policy.run(() => Promise.reject(routeAbsent()))).resolves.toEqual(
+          failed('route-absent'),
+        );
+      }
+      const op = vi.fn(() => Promise.resolve('ran'));
+      await expect(policy.run(op)).resolves.toEqual(ok('ran'));
+      expect(op).toHaveBeenCalledTimes(1);
     });
 
     it('reads the STATUS, not the message — a 403 in the text is not a 403', async () => {

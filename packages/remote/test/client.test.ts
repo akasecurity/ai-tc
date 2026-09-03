@@ -623,7 +623,11 @@ describe('recordAuditEvents', () => {
   // it is an older deployment saying it speaks only the single-event form — and
   // the device has to keep working against it, or a device and a deployment
   // could never be upgraded weeks apart.
-  it('falls back to one request per event against a deployment without the route', async () => {
+  //
+  // OPT-IN, because the remedy is 50 sequential round trips and only a caller
+  // whose budget is charged per request can afford them. This is that caller's
+  // shape; the default is pinned by the test below.
+  it('falls back to one request per event when the caller asks for it', async () => {
     const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
     server.reply((req, res) => {
       if (req.url === '/v1/audit-events/batch') {
@@ -637,13 +641,46 @@ describe('recordAuditEvents', () => {
 
     const before = server.received.length;
 
-    const ack = await client.recordAuditEvents([event('a'), event('b')]);
+    const ack = await client.recordAuditEvents([event('a'), event('b')], {
+      fallbackToSingleEvents: true,
+    });
 
     expect(ack).toEqual({ accepted: 2 });
     expect(server.received.slice(before).map((r) => r.url ?? '')).toEqual([
       '/v1/audit-events/batch',
       '/v1/audit-events',
       '/v1/audit-events',
+    ]);
+  });
+
+  // The DEFAULT, and the reason it is the default. A caller that bounds the
+  // whole call — the live forward bounds it at FORWARD_BUDGET_MS — cannot
+  // survive the fallback: 50 sequential round trips inside one budget time out,
+  // three chunks of that open the breaker, and a deployment answering every
+  // request it understands gets reported as down while every row is dropped.
+  // So an unasked-for fallback is not a kindness, and this raises instead.
+  it('raises rather than silently falling back when the route is absent', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((req, res) => {
+      if (req.url === '/v1/audit-events/batch') {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ ok: true }));
+    });
+
+    const before = server.received.length;
+
+    await expect(client.recordAuditEvents([event('a'), event('b')])).rejects.toMatchObject({
+      name: 'RemoteRouteAbsent',
+    });
+
+    // The batch attempt and NOTHING else: not one single-event request was made
+    // on the caller's budget without it asking.
+    expect(server.received.slice(before).map((r) => r.url ?? '')).toEqual([
+      '/v1/audit-events/batch',
     ]);
   });
 

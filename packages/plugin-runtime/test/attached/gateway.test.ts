@@ -852,6 +852,111 @@ describe('the live forward stamps what it delivered', () => {
     expect(calls.delivered).not.toContain(bad);
   });
 
+  it('re-sends singly against a deployment that PREDATES the batch route', async () => {
+    // The compatibility path, and the reason it lives in this loop rather than
+    // inside the client. The client's own fallback would spend 50 sequential
+    // round trips inside the ONE FORWARD_BUDGET_MS wrapping this call, so an
+    // older deployment answering every single-event request would time out,
+    // trip the breaker after three chunks, and deliver NOTHING — strictly worse
+    // than the per-item code this PR replaced. Through this loop each single
+    // gets its own budget, which is what that code already had.
+    const forward: ForwardPolicy = {
+      run: async (op: () => Promise<unknown>) => {
+        try {
+          return { ok: true, value: await op() } as ForwardResult<unknown>;
+        } catch (err) {
+          // Classified by NAME and before any breaker write, exactly as the
+          // real policy classifies it.
+          const reason =
+            (err as { name?: string }).name === 'RemoteRouteAbsent'
+              ? 'route-absent'
+              : 'unreachable';
+          return { ok: false, reason } as ForwardResult<unknown>;
+        }
+      },
+    } as unknown as ForwardPolicy;
+
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const singles: string[] = [];
+    const client = {
+      ...makeClient(calls),
+      // The older deployment: it does not have the route at all.
+      recordAuditEvents: vi.fn(() =>
+        Promise.reject(Object.assign(new Error('absent'), { name: 'RemoteRouteAbsent' })),
+      ),
+      recordAuditEvent: vi.fn((e: { id: string }) => {
+        singles.push(e.id);
+        return Promise.resolve();
+      }),
+    } as unknown as AttachedClient;
+
+    const { gateway } = build({ forward, client, local: makeLocal(calls) });
+    await gateway.recordToolCalls(
+      Array.from({ length: 10 }, (_, i) => toolCallInput(`call-${String(i)}`)),
+    );
+
+    // Every row landed, over the route the deployment does serve, and every one
+    // of them is stamped — not left reading as owed.
+    expect(singles).toHaveLength(10);
+    expect(calls.delivered).toHaveLength(10);
+  });
+
+  it('counts the events a chunk never reached when the deadline lands mid-retry', async () => {
+    // The tally is keyed to the OUTER loop's index. A `break` out of the retry
+    // returns to that loop, advances past this whole chunk, and counts the
+    // remainder from the NEXT boundary — so everything this chunk still had goes
+    // uncounted, on exactly the machine the tally exists for. The invariant is
+    // arithmetic and the docblock puts it in capitals: what is dropped is
+    // counted, so delivered + dropped is the batch.
+    let clock = 1_000;
+    const forward: ForwardPolicy = {
+      run: async (op: () => Promise<unknown>) => {
+        try {
+          const value = await op();
+          // Only a SINGLE costs budget: the batch attempt rejects before this.
+          clock += 600;
+          return { ok: true, value } as ForwardResult<unknown>;
+        } catch (err) {
+          const reason =
+            (err as { name?: string }).name === 'RemoteRouteAbsent'
+              ? 'route-absent'
+              : 'unreachable';
+          return { ok: false, reason } as ForwardResult<unknown>;
+        }
+      },
+    } as unknown as ForwardPolicy;
+
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const client = {
+      ...makeClient(calls),
+      recordAuditEvents: vi.fn(() =>
+        Promise.reject(Object.assign(new Error('absent'), { name: 'RemoteRouteAbsent' })),
+      ),
+      recordAuditEvent: vi.fn(() => Promise.resolve()),
+    } as unknown as AttachedClient;
+
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    let dir: string;
+    try {
+      const built = build({ forward, client, local: makeLocal(calls) });
+      dir = built.dataDir;
+      // 100 events is two chunks. The first 404s, then five singles at 600ms
+      // each exhaust the 3s budget 45 events into a chunk of 50.
+      await built.gateway.recordToolCalls(
+        Array.from({ length: 100 }, (_, i) => toolCallInput(`call-${String(i)}`)),
+      );
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    expect(calls.delivered).toHaveLength(5);
+    const drops = readForwardDrops(dir);
+    // 95, not 50: counted from where the retry stopped, not from the next chunk
+    // boundary. Counting from the boundary loses the 45 this chunk had left.
+    expect(drops?.droppedForwards).toBe(95);
+    expect(calls.delivered.length + (drops?.droppedForwards ?? 0)).toBe(100);
+  });
+
   /**
    * The gap `HistorySyncPartition`'s docblock named: a structural row the live
    * path forwarded SUCCESSFULLY was never stamped by anything, so it stayed NULL

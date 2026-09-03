@@ -245,7 +245,7 @@ describe('renderAttachedStatus — the forward half', () => {
     writeBreaker(0, null);
     const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
     expect(out).toContain('reporting normally');
-    expect(out).not.toContain('dropped past the batch budget');
+    expect(out).not.toContain('events dropped');
   });
 
   it('reports health only when a success actually cleared the failures', () => {

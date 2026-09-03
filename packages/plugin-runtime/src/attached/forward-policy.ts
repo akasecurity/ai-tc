@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { ATTACHED_FORWARD_STATE_FILENAME } from '@akasecurity/persistence';
 import { DATA_FILE_MODE, ensureDataDir } from '@akasecurity/plugin-sdk';
 
-import { classifyFailure, type ControlPlaneFailure } from './failure.ts';
+import { classifyFailure, type ControlPlaneFailure, statusOf } from './failure.ts';
 import { withTimeout } from './with-timeout.ts';
 
 /**
@@ -39,6 +39,46 @@ function isRouteAbsent(err: unknown): boolean {
     typeof err === 'object' &&
     err !== null &&
     (err as { name?: unknown }).name === 'RemoteRouteAbsent'
+  );
+}
+
+/**
+ * A 4xx from the DEPLOYMENT that says "you answered, and refused this BODY" —
+ * never "you are down" (a 5xx, a timeout, a 429) or "this credential is no
+ * good" (401/403).
+ *
+ * A 400/413/422 is what a schema mismatch between a device build and a
+ * deployment build produces from the SERVER side, the same way a stale build
+ * produces `invalid-request` on the client's own side — reachable for the same
+ * reason `route-absent` is. 404 is excluded because that status already has
+ * its own, more specific meaning on this route.
+ *
+ * 429 is excluded DELIBERATELY, and for a narrower reason than it looks: a
+ * `rejected` verdict DOES count toward the breaker now (see `recordFailure`),
+ * so the risk is not that a sustained 429 goes uncounted — it is
+ * `forwardBatch`'s per-item pass, which every `rejected` chunk still enters.
+ * Isolating one row makes sense against a genuine body-shape defect; against a
+ * rate limit it is the opposite of the remedy, firing up to 50 more requests
+ * at the SAME already-throttled endpoint with no pacing between them before
+ * the third chunk finally opens the breaker. That is precisely the burst
+ * `forwardBatch`'s own docblock says stays serial to avoid: "the plane's
+ * per-key rate limiting answers with the refusals the breaker THEN COUNTS." A
+ * 429 is retriable, not malformed — it belongs with `unreachable`, which
+ * counts it without ever retrying a whole chunk item by item.
+ *
+ * Read the same way `statusOf` reads every other status: structurally, off
+ * whatever the transport raised, never by class identity.
+ */
+function isServerRejection(err: unknown): boolean {
+  const status = statusOf(err);
+  return (
+    status !== null &&
+    status >= 400 &&
+    status <= 499 &&
+    status !== 401 &&
+    status !== 403 &&
+    status !== 404 &&
+    status !== 429
   );
 }
 
@@ -240,10 +280,11 @@ export interface ForwardPolicyDeps {
 /**
  * Why a forward produced no value.
  *
- * THREE of these are not verdicts of the control plane, and all three are kept
- * apart from the rest deliberately — none may be counted toward the breaker or
- * written down as its last verdict. That is the same distinction `runPolicySync`
- * draws by returning `null` for a sync it never performed.
+ * THREE of these are not verdicts of the control plane, and are kept apart
+ * from the rest deliberately — none may be counted toward the breaker's
+ * FAILURE count or written down as its `lastFailure`. That is the same
+ * distinction `runPolicySync` draws by returning `null` for a sync it never
+ * performed.
  *
  * Two of them are cases where NO ATTEMPT WAS MADE:
  *
@@ -255,22 +296,40 @@ export interface ForwardPolicyDeps {
  *                     unrelated forward while status reported an outage that
  *                     never happened.
  *
- * The third is NOT one of those, and the difference decides what the breaker
- * does with it:
+ * `route-absent` is NOT that — the request was made and ANSWERED, a 404
+ * because this deployment predates the batch route. That is not a statement
+ * about this device's credential or the plane's health, so it is not a
+ * verdict either — but unlike the two above it IS positive evidence of
+ * REACHABILITY, which is the only thing the breaker measures. A half-open
+ * probe that lands on it therefore restores `openedAtMs` to null (see
+ * `run()`'s catch) rather than merely declining to advance it — the probe
+ * re-stamps `openedAtMs` BEFORE the op runs, and leaving it re-stamped would
+ * suppress the single-event retry `forwardBatch` uses this reason to trigger,
+ * answering it with a freshly-cooled `breaker-open`. The restore touches
+ * ONLY `openedAtMs`, never `consecutiveFailures` or `lastFailure` — this
+ * breaker is shared by every route a gateway forwards through, so an answer
+ * on ONE route is not permission to erase a failure count or a cause a
+ * DIFFERENT route just earned.
  *
- *   `route-absent`    the request was made and ANSWERED — with a 404, because
- *                     this deployment predates the route. That is a statement
- *                     about which version it speaks, not about this device, so
- *                     it is still not a verdict. But unlike the two above it is
- *                     positive evidence of REACHABILITY, which is the only thing
- *                     the breaker measures — so it CLOSES the breaker rather
- *                     than merely declining to open it. That matters in the
- *                     half-open state, where the probe is the batch call and
- *                     404s by definition: leaving it open would suppress the
- *                     single-event retry that is the whole remedy.
+ * `rejected` is answered too — a 4xx other than 401/403/404, the deployment
+ * refusing the BODY, the server-side twin of `invalid-request` — but it DOES
+ * count toward the breaker, unlike every reason above. The difference from
+ * `route-absent` is what a 404 versus a 4xx body refusal is EVIDENCE OF: a
+ * 404 states which version the deployment runs, true of the whole deployment
+ * regardless of which row asked. A body refusal is schema drift, and schema
+ * drift is a property of the BUILD, not of one row — a deployment that
+ * refuses one event's shape refuses all fifty sharing that shape. Exempting
+ * it the way `route-absent` is exempt would isolate a single "bad" event
+ * forever at no cost to the breaker: every chunk 4xx's, every single retry
+ * 4xx's identically, and nothing ever opens the circuit — the exact storm the
+ * 429 exclusion above exists to prevent, for every other status this range
+ * still admits. So it is recorded through the SAME path an ordinary failure
+ * takes, just with its own `reason` returned to the caller: three rejected
+ * chunks open the breaker exactly as three timeouts would, while
+ * `forwardBatch` still isolates the row that genuinely is alone.
  */
 export type ForwardFailureReason =
-  ControlPlaneFailure | 'breaker-open' | 'invalid-request' | 'route-absent';
+  ControlPlaneFailure | 'breaker-open' | 'invalid-request' | 'route-absent' | 'rejected';
 
 /**
  * What one forward did. A DISCRIMINATED UNION rather than `T | null`, because
@@ -383,6 +442,40 @@ export function createForwardPolicy(deps: ForwardPolicyDeps): ForwardPolicy {
         current = { ...CLOSED };
       }
 
+      // Shared by the two catch arms that answer a half-open probe without
+      // treating it as a verdict: `invalid-request` restores the EXACT
+      // pre-probe `openedAtMs` (nothing reached the network, so nothing may
+      // move); `route-absent` restores it to `null` (the deployment ANSWERED,
+      // which is reachability evidence). Both preserve `consecutiveFailures`
+      // and `lastFailure` unconditionally: this breaker is shared by every
+      // route a gateway forwards through, so neither call may erase a count
+      // or a cause a DIFFERENT route earned. `rejected` does NOT use this —
+      // see its own arm below for why it needs the opposite treatment.
+      const restoreOpenedAtMs = (openedAtMs: number | null): Promise<void> =>
+        persist({
+          consecutiveFailures: current.consecutiveFailures,
+          openedAtMs,
+          lastFailure: current.lastFailure,
+        });
+
+      // Shared by `rejected` and the generic failure path below: both are
+      // real evidence the breaker must count, differing only in what they
+      // record as `lastFailure`. Recording `'unreachable'` for `rejected`
+      // rather than widening `ControlPlaneFailure` is deliberate — that type
+      // is deliberately coarse for the reason its own docblock gives, and a
+      // 4xx body refusal has no more of a human remediation than a timeout
+      // does; it belongs in the same "no verdict we are willing to name"
+      // bucket.
+      const recordFailure = (cause: ControlPlaneFailure): Promise<void> => {
+        const failures = current.consecutiveFailures + 1;
+        const shouldOpen = current.openedAtMs !== null || failures >= BREAKER_FAILURE_THRESHOLD;
+        return persist({
+          consecutiveFailures: failures,
+          openedAtMs: shouldOpen ? now() : null,
+          lastFailure: cause,
+        });
+      };
+
       const at = now();
       if (current.openedAtMs !== null) {
         if (at - current.openedAtMs < BREAKER_COOLDOWN_MS) {
@@ -447,14 +540,13 @@ export function createForwardPolicy(deps: ForwardPolicyDeps): ForwardPolicy {
         // there. Recording it would move the breaker on evidence the control
         // plane never supplied; see ForwardFailureReason.
         if (isInvalidRequest(err)) {
-          // Undo the half-open re-stamp above, rather than leaving it or
-          // clearing it. Nothing reached the network on this path — the body
-          // was refused before a socket opened — so unlike the SUCCESS arm this
-          // is no evidence of reachability, and unlike `route-absent` it is no
+          // Nothing reached the network on this path — the body was refused
+          // before a socket opened — so unlike the two arms below this is no
+          // evidence of reachability, and unlike a real failure it is no
           // evidence of anything about the deployment at all. The only correct
-          // outcome is for this call to have changed NOTHING: `current` still
-          // holds whatever `load()` returned before `run()` touched the file,
-          // so writing it back exactly undoes the re-stamp.
+          // outcome is for this call to have changed NOTHING, which is why the
+          // restore target is `current.openedAtMs` — exactly what `load()`
+          // returned before `run()` touched the file — rather than `null`.
           //
           // Left un-restored, the re-stamp is a real bug and not merely
           // untidy: `openedAtMs` moves forward to THIS probe's own timestamp,
@@ -462,49 +554,55 @@ export function createForwardPolicy(deps: ForwardPolicyDeps): ForwardPolicy {
           // is measured from a moment nothing was learned at — a caller
           // retrying a single malformed event during the half-open window pays
           // a second full cooldown for a chance the first one already earned.
-          if (current.openedAtMs !== null) {
-            await persist({
-              consecutiveFailures: current.consecutiveFailures,
-              openedAtMs: current.openedAtMs,
-              lastFailure: current.lastFailure,
-            });
-          }
+          if (current.openedAtMs !== null) await restoreOpenedAtMs(current.openedAtMs);
           return { ok: false, reason: 'invalid-request' };
         }
-        // Beside `invalid-request`, and returned before the breaker write for
-        // the same reason: a 404 on a route is this deployment saying which
-        // version it speaks, not a refusal and not an outage. Counting it would
-        // open the breaker against a deployment answering every request it
-        // understands, and then suppress every unrelated forward for the
-        // cooldown. The caller's remedy is the older route, not to stop trying.
+        // `route-absent` is the deployment ANSWERING — a 404, because this
+        // deployment predates the batch route — never a refusal of this
+        // credential and never an outage. Counting it toward the breaker
+        // would open it against a deployment responding to every request it
+        // understands, and suppress every unrelated forward for the cooldown.
+        // The caller's remedy is the older route, not to stop trying.
         if (isRouteAbsent(err)) {
-          // Mirrors the SUCCESS arm above, not the failure arm below, and the
-          // half-open state is why. A probe re-stamps `openedAtMs` before the op
-          // runs, and against a deployment that predates the batch route the
-          // probe IS the batch call — 404 by definition. Returning without
-          // clearing would leave the breaker open on a fresh cooldown and answer
-          // the single-event retry, the remedy this reason exists to trigger,
-          // with `breaker-open`: nothing delivered, and nothing counted either,
-          // since the drop tally sits past the reason check in `forwardBatch`.
+          // Restores ONLY `openedAtMs`, to `null` rather than back to
+          // `current.openedAtMs` as `invalid-request` above does — the
+          // difference is that THIS call reached the deployment and got an
+          // answer, which is reachability evidence the invalid-request arm
+          // never has. `consecutiveFailures`/`lastFailure` ride through
+          // untouched regardless: this breaker is shared by every route a
+          // gateway forwards through, so an answer on ONE of them is not
+          // permission to erase a count or a cause a DIFFERENT route earned.
           //
-          // Clearing is not a courtesy to that caller, it is what the evidence
-          // says. A 404 is an ANSWER: the deployment is reachable and talking,
-          // and reachability is the only thing this breaker measures. If the
-          // plane is in fact still sick, the retries that follow re-open it.
-          if (current.openedAtMs !== null || current.consecutiveFailures > 0) {
-            await persist({ ...CLOSED });
-          }
+          // The re-stamp still has to be undone, and for the same reason as
+          // above: a probe re-stamps `openedAtMs` before the op runs, and
+          // leaving it re-stamped would answer the per-item retry this reason
+          // exists to trigger with a freshly-cooled `breaker-open` — nothing
+          // delivered and nothing counted.
+          if (current.openedAtMs !== null) await restoreOpenedAtMs(null);
           return { ok: false, reason: 'route-absent' };
+        }
+        // `rejected` is ALSO the deployment answering — a 4xx body refusal —
+        // but unlike `route-absent` it DOES count toward the breaker, exactly
+        // like a genuine outage. The reason is what makes `route-absent` safe
+        // to exempt: a 404 is a fact about which VERSION the deployment runs,
+        // true of the whole deployment regardless of which row triggered it.
+        // A 4xx body refusal is not that — "schema drift on the other side of
+        // the wire" is a property of the BUILD, not of one row, so a
+        // deployment that refuses one event's shape refuses all fifty. Left
+        // exempt the way `route-absent` is, a sustained 422 would isolate a
+        // single event costlessly forever — 51 requests a pass, breaker
+        // permanently closed, nothing ever delivered, exactly the storm the
+        // 429 exclusion above exists to prevent, for every status this range
+        // still admits. Counting it is what bounds that: three rejected
+        // chunks open the breaker exactly as three timeouts would, and the
+        // isolation stays available for the row that genuinely is alone.
+        if (isServerRejection(err)) {
+          await recordFailure('unreachable');
+          return { ok: false, reason: 'rejected' };
         }
 
         const reason = classifyFailure(err);
-        const failures = current.consecutiveFailures + 1;
-        const shouldOpen = current.openedAtMs !== null || failures >= BREAKER_FAILURE_THRESHOLD;
-        await persist({
-          consecutiveFailures: failures,
-          openedAtMs: shouldOpen ? now() : null,
-          lastFailure: reason,
-        });
+        await recordFailure(reason);
         // Dropped, never spooled (G8). The local write already succeeded, so
         // the caller has a correct result to return.
         return { ok: false, reason };

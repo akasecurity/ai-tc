@@ -89,6 +89,20 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
     value: T,
     schema: { safeParse: (v: unknown) => { success: boolean } },
   ): T | undefined => (value !== undefined && schema.safeParse(value).success ? value : undefined);
+  // TWO readings of one column, because the id and the metadata want different
+  // things from it — and conflating them silently defeats the dedup this whole
+  // lane depends on.
+  //
+  // The ID must reproduce what `captureId` folded in when the row was written,
+  // and that is the RAW value: `filePath ?? NO_PATH` leaves an empty string
+  // alone, since `??` triggers on null/undefined and not on ''. Passing the
+  // display-filtered reading instead turns '' into the `no_path` sentinel, so a
+  // redelivered capture arrives under an id the deployment has never seen and
+  // the id-dedup does not fire — a duplicate on every retry, silently.
+  //
+  // The METADATA wants the opposite: an empty path is not a location, so it is
+  // dropped rather than sent as ''.
+  const rawFilePath = typeof attributes.file_path === 'string' ? attributes.file_path : null;
   const filePath = stringOrUndefined(attributes.file_path);
   const metadata: EventMetadata = {
     ...(rootSessionId === null ? {} : { sessionId: rootSessionId }),
@@ -143,7 +157,7 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
   // declared return type honest — what leaves this function has been through the
   // schema, not merely shaped like it.
   const parsed = IngestEvent.safeParse({
-    id: captureWireId(rootSessionId, contentHash, filePath ?? null),
+    id: captureWireId(rootSessionId, contentHash, rawFilePath),
     sourceTool: sourceTool.data,
     kind: kind.data,
     occurredAt,

@@ -179,9 +179,11 @@ function grant(
   io.out(
     `Sending this machine's unsent activity to ${controlPlaneName(settings.controlPlane)}.\n` +
       'That is the activity recorded before it attached, and anything a live send could not\n' +
-      'deliver — which for a captured prompt, reply or tool result includes its text, with\n' +
-      'detected secrets masked. It goes in the background, a little at a time, starting with\n' +
-      'your next session. Anything already sent cannot be recalled.\n',
+      'deliver — which for a captured prompt, reply or tool result includes its text. A value\n' +
+      'in that text is masked only where the policy assigned to the detection that flagged it\n' +
+      'is redact or block; under monitor or warn it goes as it was seen, and every detection\n' +
+      'ships on monitor. It goes in the background, a little at a time, starting with your\n' +
+      'next session. Anything already sent cannot be recalled.\n',
   );
   return true;
 }
@@ -227,7 +229,8 @@ function describe(settings: WorkspaceSettings): string {
   return isHistorySyncConsentStale(settings.historySyncConsent, settings.controlPlane.endpoint)
     ? `Not sending this machine's unsent activity to ${where}: your grant predates a change.\n` +
         'It now also covers the text of captured prompts, replies and tool results that no\n' +
-        'live send delivered, with detected secrets masked.\n' +
+        'live send delivered, in which a value is masked only where the detection that\n' +
+        'flagged it is set to redact or block — and every detection ships on monitor.\n' +
         'Run `aka sync-history --on` to grant it again.'
     : `Not sending this machine's unsent activity to ${where}: the earlier grant no longer\n` +
         'applies. Run `aka sync-history --on` to grant it again.';

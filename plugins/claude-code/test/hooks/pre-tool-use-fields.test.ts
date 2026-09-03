@@ -91,6 +91,16 @@ describe('scannableInputFields — NotebookEdit and Task', () => {
       { path: ['prompt'], executable: false },
     ]);
   });
+
+  it('scans it under the CURRENT spelling of that tool as well', () => {
+    // The harness renamed this tool to `Agent`. A table naming only `Task`
+    // returns no fields on a current build, and no fields means the hook
+    // returns before any decision — so the subagent prompt went unscanned with
+    // every assertion above still green.
+    expect(scannableInputFields('Agent', { prompt: 'go find things', subagent_type: 'x' })).toEqual(
+      [{ path: ['prompt'], executable: false }],
+    );
+  });
 });
 
 describe('scannableInputFields — MCP tools', () => {

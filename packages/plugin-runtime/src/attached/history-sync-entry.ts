@@ -32,8 +32,24 @@ export type HistorySyncPassReport = HistorySyncOutcome | HistorySyncSkipReason;
  * is distinct from every recorded outcome, each of which describes something a
  * deployment did, and writing one would re-create a file a detach just removed.
  */
+/**
+ * The pass's injectable seams, for tests only.
+ *
+ * Everything here has a real default and production passes none of it. It exists
+ * because the state this entry writes is only observable ACROSS passes, and a
+ * second pass that has work climbs the retry ladder with real timers — several
+ * seconds of sleeps against a 20s testTimeout, on top of the store opens, which
+ * on the Windows leg is tighter than it looks. Handing the pass its clock and a
+ * sender makes that deterministic instead of merely usually-fast.
+ */
+export type HistorySyncPassSeams = Pick<
+  Parameters<typeof runHistorySync>[0],
+  'now' | 'sleep' | 'random' | 'sendBatch' | 'sendCaptures'
+>;
+
 export async function runHistorySyncPass(
   base: string = defaultDataDir(),
+  seams: HistorySyncPassSeams = {},
 ): Promise<HistorySyncPassReport> {
   try {
     const dir = dataDir(base);
@@ -41,6 +57,7 @@ export async function runHistorySyncPass(
       base,
       settingsDir: settingsDir(base),
       dataDir: dir,
+      ...seams,
     });
     // Unchanged in EFFECT: a pass that made no attempt still writes nothing.
     // Recording an outcome for it would have status report a deployment this
@@ -60,7 +77,18 @@ export async function runHistorySyncPass(
       lastPassAtMs: result.atMs,
       sentTotal: result.counts.sent,
       pendingTotal: result.counts.pending,
-      skippedTotal: result.counts.skipped,
+      // BOTH lanes, and BOTH lifetime. `counts.skipped` filters to structural
+      // rows, so a capture rebuildCapture refused — stamped -1 and dropped for
+      // ever — was counted on no surface at all. Silence is the right shape for a
+      // TRANSIENT failure everywhere else in this repo; this one is terminal, so
+      // it owes a number.
+      //
+      // Both terms are ledger totals rather than this pass's tally, which is the
+      // part that matters: a per-pass delta added to a lifetime total gives a
+      // field whose capture half is one pass wide, so the surface beside
+      // `sentTotal` and `pendingTotal` would announce a permanent loss once and
+      // drop it on the next pass, while the rows stayed gone.
+      skippedTotal: result.counts.skipped + result.counts.capturesSkipped,
       // The first pass that ran is when this machine started sending, and it
       // keeps that answer across every later pass.
       startedAtMs: previous?.startedAtMs ?? result.atMs,
@@ -71,7 +99,14 @@ export async function runHistorySyncPass(
       // 'filling' after reading 'complete'. This keeps its original meaning
       // either way — the first moment this machine owed the deployment nothing —
       // which is why it is pinned rather than recomputed.
-      completedAtMs: done ? (previous?.completedAtMs ?? result.atMs) : null,
+      // WRITTEN ONCE, on the false→true transition, and never cleared. Under v1
+      // this was monotone because the structural lane only ever drained; the
+      // capture lane is what makes `done` flap, and clearing on every flap would
+      // erase the pin and re-stamp it on the next catch-up — so a consumer
+      // reading "when this machine first caught up" would get the most recent
+      // one instead. Carrying the previous value through the false case is what
+      // keeps the original meaning.
+      completedAtMs: previous?.completedAtMs ?? (done ? result.atMs : null),
     });
     return result.outcome;
   } catch {

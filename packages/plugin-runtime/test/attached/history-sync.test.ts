@@ -97,6 +97,11 @@ const seedCaptures = (
         // double-encodes, and every row then rebuilds with no source_tool.
         attributes: { source_tool: row.sourceTool ?? 'claude-code' },
       });
+      // What makes a capture OWED, and the drain's whole eligibility test. The
+      // attached gateway writes this when a live forward does not confirm
+      // delivery; a row without it is one no forward ever attempted — a machine
+      // that was detached, or never attached — and the drain must not offer it.
+      db.historySync.markCaptureOwed(row.id);
     }
   } finally {
     db.close();
@@ -715,7 +720,7 @@ describe('runHistorySync — the capture lane', () => {
     await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
 
     expect(l.captures.map((c) => c.content)).toEqual(['text of cap-1']);
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
   });
 
   // THE ROUTING RULE. A capture on the structural lane reaches a route that
@@ -744,7 +749,7 @@ describe('runHistorySync — the capture lane', () => {
       sendCaptures: () => Promise.resolve({ settled: 0 }),
     });
 
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL)).map((r) => r.id)).toEqual([
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL)).map((r) => r.id)).toEqual([
       'cap-1',
     ]);
   });
@@ -758,7 +763,7 @@ describe('runHistorySync — the capture lane', () => {
       sendCaptures: () => Promise.reject(new Error('unreachable')),
     });
 
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL)).map((r) => r.id)).toEqual([
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL)).map((r) => r.id)).toEqual([
       'cap-1',
     ]);
   });
@@ -775,7 +780,7 @@ describe('runHistorySync — the capture lane', () => {
     await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
 
     expect(l.captures.map((c) => c.content)).toEqual(['text of cap-good']);
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
   });
 
   // The grace window leaves a just-recorded capture to the live path, so the
@@ -788,7 +793,7 @@ describe('runHistorySync — the capture lane', () => {
     await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
 
     expect(l.captures).toEqual([]);
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL)).map((r) => r.id)).toEqual([
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL)).map((r) => r.id)).toEqual([
       'cap-fresh',
     ]);
   });
@@ -823,7 +828,7 @@ describe('runHistorySync — the capture lane', () => {
     expect(attempted(result).skipped).toBe(1);
     // Neither row is offered again: one settled, one permanently skipped. That
     // is what stops the next pass re-reading this same rejected page.
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
   });
 
   // A dead credential is terminal for the pass, not one bad row: every later
@@ -838,7 +843,7 @@ describe('runHistorySync — the capture lane', () => {
     });
 
     expect(attempted(result).skipped).toBe(0);
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toHaveLength(2);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toHaveLength(2);
   });
 
   // An attribute the wire constrains more tightly than the column does — a
@@ -860,6 +865,7 @@ describe('runHistorySync — the capture lane', () => {
         contentHash: 'c'.repeat(64),
         attributes: { source_tool: 'claude-code', correlation_id: 'legacy-7' },
       });
+      db.historySync.markCaptureOwed('cap-legacy');
     } finally {
       db.close();
     }
@@ -879,7 +885,7 @@ describe('runHistorySync — the capture lane', () => {
     // prompt permanently out of reach with nothing reporting it.
     expect(sent.map((e) => e.content).sort()).toEqual(['legacy text', 'text of cap-1']);
     expect(sent.find((e) => e.content === 'legacy text')?.metadata?.correlationId).toBeUndefined();
-    expect(ledger((db2) => db2.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
+    expect(ledger((db2) => db2.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
   });
 
   // STARVATION. The capture lane used to run only after the structural loop had
@@ -958,21 +964,45 @@ describe('runHistorySync — the capture lane', () => {
   // accepted/duplicates only to be non-negative, so a deployment this plugin
   // does not ship may answer 40 for a batch of 100 — and stamping all 100 would
   // lose 60 rows for ever with the ledger reading "delivered".
-  it('does not stamp a batch the deployment only partly took', async () => {
+  // A deployment that under-accepts is not an outage, and must not be treated as
+  // one: the read has no cursor, so abandoning the batch means re-reading the
+  // same rows next pass, under-accepting again, and wedging the lane for ever
+  // while status blames a deployment that is reachable and answering. The ack
+  // names no row, so the batch is split until the answer is unambiguous.
+  it('isolates a partly-taken batch instead of wedging the lane', async () => {
     attach({ grantFor: ENDPOINT });
     seedCaptures([{ id: 'cap-1' }, { id: 'cap-2' }]);
 
+    const delivered: string[] = [];
     await run({
       sendBatch: () => Promise.resolve(),
-      // Two offered, one taken.
-      sendCaptures: () => Promise.resolve({ settled: 1 }),
+      // Caps at one per request, whatever it is offered.
+      sendCaptures: (events: readonly IngestEvent[]) => {
+        if (events.length > 1) return Promise.resolve({ settled: 1 });
+        delivered.push(...events.map((e) => e.content));
+        return Promise.resolve({ settled: events.length });
+      },
     });
 
-    expect(
-      ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))
-        .map((r) => r.id)
-        .sort(),
-    ).toEqual(['cap-1', 'cap-2']);
+    expect(delivered.sort()).toEqual(['text of cap-1', 'text of cap-2']);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
+  });
+
+  // The floor under that: a SINGLE row the deployment takes nothing of is not
+  // stampable — the ack gave no verdict to skip on — so it stays owed and the
+  // pass stops rather than inventing one.
+  it('leaves a single row owed when the deployment takes none of it', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }]);
+
+    await run({
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: () => Promise.resolve({ settled: 0 }),
+    });
+
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL)).map((r) => r.id)).toEqual([
+      'cap-1',
+    ]);
   });
 
   // A blip is what a retry ladder is for. Returning on the first 'retry' verdict
@@ -995,7 +1025,7 @@ describe('runHistorySync — the capture lane', () => {
     });
 
     expect(attempts).toBe(2);
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toEqual([]);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
   });
 
   // `counts` is structural-only, so on its own it reports the drain finished the
@@ -1026,27 +1056,39 @@ describe('runHistorySync — the capture lane', () => {
     expect(attempted(result).capturesPending).toBe(false);
   });
 
-  // THE PRE-ATTACH BOUND, and it is a privacy assertion rather than a scoping
-  // one. The disclosure says the pre-attach half of the grant sends "the record
-  // of activity" and that only what a live send could not deliver carries its
-  // TEXT. Without this bound a first attach would drain the machine's entire
-  // local history of prompts, text and all, under copy promising the opposite —
-  // and every other test here would stay green, because they all seed inside the
-  // window.
-  it('never drains a capture recorded before the machine attached', async () => {
+  // WHAT MAKES A CAPTURE ELIGIBLE, and it is a privacy assertion rather than a
+  // scoping one. The disclosure says the pre-attach half sends "the record of
+  // activity" and that only what a live send could not deliver carries its TEXT.
+  // A row nothing marked is a row no live send ever attempted — recorded before
+  // this machine attached, or while it was detached — and shipping it would put
+  // that text on the wire under copy promising the opposite. The marker is what
+  // makes that structural: a detached machine never reaches the attached
+  // gateway, so nothing can mark its captures.
+  it('never drains a capture no live forward ever attempted', async () => {
     attach({ grantFor: ENDPOINT });
-    const beforeAttach = Date.parse(AT) - 60_000;
-    seedCaptures([{ id: 'cap-pre', atMs: beforeAttach }, { id: 'cap-post' }]);
+    seedCaptures([{ id: 'cap-owed' }]);
+    // Recorded exactly as the others, but never marked — the shape a detached
+    // or pre-attach machine leaves behind.
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.auditEvents.insertAuditEvent({
+        id: 'cap-unattempted',
+        eventType: 'prompt',
+        rootSessionId: 'cap-session',
+        parentId: 'cap-session',
+        startedAt: new Date(T0 - 3_600_000).toISOString(),
+        content: 'text of cap-unattempted',
+        contentHash: 'b'.repeat(64),
+        attributes: { source_tool: 'claude-code' },
+      });
+    } finally {
+      db.close();
+    }
     const l = lanes();
 
     await run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures });
 
-    expect(l.captures.map((c) => c.content)).toEqual(['text of cap-post']);
-    // It is not skipped either — it stays owed, and the structural lane is what
-    // covers that period, without the text.
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL)).map((r) => r.id)).toEqual([
-      'cap-pre',
-    ]);
+    expect(l.captures.map((c) => c.content)).toEqual(['text of cap-owed']);
   });
 
   // The consent gate is the whole reason payload v2 exists: without a valid
@@ -1062,6 +1104,6 @@ describe('runHistorySync — the capture lane', () => {
     });
 
     expect(l.captures).toEqual([]);
-    expect(ledger((db) => db.historySync.pendingCaptureRows(10, 0, ALL))).toHaveLength(1);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toHaveLength(1);
   });
 });

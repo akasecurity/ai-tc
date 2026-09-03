@@ -150,9 +150,15 @@ Promoting a detection to redact or block masks its matches at rest and in transi
 together, from then on — it does not reach what has already been sent, and what
 has been sent cannot be recalled.
 
-The separate `aka sync-history` backfill, which covers activity recorded before
-you attached, sends the record of that activity rather than event content, so
-this rule does not reach it.
+The separate `aka sync-history` grant covers two things, and the rule reaches
+one of them. The backfill of activity recorded before you attached sends the
+record of that activity rather than event content, so the rule does not apply
+to it. The other is the drain of anything a live send could not deliver, which
+sends the capture as the store holds it — for a prompt, an assistant reply or a
+tool result, its text. There the rule applies exactly as it does to a live
+forward: **under monitor or warn the matched value is drained as it was seen**,
+and every detection ships on monitor, so on a default install that is what a
+drain sends.
 
 Attaching is opt-in and inert until both an endpoint and an access key are on
 disk; `aka status` says what a machine is attached to and `aka detach` ends the

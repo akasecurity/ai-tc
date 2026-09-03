@@ -120,6 +120,7 @@ function makeLocalStore(opts: {
     reconcileWorktreeProjects: () => Promise.resolve(),
     staleBinaryNotice: () => null,
     markCaptureDelivered: () => undefined,
+    markCaptureOwed: () => undefined,
     markAuditEventsDelivered: () => undefined,
   };
 }

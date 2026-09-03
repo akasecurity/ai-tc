@@ -26,6 +26,7 @@ function config(dataDir: string, consented = false): PluginConfig {
       dataSharesInPlace: true,
       vaultKeyCustody: 'file',
       vaultInlineReveal: 'masked',
+      redactFallback: 'warn',
       ...(consented
         ? {
             vaultConsent: {

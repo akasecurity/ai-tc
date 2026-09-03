@@ -247,6 +247,21 @@ export const KNOWN_BUILTIN_IDS = ['monitor', 'warn', 'redact', 'vault', 'block']
 export const BuiltinPolicyId = z.enum(KNOWN_BUILTIN_IDS).meta({ id: 'BuiltinPolicyId' });
 export type BuiltinPolicyId = z.infer<typeof BuiltinPolicyId>;
 
+// What a `redact` decision degrades to on a field the host cannot rewrite in
+// place (WorkspaceSettings.redactFallback).
+//
+// An `.extract()` over the built-in ids rather than a fresh `z.enum` of the
+// same three strings, for the reason CLAUDE.md §2 gives about the harness
+// vocabulary: a subset spelled again is a subset free to drift, and this one
+// has to stay inside the action ladder so `strongerAction` can merge a
+// control-plane value raise-only without a second rank order being invented.
+// 'redact' and 'vault' are excluded because they are the thing that could not
+// be carried out; the three that remain are what is left to choose between.
+export const RedactFallback = BuiltinPolicyId.extract(['monitor', 'warn', 'block']).meta({
+  id: 'RedactFallback',
+});
+export type RedactFallback = z.infer<typeof RedactFallback>;
+
 // Display order of the built-in catalog. Aliases the canonical id set (already
 // declared least → most restrictive) so display order can never drift from
 // membership; kept as a named export for call sites that read it as display order.

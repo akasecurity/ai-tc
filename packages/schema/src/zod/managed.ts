@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { RedactFallback } from './policy.ts';
+
 // Administratively-supplied configuration: a second settings source that an
 // MDM or config-management tool writes and AKA only ever READS.
 //
@@ -30,6 +32,7 @@ export const ManagedSettingKey = z
     'vaultInlineReveal',
     'modelJudgeConsent',
     'dataSharesInPlace',
+    'redactFallback',
   ])
   .meta({ id: 'ManagedSettingKey' });
 export type ManagedSettingKey = z.infer<typeof ManagedSettingKey>;
@@ -58,6 +61,7 @@ export const ManagedSettingsValues = z
     vaultInlineReveal: z.enum(['masked', 'full', 'off']).optional(),
     modelJudgeConsent: z.boolean().optional(),
     dataSharesInPlace: z.boolean().optional(),
+    redactFallback: RedactFallback.optional(),
   })
   .meta({ id: 'ManagedSettingsValues' });
 export type ManagedSettingsValues = z.infer<typeof ManagedSettingsValues>;

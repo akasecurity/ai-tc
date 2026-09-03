@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-import { HARNESS } from '@akasecurity/schema';
+import type { LlmCallAttributes, TokenRollup } from '@akasecurity/schema';
+import { buildTokenReports, defaultCostModel, HARNESS } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
@@ -585,6 +586,107 @@ describe('tokenReports', () => {
     const report = (await activity().tokenReports())[0];
     expect(report?.rollups).toHaveLength(2);
     expect(report?.costIsPartial).toBe(true);
+  });
+
+  it('prices exactly what folding every call in JS would, tier and cache split included', async () => {
+    // The repository groups calls in SQL and prices one synthetic leaf per
+    // (session, provider, model, service_tier) group. That is exact only while
+    // the group key carries every dimension the cost model does not sum over:
+    // drop the tier from the key, or merge the 1h/5m cache-write split, and a
+    // session that mixed them misprices. This holds the SQL fold to the
+    // per-call fold across every shape a bag takes: both tiers, both cache
+    // splits, web searches, an unknown provider, a bag with no provider or
+    // model, missing token keys, and a NULL bag.
+    const leaf = (id: string, session: string, at: number, a: Record<string, unknown>) => {
+      insertEvent({ id, sessionId: session, type: 'llm_call', startedAt: at, attributes: a });
+    };
+    insertSession({ id: 'X', startedAt: NOW - HOUR_MS, attributes: {} });
+    insertSession({ id: 'Y', startedAt: NOW - HOUR_MS, attributes: {} });
+    const base = { model: 'claude-sonnet-4-6', provider: 'anthropic' };
+    leaf('X1', 'X', NOW + 1, {
+      ...base,
+      input_tokens: 1000,
+      output_tokens: 200,
+      cache_creation_input_tokens: 300,
+      cache_read_input_tokens: 4000,
+      ephemeral_1h_input_tokens: 100,
+      ephemeral_5m_input_tokens: 200,
+      service_tier: 'standard',
+      web_search_requests: 2,
+    });
+    leaf('X2', 'X', NOW + 2, {
+      ...base,
+      input_tokens: 500,
+      output_tokens: 50,
+      cache_creation_input_tokens: 60,
+      ephemeral_5m_input_tokens: 60,
+      service_tier: 'batch',
+    });
+    leaf('X3', 'X', NOW + 3, { ...base, input_tokens: 700, service_tier: 'batch' });
+    leaf('X4', 'X', NOW + 4, {
+      ...base,
+      model: 'claude-opus-4-8',
+      input_tokens: 10,
+      output_tokens: 5,
+    });
+    leaf('X5', 'X', NOW + 5, { model: 'mystery-model', provider: 'mystery', input_tokens: 500 });
+    leaf('X6', 'X', NOW + 6, { input_tokens: 5 });
+    leaf('Y1', 'Y', NOW + 7, { ...base, input_tokens: 40, output_tokens: 4 });
+    raw
+      .prepare(
+        `INSERT INTO audit_events (id, root_session_id, event_type, started_at, attributes)
+         VALUES ('Y-null', 'Y', 'llm_call', ?, NULL)`,
+      )
+      .run(NOW + 8);
+
+    // The per-call fold, straight off the bags, as the read used to do it.
+    const bags = raw
+      .prepare(
+        `SELECT root_session_id AS sessionId, attributes FROM audit_events
+          WHERE event_type = 'llm_call' AND attributes IS NOT NULL ORDER BY started_at`,
+      )
+      .all() as { sessionId: string; attributes: string }[];
+    const expected = buildTokenReports(
+      bags.map((b) => ({
+        sessionId: b.sessionId,
+        attributes: JSON.parse(b.attributes) as LlmCallAttributes,
+      })),
+      defaultCostModel,
+    );
+
+    const actual = await activity().tokenReports();
+    expect(actual).toHaveLength(expected.length);
+    for (const [i, report] of expected.entries()) {
+      const got = actual[i];
+      expect(got, `report ${String(i)}`).toBeDefined();
+      if (!got) continue;
+      const { estimatedCostUsd: expectedCost, rollups: expectedRollups, ...expectedRest } = report;
+      const { estimatedCostUsd: gotCost, rollups: gotRollups, ...gotRest } = got;
+      expect(gotRest).toEqual(expectedRest);
+      // Priced per group rather than per call: equal up to float summation order.
+      if (expectedCost === null) expect(gotCost).toBeNull();
+      else expect(gotCost).toBeCloseTo(expectedCost, 9);
+      const withoutCost = (roll: TokenRollup): Omit<TokenRollup, 'estimatedCostUsd'> => ({
+        sessionId: roll.sessionId,
+        model: roll.model,
+        provider: roll.provider,
+        inputTokens: roll.inputTokens,
+        outputTokens: roll.outputTokens,
+        cacheCreation: roll.cacheCreation,
+        cacheRead: roll.cacheRead,
+        totalTokens: roll.totalTokens,
+      });
+      expect(gotRollups.map(withoutCost)).toEqual(expectedRollups.map(withoutCost));
+      for (const [j, roll] of expectedRollups.entries()) {
+        const gotRoll = gotRollups[j];
+        if (roll.estimatedCostUsd === null) expect(gotRoll?.estimatedCostUsd).toBeNull();
+        else expect(gotRoll?.estimatedCostUsd).toBeCloseTo(roll.estimatedCostUsd, 9);
+      }
+    }
+    // The same rows, one session at a time, agree with the cross-session read.
+    for (const report of actual) {
+      expect(await activity().tokenReportForSession(report.sessionId)).toEqual(report);
+    }
   });
 
   it('windows leaves by fromMs', async () => {

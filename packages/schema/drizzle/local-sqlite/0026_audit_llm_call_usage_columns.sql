@@ -1,0 +1,4 @@
+ALTER TABLE `audit_events` ADD `service_tier` text GENERATED ALWAYS AS (json_extract(attributes, '$.service_tier')) VIRTUAL;--> statement-breakpoint
+ALTER TABLE `audit_events` ADD `ephemeral_1h_input_tokens` integer GENERATED ALWAYS AS (json_extract(attributes, '$.ephemeral_1h_input_tokens')) VIRTUAL;--> statement-breakpoint
+ALTER TABLE `audit_events` ADD `ephemeral_5m_input_tokens` integer GENERATED ALWAYS AS (json_extract(attributes, '$.ephemeral_5m_input_tokens')) VIRTUAL;--> statement-breakpoint
+ALTER TABLE `audit_events` ADD `web_search_requests` integer GENERATED ALWAYS AS (json_extract(attributes, '$.web_search_requests')) VIRTUAL;

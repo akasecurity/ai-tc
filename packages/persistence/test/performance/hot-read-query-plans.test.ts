@@ -1,5 +1,5 @@
 /**
- * How SQLite executes every read the three data-heavy dashboard pages issue.
+ * How SQLite executes every read the four data-heavy dashboard pages issue.
  *
  * This is a CORRECTNESS assertion, not a timing one, which is why it is a test
  * rather than a benchmark. A query plan is a fact about the schema and the SQL:
@@ -91,7 +91,7 @@ const CORPUS_SESSIONS = 30;
 const DAY_MS = 86_400_000;
 
 /**
- * Every read the dashboard's three store-heavy pages issue, in page order.
+ * Every read the dashboard's four store-heavy pages issue, in page order.
  *
  * `/security` is the eight-way `Promise.all` the budget names. `/activity` and
  * `/vault` are here because they read the same growing tables and are budgeted
@@ -111,6 +111,8 @@ interface Surfaces {
   readonly sessionId: string;
   /** The corpus's own end instant — see the note above. */
   readonly now: number;
+  /** A cursor into the flat list, so the keyset page read is driven with a real one. */
+  readonly secondPageCursor: string;
 }
 
 const HOT_READS: readonly HotRead[] = [
@@ -123,6 +125,20 @@ const HOT_READS: readonly HotRead[] = [
   { name: '/security topSources', run: (c) => c.security.topSources('30d', { limit: 5 }) },
   { name: '/security recentlyResolved', run: (c) => c.security.recentlyResolved() },
   { name: '/security recentFindings', run: (c) => c.findings.recentFindings({ limit: 500 }) },
+  // --- /findings: three views over one filtered set ---------------------------
+  // Each view is its own read, and the session-scoped grouped read is listed
+  // separately because the scope changes which index drives the scan.
+  { name: '/findings listGroupedFindings', run: (c) => c.findings.listGroupedFindings({}) },
+  {
+    name: '/findings listGroupedFindings (session)',
+    run: (c) => c.findings.listGroupedFindings({ sessionId: c.sessionId }),
+  },
+  { name: '/findings listFindingInstances', run: (c) => c.findings.listFindingInstances({}) },
+  {
+    name: '/findings listFindingInstances (page 2)',
+    run: (c) => c.findings.listFindingInstances({ cursor: c.secondPageCursor }),
+  },
+  { name: '/findings listFindingLocations', run: (c) => c.findings.listFindingLocations({}) },
   // --- /activity -------------------------------------------------------------
   { name: '/activity stats', run: (c) => c.activity.stats() },
   {
@@ -192,6 +208,25 @@ const EXPECTED_FULL_INDEX_SCANS: Readonly<Record<string, readonly string[]>> = {
   // across two store sizes, which a plan cannot express and
   // `security-page-scale.test.ts` asserts instead.
   '/security recentFindings': ['audit_events'],
+  // The findings page. Every unscoped read here walks `idx_audit_started_at`
+  // in DESC order the way `recentFindings` does, and for the same reason: the
+  // order the page wants falls out of the index, so nothing is sorted. Two of
+  // the three are UNBOUNDED by design — the flat list and the locations fold
+  // count and facet every finding in scope, so the scan is the answer — and
+  // the ratio in `findings-page-scale.test.ts` is what states that they are
+  // flat in the STORE once a scope narrows them. The grouped read's scan is
+  // bounded the way `recentFindings`' is: it stops once every rule has its
+  // preview, which a plan cannot show. Its `finding_resolution` entry is the
+  // latest-resolution derived table the aggregate joins, shared with the three
+  // `/security` reads above. The session-scoped grouped read drives from
+  // `idx_audit_session` instead, so only that derived table remains.
+  '/findings listGroupedFindings': ['audit_events', 'finding_resolution'],
+  '/findings listGroupedFindings (session)': ['finding_resolution'],
+  '/findings listFindingInstances': ['audit_events'],
+  // The counting pass over the whole scope, plus a keyset-bounded page read
+  // that seeks the same index and so contributes no scan of its own.
+  '/findings listFindingInstances (page 2)': ['audit_events'],
+  '/findings listFindingLocations': ['audit_events'],
   '/activity stats': [],
   '/activity listSessions': [],
   '/activity tokenReports': [],
@@ -211,7 +246,7 @@ describe('query plans of every hot dashboard read', () => {
   let store: OwnedTempStore;
   let plans: Map<string, PlanStep[]>;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     store = createTempStore('aka-query-plans-');
     const db = store.open();
     const corpus = seedCaptureCorpus(db, {
@@ -236,6 +271,16 @@ describe('query plans of every hot dashboard read', () => {
       'corpus produced no session to drive the /activity detail reads',
     ).toBeTypeOf('string');
 
+    // A real cursor off a real first page, taken through the RAW handle so the
+    // read that mints it is not itself recorded. A hand-rolled cursor could
+    // decode to null, and a null cursor silently degrades to the first page —
+    // a plan for a read the case does not claim to cover.
+    const firstPage = await new SqliteFindingsRepository(raw).listFindingInstances({});
+    expect(
+      firstPage.nextCursor,
+      'corpus produced fewer findings than one flat page, so the keyset read has no page to seek',
+    ).toBeTypeOf('string');
+
     const recorded: RecordedQuery[] = [];
     const spy = recordingConnection(raw, recorded);
     const surfaces: Surfaces = {
@@ -245,6 +290,7 @@ describe('query plans of every hot dashboard read', () => {
       vault: new SqliteSecretVaultRepository(spy),
       sessionId: sessionRow?.id ?? '',
       now: corpus.endsAt,
+      secondPageCursor: firstPage.nextCursor ?? '',
     };
 
     plans = new Map();

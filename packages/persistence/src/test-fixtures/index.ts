@@ -59,12 +59,14 @@ export function seedSampleFixtures(db: DatabaseSync): void {
 export type {
   CaptureCorpusOptions,
   CaptureCorpusTarget,
+  CorpusRule,
   GeneratedCaptureCorpus,
 } from './generate.ts';
 export {
   CORPUS_EPOCH_MS,
   CORPUS_EVENT_SPACING_MS,
   createSeededRandom,
+  DEFAULT_CORPUS_RULES,
   generateCaptureCorpus,
 } from './generate.ts';
 export { seedSampleAuditEvents, seedSampleInventory, seedSampleShares };

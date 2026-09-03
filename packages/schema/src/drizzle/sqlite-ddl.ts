@@ -123,4 +123,20 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0023_secret_vault_user_authorized',
     sql: 'ALTER TABLE `secret_vault` ADD `user_authorized` integer DEFAULT 0 NOT NULL;',
   },
+  {
+    tag: '0024_finding_resolution_key_created_index',
+    sql: 'DROP INDEX IF EXISTS `idx_finding_resolution_key`;--> statement-breakpoint\nCREATE INDEX `idx_finding_resolution_key_created` ON `finding_resolution` (`finding_key`,`created_at`);',
+  },
+  {
+    tag: '0025_audit_capture_attribute_columns',
+    sql: "ALTER TABLE `audit_events` ADD `source_tool` text GENERATED ALWAYS AS (json_extract(attributes, '$.source_tool')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `repo` text GENERATED ALWAYS AS (json_extract(attributes, '$.repo')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `file_path` text GENERATED ALWAYS AS (json_extract(attributes, '$.file_path')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `tool_name` text GENERATED ALWAYS AS (json_extract(attributes, '$.tool_name')) VIRTUAL;",
+  },
+  {
+    tag: '0026_audit_llm_call_usage_columns',
+    sql: "ALTER TABLE `audit_events` ADD `service_tier` text GENERATED ALWAYS AS (json_extract(attributes, '$.service_tier')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `ephemeral_1h_input_tokens` integer GENERATED ALWAYS AS (json_extract(attributes, '$.ephemeral_1h_input_tokens')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `ephemeral_5m_input_tokens` integer GENERATED ALWAYS AS (json_extract(attributes, '$.ephemeral_5m_input_tokens')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `web_search_requests` integer GENERATED ALWAYS AS (json_extract(attributes, '$.web_search_requests')) VIRTUAL;",
+  },
+  {
+    tag: '0027_audit_llm_usage_index',
+    sql: "CREATE INDEX `idx_audit_llm_usage` ON `audit_events` (`started_at`,`root_session_id`,`provider`,`model`,`service_tier`,`input_tokens`,`output_tokens`,`cache_creation_input_tokens`,`cache_read_input_tokens`,`ephemeral_1h_input_tokens`,`ephemeral_5m_input_tokens`,`web_search_requests`) WHERE event_type = 'llm_call' AND attributes IS NOT NULL;",
+  },
 ];

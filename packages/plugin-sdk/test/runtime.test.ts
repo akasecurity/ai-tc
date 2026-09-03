@@ -77,6 +77,7 @@ function settings(policy: 'redact' | 'warn' = 'redact'): WorkspaceSettings {
     dataSharesInPlace: true,
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
+    redactFallback: 'warn',
   };
 }
 
@@ -1003,5 +1004,114 @@ describe('capture() — CaptureResult.findingKeys (scanner re-scan resolver hook
     await rt.close();
     expect(result.findingKeys).toBeUndefined();
     expect(gw.records).toHaveLength(0);
+  });
+});
+
+// A redact the caller cannot carry out (CaptureOptions.rewritable: false).
+//
+// Antigravity's PreToolUse has no `updatedInput` at all, and Codex and Claude
+// Code decline to mask a field that EXECUTES, so on those fields a `redact`
+// policy has to become something else. Which action it becomes is
+// `settings.redactFallback`, and the point of resolving it inside the runtime
+// is that ONE resolution feeds the decision, the persisted finding and the
+// blocked-detections ledger — so the audit trail cannot claim a masking that
+// never happened.
+describe('a redact the caller cannot carry out', () => {
+  function redactBundle(): PolicyBundle {
+    const b = bundle();
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'test/secret-marker' },
+        action: 'redact',
+        enabled: true,
+      },
+    ];
+    return b;
+  }
+
+  const settingsWith = (fallback: 'monitor' | 'warn' | 'block'): WorkspaceSettings => ({
+    ...settings('redact'),
+    redactFallback: fallback,
+  });
+
+  it('still redacts in place when the caller CAN rewrite (the control)', async () => {
+    // Without this the cases below would pass on a runtime that had simply
+    // stopped redacting anything.
+    const gateway = fakeGateway(redactBundle());
+    const runtime = createPluginRuntime(gateway, settingsWith('warn'));
+    const out = await runtime.capture({
+      kind: 'tool_use',
+      sourceTool: 'claude-code',
+      text: 'here is SECRET_MARKER',
+    });
+    expect(out.action).toBe('redact');
+    expect(out.text).not.toContain('SECRET_MARKER');
+    await runtime.close();
+  });
+
+  it.each([
+    ['warn', 'warn'],
+    ['monitor', 'log'],
+    ['block', 'block'],
+  ] as const)('degrades to the configured fallback: %s', async (fallback, expected) => {
+    const gateway = fakeGateway(redactBundle());
+    const runtime = createPluginRuntime(gateway, settingsWith(fallback));
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+    expect(out.action).toBe(expected);
+    await runtime.close();
+  });
+
+  it('records the action that ACTUALLY applied, not the policy it came from', async () => {
+    // The load-bearing one. Recording 'redact' here would describe a masking
+    // that did not happen while the raw value went through — the same class of
+    // untruth as an escalated deny recorded as a redact, in the other
+    // direction.
+    const gateway = fakeGateway(redactBundle());
+    const runtime = createPluginRuntime(gateway, settingsWith('warn'));
+    await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+    const [record] = gateway.records;
+    expect(record?.findings.map((f) => f.actionTaken)).toEqual(['warn']);
+    await runtime.close();
+  });
+
+  it('leaves the value unmasked at rest when the fallback is below redact', async () => {
+    // The at-rest mask reads the same resolution, so a degraded finding is
+    // stored as it was seen. That is the honest record of a capture nothing
+    // stripped — and the reason the fallback is a deliberate choice rather
+    // than a default nobody looked at.
+    const gateway = fakeGateway(redactBundle());
+    const runtime = createPluginRuntime(gateway, settingsWith('warn'));
+    await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+    expect(gateway.records[0]?.event.content).toContain('SECRET_MARKER');
+    await runtime.close();
+  });
+
+  it('masks at rest when the fallback RAISES to block', async () => {
+    // block outranks redact, so the same capture is stored masked — the
+    // fallback moves both halves together.
+    //
+    // The at-rest assertion alone cannot carry this case: an UNdegraded redact
+    // masks at rest too, so it holds whether or not the fallback applied. What
+    // separates them is the recorded action, so both are asserted here.
+    const gateway = fakeGateway(redactBundle());
+    const runtime = createPluginRuntime(gateway, settingsWith('block'));
+    await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+    expect(gateway.records[0]?.event.content).not.toContain('SECRET_MARKER');
+    expect(gateway.records[0]?.findings.map((f) => f.actionTaken)).toEqual(['block']);
+    await runtime.close();
   });
 });

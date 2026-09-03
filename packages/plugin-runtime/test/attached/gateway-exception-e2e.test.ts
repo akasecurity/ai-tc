@@ -58,6 +58,7 @@ const settings = (): WorkspaceSettings => ({
   dataSharesInPlace: true,
   vaultKeyCustody: 'file',
   vaultInlineReveal: 'masked',
+  redactFallback: 'warn',
 });
 
 /** A local store whose exception ledger answers however the test says. */

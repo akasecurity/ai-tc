@@ -51,6 +51,7 @@ function settings(): WorkspaceSettings {
     dataSharesInPlace: true,
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
+    redactFallback: 'warn',
   };
 }
 

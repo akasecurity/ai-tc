@@ -68,6 +68,7 @@ const settings = (): WorkspaceSettings => ({
   dataSharesInPlace: true,
   vaultKeyCustody: 'file',
   vaultInlineReveal: 'masked',
+  redactFallback: 'warn',
 });
 
 const policy = (target: Policy['target'], action: Policy['action']): Policy => ({

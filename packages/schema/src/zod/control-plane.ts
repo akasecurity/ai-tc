@@ -704,9 +704,7 @@ export type DeviceCommand = z.infer<typeof DeviceCommand>;
  * `GET /v1/plugin/commands`. `command: null` is the ordinary answer — there is
  * no pending work — and is not an error or an empty-collection special case.
  */
-export const DeviceCommandPollResponse = z
-  .object({ command: DeviceCommand.nullable() })
-  .strict();
+export const DeviceCommandPollResponse = z.object({ command: DeviceCommand.nullable() }).strict();
 export type DeviceCommandPollResponse = z.infer<typeof DeviceCommandPollResponse>;
 
 /**
@@ -715,11 +713,7 @@ export type DeviceCommandPollResponse = z.infer<typeof DeviceCommandPollResponse
  * device-supplied free text can ever reach a human's screen through this
  * channel: there is no `message`, and no member of this union carries one.
  */
-export const DeviceCommandFailureReason = z.enum([
-  'scan_failed',
-  'no_projects',
-  'forward_refused',
-]);
+export const DeviceCommandFailureReason = z.enum(['scan_failed', 'no_projects', 'forward_refused']);
 export type DeviceCommandFailureReason = z.infer<typeof DeviceCommandFailureReason>;
 
 /**

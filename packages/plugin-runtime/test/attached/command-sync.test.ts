@@ -126,7 +126,9 @@ describe('runCommandSync', () => {
     pollCommand.mockResolvedValue(COMMAND);
     const { runCommandSync } = await import('../../src/attached/command-sync.ts');
 
-    await expect(runCommandSync(deps(() => Promise.resolve({ projects: 3 })))).resolves.toBe('reported');
+    await expect(runCommandSync(deps(() => Promise.resolve({ projects: 3 })))).resolves.toBe(
+      'reported',
+    );
     expect(ackCommand).toHaveBeenCalledWith('cmd_1', {
       outcome: 'reported',
       projectsForwarded: 3,
@@ -218,7 +220,9 @@ describe('runCommandSync', () => {
     ackCommand.mockRejectedValue(new Error('ETIMEDOUT'));
     const { runCommandSync } = await import('../../src/attached/command-sync.ts');
 
-    await expect(runCommandSync(deps(() => Promise.resolve({ projects: 2 })))).resolves.toBe('unreachable');
+    await expect(runCommandSync(deps(() => Promise.resolve({ projects: 2 })))).resolves.toBe(
+      'unreachable',
+    );
   });
 });
 

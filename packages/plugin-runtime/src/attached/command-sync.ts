@@ -108,9 +108,7 @@ const SCAN_FOUND_NOTHING: DeviceCommandFailureReason = 'no_projects';
  * anything. Acking a failure is what turns "we never heard from it" into "it
  * tried and here is the closed reason".
  */
-export async function runCommandSync(
-  deps: RunCommandSyncDeps,
-): Promise<CommandSyncOutcome | null> {
+export async function runCommandSync(deps: RunCommandSyncDeps): Promise<CommandSyncOutcome | null> {
   // Nothing to service, and nothing to ask. A host with no scanner must not
   // poll: a command it received and could never run would sit outstanding on
   // the roster until it expired, which reads to an operator exactly like a

@@ -132,7 +132,15 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     sql: "ALTER TABLE `audit_events` ADD `source_tool` text GENERATED ALWAYS AS (json_extract(attributes, '$.source_tool')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `repo` text GENERATED ALWAYS AS (json_extract(attributes, '$.repo')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `file_path` text GENERATED ALWAYS AS (json_extract(attributes, '$.file_path')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `tool_name` text GENERATED ALWAYS AS (json_extract(attributes, '$.tool_name')) VIRTUAL;",
   },
   {
-    tag: '0026_activity_session_probe_indexes',
+    tag: '0026_audit_llm_call_usage_columns',
+    sql: "ALTER TABLE `audit_events` ADD `service_tier` text GENERATED ALWAYS AS (json_extract(attributes, '$.service_tier')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `ephemeral_1h_input_tokens` integer GENERATED ALWAYS AS (json_extract(attributes, '$.ephemeral_1h_input_tokens')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `ephemeral_5m_input_tokens` integer GENERATED ALWAYS AS (json_extract(attributes, '$.ephemeral_5m_input_tokens')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `web_search_requests` integer GENERATED ALWAYS AS (json_extract(attributes, '$.web_search_requests')) VIRTUAL;",
+  },
+  {
+    tag: '0027_audit_llm_usage_index',
+    sql: "CREATE INDEX `idx_audit_llm_usage` ON `audit_events` (`started_at`,`root_session_id`,`provider`,`model`,`service_tier`,`input_tokens`,`output_tokens`,`cache_creation_input_tokens`,`cache_read_input_tokens`,`ephemeral_1h_input_tokens`,`ephemeral_5m_input_tokens`,`web_search_requests`) WHERE event_type = 'llm_call' AND attributes IS NOT NULL;",
+  },
+  {
+    tag: '0028_activity_session_probe_indexes',
     sql: "CREATE INDEX `idx_audit_session_prompt` ON `audit_events` (`root_session_id`) WHERE event_type = 'prompt';--> statement-breakpoint\nCREATE INDEX `idx_audit_session_share` ON `audit_events` (`root_session_id`) WHERE event_type = 'share';--> statement-breakpoint\nCREATE INDEX `idx_audit_ended_at` ON `audit_events` (`ended_at`,`root_session_id`) WHERE ended_at IS NOT NULL;--> statement-breakpoint\nCREATE INDEX `idx_audit_session_ended` ON `audit_events` (`root_session_id`,`ended_at`) WHERE ended_at IS NOT NULL;--> statement-breakpoint\n-- Expression index for the activity list's turns rollup: a live-captured\n-- session's turns are the DISTINCT `run_key` across its `llm_call` leaves, and\n-- carrying the extracted key in the index answers that count from the index\n-- alone instead of parsing every leaf's attribute bag. Written by hand, as\n-- 0013's `idx_audit_code_change_path` was: drizzle-kit cannot emit an\n-- expression containing a comma, so this index is not declared in sqlite.ts.\nCREATE INDEX `idx_audit_session_run_key` ON `audit_events` (`root_session_id`, json_extract(`attributes`, '$.run_key')) WHERE `event_type` = 'llm_call';\n",
   },
 ];

@@ -1468,6 +1468,24 @@ as well as the capture path, plus a backfill for existing stores), windowing the
 changes what the number means from "ever" to "the last 30 days"), or retention on the corpus
 itself. All three are product calls, not tuning.
 
+**A VIRTUAL generated column is only faster than the bag when an index stores its value.**
+The token rollup (`tokenReports` / `tokenReportForSession`) reads the `llm_call` usage
+columns — model, provider, the four token counts and the tier, cache-split and web-search
+members 0026 added — grouped in SQL per `(session, provider, model, service_tier)` and priced
+once per group, which the cost model's linearity makes exact (activity.test.ts holds the SQL
+fold equal to the per-call fold across every bag shape). Naming those columns against the
+TABLE is slower than parsing the bag in JS (137 ms against 98 ms at 50k calls), because each
+VIRTUAL column is a `json_extract` recomputed per row; the read is fast only through
+`idx_audit_llm_usage` (0027), a partial index over the columns that stores the values once,
+at write (8.5 ms for a seven-day window against 31 ms, 38 ms all-time). Two things to know
+before touching it. `INDEXED BY` is deliberate — with or without `ANALYZE` statistics the
+planner prefers the event-type index and refetches every row — and the plan will never say
+COVERING for an index over VIRTUAL columns, because SQLite counts the column's dependency on
+`attributes` as a reference to the row even as it reads the value from the index; the
+timing, not the label, is the evidence, and `token-rollup-plans.test.ts` pins the index by
+name. The per-session form of the old fold walked EVERY `llm_call` in the store through the
+event-type index to find one session's (17 ms at 50k, growing with the store); it now seeks
+`idx_audit_session_type`.
 **`/activity` had the same shape of defect, and the same pair of guards now holds it.**
 `liveNow` walked every descendant of every open root to find the latest one, and on a real
 store every root is open — the local writer never stamps `ended_at` on a session — so
@@ -1477,7 +1495,7 @@ three index ranges, and two of them are pinned with `INDEXED BY`: whenever the r
 is the second column of a `(root_session_id, …)` index the planner prefers a skip-scan over
 every root through that index — with or without `ANALYZE` statistics — and a skip-scan over
 every root is the walk again (2.8 ms against 0.1 ms). The list's per-session rollups read
-partial indexes over their own kind (migration 0026), and the last-activity rollup is two
+partial indexes over their own kind (migration 0028), and the last-activity rollup is two
 seeks per session through `json_each`. `activity-page-scale.test.ts` pins the consequence on
 the real shape (`endedRate: 0`: a ratio of 11.5 before and ~1 after, 5k → 50k captures), and
 `activity-probe-plans.test.ts` pins each probe to the index it must be seen using, which the

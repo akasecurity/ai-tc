@@ -29,7 +29,7 @@ import {
 
 import { safeJson } from '../internal/json.ts';
 import { decodeKeysetCursor, encodeKeysetCursor } from '../internal/keyset-cursor.ts';
-import { allRows, countScalar, getRow, intToBool, mapRowsTolerant } from '../internal/rows.ts';
+import { allRows, countScalar, getRow, intToBool } from '../internal/rows.ts';
 import { containsPattern, placeholders } from '../internal/sql-text.ts';
 import type { ActivityReadPort } from '../ports.ts';
 
@@ -316,6 +316,80 @@ const TIMELINE_COLUMNS = `
   json_extract(attributes, '$.targetId') AS target_id,
   json_extract(attributes, '$.internal') AS internal,
   json_extract(attributes, '$.flagged') AS flagged`;
+
+/**
+ * One `llm_call` group: every call in one session on one
+ * `(provider, model, service_tier)`, with its usage members summed. The grain
+ * is the one PRICING needs, not the one the view renders: `CostModel.costFor`
+ * is linear in each usage member and applies the service-tier multiplier to
+ * the token subtotal, so summing within a fixed `(provider, model, tier)` and
+ * pricing ONCE gives the figure that pricing every call and adding would. The
+ * tier is in the key precisely because it is the one per-call dimension that
+ * changes the multiplier, and the 1h/5m cache-write split rides along as two
+ * sums because the two are priced apart. That exactness is what lets the
+ * report collapse in SQL over the usage index instead of shipping one bag per
+ * call to JS — activity.test.ts holds the two folds equal across every shape a
+ * bag takes, and token-rollup-plans.test.ts pins the index.
+ */
+interface LlmUsageRow {
+  sessionId: string;
+  provider: string | null;
+  model: string | null;
+  serviceTier: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  ephemeral1hTokens: number;
+  ephemeral5mTokens: number;
+  webSearchRequests: number;
+}
+
+const LLM_USAGE_SELECT = `
+  SELECT root_session_id AS sessionId,
+         provider,
+         model,
+         service_tier AS serviceTier,
+         coalesce(sum(input_tokens), 0) AS inputTokens,
+         coalesce(sum(output_tokens), 0) AS outputTokens,
+         coalesce(sum(cache_creation_input_tokens), 0) AS cacheCreationTokens,
+         coalesce(sum(cache_read_input_tokens), 0) AS cacheReadTokens,
+         coalesce(sum(ephemeral_1h_input_tokens), 0) AS ephemeral1hTokens,
+         coalesce(sum(ephemeral_5m_input_tokens), 0) AS ephemeral5mTokens,
+         coalesce(sum(web_search_requests), 0) AS webSearchRequests`;
+
+// The usage index's own predicate (`idx_audit_llm_usage` is partial on exactly
+// these two terms), so the index applies and neither is re-checked against the
+// row: a call with no bag has no usage to roll up, and a leaf with no root
+// session cannot be attributed. A bag that is not JSON cannot be inserted at
+// all — the store's expression indexes reject it at write — so there is no
+// unparseable leaf to skip, and a generated column only ever reads a valid bag.
+const LLM_USAGE_SCOPE = `event_type = 'llm_call' AND attributes IS NOT NULL AND root_session_id IS NOT NULL`;
+
+const LLM_USAGE_GROUP = `GROUP BY root_session_id, provider, model, service_tier`;
+
+/** The grouped rows as synthetic leaves — exact by the cost model's linearity (see LlmUsageRow). */
+function usageLeaves(rows: readonly LlmUsageRow[]): LlmCallLeaf[] {
+  return rows.map((row) => {
+    const attributes: LlmCallAttributes = {
+      input_tokens: row.inputTokens,
+      output_tokens: row.outputTokens,
+      cache_creation_input_tokens: row.cacheCreationTokens,
+      cache_read_input_tokens: row.cacheReadTokens,
+      ephemeral_1h_input_tokens: row.ephemeral1hTokens,
+      ephemeral_5m_input_tokens: row.ephemeral5mTokens,
+      web_search_requests: row.webSearchRequests,
+    };
+    // Set only when the group has one: exactOptionalPropertyTypes tells an
+    // absent key from an undefined one, and buildTokenReports reads an absent
+    // provider or model as 'unknown' and an absent tier as 1x — exactly what a
+    // bag without them meant when every call was folded on its own.
+    if (row.provider !== null) attributes.provider = row.provider;
+    if (row.model !== null) attributes.model = row.model;
+    if (row.serviceTier !== null) attributes.service_tier = row.serviceTier;
+    return { sessionId: row.sessionId, attributes };
+  });
+}
 
 // A session root row. EVERY `event_type='session'` row counts, and a row missing
 // the fixture/live attributes degrades to defensive defaults (see
@@ -688,28 +762,58 @@ export class SqliteActivityRepository implements ActivityReadPort {
   }
 
   /**
-   * Cross-session token report — every `llm_call` leaf (optionally windowed to
-   * `started_at >= fromMs`) grouped into per-session `SessionTokenReport`s, with
-   * USD cost DERIVED at read time via the shared `defaultCostModel` (never
-   * stored). `fromMs` lets the Activity page scope the usage panel to its
-   * selected time range; omit it for all-time (the CLI/TUI overview). The
-   * caller collapses these onto per-model rows with `aggregateTokenUsage`.
+   * Cross-session token report — every `llm_call` in the store (or in a
+   * `started_at >= fromMs` window, the Activity page's range) grouped per
+   * session, with USD cost DERIVED at read time via the shared
+   * `defaultCostModel` (never stored). The caller collapses these onto
+   * per-model rows with `aggregateTokenUsage`.
+   *
+   * Grouped in SQL over `idx_audit_llm_usage` — one entry per call carrying
+   * the members the rollup sums — and priced once per group, which is exact
+   * (see LlmUsageRow). Reading the bags and folding them in JS measured 31 ms
+   * for a seven-day window at 50k calls, and naming the VIRTUAL columns
+   * against the table 40 ms, since each is a json_extract recomputed per row;
+   * the index stores the values once, at write, and answers the same window in
+   * 8.5 ms. `INDEXED BY` is deliberate: with or without ANALYZE statistics the
+   * planner prefers the general event-type index and fetches every row to
+   * recompute the columns it could have read. The index is one every open
+   * store carries, since opening runs the migrations, so the hard requirement
+   * `INDEXED BY` introduces is already met; token-rollup-plans.test.ts pins
+   * the plan. All-time is a scan of the whole index — still one narrow entry
+   * per call, no bag parsed.
    */
   tokenReports(fromMs?: number): Promise<SessionTokenReport[]> {
-    // Omit `fromMs` entirely when unset (exactOptionalPropertyTypes rejects an
-    // explicit `undefined`) so the helper reads all-time.
-    const leaves = this.readLlmCallLeaves(fromMs === undefined ? {} : { fromMs });
-    return Promise.resolve(buildTokenReports(leaves, defaultCostModel));
+    const rows = allRows<LlmUsageRow>(
+      this.db.prepare(
+        `${LLM_USAGE_SELECT}
+           FROM audit_events INDEXED BY idx_audit_llm_usage
+          WHERE ${LLM_USAGE_SCOPE}${fromMs === undefined ? '' : ' AND started_at >= ?'}
+          ${LLM_USAGE_GROUP}`,
+      ),
+      fromMs === undefined ? undefined : [fromMs],
+    );
+    return Promise.resolve(buildTokenReports(usageLeaves(rows), defaultCostModel));
   }
 
   /**
-   * One session's token report — its `llm_call` leaves grouped per (provider,
-   * model) with derived cost, or `null` when the session made no `llm_call`s
-   * (an empty/tool-only session). Feeds the session-detail pane's per-model
-   * breakdown + estimated cost.
+   * One session's token report — its `llm_call`s grouped per (provider,
+   * model, tier) with derived cost, or `null` when the session made no
+   * `llm_call`s (an empty/tool-only session). Feeds the session-detail pane's
+   * per-model breakdown + estimated cost. The same rollup as `tokenReports`,
+   * seeking one root through a root-led `llm_call` index; the bag-reading fold
+   * it replaces walked every `llm_call` in the store to find one session's.
    */
   tokenReportForSession(sessionId: string): Promise<SessionTokenReport | null> {
-    const reports = buildTokenReports(this.readLlmCallLeaves({ sessionId }), defaultCostModel);
+    const rows = allRows<LlmUsageRow>(
+      this.db.prepare(
+        `${LLM_USAGE_SELECT}
+           FROM audit_events
+          WHERE ${LLM_USAGE_SCOPE} AND root_session_id = ?
+          ${LLM_USAGE_GROUP}`,
+      ),
+      [sessionId],
+    );
+    const reports = buildTokenReports(usageLeaves(rows), defaultCostModel);
     // buildTokenReports groups by session, so a single-session read yields at
     // most one report (its rollups are the per-model breakdown).
     return Promise.resolve(reports[0] ?? null);
@@ -735,46 +839,6 @@ export class SqliteActivityRepository implements ActivityReadPort {
     const seen = new Set<HarnessType>();
     for (const row of rows) seen.add(toHarness(row.harness));
     return Promise.resolve([...seen]);
-  }
-
-  /**
-   * The raw `llm_call` leaves (session id + parsed attribute bag) for the token
-   * rollups, optionally narrowed to one session and/or a `started_at >= fromMs`
-   * window. A leaf whose attributes blob is NULL or unparseable is skipped
-   * (best-effort read — a corrupt bag never breaks the report). `root_session_id`
-   * is the leaf's session (the reconciler sets parent_id = root_session_id).
-   */
-  private readLlmCallLeaves(opts: { sessionId?: string; fromMs?: number } = {}): LlmCallLeaf[] {
-    const conditions = ["event_type = 'llm_call'", 'attributes IS NOT NULL'];
-    const params: unknown[] = [];
-    if (opts.sessionId !== undefined) {
-      conditions.push('root_session_id = ?');
-      params.push(opts.sessionId);
-    }
-    if (opts.fromMs !== undefined) {
-      conditions.push('started_at >= ?');
-      params.push(opts.fromMs);
-    }
-    const rows = allRows<{ sessionId: string | null; attributes: string }>(
-      this.db.prepare(
-        `SELECT root_session_id AS sessionId, attributes
-           FROM audit_events
-          WHERE ${conditions.join(' AND ')}`,
-      ),
-      params as SQLInputValue[],
-    );
-
-    // A leaf with no root session can't be attributed and is dropped; a leaf
-    // whose attributes blob is unparseable is skipped (best-effort read).
-    return mapRowsTolerant(
-      rows.filter(
-        (row): row is { sessionId: string; attributes: string } => row.sessionId !== null,
-      ),
-      (row) => ({
-        sessionId: row.sessionId,
-        attributes: JSON.parse(row.attributes) as LlmCallAttributes,
-      }),
-    );
   }
 
   /**

@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "1cafbbc8-63ed-44d8-a908-c9dc9d10854a",
-  "prevId": "99c4f383-88a9-4c44-8a4a-3fc115f79992",
+  "id": "c38ef17c-6a59-4420-8abb-b935bc21f9a0",
+  "prevId": "9d681a20-60ce-4e13-84ab-729071dcb6ac",
   "tables": {
     "audit_events": {
       "name": "audit_events",
@@ -326,6 +326,59 @@
             "started_at"
           ],
           "isUnique": false
+        },
+        "idx_audit_llm_usage": {
+          "name": "idx_audit_llm_usage",
+          "columns": [
+            "started_at",
+            "root_session_id",
+            "provider",
+            "model",
+            "service_tier",
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+            "ephemeral_1h_input_tokens",
+            "ephemeral_5m_input_tokens",
+            "web_search_requests"
+          ],
+          "isUnique": false,
+          "where": "event_type = 'llm_call' AND attributes IS NOT NULL"
+        },
+        "idx_audit_session_prompt": {
+          "name": "idx_audit_session_prompt",
+          "columns": [
+            "root_session_id"
+          ],
+          "isUnique": false,
+          "where": "event_type = 'prompt'"
+        },
+        "idx_audit_session_share": {
+          "name": "idx_audit_session_share",
+          "columns": [
+            "root_session_id"
+          ],
+          "isUnique": false,
+          "where": "event_type = 'share'"
+        },
+        "idx_audit_ended_at": {
+          "name": "idx_audit_ended_at",
+          "columns": [
+            "ended_at",
+            "root_session_id"
+          ],
+          "isUnique": false,
+          "where": "ended_at IS NOT NULL"
+        },
+        "idx_audit_session_ended": {
+          "name": "idx_audit_session_ended",
+          "columns": [
+            "root_session_id",
+            "ended_at"
+          ],
+          "isUnique": false,
+          "where": "ended_at IS NOT NULL"
         }
       },
       "foreignKeys": {

@@ -1,0 +1,1 @@
+CREATE INDEX `idx_audit_llm_usage` ON `audit_events` (`started_at`,`root_session_id`,`provider`,`model`,`service_tier`,`input_tokens`,`output_tokens`,`cache_creation_input_tokens`,`cache_read_input_tokens`,`ephemeral_1h_input_tokens`,`ephemeral_5m_input_tokens`,`web_search_requests`) WHERE event_type = 'llm_call' AND attributes IS NOT NULL;

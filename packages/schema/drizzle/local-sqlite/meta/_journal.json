@@ -187,8 +187,22 @@
     {
       "idx": 26,
       "version": "6",
-      "when": 1788448643335,
-      "tag": "0026_activity_session_probe_indexes",
+      "when": 1788438007213,
+      "tag": "0026_audit_llm_call_usage_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "6",
+      "when": 1788450230407,
+      "tag": "0027_audit_llm_usage_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "6",
+      "when": 1788454323528,
+      "tag": "0028_activity_session_probe_indexes",
       "breakpoints": true
     }
   ]

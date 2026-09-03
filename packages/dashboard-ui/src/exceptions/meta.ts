@@ -23,7 +23,18 @@ export type Tone = NonNullable<BadgeProps['variant']>;
 // it is unrevoked, unexpired, and under its use budget.
 export type ExceptionState = 'active' | 'consumed' | 'expired' | 'revoked';
 
-export function exceptionState(ex: ExceptionDescriptor, now = Date.now()): ExceptionState {
+/**
+ * The lifecycle state a grant is in at `now`.
+ *
+ * `now` is required rather than defaulted, and this is the call that most needs
+ * it: the state gates STRUCTURE, not just a label. ExceptionDetailView renders
+ * the revoke form only while the state reads `active`, so a server render and a
+ * hydration that straddle `expiresAt` disagree about whether that whole subtree
+ * exists — a mismatch React resolves by throwing the server HTML away. See the
+ * note at the top of ../lib/relativeTime.ts; the same argument applies, one
+ * severity up.
+ */
+export function exceptionState(ex: ExceptionDescriptor, now: number): ExceptionState {
   if (ex.revokedAt !== null) return 'revoked';
   if (ex.maxUses !== null && ex.useCount >= ex.maxUses) return 'consumed';
   if (ex.expiresAt !== null && Date.parse(ex.expiresAt) <= now) return 'expired';

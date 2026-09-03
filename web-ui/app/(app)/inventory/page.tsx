@@ -2,6 +2,7 @@ import { PageHead, resolveInventorySelection } from '@akasecurity/dashboard-ui';
 import type { HarnessEventsResponse } from '@akasecurity/schema';
 
 import { db } from '../../lib/db';
+import { renderInstant } from '../../lib/rendered-at';
 import {
   type InventorySearchParams,
   parseDrawer,
@@ -97,6 +98,7 @@ export default async function InventoryPage({
         path={path}
         fq={fq}
         drawer={drawer}
+        renderedAt={renderInstant()}
       />
     </div>
   );

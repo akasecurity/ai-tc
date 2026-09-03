@@ -16,13 +16,13 @@ export function StateTag({ state }: { state: ExceptionState }) {
   return <Badge variant={STATE_TONE[state]}>{state}</Badge>;
 }
 
-export function StateTagFor({
-  exception,
-  now,
-}: {
-  exception: ExceptionDescriptor;
-  now?: number | undefined;
-}) {
+/**
+ * Lifecycle chip for a grant, derived at `now`. `now` is required for the reason
+ * {@link exceptionState}'s is — a chip that picks its own instant reads `active`
+ * on the server and `expired` in the browser whenever the two straddle
+ * `expiresAt`.
+ */
+export function StateTagFor({ exception, now }: { exception: ExceptionDescriptor; now: number }) {
   return <StateTag state={exceptionState(exception, now)} />;
 }
 

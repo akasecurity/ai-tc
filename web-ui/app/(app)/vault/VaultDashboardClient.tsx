@@ -34,6 +34,12 @@ interface VaultDashboardClientProps {
   // The audit trail with the batched render reasons hidden (the default). The
   // toggle re-queries rather than filtering a second copy shipped up front.
   derefs: ListVaultDerefsResponse;
+  /**
+   * The instant the SERVER rendered against. Passed down rather than read here:
+   * a client that picked its own would render different text than the HTML it
+   * is hydrating.
+   */
+  renderedAt: number;
 }
 
 // The `{ items, nextCursor }` half the three vault list responses share.
@@ -226,6 +232,7 @@ export function VaultDashboardClient({
   inventory,
   reuse,
   derefs: firstDerefs,
+  renderedAt,
 }: VaultDashboardClientProps) {
   // pointerId → the revealed value (null when the vault could not resolve it)
   // AND the row it was revealed from. The row is CARRIED rather than looked up
@@ -568,6 +575,7 @@ export function VaultDashboardClient({
           </div>
         )}
         <VaultInventoryView
+          renderedAt={renderedAt}
           entries={inventoryRows}
           onReveal={onReveal}
           onRevoke={onRevoke}
@@ -609,6 +617,7 @@ export function VaultDashboardClient({
           sub="Every resolution of a vaulted value — never the value itself. Model crossings render loud."
         />
         <DerefAuditTableView
+          renderedAt={renderedAt}
           rows={derefRows}
           hiddenBatched={deref.hiddenBatched}
           showBatched={showBatched}

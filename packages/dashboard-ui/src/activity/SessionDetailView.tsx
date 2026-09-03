@@ -75,6 +75,7 @@ function DetailBody({
   toolHref,
   onExpand,
   overlayClose = false,
+  renderedAt,
 }: {
   session: ActivitySession;
   tokenReport?: SessionTokenReport | null;
@@ -83,6 +84,13 @@ function DetailBody({
   toolHref?: (toolName: string) => string;
   onExpand?: () => void;
   overlayClose?: boolean;
+  /**
+   * The instant this render is measured against, in epoch milliseconds. The host
+   * captures one and every relative label below reads it. Required: a view that
+   * picks its own instant renders one string while the server renders it and
+   * another when the browser hydrates it. See ../lib/relativeTime.ts.
+   */
+  renderedAt: number;
 }) {
   const harness = PROVIDERS[session.harness];
   const tools = toolEntries(session.tools);
@@ -157,10 +165,14 @@ function DetailBody({
             <MetaChips items={session.models} mono nowrap />
           </MetaItem>
           <MetaItem label="Started">
-            <MetaLine text={`${startLabel(session.startedAt)} · ${dayLabel(session.startedAt)}`} />
+            <MetaLine
+              text={`${startLabel(session.startedAt)} · ${dayLabel(session.startedAt, new Date(renderedAt))}`}
+            />
           </MetaItem>
           <MetaItem label="Duration">
-            <MetaLine text={durationLabel(session.startedAt, session.endedAt, session.status)} />
+            <MetaLine
+              text={durationLabel(session.startedAt, session.endedAt, session.status, renderedAt)}
+            />
           </MetaItem>
           <MetaItem label="Turns">{session.turns}</MetaItem>
           {/* In the Findings cell the tally is what yields when the column is
@@ -324,6 +336,7 @@ export function SessionDetailView({
   toolHref,
   onExpand,
   overlayClose,
+  renderedAt,
 }: {
   session: ActivitySession | null;
   isLoading: boolean;
@@ -350,6 +363,13 @@ export function SessionDetailView({
   /** The host paints a close control over this view's top-right corner (a
    * slide-over does) — reserve room for it in the header's action row. */
   overlayClose?: boolean;
+  /**
+   * The instant this render is measured against, in epoch milliseconds. The host
+   * captures one and every relative label below reads it. Required: a view that
+   * picks its own instant renders one string while the server renders it and
+   * another when the browser hydrates it. See ../lib/relativeTime.ts.
+   */
+  renderedAt: number;
 }) {
   if (error) {
     return (
@@ -384,6 +404,7 @@ export function SessionDetailView({
       {...(toolHref ? { toolHref } : {})}
       {...(onExpand ? { onExpand } : {})}
       {...(overlayClose ? { overlayClose } : {})}
+      renderedAt={renderedAt}
     />
   );
 }

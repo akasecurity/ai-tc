@@ -43,10 +43,18 @@ const DAY_MS = 86_400_000;
 /**
  * A time-range chip → the ISO `from` lower bound (`now − N days`) an API filters
  * on. Shared by every page that turns a range into a session/activity query so
- * every host path derives the same
- * bound. `now` is injectable so the derived `from` is testable.
+ * every host path derives the same bound.
+ *
+ * `now` is required rather than defaulted to `Date.now()` — not because this
+ * bound is itself rendered (it never is; it only shapes which rows a query
+ * returns), but because the caller's own render instant is what every LABEL on
+ * the same page is measured against. A default here would let the query window
+ * and the page's labels each read the clock independently, a fraction of a
+ * second apart — invisible almost always, and a real skew exactly when a
+ * request lands on the boundary the window is drawn from. Pass the same
+ * `renderedAt` the page already captured.
  */
-export function rangeToFromIso(range: TimeRange, now: number = Date.now()): string {
+export function rangeToFromIso(range: TimeRange, now: number): string {
   return new Date(now - RANGE_DAYS[range] * DAY_MS).toISOString();
 }
 

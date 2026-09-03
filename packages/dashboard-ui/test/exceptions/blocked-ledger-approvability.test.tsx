@@ -27,6 +27,11 @@ import {
   BlockedLedgerView,
 } from '../../src/exceptions/BlockedLedgerView.tsx';
 
+// A fixed render instant. These cases assert display contracts rather than
+// ages, so the value only has to be the SAME one every run — but it has to be
+// passed, because the views no longer have a clock of their own to fall back on.
+const RENDERED_AT = Date.parse('2026-07-05T00:00:00.000Z');
+
 const row = (reference: string, keyVersion: number): BlockedDetectionDescriptor => ({
   reference,
   ruleId: 'aws-access-key',
@@ -43,6 +48,7 @@ const REFERENCES = ['aaa111', 'bbb222'] as const;
 const render = (blockReason: (r: BlockedDetectionDescriptor) => string | null) =>
   renderToStaticMarkup(
     <BlockedLedgerView
+      renderedAt={RENDERED_AT}
       items={[row(REFERENCES[0], 1), row(REFERENCES[1], 7)]}
       onApprove={vi.fn()}
       blockedWindow="30m"

@@ -71,15 +71,19 @@ export function parseExpanded(sp: ActivitySearchParams): boolean {
 /**
  * Search + harness + range → the persistence session-list query. The range maps
  * to a `from` lower bound (`now − N days`); `limit: 100` is the schema max (the
- * list shows a truncation notice past it rather than paginating). `nowMs` is
- * injectable so the derived `from` is testable.
+ * list shows a truncation notice past it rather than paginating).
+ *
+ * `nowMs` is required — see `rangeToFromIso`'s own doc for why a default here
+ * is the wrong shape even though this bound is never itself rendered: it must
+ * share the page's `renderedAt` rather than take an independent clock read a
+ * fraction of a second apart from the labels that instant measures.
  */
 export function toListQuery(
   q: string,
   harness: Harness[],
   range: TimeRange,
   showEmpty = false,
-  nowMs: number = Date.now(),
+  nowMs: number,
 ): ListActivitySessionsQuery {
   return {
     ...(q ? { q } : {}),

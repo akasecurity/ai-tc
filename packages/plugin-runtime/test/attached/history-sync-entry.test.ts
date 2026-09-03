@@ -58,8 +58,12 @@ const attachWithGrant = (): void => {
 describe('runHistorySyncPass', () => {
   // The child runs detached with stdio ignored: a rejection would be an
   // unhandled rejection nobody ever reads.
-  it('never throws on a machine that was never attached', async () => {
-    await expect(runHistorySyncPass(home)).resolves.toBeUndefined();
+  it('never throws on a machine that was never attached, and says why', async () => {
+    // It used to resolve `undefined` here, which is what made `--run` silent:
+    // the command could not distinguish this from a pass that ran and sent
+    // nothing. The state-writing behaviour below is unchanged — a pass that made
+    // no attempt still writes no file; only the report reaches the caller.
+    await expect(runHistorySyncPass(home)).resolves.toBe('not-attached');
   });
 
   // Writing state for a pass that was never made would have status describe a

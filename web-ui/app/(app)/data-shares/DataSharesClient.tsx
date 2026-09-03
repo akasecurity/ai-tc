@@ -62,6 +62,7 @@ export function DataSharesClient({
   destination,
   selectedDest,
   selectedEndpoint,
+  renderedAt,
 }: {
   q: string;
   groups: ShareDestinationGroup[];
@@ -69,6 +70,12 @@ export function DataSharesClient({
   destination: ShareDestinationDetail | null;
   selectedDest: string | null;
   selectedEndpoint: string | null;
+  /**
+   * The instant the SERVER rendered against. Passed down rather than read here:
+   * a client that picked its own would render different text than the HTML it
+   * is hydrating.
+   */
+  renderedAt: number;
 }) {
   const pathname = usePathname();
   // Navigation transition (search/selection pushes) — distinct from the write
@@ -186,6 +193,7 @@ export function DataSharesClient({
                 className="min-h-0 flex-1 overflow-y-auto p-3.5"
               >
                 <DataSharesTableView
+                  renderedAt={renderedAt}
                   group={activeGroup}
                   expanded={expanded}
                   forceExpand={!!ql}
@@ -241,6 +249,7 @@ export function DataSharesClient({
                     </div>
                   )}
                   <DataShareDetailView
+                    renderedAt={renderedAt}
                     destination={destination}
                     endpoint={selectedEp}
                     isSettingDecision={isSettingDecision}

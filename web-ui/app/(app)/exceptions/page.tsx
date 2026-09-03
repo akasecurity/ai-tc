@@ -13,6 +13,7 @@ import type { FingerprintKeyState } from '@akasecurity/schema';
 import { toBlockedDetectionDescriptor, toExceptionDescriptor } from '@akasecurity/schema';
 
 import { db } from '../../lib/db';
+import { renderInstant } from '../../lib/rendered-at';
 import { ExceptionsClient } from './ExceptionsClient';
 
 // node:sqlite (via @akasecurity/persistence) runs only on the Node.js runtime.
@@ -78,8 +79,8 @@ export default async function ExceptionsPage({
   const approvableBlocked = retained.filter((b) => isBlockedRowApprovable(b, keyState)).length;
   // A relative label must be calculated against the exact same instant during
   // SSR and hydration; otherwise crossing a minute boundary can change its text.
-  // eslint-disable-next-line react-hooks/purity -- serialized to the client for hydration parity
-  const renderedAt = Date.now();
+  // One instant for the whole route, so both child views measure against it.
+  const renderedAt = renderInstant();
 
   return (
     <ExceptionsClient

@@ -458,6 +458,32 @@ export const auditEvents = sqliteTable(
     // the composite indexes above cannot serve because none of them leads with
     // started_at. Without it each batch sorts the whole remaining scope.
     index('idx_audit_started_at').on(t.startedAt),
+    // The token rollups' index: one covering entry per `llm_call` carrying the
+    // usage members the report groups and sums, so a window's rollup is
+    // answered from the index alone — no bag parsed, no row fetched. This is
+    // what makes the usage columns fast HERE: they are VIRTUAL, so a read that
+    // names them against the table recomputes eleven json_extracts per row
+    // (137 ms at 50k rows against 98 ms for parsing the bags in JS), while the
+    // index stores the values once, at write (8.8 ms for a seven-day window,
+    // 38 ms all-time). Partial on `attributes IS NOT NULL` as well as the kind,
+    // so the rollup's own predicate is implied by the index and stays
+    // covering; a call with no bag has no usage to roll up.
+    index('idx_audit_llm_usage')
+      .on(
+        t.startedAt,
+        t.rootSessionId,
+        t.provider,
+        t.model,
+        t.serviceTier,
+        t.inputTokens,
+        t.outputTokens,
+        t.cacheCreationInputTokens,
+        t.cacheReadInputTokens,
+        t.ephemeral1hInputTokens,
+        t.ephemeral5mInputTokens,
+        t.webSearchRequests,
+      )
+      .where(sql`event_type = 'llm_call' AND attributes IS NOT NULL`),
   ],
 );
 

@@ -135,4 +135,8 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0026_audit_llm_call_usage_columns',
     sql: "ALTER TABLE `audit_events` ADD `service_tier` text GENERATED ALWAYS AS (json_extract(attributes, '$.service_tier')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `ephemeral_1h_input_tokens` integer GENERATED ALWAYS AS (json_extract(attributes, '$.ephemeral_1h_input_tokens')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `ephemeral_5m_input_tokens` integer GENERATED ALWAYS AS (json_extract(attributes, '$.ephemeral_5m_input_tokens')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `web_search_requests` integer GENERATED ALWAYS AS (json_extract(attributes, '$.web_search_requests')) VIRTUAL;",
   },
+  {
+    tag: '0027_audit_llm_usage_index',
+    sql: "CREATE INDEX `idx_audit_llm_usage` ON `audit_events` (`started_at`,`root_session_id`,`provider`,`model`,`service_tier`,`input_tokens`,`output_tokens`,`cache_creation_input_tokens`,`cache_read_input_tokens`,`ephemeral_1h_input_tokens`,`ephemeral_5m_input_tokens`,`web_search_requests`) WHERE event_type = 'llm_call' AND attributes IS NOT NULL;",
+  },
 ];

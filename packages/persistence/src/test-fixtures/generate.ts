@@ -462,7 +462,9 @@ export function generateCaptureCorpus(
   // fallback would.
   const firstRule = rules[0];
   if (firstRule === undefined) {
-    throw new RangeError('generateCaptureCorpus: unreachable — rules.length === 0 already rejected');
+    throw new RangeError(
+      'generateCaptureCorpus: unreachable — rules.length === 0 already rejected',
+    );
   }
 
   if (!Number.isInteger(events) || events < 0) {

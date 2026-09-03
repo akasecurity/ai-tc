@@ -134,6 +134,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'maskContextSlice',
   'maskMatch',
   'maskText',
+  'matchProhibitedSpawnModel',
   'migrateLegacyLayout',
   'modelFromTranscript',
   'modelFromTranscriptTail',

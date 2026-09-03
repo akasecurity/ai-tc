@@ -15,6 +15,16 @@ export interface ExceptionDetailViewProps {
   onRevoke?: ((reason: string) => void) | undefined;
   busy?: boolean;
   error?: string | null;
+  /**
+   * The instant every relative label and the derived lifecycle state are
+   * measured against. An SSR host passes the time it rendered at, so the
+   * server pass and the hydration pass that follows it cannot disagree.
+   *
+   * It reaches further here than on the list views: `exceptionState` gates the
+   * revoke form below, so a grant whose `expiresAt` falls between the two
+   * passes renders that whole block on the server and drops it on the client.
+   */
+  renderedAt?: number | undefined;
 }
 
 /** Full grant detail — the web twin of `aka exception show <id>`. */
@@ -23,9 +33,10 @@ export function ExceptionDetailView({
   onRevoke,
   busy,
   error,
+  renderedAt,
 }: ExceptionDetailViewProps) {
   const [reason, setReason] = useState('');
-  const state = exceptionState(exception);
+  const state = exceptionState(exception, renderedAt);
 
   return (
     <div className="flex flex-col gap-6 rounded-xl border border-border bg-surface p-5">
@@ -33,7 +44,7 @@ export function ExceptionDetailView({
         <span className="font-mono text-sm font-semibold text-text">
           {exception.id.slice(0, 8)}
         </span>
-        <StateTagFor exception={exception} />
+        <StateTagFor exception={exception} now={renderedAt} />
         <CapabilityTagFor exception={exception} />
       </div>
 
@@ -60,16 +71,16 @@ export function ExceptionDetailView({
           {exception.scope === 'permanent' && ' — until revoked'}
         </MetaItem>
         <MetaItem label="Expires">
-          {exception.expiresAt === null ? '—' : relativeTime(exception.expiresAt)}
+          {exception.expiresAt === null ? '—' : relativeTime(exception.expiresAt, renderedAt)}
         </MetaItem>
         <MetaItem label="Uses">
           {exception.maxUses === null
             ? String(exception.useCount)
             : `${String(exception.useCount)}/${String(exception.maxUses)}`}
-          {exception.lastUsedAt && ` · last ${relativeTime(exception.lastUsedAt)}`}
+          {exception.lastUsedAt && ` · last ${relativeTime(exception.lastUsedAt, renderedAt)}`}
         </MetaItem>
         <MetaItem label="Created">
-          {relativeTime(exception.createdAt)} by {exception.createdBy} via{' '}
+          {relativeTime(exception.createdAt, renderedAt)} by {exception.createdBy} via{' '}
           {VIA_LABEL[exception.createdVia]}
         </MetaItem>
         <MetaItem label="Key version">{String(exception.keyVersion)}</MetaItem>
@@ -84,7 +95,7 @@ export function ExceptionDetailView({
         <div className="rounded-lg border border-sev-critical-fill bg-sev-critical-fill p-3">
           <SectionLabel className="text-sev-critical-ink">Revoked</SectionLabel>
           <p className="text-sm text-text-2">
-            {relativeTime(exception.revokedAt)} by {exception.revokedBy ?? 'unknown'}
+            {relativeTime(exception.revokedAt, renderedAt)} by {exception.revokedBy ?? 'unknown'}
             {exception.revokeReason ? ` — ${exception.revokeReason}` : ''}
           </p>
         </div>

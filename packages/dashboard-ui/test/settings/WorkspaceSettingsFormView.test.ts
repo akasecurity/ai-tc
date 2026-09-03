@@ -451,8 +451,15 @@ describe('history-sync disclosure states what payload v2 sends', () => {
   it('names the captured text, the masking, and what declining costs', () => {
     // The widening: captured text is inside the grant now.
     expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('INCLUDES ITS TEXT');
-    // ...and it is not raw — the masking is part of the claim.
-    expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('masked');
+    // ...and the masking is part of the claim, but only as the CONDITIONAL it
+    // is: a span is masked where the policy assigned its detection is redact or
+    // block, and not otherwise. A bare match on `masked` was what this used to
+    // assert, and it went on passing after at-rest masking started following
+    // the assigned policy — which is how the copy came to promise a guarantee
+    // the product no longer gives. So pin the condition and the default with it.
+    expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('masked only where that policy is redact');
+    expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('under monitor or warn');
+    expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('Every detection ships on monitor');
     // Declining must not be sold as "this stops sending"; live sending remains.
     expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('Live sending is part of being attached');
     expect(HISTORY_SYNC_SECTION_DESCRIPTION).toContain('dropped rather than kept');
@@ -469,6 +476,18 @@ describe('history-sync disclosure states what payload v2 sends', () => {
     ].join(' ');
     expect(all).not.toContain('never the prompts or replies themselves');
     expect(all).not.toContain('Prompts and assistant replies are not sent');
+  });
+
+  it('does not still promise every detected secret is masked', () => {
+    // The unconditional masking claim, which the per-detection at-rest rule
+    // makes false for monitor and warn. Pinned in both directions for the same
+    // reason as the sentence above: new wording beside the old one reads green.
+    const all = [
+      HISTORY_SYNC_SECTION_DESCRIPTION,
+      ...HISTORY_SYNC_CHOICES.map((c) => c.description),
+    ].join(' ');
+    expect(all).not.toContain('every secret this machine detected is masked first');
+    expect(all).not.toContain('with detected secrets masked');
   });
 
   it('offers the paused grant a way back that names what changed', () => {

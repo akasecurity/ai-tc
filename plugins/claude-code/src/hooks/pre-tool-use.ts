@@ -18,12 +18,13 @@
  *
  * Fail-open: any error → no output, exit 0.
  */
-import type { VaultGlue } from '@akasecurity/plugin-sdk';
+import type { PluginConfig, VaultGlue } from '@akasecurity/plugin-sdk';
 import { createPluginRuntime, createVaultGlue, loadConfig } from '@akasecurity/plugin-sdk';
 import { isVaultConsentValid, pointerTokenScanner, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
+import { handleSubagentSpawn } from './model-guard.ts';
 import { replaceAtPath, stringAtPath } from './paths.ts';
 import type { PointerField } from './pointer-substitution.ts';
 import {
@@ -50,15 +51,47 @@ async function main(): Promise<void> {
   const rawToolInput = input.tool_input;
   if (typeof rawToolInput !== 'object' || rawToolInput === null) return;
 
+  const toolInput = rawToolInput as Record<string, unknown>;
+  const sessionId = getString(input, 'session_id');
+  // Read at most once per hook, and only if something below actually needs it —
+  // the matcher is broad enough to spawn this hook for tool calls that reach
+  // neither the spawn seam nor the scan, and those must still cost nothing.
+  let configMemo: PluginConfig | undefined;
+  const loadConfigOnce = (): PluginConfig => (configMemo ??= loadConfig());
+
+  // PROHIBITED-MODEL GOVERNANCE for a subagent spawn, ahead of BOTH the scan
+  // and the early return below.
+  //
+  // The position is the point. A spawn's arguments carry no executable text, so
+  // it leaves through `fields.length === 0` before any of the scan's setup
+  // happens — which is why this cannot sit beside the scan and borrow its
+  // gateway. It is also the only seam that sees a subagent at all: a subagent
+  // turn is neither a user prompt nor a model switch, and both of those resolve
+  // the PARENT's model, which is exactly what a spawn overrides.
+  //
+  // `handleSubagentSpawn` opens nothing unless the call really is a spawn, and
+  // reads no agent definition unless the organization prohibits something, so
+  // the ordinary tool call pays one set lookup for this.
+  if (
+    await handleSubagentSpawn(
+      () => openGatewayOrNull(loadConfigOnce()),
+      toolName,
+      toolInput,
+      sessionId,
+      getString(input, 'cwd'),
+      emit,
+    )
+  ) {
+    return;
+  }
+
   // Resolved before the store is opened: the matcher is broad enough to spawn
   // this hook for MCP tools whose payload carries no scannable text, and those
   // calls should cost nothing.
-  const toolInput = rawToolInput as Record<string, unknown>;
   const fields = scannableInputFields(toolName, toolInput);
   if (fields.length === 0) return;
 
-  const config = loadConfig();
-  const sessionId = getString(input, 'session_id');
+  const config = loadConfigOnce();
   // A symlinked store path redirects the corpus without failing anything;
   // say so once per session (stderr, so the stdout contract is untouched).
   warnIfStoreRedirected(config, sessionId);

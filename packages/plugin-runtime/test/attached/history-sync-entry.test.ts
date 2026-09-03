@@ -34,6 +34,27 @@ afterEach(() => {
   removeTree(home);
 });
 
+const attachWithGrant = (): void => {
+  applyOnboarding(
+    {
+      runMode: 'attached',
+      controlPlane: { endpoint: ENDPOINT, attachedAt: AT },
+      historySyncConsent: {
+        acknowledgedAt: AT,
+        payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+        endpoint: ENDPOINT,
+      },
+    },
+    home,
+  );
+  writeControlPlaneCredential(settingsDirOf(home), {
+    specVersion: 1,
+    endpoint: ENDPOINT,
+    apiKey: FIXTURE,
+    mintedAt: AT,
+  });
+};
+
 describe('runHistorySyncPass', () => {
   // The child runs detached with stdio ignored: a rejection would be an
   // unhandled rejection nobody ever reads.
@@ -101,5 +122,107 @@ describe('runHistorySyncPass', () => {
     // The first pass that ran is when this machine started, and it is stamped.
     expect(state?.startedAtMs).not.toBeNull();
     expect(state?.completedAtMs).not.toBeNull();
+  });
+
+  // skippedTotal is the only place a PERMANENTLY dropped capture is reported, and
+  // it has to be a lifetime figure: it sits beside sentTotal and pendingTotal,
+  // both of which are. Built from a per-pass delta it announced a terminal loss
+  // once and then dropped it while the rows stayed gone — so the second pass
+  // here, with nothing left to skip, is the half that matters.
+  it('reports a permanently skipped capture, and keeps reporting it', async () => {
+    attachWithGrant();
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.auditEvents.ensureSessionRoot('s-1', AT);
+      db.auditEvents.insertAuditEvent({
+        id: 's-1-prompt',
+        eventType: 'prompt',
+        rootSessionId: 's-1',
+        parentId: 's-1',
+        startedAt: new Date(Date.parse(AT) + 60_000).toISOString(),
+        content: 'a prompt that can never be expressed',
+        contentHash: 'c'.repeat(64),
+        // No source_tool: required on the wire, so rebuildCapture refuses the
+        // row and the drain skips it permanently.
+        attributes: {},
+      });
+      db.historySync.markCaptureOwed('s-1-prompt');
+    } finally {
+      db.close();
+    }
+
+    await runHistorySyncPass(home, {
+      sleep: () => Promise.resolve(),
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: () => Promise.resolve({ settled: 0 }),
+    });
+    expect(readHistorySyncState(dataDirOf(home))?.skippedTotal).toBe(1);
+
+    // A second pass with nothing to skip. A per-pass delta would report 0 here
+    // while the row stayed gone for ever.
+    await runHistorySyncPass(home, {
+      sleep: () => Promise.resolve(),
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: () => Promise.resolve({ settled: 0 }),
+    });
+    expect(readHistorySyncState(dataDirOf(home))?.skippedTotal).toBe(1);
+  });
+
+  // completedAtMs is the FIRST moment this machine owed the deployment nothing,
+  // and it has to survive `done` going false again. Under v1 that never happened
+  // — the structural lane only ever drained — but the capture lane's subject
+  // grows with every failed live send, so a later capture flips `done` back and
+  // the old write cleared the pin, re-stamping it on the next catch-up. A
+  // consumer reading "when this machine first caught up" then got the most
+  // recent catch-up instead.
+  it('keeps the first completedAtMs when a later pass has work again', async () => {
+    attachWithGrant();
+    const db = openLocalDatabase(dataDirOf(home));
+    db.close();
+
+    await runHistorySyncPass(home);
+    // `not.toBeNull()` is satisfied by undefined, which is exactly what an
+    // unwritten state yields — the case this guard exists to catch.
+    const first = readHistorySyncState(dataDirOf(home))?.completedAtMs;
+    expect(first).toEqual(expect.any(Number));
+
+    // A capture a live forward tried and failed to deliver — marked owed, which
+    // is what the attached gateway writes and what the drain reads. The next
+    // pass therefore has work, so `done` is false and the branch under test is
+    // the one taken.
+    const owed = openLocalDatabase(dataDirOf(home));
+    try {
+      owed.auditEvents.ensureSessionRoot('s-1', AT);
+      owed.auditEvents.insertAuditEvent({
+        id: 's-1-prompt',
+        eventType: 'prompt',
+        rootSessionId: 's-1',
+        parentId: 's-1',
+        startedAt: new Date(Date.parse(AT) + 60_000).toISOString(),
+        content: 'a prompt nobody delivered',
+        contentHash: 'c'.repeat(64),
+        attributes: { source_tool: 'claude-code' },
+      });
+      owed.historySync.markCaptureOwed('s-1-prompt');
+    } finally {
+      owed.close();
+    }
+
+    // Driven through the pass's seams rather than the real transport: a send
+    // that fails climbs the retry ladder on real timers, which is seconds of
+    // sleeps against a 20s testTimeout and a flake waiting to happen on a slow
+    // leg. The deployment takes nothing, so the row stays owed and `done` is
+    // false — the branch under test — with no network and no clock involved.
+    await runHistorySyncPass(home, {
+      sleep: () => Promise.resolve(),
+      sendBatch: () => Promise.resolve(),
+      sendCaptures: () => Promise.resolve({ settled: 0 }),
+    });
+    const after = readHistorySyncState(dataDirOf(home));
+
+    // The pass found work, so the phase flapped back...
+    expect(after?.phase).toBe('filling');
+    // ...and the pin did not move.
+    expect(after?.completedAtMs).toBe(first);
   });
 });

@@ -474,7 +474,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   if (
     outcome === 'ok' &&
     d.now() < deadline &&
-    d.ledger.pendingCaptureRows(1, d.backlogBefore, d.now() - CAPTURE_GRACE_MS).length === 0
+    d.ledger.pendingCaptureRows(1, d.now() - CAPTURE_GRACE_MS).length === 0
   ) {
     outcome = await drainStructural(deadline);
   }
@@ -488,8 +488,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     skipped,
     // LIMIT 1 — this asks "is anything owed", never "how much", so it must not
     // pay for a count over the capture grain on every pass.
-    capturesPending:
-      d.ledger.pendingCaptureRows(1, d.backlogBefore, d.now() - CAPTURE_GRACE_MS).length > 0,
+    capturesPending: d.ledger.pendingCaptureRows(1, d.now() - CAPTURE_GRACE_MS).length > 0,
     counts: d.ledger.counts(d.backlogBefore),
     atMs: d.now(),
   };
@@ -548,11 +547,7 @@ async function drainCaptures(
     // pre-attach history and belong to the structural lane, which sends them
     // without their text — draining them here would put a machine's whole local
     // history of prompts on the wire under copy that promises the opposite.
-    const rows = d.ledger.pendingCaptureRows(
-      CAPTURE_BATCH_SIZE,
-      d.backlogBefore,
-      d.now() - CAPTURE_GRACE_MS,
-    );
+    const rows = d.ledger.pendingCaptureRows(CAPTURE_BATCH_SIZE, d.now() - CAPTURE_GRACE_MS);
     if (rows.length === 0) return { sent, skipped };
 
     const ready: { id: string; event: IngestEvent }[] = [];
@@ -647,7 +642,24 @@ async function sendCaptureChunk(
     // reading "delivered" for rows that were not. Under-counting costs a
     // redundant resend the receiver's id-dedup absorbs; over-counting is silent
     // data loss, so the unread case has to fall on the resend side.
-    if (settled < chunk.length) return { sent: 0, skipped: 0, stopped: 'unreachable' };
+    if (settled < chunk.length) {
+      // ISOLATE, exactly as a rejection does, rather than abandoning the batch.
+      // Returning here was safe but made no progress: the read has no cursor, so
+      // a deployment that consistently under-accepts (one capping at 50, say)
+      // re-reads the same rows next pass, under-accepts again, and wedges the
+      // lane for ever while reporting a reachable deployment as unreachable.
+      //
+      // Stamping `settled` rows is not available — the ack is an AGGREGATE and
+      // names none of them, so which ones settled is unknowable at this size.
+      // Splitting is what makes it knowable: at length 1 the answer is
+      // unambiguous, and every row the deployment will take gets taken.
+      if (chunk.length > 1) return await isolate(d, chunk, beat);
+      // A single row the deployment accepted the request for and then took
+      // nothing of. Not a rejection — nothing threw — so it is not skippable
+      // without inventing a verdict the deployment never gave. Stop, and leave
+      // it owed.
+      return { sent: 0, skipped: 0, stopped: 'unreachable' };
+    }
     d.ledger.markSynced(
       chunk.map((c) => c.id),
       d.now(),
@@ -663,22 +675,38 @@ async function sendCaptureChunk(
       d.ledger.markSkipped([only.id]);
       return { sent: 0, skipped: 1 };
     }
-    let sent = 0;
-    let skipped = 0;
-    for (const [index, one] of chunk.entries()) {
-      // PACED like every other request, for the reason the structural lane
-      // gives: the isolation pass must not burst one request per row at the
-      // moment the deployment has just refused something, on a credential this
-      // job shares with the live forwarding.
-      if (index > 0) await d.sleep(PACE_INTERVAL_MS);
-      beat();
-      const single = await sendCaptureChunk(d, [one], beat);
-      sent += single.sent;
-      skipped += single.skipped;
-      if (single.stopped !== undefined) return { sent, skipped, stopped: single.stopped };
-    }
-    return { sent, skipped };
+    return await isolate(d, chunk, beat);
   }
+}
+
+/**
+ * Re-send a batch one row at a time.
+ *
+ * Shared by the two answers that name no row — a rejection on the merits, and an
+ * ack that took only some of the batch. Both are aggregate verdicts over a body
+ * that has to be taken apart before anything can be said about a particular row,
+ * and neither may cost the rows that were fine.
+ */
+async function isolate(
+  d: DrainDeps,
+  chunk: readonly { id: string; event: IngestEvent }[],
+  beat: () => void,
+): Promise<ChunkResult> {
+  let sent = 0;
+  let skipped = 0;
+  for (const [index, one] of chunk.entries()) {
+    // PACED like every other request, for the reason the structural lane gives:
+    // the isolation pass must not burst one request per row at the moment the
+    // deployment has just refused something, on a credential this job shares
+    // with the live forwarding.
+    if (index > 0) await d.sleep(PACE_INTERVAL_MS);
+    beat();
+    const single = await sendCaptureChunk(d, [one], beat);
+    sent += single.sent;
+    skipped += single.skipped;
+    if (single.stopped !== undefined) return { sent, skipped, stopped: single.stopped };
+  }
+  return { sent, skipped };
 }
 
 /**

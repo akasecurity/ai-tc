@@ -79,6 +79,100 @@ export function isModelProhibited(
 }
 
 /**
+ * Words that name no model of their own.
+ *
+ * `inherit` is the parent's, which the switch and turn seams have already
+ * vetted. `default` is NOT: it names the harness's configured default subagent
+ * model, which falls back to the parent only when none is configured. Both are
+ * allowed here for the same reason — this package cannot read that setting — so
+ * `default` is a known ceiling rather than a vetted case. `resolveSpawnModel`
+ * in the Claude Code plugin carries the same limit and states it.
+ */
+const SPAWN_INHERIT_WORDS: ReadonlySet<string> = new Set(['inherit', 'default']);
+
+/** Whether `char` ends an id rather than continuing it. */
+function isBoundary(char: string): boolean {
+  return char === '' || /[^a-z0-9]/.test(char);
+}
+
+/**
+ * The prohibited id a subagent spawn's requested model names, or undefined.
+ *
+ * Returns the MATCHED ENTRY rather than a boolean because the audit row is
+ * keyed on it: `buildModelRefusalEvent` exists so a control plane can group
+ * refusals by the same id the prohibition was keyed on, and recording the
+ * caller's spelling instead would file every spawn refusal under a string no
+ * prohibition list contains.
+ *
+ * THE STRING COMPARED HERE IS CALLER-CHOSEN, and that is what separates this
+ * seam from the other two. Their model is read from the session marker or the
+ * transcript, so `normalizeModelId`'s exactness argument holds: both sides
+ * speak the ids the control plane observed. Here the value is whatever the
+ * caller put in the spawn's `model` argument, so an exact matcher is a matcher
+ * with known spellings around it — `claude-opus-5[1m]`, `claude-opus-5-latest`,
+ * `us.anthropic.claude-opus-5-v1:0` all name a prohibited build and none of
+ * them is that build's id. Three shapes are therefore matched, each widening
+ * bounded by what the organization actually prohibited:
+ *
+ *   1. The id itself, folded exactly as everywhere else.
+ *   2. A BARE WORD (no hyphen) naming a tier — `opus`, `haiku`, `fable` —
+ *      matched when some prohibited id carries it as a segment. Which words are
+ *      tiers is the HARNESS's vocabulary and it grows; a fixed list of them is a
+ *      list that drifts toward allow the next time one is added, silently, which
+ *      is the failure this seam's own manifest matcher already made once.
+ *      Deriving it from the prohibition list needs no edit to cover a tier that
+ *      does not exist yet, at the cost of also matching a bare word that merely
+ *      happens to be a segment (`claude`); that is not a value the harness
+ *      accepts, and the refusal names what it matched.
+ *   3. A prohibited id CARRIED INSIDE the requested string at non-alphanumeric
+ *      boundaries on both ends — the decorated and suffixed spellings above.
+ *      The boundary is what stops `claude-opus-4` from swallowing
+ *      `claude-opus-45`.
+ *
+ * Undefined for every genuinely unknown case: an empty request, an empty list,
+ * an inherit word, and a string that matches none of the three. This control
+ * refuses on knowledge, never on ignorance.
+ */
+export function matchProhibitedSpawnModel(
+  requested: string | undefined,
+  prohibited: readonly string[] | undefined,
+): string | undefined {
+  if (requested === undefined || requested === '') return undefined;
+  if (prohibited === undefined || prohibited.length === 0) return undefined;
+  const needle = normalizeModelId(requested);
+  if (needle === '' || SPAWN_INHERIT_WORDS.has(needle)) return undefined;
+
+  const exact = prohibited.find((p) => normalizeModelId(p) === needle);
+  if (exact !== undefined) return exact;
+
+  if (!needle.includes('-')) {
+    return prohibited.find((p) => normalizeModelId(p).split('-').includes(needle));
+  }
+
+  return prohibited.find((p) => {
+    const base = normalizeModelId(p);
+    if (base === '') return false;
+    // EVERY occurrence, not the first. A base that appears twice — once inside
+    // a longer token and once at a real boundary — must match on the second,
+    // and stopping at the first turns a crafted spelling into an allow. The
+    // string is caller-chosen, which is the premise this whole function rests
+    // on, so "the harness would reject that spelling anyway" is the same
+    // reasoning that made an exact matcher look safe here to begin with.
+    let at = needle.indexOf(base);
+    while (at !== -1) {
+      if (
+        isBoundary(at === 0 ? '' : needle.charAt(at - 1)) &&
+        isBoundary(needle.charAt(at + base.length))
+      ) {
+        return true;
+      }
+      at = needle.indexOf(base, at + 1);
+    }
+    return false;
+  });
+}
+
+/**
  * Record the model a session is running on.
  *
  * Best-effort and silent: this is a governance CONVENIENCE (it saves the
@@ -269,14 +363,22 @@ export function modelFromTranscript(transcriptPath: string | undefined): string 
  * claim the call was intercepted: nothing here sits in the network path, and
  * saying otherwise would overstate the control.
  */
-export function prohibitedModelMessage(model: string, action: 'switch' | 'turn'): string {
+export function prohibitedModelMessage(model: string, action: 'switch' | 'turn' | 'spawn'): string {
   const subject =
     action === 'switch'
       ? `Cannot switch to ${model}`
-      : `This session is running on ${model}, which cannot be used`;
+      : action === 'spawn'
+        ? `Cannot start a subagent on ${model}`
+        : `This session is running on ${model}, which cannot be used`;
+  // The remedy differs by seam: a spawn is refused on an argument the caller
+  // chose, so pointing it at /model would name the wrong control.
+  const remedy =
+    action === 'spawn'
+      ? 'Name an approved model on the subagent'
+      : 'Switch to an approved model with /model';
   return (
     `${subject} — your organization has prohibited this model. ` +
-    `Switch to an approved model with /model, or ask an administrator to change ` +
+    `${remedy}, or ask an administrator to change ` +
     `its status in AKA under Govern → LLM Providers.`
   );
 }
@@ -309,8 +411,11 @@ export function decideProhibitedModelTurn(
   return { decision: 'block', reason: prohibitedModelMessage(model, 'turn') };
 }
 
-/** Which seam refused: a model switch, or a turn already running on one. */
-export type RefusalSeam = 'switch' | 'turn';
+/**
+ * Which seam refused: a model switch, a turn already running on one, or a
+ * subagent spawn asking for one.
+ */
+export type RefusalSeam = 'switch' | 'turn' | 'spawn';
 
 /**
  * The audit row for one refusal.
@@ -336,6 +441,16 @@ export function buildModelRefusalEvent(input: {
   seam: RefusalSeam;
   sourceTool: string;
   occurredAt: string;
+  /**
+   * What the caller ASKED for, when that is not the id `model` carries.
+   *
+   * The spawn seam matches a tier word or a decorated spelling against the
+   * prohibited id, and `model` records the id so a control plane can group the
+   * refusal with the prohibition. That would otherwise lose the string the user
+   * actually typed, which is the half the refusal message quotes back at them —
+   * so the two stay reconcilable rather than the row silently rewriting history.
+   */
+  requestedModel?: string;
 }): {
   id: string;
   eventType: 'model_refusal';
@@ -359,6 +474,10 @@ export function buildModelRefusalEvent(input: {
       model: input.model,
       refusal_seam: input.seam,
       source_tool: input.sourceTool,
+      // Omitted rather than duplicated when the caller named the id itself.
+      ...(input.requestedModel === undefined || input.requestedModel === input.model
+        ? {}
+        : { requested_model: input.requestedModel }),
     },
   };
 }

@@ -8,6 +8,7 @@ import {
   ExceptionsTableView,
   PageHead,
   RotateKeyDialog,
+  useRenderClock,
 } from '@akasecurity/dashboard-ui';
 import type {
   BlockedDetectionDescriptor,
@@ -60,6 +61,10 @@ export function ExceptionsClient({
     'transition-shadow duration-150',
     navPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
   );
+  // Starts at the server's instant so hydration reproduces the server's markup,
+  // then moves, so the ledger's ages and the grants table's state badges keep
+  // up with a page somebody leaves open.
+  const now = useRenderClock(renderedAt);
   const [approving, setApproving] = useState<BlockedDetectionDescriptor | null>(null);
   const [rotating, setRotating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -170,7 +175,7 @@ export function ExceptionsClient({
           // keeps the machine-local remediation copy on the one host that can
           // act on it.
           blockReason={(row) => blockedRowBlockReason(row, keyState)}
-          renderedAt={renderedAt}
+          renderedAt={now}
         />
       </div>
 
@@ -182,7 +187,7 @@ export function ExceptionsClient({
           onSelect={(id) => {
             pushUrl(`/exceptions/${id.slice(0, 8)}`);
           }}
-          renderedAt={renderedAt}
+          renderedAt={now}
         />
       </div>
 

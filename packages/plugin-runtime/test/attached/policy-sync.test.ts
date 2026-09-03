@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -115,6 +115,40 @@ describe('pullPolicyBundle', () => {
     await pullPolicyBundle({ connection: CONNECTION, credential: CREDENTIAL, store });
 
     expect(getPolicyBundle).toHaveBeenCalledWith('W/"aaa"');
+  });
+
+  it('sends NO validator when the cache was written by a different bundle shape', async () => {
+    // The gap this closes, end to end. `PolicyBundle.parse` strips a key this
+    // build does not declare, so a body cached by an older build is missing
+    // whatever that build had never heard of — while carrying the `version` of
+    // a representation that HAD it. Replaying that validator earns a 304, and
+    // the arm below rewrites the same narrowed bytes with a fresh tag, so the
+    // absent field can never arrive however long the device polls. Upgrading
+    // the plugin does not help either: the etag still matches.
+    //
+    // Reached in the field by adding a field to PolicyBundle — a governance
+    // decision the control plane was serving and no attached device could see.
+    const store = createPolicyStore(dataDir);
+    await store.write(bundle('v1'), 'W/"stale"');
+    const file = join(dataDir, 'policy-cache.json');
+    const record = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+    record.shapeId = 'customKeywords,fetchedAt,policies,version';
+    writeFileSync(file, JSON.stringify(record), 'utf8');
+
+    getPolicyBundle.mockResolvedValue({
+      changed: true,
+      bundle: bundle('v2'),
+      etag: 'W/"fresh"',
+    });
+
+    await expect(
+      pullPolicyBundle({ connection: CONNECTION, credential: CREDENTIAL, store }),
+    ).resolves.toBe('ok');
+
+    expect(getPolicyBundle, 'the stale validator is not replayed').toHaveBeenCalledWith(undefined);
+    const after = await store.read();
+    expect(after?.bundle.version, 'the full body replaced the narrowed one').toBe('v2');
+    expect(after?.etag, 're-stamped, so the very next pull is conditional again').toBe('W/"fresh"');
   });
 
   it('sends no validator when there is no cache', async () => {

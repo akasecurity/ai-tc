@@ -29,7 +29,7 @@ import type {
 import { toExceptionDescriptor } from '@akasecurity/schema';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ExceptionsClient reaches the router through the shared navigation hook, which
 // throws outside a real Next app. Renders here are static — renderToStaticMarkup
@@ -47,6 +47,17 @@ const CURRENT_VERSION = 4;
 const FRESH = 'blk-fresh';
 const STALE = 'blk-stale';
 const REFERENCES = [FRESH, STALE] as const;
+
+// An hour past the instant the renderedAt fixtures below are rendered at. The
+// two wiring pins at the bottom of this file need the ambient clock to DISAGREE
+// with that instant, and pinning it here is what makes them discriminate for a
+// reason this file states rather than one it inherits from the calendar: left
+// real, they would go red only because today happens to be far from 2026-08-01.
+// Under this instant a view that fell back to Date.now() reads "1 hour ago" for
+// the ledger row and "30 minutes ago" for the expiry, and neither is what the
+// assertions accept. Same convention as relativeTime.test.ts, which anchors its
+// own clock so the age math holds whenever the suite runs.
+const AMBIENT = Date.parse('2026-08-01T01:30:00.000Z');
 
 function exceptionRow(overrides: Partial<DetectionException>): ExceptionDescriptor {
   return toExceptionDescriptor({
@@ -169,10 +180,18 @@ describe('the exceptions client asks blockedRowBlockReason per row', () => {
 });
 
 describe('the exceptions client threads renderedAt into the blocked ledger', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(AMBIENT);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('renders the blocked-at label against the SSR instant, not the ambient clock', () => {
     // Pins the host-side wiring — `renderedAt={renderedAt}` on
     // BlockedLedgerView in ExceptionsClient.tsx. Delete it and relativeTime
-    // falls back to Date.now(), which would not read "30 minutes ago" for a
+    // falls back to the pinned ambient clock, which reads "1 hour ago" for a
     // fixture blocked at 2026-08-01T00:00 and rendered at 2026-08-01T00:30.
     const markup = render({ status: 'present', version: CURRENT_VERSION });
     expect(markup).toContain('30 minutes ago');
@@ -180,12 +199,20 @@ describe('the exceptions client threads renderedAt into the blocked ledger', () 
 });
 
 describe('the exceptions client threads renderedAt into the exceptions table', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(AMBIENT);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('renders the expiry label against the SSR instant, not the ambient clock', () => {
     // Mirrors the ledger pin above, for the sibling view on the same route:
     // `renderedAt={renderedAt}` on ExceptionsTableView in ExceptionsClient.tsx.
-    // Delete it and relativeTime falls back to Date.now(), which would not
-    // read "in 30 minutes" for a grant expiring 2026-08-01T01:00 when rendered
-    // at 2026-08-01T00:30.
+    // Delete it and relativeTime falls back to the pinned ambient clock, which
+    // reads "30 minutes ago" — the grant already expired — for one expiring at
+    // 2026-08-01T01:00 when rendered at 2026-08-01T00:30.
     const markup = renderToStaticMarkup(
       createElement(
         NavigationTransitionProvider,

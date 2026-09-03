@@ -138,6 +138,67 @@ export const PolicyBundle = z
   .meta({ id: 'PolicyBundle' });
 export type PolicyBundle = z.infer<typeof PolicyBundle>;
 
+/**
+ * Which bundle fields THIS build understands, as one stable string.
+ *
+ * Derived from the schema's own keys rather than written by hand. A field added
+ * above moves this value with no second edit, which is the entire point: a
+ * constant somebody has to remember to bump goes stale on exactly the commit
+ * that widened the shape, which is the one commit where it has to be right.
+ *
+ * It exists because "an older on-disk cache still parses" — said of every
+ * optional field above — is only half of what an older cache does. Zod drops a
+ * key the schema does not declare, so a body cached by a build that predated a
+ * field is missing it, while still carrying the `version` of a served
+ * representation that HAD it. The bundle is fetched conditionally, so the
+ * control plane answers every later poll with 304 Not Modified and the reader
+ * is handed back the same narrowed body: the field can never arrive, however
+ * often the device polls and however new the plugin gets. Stamping the cache
+ * lets a reader tell a body its own build produced from one an older build
+ * narrowed, and pay a single unconditional refetch instead of being told
+ * forever that nothing has changed.
+ *
+ * NESTED KEYS ARE INCLUDED, and the top level alone would not have been enough.
+ * `Policy` and `ExceptionBundleEntry` are plain objects, so Zod narrows them
+ * exactly as it narrows the bundle — while `policies` and `exceptions` stay one
+ * unchanged key each. A build that widens `Policy` therefore moves no top-level
+ * key, its stamp reads as a match, and the same 304 replays the same narrowed
+ * policies: the identical trap one level down. `Policy.provenance` is the
+ * worked example, and it decides whether a device may locally re-assign a rule
+ * the deployment has authored.
+ *
+ * `PolicyTarget` is walked through its UNION MEMBERS for the same reason, and
+ * it is the easiest of the three to overlook: `policies.target` is one key
+ * whatever the target holds, so widening either member moves nothing the other
+ * walks see. The comment above this schema records that a `{ packId }` variant
+ * was considered and expressed as per-rule policies instead — the kind of
+ * decision that gets revisited, which is exactly when this would matter.
+ *
+ * `Rule` is deliberately absent. It is a `strictObject`, so a widened rule
+ * fails the parse outright instead of being narrowed in silence — a loud
+ * failure needs no stamp to detect it.
+ *
+ * Keys, not their types. Fields here get ADDED; a field retyped under an
+ * unchanged name at a depth this does not walk is not a case it separates, and
+ * claiming otherwise would make it read as a schema checksum, which it is not.
+ */
+export const POLICY_BUNDLE_SHAPE_ID: string = [
+  ...Object.keys(PolicyBundle.shape),
+  ...Object.keys(Policy.shape).map((key) => `policies.${key}`),
+  ...PolicyTarget.options
+    // `shape` GUARDED, and the guard is the load-bearing half. This expression
+    // runs at module load in a package every hook script bundles, so a union
+    // member that is not a plain object would not merely go unstamped — it
+    // would throw on import and take every hook with it, which is the one thing
+    // this plugin may never do. A non-object member contributes nothing here
+    // and is a deliberate gap for whoever adds one to close.
+    .flatMap((member) => ('shape' in member ? Object.keys(member.shape) : []))
+    .map((key) => `policies.target.${key}`),
+  ...Object.keys(ExceptionBundleEntry.shape).map((key) => `exceptions.${key}`),
+]
+  .sort()
+  .join(',');
+
 // Enforcement-coverage denominators use this, NOT DEFAULT_ACTIONS: 'config'
 // findings only observe (see above), so a config policy can never be "covered"
 // by enforcement and would permanently drag the coverage % down. Derived by

@@ -169,6 +169,20 @@
       "when": 1788351257334,
       "tag": "0023_secret_vault_user_authorized",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1788377467503,
+      "tag": "0024_finding_resolution_key_created_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1788378190124,
+      "tag": "0025_audit_capture_attribute_columns",
+      "breakpoints": true
     }
   ]
 }

@@ -96,7 +96,15 @@ export const findingResolution = sqliteTable(
       .$defaultFn(() => Date.now()),
   },
   (t) => [
-    index('idx_finding_resolution_key').on(t.findingKey),
+    // Every read of this table asks the same question — the NEWEST row for a
+    // finding key, ordered `created_at DESC, rowid DESC` — either as a
+    // correlated `LIMIT 1` per finding or as a window over every key (see
+    // resolution-sql.ts). With `created_at` in the key a backward scan of one
+    // key's range yields that order directly, so the per-finding lookup is a
+    // single probe and the window sorts only its rowid tie-break. A bare
+    // `finding_key` index answered the equality and left every row of the key
+    // to be sorted, once per statement.
+    index('idx_finding_resolution_key_created').on(t.findingKey, t.createdAt),
     // Serves the resolution-driven /security reads, which ask "which findings
     // were resolved in this window" and therefore drive from a resolved_at range.
     // With finding_key as the table's only index that range had none to scan, so
@@ -386,6 +394,26 @@ export const auditEvents = sqliteTable(
       sql`json_extract(attributes, '$.inspection_ms')`,
       { mode: 'virtual' },
     ),
+    // The capture attributes the findings reads filter, facet and fold on,
+    // surfaced by name for the same reason the token facets are. VIRTUAL like
+    // them: json_extract runs per read either way, and only an index on one
+    // of these would materialize it. Their value here is that a read names a
+    // column, so the store and the hosted control plane — where the same four
+    // are STORED, because parsing the bag there costs a function call per row
+    // — spell the same query.
+    sourceTool: text(COL.sourceTool).generatedAlwaysAs(
+      sql`json_extract(attributes, '$.source_tool')`,
+      { mode: 'virtual' },
+    ),
+    repo: text(COL.repo).generatedAlwaysAs(sql`json_extract(attributes, '$.repo')`, {
+      mode: 'virtual',
+    }),
+    filePath: text(COL.filePath).generatedAlwaysAs(sql`json_extract(attributes, '$.file_path')`, {
+      mode: 'virtual',
+    }),
+    toolName: text(COL.toolName).generatedAlwaysAs(sql`json_extract(attributes, '$.tool_name')`, {
+      mode: 'virtual',
+    }),
   },
   (t) => [
     index('idx_audit_parent').on(t.parentId),

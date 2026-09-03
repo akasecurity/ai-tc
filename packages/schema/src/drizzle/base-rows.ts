@@ -151,6 +151,15 @@ export interface BaseAuditEventRow<TTime = number> {
   // carries no measurement — a replayed capture, a pre-measurement row, or any
   // non-capture event type. NULL means "not measured", never "took no time".
   inspectionMs: number | null;
+  // The capture attributes the findings reads filter, facet and fold on —
+  // `source_tool`, `repo`, `file_path` and `tool_name` — surfaced as generated
+  // columns so a read names a column rather than parsing the bag per row.
+  // NULL wherever the capture carried no such key, and on every non-capture
+  // row, which carries none of them.
+  sourceTool: string | null;
+  repo: string | null;
+  filePath: string | null;
+  toolName: string | null;
 }
 
 /** classified_data — small CLASS dimension keyed by class only. */

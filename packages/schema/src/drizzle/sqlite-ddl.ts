@@ -123,4 +123,12 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0023_secret_vault_user_authorized',
     sql: 'ALTER TABLE `secret_vault` ADD `user_authorized` integer DEFAULT 0 NOT NULL;',
   },
+  {
+    tag: '0024_finding_resolution_key_created_index',
+    sql: 'DROP INDEX IF EXISTS `idx_finding_resolution_key`;--> statement-breakpoint\nCREATE INDEX `idx_finding_resolution_key_created` ON `finding_resolution` (`finding_key`,`created_at`);',
+  },
+  {
+    tag: '0025_audit_capture_attribute_columns',
+    sql: "ALTER TABLE `audit_events` ADD `source_tool` text GENERATED ALWAYS AS (json_extract(attributes, '$.source_tool')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `repo` text GENERATED ALWAYS AS (json_extract(attributes, '$.repo')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `file_path` text GENERATED ALWAYS AS (json_extract(attributes, '$.file_path')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `tool_name` text GENERATED ALWAYS AS (json_extract(attributes, '$.tool_name')) VIRTUAL;",
+  },
 ];

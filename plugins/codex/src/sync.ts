@@ -9,13 +9,29 @@
  *
  *   node scripts/sync.js
  *
+ * It also services the device-command channel, which is why this entry hands
+ * `runAttachedSync` a scan. The scanner cannot be imported by the runtime
+ * itself — `@akasecurity/scanner` already depends on it, so that edge would
+ * close a cycle — and passing it here keeps the capability honest besides: a
+ * host that ships no scanner passes nothing and does not poll, rather than
+ * accepting a command it could never run.
+ *
+ * The scan SCOPE is not chosen here. `commandScanFor` owns it, so the rule
+ * ("never the home directory implicitly") is written once rather than three
+ * times across three plugin trees.
+ *
  * Fully fail-open, and it never throws: `runAttachedSync` records an outcome
  * for `/aka:status` to render and swallows everything else. Always exits 0.
  */
-import { runAttachedSync } from '@akasecurity/plugin-runtime';
+import { commandScanFor, runAttachedSync } from '@akasecurity/plugin-runtime';
+import { loadConfig } from '@akasecurity/plugin-sdk';
+import { scanAllRepos } from '@akasecurity/scanner';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 
 try {
-  await runAttachedSync();
+  await runAttachedSync(undefined, {
+    scan: commandScanFor(loadConfig(), scanAllRepos, SOURCE_TOOL.Codex),
+  });
 } catch {
   // Nothing to report to — this process is detached with stdio ignored.
 }

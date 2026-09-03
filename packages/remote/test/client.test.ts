@@ -532,7 +532,7 @@ describe('the shares-ingest submission', () => {
 describe('routes', () => {
   const server = useLoopbackServer();
 
-  it('addresses each of the eight, and tolerates trailing slashes on the endpoint', async () => {
+  it('addresses each of the ten, and tolerates trailing slashes on the endpoint', async () => {
     // SEVERAL slashes, not one. The normalization is a scan rather than a
     // `replace(/\/+$/, '')` — that regex is quadratic on an all-slash string,
     // since the engine retries from every position and each attempt walks to the
@@ -556,7 +556,9 @@ describe('routes', () => {
                 })
               : req.url === '/v1/shares'
                 ? json({ ok: true })
-                : json({ accepted: 1, duplicates: 0, ok: true }),
+                : req.url === '/v1/plugin/commands'
+                  ? json({ command: null })
+                  : json({ accepted: 1, duplicates: 0, ok: true }),
       );
     });
 
@@ -580,6 +582,8 @@ describe('routes', () => {
     await client.getPolicyBundle();
     await client.whoami();
     await client.recordProjectEgress(egressRequest);
+    await client.pollCommand();
+    await client.ackCommand('cmd_1', { outcome: 'reported', projectsForwarded: 0 });
 
     expect(server.received.map((r) => `${r.method ?? ''} ${r.url ?? ''}`)).toEqual([
       'POST /v1/events',
@@ -590,7 +594,87 @@ describe('routes', () => {
       'GET /v1/policy-bundle',
       'GET /v1/plugin/whoami',
       'POST /v1/shares',
+      'GET /v1/plugin/commands',
+      'POST /v1/plugin/commands/cmd_1/ack',
     ]);
+  });
+
+  /**
+   * The command id is echoed back from the wire, so it is the one path segment
+   * this client does not author. Unencoded, a `../` in it walks the URL onto a
+   * different route on the same host with this machine's credential attached —
+   * `printable(128)` rejects control characters but not slashes or dots.
+   */
+  it('encodes a command id rather than pasting it into the path', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(json({ ok: true }));
+    });
+
+    // The server records every request in this describe, so index from HERE
+    // rather than from 0 — `received[0]` is the first case's POST /v1/events.
+    const before = server.received.length;
+    await client.ackCommand('../../v1/events', { outcome: 'reported', projectsForwarded: 0 });
+
+    const url = server.received[before]?.url ?? '';
+    expect(url).toBe('/v1/plugin/commands/..%2F..%2Fv1%2Fevents/ack');
+    expect(url).not.toContain('../');
+  });
+
+  /**
+   * A deployment older than this route answers 404, and that is not an outage:
+   * it is a deployment saying it has no command channel. Treated as "nothing
+   * pending" so a device and a deployment can be upgraded weeks apart — the
+   * same tolerance the audit-events batch route already has.
+   */
+  it('reads a 404 on the poll as no command, not as a failure', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(json({ error: { code: 'NOT_FOUND' } }));
+    });
+
+    await expect(client.pollCommand()).resolves.toBeNull();
+  });
+
+  /**
+   * The scope is the privilege. A deployment that sends a path gets a parse
+   * failure HERE, at the transport, before anything downstream can read it —
+   * the client-side half of the pin `DeviceCommand.strict()` holds.
+   */
+  it('refuses a command that tries to name a directory', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        json({
+          command: {
+            id: 'cmd_1',
+            kind: 'shares_rescan',
+            issuedAt: '2026-09-03T12:00:00.000Z',
+            expiresAt: '2026-09-04T12:00:00.000Z',
+            searchRoots: ['/'],
+          },
+        }),
+      );
+    });
+
+    await expect(client.pollCommand()).rejects.toThrow();
+  });
+
+  /** A malformed ack names the local defect instead of becoming a 400. */
+  it('refuses to send an ack this device assembled wrongly', async () => {
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    const before = server.received.length;
+
+    await expect(
+      // A failed ack with no reason — the case the discriminated union exists
+      // to stop, caught before it leaves the machine.
+      client.ackCommand('cmd_1', { outcome: 'failed', projectsForwarded: 0 } as never),
+    ).rejects.toThrow();
+
+    expect(server.received).toHaveLength(before);
   });
 });
 

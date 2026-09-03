@@ -1,5 +1,7 @@
 import { dataDir, defaultDataDir, settingsDir } from '@akasecurity/persistence';
 
+import type { CommandScan } from './command-sync.ts';
+import { runCommandSync } from './command-sync.ts';
 import { runPolicySync } from './policy-sync.ts';
 import { writeSyncState } from './sync-state.ts';
 
@@ -21,8 +23,17 @@ import { writeSyncState } from './sync-state.ts';
  * describes something a control plane did or failed to do — writing one here
  * would have status report a plane this machine never called, and would
  * re-create a file a detach had just removed.
+ *
+ * `deps.scan` adds the device-command channel to the same child. It is optional
+ * because not every host can service a command: the browser extension's native
+ * host ships no scanner, and a host that cannot scan must not poll — a command
+ * it received and could never run would sit outstanding on an operator's roster
+ * until it expired, which reads exactly like a machine that is switched off.
  */
-export async function runAttachedSync(base: string = defaultDataDir()): Promise<void> {
+export async function runAttachedSync(
+  base: string = defaultDataDir(),
+  deps: { scan?: CommandScan | undefined } = {},
+): Promise<void> {
   try {
     const result = await runPolicySync({
       base,
@@ -32,5 +43,22 @@ export async function runAttachedSync(base: string = defaultDataDir()): Promise<
     if (result !== null) writeSyncState(dataDir(base), result);
   } catch {
     // Nothing to report to and nowhere to report it.
+  }
+
+  // AFTER the policy pull, and in its own try. Ordered that way because the
+  // scan the command triggers reads the policy the pull just cached, so a
+  // command serviced first would scan against the previous ruleset.
+  //
+  // Separately caught rather than sharing the block above: a policy pull that
+  // threw must not also silently cancel the command channel, and a command that
+  // fails must not lose the sync state the pull already wrote. Two independent
+  // jobs sharing one child, not one job in two halves.
+  try {
+    await runCommandSync({ base, settingsDir: settingsDir(base), scan: deps.scan });
+  } catch {
+    // Same contract: nothing is waiting on this process. `runCommandSync` is
+    // documented never to throw, so reaching here is a bug rather than an
+    // expected path — and the response to a bug in a detached child is still to
+    // exit quietly rather than to take the sync down with it.
   }
 }

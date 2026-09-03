@@ -650,3 +650,101 @@ export const AttachTokenResponse = z.union([
   z.object({ status: printable(64) }),
 ]);
 export type AttachTokenResponse = z.infer<typeof AttachTokenResponse>;
+
+// ─── Device commands: what a deployment may ask this machine to do ───────────
+
+/**
+ * The command kinds this build knows how to service.
+ *
+ * A CLOSED enum, and unlike `AttachTokenResponse` above there is deliberately
+ * no catch-all member. The reasoning is opposite because the direction of
+ * trust is opposite: an unrecognised ATTACH STATUS means "keep waiting", which
+ * is safe, while an unrecognised COMMAND would mean "a deployment asked this
+ * machine to do something this build cannot reason about". The only safe
+ * response to that is to not recognise it at all, so a newer deployment's new
+ * verb reads to an older device as no command rather than as an instruction it
+ * half-understands.
+ */
+export const DeviceCommandKind = z.enum(['shares_rescan']);
+export type DeviceCommandKind = z.infer<typeof DeviceCommandKind>;
+
+/**
+ * What a deployment is allowed to tell this machine to do.
+ *
+ * A VERB, AND NEVER A PATH. This is the load-bearing shape of the whole
+ * channel: there is no `searchRoots`, no `rootDir`, no `path`, no glob and no
+ * depth here, and `.strict()` is what makes their absence enforced rather than
+ * merely current. A deployment that sends one gets a parse failure on the
+ * device, and the scan never runs.
+ *
+ * That matters because the scan scope is the privilege. A command that could
+ * name a directory would let whoever controls (or impersonates) a deployment
+ * point a filesystem walk at `~/.ssh`, a mounted volume, or another customer's
+ * checkout, and have the results forwarded — turning a fleet-hygiene feature
+ * into remote file discovery. The scope is therefore chosen ENTIRELY
+ * device-side, by the same rule the interactive scan uses (see
+ * `runCommandSync`), and nothing on the wire can influence it.
+ *
+ * `.strict()` also makes widening this visible. Adding a field means deleting
+ * `.strict()` or extending this object, both of which are diffs a reviewer
+ * cannot miss — as opposed to a permissive object, where a new key arrives
+ * silently and is simply available to whatever reads it next.
+ */
+export const DeviceCommand = z
+  .object({
+    id: printable(128).min(1),
+    kind: DeviceCommandKind,
+    issuedAt: printable(64).min(1),
+    expiresAt: printable(64).min(1),
+  })
+  .strict();
+export type DeviceCommand = z.infer<typeof DeviceCommand>;
+
+/**
+ * `GET /v1/plugin/commands`. `command: null` is the ordinary answer — there is
+ * no pending work — and is not an error or an empty-collection special case.
+ */
+export const DeviceCommandPollResponse = z
+  .object({ command: DeviceCommand.nullable() })
+  .strict();
+export type DeviceCommandPollResponse = z.infer<typeof DeviceCommandPollResponse>;
+
+/**
+ * Why a device could not service a command. A CLOSED enum, sent by the device
+ * and read back by an operator on the other side, so it is the reason no
+ * device-supplied free text can ever reach a human's screen through this
+ * channel: there is no `message`, and no member of this union carries one.
+ */
+export const DeviceCommandFailureReason = z.enum([
+  'scan_failed',
+  'no_projects',
+  'forward_refused',
+]);
+export type DeviceCommandFailureReason = z.infer<typeof DeviceCommandFailureReason>;
+
+/**
+ * `POST /v1/plugin/commands/:id/ack` — what this machine did.
+ *
+ * A discriminated union rather than a flat object with an optional `reason`,
+ * so the contract holds at the parse boundary instead of in a comment: a
+ * `failed` ack MUST carry a reason, and a `reported` ack must not. Validated on
+ * the way OUT (see the client), because a body this device assembles wrongly
+ * should name the local defect rather than become a 400 that a fail-open
+ * forwarder swallows.
+ */
+export const DeviceCommandAckBody = z.discriminatedUnion('outcome', [
+  z
+    .object({
+      outcome: z.literal('reported'),
+      projectsForwarded: z.number().int().nonnegative(),
+    })
+    .strict(),
+  z
+    .object({
+      outcome: z.literal('failed'),
+      reason: DeviceCommandFailureReason,
+      projectsForwarded: z.number().int().nonnegative(),
+    })
+    .strict(),
+]);
+export type DeviceCommandAckBody = z.infer<typeof DeviceCommandAckBody>;

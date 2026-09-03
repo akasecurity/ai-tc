@@ -115,36 +115,36 @@ export async function runSyncHistory(argv: string[], deps: SyncHistoryDeps = {})
  * line below names the remedy where there is one, because "nothing happened" is
  * the answer a user is trying to get past.
  *
- * Total over the union: a report this does not recognise still prints something
- * rather than falling through to an empty line.
+ * A RECORD rather than a switch with a `default`: the union is closed and this
+ * package owns both halves of it (`HistorySyncOutcome` and
+ * `HistorySyncSkipReason` both live in `@akasecurity/plugin-runtime`, inlined
+ * into this bundle — `cli/tsup.config.ts`'s `noExternal` makes the CLI and that
+ * package one typechecked artifact, never two skewed at runtime), so there is no
+ * REPORT this build fails to recognise, only a MEMBER added later. A `default`
+ * would answer that with a sentence that is wrong rather than merely vague — a
+ * new outcome is far likelier to resemble `ok` than to resemble nothing — where
+ * `satisfies Record<HistorySyncPassReport, string>` fails the build at the line
+ * that has to change.
  */
+const REPORT_LINES = {
+  ok: 'This pass sent what was waiting.',
+  interrupted: 'This pass sent some of what was waiting; run it again to continue.',
+  unreachable: 'This pass could not reach the deployment. Nothing was sent; it stays queued.',
+  refused: 'This pass was refused by the deployment. Re-attach with `aka attach --url <url>`.',
+  'not-attached': 'This pass did nothing: there is no deployment to send to.',
+  'no-consent': 'This pass did nothing: sending existing activity is switched off.',
+  'credential-unusable':
+    'This pass did nothing: the stored credential cannot be used. Re-attach to repair it.',
+  'breaker-open':
+    'This pass did nothing: forwarding is paused after repeated failures, and resumes on its own.',
+  'attachment-unreadable':
+    'This pass did nothing: the recorded attachment time is unreadable. Re-attach to repair it.',
+  'already-running': 'This pass did nothing: another pass is already running.',
+  failed: 'This pass could not complete. Nothing was lost; it stays queued for the next one.',
+} as const satisfies Record<HistorySyncPassReport, string>;
+
 function reportLine(report: HistorySyncPassReport): string {
-  switch (report) {
-    case 'ok':
-      return 'This pass sent what was waiting.';
-    case 'interrupted':
-      return 'This pass sent some of what was waiting; run it again to continue.';
-    case 'unreachable':
-      return 'This pass could not reach the deployment. Nothing was sent; it stays queued.';
-    case 'refused':
-      return 'This pass was refused by the deployment. Re-attach with `aka attach --url <url>`.';
-    case 'not-attached':
-      return 'This pass did nothing: there is no deployment to send to.';
-    case 'no-consent':
-      return 'This pass did nothing: sending existing activity is switched off.';
-    case 'credential-unusable':
-      return 'This pass did nothing: the stored credential cannot be used. Re-attach to repair it.';
-    case 'breaker-open':
-      return 'This pass did nothing: forwarding is paused after repeated failures, and resumes on its own.';
-    case 'attachment-unreadable':
-      return 'This pass did nothing: the recorded attachment time is unreadable. Re-attach to repair it.';
-    case 'already-running':
-      return 'This pass did nothing: another pass is already running.';
-    case 'failed':
-      return 'This pass could not complete. Nothing was lost; it stays queued for the next one.';
-    default:
-      return 'This pass sent nothing.';
-  }
+  return REPORT_LINES[report];
 }
 
 function grant(

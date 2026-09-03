@@ -124,18 +124,14 @@ describe('aka sync-history --run reports every pass outcome', () => {
     expect(new Set(lines).size).toBe(lines.length);
   });
 
-  it('still prints something for a report it does not recognise', async () => {
-    // The `default` arm. The union is closed today, but a reason added in
-    // plugin-runtime and not here would otherwise fall through to an empty line
-    // — a silent regression in the one command whose job is to not be silent.
-    vi.mocked(runHistorySyncPass).mockResolvedValue('a-reason-from-a-later-build' as never);
-    const io = recorder();
-
-    await runSyncHistory(['--run'], deps(io));
-
-    expect(exits).toEqual([]);
-    expect(io.output()).toContain('This pass sent nothing.');
-  });
+  // No runtime case for a report this build does not recognise: `reportLine`
+  // is `REPORT_LINES[report]` against a table typed `satisfies
+  // Record<HistorySyncPassReport, string>`, so a member added to the union
+  // without a matching line is a COMPILE failure at the table, not a value
+  // that reaches this test. The union is closed and this package owns both
+  // halves of it, so there is no way to construct an unrecognised report
+  // without lying to the type system — which is the property itself, and
+  // needs no test beyond the typecheck CI already runs.
 
   it('prints the report ABOVE the consent sentence, not instead of it', async () => {
     // Both halves are load-bearing: the report says what this pass did, the

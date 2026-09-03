@@ -1468,6 +1468,24 @@ as well as the capture path, plus a backfill for existing stores), windowing the
 changes what the number means from "ever" to "the last 30 days"), or retention on the corpus
 itself. All three are product calls, not tuning.
 
+**`/activity` had the same shape of defect, and the same pair of guards now holds it.**
+`liveNow` walked every descendant of every open root to find the latest one, and on a real
+store every root is open — the local writer never stamps `ended_at` on a session — so
+"sessions live in the last thirty minutes" read the whole table on every page load: 90 ms at
+200k captures, growing with history. It is driven from the rows active in the window now, as
+three index ranges, and two of them are pinned with `INDEXED BY`: whenever the range column
+is the second column of a `(root_session_id, …)` index the planner prefers a skip-scan over
+every root through that index — with or without `ANALYZE` statistics — and a skip-scan over
+every root is the walk again (2.8 ms against 0.1 ms). The list's per-session rollups read
+partial indexes over their own kind (migration 0026), and the last-activity rollup is two
+seeks per session through `json_each`. `activity-page-scale.test.ts` pins the consequence on
+the real shape (`endedRate: 0`: a ratio of 11.5 before and ~1 after, 5k → 50k captures), and
+`activity-probe-plans.test.ts` pins each probe to the index it must be seen using, which the
+plan test cannot — a per-root walk is a SEARCH there. What still grows is the search: `q`
+matches `content` and a `json_extract` of `detail` over every descendant in its window,
+twice (the page and the empty-session count); a key-presence `LIKE` guard on that parse
+measured 48 → 43 ms per statement and was not taken.
+
 **Two tables have a retention policy; six do not.**
 `BLOCKED_DETECTIONS_RETENTION_MS` (24 h) sweeps `blocked_detections`, and
 `EXCEPTION_RETENTION_MS` (90 days) sweeps terminal `exceptions`. `audit_events`,

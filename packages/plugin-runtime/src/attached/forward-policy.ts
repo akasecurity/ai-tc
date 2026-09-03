@@ -240,19 +240,34 @@ export interface ForwardPolicyDeps {
 /**
  * Why a forward produced no value.
  *
- * TWO of these are not verdicts of the control plane at all, and both are kept
- * apart from the rest deliberately, for the same reason: NO ATTEMPT WAS MADE.
+ * THREE of these are not verdicts of the control plane, and all three are kept
+ * apart from the rest deliberately — none may be counted toward the breaker or
+ * written down as its last verdict. That is the same distinction `runPolicySync`
+ * draws by returning `null` for a sync it never performed.
+ *
+ * Two of them are cases where NO ATTEMPT WAS MADE:
  *
  *   `breaker-open`    the breaker skipped the network entirely.
  *   `invalid-request` this machine refused to send a body that does not satisfy
- *                     the route's published contract.
+ *                     the route's published contract. The sharper of the pair,
+ *                     because it is DETERMINISTIC: counting it would let one
+ *                     local shape bug open the breaker and suppress every
+ *                     unrelated forward while status reported an outage that
+ *                     never happened.
  *
- * Neither says anything about the plane, so neither may be counted toward the
- * breaker or written down as its last verdict — the same distinction
- * `runPolicySync` draws by returning `null` for a sync it never performed.
- * `invalid-request` is the sharper of the two: it is DETERMINISTIC, so counting
- * it would let one local shape bug open the breaker and suppress every
- * unrelated forward while status reported an outage that never happened.
+ * The third is NOT one of those, and the difference decides what the breaker
+ * does with it:
+ *
+ *   `route-absent`    the request was made and ANSWERED — with a 404, because
+ *                     this deployment predates the route. That is a statement
+ *                     about which version it speaks, not about this device, so
+ *                     it is still not a verdict. But unlike the two above it is
+ *                     positive evidence of REACHABILITY, which is the only thing
+ *                     the breaker measures — so it CLOSES the breaker rather
+ *                     than merely declining to open it. That matters in the
+ *                     half-open state, where the probe is the batch call and
+ *                     404s by definition: leaving it open would suppress the
+ *                     single-event retry that is the whole remedy.
  */
 export type ForwardFailureReason =
   ControlPlaneFailure | 'breaker-open' | 'invalid-request' | 'route-absent';
@@ -438,7 +453,25 @@ export function createForwardPolicy(deps: ForwardPolicyDeps): ForwardPolicy {
         // open the breaker against a deployment answering every request it
         // understands, and then suppress every unrelated forward for the
         // cooldown. The caller's remedy is the older route, not to stop trying.
-        if (isRouteAbsent(err)) return { ok: false, reason: 'route-absent' };
+        if (isRouteAbsent(err)) {
+          // Mirrors the SUCCESS arm above, not the failure arm below, and the
+          // half-open state is why. A probe re-stamps `openedAtMs` before the op
+          // runs, and against a deployment that predates the batch route the
+          // probe IS the batch call — 404 by definition. Returning without
+          // clearing would leave the breaker open on a fresh cooldown and answer
+          // the single-event retry, the remedy this reason exists to trigger,
+          // with `breaker-open`: nothing delivered, and nothing counted either,
+          // since the drop tally sits past the reason check in `forwardBatch`.
+          //
+          // Clearing is not a courtesy to that caller, it is what the evidence
+          // says. A 404 is an ANSWER: the deployment is reachable and talking,
+          // and reachability is the only thing this breaker measures. If the
+          // plane is in fact still sick, the retries that follow re-open it.
+          if (current.openedAtMs !== null || current.consecutiveFailures > 0) {
+            await persist({ ...CLOSED });
+          }
+          return { ok: false, reason: 'route-absent' };
+        }
 
         const reason = classifyFailure(err);
         const failures = current.consecutiveFailures + 1;

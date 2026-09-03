@@ -313,6 +313,33 @@ describe('createForwardPolicy', () => {
       );
     });
 
+    it('a route-absent PROBE closes the breaker instead of spending the cooldown', async () => {
+      // The half-open path re-stamps `openedAtMs` BEFORE issuing the probe, and
+      // only the success arm clears it. Against a deployment that predates the
+      // batch route the probe IS the batch call, and it 404s by definition — so
+      // an early return here would leave the breaker open with a freshly reset
+      // cooldown and answer every single-event retry the compatibility path
+      // depends on with `breaker-open`: nothing delivered, and nothing counted
+      // either, because the drop tally sits past the reason check.
+      //
+      // A 404 is an ANSWER. Reachability is the only thing the breaker measures,
+      // and this arm has just proved it, so it closes exactly as a success does.
+      let clock = 1_000;
+      const policy = createForwardPolicy({ dir, now: () => clock });
+      await tripOpen(policy);
+      clock += BREAKER_COOLDOWN_MS + 1;
+
+      await expect(policy.run(() => Promise.reject(routeAbsent()))).resolves.toEqual(
+        failed('route-absent'),
+      );
+
+      // The remedy must reach the network, not be suppressed by the call that
+      // discovered it was needed.
+      const op = vi.fn(() => Promise.resolve('ran'));
+      await expect(policy.run(op)).resolves.toEqual(ok('ran'));
+      expect(op).toHaveBeenCalledTimes(1);
+    });
+
     it('a route the deployment does not serve never moves the breaker', async () => {
       // The property the reason exists for. An older deployment answers 404 on
       // EVERY chunk, so if this counted as a failure the third chunk would open

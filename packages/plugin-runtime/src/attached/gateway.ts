@@ -655,12 +655,19 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
    *
    * BATCH-ATOMIC SETTLEMENT. The receiver wraps a chunk in one transaction, so a
    * 2xx settles every event in it and a non-2xx settles none — which is why the
-   * whole chunk is stamped on `ok` and none of it otherwise. The one case that
-   * does NOT deserve that treatment is a chunk the client refused to send at all
-   * (`invalid-request`): one malformed event would otherwise cost the 49 good
-   * ones beside it, which is a new way to lose data introduced by the very
-   * change meant to stop losing it. That chunk alone is re-sent one at a time,
-   * so the blast radius stays exactly what it was before batching.
+   * whole chunk is stamped on `ok` and none of it otherwise. TWO cases do not
+   * deserve that treatment, and both are re-sent one event at a time:
+   *
+   *   `invalid-request` a chunk the client refused to send at all. One malformed
+   *                     event would otherwise cost the 49 good ones beside it —
+   *                     a new way to lose data introduced by the very change
+   *                     meant to stop losing it.
+   *   `route-absent`    a deployment that predates the batch route. The
+   *                     single-event route is the one it serves, and re-sending
+   *                     here rather than inside the client is what gives each
+   *                     request its own budget instead of 50 inside one.
+   *
+   * Either way the blast radius stays exactly what it was before batching.
    */
   private async forwardBatch<T>(
     inputs: readonly T[],

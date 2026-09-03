@@ -957,6 +957,64 @@ describe('the live forward stamps what it delivered', () => {
     expect(calls.delivered.length + (drops?.droppedForwards ?? 0)).toBe(100);
   });
 
+  it('counts from the CHUNK it stopped in, not from the start of the batch', async () => {
+    // The other half of the tally arithmetic. The case above stops inside the
+    // FIRST chunk, where `i` is 0 — so it cannot tell `inputs.length - i - j`
+    // from `inputs.length - j`. This one stops inside the SECOND chunk, where
+    // both terms are non-zero and dropping either one breaks the invariant.
+    let clock = 1_000;
+    let batches = 0;
+    const forward: ForwardPolicy = {
+      run: async (op: () => Promise<unknown>) => {
+        try {
+          const value = await op();
+          clock += 600;
+          return { ok: true, value } as ForwardResult<unknown>;
+        } catch (err) {
+          const reason =
+            (err as { name?: string }).name === 'RemoteRouteAbsent'
+              ? 'route-absent'
+              : 'unreachable';
+          return { ok: false, reason } as ForwardResult<unknown>;
+        }
+      },
+    } as unknown as ForwardPolicy;
+
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const client = {
+      ...makeClient(calls),
+      // The first chunk lands whole; the second finds no batch route and falls
+      // to the per-item pass, which is where the deadline catches it.
+      recordAuditEvents: vi.fn((events: readonly unknown[]) => {
+        batches += 1;
+        return batches === 1
+          ? Promise.resolve({ accepted: events.length })
+          : Promise.reject(Object.assign(new Error('absent'), { name: 'RemoteRouteAbsent' }));
+      }),
+      recordAuditEvent: vi.fn(() => Promise.resolve()),
+    } as unknown as AttachedClient;
+
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    let dir: string;
+    try {
+      const built = build({ forward, client, local: makeLocal(calls) });
+      dir = built.dataDir;
+      await built.gateway.recordToolCalls(
+        Array.from({ length: 100 }, (_, i) => toolCallInput(`call-${String(i)}`)),
+      );
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    // Fifty from the first chunk, then four singles before the budget ran out.
+    expect(calls.delivered).toHaveLength(54);
+    const drops = readForwardDrops(dir);
+    // 46 = 100 - 50 settled - 4 attempted. Dropping `- i` gives 96 and dropping
+    // `- j` gives 50; both are caught here and by the invariant below.
+    expect(drops?.droppedForwards).toBe(46);
+    expect(calls.delivered.length + (drops?.droppedForwards ?? 0)).toBe(100);
+  });
+
   /**
    * The gap `HistorySyncPartition`'s docblock named: a structural row the live
    * path forwarded SUCCESSFULLY was never stamped by anything, so it stayed NULL

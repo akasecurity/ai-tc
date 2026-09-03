@@ -21,6 +21,15 @@
  *    `idx_audit_session_ended`, both covering.
  *  - The prompt, share and run-key rollups read partial indexes over just
  *    their own kind, so a session's prompts cost its prompts, not its rows.
+ *  - The detail pane's kind-scoped reads of one session seek the root.
+ *
+ * The corpus is never analyzed, because the shipped store never is: SQLite
+ * plans every read here from the schema alone, and that is the planner these
+ * plans have to hold under. With statistics the three rollups took their
+ * partial indexes unpinned; without them they took the event-type index —
+ * every row of the kind in the store — which is why every kind-scoped read
+ * carries `INDEXED BY` and why this file refuses the event-type-led indexes
+ * by name.
  */
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 
@@ -68,25 +77,84 @@ const LIST_PROBES: readonly Probe[] = [
       // `ended_at IS NOT NULL` prints as `ended_at>?` — the seek's second column.
       /SEARCH e USING COVERING INDEX idx_audit_session_ended \(root_session_id=\? AND ended_at>\?\)/,
     ],
+    // Load-bearing on SQLite's wording: the positive fragment says COVERING,
+    // and this negative one is the same index WITHOUT it — the seek that has
+    // to fetch a row per child. `USING INDEX` is not a substring of `USING
+    // COVERING INDEX`, which is the only reason the pair is not a
+    // contradiction; keep both spellings exact.
     mustNotUse: [/USING INDEX idx_audit_session \(root_session_id=\?\)/],
   },
+  // The walk each of these falls back to is an event-type-led index (the
+  // general one, or the attached-mode sync index that also leads with the
+  // kind) — every row of that kind in the whole store, then a sort — so both
+  // are refused by name, alongside the general per-root walk.
   {
     name: 'turns',
     statement: (sql) => sql.includes("event_type = 'prompt'") && sql.includes('GROUP BY'),
     mustUse: [/USING COVERING INDEX idx_audit_session_prompt \(root_session_id=\?\)/],
-    mustNotUse: [/idx_audit_session \(/],
+    mustNotUse: [/idx_audit_(type_t|events_sync)/, /idx_audit_session \(/],
   },
   {
     name: 'runKey',
     statement: (sql) => sql.includes("'$.run_key'") && sql.includes('GROUP BY'),
     mustUse: [/USING INDEX idx_audit_session_run_key \(root_session_id=\?\)/],
-    mustNotUse: [/idx_audit_session_type \(/],
+    mustNotUse: [/idx_audit_(type_t|events_sync)/, /idx_audit_session_type \(/],
   },
   {
     name: 'shares',
     statement: (sql) => sql.includes("event_type = 'share'") && sql.includes('GROUP BY'),
     mustUse: [/USING INDEX idx_audit_session_share \(root_session_id=\?\)/],
-    mustNotUse: [/idx_audit_session \(/],
+    mustNotUse: [/idx_audit_(type_t|events_sync)/, /idx_audit_session \(/],
+  },
+];
+
+const DETAIL_PROBES: readonly Probe[] = [
+  {
+    // `(id = ? OR root_session_id = ?) AND event_type IN (…)`: the root by its
+    // key and the descendants through the session index, never the event-type
+    // index over every row of eleven kinds.
+    name: 'timeline',
+    statement: (sql) => sql.includes('AS target_id'),
+    mustUse: [
+      /SEARCH audit_events USING INDEX sqlite_autoindex_audit_events_1 \(id=\?\)/,
+      /SEARCH audit_events USING INDEX idx_audit_session \(root_session_id=\?\)/,
+    ],
+    mustNotUse: [/idx_audit_(type_t|events_sync)/],
+  },
+  // The kind-scoped reads of ONE session: each is a root-led seek, never a walk
+  // of every row of that kind in the store — which is what a never-analyzed
+  // store's planner picks for `root_session_id = ? AND event_type = '…'` when
+  // nothing pins it (the token sum, the tool grouping and the model list each
+  // read the whole store's llm_calls or tool_calls for one session).
+  {
+    name: 'tokens',
+    statement: (sql) => sql.includes('sum(input_tokens)') && sql.includes('root_session_id = ?'),
+    mustUse: [/USING (COVERING )?INDEX idx_audit_session_type \(root_session_id=\?\)/],
+    mustNotUse: [/idx_audit_(type_t|events_sync)/],
+  },
+  {
+    name: 'primaryModel',
+    statement: (sql) => sql.includes('SELECT model, provider') && sql.includes('LIMIT 1'),
+    mustUse: [/USING (COVERING )?INDEX idx_audit_session_type \(root_session_id=\?\)/],
+    mustNotUse: [/idx_audit_(type_t|events_sync)/],
+  },
+  {
+    name: 'tools',
+    statement: (sql) => sql.includes("event_type = 'tool_call'") && sql.includes('GROUP BY'),
+    mustUse: [/USING (COVERING )?INDEX idx_audit_session \(root_session_id=\?\)/],
+    mustNotUse: [/idx_audit_(type_t|events_sync)/],
+  },
+  {
+    name: 'models',
+    statement: (sql) => sql.includes('SELECT DISTINCT model'),
+    mustUse: [/USING (COVERING )?INDEX idx_audit_session_type \(root_session_id=\?\)/],
+    mustNotUse: [/idx_audit_(type_t|events_sync)/],
+  },
+  {
+    name: 'commits',
+    statement: (sql) => sql.includes("event_type = 'commit'"),
+    mustUse: [/USING (COVERING )?INDEX idx_audit_session \(root_session_id=\?\)/],
+    mustNotUse: [/idx_audit_(type_t|events_sync)/],
   },
 ];
 
@@ -105,6 +173,7 @@ describe('the activity page probes are served by their own indexes', () => {
   let raw: DatabaseSync;
   let statsStatements: RecordedQuery[];
   let listStatements: RecordedQuery[];
+  let detailStatements: RecordedQuery[];
 
   beforeAll(() => {
     store = createTempStore('aka-activity-probe-plans-', { migrated: true });
@@ -124,6 +193,9 @@ describe('the activity page probes are served by their own indexes', () => {
       limit: 100,
     });
     listStatements = [...recorded];
+    recorded.length = 0;
+    void activity.getSession(corpus.largestSessionId);
+    detailStatements = [...recorded];
   });
 
   afterAll(() => {
@@ -133,6 +205,7 @@ describe('the activity page probes are served by their own indexes', () => {
   const cases: readonly [string, readonly Probe[], () => RecordedQuery[]][] = [
     ['stats', STATS_PROBES, () => statsStatements],
     ['listSessions', LIST_PROBES, () => listStatements],
+    ['getSession', DETAIL_PROBES, () => detailStatements],
   ];
 
   for (const [read, probes, statements] of cases) {

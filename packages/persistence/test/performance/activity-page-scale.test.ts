@@ -25,9 +25,17 @@
  * same question of both stores. Capture spacing is fixed, so a window both
  * stores hold in full has the same rows at both sizes, and sessions are
  * `captures / 40` at both, so the number of roots grows with the store the way
- * it does in the field. Sizes are captures (three rows each), and the pair is
- * sized against the ~30x CI-to-local seeding factor the security scale test
- * documents: 5k + 50k seed in about two seconds here.
+ * it does in the field. Sizes are captures (three rows each): the same 2k/20k
+ * pair as the package's other scale tests, since the property is a ratio and
+ * needs no particular absolute size — the seed is raw inserts and cheap, but
+ * the CI-to-local seeding factor those files document (~30x) is the reason to
+ * take the small pair rather than to spend headroom on a larger one.
+ *
+ * The corpus is never analyzed, because the shipped store never is. SQLite
+ * plans every read here from the schema alone, which is the planner the ratio
+ * has to hold under: with statistics three of the page's rollups took their
+ * partial indexes on their own; without them they walked every row of their
+ * kind in the store and read a ratio of 9 at these sizes.
  *
  * ## The control
  *
@@ -46,16 +54,16 @@ import { corpusConnection } from '../helpers/corpus.ts';
 import type { OwnedTempStore } from '../helpers/temp-store.ts';
 import { createTempStore } from '../helpers/temp-store.ts';
 
-const SMALL_CAPTURES = 5_000;
-const LARGE_CAPTURES = 50_000;
+const SMALL_CAPTURES = 2_000;
+const LARGE_CAPTURES = 20_000;
 
 /**
- * The window the list and the token chip are read over. Three days rather than
+ * The window the list and the token chip are read over. One day rather than
  * the page's default seven because the SMALL corpus, at the real capture
- * spacing, spans only 4.3 days: a window both stores hold in full is what makes
+ * spacing, spans only 1.7 days: a window both stores hold in full is what makes
  * the two reads answer the same-sized question.
  */
-const WINDOW_DAYS = 3;
+const WINDOW_DAYS = 1;
 
 /** The giant session's size at BOTH sizes — what makes the detail read's answer fixed. */
 const GIANT_CAPTURES = 500;

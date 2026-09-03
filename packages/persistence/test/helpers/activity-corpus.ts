@@ -11,8 +11,21 @@
  * bags carry, a `share` on 2% of captures, `ended_at` on `endedRate` of the
  * roots, and one giant session of `giantCaptures`. Deterministic on the
  * options (mulberry32).
+ *
+ * Raw `INSERT`s, deliberately, where `seedCaptureCorpus` writes through the
+ * product's own `recordCapture`: what the guards over this corpus measure is
+ * index behaviour over a STATED row shape — the one observed above — and a
+ * prepared insert is an order of magnitude cheaper than the capture path, which
+ * is what lets two sizes seed inside a hook. The cost is that the shape is
+ * asserted here rather than produced by the writer, so a key the reconciler
+ * starts writing differently does not show up in these rows; re-read the store
+ * before trusting a shape this file states. Never `ANALYZE` here: the shipped
+ * store never runs it, so SQLite plans every read from the schema alone, and a
+ * corpus with statistics certifies plans no field store gets.
  */
 import type { DatabaseSync } from 'node:sqlite';
+
+import { assertNoOpenTransaction } from './transactions.ts';
 
 export interface ActivityCorpusOptions {
   readonly captures: number;
@@ -229,7 +242,9 @@ export function seedActivityCorpus(
     childCount.set(sid, (childCount.get(sid) ?? 0) + n);
   }
   raw.exec('COMMIT');
-  raw.exec('ANALYZE');
+  // A seeder that returns inside its BEGIN makes every read below it measure
+  // an empty store and report the number as a result.
+  assertNoOpenTransaction(raw);
 
   const sized = [...childCount.entries()].sort((a, b) => b[1] - a[1]);
   return {

@@ -659,6 +659,17 @@ export class SqliteActivityRepository implements ActivityReadPort {
 
     const events = timelineRows.map(buildAuditEvent).filter((e): e is AuditEvent => e !== null);
 
+    // Every kind-scoped read of ONE session below is pinned to a root-led
+    // index. The store never runs ANALYZE, so the planner prices the
+    // alternatives from the schema alone, and from the schema alone it takes an
+    // event-type-led index for `event_type = '…'` — every row of that kind in
+    // the store, filtered to the session afterwards — over the session's own
+    // children: the token sum, the tool grouping and the model list each read
+    // ~7 ms of a never-analyzed 20k-capture store for a 500-capture session,
+    // growing with the store, against a fraction of a millisecond through the
+    // pin. `idx_audit_session_type` for the llm_call reads (partial on the
+    // kind, ordered by started_at, which also serves the primary model's
+    // ORDER BY), `idx_audit_session` for the rest.
     const tokenRow = getRow<{
       input: number;
       output: number;
@@ -671,7 +682,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
            coalesce(sum(output_tokens), 0) AS output,
            coalesce(sum(cache_creation_input_tokens), 0) AS cache_creation,
            coalesce(sum(cache_read_input_tokens), 0) AS cache_read
-         FROM audit_events
+         FROM audit_events INDEXED BY idx_audit_session_type
          WHERE root_session_id = ? AND event_type = 'llm_call'`,
       ),
       [sessionId],
@@ -679,7 +690,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
 
     const primaryModel = getRow<{ model: string | null; provider: string | null }>(
       this.db.prepare(
-        `SELECT model, provider FROM audit_events
+        `SELECT model, provider FROM audit_events INDEXED BY idx_audit_session_type
          WHERE root_session_id = ? AND event_type = 'llm_call'
          ORDER BY started_at ASC, id ASC
          LIMIT 1`,
@@ -694,7 +705,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
       this.db.prepare(
         `SELECT coalesce(json_extract(attributes, '$.tool_name'), json_extract(attributes, '$.tool')) AS tool,
                 count(*) AS n
-         FROM audit_events
+         FROM audit_events INDEXED BY idx_audit_session
          WHERE root_session_id = ? AND event_type = 'tool_call'
          GROUP BY coalesce(json_extract(attributes, '$.tool_name'), json_extract(attributes, '$.tool'))`,
       ),
@@ -708,7 +719,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
     // Falls back to the root attribute when no leaves exist (fixture rows).
     const modelRows = allRows<{ model: string }>(
       this.db.prepare(
-        `SELECT DISTINCT model FROM audit_events
+        `SELECT DISTINCT model FROM audit_events INDEXED BY idx_audit_session_type
          WHERE root_session_id = ? AND event_type = 'llm_call' AND model IS NOT NULL AND model <> ''
          ORDER BY model`,
       ),
@@ -718,7 +729,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
 
     const commits = countScalar(
       this.db,
-      `SELECT count(*) AS n FROM audit_events
+      `SELECT count(*) AS n FROM audit_events INDEXED BY idx_audit_session
            WHERE root_session_id = ? AND event_type = 'commit'`,
       [sessionId],
     );
@@ -880,9 +891,18 @@ export class SqliteActivityRepository implements ActivityReadPort {
       if (entry && last > 0) entry.lastActivityMs = last;
     }
 
+    // Each kind-scoped rollup below is pinned to its partial index. The store
+    // never runs ANALYZE, so the planner prices every alternative from the
+    // schema alone — and from the schema alone it takes the event-type index
+    // for `event_type = 'prompt'`, which is every prompt in the store and a
+    // sort, over the per-root partial built for exactly this read: 0.4 ms →
+    // 4.0 ms across a ten-fold store on a never-analyzed corpus, against 0.07
+    // ms flat through the pin. Same tool, same reason as liveNow above and
+    // tokenReports below; activity-probe-plans.test.ts pins each plan.
     const turnsRows = allRows<{ id: string | null; n: number }>(
       this.db.prepare(
-        `SELECT root_session_id AS id, count(*) AS n FROM audit_events
+        `SELECT root_session_id AS id, count(*) AS n
+         FROM audit_events INDEXED BY idx_audit_session_prompt
          WHERE root_session_id IN (${inClause}) AND event_type = 'prompt'
          GROUP BY root_session_id`,
       ),
@@ -903,7 +923,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
       this.db.prepare(
         `SELECT root_session_id AS id,
                 count(DISTINCT json_extract(attributes, '$.run_key')) AS n
-         FROM audit_events
+         FROM audit_events INDEXED BY idx_audit_session_run_key
          WHERE root_session_id IN (${inClause}) AND event_type = 'llm_call'
            AND json_extract(attributes, '$.run_key') IS NOT NULL
          GROUP BY root_session_id`,
@@ -939,7 +959,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
       this.db.prepare(
         `SELECT root_session_id AS id,
                 count(DISTINCT json_extract(attributes, '$.destination')) AS n
-         FROM audit_events
+         FROM audit_events INDEXED BY idx_audit_session_share
          WHERE root_session_id IN (${inClause}) AND event_type = 'share'
          GROUP BY root_session_id`,
       ),

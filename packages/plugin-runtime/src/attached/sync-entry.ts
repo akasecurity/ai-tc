@@ -2,6 +2,7 @@ import { dataDir, defaultDataDir, settingsDir } from '@akasecurity/persistence';
 
 import type { CommandScan } from './command-sync.ts';
 import { runCommandSync } from './command-sync.ts';
+import type { PolicySyncOutcome } from './policy-sync.ts';
 import { runPolicySync } from './policy-sync.ts';
 import { writeSyncState } from './sync-state.ts';
 
@@ -34,16 +35,34 @@ export async function runAttachedSync(
   base: string = defaultDataDir(),
   deps: { scan?: CommandScan | undefined } = {},
 ): Promise<void> {
+  let policyOutcome: PolicySyncOutcome | null = null;
   try {
     const result = await runPolicySync({
       base,
       settingsDir: settingsDir(base),
       dataDir: dataDir(base),
     });
-    if (result !== null) writeSyncState(dataDir(base), result);
+    if (result !== null) {
+      policyOutcome = result.outcome;
+      writeSyncState(dataDir(base), result);
+    }
   } catch {
     // Nothing to report to and nowhere to report it.
   }
+
+  // The credential this process holds was just refused, and re-presenting it on
+  // another route in the same second cannot go differently: `unauthorized` is a
+  // 401, the credential itself no longer accepted, which is not a property of
+  // any one route. Skipping saves a round trip that is certain to fail — and
+  // the user is not left uninformed by it, because the pull that learned this
+  // has already written the outcome `/aka:status` renders.
+  //
+  // `forbidden` is deliberately NOT included. A 403 can mean "this key is
+  // scoped away from THIS route" (see `failure.ts`), and the policy bundle is a
+  // read with no write-role guard while the command channel is a different
+  // route — so a 403 there is not proof of a 403 here, and declining to even
+  // ask would be this device deciding on the deployment's behalf.
+  if (policyOutcome === 'unauthorized') return;
 
   // AFTER the policy pull, and in its own try. Ordered that way because the
   // scan the command triggers reads the policy the pull just cached, so a

@@ -55,11 +55,16 @@ function attach(): void {
   writeControlPlaneCredential(settingsDirOf(base), CREDENTIAL);
 }
 
-const deps = (scan?: () => Promise<{ projects: number }>) => ({
+const deps = (scan?: () => Promise<{ projects: number }>, now?: () => number) => ({
   base,
   settingsDir: settingsDirOf(base),
   ...(scan === undefined ? {} : { scan }),
+  ...(now === undefined ? {} : { now }),
 });
+
+/** Fixed instants either side of COMMAND's own `expiresAt`. */
+const BEFORE_DEADLINE = () => Date.parse('2026-09-04T11:59:59.000Z');
+const AFTER_DEADLINE = () => Date.parse('2026-09-04T12:00:01.000Z');
 
 beforeEach(() => {
   pollCommand.mockReset();
@@ -314,5 +319,99 @@ describe('commandScanFor', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe('runCommandSync — a command past its own deadline', () => {
+  it('declines an EXPIRED command without scanning, and says so', async () => {
+    // A laptop closed on Friday and opened the following week is the case this
+    // exists for. The deployment is the authority on expiry and is expected not
+    // to serve one past its deadline; this is the device declining if it does.
+    attach();
+    pollCommand.mockResolvedValue(COMMAND);
+    const scan = vi.fn(() => Promise.resolve({ projects: 3 }));
+    const { runCommandSync } = await import('../../src/attached/command-sync.ts');
+
+    await expect(runCommandSync(deps(scan, AFTER_DEADLINE))).resolves.toBe('failed');
+
+    // Not scanned — the whole point is that stale work is not done.
+    expect(scan).not.toHaveBeenCalled();
+    // …and ACKED anyway, because going quiet reads on a roster exactly like a
+    // machine that is switched off.
+    expect(ackCommand).toHaveBeenCalledWith('cmd_1', {
+      outcome: 'failed',
+      reason: 'expired',
+      projectsScanned: 0,
+    });
+  });
+
+  it('services a command that has NOT expired yet', async () => {
+    // The positive control. Without it, a `hasExpired` stuck at `true` would
+    // satisfy the case above and nothing would ever be scanned again.
+    attach();
+    pollCommand.mockResolvedValue(COMMAND);
+    const scan = vi.fn(() => Promise.resolve({ projects: 1 }));
+    const { runCommandSync } = await import('../../src/attached/command-sync.ts');
+
+    await expect(runCommandSync(deps(scan, BEFORE_DEADLINE))).resolves.toBe('reported');
+    expect(scan).toHaveBeenCalledTimes(1);
+  });
+
+  it('services a command whose deadline cannot be read, rather than refusing it', async () => {
+    // FAIL-OPEN on an unreadable stamp, deliberately. `expiresAt` is
+    // `printable(64)` on the wire rather than a validated datetime — tightening
+    // it is not available, because that field rides the same envelope as the id
+    // and a rejected envelope leaves the device unable to ack what it refused.
+    // So a deployment that changes its timestamp format must not silently stop
+    // every device in the fleet from working.
+    attach();
+    pollCommand.mockResolvedValue({ ...COMMAND, expiresAt: 'next Tuesday' });
+    const scan = vi.fn(() => Promise.resolve({ projects: 1 }));
+    const { runCommandSync } = await import('../../src/attached/command-sync.ts');
+
+    await expect(runCommandSync(deps(scan, AFTER_DEADLINE))).resolves.toBe('reported');
+    expect(scan).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('runCommandSync — a refusal is not an outage', () => {
+  // Collapsing a 401 into `unreachable` said "try again" about the one outcome
+  // that will never succeed on its own: a revoked key polled every fifteen
+  // minutes forever, reported as an outage. `classifyFailure` is the same
+  // function `runPolicySync` uses, so the two halves of attached mode cannot
+  // reach different verdicts about one refusal.
+  const refusal = (status: number): Error & { status: number } =>
+    Object.assign(new Error('refused'), { status });
+
+  it.each([
+    [401, 'unauthorized'],
+    [403, 'forbidden'],
+    [500, 'unreachable'],
+  ] as const)('classifies a %d on the POLL as %s', async (status, outcome) => {
+    attach();
+    pollCommand.mockRejectedValue(refusal(status));
+    const scan = vi.fn(() => Promise.resolve({ projects: 1 }));
+    const { runCommandSync } = await import('../../src/attached/command-sync.ts');
+
+    await expect(runCommandSync(deps(scan))).resolves.toBe(outcome);
+    expect(scan).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [401, 'unauthorized'],
+    [403, 'forbidden'],
+    [500, 'unreachable'],
+  ] as const)('classifies a %d on the ACK as %s', async (status, outcome) => {
+    // The ack is a request like any other: a credential refusal is terminal
+    // wherever it lands. It is still never the scan's own outcome — from the
+    // deployment's side this device remains outstanding.
+    attach();
+    pollCommand.mockResolvedValue(COMMAND);
+    ackCommand.mockRejectedValue(refusal(status));
+    const { runCommandSync } = await import('../../src/attached/command-sync.ts');
+
+    await expect(
+      runCommandSync(deps(() => Promise.resolve({ projects: 1 }), BEFORE_DEADLINE)),
+    ).resolves.toBe(outcome);
   });
 });

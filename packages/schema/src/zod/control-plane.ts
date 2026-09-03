@@ -731,8 +731,15 @@ export type DeviceCommandPollResponse = z.infer<typeof DeviceCommandPollResponse
  * to reach that verdict. A closed enum carrying a member no code path can emit
  * reads as covering a case it does not; add one back when something can send
  * it.
+ *
+ * `expired` is the device declining a command whose own `expiresAt` has already
+ * passed — a laptop that was closed for a week waking up and being handed
+ * week-old work. The deployment is expected to stop serving an expired command
+ * on its own, so reaching this means the two disagree; the device says so
+ * rather than servicing it silently, and rather than going quiet, which would
+ * read on the roster as a machine that never answered.
  */
-export const DeviceCommandFailureReason = z.enum(['scan_failed', 'no_projects']);
+export const DeviceCommandFailureReason = z.enum(['scan_failed', 'no_projects', 'expired']);
 export type DeviceCommandFailureReason = z.infer<typeof DeviceCommandFailureReason>;
 
 /**

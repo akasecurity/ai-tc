@@ -12,9 +12,14 @@
 import { readControlPlaneCredentialFile, readWorkspaceSettings } from '@akasecurity/persistence';
 import type { PluginConfig, SourceTool } from '@akasecurity/plugin-sdk';
 import { createRemoteClient } from '@akasecurity/remote';
-import type { DeviceCommand, DeviceCommandFailureReason } from '@akasecurity/schema';
+import type {
+  DeviceCommand,
+  DeviceCommandFailureReason,
+  DeviceCommandKind,
+} from '@akasecurity/schema';
 import { isAttached } from '@akasecurity/schema';
 
+import { classifyFailure } from './failure.ts';
 import { withTimeout } from './with-timeout.ts';
 
 /**
@@ -44,7 +49,8 @@ export const COMMAND_REQUEST_TIMEOUT_MS = 30_000;
  *   `unreachable` the poll itself did not answer. Nothing was scanned and
  *                 nothing was acked; the next sync tries again.
  */
-export type CommandSyncOutcome = 'none' | 'reported' | 'failed' | 'unreachable';
+export type CommandSyncOutcome =
+  'none' | 'reported' | 'failed' | 'unauthorized' | 'forbidden' | 'unreachable';
 
 /**
  * The scan this module is allowed to run.
@@ -71,6 +77,8 @@ export interface RunCommandSyncDeps {
   settingsDir: string;
   /** Absent on a host that cannot scan; see `CommandScan`. */
   scan?: CommandScan | undefined;
+  /** Injected for the expiry check, as `runPolicySync` injects its own. */
+  now?: (() => number) | undefined;
 }
 
 /**
@@ -95,6 +103,46 @@ const SCAN_THREW: DeviceCommandFailureReason = 'scan_failed';
  * only possible if the device distinguishes them in the first place.
  */
 const SCAN_FOUND_NOTHING: DeviceCommandFailureReason = 'no_projects';
+
+/** A command whose own deadline had already passed when this device got it. */
+const COMMAND_EXPIRED: DeviceCommandFailureReason = 'expired';
+
+/**
+ * Has this command's own deadline passed?
+ *
+ * FAIL-OPEN ON AN UNREADABLE STAMP, and that direction is deliberate.
+ * `expiresAt` is `printable(64)` on the wire rather than a validated datetime,
+ * because this is a RESPONSE field and tightening it would make an older device
+ * reject the whole envelope — which, since the id rides in that same envelope,
+ * would leave it unable to ack the command it just refused. So a stamp that
+ * does not parse is treated as no deadline at all and the command is serviced.
+ * The alternative errs the wrong way: a deployment that changes its timestamp
+ * format would silently stop every device in the fleet from working, and a
+ * re-scan is not the kind of instruction worth refusing on a formatting doubt.
+ *
+ * The deployment is the authority on expiry and is expected not to serve a
+ * command past its deadline. This is the device declining to act on week-old
+ * work if it does anyway — a laptop closed on Friday and opened the following
+ * week is the case it exists for.
+ */
+function hasExpired(expiresAt: string, atMs: number): boolean {
+  const deadlineMs = Date.parse(expiresAt);
+  return Number.isFinite(deadlineMs) && deadlineMs <= atMs;
+}
+
+/**
+ * What each verb does, keyed on the verb.
+ *
+ * A `Record<DeviceCommandKind, …>` rather than a bare call on the one thing a
+ * command can currently mean, for the reason CLAUDE.md gives for every table
+ * over a vocabulary: adding a member to `DeviceCommandKind` fails to COMPILE
+ * here until somebody decides what it does. Without it, a second verb — which
+ * would parse, since that enum is what decides what parses — would silently run
+ * a `shares_rescan`, the one outcome the closed enum was chosen to prevent.
+ */
+const SERVICE: Record<DeviceCommandKind, (scan: CommandScan) => Promise<{ projects: number }>> = {
+  shares_rescan: (scan) => scan(),
+};
 
 /**
  * Poll, service, ack — once.
@@ -137,12 +185,21 @@ export async function runCommandSync(deps: RunCommandSyncDeps): Promise<CommandS
   let command: DeviceCommand | null;
   try {
     command = await withTimeout(client.pollCommand(), COMMAND_REQUEST_TIMEOUT_MS);
-  } catch {
-    // Includes a deployment that answered with a command this build refuses to
-    // parse — one carrying a path, say. Nothing is scanned and nothing is
-    // acked, which is the correct response to an instruction that failed its
-    // own contract: the command stays outstanding and a human sees that.
-    return 'unreachable';
+  } catch (err) {
+    // Credential verdicts FIRST, and off the STATUS rather than the message —
+    // the same rule, and the same `classifyFailure`, that `runPolicySync` uses,
+    // so the two halves of attached mode cannot reach different verdicts about
+    // one refusal. Collapsing a 401 into `unreachable` said "try again" about
+    // the one outcome that will never succeed on its own: a revoked key would
+    // poll every fifteen minutes forever, reported as an outage.
+    //
+    // The `unreachable` bucket still includes a deployment that answered with a
+    // command this build refuses to parse — one carrying a path, say. Nothing
+    // is scanned and nothing is acked, which is the correct response to an
+    // instruction that failed its own contract: the command stays outstanding
+    // and a human sees that.
+    const failure = classifyFailure(err);
+    return failure === 'unreachable' ? 'unreachable' : failure;
   }
   if (command === null) return 'none';
 
@@ -151,11 +208,19 @@ export async function runCommandSync(deps: RunCommandSyncDeps): Promise<CommandS
   // `DeviceCommand.strict()` is what keeps that true rather than customary.
   let projects = 0;
   let reason: DeviceCommandFailureReason | null = null;
-  try {
-    projects = (await deps.scan()).projects;
-    if (projects === 0) reason = SCAN_FOUND_NOTHING;
-  } catch {
-    reason = SCAN_THREW;
+  if (hasExpired(command.expiresAt, (deps.now ?? Date.now)())) {
+    // Declined rather than serviced, and ACKED rather than dropped: the whole
+    // discipline of this module is that every terminal path says something, so
+    // an operator's roster distinguishes "declined, and here is why" from a
+    // machine that never answered.
+    reason = COMMAND_EXPIRED;
+  } else {
+    try {
+      projects = (await SERVICE[command.kind](deps.scan)).projects;
+      if (projects === 0) reason = SCAN_FOUND_NOTHING;
+    } catch {
+      reason = SCAN_THREW;
+    }
   }
 
   try {
@@ -169,12 +234,15 @@ export async function runCommandSync(deps: RunCommandSyncDeps): Promise<CommandS
           }),
       COMMAND_REQUEST_TIMEOUT_MS,
     );
-  } catch {
-    // The work happened; only the report did not. Reported as `unreachable`
-    // rather than as the scan's own outcome, because from the deployment's side
-    // this device is still outstanding — claiming `reported` here would make
-    // this module's return value disagree with the roster it exists to feed.
-    return 'unreachable';
+  } catch (err) {
+    // The work happened; only the report did not. Never the scan's own outcome,
+    // because from the deployment's side this device is still outstanding —
+    // claiming `reported` here would make this module's return value disagree
+    // with the roster it exists to feed. Classified for the same reason the
+    // poll is: a refusal of the credential is terminal wherever it lands, and
+    // the ack is a request like any other.
+    const failure = classifyFailure(err);
+    return failure === 'unreachable' ? 'unreachable' : failure;
   }
 
   return reason === null ? 'reported' : 'failed';

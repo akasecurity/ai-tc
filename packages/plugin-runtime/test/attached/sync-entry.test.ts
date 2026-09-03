@@ -211,3 +211,56 @@ describe('runAttachedSync — the device-command pass', () => {
     });
   });
 });
+
+describe('runAttachedSync — what a refused credential does to the command pass', () => {
+  const refusal = (status: number): Error & { status: number } =>
+    Object.assign(new Error('refused'), { status });
+
+  it('does not poll after the policy pull learned the key is REVOKED', async () => {
+    // A 401 is the credential itself no longer being accepted, which is not a
+    // property of any one route — so re-presenting it on the command route in
+    // the same second cannot go differently. The user is not left uninformed:
+    // the pull that learned this already wrote the outcome `/aka:status` reads.
+    attach();
+    getPolicyBundle.mockRejectedValue(refusal(401));
+    pollCommand.mockResolvedValue(null);
+
+    const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
+    await runAttachedSync(base, { scan: () => Promise.resolve({ projects: 1 }) });
+
+    expect(pollCommand).not.toHaveBeenCalled();
+    // The skip must not cost the verdict a human acts on.
+    expect(JSON.parse(readFileSync(statePath(), 'utf8'))).toMatchObject({
+      outcome: 'unauthorized',
+    });
+  });
+
+  it('STILL polls after a 403, which is not proof about this route', async () => {
+    // The boundary, and the reason `forbidden` is not folded in with `401`. A
+    // 403 can mean "this key is scoped away from THIS route", and the policy
+    // bundle is a read with no write-role guard while the command channel is a
+    // different route — so declining to even ask would be this device deciding
+    // on the deployment's behalf.
+    attach();
+    getPolicyBundle.mockRejectedValue(refusal(403));
+    pollCommand.mockResolvedValue(null);
+
+    const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
+    await runAttachedSync(base, { scan: () => Promise.resolve({ projects: 1 }) });
+
+    expect(pollCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('polls normally when the pull merely could not reach the plane', async () => {
+    // The control that keeps the two cases above from passing under a skip that
+    // fired on every failure.
+    attach();
+    getPolicyBundle.mockRejectedValue(new Error('ECONNREFUSED'));
+    pollCommand.mockResolvedValue(null);
+
+    const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');
+    await runAttachedSync(base, { scan: () => Promise.resolve({ projects: 1 }) });
+
+    expect(pollCommand).toHaveBeenCalledTimes(1);
+  });
+});

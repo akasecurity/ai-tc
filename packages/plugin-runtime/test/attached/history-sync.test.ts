@@ -517,6 +517,45 @@ describe('runHistorySync — reading the deployment right', () => {
 
     expect(attempted(result).sent).toBe(2);
   });
+
+  it('skips while the breaker stamp is INSIDE the cooldown, and names that reason', async () => {
+    // The other side of the case above. A drain that returns here did nothing,
+    // and the remedy is to WAIT rather than to re-attach — which is why
+    // `aka sync-history --run` has its own line for it. Without a pass that can
+    // actually produce this reason, that line is a string nothing reaches.
+    attach({ grantFor: ENDPOINT });
+    seedRows(1);
+    writeFileSync(
+      join(dataDirOf(home), 'attached-state.json'),
+      JSON.stringify({
+        consecutiveFailures: 3,
+        openedAtMs: T0 - 1_000,
+        lastFailure: 'unreachable',
+      }),
+    );
+
+    await expect(run({ sendBatch: () => Promise.resolve() })).resolves.toEqual({
+      attempted: false,
+      reason: 'breaker-open',
+    });
+  });
+
+  it('reports `failed` rather than throwing when the store cannot be opened', async () => {
+    // The catch is this drain's whole contract: it runs detached with nobody
+    // watching, so a throw would be an unhandled rejection whose only effect is
+    // a status nobody reads. It reports instead — and the reason has to REACH
+    // the caller, or the CLI's "could not complete" line is unreachable too.
+    attach({ grantFor: ENDPOINT });
+    seedRows(1);
+
+    await expect(
+      run({
+        openStore: () => {
+          throw new Error('database disk image is malformed');
+        },
+      }),
+    ).resolves.toEqual({ attempted: false, reason: 'failed' });
+  });
 });
 
 describe('runHistorySync — detach and re-attach', () => {

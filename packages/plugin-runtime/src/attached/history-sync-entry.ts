@@ -16,23 +16,6 @@ import { runHistorySync } from './history-sync.ts';
 export type HistorySyncPassReport = HistorySyncOutcome | HistorySyncSkipReason;
 
 /**
- * The detached child's whole program for the history drain.
- *
- * Each harness ships a short entry that imports this and calls it, so the drain
- * is written once here rather than three times in three plugin trees.
- * `triggerHistorySync` is what spawns those entries.
- *
- * NEVER THROWS, and never signals through its exit code. It runs with stdio
- * ignored and no parent watching, so a rejection would be an unhandled
- * rejection whose only effect is a status nobody reads. What a failure produces
- * instead is a recorded outcome, which is what `aka status` renders.
- *
- * A null result means NO PASS WAS MADE — not attached, no grant, the breaker is
- * open, or another drain holds the claim — and nothing is written for it. That
- * is distinct from every recorded outcome, each of which describes something a
- * deployment did, and writing one would re-create a file a detach just removed.
- */
-/**
  * The pass's injectable seams, for tests only.
  *
  * Everything here has a real default and production passes none of it. It exists
@@ -47,6 +30,29 @@ export type HistorySyncPassSeams = Pick<
   'now' | 'sleep' | 'random' | 'sendBatch' | 'sendCaptures'
 >;
 
+/**
+ * The detached child's whole program for the history drain.
+ *
+ * Each harness ships a short entry that imports this and calls it, so the drain
+ * is written once here rather than three times in three plugin trees.
+ * `triggerHistorySync` is what spawns those entries.
+ *
+ * NEVER THROWS, and never signals through its exit code. It runs with stdio
+ * ignored and no parent watching, so a rejection would be an unhandled
+ * rejection whose only effect is a status nobody reads. What a failure produces
+ * instead is a recorded outcome, which is what `aka status` renders.
+ *
+ * A SKIP REASON rather than an outcome means NO PASS WAS MADE — not attached, no
+ * grant, the breaker is open, or another drain holds the claim — and nothing is
+ * written down for it. That is distinct from every recorded outcome, each of
+ * which describes something a deployment did, and writing one would re-create a
+ * file a detach just removed.
+ *
+ * The reason is RETURNED rather than discarded here, which is the whole of this
+ * change: it used to be flattened to `null` at this boundary, so `aka
+ * sync-history --run` could say only that nothing happened, never which of the
+ * seven ways of doing nothing it was.
+ */
 export async function runHistorySyncPass(
   base: string = defaultDataDir(),
   seams: HistorySyncPassSeams = {},

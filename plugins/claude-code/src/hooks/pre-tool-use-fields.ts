@@ -48,7 +48,13 @@ const STATIC_FIELDS: Record<string, readonly ScannableField[]> = {
   // machine, but it is still a channel a secret can ride into a context the
   // user never sees. Scanned as data: the masked prompt is a coherent
   // instruction, so redaction is the intended end state and block still blocks.
+  //
+  // BOTH spellings. The harness renamed this tool — older builds send `Task`,
+  // current ones send `Agent` — and a table naming only the old one scans
+  // nothing at all on a current build, silently, because an unknown tool yields
+  // no fields and the hook returns before any decision.
   Task: [{ path: ['prompt'], executable: false }],
+  Agent: [{ path: ['prompt'], executable: false }],
 };
 
 // Bounds on the MCP walk. A tool payload can be arbitrarily large and the hook
@@ -126,6 +132,21 @@ function multiEditFields(toolInput: Record<string, unknown>): ScannableField[] {
     executable: false,
   }));
 }
+
+/**
+ * The tools whose scannable fields come from the STATIC table above.
+ *
+ * Not every tool this hook covers: `MultiEdit` and the `mcp__*` family are
+ * handled by the dynamic branches below and appear here in neither case. So a
+ * manifest check derived from this catches a tool added to the table and
+ * forgotten in the matcher, and nothing about a dynamic handler — which is why
+ * the tools reached that way are named in the manifest test directly.
+ *
+ * Exported for that check: a tool named here that the matcher does not select
+ * is a tool the hook is never spawned for, which looks exactly like a tool with
+ * nothing to scan.
+ */
+export const SCANNED_TOOL_NAMES: readonly string[] = Object.keys(STATIC_FIELDS);
 
 /**
  * The scannable fields of a tool's input, each addressing a non-empty string.

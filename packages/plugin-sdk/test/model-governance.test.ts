@@ -10,6 +10,7 @@ import {
   codexModelFromRecord,
   decideProhibitedModelTurn,
   isModelProhibited,
+  matchProhibitedSpawnModel,
   modelFromTranscript,
   modelFromTranscriptTail,
   normalizeModelId,
@@ -334,5 +335,125 @@ describe('buildModelRefusalEvent', () => {
 
   it('records the turn seam distinctly from the switch seam', () => {
     expect(buildModelRefusalEvent({ ...base, seam: 'turn' }).attributes.refusal_seam).toBe('turn');
+  });
+});
+
+// A subagent spawn names its model in a vocabulary nothing else here speaks,
+// and — unlike the switch and turn seams — the string is CALLER-CHOSEN rather
+// than read from a marker or a transcript. So the exactness argument that makes
+// `normalizeModelId` safe elsewhere does not carry here: every spelling that
+// names a prohibited build without being its id is a bypass.
+describe('matchProhibitedSpawnModel', () => {
+  const PROHIBITED = ['claude-opus-5'];
+
+  it('returns the MATCHED id, not a boolean and not the caller string', () => {
+    // The audit row is keyed on it: recording the caller's spelling would file
+    // every spawn refusal under a string no prohibition list contains.
+    expect(matchProhibitedSpawnModel('opus', PROHIBITED)).toBe('claude-opus-5');
+    expect(matchProhibitedSpawnModel('claude-opus-5', PROHIBITED)).toBe('claude-opus-5');
+  });
+
+  it.each([
+    ['an exact id', 'claude-opus-5'],
+    ['casing and whitespace', '  CLAUDE-OPUS-5 '],
+    ['a dated build of a bare listing', 'claude-opus-5-20250805'],
+    ['the bare tier word', 'opus'],
+    ['a 1M-context variant', 'claude-opus-5[1m]'],
+    ['a floating alias', 'claude-opus-5-latest'],
+    ['a Bedrock-decorated spelling', 'us.anthropic.claude-opus-5-v1:0'],
+    ['a Vertex-decorated spelling', 'claude-opus-5@20250805'],
+  ])('catches %s', (_label, requested) => {
+    expect(matchProhibitedSpawnModel(requested, PROHIBITED)).toBe('claude-opus-5');
+  });
+
+  it('derives the tier word from the prohibition list, not from a fixed set', () => {
+    // The list this replaced named opus/sonnet/haiku from memory and the
+    // harness had already added a fourth. A hardcoded harness vocabulary drifts
+    // toward ALLOW and is invisible when it drifts — the same failure as the
+    // Task/Agent rename. Deriving it covers a tier that does not exist yet.
+    expect(matchProhibitedSpawnModel('fable', ['claude-fable-1'])).toBe('claude-fable-1');
+    expect(matchProhibitedSpawnModel('haiku', ['claude-haiku-4-5-20251001'])).toBe(
+      'claude-haiku-4-5-20251001',
+    );
+  });
+
+  it('scans EVERY occurrence, not just the first', () => {
+    // `indexOf` stops at the first hit. Here the first sits inside a longer
+    // token (no boundary) and the second is a real one, so stopping early
+    // reports no match and a crafted spelling becomes an allow. The
+    // `claude-opus-45` case below passes either way and cannot catch this.
+    expect(matchProhibitedSpawnModel('claude-opus-51-claude-opus-5', PROHIBITED)).toBe(
+      'claude-opus-5',
+    );
+  });
+
+  it('does not let one id swallow a longer one at a non-boundary', () => {
+    // The boundary is what keeps the containment rule from over-reaching:
+    // `claude-opus-45` merely starts with `claude-opus-4`.
+    expect(matchProhibitedSpawnModel('claude-opus-45', ['claude-opus-4'])).toBeUndefined();
+  });
+
+  it('allows the inherit words — the parent model is already vetted', () => {
+    expect(matchProhibitedSpawnModel('inherit', PROHIBITED)).toBeUndefined();
+    expect(matchProhibitedSpawnModel('default', PROHIBITED)).toBeUndefined();
+  });
+
+  it.each([
+    ['an empty request', '', PROHIBITED],
+    ['an unrelated id', 'claude-sonnet-5', PROHIBITED],
+    ['an unrelated tier', 'haiku', PROHIBITED],
+    ['no prohibition list', 'opus', undefined],
+    ['an empty prohibition list', 'opus', []],
+  ])('allows on %s — knowledge, never ignorance', (_label, requested, prohibited) => {
+    expect(matchProhibitedSpawnModel(requested, prohibited)).toBeUndefined();
+  });
+});
+
+describe('buildModelRefusalEvent carries the caller spelling beside the id', () => {
+  it('records requested_model when the two differ', () => {
+    const event = buildModelRefusalEvent({
+      id: 'e1',
+      sessionId: 's1',
+      model: 'claude-opus-5',
+      requestedModel: 'opus',
+      seam: 'spawn',
+      sourceTool: 'claude-code',
+      occurredAt: '2026-09-02T00:00:00.000Z',
+    });
+    expect(event.attributes).toMatchObject({
+      model: 'claude-opus-5',
+      requested_model: 'opus',
+      refusal_seam: 'spawn',
+    });
+  });
+
+  it('omits it when the caller named the id itself', () => {
+    // Not duplicated: a row carrying the same string twice reads as two facts.
+    const event = buildModelRefusalEvent({
+      id: 'e1',
+      sessionId: 's1',
+      model: 'claude-opus-5',
+      requestedModel: 'claude-opus-5',
+      seam: 'spawn',
+      sourceTool: 'claude-code',
+      occurredAt: '2026-09-02T00:00:00.000Z',
+    });
+    expect(event.attributes).not.toHaveProperty('requested_model');
+  });
+});
+
+describe('prohibitedModelMessage names the right remedy per seam', () => {
+  it('sends a spawn refusal to the subagent argument, not to /model', () => {
+    // A spawn is refused on an argument the caller chose, so pointing them at
+    // /model would name a control that cannot fix it.
+    const message = prohibitedModelMessage('sonnet', 'spawn');
+    expect(message).toContain('Cannot start a subagent on sonnet');
+    expect(message).toContain('Name an approved model on the subagent');
+    expect(message).not.toContain('/model');
+  });
+
+  it('still sends switch and turn refusals to /model', () => {
+    expect(prohibitedModelMessage('claude-sonnet-5', 'switch')).toContain('/model');
+    expect(prohibitedModelMessage('claude-sonnet-5', 'turn')).toContain('/model');
   });
 });

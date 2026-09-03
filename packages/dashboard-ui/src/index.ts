@@ -22,6 +22,11 @@ export {
   type TimeRange,
   type TimeRangeOption,
 } from './lib/timeRanges.ts';
+// `CLOCK_TICK_MS` is public because a host's own guards have to advance time by
+// the interval this hook actually runs on — web-ui's clock-liveness suite reads
+// it rather than restating 30s, so retuning the tick cannot leave a test
+// asserting against a length nothing uses any more.
+export { CLOCK_TICK_MS, useRenderClock } from './lib/useRenderClock.ts';
 export {
   AreaChart,
   type AreaSeries,
@@ -330,6 +335,7 @@ export {
   ClassTag,
   DestMark,
   MethodTag,
+  StatusTag,
   TemplatePill,
   TemplateUrl,
   TransportTag,
@@ -351,6 +357,8 @@ export {
   CLASS_META,
   type ClassMeta,
   destMarkStyle,
+  EGRESS_STATUS_META,
+  type EgressStatusMeta,
   flagReason,
   hasInsecureTransport,
   KIND_LABEL,

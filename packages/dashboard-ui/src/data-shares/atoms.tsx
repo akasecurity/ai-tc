@@ -4,6 +4,7 @@
 import type {
   DataClass,
   DestinationKind,
+  EgressStatus,
   HttpMethod,
   ShareTrustLevel,
   Transport,
@@ -11,7 +12,14 @@ import type {
 import { Badge, cn, type Tone, TONE_SOFT } from '@akasecurity/ui-kit';
 
 import { BracesIcon, BuildingIcon, PinIcon, ServerIcon } from '../shared/icons.tsx';
-import { CLASS_META, destMarkStyle, providerMark, TRANSPORT_META, TRUST_META } from './meta.ts';
+import {
+  CLASS_META,
+  destMarkStyle,
+  EGRESS_STATUS_META,
+  providerMark,
+  TRANSPORT_META,
+  TRUST_META,
+} from './meta.ts';
 
 /**
  * Colored method tag (mono, method-colored). 'SDK' and 'REF' are evidence tags
@@ -87,6 +95,29 @@ export function TrustTag({ trust }: { trust: ShareTrustLevel }) {
     <Badge variant={m.tone}>
       <Icon aria-hidden focusable={false} className="size-3" />
       {m.label}
+    </Badge>
+  );
+}
+
+/**
+ * Effective egress state chip. `isCustom` — an override that resolves to a
+ * different state than the trust default would — is what separates a decision
+ * somebody MADE from a state the destination merely inherited, and that is the
+ * question a register full of rows is asked first, so it drives the badge:
+ * tinted for an explicit decision, neutral for the default.
+ *
+ * That distinction is carried by colour alone, so the label also states it in
+ * `sr-only` text: "Blocked" read aloud is the same word either way, and the
+ * whole value of the column is knowing which rows have been dealt with.
+ */
+export function StatusTag({ status, isCustom }: { status: EgressStatus; isCustom: boolean }) {
+  const m = EGRESS_STATUS_META[status];
+  const Icon = m.icon;
+  return (
+    <Badge variant={isCustom ? m.tone : 'default'}>
+      <Icon aria-hidden focusable={false} className="size-3" />
+      {m.label}
+      <span className="sr-only">{isCustom ? ' — set by an operator' : ' — trust default'}</span>
     </Badge>
   );
 }

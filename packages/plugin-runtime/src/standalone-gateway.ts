@@ -436,6 +436,13 @@ export class StandaloneDataGateway implements DataGateway, LocalStoreMaintenance
   // for the whole of it, so a member that threw would make that answer a lie
   // the moment a composite delegated to it. A store-level no-op is the honest
   // shape — a standalone machine has nothing delivered to record.
+  markCaptureOwed(event: IngestEvent): void {
+    // Reachable only through the attached decorator in practice — a standalone
+    // machine owes nobody — but implemented rather than thrown so the two
+    // gateways stay substitutable.
+    this.db.markCaptureOwed(event);
+  }
+
   markCaptureDelivered(event: IngestEvent, atMs: number): void {
     this.db.markCaptureDelivered(event, atMs);
   }

@@ -55,6 +55,21 @@ describe('rebuildCapture', () => {
     expect(rebuildCapture(withFile)?.id).not.toBe(captureWireId(SESSION, HASH, null));
   });
 
+  // THE EMPTY-PATH CASE. `captureId` folds the raw column in and `?? NO_PATH`
+  // leaves '' alone, so a display filter that turns '' into undefined derives a
+  // DIFFERENT id for the same row — and a redelivery then arrives under an id the
+  // deployment has never seen, defeating the dedup the reproduced id exists for.
+  it('reproduces the row id when file_path is an empty string', () => {
+    const empty = row({
+      attributes: JSON.stringify({ source_tool: 'claude-code', file_path: '' }),
+    });
+    expect(rebuildCapture(empty)?.id).toBe(captureWireId(SESSION, HASH, ''));
+    // ...and that is NOT the no-path id, which is the whole point.
+    expect(rebuildCapture(empty)?.id).not.toBe(captureWireId(SESSION, HASH, null));
+    // The metadata still drops it — an empty path is not a location.
+    expect(rebuildCapture(empty)?.metadata?.filePath).toBeUndefined();
+  });
+
   it('emits something the wire schema actually accepts', () => {
     expect(IngestEvent.safeParse(rebuildCapture(row())).success).toBe(true);
   });

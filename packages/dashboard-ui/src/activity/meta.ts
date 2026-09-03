@@ -91,7 +91,11 @@ export const TOOL_META: Record<string, IconComponent | undefined> = {
   Read: FileIcon,
   Grep: SearchIcon,
   WebFetch: GlobeIcon,
+  // Both spellings of the subagent tool: the harness renamed it from `Task` to
+  // `Agent`, and a row recorded by a current build falls to the terminal glyph
+  // without this — which reads as a rendering bug rather than a missing entry.
   Task: RouteIcon,
+  Agent: RouteIcon,
 };
 
 /** Glyph for an unknown tool. */

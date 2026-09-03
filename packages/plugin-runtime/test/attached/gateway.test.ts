@@ -71,6 +71,7 @@ const MAINTENANCE_METHODS = [
   'reconcileWorktreeProjects',
   'staleBinaryNotice',
   'markCaptureDelivered',
+  'markCaptureOwed',
   'markAuditEventsDelivered',
 ] as const;
 type MissingMaintenance = Exclude<
@@ -154,6 +155,9 @@ function makeLocal(calls: Calls, overrides: Partial<DataGateway & LocalStoreMain
   });
   base.markCaptureDelivered = vi.fn(() => {
     calls.order.push('local.markCaptureDelivered');
+  });
+  base.markCaptureOwed = vi.fn(() => {
+    calls.order.push('local.markCaptureOwed');
   });
   base.markAuditEventsDelivered = vi.fn((events: readonly { id: string }[]) => {
     calls.order.push('local.markAuditEventsDelivered');
@@ -407,6 +411,14 @@ describe('writes are local-FIRST, then forwarded', () => {
     expect(forwardCalls.order).toContain('forward.skipped');
     expect(calls.order).toContain('local.recordCapture');
     expect(calls.order).not.toContain('local.markCaptureDelivered');
+    // THE POSITIVE HALF, and the one that makes the absence above mean
+    // something. Not stamping is only half of queueing a row — the other half is
+    // MARKING it owed, and that single line is the entire write side of the
+    // outbox. Without this assertion it can be deleted with the whole suite
+    // green: nothing would be marked, pendingCaptureRows would return [] for
+    // ever, capturesPending would read false, and status would report a machine
+    // that owes prompts as caught up.
+    expect(calls.order).toContain('local.markCaptureOwed');
   });
 
   it('stamps a capture the plane already had, reported as a duplicate', async () => {
@@ -423,6 +435,10 @@ describe('writes are local-FIRST, then forwarded', () => {
     });
     await gateway.recordCapture({ event: event('e1'), findings: [] });
     expect(calls.order).toContain('local.markCaptureDelivered');
+    // ...and NOT owed. The two are exclusive: a delivered row that also carried
+    // the marker would be re-offered by every later drain, and the receiver's
+    // id-dedup would absorb it silently for ever.
+    expect(calls.order).not.toContain('local.markCaptureOwed');
   });
 
   it('does NOT stamp a 200 that accepted nothing', async () => {
@@ -439,6 +455,9 @@ describe('writes are local-FIRST, then forwarded', () => {
       ),
     });
     await gateway.recordCapture({ event: event('e1'), findings: [] });
+    // A 200 that took nothing is a non-delivery like any other, so the row is
+    // owed rather than merely unstamped.
+    expect(calls.order).toContain('local.markCaptureOwed');
     // Both assertions below are satisfied by a run that never forwarded at all
     // — `recordCapture` comes first regardless, and the stamp is an ABSENCE. So
     // the forward is pinned as having happened, or this case cannot tell

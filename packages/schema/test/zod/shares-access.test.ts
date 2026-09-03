@@ -101,11 +101,44 @@ describe('deriveReviewReasons', () => {
 
 describe('buildReviewInfo', () => {
   it('sets needsReview from the presence of any reason', () => {
-    expect(buildReviewInfo('recognized', ['wss'])).toEqual({ needsReview: false, reasons: [] });
-    expect(buildReviewInfo('recognized', ['ws'])).toEqual({
+    expect(buildReviewInfo('recognized', ['wss'], false)).toEqual({
+      needsReview: false,
+      reasons: [],
+    });
+    expect(buildReviewInfo('recognized', ['ws'], false)).toEqual({
       needsReview: true,
       reasons: ['plaintext_transport'],
     });
+  });
+
+  it('clears needsReview once the destination is decided, keeping the reasons', () => {
+    // The queue empties as the operator works; the explanation of why the row
+    // was ever flagged survives, because blocking a raw IP does not un-raw it.
+    expect(buildReviewInfo('ip', ['https'], true)).toEqual({
+      needsReview: false,
+      reasons: ['raw_ip'],
+    });
+  });
+
+  it('clears a decided destination whose decision matches its trust default', () => {
+    // The case `isCustomDecision` cannot express, and the reason `decided` is
+    // an override-row existence check rather than that flag: 'recognized'
+    // already defaults to 'allowed', so an explicit `allow` here resolves to
+    // the same status and reports isCustom false. Keyed on isCustom, this row
+    // would never leave the queue however often an operator cleared it.
+    expect(buildReviewInfo('recognized', ['http'], true)).toEqual({
+      needsReview: false,
+      reasons: ['plaintext_transport'],
+    });
+  });
+
+  it('leaves a clean destination clean whether or not it is decided', () => {
+    for (const decided of [false, true]) {
+      expect(buildReviewInfo('recognized', ['https'], decided)).toEqual({
+        needsReview: false,
+        reasons: [],
+      });
+    }
   });
 });
 

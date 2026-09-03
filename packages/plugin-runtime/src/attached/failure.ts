@@ -45,8 +45,13 @@ export type ControlPlaneFailure = 'unauthorized' | 'forbidden' | 'unreachable';
  * Range-checked rather than merely typed as a number: the value can come from a
  * thrown response BODY the control plane did not author (a proxy, a captive portal),
  * and a `status` field that is not an HTTP status is not evidence of anything.
+ *
+ * EXPORTED, unlike `classifyFailure` here it feeds: `forward-policy.ts`'s
+ * `isServerRejection` reads the same status for a DIFFERENT question — not
+ * "what should a human do", but "did the deployment answer at all" — and must
+ * agree with this module on what counts as a status rather than re-deriving it.
  */
-function statusOf(err: unknown): number | null {
+export function statusOf(err: unknown): number | null {
   if (typeof err !== 'object' || err === null || !('status' in err)) return null;
   const { status } = err;
   if (typeof status !== 'number' || !Number.isInteger(status)) return null;

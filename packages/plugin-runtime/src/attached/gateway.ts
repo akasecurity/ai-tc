@@ -648,15 +648,35 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
    *
    * When the deadline passes the remainder is dropped rather than sent: the
    * local write has already succeeded, so every caller has a correct result to
-   * return. What is dropped is COUNTED — this path returns BEFORE
-   * `ForwardPolicy.run` is reached, so without the tally in `forward-drops.ts` a
-   * slow-but-answering plane produces no failures, keeps the breaker closed,
-   * renders a healthy block, and discards the tail of every batch indefinitely.
+   * return. What is dropped is COUNTED, everywhere it can happen — this path
+   * returns BEFORE `ForwardPolicy.run` is reached, so without the tally in
+   * `forward-drops.ts` a slow-but-answering plane produces no failures, keeps
+   * the breaker closed, renders a healthy block, and discards the tail of every
+   * batch indefinitely. The SAME tally also covers a single that fails inside
+   * the per-item retry below — the breaker opening mid-retry is a failure the
+   * breaker's own state DOES capture, but the events still in this chunk once
+   * that happens are neither delivered nor otherwise counted anywhere, which is
+   * the same invisibility with a different cause.
    *
-   * BATCH-ATOMIC SETTLEMENT. The receiver wraps a chunk in one transaction, so a
-   * 2xx settles every event in it and a non-2xx settles none — which is why the
-   * whole chunk is stamped on `ok` and none of it otherwise. TWO cases do not
-   * deserve that treatment, and both are re-sent one event at a time:
+   * `ok` ALONE IS NOT DELIVERY, the same rule `recordCapture` states for the
+   * single-event ack and at fifty times the blast radius here:
+   * `AuditEventBatchAck.accepted` is an aggregate count the wire contract does
+   * not tie to the chunk's own length, so a 2xx answering `{accepted: 30}` for
+   * fifty events is well-formed. Trusting `ok` alone would stamp all fifty as
+   * delivered and never re-offer the twenty the plane did not take. So success
+   * is checked against `chunk.length`; anything short of it falls into the same
+   * per-item pass as a refused chunk, which is SAFE to do blindly, because the
+   * receiver's own upsert settles a duplicate silently (`AuditEventBatchAck`'s
+   * own docblock) — re-sending a row that already landed is a no-op there, and
+   * it is the only way to recover the rows that did not, since the ack carries
+   * no per-row verdict to resend by.
+   *
+   * BATCH-ATOMIC SETTLEMENT is otherwise the rule: the receiver wraps a chunk in
+   * one transaction, so a full 2xx settles every event in it and a non-2xx
+   * settles none — which is why the whole chunk is stamped together on a FULL
+   * accept and none of it otherwise. THREE reasons do not deserve whole-chunk
+   * treatment, alongside a short accept, and all are re-sent one event at a
+   * time:
    *
    *   `invalid-request` a chunk the client refused to send at all. One malformed
    *                     event would otherwise cost the 49 good ones beside it —
@@ -666,8 +686,17 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
    *                     single-event route is the one it serves, and re-sending
    *                     here rather than inside the client is what gives each
    *                     request its own budget instead of 50 inside one.
+   *   `rejected`        the deployment's SERVER-side twin of `invalid-request` —
+   *                     a 4xx body refusal from schema drift on the other side
+   *                     of the wire. Settlement is batch-atomic on this reason
+   *                     exactly as on the others, so leaving it out would cost
+   *                     the whole chunk for one event the DEPLOYMENT considers
+   *                     malformed, where the per-item form cost only that one.
    *
-   * Either way the blast radius stays exactly what it was before batching.
+   * Every other reason (breaker-open, a refusal, a timeout) applies to the whole
+   * chunk, and re-sending it item by item would just spend the budget failing 50
+   * more times — for those, the blast radius stays exactly what it was before
+   * batching.
    */
   private async forwardBatch<T>(
     inputs: readonly T[],
@@ -705,29 +734,47 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
           ),
         );
         if (forwarded.ok) {
-          delivered.push(...chunk);
-          continue;
-        }
-        // TWO reasons are worth a second pass, one at a time, and they are the
-        // two settled BEFORE the control plane refused anything.
-        //
-        // `invalid-request` — the CLIENT refused the body before any request
-        // went out: a defect in one event, not an outage. Re-sending singly
-        // isolates the bad one instead of charging its 49 neighbours for it.
-        //
-        // `route-absent` — the deployment predates the batch route and serves
-        // only the single-event one. The retry IS the compatibility path, and it
-        // has to live HERE rather than inside the client: each single gets its
-        // own FORWARD_BUDGET_MS through `run`, whereas the client's own fallback
-        // would spend 50 sequential round trips inside the ONE budget wrapping
-        // this call — turning a working older deployment into a timeout, three
-        // of those into an open breaker, and every row into a silent drop while
-        // the status surface called an answering deployment down.
-        //
-        // Every other reason (breaker-open, a refusal, a timeout) applies to the
-        // whole chunk; re-sending it item by item would just spend the budget
-        // failing 50 more times.
-        if (forwarded.reason !== 'invalid-request' && forwarded.reason !== 'route-absent') {
+          if (forwarded.value.accepted === chunk.length) {
+            delivered.push(...chunk);
+            continue;
+          }
+          // A well-formed ack claiming fewer accepted than sent. `ok` is not
+          // delivery here any more than it is for a single capture — fall
+          // through to the per-item pass below, which is the only way to find
+          // out which of the fifty actually landed. Blind re-sending the whole
+          // chunk is safe rather than wasteful, per the docblock above: the
+          // upsert on the far side settles a duplicate silently.
+        } else if (
+          // THREE reasons are worth a second pass, one at a time, and they are
+          // the three settled BEFORE the control plane refused anything, or
+          // (for `rejected`) refused the BODY rather than the connection.
+          //
+          // `invalid-request` — the CLIENT refused the body before any request
+          // went out: a defect in one event, not an outage. Re-sending singly
+          // isolates the bad one instead of charging its 49 neighbours for it.
+          //
+          // `route-absent` — the deployment predates the batch route and serves
+          // only the single-event one. The retry IS the compatibility path, and
+          // it has to live HERE rather than inside the client: each single gets
+          // its own FORWARD_BUDGET_MS through `run`, whereas the client's own
+          // fallback would spend 50 sequential round trips inside the ONE
+          // budget wrapping this call — turning a working older deployment into
+          // a timeout, three of those into an open breaker, and every row into
+          // a silent drop while the status surface called an answering
+          // deployment down.
+          //
+          // `rejected` — the deployment's own 4xx refusal of the body, the
+          // server-side twin of `invalid-request`: isolating it the same way
+          // costs one event instead of the whole chunk for a defect the
+          // deployment considers local to one row.
+          //
+          // Every other reason (breaker-open, a refusal, a timeout) applies to
+          // the whole chunk; re-sending it item by item would just spend the
+          // budget failing 50 more times.
+          forwarded.reason !== 'invalid-request' &&
+          forwarded.reason !== 'route-absent' &&
+          forwarded.reason !== 'rejected'
+        ) {
           continue;
         }
         for (const [j, event] of chunk.entries()) {
@@ -744,7 +791,28 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
           const single = await this.deps.forward.run(() =>
             this.deps.client.recordAuditEvent(reKeyForForward(event, this.remoteInventory)),
           );
-          if (single.ok) delivered.push(event);
+          if (single.ok) {
+            delivered.push(event);
+            continue;
+          }
+          if (single.reason === 'breaker-open') {
+            // Three failures inside THIS retry just opened the breaker, so
+            // every remaining `run()` call in this chunk would short-circuit
+            // identically at zero network cost — nothing left to isolate.
+            // Counted ONCE for the whole remainder rather than once per event,
+            // which is what continuing the loop would otherwise cost in
+            // redundant file I/O for an outcome already decided.
+            recordForwardDrops(this.deps.dataDir, chunk.length - j, at);
+            break;
+          }
+          // Any other single-level failure — this one event's own
+          // invalid-request or rejected, a refusal, a timeout that has not yet
+          // opened the breaker — is isolated to THIS row. The rest of the
+          // chunk still deserves its own attempt, which is the whole point of
+          // retrying one at a time, so the loop continues rather than
+          // aborting. Counted individually: each is its own verdict, not part
+          // of a remainder abandoned together.
+          recordForwardDrops(this.deps.dataDir, 1, at);
         }
       }
     } finally {

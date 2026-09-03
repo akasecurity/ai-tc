@@ -64,11 +64,6 @@ import { LATEST_RESOLUTION_BY_KEY_SQL, latestResolutionStatusSql } from './resol
 // the table to count, so time grows with it while memory does not.
 const PREVIEW_INSTANCES_PER_GROUP = 200;
 
-// How many rows one batch of the flat scan pulls. The scan is a sequence of
-// these rather than one result set, so a store far larger than any page keeps
-// memory flat while the totals and facets are counted.
-const SCAN_BATCH_ROWS = 1000;
-
 // Repos returned by listFindingLocations when the query names no limit.
 const DEFAULT_LOCATIONS_LIMIT = 100;
 
@@ -420,39 +415,10 @@ export class SqliteFindingsRepository
       params: sessionParams,
     });
 
-    const rows = allRows<FindingGroupRowJoined>(
-      this.db.prepare(
-        `SELECT id, rule_id, category, severity, masked_match, action_taken, confidence,
-                occurred_at, source_tool, repo, file, tool_name, event_id, session_id,
-                kind, finding_key, latest_status
-         FROM (
-           SELECT f.id AS id, d.rule_id AS rule_id, d.category AS category,
-                  d.severity AS severity, f.masked_match AS masked_match,
-                  f.action_taken AS action_taken, f.confidence AS confidence,
-                  e.started_at AS occurred_at,
-                  json_extract(e.attributes, '$.source_tool') AS source_tool,
-                  json_extract(e.attributes, '$.repo') AS repo,
-                  json_extract(e.attributes, '$.file_path') AS file,
-                  json_extract(e.attributes, '$.tool_name') AS tool_name,
-                  f.audit_event_id AS event_id, e.root_session_id AS session_id,
-                  e.event_type AS kind, f.finding_key AS finding_key,
-                  latest.status AS latest_status,
-                  ROW_NUMBER() OVER (
-                    PARTITION BY d.rule_id
-                    ORDER BY e.started_at DESC, f.id DESC
-                  ) AS rn
-             FROM inspection_findings f
-             JOIN audit_events e ON e.id = f.audit_event_id
-             JOIN inspection_definitions d ON d.id = f.inspection_definition_id
-             LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
-               ON latest.finding_key = f.finding_key
-             ${predicate}
-         )
-         WHERE rn <= :cap
-         ORDER BY occurred_at DESC, id DESC`,
-      ),
-      { cap: PREVIEW_INSTANCES_PER_GROUP, ...sessionParams },
-    );
+    const rows = this.previewRows(aggregates, {
+      ...(query.sessionId ? { sessionId: query.sessionId } : {}),
+      ...(query.from === undefined ? {} : { from: query.from }),
+    });
 
     const groupable: GroupableFindingRow[] = rows.map((r) => ({
       id: r.id,
@@ -810,29 +776,138 @@ export class SqliteFindingsRepository
   }
 
   /**
-   * Every finding in scope as a FlatFindingRow, newest first, pulled in batches.
+   * Each group's newest instances, for the table's expanded rows.
+   *
+   * ONE index-ordered scan with early termination, and the shape is the point.
+   * The natural spelling — `ROW_NUMBER() OVER (PARTITION BY rule_id ORDER BY
+   * started_at DESC)` then `WHERE rn <= cap` — sorts EVERY finding in scope
+   * through a temp B-tree to keep a bounded preview of each group, and then
+   * sorts the survivors again for the page order. Both sorts grow with the
+   * store while the answer does not.
+   *
+   * Instead the scan walks `audit_events` newest-first off `idx_audit_started_at`
+   * (or the session or window index the scope names — see `findingScanSql`),
+   * which is already the order the page wants, and keeps rows per rule until
+   * each rule has as many as it can show. The aggregate the caller already holds
+   * says how many that is: `min(instanceCount, PREVIEW_INSTANCES_PER_GROUP)`
+   * per rule, summed, is the number of rows this scan has to find, and it stops
+   * on the last one. For a store where every rule fires recently that is a few
+   * hundred rows; the worst case — a rule whose last instances are the oldest
+   * in the store — is one pass with no sort, which is still the floor the sorted
+   * form paid before doing any of its work.
+   *
+   * A row whose rule the aggregate did not see is skipped: the two statements
+   * run without a shared snapshot, so a capture landing between them can add a
+   * rule here that has no counts there, and the counts are what the group is
+   * built from.
+   */
+  private previewRows(
+    aggregates: ReadonlyMap<string, FindingGroupAggregate>,
+    scope: { sessionId?: string | undefined; from?: string | undefined },
+  ): FindingGroupRowJoined[] {
+    const wanted = new Map<string, number>();
+    let remaining = 0;
+    for (const [ruleId, agg] of aggregates) {
+      const n = Math.min(agg.instanceCount, PREVIEW_INSTANCES_PER_GROUP);
+      wanted.set(ruleId, n);
+      remaining += n;
+    }
+    const rows: FindingGroupRowJoined[] = [];
+    if (remaining === 0) return rows;
+
+    const { sql, params } = this.findingScanSql(scope);
+    const taken = new Map<string, number>();
+    for (const row of this.db.prepare(sql).iterate(...params)) {
+      const r = row as unknown as FindingGroupRowJoined;
+      const want = wanted.get(r.rule_id);
+      if (want === undefined) continue;
+      const have = taken.get(r.rule_id) ?? 0;
+      if (have >= want) continue;
+      taken.set(r.rule_id, have + 1);
+      rows.push(r);
+      remaining -= 1;
+      if (remaining === 0) break;
+    }
+    return rows;
+  }
+
+  /**
+   * Every finding in scope as a FlatFindingRow, newest first, streamed.
    *
    * A generator so a caller streams the scope without it ever being an array:
    * the flat list counts and facets the whole filtered scope, which on a large
-   * store is far more rows than any page. Each batch advances the same keyset
-   * predicate the page read uses, so the scan is a sequence of bounded reads
-   * rather than one unbounded result set.
+   * store is far more rows than any page. The rows come off ONE statement,
+   * iterated rather than materialized, in the index order `findingScanSql`
+   * arranges — so the scan is a single pass with no sort, where a sequence of
+   * keyset-bounded batches re-sorted everything below the cursor on every
+   * batch and cost the square of the scope.
    *
-   * The latest-resolution lookup is the CORRELATED form, not the derived table
-   * the grouped path joins: only `status` is needed, idx_finding_resolution_key
-   * makes it a point lookup per row, and the derived table would re-materialize
-   * a window over the whole resolution table once per batch.
-   *
-   * `scope` carries ONLY what no facet counts. A filter dimension narrowed here
-   * would be missing from its own facet, which is computed by excluding that
-   * dimension — see listFindingInstances.
+   * `after` narrows the pass to the rows strictly after a keyset cursor, for
+   * the page reads; `sessionId` and `from` carry ONLY what no facet counts. A
+   * filter dimension narrowed here would be missing from its own facet, which
+   * is computed by excluding that dimension — see listFindingInstances.
    */
   private *scanFindingRows(scope: {
     sessionId?: string | undefined;
     from?: string | undefined;
     after?: { startedAtMs: number; id: string } | undefined;
   }): Generator<FlatFindingRow> {
-    const conditions = [`e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})`];
+    const { sql, params } = this.findingScanSql(scope);
+    for (const row of this.db.prepare(sql).iterate(...params)) {
+      const r = row as unknown as FindingGroupRowJoined;
+      yield {
+        id: r.id,
+        ruleId: r.rule_id,
+        category: r.category,
+        severity: r.severity,
+        maskedMatch: r.masked_match,
+        actionTaken: r.action_taken,
+        confidence: r.confidence,
+        occurredAt: epochMillisToIso(r.occurred_at),
+        sourceTool: r.source_tool,
+        repo: r.repo ?? '',
+        file: r.file ?? '',
+        ...(r.tool_name === null ? {} : { toolName: r.tool_name }),
+        eventId: r.event_id,
+        ...(r.session_id === null ? {} : { sessionId: r.session_id }),
+        status: deriveInstanceStatus(r),
+      };
+    }
+  }
+
+  /**
+   * The one statement both instance-level scans run: every finding in scope,
+   * joined to its event and definition, newest first.
+   *
+   * THE PLAN IS THE POINT, and two things in the SQL exist only to pin it —
+   * the same two `recentFindings` documents at length, for the same reason:
+   *
+   *  - **`+e.event_type`** makes the capture-kind predicate non-indexable, so
+   *    the planner cannot pick `idx_audit_type_t` and then sort. That index
+   *    yields `started_at` order per event type, not across the four, so
+   *    satisfying the ORDER BY from it would need a merge SQLite does not do.
+   *    Freed of it, the planner walks `idx_audit_started_at` backwards — or
+   *    `idx_audit_session` for a session scope, which is also `started_at`
+   *    ordered within the session — and the order falls out of the index.
+   *  - **`CROSS JOIN`** pins `audit_events` as the driving table. With plain
+   *    JOINs the planner drives from the findings and sorts everything.
+   *
+   * The keyset cursor is spelled as an index range plus a boundary filter
+   * (`started_at <= ? AND (started_at < ? OR id < ?)`) rather than the
+   * disjunction the cursor's order implies, so the range half seeks the index
+   * and only the boundary instant pays the second test.
+   *
+   * The latest-resolution lookup is the CORRELATED form: only `status` is
+   * needed, `idx_finding_resolution_key_created` answers it with one backward
+   * index probe per keyed row, and a derived table over the whole resolution
+   * table would be materialized before the first row streamed.
+   */
+  private findingScanSql(scope: {
+    sessionId?: string | undefined;
+    from?: string | undefined;
+    after?: { startedAtMs: number; id: string } | undefined;
+  }): { sql: string; params: SQLInputValue[] } {
+    const conditions = [`+e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})`];
     const params: SQLInputValue[] = [];
 
     if (scope.sessionId !== undefined && scope.sessionId !== '') {
@@ -842,6 +917,10 @@ export class SqliteFindingsRepository
     if (scope.from !== undefined) {
       conditions.push('e.started_at >= ?');
       params.push(isoToEpochMillis(scope.from));
+    }
+    if (scope.after !== undefined) {
+      conditions.push('e.started_at <= ? AND (e.started_at < ? OR f.id < ?)');
+      params.push(scope.after.startedAtMs, scope.after.startedAtMs, scope.after.id);
     }
 
     const sql = `SELECT f.id AS id, d.rule_id AS rule_id, d.category AS category,
@@ -855,50 +934,12 @@ export class SqliteFindingsRepository
               f.audit_event_id AS event_id, e.root_session_id AS session_id,
               e.event_type AS kind, f.finding_key AS finding_key,
               ${latestResolutionStatusSql('f')} AS latest_status
-         FROM inspection_findings f
-         JOIN audit_events e ON e.id = f.audit_event_id
-         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+         FROM audit_events e
+         CROSS JOIN inspection_findings f ON f.audit_event_id = e.id
+         CROSS JOIN inspection_definitions d ON d.id = f.inspection_definition_id
         WHERE ${conditions.join(' AND ')}
-          AND (e.started_at < ? OR (e.started_at = ? AND f.id < ?))
-        ORDER BY e.started_at DESC, f.id DESC
-        LIMIT ?`;
-
-    // The batch walks the same tuple the cursor does. It starts one past the
-    // newest possible row (or at the caller's cursor) and re-enters at the last
-    // row of the previous batch, so no row is read twice or skipped.
-    let after = scope.after ?? { startedAtMs: Number.MAX_SAFE_INTEGER, id: '￿' };
-    for (;;) {
-      const rows = allRows<FindingGroupRowJoined>(this.db.prepare(sql), [
-        ...params,
-        after.startedAtMs,
-        after.startedAtMs,
-        after.id,
-        SCAN_BATCH_ROWS,
-      ]);
-      for (const r of rows) {
-        yield {
-          id: r.id,
-          ruleId: r.rule_id,
-          category: r.category,
-          severity: r.severity,
-          maskedMatch: r.masked_match,
-          actionTaken: r.action_taken,
-          confidence: r.confidence,
-          occurredAt: epochMillisToIso(r.occurred_at),
-          sourceTool: r.source_tool,
-          repo: r.repo ?? '',
-          file: r.file ?? '',
-          ...(r.tool_name === null ? {} : { toolName: r.tool_name }),
-          eventId: r.event_id,
-          ...(r.session_id === null ? {} : { sessionId: r.session_id }),
-          status: deriveInstanceStatus(r),
-        };
-      }
-      if (rows.length < SCAN_BATCH_ROWS) return;
-      const lastRow = rows[rows.length - 1];
-      if (lastRow === undefined) return;
-      after = { startedAtMs: lastRow.occurred_at, id: lastRow.id };
-    }
+        ORDER BY e.started_at DESC, f.id DESC`;
+    return { sql, params };
   }
 
   private groupAggregates(

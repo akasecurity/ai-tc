@@ -29,7 +29,7 @@ import {
 
 import { safeJson } from '../internal/json.ts';
 import { decodeKeysetCursor, encodeKeysetCursor } from '../internal/keyset-cursor.ts';
-import { allRows, countScalar, getRow, intToBool, mapRowsTolerant } from '../internal/rows.ts';
+import { allRows, countScalar, getRow, intToBool } from '../internal/rows.ts';
 import { containsPattern, placeholders } from '../internal/sql-text.ts';
 import type { ActivityReadPort } from '../ports.ts';
 
@@ -46,13 +46,12 @@ const DAY_MS = 86_400_000;
 // long tail of never-closed roots.
 export const LIVE_ACTIVITY_WINDOW_MS = 30 * 60_000;
 
-// A single event's "activity instant": the later of when it started and when it
-// ended (a null `ended_at` — the common case — falls back to the start). Folding
-// `ended_at` in means one long-running descendant (a subagent, a build, a 35-min
-// tool call) keeps a session live off its END, not its start, so it can't flip to
-// `completed` mid-work. Bare column names deliberately resolve to the innermost
-// query's `audit_events` alias in every call site.
-const LAST_ACTIVITY_EXPR = `max(started_at, coalesce(ended_at, started_at))`;
+// An event's "last activity" is the later of its start and its end
+// (`max(started_at, coalesce(ended_at, started_at))`): a long-running tool
+// call keeps its session live until it FINISHES, not just when it began. The
+// reads below take that maximum as two index seeks — the latest start and the
+// latest end under a root — rather than as one expression walked over every
+// descendant, which is what it used to be.
 
 // Default IANA zone when the caller omits `tz`: the web-ui server IS the
 // user's machine, so its local zone is the right "today" boundary.
@@ -138,6 +137,14 @@ const DB_EVENT_TYPE_TO_KIND: Partial<Record<string, AuditEventKind>> = {
   error: 'error',
   active: 'active',
 };
+
+// The SQL form of the map's keys: the timeline read filters to them in the
+// statement, because the structural rows it would otherwise fetch and drop
+// (every `llm_call`, every `code_change`, every `tool_use`) outnumber the rows
+// it renders, and reading them cost the detail pane the whole session per open.
+const TIMELINE_EVENT_TYPES = Object.keys(DB_EVENT_TYPE_TO_KIND)
+  .map((kind) => `'${kind}'`)
+  .join(', ');
 
 /** Parse a JSON-array attribute (branches/models/files), degrading to [] on a
  * missing or malformed value — never throws on a legacy-shaped row. */
@@ -310,6 +317,80 @@ const TIMELINE_COLUMNS = `
   json_extract(attributes, '$.internal') AS internal,
   json_extract(attributes, '$.flagged') AS flagged`;
 
+/**
+ * One `llm_call` group: every call in one session on one
+ * `(provider, model, service_tier)`, with its usage members summed. The grain
+ * is the one PRICING needs, not the one the view renders: `CostModel.costFor`
+ * is linear in each usage member and applies the service-tier multiplier to
+ * the token subtotal, so summing within a fixed `(provider, model, tier)` and
+ * pricing ONCE gives the figure that pricing every call and adding would. The
+ * tier is in the key precisely because it is the one per-call dimension that
+ * changes the multiplier, and the 1h/5m cache-write split rides along as two
+ * sums because the two are priced apart. That exactness is what lets the
+ * report collapse in SQL over the usage index instead of shipping one bag per
+ * call to JS — activity.test.ts holds the two folds equal across every shape a
+ * bag takes, and token-rollup-plans.test.ts pins the index.
+ */
+interface LlmUsageRow {
+  sessionId: string;
+  provider: string | null;
+  model: string | null;
+  serviceTier: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  ephemeral1hTokens: number;
+  ephemeral5mTokens: number;
+  webSearchRequests: number;
+}
+
+const LLM_USAGE_SELECT = `
+  SELECT root_session_id AS sessionId,
+         provider,
+         model,
+         service_tier AS serviceTier,
+         coalesce(sum(input_tokens), 0) AS inputTokens,
+         coalesce(sum(output_tokens), 0) AS outputTokens,
+         coalesce(sum(cache_creation_input_tokens), 0) AS cacheCreationTokens,
+         coalesce(sum(cache_read_input_tokens), 0) AS cacheReadTokens,
+         coalesce(sum(ephemeral_1h_input_tokens), 0) AS ephemeral1hTokens,
+         coalesce(sum(ephemeral_5m_input_tokens), 0) AS ephemeral5mTokens,
+         coalesce(sum(web_search_requests), 0) AS webSearchRequests`;
+
+// The usage index's own predicate (`idx_audit_llm_usage` is partial on exactly
+// these two terms), so the index applies and neither is re-checked against the
+// row: a call with no bag has no usage to roll up, and a leaf with no root
+// session cannot be attributed. A bag that is not JSON cannot be inserted at
+// all — the store's expression indexes reject it at write — so there is no
+// unparseable leaf to skip, and a generated column only ever reads a valid bag.
+const LLM_USAGE_SCOPE = `event_type = 'llm_call' AND attributes IS NOT NULL AND root_session_id IS NOT NULL`;
+
+const LLM_USAGE_GROUP = `GROUP BY root_session_id, provider, model, service_tier`;
+
+/** The grouped rows as synthetic leaves — exact by the cost model's linearity (see LlmUsageRow). */
+function usageLeaves(rows: readonly LlmUsageRow[]): LlmCallLeaf[] {
+  return rows.map((row) => {
+    const attributes: LlmCallAttributes = {
+      input_tokens: row.inputTokens,
+      output_tokens: row.outputTokens,
+      cache_creation_input_tokens: row.cacheCreationTokens,
+      cache_read_input_tokens: row.cacheReadTokens,
+      ephemeral_1h_input_tokens: row.ephemeral1hTokens,
+      ephemeral_5m_input_tokens: row.ephemeral5mTokens,
+      web_search_requests: row.webSearchRequests,
+    };
+    // Set only when the group has one: exactOptionalPropertyTypes tells an
+    // absent key from an undefined one, and buildTokenReports reads an absent
+    // provider or model as 'unknown' and an absent tier as 1x — exactly what a
+    // bag without them meant when every call was folded on its own.
+    if (row.provider !== null) attributes.provider = row.provider;
+    if (row.model !== null) attributes.model = row.model;
+    if (row.serviceTier !== null) attributes.service_tier = row.serviceTier;
+    return { sessionId: row.sessionId, attributes };
+  });
+}
+
 // A session root row. EVERY `event_type='session'` row counts, and a row missing
 // the fixture/live attributes degrades to defensive defaults (see
 // `toHarness`/`toSummary`) rather than being hidden — so dashboards render
@@ -359,23 +440,49 @@ export class SqliteActivityRepository implements ActivityReadPort {
     // boundary). "Open" alone is not enough: the local store never stamps
     // `ended_at` on the root, so a bare `ended_at IS NULL` count would return the
     // entire session history. A session is live only while its most recent
-    // activity is inside LIVE_ACTIVITY_WINDOW_MS. "Most recent activity" folds in
-    // each descendant's OWN `ended_at` (via `LAST_ACTIVITY_EXPR`) so a single
-    // long-running event — a subagent, a build, a 35-min tool call — keeps the
-    // session live off its end time, not its start.
+    // activity is inside LIVE_ACTIVITY_WINDOW_MS, and "most recent activity"
+    // folds in each descendant's OWN `ended_at`, so a single long-running event
+    // — a subagent, a build, a 35-min tool call — keeps the session live off
+    // its end time, not its start.
+    //
+    // Driven from the rows active in the window, not from the open roots: a
+    // root is live iff it started in the window, or a descendant started in
+    // it, or a descendant ended in it — three index ranges, and the outer
+    // query seeks each root the list names by primary key — so the read costs
+    // the last thirty minutes of the store and nothing else. The per-root
+    // form it replaces (`max(...)` over every descendant of every open root)
+    // read the whole table, because on a real store EVERY root is open.
+    //
+    // Three `INDEXED BY`s, all deliberate, none of which the planner takes on
+    // its own (the store never runs ANALYZE, so it prices from the schema).
+    // The two descendant ranges: each column is also the second column of a
+    // (root_session_id, …) index, and the planner prefers a skip-scan over
+    // every root through that one, which is the per-root walk again (2.8 ms
+    // against 0.1 ms at 200k captures for the start range). The outer: left
+    // to itself it enumerates every session root through an event-type-led
+    // index and tests each against the list, linear in roots (4.8x across a
+    // ten-fold store), where the list — the last thirty minutes — is tiny and
+    // constant; seeking it by primary key is flat (1.2x) and six times
+    // cheaper. `sqlite_autoindex_audit_events_1` is SQLite's implicit name
+    // for the primary key's index, stable while `id` stays the table's only
+    // primary key and its first autoindex — the timeline probe asserts the
+    // same name. The indexes named are ones every open store carries, since
+    // opening runs the migrations, so the hard requirement `INDEXED BY`
+    // introduces is already met; activity-probe-plans.test.ts pins the plan.
     const liveThreshold = this.now() - LIVE_ACTIVITY_WINDOW_MS;
     const liveNow = countScalar(
       this.db,
-      `SELECT count(*) AS n FROM audit_events s
+      `SELECT count(*) AS n FROM audit_events s INDEXED BY sqlite_autoindex_audit_events_1
            WHERE s.event_type = 'session' AND s.ended_at IS NULL
-             AND max(
-               s.started_at,
-               coalesce(
-                 (SELECT max(${LAST_ACTIVITY_EXPR}) FROM audit_events e WHERE e.root_session_id = s.id),
-                 s.started_at
-               )
-             ) >= ?`,
-      [liveThreshold],
+             AND s.id IN (
+               SELECT id FROM audit_events WHERE event_type = 'session' AND started_at >= ?
+               UNION
+               SELECT root_session_id FROM audit_events INDEXED BY idx_audit_started_at
+                WHERE started_at >= ?
+               UNION
+               SELECT root_session_id FROM audit_events INDEXED BY idx_audit_ended_at
+                WHERE ended_at >= ?)`,
+      [liveThreshold, liveThreshold, liveThreshold],
     );
 
     const toolCallsToday = countScalar(
@@ -553,7 +660,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
       this.db.prepare(
         `SELECT ${TIMELINE_COLUMNS}
          FROM audit_events
-         WHERE id = ? OR root_session_id = ?
+         WHERE (id = ? OR root_session_id = ?) AND event_type IN (${TIMELINE_EVENT_TYPES})
          ORDER BY started_at ASC, id ASC`,
       ),
       [sessionId, sessionId],
@@ -561,6 +668,17 @@ export class SqliteActivityRepository implements ActivityReadPort {
 
     const events = timelineRows.map(buildAuditEvent).filter((e): e is AuditEvent => e !== null);
 
+    // Every kind-scoped read of ONE session below is pinned to a root-led
+    // index. The store never runs ANALYZE, so the planner prices the
+    // alternatives from the schema alone, and from the schema alone it takes an
+    // event-type-led index for `event_type = '…'` — every row of that kind in
+    // the store, filtered to the session afterwards — over the session's own
+    // children: the token sum, the tool grouping and the model list each read
+    // ~7 ms of a never-analyzed 20k-capture store for a 500-capture session,
+    // growing with the store, against a fraction of a millisecond through the
+    // pin. `idx_audit_session_type` for the llm_call reads (partial on the
+    // kind, ordered by started_at, which also serves the primary model's
+    // ORDER BY), `idx_audit_session` for the rest.
     const tokenRow = getRow<{
       input: number;
       output: number;
@@ -573,7 +691,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
            coalesce(sum(output_tokens), 0) AS output,
            coalesce(sum(cache_creation_input_tokens), 0) AS cache_creation,
            coalesce(sum(cache_read_input_tokens), 0) AS cache_read
-         FROM audit_events
+         FROM audit_events INDEXED BY idx_audit_session_type
          WHERE root_session_id = ? AND event_type = 'llm_call'`,
       ),
       [sessionId],
@@ -581,7 +699,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
 
     const primaryModel = getRow<{ model: string | null; provider: string | null }>(
       this.db.prepare(
-        `SELECT model, provider FROM audit_events
+        `SELECT model, provider FROM audit_events INDEXED BY idx_audit_session_type
          WHERE root_session_id = ? AND event_type = 'llm_call'
          ORDER BY started_at ASC, id ASC
          LIMIT 1`,
@@ -596,7 +714,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
       this.db.prepare(
         `SELECT coalesce(json_extract(attributes, '$.tool_name'), json_extract(attributes, '$.tool')) AS tool,
                 count(*) AS n
-         FROM audit_events
+         FROM audit_events INDEXED BY idx_audit_session
          WHERE root_session_id = ? AND event_type = 'tool_call'
          GROUP BY coalesce(json_extract(attributes, '$.tool_name'), json_extract(attributes, '$.tool'))`,
       ),
@@ -610,7 +728,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
     // Falls back to the root attribute when no leaves exist (fixture rows).
     const modelRows = allRows<{ model: string }>(
       this.db.prepare(
-        `SELECT DISTINCT model FROM audit_events
+        `SELECT DISTINCT model FROM audit_events INDEXED BY idx_audit_session_type
          WHERE root_session_id = ? AND event_type = 'llm_call' AND model IS NOT NULL AND model <> ''
          ORDER BY model`,
       ),
@@ -620,7 +738,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
 
     const commits = countScalar(
       this.db,
-      `SELECT count(*) AS n FROM audit_events
+      `SELECT count(*) AS n FROM audit_events INDEXED BY idx_audit_session
            WHERE root_session_id = ? AND event_type = 'commit'`,
       [sessionId],
     );
@@ -664,28 +782,58 @@ export class SqliteActivityRepository implements ActivityReadPort {
   }
 
   /**
-   * Cross-session token report — every `llm_call` leaf (optionally windowed to
-   * `started_at >= fromMs`) grouped into per-session `SessionTokenReport`s, with
-   * USD cost DERIVED at read time via the shared `defaultCostModel` (never
-   * stored). `fromMs` lets the Activity page scope the usage panel to its
-   * selected time range; omit it for all-time (the CLI/TUI overview). The
-   * caller collapses these onto per-model rows with `aggregateTokenUsage`.
+   * Cross-session token report — every `llm_call` in the store (or in a
+   * `started_at >= fromMs` window, the Activity page's range) grouped per
+   * session, with USD cost DERIVED at read time via the shared
+   * `defaultCostModel` (never stored). The caller collapses these onto
+   * per-model rows with `aggregateTokenUsage`.
+   *
+   * Grouped in SQL over `idx_audit_llm_usage` — one entry per call carrying
+   * the members the rollup sums — and priced once per group, which is exact
+   * (see LlmUsageRow). Reading the bags and folding them in JS measured 31 ms
+   * for a seven-day window at 50k calls, and naming the VIRTUAL columns
+   * against the table 40 ms, since each is a json_extract recomputed per row;
+   * the index stores the values once, at write, and answers the same window in
+   * 8.5 ms. `INDEXED BY` is deliberate: with or without ANALYZE statistics the
+   * planner prefers the general event-type index and fetches every row to
+   * recompute the columns it could have read. The index is one every open
+   * store carries, since opening runs the migrations, so the hard requirement
+   * `INDEXED BY` introduces is already met; token-rollup-plans.test.ts pins
+   * the plan. All-time is a scan of the whole index — still one narrow entry
+   * per call, no bag parsed.
    */
   tokenReports(fromMs?: number): Promise<SessionTokenReport[]> {
-    // Omit `fromMs` entirely when unset (exactOptionalPropertyTypes rejects an
-    // explicit `undefined`) so the helper reads all-time.
-    const leaves = this.readLlmCallLeaves(fromMs === undefined ? {} : { fromMs });
-    return Promise.resolve(buildTokenReports(leaves, defaultCostModel));
+    const rows = allRows<LlmUsageRow>(
+      this.db.prepare(
+        `${LLM_USAGE_SELECT}
+           FROM audit_events INDEXED BY idx_audit_llm_usage
+          WHERE ${LLM_USAGE_SCOPE}${fromMs === undefined ? '' : ' AND started_at >= ?'}
+          ${LLM_USAGE_GROUP}`,
+      ),
+      fromMs === undefined ? undefined : [fromMs],
+    );
+    return Promise.resolve(buildTokenReports(usageLeaves(rows), defaultCostModel));
   }
 
   /**
-   * One session's token report — its `llm_call` leaves grouped per (provider,
-   * model) with derived cost, or `null` when the session made no `llm_call`s
-   * (an empty/tool-only session). Feeds the session-detail pane's per-model
-   * breakdown + estimated cost.
+   * One session's token report — its `llm_call`s grouped per (provider,
+   * model, tier) with derived cost, or `null` when the session made no
+   * `llm_call`s (an empty/tool-only session). Feeds the session-detail pane's
+   * per-model breakdown + estimated cost. The same rollup as `tokenReports`,
+   * seeking one root through a root-led `llm_call` index; the bag-reading fold
+   * it replaces walked every `llm_call` in the store to find one session's.
    */
   tokenReportForSession(sessionId: string): Promise<SessionTokenReport | null> {
-    const reports = buildTokenReports(this.readLlmCallLeaves({ sessionId }), defaultCostModel);
+    const rows = allRows<LlmUsageRow>(
+      this.db.prepare(
+        `${LLM_USAGE_SELECT}
+           FROM audit_events
+          WHERE ${LLM_USAGE_SCOPE} AND root_session_id = ?
+          ${LLM_USAGE_GROUP}`,
+      ),
+      [sessionId],
+    );
+    const reports = buildTokenReports(usageLeaves(rows), defaultCostModel);
     // buildTokenReports groups by session, so a single-session read yields at
     // most one report (its rollups are the per-model breakdown).
     return Promise.resolve(reports[0] ?? null);
@@ -714,46 +862,6 @@ export class SqliteActivityRepository implements ActivityReadPort {
   }
 
   /**
-   * The raw `llm_call` leaves (session id + parsed attribute bag) for the token
-   * rollups, optionally narrowed to one session and/or a `started_at >= fromMs`
-   * window. A leaf whose attributes blob is NULL or unparseable is skipped
-   * (best-effort read — a corrupt bag never breaks the report). `root_session_id`
-   * is the leaf's session (the reconciler sets parent_id = root_session_id).
-   */
-  private readLlmCallLeaves(opts: { sessionId?: string; fromMs?: number } = {}): LlmCallLeaf[] {
-    const conditions = ["event_type = 'llm_call'", 'attributes IS NOT NULL'];
-    const params: unknown[] = [];
-    if (opts.sessionId !== undefined) {
-      conditions.push('root_session_id = ?');
-      params.push(opts.sessionId);
-    }
-    if (opts.fromMs !== undefined) {
-      conditions.push('started_at >= ?');
-      params.push(opts.fromMs);
-    }
-    const rows = allRows<{ sessionId: string | null; attributes: string }>(
-      this.db.prepare(
-        `SELECT root_session_id AS sessionId, attributes
-           FROM audit_events
-          WHERE ${conditions.join(' AND ')}`,
-      ),
-      params as SQLInputValue[],
-    );
-
-    // A leaf with no root session can't be attributed and is dropped; a leaf
-    // whose attributes blob is unparseable is skipped (best-effort read).
-    return mapRowsTolerant(
-      rows.filter(
-        (row): row is { sessionId: string; attributes: string } => row.sessionId !== null,
-      ),
-      (row) => ({
-        sessionId: row.sessionId,
-        attributes: JSON.parse(row.attributes) as LlmCallAttributes,
-      }),
-    );
-  }
-
-  /**
    * Per-session turns/findings/shares + last-activity for a page of session ids,
    * in grouped queries (not one per row). An id with no matching rows still
    * appears in the map with zeros. Returns an empty map for an empty id list (an
@@ -767,26 +875,43 @@ export class SqliteActivityRepository implements ActivityReadPort {
 
     const inClause = placeholders(sessionIds.length);
 
-    // Most recent descendant activity per session (each event's later of
-    // start/end — see LAST_ACTIVITY_EXPR); the caller maxes this with the root's
-    // own started_at to decide liveness (see resolveLifecycle).
-    const lastActivityRows = allRows<{ id: string | null; m: number | null }>(
+    // Most recent descendant activity per session — the later of each event's
+    // start and end (a long tool call counts from when it ENDED); the caller
+    // maxes this with the root's own started_at to decide liveness (see
+    // resolveLifecycle). Two index seeks per session — `max(started_at)` is
+    // the last entry under the root in idx_audit_session, `max(ended_at)` the
+    // last in idx_audit_session_ended — instead of one walk over every
+    // descendant of the page's sessions, which cost the page its every row on
+    // each load. The ids travel as one JSON array through json_each, so it is
+    // one statement whatever the page size.
+    const lastActivityRows = allRows<{ id: string; ms: number | null; me: number | null }>(
       this.db.prepare(
-        `SELECT root_session_id AS id, max(${LAST_ACTIVITY_EXPR}) AS m FROM audit_events
-         WHERE root_session_id IN (${inClause})
-         GROUP BY root_session_id`,
+        `SELECT ids.value AS id,
+                (SELECT max(started_at) FROM audit_events e WHERE e.root_session_id = ids.value) AS ms,
+                (SELECT max(ended_at) FROM audit_events e
+                  WHERE e.root_session_id = ids.value AND e.ended_at IS NOT NULL) AS me
+         FROM json_each(?) AS ids`,
       ),
-      sessionIds,
+      [JSON.stringify(sessionIds)],
     );
     for (const row of lastActivityRows) {
-      if (row.id === null) continue;
       const entry = result.get(row.id);
-      if (entry && row.m !== null) entry.lastActivityMs = row.m;
+      const last = Math.max(row.ms ?? 0, row.me ?? 0);
+      if (entry && last > 0) entry.lastActivityMs = last;
     }
 
+    // Each kind-scoped rollup below is pinned to its partial index. The store
+    // never runs ANALYZE, so the planner prices every alternative from the
+    // schema alone — and from the schema alone it takes the event-type index
+    // for `event_type = 'prompt'`, which is every prompt in the store and a
+    // sort, over the per-root partial built for exactly this read: 0.4 ms →
+    // 4.0 ms across a ten-fold store on a never-analyzed corpus, against 0.07
+    // ms flat through the pin. Same tool, same reason as liveNow above and
+    // tokenReports below; activity-probe-plans.test.ts pins each plan.
     const turnsRows = allRows<{ id: string | null; n: number }>(
       this.db.prepare(
-        `SELECT root_session_id AS id, count(*) AS n FROM audit_events
+        `SELECT root_session_id AS id, count(*) AS n
+         FROM audit_events INDEXED BY idx_audit_session_prompt
          WHERE root_session_id IN (${inClause}) AND event_type = 'prompt'
          GROUP BY root_session_id`,
       ),
@@ -807,7 +932,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
       this.db.prepare(
         `SELECT root_session_id AS id,
                 count(DISTINCT json_extract(attributes, '$.run_key')) AS n
-         FROM audit_events
+         FROM audit_events INDEXED BY idx_audit_session_run_key
          WHERE root_session_id IN (${inClause}) AND event_type = 'llm_call'
            AND json_extract(attributes, '$.run_key') IS NOT NULL
          GROUP BY root_session_id`,
@@ -843,7 +968,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
       this.db.prepare(
         `SELECT root_session_id AS id,
                 count(DISTINCT json_extract(attributes, '$.destination')) AS n
-         FROM audit_events
+         FROM audit_events INDEXED BY idx_audit_session_share
          WHERE root_session_id IN (${inClause}) AND event_type = 'share'
          GROUP BY root_session_id`,
       ),

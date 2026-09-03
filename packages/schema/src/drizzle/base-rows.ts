@@ -151,6 +151,25 @@ export interface BaseAuditEventRow<TTime = number> {
   // carries no measurement — a replayed capture, a pre-measurement row, or any
   // non-capture event type. NULL means "not measured", never "took no time".
   inspectionMs: number | null;
+  // The capture attributes the findings reads filter, facet and fold on —
+  // `source_tool`, `repo`, `file_path` and `tool_name` — surfaced as generated
+  // columns so a read names a column rather than parsing the bag per row.
+  // NULL wherever the capture carried no such key, and on every non-capture
+  // row, which carries none of them.
+  sourceTool: string | null;
+  repo: string | null;
+  filePath: string | null;
+  toolName: string | null;
+  // The usage members a cost model prices beyond the four token counts above
+  // — the service tier that selects the price multiplier, the two ephemeral
+  // cache-write splits, and the web-search request count — surfaced as
+  // generated columns so a token rollup that groups by tier and sums the
+  // rest names columns instead of parsing the bag four times per row. NULL
+  // wherever the llm_call carried no such key, and on every other event kind.
+  serviceTier: string | null;
+  ephemeral1hInputTokens: number | null;
+  ephemeral5mInputTokens: number | null;
+  webSearchRequests: number | null;
 }
 
 /** classified_data — small CLASS dimension keyed by class only. */

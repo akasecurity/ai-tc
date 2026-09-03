@@ -73,6 +73,18 @@ export const COL = {
   // Added-latency generated column on audit_events (json_extract from
   // attributes) — how long a capture's inspection blocked its caller.
   inspectionMs: 'inspection_ms',
+  // Capture-attribute generated columns on audit_events (json_extract from
+  // attributes) — the keys the findings reads filter, facet and fold on.
+  // `source_tool` reuses `sourceTool` above.
+  repo: 'repo',
+  filePath: 'file_path',
+  toolName: 'tool_name',
+  // Usage-member generated columns on audit_events (json_extract from
+  // attributes) — the members a cost model prices beyond the token counts.
+  serviceTier: 'service_tier',
+  ephemeral1hInputTokens: 'ephemeral_1h_input_tokens',
+  ephemeral5mInputTokens: 'ephemeral_5m_input_tokens',
+  webSearchRequests: 'web_search_requests',
   // Meta data model — Source / Project
   url: 'url',
   // Meta data model — Inventory API (asset/file/override tables)

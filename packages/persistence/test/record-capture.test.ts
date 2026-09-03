@@ -208,6 +208,68 @@ describe('recordCapture — audit/inspection trio', () => {
     db.close();
   });
 
+  it('surfaces the llm_call usage members as generated columns, NULL when the bag carries none', () => {
+    const db = store.open();
+
+    // The four members a cost model prices beyond the token counts: the tier
+    // that selects the multiplier and three more counts. A token rollup that
+    // groups by tier and sums the rest names these columns instead of parsing
+    // the bag four times per row.
+    const priced = randomUUID();
+    db.auditEvents.insertAuditEvent({
+      id: priced,
+      eventType: 'llm_call',
+      startedAt: new Date().toISOString(),
+      attributes: {
+        model: 'claude-sonnet-4-6',
+        provider: 'anthropic',
+        input_tokens: 120,
+        output_tokens: 30,
+        service_tier: 'batch',
+        ephemeral_1h_input_tokens: 5,
+        ephemeral_5m_input_tokens: 7,
+        web_search_requests: 2,
+      },
+    });
+    const bare = randomUUID();
+    db.auditEvents.insertAuditEvent({
+      id: bare,
+      eventType: 'llm_call',
+      startedAt: new Date().toISOString(),
+      attributes: { model: 'claude-sonnet-4-6', provider: 'anthropic', input_tokens: 1 },
+    });
+
+    const r = raw();
+    const read = (id: string) =>
+      r
+        .prepare(
+          'SELECT service_tier, ephemeral_1h_input_tokens, ephemeral_5m_input_tokens, web_search_requests FROM audit_events WHERE id = ?',
+        )
+        .get(id) as {
+        service_tier: string | null;
+        ephemeral_1h_input_tokens: number | null;
+        ephemeral_5m_input_tokens: number | null;
+        web_search_requests: number | null;
+      };
+
+    expect(read(priced)).toEqual({
+      service_tier: 'batch',
+      ephemeral_1h_input_tokens: 5,
+      ephemeral_5m_input_tokens: 7,
+      web_search_requests: 2,
+    });
+    // An absent key is SQL NULL, never 0: the reader prices an absent tier at
+    // 1x and an absent count as nothing, and must be able to tell the two apart.
+    expect(read(bare)).toEqual({
+      service_tier: null,
+      ephemeral_1h_input_tokens: null,
+      ephemeral_5m_input_tokens: null,
+      web_search_requests: null,
+    });
+    r.close();
+    db.close();
+  });
+
   it('stamps parent_id/root_session_id to the session when present, NULL when absent', () => {
     const db = store.open();
     const sessionId = randomUUID();

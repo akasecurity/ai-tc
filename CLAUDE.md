@@ -1541,6 +1541,62 @@ as well as the capture path, plus a backfill for existing stores), windowing the
 changes what the number means from "ever" to "the last 30 days"), or retention on the corpus
 itself. All three are product calls, not tuning.
 
+**A VIRTUAL generated column is only faster than the bag when an index stores its value.**
+The token rollup (`tokenReports` / `tokenReportForSession`) reads the `llm_call` usage
+columns — model, provider, the four token counts and the tier, cache-split and web-search
+members 0026 added — grouped in SQL per `(session, provider, model, service_tier)` and priced
+once per group, which the cost model's linearity makes exact (activity.test.ts holds the SQL
+fold equal to the per-call fold across every bag shape). Naming those columns against the
+TABLE is slower than parsing the bag in JS (137 ms against 98 ms at 50k calls), because each
+VIRTUAL column is a `json_extract` recomputed per row; the read is fast only through
+`idx_audit_llm_usage` (0027), a partial index over the columns that stores the values once,
+at write (8.5 ms for a seven-day window against 31 ms, 38 ms all-time). Two things to know
+before touching it. `INDEXED BY` is deliberate — with or without `ANALYZE` statistics the
+planner prefers the event-type index and refetches every row — and the plan will never say
+COVERING for an index over VIRTUAL columns, because SQLite counts the column's dependency on
+`attributes` as a reference to the row even as it reads the value from the index; the
+timing, not the label, is the evidence, and `token-rollup-plans.test.ts` pins the index by
+name. The per-session form of the old fold walked EVERY `llm_call` in the store through the
+event-type index to find one session's (17 ms at 50k, growing with the store); it now seeks
+`idx_audit_session_type`.
+**`/activity` had the same shape of defect, and the same pair of guards now holds it.**
+`liveNow` walked every descendant of every open root to find the latest one, and on a real
+store every root is open — the local writer never stamps `ended_at` on a session — so
+"sessions live in the last thirty minutes" read the whole table on every page load: 90 ms at
+200k captures, growing with history. It is driven from the rows active in the window now, as
+three index ranges and one primary-key seek per root they name, with three `INDEXED BY`s
+the planner takes none of on its own: whenever the range column is the second column of a
+`(root_session_id, …)` index it prefers a skip-scan over every root through that index, and a
+skip-scan over every root is the walk again (2.8 ms against 0.1 ms); and left to itself the
+outer query enumerates every session root through an event-type-led index to test each
+against the list — linear in roots, and invisible inside the `stats` composite because the
+four day-windowed counters shrink faster than it grows (4.8x across a ten-fold store, 1.2x
+pinned to the primary key, whose implicit index name the statement therefore depends on). The list's per-session rollups read partial indexes over their own kind
+(migration 0028), and the last-activity rollup is two seeks per session through `json_each`.
+`activity-page-scale.test.ts` pins the consequence on the real shape (`endedRate: 0`, 2k →
+20k captures: before, `stats` 9.4, the first page 4.5 and the detail pane 3.5 across a
+ten-fold store; after, every page-load read under 1), and `activity-probe-plans.test.ts` pins
+each read to the index it must be seen using, which the plan test cannot — a per-root walk is
+a SEARCH there. What still grows is the search: `q` matches `content` and a `json_extract` of
+`detail` over every descendant in its window, twice (the page and the empty-session count); a
+key-presence `LIKE` guard on that parse measured 48 → 43 ms per statement and was not taken.
+
+**A corpus must never `ANALYZE`, and every kind-scoped read is pinned because of it.** The
+shipped store never runs `ANALYZE`, so SQLite plans from the schema alone, and from the schema
+alone `root_session_id IN (…) AND event_type = 'prompt'` takes an event-type-led index — every
+prompt in the store, then a sort — over the per-root partial built for it; the same for the
+detail pane's token sum, tool grouping and model list of ONE session (`~7 ms` of a
+never-analyzed 20k store each, growing with it). The activity corpus first ran `ANALYZE` after
+seeding, and with statistics all of those reads took the right index unpinned, so both guards
+were green over plans no field store gets (review on the PR that added them; the ratios above
+are from the never-analyzed corpus). Every `root_session_id … AND event_type = '…'` read on the
+page now carries `INDEXED BY` its root-led index, `activity-probe-plans.test.ts` refuses the
+two event-type-led indexes (`idx_audit_type_t`, `idx_audit_events_sync`) by name, and the
+corpus helper says why it does not analyze. Two things to know when reproducing: a dropped
+`sqlite_stat1` stays loaded on the connection that dropped it — measure from a fresh handle or
+seed without ever analyzing — and a single-id `IN (?)` may plan differently from a hundred-id
+one, so probe the page's real page size.
+
 **Two tables have a retention policy; six do not.**
 `BLOCKED_DETECTIONS_RETENTION_MS` (24 h) sweeps `blocked_detections`, and
 `EXCEPTION_RETENTION_MS` (90 days) sweeps terminal `exceptions`. `audit_events`,

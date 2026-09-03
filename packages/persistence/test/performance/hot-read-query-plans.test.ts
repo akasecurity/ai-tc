@@ -138,7 +138,15 @@ const HOT_READS: readonly HotRead[] = [
     name: '/findings listFindingInstances (page 2)',
     run: (c) => c.findings.listFindingInstances({ cursor: c.secondPageCursor }),
   },
+  {
+    name: '/findings listFindingInstances (session)',
+    run: (c) => c.findings.listFindingInstances({ sessionId: c.sessionId }),
+  },
   { name: '/findings listFindingLocations', run: (c) => c.findings.listFindingLocations({}) },
+  {
+    name: '/findings listFindingLocations (session)',
+    run: (c) => c.findings.listFindingLocations({ sessionId: c.sessionId }),
+  },
   // --- /activity -------------------------------------------------------------
   { name: '/activity stats', run: (c) => c.activity.stats() },
   {
@@ -214,19 +222,32 @@ const EXPECTED_FULL_INDEX_SCANS: Readonly<Record<string, readonly string[]>> = {
   // the three are UNBOUNDED by design — the flat list and the locations fold
   // count and facet every finding in scope, so the scan is the answer — and
   // the ratio in `findings-page-scale.test.ts` is what states that they are
-  // flat in the STORE once a scope narrows them. The grouped read's scan is
-  // bounded the way `recentFindings`' is: it stops once every rule has its
-  // preview, which a plan cannot show. Its `finding_resolution` entry is the
-  // latest-resolution derived table the aggregate joins, shared with the three
-  // `/security` reads above. The session-scoped grouped read drives from
-  // `idx_audit_session` instead, so only that derived table remains.
+  // flat in the STORE once a scope narrows them. The grouped read's scan
+  // stops early too, but NOT on a fixed row count the way `recentFindings`'
+  // LIMIT does: it stops once every rule has its preview cap, and that sum
+  // (`rules * PREVIEW_INSTANCES_PER_GROUP`) grows with the rule count, so a
+  // plan cannot show the bound and neither can this comment overstate it as
+  // constant — see `previewRows`' docblock in findings.ts for the real one.
+  // Its `finding_resolution` entry is the latest-resolution derived table the
+  // aggregate joins, shared with the three `/security` reads above. The
+  // session-scoped grouped read drives from `idx_audit_session` instead, so
+  // only that derived table remains.
   '/findings listGroupedFindings': ['audit_events', 'finding_resolution'],
   '/findings listGroupedFindings (session)': ['finding_resolution'],
   '/findings listFindingInstances': ['audit_events'],
-  // The counting pass over the whole scope, plus a keyset-bounded page read
-  // that seeks the same index and so contributes no scan of its own.
+  // ONE statement, the same one page 1 runs: the page-2 items are collected
+  // inline once the scan passes the cursor (listFindingInstances'
+  // isPastCursor), not a second, narrower statement.
   '/findings listFindingInstances (page 2)': ['audit_events'],
+  // Session-scoped, so `idx_audit_session` drives it the way the grouped
+  // read's session variant is driven — and unlike that variant, the flat
+  // and locations reads answer their resolution status through the
+  // CORRELATED form (one backward `idx_finding_resolution_key_created` probe
+  // per row), never the derived table, so neither one full-scans it even
+  // unscoped. Empty is the correct answer here, not an oversight.
+  '/findings listFindingInstances (session)': [],
   '/findings listFindingLocations': ['audit_events'],
+  '/findings listFindingLocations (session)': [],
   '/activity stats': [],
   '/activity listSessions': [],
   '/activity tokenReports': [],
@@ -245,6 +266,7 @@ describe('query plans of every hot dashboard read', () => {
   // per-test shape and would rebuild it three times over.
   let store: OwnedTempStore;
   let plans: Map<string, PlanStep[]>;
+  let statementCounts: Map<string, number>;
 
   beforeAll(async () => {
     store = createTempStore('aka-query-plans-');
@@ -294,9 +316,11 @@ describe('query plans of every hot dashboard read', () => {
     };
 
     plans = new Map();
+    statementCounts = new Map();
     for (const read of HOT_READS) {
       recorded.length = 0;
       read.run(surfaces);
+      statementCounts.set(read.name, recorded.length);
       // EXPLAIN goes through the RAW handle, so the recorder does not capture
       // its own explains and recurse.
       plans.set(
@@ -347,5 +371,16 @@ describe('query plans of every hot dashboard read', () => {
       Object.entries(EXPECTED_FULL_INDEX_SCANS).map(([name, tables]) => [name, [...tables].sort()]),
     );
     expect(actual).toEqual(expected);
+  });
+
+  it('a page-2 flat read is one statement, not two', () => {
+    // The plan-shape pin above cannot see this: the deleted second statement
+    // sought idx_audit_started_at with a SEARCH, contributing no full-index
+    // scan either way, so its absence is invisible to a plan-shape assertion.
+    // Only a statement count states what the page-2 fix actually changed —
+    // listFindingInstances collecting the page inline once the scan passes
+    // the cursor, instead of discarding a first unbounded pass and re-running
+    // scanFindingRows narrowed by a keyset `after` predicate.
+    expect(statementCounts.get('/findings listFindingInstances (page 2)')).toBe(1);
   });
 });

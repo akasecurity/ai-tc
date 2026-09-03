@@ -1,25 +1,20 @@
 import { dataDir, defaultDataDir, settingsDir } from '@akasecurity/persistence';
 
+import type { HistorySyncOutcome } from './history-state.ts';
 import { readHistorySyncState, writeHistorySyncState } from './history-state.ts';
+import type { HistorySyncSkipReason } from './history-sync.ts';
 import { runHistorySync } from './history-sync.ts';
 
 /**
- * The detached child's whole program for the history drain.
+ * What one pass did — the outcome if it ran, the reason if it did not.
  *
- * Each harness ships a short entry that imports this and calls it, so the drain
- * is written once here rather than three times in three plugin trees.
- * `triggerHistorySync` is what spawns those entries.
- *
- * NEVER THROWS, and never signals through its exit code. It runs with stdio
- * ignored and no parent watching, so a rejection would be an unhandled
- * rejection whose only effect is a status nobody reads. What a failure produces
- * instead is a recorded outcome, which is what `aka status` renders.
- *
- * A null result means NO PASS WAS MADE — not attached, no grant, the breaker is
- * open, or another drain holds the claim — and nothing is written for it. That
- * is distinct from every recorded outcome, each of which describes something a
- * deployment did, and writing one would re-create a file a detach just removed.
+ * Two enums in one union rather than a shared vocabulary: an OUTCOME is
+ * something a deployment did and a SKIP REASON is something this machine
+ * decided, and collapsing them would let a surface report a plane that was
+ * never called. Both are closed sets and neither is derived from a response.
  */
+export type HistorySyncPassReport = HistorySyncOutcome | HistorySyncSkipReason;
+
 /**
  * The pass's injectable seams, for tests only.
  *
@@ -35,10 +30,33 @@ export type HistorySyncPassSeams = Pick<
   'now' | 'sleep' | 'random' | 'sendBatch' | 'sendCaptures'
 >;
 
+/**
+ * The detached child's whole program for the history drain.
+ *
+ * Each harness ships a short entry that imports this and calls it, so the drain
+ * is written once here rather than three times in three plugin trees.
+ * `triggerHistorySync` is what spawns those entries.
+ *
+ * NEVER THROWS, and never signals through its exit code. It runs with stdio
+ * ignored and no parent watching, so a rejection would be an unhandled
+ * rejection whose only effect is a status nobody reads. What a failure produces
+ * instead is a recorded outcome, which is what `aka status` renders.
+ *
+ * A SKIP REASON rather than an outcome means NO PASS WAS MADE — not attached, no
+ * grant, the breaker is open, or another drain holds the claim — and nothing is
+ * written down for it. That is distinct from every recorded outcome, each of
+ * which describes something a deployment did, and writing one would re-create a
+ * file a detach just removed.
+ *
+ * The reason is RETURNED rather than discarded here, which is the whole of this
+ * change: it used to be flattened to `null` at this boundary, so `aka
+ * sync-history --run` could say only that nothing happened, never which of the
+ * seven ways of doing nothing it was.
+ */
 export async function runHistorySyncPass(
   base: string = defaultDataDir(),
   seams: HistorySyncPassSeams = {},
-): Promise<void> {
+): Promise<HistorySyncPassReport> {
   try {
     const dir = dataDir(base);
     const result = await runHistorySync({
@@ -47,7 +65,12 @@ export async function runHistorySyncPass(
       dataDir: dir,
       ...seams,
     });
-    if (result === null) return;
+    // Unchanged in EFFECT: a pass that made no attempt still writes nothing.
+    // Recording an outcome for it would have status report a deployment this
+    // machine never called, and would re-create a file a detach just removed —
+    // the reason the old `null` existed. What changes is that the reason now
+    // reaches the caller instead of being discarded here.
+    if (!result.attempted) return result.reason;
 
     const previous = readHistorySyncState(dir);
     // BOTH lanes. `counts` is structural-only by construction, so on its own it
@@ -91,7 +114,9 @@ export async function runHistorySyncPass(
       // keeps the original meaning.
       completedAtMs: previous?.completedAtMs ?? (done ? result.atMs : null),
     });
+    return result.outcome;
   } catch {
     // Nothing to report to and nowhere to report it.
+    return 'failed';
   }
 }

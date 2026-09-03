@@ -15,7 +15,23 @@ import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import type { HistorySyncResult } from '../../src/attached/history-sync.ts';
 import { runHistorySync } from '../../src/attached/history-sync.ts';
+
+/**
+ * The result of a pass that RAN, or a failure naming why it did not.
+ *
+ * `runHistorySync` returns a union now, so reading `outcome` needs narrowing —
+ * and asserting the narrowing is worth more than the optional chain it replaces.
+ * A pass that quietly made no attempt used to read as `undefined` on every
+ * field, so `expect(attempted(result).sent).toBe(0)` passed for the wrong reason.
+ */
+function attempted(result: Awaited<ReturnType<typeof runHistorySync>>): HistorySyncResult {
+  if (!result.attempted) {
+    throw new Error(`expected a pass to run, but it was skipped: ${result.reason}`);
+  }
+  return result;
+}
 
 const ENDPOINT = 'https://plane.example.test';
 const OTHER_ENDPOINT = 'https://other.example.test';
@@ -154,29 +170,35 @@ afterEach(() => {
 });
 
 describe('runHistorySync — passes that are never made', () => {
-  // Null is NOT an outcome: it means nothing was attempted, and the caller
+  // `attempted: false` is NOT an outcome: nothing was attempted, and the caller
   // writes no state for it. Recording one would have status describe a
   // deployment this machine never called.
+  //
+  // Asserted by REASON rather than by "made no pass". These were seven
+  // indistinguishable nulls, so a wrong branch — refusing for the credential
+  // when the real problem was the grant — satisfied every one of them. The
+  // reason is what `aka sync-history --run` prints, so a wrong one is a wrong
+  // instruction to a human rather than merely a wrong value.
   it('makes no pass on an unattached machine', async () => {
-    await expect(run()).resolves.toBeNull();
+    await expect(run()).resolves.toEqual({ attempted: false, reason: 'not-attached' });
   });
 
   it('makes no pass without a grant', async () => {
     attach();
     seedRows();
-    await expect(run()).resolves.toBeNull();
+    await expect(run()).resolves.toEqual({ attempted: false, reason: 'no-consent' });
   });
 
   it('makes no pass when the grant names another deployment', async () => {
     attach({ grantFor: OTHER_ENDPOINT });
     seedRows();
-    await expect(run()).resolves.toBeNull();
+    await expect(run()).resolves.toEqual({ attempted: false, reason: 'no-consent' });
   });
 
   it('makes no pass without a usable credential', async () => {
     attach({ grantFor: ENDPOINT, credential: false });
     seedRows();
-    await expect(run()).resolves.toBeNull();
+    await expect(run()).resolves.toEqual({ attempted: false, reason: 'credential-unusable' });
   });
 
   // Two drains would send the same rows and the far side would settle it, so
@@ -186,7 +208,7 @@ describe('runHistorySync — passes that are never made', () => {
     seedRows();
     ledger((db) => db.historySync.claim(999_999, 'another-host', T0, 60_000));
 
-    await expect(run()).resolves.toBeNull();
+    await expect(run()).resolves.toEqual({ attempted: false, reason: 'already-running' });
   });
 });
 
@@ -203,8 +225,8 @@ describe('runHistorySync — draining', () => {
       },
     });
 
-    expect(result?.outcome).toBe('ok');
-    expect(result?.sent).toBe(4);
+    expect(attempted(result).outcome).toBe('ok');
+    expect(attempted(result).sent).toBe(4);
     expect(sent).toEqual(['s-0', 's-0-llm', 's-1', 's-1-llm']);
     expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ pending: 0, sent: 4 });
   });
@@ -242,7 +264,7 @@ describe('runHistorySync — draining', () => {
     const again = await run({
       sendBatch: () => Promise.reject(new Error('should not be called')),
     });
-    expect(again?.sent).toBe(0);
+    expect(attempted(again).sent).toBe(0);
   });
 });
 
@@ -261,7 +283,7 @@ describe('runHistorySync — failures', () => {
       },
     });
 
-    expect(result?.outcome).toBe('refused');
+    expect(attempted(result).outcome).toBe('refused');
     expect(calls).toBe(1);
     expect(ledger((db) => db.historySync.counts(ALL).sent)).toBe(0);
   });
@@ -274,7 +296,7 @@ describe('runHistorySync — failures', () => {
 
     const result = await run({ sendBatch: () => Promise.reject(new Error('socket hang up')) });
 
-    expect(result?.outcome).toBe('unreachable');
+    expect(attempted(result).outcome).toBe('unreachable');
     expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ pending: 4, sent: 0 });
   });
 
@@ -304,7 +326,7 @@ describe('runHistorySync — failures', () => {
 
     const result = await run({ sendBatch: () => Promise.reject(new RemoteRequestError(400)) });
 
-    expect(result?.skipped).toBe(2);
+    expect(attempted(result).skipped).toBe(2);
     expect(ledger((db) => db.historySync.counts(ALL).skipped)).toBe(2);
   });
 
@@ -322,8 +344,8 @@ describe('runHistorySync — failures', () => {
           : Promise.resolve(),
     });
 
-    expect(result?.sent).toBe(1);
-    expect(result?.skipped).toBe(1);
+    expect(attempted(result).sent).toBe(1);
+    expect(attempted(result).skipped).toBe(1);
     expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ sent: 1, skipped: 1 });
   });
 
@@ -348,7 +370,7 @@ describe('runHistorySync — failures', () => {
       sendBatch: () => Promise.resolve(),
     });
 
-    expect(result?.outcome).toBe('interrupted');
+    expect(attempted(result).outcome).toBe('interrupted');
     expect(ledger((db) => db.historySync.counts(ALL).pending)).toBeGreaterThan(0);
   });
 });
@@ -475,7 +497,7 @@ describe('runHistorySync — reading the deployment right', () => {
       },
     });
 
-    expect(result?.outcome).toBe('refused');
+    expect(attempted(result).outcome).toBe('refused');
     expect(calls).toBe(1);
   });
 
@@ -493,7 +515,46 @@ describe('runHistorySync — reading the deployment right', () => {
 
     const result = await run({ sendBatch: () => Promise.resolve() });
 
-    expect(result?.sent).toBe(2);
+    expect(attempted(result).sent).toBe(2);
+  });
+
+  it('skips while the breaker stamp is INSIDE the cooldown, and names that reason', async () => {
+    // The other side of the case above. A drain that returns here did nothing,
+    // and the remedy is to WAIT rather than to re-attach — which is why
+    // `aka sync-history --run` has its own line for it. Without a pass that can
+    // actually produce this reason, that line is a string nothing reaches.
+    attach({ grantFor: ENDPOINT });
+    seedRows(1);
+    writeFileSync(
+      join(dataDirOf(home), 'attached-state.json'),
+      JSON.stringify({
+        consecutiveFailures: 3,
+        openedAtMs: T0 - 1_000,
+        lastFailure: 'unreachable',
+      }),
+    );
+
+    await expect(run({ sendBatch: () => Promise.resolve() })).resolves.toEqual({
+      attempted: false,
+      reason: 'breaker-open',
+    });
+  });
+
+  it('reports `failed` rather than throwing when the store cannot be opened', async () => {
+    // The catch is this drain's whole contract: it runs detached with nobody
+    // watching, so a throw would be an unhandled rejection whose only effect is
+    // a status nobody reads. It reports instead — and the reason has to REACH
+    // the caller, or the CLI's "could not complete" line is unreachable too.
+    attach({ grantFor: ENDPOINT });
+    seedRows(1);
+
+    await expect(
+      run({
+        openStore: () => {
+          throw new Error('database disk image is malformed');
+        },
+      }),
+    ).resolves.toEqual({ attempted: false, reason: 'failed' });
   });
 });
 
@@ -803,7 +864,7 @@ describe('runHistorySync — the capture lane', () => {
     // session root, which is a structural row the other lane also delivers, so
     // the pass total counts work this test is not about.
     expect(delivered).toEqual(['text of cap-good']);
-    expect(result?.skipped).toBe(1);
+    expect(attempted(result).skipped).toBe(1);
     // Neither row is offered again: one settled, one permanently skipped. That
     // is what stops the next pass re-reading this same rejected page.
     expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
@@ -820,7 +881,7 @@ describe('runHistorySync — the capture lane', () => {
       sendCaptures: () => Promise.reject(new RemoteRequestError(403)),
     });
 
-    expect(result?.skipped).toBe(0);
+    expect(attempted(result).skipped).toBe(0);
     expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toHaveLength(2);
   });
 
@@ -1019,7 +1080,7 @@ describe('runHistorySync — the capture lane', () => {
       sendCaptures: () => Promise.resolve({ settled: 0 }),
     });
 
-    expect(result?.capturesPending).toBe(true);
+    expect(attempted(result).capturesPending).toBe(true);
   });
 
   it('reports nothing owed once the capture lane drains', async () => {
@@ -1031,7 +1092,7 @@ describe('runHistorySync — the capture lane', () => {
       sendCaptures: (events: readonly IngestEvent[]) => Promise.resolve({ settled: events.length }),
     });
 
-    expect(result?.capturesPending).toBe(false);
+    expect(attempted(result).capturesPending).toBe(false);
   });
 
   // WHAT MAKES A CAPTURE ELIGIBLE, and it is a privacy assertion rather than a
@@ -1076,7 +1137,10 @@ describe('runHistorySync — the capture lane', () => {
     seedCaptures([{ id: 'cap-1' }]);
     const l = lanes();
 
-    await expect(run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures })).resolves.toBeNull();
+    await expect(run({ sendBatch: l.sendBatch, sendCaptures: l.sendCaptures })).resolves.toEqual({
+      attempted: false,
+      reason: 'no-consent',
+    });
 
     expect(l.captures).toEqual([]);
     expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toHaveLength(1);

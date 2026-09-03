@@ -30,6 +30,9 @@ const DOCUMENTED_ONE_SIDED_INDEXES: Record<string, string> = {
   // schema builder cannot express, so it is hand-written in the migration and
   // is absent from every snapshot by construction.
   idx_audit_code_change_path: 'expression index, hand-written outside the drizzle schema',
+  // Migrations only, for the same reason: the activity list's turns rollup
+  // reads (root_session_id, json_extract(attributes, '$.run_key')) — see 0028.
+  idx_audit_session_run_key: 'expression index, hand-written outside the drizzle schema',
   // Snapshot only. 0014 dropped the legacy `events`/`findings` TABLES and put
   // compat VIEWS of the same names in their place. The drizzle schema still
   // declares them as tables, so the snapshot goes on recording their indexes,

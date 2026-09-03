@@ -242,6 +242,14 @@ export interface LocalStoreMaintenance {
    */
   markCaptureDelivered(event: IngestEvent, atMs: number): void;
   /**
+   * Record that a live forward did NOT deliver this capture, so the outbox owes
+   * it. The attached gateway's counterpart to markCaptureDelivered; standalone
+   * never calls it, which is what keeps a detached machine's captures out of the
+   * drain by construction rather than by a date.
+   */
+  markCaptureOwed(event: IngestEvent): void;
+
+  /**
    * Stamp structural events the live forward already delivered.
    *
    * The sibling of `markCaptureDelivered` for the lane the partition actually
@@ -282,6 +290,7 @@ const LOCAL_STORE_MAINTENANCE_MEMBERS: Record<keyof LocalStoreMaintenance, true>
   reconcileWorktreeProjects: true,
   staleBinaryNotice: true,
   markCaptureDelivered: true,
+  markCaptureOwed: true,
   markAuditEventsDelivered: true,
 };
 

@@ -19,6 +19,7 @@ import {
   HistoricalAccess,
   HISTORY_SYNC_PAYLOAD_VERSION,
   isHistorySyncConsentValid,
+  isModelJudgeConsentValid,
   isVaultConsentValid,
   MODEL_JUDGE_PAYLOAD_VERSION,
   parseActionInput,
@@ -95,9 +96,22 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
       // clears it (undefined ⇒ dropped by the schema on the merged write).
       // REQUIRED on the input, so an omitted field can no longer read as a
       // revocation of a live egress grant.
-      modelJudgeConsent: data.modelJudgeConsent
-        ? { acknowledgedAt: new Date().toISOString(), payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION }
-        : undefined,
+      // THREE answers, matching the history-sync grant below. 'unchanged' is what
+      // an untouched row sends, and it is what stops an unrelated save from
+      // deleting this grant the moment MODEL_JUDGE_PAYLOAD_VERSION is bumped —
+      // and, today, from rewriting acknowledgedAt on every save. A still-valid
+      // grant is kept as-is for the same reason the vault grant is.
+      modelJudgeConsent:
+        data.modelJudgeConsent === 'unchanged'
+          ? current.modelJudgeConsent
+          : data.modelJudgeConsent === 'revoked'
+            ? undefined
+            : isModelJudgeConsentValid(current.modelJudgeConsent)
+              ? current.modelJudgeConsent
+              : {
+                  acknowledgedAt: new Date().toISOString(),
+                  payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION,
+                },
       // The vault grant is stamped HERE, never accepted from the client — the
       // input is only the choice string, so a caller-supplied acknowledgedAt or
       // version has no path in. 'on' records the current time at the current

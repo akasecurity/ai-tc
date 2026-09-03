@@ -323,7 +323,7 @@ describe('detachFromControlPlane', () => {
     await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY });
     await saveSettings({
       historicalAccess: 'session-only',
-      modelJudgeConsent: false,
+      modelJudgeConsent: 'revoked',
       historySyncConsent: 'granted',
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
@@ -434,7 +434,7 @@ describe('detachFromControlPlane', () => {
   it('leaves unrelated settings alone', async () => {
     await saveSettings({
       historicalAccess: 'full',
-      modelJudgeConsent: false,
+      modelJudgeConsent: 'revoked',
       historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'off',
@@ -478,7 +478,7 @@ describe('write failures are reported, never thrown', () => {
     try {
       const res = await saveSettings({
         historicalAccess: 'full',
-        modelJudgeConsent: false,
+        modelJudgeConsent: 'revoked',
         historySyncConsent: 'revoked',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
@@ -585,7 +585,7 @@ describe('untyped wire input', () => {
     it('refuses a wrong-typed field and names the SCHEMA key', async () => {
       const res = await saveSettings({
         historicalAccess: 12345,
-        modelJudgeConsent: false,
+        modelJudgeConsent: 'revoked',
         historySyncConsent: 'revoked',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
@@ -612,7 +612,7 @@ describe('untyped wire input', () => {
       // everything satisfies every case above.
       const res = await saveSettings({
         historicalAccess: 'full',
-        modelJudgeConsent: false,
+        modelJudgeConsent: 'revoked',
         historySyncConsent: 'revoked',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',

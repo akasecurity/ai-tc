@@ -72,11 +72,20 @@ const CAPTURE_TYPE_LIST = OUTBOX_CAPTURE_EVENT_TYPES.map((t) => `'${t}'`).join('
 /** `synced_at` values that are not a delivery time. */
 const SKIPPED = -1;
 
-/** How many structural rows are delivered, waiting, or permanently skipped. */
+/**
+ * How many structural rows are delivered, waiting, or permanently skipped —
+ * plus the capture lane's permanent skips.
+ *
+ * `capturesSkipped` is separate rather than folded into `skipped` because the
+ * other three are the STRUCTURAL drain's own view and several readers depend on
+ * that. It is a lifetime count like they are, which is the point: a per-pass
+ * tally rendered beside them would report a permanent loss once and then lose it.
+ */
 export interface HistorySyncCounts {
   pending: number;
   sent: number;
   skipped: number;
+  capturesSkipped: number;
 }
 
 /**
@@ -216,6 +225,9 @@ export class SqliteHistorySyncRepository {
   private readonly releaseBoundaryStmt: StatementSync;
   private readonly freezeBoundaryStmt: StatementSync;
   private readonly captureRowsStmt: StatementSync;
+  private readonly markOwedStmt: StatementSync;
+  private readonly captureSkipCountStmt: StatementSync;
+  private readonly disownCapturesStmt: StatementSync;
   private readonly partitionStmt: StatementSync;
   private readonly claimRowStmt: StatementSync;
   private readonly releaseRowStmt: StatementSync;
@@ -258,18 +270,18 @@ export class SqliteHistorySyncRepository {
     // absorbed rather than rejected; the structural lane pages by session only
     // because /v1/audit-events stubs nothing and its foreign keys are real.
     //
-    // TWO bounds, and they are not the structural lane's.
+    // `outbox_owed` IS THE WHOLE PREDICATE, and it replaced a time window that
+    // could not express this correctly in either direction.
     //
-    // `:since` is the attachment boundary, and it is the INVERSE of how the
-    // structural lane uses one. There, rows BEFORE the boundary are the backlog
-    // to drain and rows after belong to the live path. Here, rows after it are
-    // the ones the live path was supposed to deliver — so an unstamped one is
-    // precisely what the outbox owes — and rows BEFORE it are pre-attach
-    // history, which is the structural lane's subject and travels WITHOUT
-    // `content`. Dropping this bound would drain a machine's entire local
-    // history of prompts, text and all, on its first attach: covered by no
-    // disclosure, since the copy says the pre-attach half sends the record of
-    // activity only.
+    // Owed-ness is a fact the forward path has: the machine was attached, the
+    // live send did not confirm delivery, so the row is owed. A lower bound only
+    // approximates it, and got both ends wrong — rows a previous attachment left
+    // owed fell below a boundary that a re-attach moved, and the entire DETACHED
+    // span sat above it, so a machine that ran three weeks unattached would have
+    // shipped every prompt in those weeks, with text, on re-attaching. Neither
+    // is reachable now: a capture recorded while detached never passes through
+    // the attached gateway, so nothing marks it, and no window has to be reasoned
+    // about at all.
     //
     // `:before` is a GRACE WINDOW rather than a boundary. It buys quiet, not
     // correctness: it keeps this pass off rows the live forward is probably
@@ -280,8 +292,8 @@ export class SqliteHistorySyncRepository {
          FROM audit_events
         WHERE synced_at IS NULL
           AND sync_claimed_at IS NULL
+          AND outbox_owed = 1
           AND event_type IN (${CAPTURE_TYPE_LIST})
-          AND started_at >= :since
           AND started_at < :before
         ORDER BY started_at
         LIMIT :limit`,
@@ -290,6 +302,18 @@ export class SqliteHistorySyncRepository {
     // Settling clears the claim in the same statement. A row that has a
     // delivery time and still reads as claimed would show up in two states at
     // once, and the pair is only ever written together.
+    // Only ever set, never cleared.
+    //
+    // The `synced_at IS NULL` clause is INSURANCE, not the guarantee — say so
+    // rather than dressing it up: `captureRowsStmt` already excludes a settled
+    // row, so a late marker from a forward that raced the drain changes nothing
+    // today, and no test can tell the two spellings apart. It is here for the
+    // day captures gain a re-arm (structural rows have one), where a stray
+    // marker on a settled row would start to mean something.
+    this.markOwedStmt = db.prepare(
+      `UPDATE audit_events SET outbox_owed = 1 WHERE id = :id AND synced_at IS NULL`,
+    );
+
     this.stampStmt = db.prepare(
       `UPDATE audit_events SET synced_at = :at, sync_claimed_at = NULL WHERE id = :id`,
     );
@@ -335,6 +359,18 @@ export class SqliteHistorySyncRepository {
        WHERE event_type IN (${TYPE_LIST})`,
     );
 
+    // The capture lane's permanent skips, as a LIFETIME total like the three
+    // above rather than a per-pass tally. A surface renders it beside `sent` and
+    // `pending`, both of which are lifetime figures, so a delta there would
+    // report a terminal loss once and then drop it on the next pass — while the
+    // rows stayed gone.
+    this.captureSkipCountStmt = db.prepare(
+      `SELECT COUNT(*) AS skipped
+         FROM audit_events
+        WHERE synced_at = ${String(SKIPPED)}
+          AND event_type IN (${CAPTURE_TYPE_LIST})`,
+    );
+
     this.fingerprintStmt = db.prepare(
       `SELECT endpoint_fingerprint AS fingerprint, backlog_before AS backlogBefore
          FROM history_sync WHERE id = 1`,
@@ -346,23 +382,31 @@ export class SqliteHistorySyncRepository {
     );
     // Permanent skips are NOT re-armed: a row that failed to rebuild locally
     // fails the same way against any deployment.
-    // STRUCTURAL ONLY, and the capture half is deliberately absent — it was
-    // added here and then removed, so the reasoning is worth keeping.
+    // STRUCTURAL ONLY, and the capture half is handled by disownCapturesStmt
+    // below rather than here — the two lanes discard different things.
     //
     // Re-arming exists because a stamp records that ONE deployment received a
-    // row, and the next one has not. That argument holds for the structural
-    // lane, which reads `started_at < :before` and so re-drains the rows the
-    // re-arm just cleared. It does NOT hold for captures, which read the other
-    // side of the same boundary (`started_at >= :since`): every row a
-    // deployment change re-arms was recorded before the new attachment, so the
-    // capture lane would never offer one again. Widening this achieved nothing
-    // but un-stamping delivered rows for ever.
+    // row, and the next one has not. For the structural lane that means clearing
+    // `synced_at`, so those rows are offered to the new deployment again.
     //
-    // And re-offering them would be WRONG, which is why the fix is to narrow
-    // rather than to loosen the bound. A capture recorded under deployment A is
-    // pre-attach relative to B, and the grant says the pre-attach half sends the
-    // record of activity, not its text. B is entitled to the structural rows —
-    // which it gets, because those DO re-arm — and not to the prompts.
+    // The capture lane wants the opposite of that, which is why it is a separate
+    // statement rather than a wider WHERE:
+    //
+    // A capture recorded under deployment A is pre-attach relative to B, and the
+    // grant says the pre-attach half sends the record of activity, not its text.
+    // B is entitled to the structural rows — which it gets, because those DO
+    // re-arm above — and not to the prompts.
+    //
+    // The marker is what carries that now, so it is CLEARED rather than left:
+    // `outbox_owed` says "a live forward owed this row", and the forward that
+    // owed it was A's. Left set, the drain would read it as owed to B and ship
+    // A's prompts, with their text, to a deployment that never saw them —
+    // exactly the leak the removed floor was reset to prevent. Set-only would
+    // have made this marker worse than the bound it replaced.
+    this.disownCapturesStmt = db.prepare(
+      `UPDATE audit_events SET outbox_owed = NULL
+        WHERE outbox_owed IS NOT NULL AND event_type IN (${CAPTURE_TYPE_LIST})`,
+    );
     this.rearmStmt = db.prepare(
       `UPDATE audit_events SET synced_at = NULL
         WHERE synced_at > 0 AND event_type IN (${TYPE_LIST})`,
@@ -467,14 +511,31 @@ export class SqliteHistorySyncRepository {
   /**
    * Captures this machine still owes the deployment, oldest first.
    *
-   * `since` is the attachment boundary — only captures from the period this
-   * machine was attached, because those are the ones a live forward owed and
-   * failed to deliver. Anything older is pre-attach history, which travels on
-   * the structural lane without its text. `before` is the grace window. See
-   * captureRowsStmt for why the two bounds point the way they do.
+   * Selected by the `outbox_owed` marker the attached forward path writes, not
+   * by a time window — see captureRowsStmt for why a window could not express
+   * this. `before` is the grace window that leaves a just-recorded capture to
+   * the live path.
    */
-  pendingCaptureRows(limit: number, since: number, before: number): AuditEventRow[] {
-    return allRows<AuditEventRow>(this.captureRowsStmt, { limit, since, before });
+  pendingCaptureRows(limit: number, before: number): AuditEventRow[] {
+    return allRows<AuditEventRow>(this.captureRowsStmt, { limit, before });
+  }
+
+  /**
+   * Record that a capture is OWED to the deployment.
+   *
+   * Written by the attached forward path when a live send did not confirm
+   * delivery, and read by the drain as the whole of its eligibility test. It is
+   * a fact rather than an inference: the machine was attached, the send did not
+   * land, so the row is owed — which no time window can state, because the same
+   * window that holds the rows a past attachment left owed also holds every
+   * capture recorded while the machine was DETACHED, and those were never
+   * offered to anyone.
+   *
+   * Idempotent, and never un-set: `markSynced` settling the row is what takes it
+   * out of the drain's read.
+   */
+  markCaptureOwed(id: string): void {
+    this.markOwedStmt.run({ id });
   }
 
   /** Record delivery. Called only AFTER the far side has accepted the rows. */
@@ -571,11 +632,13 @@ export class SqliteHistorySyncRepository {
       this.countsStmt,
       { before },
     );
+    const captures = getRow<{ skipped: number | null }>(this.captureSkipCountStmt);
     // SUM() over no rows is NULL, which is zero of each here.
     return {
       pending: row?.pending ?? 0,
       sent: row?.sent ?? 0,
       skipped: row?.skipped ?? 0,
+      capturesSkipped: captures?.skipped ?? 0,
     };
   }
 
@@ -618,7 +681,20 @@ export class SqliteHistorySyncRepository {
     withTransaction(
       this.db,
       () => {
+        // Read BEFORE the overwrite: whether a PREVIOUS deployment existed is
+        // what decides the capture half, and this is the last moment it is
+        // knowable.
+        const previous = getRow<{ fingerprint: string | null }>(this.fingerprintStmt)?.fingerprint;
         this.rearmStmt.run();
+        // ONLY on a change BETWEEN deployments, never on a first attach. This
+        // method also runs the first time a machine attaches at all
+        // (`undefined` → A), and there the markers on disk were written by A's
+        // own live path earlier in the same session — disowning them would
+        // silently empty the outbox at the moment it started filling. What must
+        // be disowned is a marker the PREVIOUS deployment's forward wrote.
+        if (previous !== null && previous !== undefined && previous !== fingerprint) {
+          this.disownCapturesStmt.run();
+        }
         this.setFingerprintStmt.run({ fingerprint, backlogBefore });
       },
       'IMMEDIATE',

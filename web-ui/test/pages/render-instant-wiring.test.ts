@@ -22,9 +22,13 @@ import { emptyStore } from '../helpers/store-templates.ts';
 // instant it booted.
 //
 // Rather than knowing where each route puts the prop, this walks the element
-// tree the page returns and collects EVERY `renderedAt` it finds. That is the
-// stronger assertion: it says every consumer on the route got this request's
-// instant, not merely that one did.
+// tree the page returns and collects EVERY `renderedAt` it finds, so a route
+// with more than one consumer would be caught if one of them silently got a
+// different value. None of the six routes below is actually that shape today
+// — each has exactly one `renderedAt`-bearing element (`findings` has three,
+// but they are mutually exclusive branches) — so this generalizes correctly
+// without currently exercising the multi-consumer case; do not read the
+// walker's existence as proof that case is covered.
 const osHome = vi.hoisted(() => ({ dir: '' }));
 vi.mock('node:os', async (importActual) => {
   const actual = await importActual<typeof NodeOs>();
@@ -108,11 +112,11 @@ const ROUTES = [
     load: () => import('../../app/(app)/inventory/page.tsx'),
   },
   {
-    // The one route that hoists `renderInstant()` to a local and hands it to
-    // more than one consumer (VaultLookupClient, VaultDashboardClient) — the
-    // shape where a second consumer can quietly be given a different value.
-    // `collectRenderedAt` already walks props as well as children, so nothing
-    // else needed to change to catch that here.
+    // NOT a multi-consumer route, despite this file's earlier claim: the page
+    // also renders `<VaultLookupClient />`, but that component takes zero
+    // props — only `VaultDashboardClient` gets `renderedAt`. Single consumer,
+    // same shape as the other five; added for its zero-argument page function
+    // (below), which none of the others have.
     name: 'vault',
     load: () => import('../../app/(app)/vault/page.tsx'),
   },

@@ -101,6 +101,32 @@ const RELAXED_FILES = [
   },
 ];
 
+// The ambient-clock ban's WIDENING for `dashboard-ui`/`ui-kit`: `Date.now()`
+// and a bare `new Date()` are banned in every `src/**` module, not only ones
+// carrying `use client`, since neither package ever legitimately captures a
+// render instant. That is a `files: ['src/**']`-scoped entry layered onto
+// `reactUiPackage` inside `presentationalUiPackage` (react.js) — resolved per
+// FILE for the same reason `RELAXED_FILES` above is, since the package-level
+// config says nothing about the split between `src/**` and everywhere else.
+//
+// This is the only place that widening is checked against the REAL resolved
+// config. ambient-clock.test.js's own suite drives `tonalInkTokensPresentational`
+// — a bare rule VALUE that no production config actually consumes once
+// `presentationalUiPackage` stopped spreading it directly (a refactor partway
+// through this file's own history) — so it could not have caught the widening
+// going dead. Verified by deleting the `files`-scoped entry from
+// `presentationalUiPackage` and re-running the whole `eslint-config` suite: it
+// stayed green throughout, `pnpm lint` on `dashboard-ui` stopped catching the
+// exact regression this ban exists for, and only the two cases below noticed.
+const AMBIENT_CLOCK_TEST_FILES = [
+  {
+    name: '@akasecurity/dashboard-ui test',
+    dir: 'packages/dashboard-ui',
+    file: 'test/lib/relativeTime.test.ts',
+  },
+  { name: '@akasecurity/ui-kit test', dir: 'packages/ui-kit', file: 'test/badge.test.ts' },
+];
+
 // The workspace packages that deliberately do NOT carry the drizzle wall, with
 // the reason each is out. Every other workspace package is in WALLED_PACKAGES,
 // and the coverage assertion below holds the two together — so a package added
@@ -140,7 +166,7 @@ const resolved = new Map();
 // surfaced HERE rather than left to surface as ESLint's own bare "Could not find
 // config file", which names neither the package nor the reason.
 beforeAll(async () => {
-  for (const pkg of [...WALLED_PACKAGES, ...RELAXED_FILES]) {
+  for (const pkg of [...WALLED_PACKAGES, ...RELAXED_FILES, ...AMBIENT_CLOCK_TEST_FILES]) {
     const pkgDir = join(REPO_ROOT, pkg.dir);
     const eslint = new ESLint({ cwd: pkgDir });
     let config;
@@ -224,6 +250,42 @@ describe('the tonal-ink wall reaches every package that renders Tailwind classes
   it.each(tonalNames)('%s still enforces the network ban', (name) => {
     expect(firedIn(name, "await import('node:http');", 'no-restricted-syntax')).toBe(1);
   });
+});
+
+// The ambient-clock widening (see AMBIENT_CLOCK_TEST_FILES above), against the
+// REAL resolved config for each package rather than a bare rule value.
+describe('the ambient-clock ban is widened for dashboard-ui/ui-kit src, and only src', () => {
+  // No `use client` directive anywhere in this snippet — the shape of
+  // relativeTime.ts's regression this widening exists to catch. espree (this
+  // suite's plain Linter) parses it fine: the widened selector carries no
+  // directive-prologue requirement to begin with.
+  const NO_DIRECTIVE_CLOCK_READ = 'export function f(n = Date.now()) { return n; }';
+  const DIRECTIVE_SCOPED_CLOCK_READ = "'use client';\nexport function F() { return Date.now(); }";
+
+  it.each(['@akasecurity/dashboard-ui', '@akasecurity/ui-kit'])(
+    '%s catches it in src/**, where directive scoping alone would miss it',
+    (name) => {
+      expect(firedIn(name, NO_DIRECTIVE_CLOCK_READ, 'no-restricted-syntax')).toBe(1);
+    },
+  );
+
+  it.each(['@akasecurity/dashboard-ui test', '@akasecurity/ui-kit test'])(
+    '%s does NOT widen into test/**, where fixtures need an unrestricted clock',
+    (name) => {
+      expect(firedIn(name, NO_DIRECTIVE_CLOCK_READ, 'no-restricted-syntax')).toBe(0);
+    },
+  );
+
+  it('web-ui keeps the directive-scoped ban everywhere — it never widens', () => {
+    expect(firedIn('web-ui', NO_DIRECTIVE_CLOCK_READ, 'no-restricted-syntax')).toBe(0);
+  });
+
+  it.each(['@akasecurity/dashboard-ui', '@akasecurity/ui-kit', 'web-ui'])(
+    '%s still catches the directive-scoped case — widening does not narrow it',
+    (name) => {
+      expect(firedIn(name, DIRECTIVE_SCOPED_CLOCK_READ, 'no-restricted-syntax')).toBe(1);
+    },
+  );
 });
 
 // Derived from the tree rather than listed, so a package added without the wall

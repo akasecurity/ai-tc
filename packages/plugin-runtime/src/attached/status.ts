@@ -216,14 +216,19 @@ function policyLines(dataDir: string, nowMs: number): string[] {
  * overstatement as the clean block this whole surface replaced.
  */
 /**
- * What the batch budget threw away, if anything.
+ * What the live forward gave up on, if anything.
  *
  * Rendered INDEPENDENTLY of breaker state, and that is the whole reason it
- * exists: the machine this happens on is the one whose breaker is closed. A
- * plane that answers every request successfully but slowly produces no
- * failures, so every other line in this block reads healthy while the tail of
- * each batch is discarded. Appended to all three of `forwardLines`' outcomes
- * rather than to one.
+ * exists for its original cause: the machine a batch-budget drop happens on
+ * is the one whose breaker is closed. A plane that answers every request
+ * successfully but slowly produces no failures, so every other line in this
+ * block reads healthy while the tail of each batch is discarded. Appended to
+ * all three of `forwardLines`' outcomes rather than to one — the second cause
+ * `forward-drops.ts` now also counts (the breaker opening mid-retry with
+ * nothing left to isolate) DOES move the breaker's own file, but that alone
+ * says nothing was delivered, never how much; this line is still the only
+ * place that number is rendered, so it stays independent of which of the two
+ * caused it.
  *
  * "at least" is accuracy, not hedging. Concurrent detached workers increment the
  * tally with an unlocked read-modify-write, so a simultaneous pair can lose one
@@ -234,8 +239,8 @@ function dropLines(dataDir: string, nowMs: number): string[] {
   const drops = readForwardDrops(dataDir);
   if (!drops) return [];
   return [
-    `             at least ${String(drops.droppedForwards)} events dropped past the ` +
-      `batch budget, last ${ageLine(drops.lastDropAtMs, nowMs)}`,
+    `             at least ${String(drops.droppedForwards)} events dropped by the ` +
+      `live forward, last ${ageLine(drops.lastDropAtMs, nowMs)}`,
   ];
 }
 

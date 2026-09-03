@@ -484,31 +484,59 @@ describe('createForwardPolicy', () => {
     });
 
     it.each([400, 413, 422])(
-      'a %d body refusal classifies as rejected, and never moves the breaker',
+      'a %d body refusal classifies as rejected, and DOES open the breaker after three',
       async (status) => {
+        // Schema drift is a property of the BUILD, not of one row: a
+        // deployment that refuses one event's shape refuses all fifty
+        // sharing it. Left exempt from the failure count the way
+        // `route-absent` is, a sustained 422 would isolate a single "bad"
+        // event forever at no cost to the breaker — the exact storm the 429
+        // exclusion exists to prevent, reachable here through every OTHER
+        // status this classifier admits. So three of them opens the breaker
+        // exactly as three timeouts would; the reason returned is still
+        // `rejected`, so `forwardBatch` keeps isolating the row that
+        // genuinely is alone, but the circuit itself stops the fan-out once
+        // it is not.
         const policy = createForwardPolicy({ dir });
-        for (let i = 0; i < BREAKER_FAILURE_THRESHOLD + 2; i++) {
+        for (let i = 0; i < BREAKER_FAILURE_THRESHOLD; i++) {
           await expect(policy.run(() => Promise.reject(serverRejection(status)))).resolves.toEqual(
             failed('rejected'),
           );
         }
-        const op = vi.fn(() => Promise.resolve('ran'));
-        await expect(policy.run(op)).resolves.toEqual(ok('ran'));
-        expect(op).toHaveBeenCalledTimes(1);
+        const op = vi.fn(() => Promise.resolve('should not run'));
+        await expect(policy.run(op)).resolves.toEqual(failed('breaker-open'));
+        expect(op).not.toHaveBeenCalled();
       },
     );
 
-    it.each([401, 403, 404, 429, 500])(
-      'a %d is NOT classified as rejected — it keeps its own existing meaning',
-      async (status) => {
-        // The boundary the range check draws. 401/403 already have their own
-        // members; 404 on this route is `route-absent`, handled earlier and
-        // never reaching `classifyFailure` at all; 429 and 500 are both
-        // retriable rather than a body-shape refusal and must still count
-        // toward the breaker like any other `unreachable`.
+    it('rejected records its cause for /aka:status, the same as any other failure', async () => {
+      // `rejected` is not in ForwardFailureReason's "no verdict we are
+      // willing to name" split at the type level, but it persists through
+      // that exact bucket (`lastFailure: 'unreachable'`) rather than
+      // widening `ControlPlaneFailure` — a 4xx body refusal has no more of a
+      // human remediation than a timeout does.
+      const policy = createForwardPolicy({ dir, now: () => 7 });
+      await expect(policy.run(() => Promise.reject(serverRejection(422)))).resolves.toEqual(
+        failed('rejected'),
+      );
+      expect(readForwardHealth(dir, 7)?.lastFailure).toBe('unreachable');
+    });
+
+    it.each([
+      [401, 'unauthorized'],
+      [403, 'forbidden'],
+      // 404 is excluded from `isServerRejection`'s range because it has its
+      // own, sharper meaning — but only `isRouteAbsent` (name-based, matching
+      // `RemoteRouteAbsent`) reaches it there. This fixture is a plain
+      // status-bearing `Error`, so it is NOT `route-absent` here.
+      [404, 'unreachable'],
+      [500, 'unreachable'],
+    ] as const)(
+      'a %d is NOT classified as rejected — it keeps its own existing meaning of %s',
+      async (status, reason) => {
         const policy = createForwardPolicy({ dir });
         const result = await policy.run(() => Promise.reject(serverRejection(status)));
-        expect(result).not.toEqual(failed('rejected'));
+        expect(result).toEqual(failed(reason));
       },
     );
 
@@ -531,10 +559,14 @@ describe('createForwardPolicy', () => {
       expect(op).not.toHaveBeenCalled();
     });
 
-    it('rejected does not erase a failure count a DIFFERENT route earned', async () => {
-      // Mirrors the equivalent route-absent test: the breaker is shared across
-      // every route a gateway forwards through, so a 422 on THIS one must not
-      // zero a count `ingestEvents` (say) already earned.
+    it('a rejected failure ACCUMULATES onto a count a different route earned', async () => {
+      // Unlike route-absent, rejected is a real failure — so two unrelated
+      // failures on one route plus a 422 on another must together reach the
+      // SAME shared threshold, exactly as three failures on one route would.
+      // Mirrors what the original design got wrong: exempting this reason
+      // meant a permanently-rejecting deployment could never contribute to
+      // opening the breaker no matter how many other routes were also
+      // failing alongside it.
       const policy = createForwardPolicy({ dir });
       await policy.run(() => Promise.reject(new Error('ingestEvents down')));
       await policy.run(() => Promise.reject(new Error('ingestEvents down')));
@@ -543,17 +575,19 @@ describe('createForwardPolicy', () => {
       await expect(policy.run(() => Promise.reject(serverRejection(422)))).resolves.toEqual(
         failed('rejected'),
       );
-      expect(readForwardHealth(dir)?.consecutiveFailures).toBe(2);
+      expect(readForwardHealth(dir)?.consecutiveFailures).toBe(3);
 
-      await expect(
-        policy.run(() => Promise.reject(new Error('ingestEvents still down'))),
-      ).resolves.toEqual(failed('unreachable'));
       const op = vi.fn(() => Promise.resolve('should not run'));
       await expect(policy.run(op)).resolves.toEqual(failed('breaker-open'));
       expect(op).not.toHaveBeenCalled();
     });
 
-    it('a rejected PROBE closes the breaker instead of spending the cooldown', async () => {
+    it('a rejected PROBE re-opens the breaker instead of closing it', async () => {
+      // The opposite of route-absent's half-open behaviour, and deliberately
+      // so: a 404 is reachability evidence with nothing further to explain,
+      // while a 422 is itself the ongoing failure — so where route-absent's
+      // probe clears the cooldown, a rejected probe must extend it exactly as
+      // a probe that timed out would.
       let clock = 1_000;
       const policy = createForwardPolicy({ dir, now: () => clock });
       await tripOpen(policy);
@@ -563,9 +597,12 @@ describe('createForwardPolicy', () => {
         failed('rejected'),
       );
 
-      const op = vi.fn(() => Promise.resolve('ran'));
-      await expect(policy.run(op)).resolves.toEqual(ok('ran'));
-      expect(op).toHaveBeenCalledTimes(1);
+      // Nowhere near a second full cooldown — if the probe had cleared
+      // `openedAtMs` the way route-absent's does, this would already run.
+      clock += 1;
+      const op = vi.fn(() => Promise.resolve('should not run'));
+      await expect(policy.run(op)).resolves.toEqual(failed('breaker-open'));
+      expect(op).not.toHaveBeenCalled();
     });
 
     it('reads the STATUS, not the message — a 403 in the text is not a 403', async () => {

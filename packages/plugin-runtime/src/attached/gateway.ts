@@ -679,11 +679,24 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
    * fifty events is well-formed. Trusting `ok` alone would stamp all fifty as
    * delivered and never re-offer the twenty the plane did not take. So success
    * is checked against `chunk.length`; anything short of it falls into the same
-   * per-item pass as a refused chunk, which is SAFE to do blindly, because the
-   * receiver's own upsert settles a duplicate silently (`AuditEventBatchAck`'s
-   * own docblock) — re-sending a row that already landed is a no-op there, and
-   * it is the only way to recover the rows that did not, since the ack carries
-   * no per-row verdict to resend by.
+   * per-item pass as a refused chunk, which is the only way to recover the
+   * rows that did not land, since the ack carries no per-row verdict to
+   * resend by.
+   *
+   * That fallback ASSUMES a re-send of an already-landed row is a harmless
+   * no-op rather than a second cost — an assumption this file cannot verify.
+   * `AuditEventBatchAck` carries only `accepted`, unlike its sibling
+   * `IngestAck` (`accepted` + `duplicates`, with `accepted + duplicates ==`
+   * the batch size as the invariant `recordCapture` reads), so whether a
+   * duplicate counts toward THIS route's `accepted` is not expressed
+   * anywhere in this repo. If it follows its sibling's convention and does
+   * NOT, a chunk containing even one already-delivered row — the ordinary
+   * consequence of a lost stamp, which this file already treats as cheap —
+   * answers short forever and enters the per-item pass on every pass it is
+   * offered again. The cost of that is bounded rather than silent: the
+   * pass converges (every row lands and stamps), so it is one wasted round
+   * of singles rather than a stall, and it errs toward an extra resend
+   * rather than toward the lost row the alternative risks.
    *
    * BATCH-ATOMIC SETTLEMENT is otherwise the rule: the receiver wraps a chunk in
    * one transaction, so a full 2xx settles every event in it and a non-2xx
@@ -755,9 +768,10 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
           // A well-formed ack claiming fewer accepted than sent. `ok` is not
           // delivery here any more than it is for a single capture — fall
           // through to the per-item pass below, which is the only way to find
-          // out which of the fifty actually landed. Blind re-sending the whole
-          // chunk is safe rather than wasteful, per the docblock above: the
-          // upsert on the far side settles a duplicate silently.
+          // out which of the fifty actually landed. Bounded rather than
+          // free, per the docblock above: this assumes a re-send of a
+          // row that already landed costs an extra round trip, not a
+          // second write.
         } else if (
           // THREE reasons are worth a second pass, one at a time, and they are
           // the three settled BEFORE the control plane refused anything, or
@@ -810,14 +824,20 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
             continue;
           }
           if (single.reason === 'breaker-open') {
-            // Three failures inside THIS retry just opened the breaker, so
-            // every remaining `run()` call in this chunk would short-circuit
-            // identically at zero network cost — nothing left to isolate.
-            // Counted ONCE for the whole remainder rather than once per event,
-            // which is what continuing the loop would otherwise cost in
-            // redundant file I/O for an outcome already decided.
-            recordForwardDrops(this.deps.dataDir, chunk.length - j, at);
-            break;
+            // The breaker is now open for every route this gateway forwards
+            // through, not just the rest of THIS chunk — so the next chunk's
+            // own batch attempt would ALSO come back breaker-open, and that
+            // reason is not one of the three the outer gate retries per item
+            // (`:788-790`), so it falls straight into the `continue` beside
+            // them. That `continue` records nothing. Left as a `break`, every
+            // chunk after this one — not merely the rest of this one —
+            // vanishes with no tally anywhere: the exact failure mode the
+            // deadline exit fourteen lines up already solves, for the
+            // identical reason. So this counts the FULL remainder, from here
+            // to the end of the whole batch, and returns from the whole pass
+            // rather than merely breaking this loop.
+            recordForwardDrops(this.deps.dataDir, inputs.length - i - j, at);
+            return;
           }
           // Any other single-level failure — this one event's own
           // invalid-request or rejected, a refusal, a timeout that has not yet

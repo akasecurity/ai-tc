@@ -1085,24 +1085,31 @@ describe('the live forward stamps what it delivered', () => {
     expect(drops?.droppedForwards).toBe(1);
   });
 
-  it('stops the retry — and counts the WHOLE remainder once — the moment the breaker opens mid-pass', async () => {
-    // Once a single comes back breaker-open, every remaining `run()` call in
-    // this chunk would short-circuit identically at zero network cost: nothing
-    // left to isolate. The loop must stop rather than iterate through a
-    // decided outcome, and the remainder is counted as ONE write, not one per
-    // event, since `recordForwardDrops` is a real file read-modify-write.
-    let calls_ = 0;
+  it('stops the WHOLE PASS — not just this chunk — and counts every chunk still owed, the moment the breaker opens mid-retry', async () => {
+    // TWO chunks, deliberately: with only one, `break` and `return` behave
+    // identically, because there is no next chunk for the bug to hide in.
+    // Once a single comes back breaker-open here, every remaining `run()`
+    // call — this chunk's own remainder AND every later chunk's batch
+    // attempt — would answer breaker-open identically at zero network cost.
+    // `breaker-open` is not one of the three reasons the outer gate retries
+    // per item, so a chunk that reaches it via `continue` records NOTHING —
+    // which is what a `break` here used to leave the SECOND chunk to. The
+    // fix counts the full remainder, across every chunk still owed, and
+    // returns from the whole pass rather than merely breaking this loop.
+    let callCount = 0;
     const forward: ForwardPolicy = {
       run: async (op: () => Promise<unknown>) => {
-        calls_ += 1;
-        if (calls_ === 1) {
-          // The batch attempt: refused, triggering the retry.
+        callCount += 1;
+        if (callCount === 1) {
+          // Chunk 1's own batch attempt: refused, triggering the retry.
           return { ok: false, reason: 'invalid-request' } as ForwardResult<unknown>;
         }
-        if (calls_ <= 4) {
-          // Singles 1-3 succeed, THEN the breaker opens on the 4th call.
+        if (callCount <= 4) {
+          // Three singles succeed, THEN the breaker opens on the fourth.
           return { ok: true, value: await op() } as ForwardResult<unknown>;
         }
+        // Everything from here on, including chunk 2's own batch attempt if
+        // it were ever reached, answers breaker-open at zero network cost.
         return { ok: false, reason: 'breaker-open' } as ForwardResult<unknown>;
       },
     } as unknown as ForwardPolicy;
@@ -1121,18 +1128,27 @@ describe('the live forward stamps what it delivered', () => {
     } as unknown as AttachedClient;
 
     const { gateway, dataDir: dir } = build({ forward, client, local: makeLocal(calls) });
-    // 10 events: 1 batch attempt (refused) + 3 successful singles, then the
-    // breaker opens on the 4th and the remaining 6 are never attempted.
+    // 100 events is two chunks of 50. Chunk 1's batch is refused; three
+    // singles land, the fourth opens the breaker. Chunk 2 must never even be
+    // ATTEMPTED — the whole pass stops here.
     await gateway.recordToolCalls(
-      Array.from({ length: 10 }, (_, i) => toolCallInput(`call-${String(i)}`)),
+      Array.from({ length: 100 }, (_, i) => toolCallInput(`call-${String(i)}`)),
     );
 
-    // The breaker-open call itself DID reach the client (that is how the fake
-    // decides to answer breaker-open), but nothing past it did.
-    expect(singles.length).toBeLessThanOrEqual(4);
+    // Exactly three singles reached the client and succeeded — the fourth
+    // call answers breaker-open without calling `op()` at all, so this is
+    // the value, not merely a bound on it.
+    expect(singles).toHaveLength(3);
     expect(calls.delivered).toHaveLength(3);
+    // The client was never asked for chunk 2's batch: only the five calls
+    // chunk 1 itself made (one batch + four singles) ever happened.
+    expect(callCount).toBe(5);
     const drops = readForwardDrops(dir);
-    expect(calls.delivered.length + (drops?.droppedForwards ?? 0)).toBe(10);
+    // 97, not 47: the remainder covers BOTH chunk 1's own un-retried tail
+    // and the whole of chunk 2, which a `break` would have abandoned to the
+    // outer loop's silent `continue`.
+    expect(drops?.droppedForwards).toBe(97);
+    expect(calls.delivered.length + (drops?.droppedForwards ?? 0)).toBe(100);
   });
 
   it('counts the events a chunk never reached when the deadline lands mid-retry', async () => {

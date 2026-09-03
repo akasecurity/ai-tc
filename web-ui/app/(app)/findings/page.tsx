@@ -50,12 +50,14 @@ export default async function FindingsPage({
   const repo = parseRepo(sp);
   const file = parseFile(sp);
 
+  // One instant for the whole route: every relative label below is measured
+  // against it during the server render and again during hydration — captured
+  // before `from` below so the query window derives from the same instant
+  // rather than a clock read apart from the labels it scopes.
+  const renderedAt = renderInstant();
   // An absent/unknown range means all time — this list has never had a default
   // window, and applying one silently would hide findings.
-  const from = range ? rangeToFromIso(range) : null;
-  // One instant for the whole route: every relative label below is measured
-  // against it during the server render and again during hydration.
-  const renderedAt = renderInstant();
+  const from = range ? rangeToFromIso(range, renderedAt) : null;
   const scope: FindingsScope = {
     ...(from ? { from } : {}),
     ...(tools.length ? { tools } : {}),

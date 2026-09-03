@@ -8,6 +8,7 @@ import {
   InventoryNav,
   type InventorySelection as Selection,
   ProjectPane,
+  useRenderClock,
 } from '@akasecurity/dashboard-ui';
 import type {
   AccessLevel,
@@ -75,9 +76,18 @@ export function InventoryClient({
   path: string[];
   fq: string;
   drawer: string | null;
-  /** The instant the server rendered against. */
+  /**
+   * The instant the server rendered against. Advanced through useRenderClock
+   * below rather than read directly — see that hook's doc for why: freezing it
+   * for the life of this client component would not just go stale, it would
+   * turn the harness feed's day bucket false. Unlike a relative-time label,
+   * that bucket is a discrete Today/Yesterday/date branch computed once per
+   * event and then held, so a session left open across local midnight would
+   * go on showing "Today" for an event days old were this never advanced.
+   */
   renderedAt: number;
 }) {
+  const renderClock = useRenderClock(renderedAt);
   const pathname = usePathname();
   // Navigation transition (selection/search/path pushes) — distinct from the
   // write transition below, which tracks the access/trust Server Actions.
@@ -215,7 +225,7 @@ export function InventoryClient({
           <Card className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {selHarness ? (
               <HarnessOverview
-                renderedAt={renderedAt}
+                renderedAt={renderClock}
                 harness={selHarness}
                 events={harnessEvents}
                 onSelect={selectAsset}

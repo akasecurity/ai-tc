@@ -56,14 +56,19 @@ export default async function ActivityPage({
 
   const activity = db().activity;
 
+  // Captured before the range bound below so the query window and every
+  // rendered label this request produces come from the SAME instant, rather
+  // than a range bound computed a clock read apart from the labels it scopes.
+  const renderedAt = renderInstant();
+
   // The time-range lower bound the session list uses, reused to scope the token
   // panel and the harness filter to the window on screen (range maps to `now − N
   // days`; rows/leaves/harnesses before it are excluded).
-  const rangeFromMs = Date.parse(rangeToFromIso(range));
+  const rangeFromMs = Date.parse(rangeToFromIso(range, renderedAt));
 
   const [stats, list, tokenReports, harnessOptions] = await Promise.all([
     activity.stats(),
-    activity.listSessions(toListQuery(q, harness, range, showEmpty)),
+    activity.listSessions(toListQuery(q, harness, range, showEmpty, renderedAt)),
     activity.tokenReports(rangeFromMs),
     // Only the harnesses that actually have sessions in this range populate the
     // filter (not the full enum).
@@ -127,9 +132,6 @@ export default async function ActivityPage({
       tone: 'teal',
     },
   ];
-  // One instant for the whole route: every relative label below is measured
-  // against it during the server render and again during hydration.
-  const renderedAt = renderInstant();
   return (
     <div className="flex h-full min-h-0 flex-col px-8 pb-8 pt-7">
       {/* Token usage sits in the filter bar beside the range picker rather than

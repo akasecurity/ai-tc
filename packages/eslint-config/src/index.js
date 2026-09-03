@@ -358,32 +358,51 @@ const AMBIENT_CLOCK_MESSAGE =
 
 /**
  * The `no-restricted-syntax` entries that reject an ambient clock read inside a
- * module carrying the `use client` directive.
+ * module carrying the `use client` directive — or, with `everyModule: true`,
+ * inside every module in the package, directive or not.
  *
- * The scoping is the whole trick: `Program:has(> ExpressionStatement[directive=…])`
- * matches only where the directive is a real directive-prologue statement, so a
- * SERVER component — which is where an instant is legitimately captured, and must
- * stay legitimate — is untouched, and so is a file that merely mentions the string
- * `use client` as a value. Only `Date.now()` and a zero-argument `new Date()` are
- * clock reads; `new Date(iso)` and `Date.parse(iso)` parse a value the caller
- * already had and are deliberately left alone.
+ * The directive scoping is the whole trick for the default case:
+ * `Program:has(> ExpressionStatement[directive=…])` matches only where the
+ * directive is a real directive-prologue statement, so a SERVER component —
+ * which is where an instant is legitimately captured, and must stay legitimate
+ * — is untouched, and so is a file that merely mentions the string
+ * `use client` as a value. Only `Date.now()` and a zero-argument `new Date()`
+ * are clock reads; `new Date(iso)` and `Date.parse(iso)` parse a value the
+ * caller already had and are deliberately left alone.
+ *
+ * `everyModule` exists because the directive scoping has a gap the default
+ * case cannot close: a PRESENTATIONAL helper module — one that carries no
+ * component and so no directive of its own, `relativeTime.ts` and
+ * `exceptions/meta.ts` are the two this repo ships — is invisible to the
+ * directive-anchored selector no matter how many client components import it.
+ * A caller who reverts `now: number` back to `now: number = Date.now()` there
+ * still typechecks at every existing call site (a default satisfies
+ * "required") and trips no rule, because the selector never runs on a Program
+ * with no directive child. `dashboard-ui` and `ui-kit` close that: neither
+ * package ever legitimately captures an instant — that is `web-ui`'s
+ * `renderInstant()`, which lives outside both — so nothing in either is
+ * exempted by the widening except the one sanctioned reader, which stays
+ * exempted through `allowAmbientClock` (a full opt-out, checked first)
+ * regardless of which mode this produces.
  *
  * Known limits, in the shape `tonalInkSelectors` states its own: an alias
  * (`const n = Date.now; n()`), a clock reached through a helper the client
  * component calls, and `performance.now()` — which is not a wall clock and cannot
  * produce a date label — are not matched. This bans the accident, not the evasion.
  *
+ * @param {{ everyModule?: boolean }} [opts]
  * @returns {{ selector: string, message: string }[]}
  */
-function ambientClockSelectors() {
-  const CLIENT = "Program:has(> ExpressionStatement[directive='use client'])";
+function ambientClockSelectors(opts = {}) {
+  const { everyModule = false } = opts;
+  const scope = everyModule ? '' : "Program:has(> ExpressionStatement[directive='use client']) ";
   return [
     {
-      selector: `${CLIENT} CallExpression[callee.object.name='Date'][callee.property.name='now']`,
+      selector: `${scope}CallExpression[callee.object.name='Date'][callee.property.name='now']`,
       message: AMBIENT_CLOCK_MESSAGE,
     },
     {
-      selector: `${CLIENT} NewExpression[callee.name='Date'][arguments.length=0]`,
+      selector: `${scope}NewExpression[callee.name='Date'][arguments.length=0]`,
       message: AMBIENT_CLOCK_MESSAGE,
     },
   ];
@@ -415,17 +434,24 @@ function ambientClockSelectors() {
  * The other three groups come along by construction, so an opt-out for one ban
  * cannot become an opt-out for four by omission.
  *
- * @param {{ allowAmbientClock?: boolean }} [opts]
+ * `ambientClockEveryModule` is the other direction — WIDENING rather than
+ * lifting the clock ban, to every module in the package regardless of
+ * directive. See `ambientClockSelectors`'s own doc for why that is sound only
+ * for a package with no legitimate ambient-clock reader anywhere in it.
+ * `allowAmbientClock` wins if both are set, since a file that opted all the
+ * way out has nothing left to widen.
+ *
+ * @param {{ allowAmbientClock?: boolean, ambientClockEveryModule?: boolean }} [opts]
  * @returns {import('eslint').Linter.RuleEntry}
  */
 export function reactSyntaxBans(opts = {}) {
-  const { allowAmbientClock = false } = opts;
+  const { allowAmbientClock = false, ambientClockEveryModule = false } = opts;
   return /** @type {import('eslint').Linter.RuleEntry} */ ([
     'error',
     ...networkSyntaxSelectors(),
     ...drizzleSyntaxSelectors(),
     ...tonalInkSelectors(),
-    ...(allowAmbientClock ? [] : ambientClockSelectors()),
+    ...(allowAmbientClock ? [] : ambientClockSelectors({ everyModule: ambientClockEveryModule })),
   ]);
 }
 
@@ -434,6 +460,22 @@ export const tonalInkTokens = [
   {
     rules: {
       'no-restricted-syntax': reactSyntaxBans(),
+    },
+  },
+];
+
+/**
+ * The same assembled value, with the ambient-clock ban widened to every
+ * module in the package rather than only ones carrying `use client`. For
+ * `dashboard-ui` and `ui-kit`: both are pure-presentational packages that
+ * never legitimately capture a render instant (that is `web-ui`'s
+ * `renderInstant()`, outside either), so the directive is not what should
+ * decide whether a clock read there is caught — see `ambientClockSelectors`.
+ */
+export const tonalInkTokensPresentational = [
+  {
+    rules: {
+      'no-restricted-syntax': reactSyntaxBans({ ambientClockEveryModule: true }),
     },
   },
 ];

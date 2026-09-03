@@ -159,6 +159,7 @@ export function ActivityClient({
     linkHref,
     isLoading: false,
     error: null,
+    renderedAt,
     // Tool chips deep-link to the flat findings view filtered to that
     // tool. `?tool=` is a real filter on the capturing event's recorded
     // tool name, where the previous `?q=via Bash` was a text match

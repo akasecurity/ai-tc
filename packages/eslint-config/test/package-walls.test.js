@@ -230,7 +230,12 @@ describe('the tonal-ink wall reaches every package that renders Tailwind classes
 // fails here. A floor would forbid removals while letting the next unguarded
 // package in, which is the direction this drifts.
 describe('the drizzle wall covers an exact set of packages, not a floor', () => {
-  const WALL_TOKENS = ['noDrizzleImports', 'reactUiPackage', 'drizzleWallRules'];
+  const WALL_TOKENS = [
+    'noDrizzleImports',
+    'reactUiPackage',
+    'presentationalUiPackage',
+    'drizzleWallRules',
+  ];
 
   // Discovered by BASENAME, via the same helper the no-network audit derives
   // from — never a hardcoded `eslint.config.mjs`. ESLint honours `-c
@@ -263,7 +268,8 @@ describe('the drizzle wall covers an exact set of packages, not a floor', () => 
     expect(
       configsReferencingWall(),
       'The set of packages wiring the drizzle wall changed. Every workspace package that ships ' +
-        'product code must spread `noDrizzleImports` (or `reactUiPackage`, which composes it), ' +
+        'product code must spread `noDrizzleImports` (or `reactUiPackage`/`presentationalUiPackage`, ' +
+        'either of which composes it), ' +
         'whether or not it reads the store today: the shipping bundles set ' +
         '`noExternal: [/^@akasecurity\\//]`, so ONE Drizzle import anywhere in that closure is ' +
         'inlined into a published artifact — and into a browser for the extension, web-ui, ' +

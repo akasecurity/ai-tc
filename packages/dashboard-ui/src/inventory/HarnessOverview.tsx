@@ -14,6 +14,7 @@ import type {
 } from '@akasecurity/schema';
 import { Badge, cn } from '@akasecurity/ui-kit';
 
+import { dayLabel } from '../activity/format.ts';
 import { Provider } from '../shared/Provider.tsx';
 import { AccessBar, EmptyState, FlagChips, TrustPill, VisBadge } from './chips.tsx';
 import { ASSET_META, assetTile, EVENT_KIND, langColor } from './data.ts';
@@ -24,26 +25,20 @@ const EVENT_KINDS: HarnessEventKind[] = ['block', 'redact', 'warn'];
 /**
  * Format an ISO timestamp into the "Today · 09:19" day/time the row shows.
  *
- * `now` is the instant the day bucket is relative to, and it is a parameter for
- * the reason relativeTime's is: a server render and a hydration that straddle
- * local midnight would label the same event "Today" and "Yesterday". The clock
- * half is closed by passing one instant; the LOCALE half is not closeable here —
- * toLocaleTimeString renders in the renderer's own locale and time zone, and the
- * server's need not be the browser's.
+ * The day half is `dayLabel` from the Activity view's format module — this used
+ * to reimplement the same local-midnight bucketing locally, which is exactly
+ * the kind of divergence a rounding or DST fix to one copy and not the other
+ * would produce silently. `now` is required for the reason `dayLabel`'s own is:
+ * a server render and a hydration that straddle local midnight would label the
+ * same event "Today" and "Yesterday". The clock half is closed by passing one
+ * instant; the LOCALE half is not closeable here — toLocaleTimeString renders
+ * in the renderer's own locale and time zone, and the server's need not be the
+ * browser's.
  */
 function formatEvent(iso: string, now: number): { day: string; time: string } {
   const d = new Date(iso);
   const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const today = new Date(now);
-  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-  const dayDiff = Math.round((startOf(today) - startOf(d)) / 86_400_000);
-  const day =
-    dayDiff === 0
-      ? 'Today'
-      : dayDiff === 1
-        ? 'Yesterday'
-        : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-  return { day, time };
+  return { day: dayLabel(iso, new Date(now)), time };
 }
 
 export function HarnessOverview({

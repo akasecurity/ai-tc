@@ -1,9 +1,9 @@
 // @ts-check
 import { reactSyntaxBans, rootConfigFiles } from '@akasecurity/eslint-config';
-import { reactUiPackage } from '@akasecurity/eslint-config/react';
+import { presentationalUiPackage } from '@akasecurity/eslint-config/react';
 
 export default [
-  ...reactUiPackage,
+  ...presentationalUiPackage,
   {
     languageOptions: {
       parserOptions: {

@@ -7,11 +7,11 @@ import { dataDir, type LocalDatabase } from '@akasecurity/persistence';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
-import { withBundledPacks } from '../helpers/store-templates.ts';
+import { emptyStore } from '../helpers/store-templates.ts';
 
 // Every route that renders a relative label captures ONE instant per request
 // and hands it to each consumer below it. `exceptions-page.test.ts` pins that
-// for its own two routes; these four had no page test at all, so the line that
+// for its own two routes; six others had no page test at all, so the line that
 // does it — `const renderedAt = renderInstant()` — was covered by nothing.
 //
 // What makes that worth a test rather than a glance is that it still typechecks
@@ -44,7 +44,11 @@ beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-web-instant-'));
   osHome.dir = home;
   dir = dataDir();
-  withBundledPacks.seed(dir);
+  // None of the six routes below reads `installed_packs` (they read
+  // activity/data-shares/findings/security/inventory/vault store surfaces
+  // only), so the schema alone is enough — no need for the full bundled
+  // ruleset a route that scans against detections would require.
+  emptyStore.seed(dir);
   resetSingleton();
   vi.useFakeTimers({ toFake: ['Date'] });
 });
@@ -79,7 +83,7 @@ function collectRenderedAt(node: unknown, into: number[] = []): number[] {
   return into;
 }
 
-// The four routes, each called the way Next calls it. An empty store is enough:
+// The six routes, each called the way Next calls it. An empty store is enough:
 // every read returns nothing and the page still renders its tree, which is
 // where the prop lives.
 const ROUTES = [
@@ -99,11 +103,33 @@ const ROUTES = [
     name: 'security',
     load: () => import('../../app/(app)/security/page.tsx'),
   },
+  {
+    name: 'inventory',
+    load: () => import('../../app/(app)/inventory/page.tsx'),
+  },
+  {
+    // The one route that hoists `renderInstant()` to a local and hands it to
+    // more than one consumer (VaultLookupClient, VaultDashboardClient) — the
+    // shape where a second consumer can quietly be given a different value.
+    // `collectRenderedAt` already walks props as well as children, so nothing
+    // else needed to change to catch that here.
+    name: 'vault',
+    load: () => import('../../app/(app)/vault/page.tsx'),
+  },
 ] as const;
 
+// `vault/page.tsx`'s component is synchronous and takes no arguments; the
+// other five take `searchParams` as a promise, the way Next hands it.
+// `await`ing a non-promise return still resolves, so only the call shape
+// differs.
 async function render(route: (typeof ROUTES)[number]): Promise<number[]> {
   const mod = await route.load();
-  const element = await mod.default({ searchParams: Promise.resolve({}) });
+  const element =
+    route.name === 'vault'
+      ? await (mod.default as () => unknown)()
+      : await (mod.default as (props: { searchParams: Promise<object> }) => unknown)({
+          searchParams: Promise.resolve({}),
+        });
   return collectRenderedAt(element);
 }
 

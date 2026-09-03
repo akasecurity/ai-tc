@@ -2,7 +2,12 @@ import { Linter } from 'eslint';
 import tseslint from 'typescript-eslint';
 import { describe, expect, it } from 'vitest';
 
-import { noNetworkSyntax, reactSyntaxBans, tonalInkTokens } from '../src/index.js';
+import {
+  noNetworkSyntax,
+  reactSyntaxBans,
+  tonalInkTokens,
+  tonalInkTokensPresentational,
+} from '../src/index.js';
 
 // The ambient-clock guard. A component under a `use client` directive is
 // rendered twice — once on the server, once when the browser hydrates it — so a
@@ -19,7 +24,7 @@ import { noNetworkSyntax, reactSyntaxBans, tonalInkTokens } from '../src/index.j
 
 const linter = new Linter();
 
-/** The `no-restricted-syntax` value the three UI packages actually get. */
+/** The `no-restricted-syntax` value `web-ui` gets (`dashboard-ui`/`ui-kit` get the same tonal/network/drizzle selectors via `tonalInkTokensPresentational`, differing only in the ambient-clock scope — see ambient-clock.test.js). */
 const SHIPPED_RULE = tonalInkTokens[0]?.rules?.['no-restricted-syntax'];
 
 // The real parser, on a real .tsx filename. espree would do for the selectors
@@ -152,5 +157,55 @@ describe('the opt-out cannot become an opt-out for everything', () => {
 
   it('is set to error, so it fails a lint run rather than warning', () => {
     expect(SHIPPED_RULE[0]).toBe('error');
+  });
+});
+
+// The gap the directive scoping leaves: a presentational helper module carries
+// no component and so no directive of its own, so it is invisible to the
+// SHIPPED_RULE above no matter how many client components import it —
+// `relativeTime.ts` and `exceptions/meta.ts` are the two this repo ships.
+// `dashboard-ui` and `ui-kit` close it by widening instead: neither package
+// ever legitimately captures an instant, so the directive is not what should
+// decide whether a clock read in it is caught.
+describe('the presentational variant reaches a module with no directive of its own', () => {
+  const PRESENTATIONAL_RULE = tonalInkTokensPresentational[0]?.rules?.['no-restricted-syntax'];
+
+  it('rejects Date.now() in a module carrying NO use client directive at all', () => {
+    // The exact shape of relativeTime.ts before this PR: no component, no
+    // directive, a default parameter reading the clock.
+    const code = 'export function relativeTime(iso, now = Date.now()) { return now; }';
+    expect(firedOn(code, PRESENTATIONAL_RULE)).toBe(1);
+  });
+
+  it('rejects a bare new Date() the same way, directive or not', () => {
+    const code = 'export function dayLabel(iso, now = new Date()) { return now; }';
+    expect(firedOn(code, PRESENTATIONAL_RULE)).toBe(1);
+  });
+
+  it('the DEFAULT (directive-scoped) rule does NOT catch that shape — the regression this closes', () => {
+    const code = 'export function relativeTime(iso, now = Date.now()) { return now; }';
+    expect(firedOn(code, SHIPPED_RULE)).toBe(0);
+  });
+
+  it('still catches the directive-scoped case too — widening does not narrow it', () => {
+    expect(
+      firedOn(CLIENT + 'export function F() { return <b>{Date.now()}</b>; }', PRESENTATIONAL_RULE),
+    ).toBe(1);
+  });
+
+  it('still allows new Date(iso) and Date.parse(iso) — the widening bans no more shapes, only more files', () => {
+    expect(firedOn('export function F(x) { return new Date(x); }', PRESENTATIONAL_RULE)).toBe(0);
+    expect(firedOn('export function F(x) { return Date.parse(x); }', PRESENTATIONAL_RULE)).toBe(0);
+  });
+
+  it('the one sanctioned reader stays exempt: allowAmbientClock wins over everyModule', () => {
+    const rule = reactSyntaxBans({ allowAmbientClock: true, ambientClockEveryModule: true });
+    expect(firedOn('export function useRenderClock() { return Date.now(); }', rule)).toBe(0);
+  });
+
+  it('still bans the network and drizzle in the widened form — the assembly is not a bare override', () => {
+    expect(firedOn("export const p = import('node:https');", PRESENTATIONAL_RULE)).toBe(1);
+    expect(firedOn("import x from 'drizzle-orm';", PRESENTATIONAL_RULE)).toBe(0); // no-restricted-syntax only covers the DYNAMIC form; static is a separate rule
+    expect(firedOn("await import('drizzle-orm');", PRESENTATIONAL_RULE)).toBe(1);
   });
 });

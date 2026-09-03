@@ -79,7 +79,7 @@ function SessionRow({
           {relativeTime(session.startedAt, renderedAt)}
         </span>
         <Metric icon={ClockIcon}>
-          {durationLabel(session.startedAt, session.endedAt, session.status)}
+          {durationLabel(session.startedAt, session.endedAt, session.status, renderedAt)}
         </Metric>
         <Metric icon={ListIcon}>{session.turns} turns</Metric>
         {flagged && (
@@ -150,7 +150,7 @@ export function SessionListView({
    */
   renderedAt: number;
 }) {
-  const days = groupSessionsByDay(sessions);
+  const days = groupSessionsByDay(sessions, new Date(renderedAt));
   const filtersActive = query.trim() !== '' || harness.length > 0;
 
   const noun = emptyCount === 1 ? 'background session' : 'background sessions';

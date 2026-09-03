@@ -152,24 +152,26 @@ const GROUP_BY_ONE_PARSE = `
    GROUP BY sessionId, provider, model, serviceTier`;
 
 describe(`token rollup over ${String(LLM_CALLS)} llm_call rows in ${String(SESSIONS)} sessions`, () => {
-  let store: OwnedTempStore;
-  let raw: DatabaseSync;
-  let activity: SqliteActivityRepository;
+  let store: OwnedTempStore | undefined;
+  let raw: DatabaseSync | undefined;
+  let activity: SqliteActivityRepository | undefined;
 
-  const setup = () => {
-    if (activity) return;
+  // One store for all three cases, seeded on first use: the seed is the
+  // expensive part and every case reads the same rows.
+  const setup = (): { raw: DatabaseSync; activity: SqliteActivityRepository } => {
+    if (raw !== undefined && activity !== undefined) return { raw, activity };
     store = createTempStore('aka-token-bench-', { migrated: true });
     const db = store.open();
     raw = corpusConnection(db);
     seed(raw);
     activity = new SqliteActivityRepository(raw);
+    return { raw, activity };
   };
 
   bench(
     'as today: read every bag, JSON.parse in JS, fold',
     async () => {
-      setup();
-      await activity.tokenReports();
+      await setup().activity.tokenReports();
     },
     { time: 3000 },
   );
@@ -177,8 +179,7 @@ describe(`token rollup over ${String(LLM_CALLS)} llm_call rows in ${String(SESSI
   bench(
     'SQL GROUP BY over the generated columns (0026), fold the groups',
     () => {
-      setup();
-      const rows = raw.prepare(GROUP_BY_COLUMNS).all() as unknown as GroupedRow[];
+      const rows = setup().raw.prepare(GROUP_BY_COLUMNS).all() as unknown as GroupedRow[];
       buildTokenReports(leavesOf(rows), defaultCostModel);
     },
     { time: 3000 },
@@ -187,8 +188,7 @@ describe(`token rollup over ${String(LLM_CALLS)} llm_call rows in ${String(SESSI
   bench(
     'SQL GROUP BY, one json_extract per row, fold the groups',
     () => {
-      setup();
-      const rows = raw.prepare(GROUP_BY_ONE_PARSE).all() as unknown as GroupedRow[];
+      const rows = setup().raw.prepare(GROUP_BY_ONE_PARSE).all() as unknown as GroupedRow[];
       buildTokenReports(leavesOf(rows), defaultCostModel);
     },
     { time: 3000 },

@@ -46,13 +46,12 @@ const DAY_MS = 86_400_000;
 // long tail of never-closed roots.
 export const LIVE_ACTIVITY_WINDOW_MS = 30 * 60_000;
 
-// A single event's "activity instant": the later of when it started and when it
-// ended (a null `ended_at` — the common case — falls back to the start). Folding
-// `ended_at` in means one long-running descendant (a subagent, a build, a 35-min
-// tool call) keeps a session live off its END, not its start, so it can't flip to
-// `completed` mid-work. Bare column names deliberately resolve to the innermost
-// query's `audit_events` alias in every call site.
-const LAST_ACTIVITY_EXPR = `max(started_at, coalesce(ended_at, started_at))`;
+// An event's "last activity" is the later of its start and its end
+// (`max(started_at, coalesce(ended_at, started_at))`): a long-running tool
+// call keeps its session live until it FINISHES, not just when it began. The
+// reads below take that maximum as two index seeks — the latest start and the
+// latest end under a root — rather than as one expression walked over every
+// descendant, which is what it used to be.
 
 // Default IANA zone when the caller omits `tz`: the web-ui server IS the
 // user's machine, so its local zone is the right "today" boundary.
@@ -138,6 +137,14 @@ const DB_EVENT_TYPE_TO_KIND: Partial<Record<string, AuditEventKind>> = {
   error: 'error',
   active: 'active',
 };
+
+// The SQL form of the map's keys: the timeline read filters to them in the
+// statement, because the structural rows it would otherwise fetch and drop
+// (every `llm_call`, every `code_change`, every `tool_use`) outnumber the rows
+// it renders, and reading them cost the detail pane the whole session per open.
+const TIMELINE_EVENT_TYPES = Object.keys(DB_EVENT_TYPE_TO_KIND)
+  .map((kind) => `'${kind}'`)
+  .join(', ');
 
 /** Parse a JSON-array attribute (branches/models/files), degrading to [] on a
  * missing or malformed value — never throws on a legacy-shaped row. */
@@ -359,23 +366,40 @@ export class SqliteActivityRepository implements ActivityReadPort {
     // boundary). "Open" alone is not enough: the local store never stamps
     // `ended_at` on the root, so a bare `ended_at IS NULL` count would return the
     // entire session history. A session is live only while its most recent
-    // activity is inside LIVE_ACTIVITY_WINDOW_MS. "Most recent activity" folds in
-    // each descendant's OWN `ended_at` (via `LAST_ACTIVITY_EXPR`) so a single
-    // long-running event — a subagent, a build, a 35-min tool call — keeps the
-    // session live off its end time, not its start.
+    // activity is inside LIVE_ACTIVITY_WINDOW_MS, and "most recent activity"
+    // folds in each descendant's OWN `ended_at`, so a single long-running event
+    // — a subagent, a build, a 35-min tool call — keeps the session live off
+    // its end time, not its start.
+    //
+    // Driven from the rows active in the window, not from the open roots: a
+    // root is live iff it started in the window, or a descendant started in
+    // it, or a descendant ended in it — three index ranges, so the read costs
+    // the last thirty minutes of the store. The per-root form it replaces
+    // (`max(...)` over every descendant of every open root) read the whole
+    // table, because on a real store EVERY root is open.
+    //
+    // `INDEXED BY` on the two descendant ranges is deliberate. Each column is
+    // also the second column of a (root_session_id, …) index, and the planner
+    // prefers a skip-scan over every root through that one — with or without
+    // ANALYZE statistics — which is the per-root walk again (2.8 ms against
+    // 0.1 ms at 200k captures for the start range). The indexes named are ones
+    // every open store carries, since opening runs the migrations, so the hard
+    // requirement `INDEXED BY` introduces is already met;
+    // test/performance/activity-probe-plans.test.ts pins the plan.
     const liveThreshold = this.now() - LIVE_ACTIVITY_WINDOW_MS;
     const liveNow = countScalar(
       this.db,
       `SELECT count(*) AS n FROM audit_events s
            WHERE s.event_type = 'session' AND s.ended_at IS NULL
-             AND max(
-               s.started_at,
-               coalesce(
-                 (SELECT max(${LAST_ACTIVITY_EXPR}) FROM audit_events e WHERE e.root_session_id = s.id),
-                 s.started_at
-               )
-             ) >= ?`,
-      [liveThreshold],
+             AND s.id IN (
+               SELECT id FROM audit_events WHERE event_type = 'session' AND started_at >= ?
+               UNION
+               SELECT root_session_id FROM audit_events INDEXED BY idx_audit_started_at
+                WHERE started_at >= ?
+               UNION
+               SELECT root_session_id FROM audit_events INDEXED BY idx_audit_ended_at
+                WHERE ended_at >= ?)`,
+      [liveThreshold, liveThreshold, liveThreshold],
     );
 
     const toolCallsToday = countScalar(
@@ -553,7 +577,7 @@ export class SqliteActivityRepository implements ActivityReadPort {
       this.db.prepare(
         `SELECT ${TIMELINE_COLUMNS}
          FROM audit_events
-         WHERE id = ? OR root_session_id = ?
+         WHERE (id = ? OR root_session_id = ?) AND event_type IN (${TIMELINE_EVENT_TYPES})
          ORDER BY started_at ASC, id ASC`,
       ),
       [sessionId, sessionId],
@@ -767,21 +791,29 @@ export class SqliteActivityRepository implements ActivityReadPort {
 
     const inClause = placeholders(sessionIds.length);
 
-    // Most recent descendant activity per session (each event's later of
-    // start/end — see LAST_ACTIVITY_EXPR); the caller maxes this with the root's
-    // own started_at to decide liveness (see resolveLifecycle).
-    const lastActivityRows = allRows<{ id: string | null; m: number | null }>(
+    // Most recent descendant activity per session — the later of each event's
+    // start and end (a long tool call counts from when it ENDED); the caller
+    // maxes this with the root's own started_at to decide liveness (see
+    // resolveLifecycle). Two index seeks per session — `max(started_at)` is
+    // the last entry under the root in idx_audit_session, `max(ended_at)` the
+    // last in idx_audit_session_ended — instead of one walk over every
+    // descendant of the page's sessions, which cost the page its every row on
+    // each load. The ids travel as one JSON array through json_each, so it is
+    // one statement whatever the page size.
+    const lastActivityRows = allRows<{ id: string; ms: number | null; me: number | null }>(
       this.db.prepare(
-        `SELECT root_session_id AS id, max(${LAST_ACTIVITY_EXPR}) AS m FROM audit_events
-         WHERE root_session_id IN (${inClause})
-         GROUP BY root_session_id`,
+        `SELECT ids.value AS id,
+                (SELECT max(started_at) FROM audit_events e WHERE e.root_session_id = ids.value) AS ms,
+                (SELECT max(ended_at) FROM audit_events e
+                  WHERE e.root_session_id = ids.value AND e.ended_at IS NOT NULL) AS me
+         FROM json_each(?) AS ids`,
       ),
-      sessionIds,
+      [JSON.stringify(sessionIds)],
     );
     for (const row of lastActivityRows) {
-      if (row.id === null) continue;
       const entry = result.get(row.id);
-      if (entry && row.m !== null) entry.lastActivityMs = row.m;
+      const last = Math.max(row.ms ?? 0, row.me ?? 0);
+      if (entry && last > 0) entry.lastActivityMs = last;
     }
 
     const turnsRows = allRows<{ id: string | null; n: number }>(

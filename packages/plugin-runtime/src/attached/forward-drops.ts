@@ -8,18 +8,29 @@ import {
 } from '@akasecurity/persistence';
 
 /**
- * Where events discarded by the BATCH BUDGET are counted, for `status` to render.
+ * Where events the live forward gives up on are counted, for `status` to render.
  *
- * This file exists because a drop on that path was the one kind this package
- * could not see. Every other forward failure ends in `ForwardPolicy.run`'s catch
- * and moves the breaker's own file, which is what lets `aka status` say the
- * forward is unhealthy. A batch-deadline drop returns BEFORE `run` is called, so
- * nothing was written anywhere — and the machine it happens on is precisely the
- * one that looks healthiest: a slow-but-answering plane produces no failures at
- * all, so the breaker stays closed, the policy line says "synced", and the tail
- * of every batch past the budget is discarded indefinitely with nothing to show
- * for it. That is the shape §5 forbids for a dropped rule ("the scan says what
- * it dropped"), reached on the forwarding path.
+ * Two causes, and this file exists for the first: the BATCH BUDGET, which was
+ * the one kind of drop this package could not see at all. Every other forward
+ * failure ends in `ForwardPolicy.run`'s catch and moves the breaker's own file,
+ * which is what lets `aka status` say the forward is unhealthy. A batch-deadline
+ * drop returns BEFORE `run` is called, so nothing was written anywhere — and the
+ * machine it happens on is precisely the one that looks healthiest: a
+ * slow-but-answering plane produces no failures at all, so the breaker stays
+ * closed, the policy line says "synced", and the tail of every batch past the
+ * budget is discarded indefinitely with nothing to show for it. That is the
+ * shape §5 forbids for a dropped rule ("the scan says what it dropped"),
+ * reached on the forwarding path.
+ *
+ * The second is a chunk this file's own `forwardBatch` gives up on ONCE the
+ * breaker opens mid-retry — that call DOES move the breaker's file, but the
+ * events themselves still land nowhere else: they are neither delivered nor
+ * (past that one call) reached by anything that would count them again. The
+ * two are worth telling apart in a rewrite of the surface that renders this,
+ * but not worth a second file for: both describe rows this pass will not
+ * re-offer, both are equally "at least" (see the `lastDropAtMs` comment on
+ * concurrency), and this counter has never claimed to explain WHY, only how
+ * many.
  *
  * NOT `attached-state.json`, and not for tidiness: `forward-policy.ts` rewrites
  * that file WHOLESALE on every breaker transition, so a counter parked there is
@@ -43,7 +54,11 @@ export const FORWARD_DROPS_FILENAME = ATTACHED_FORWARD_DROPS_FILENAME;
  * for keeping `lastFailure` an enum applies to every field of this file too.
  */
 export interface ForwardDrops {
-  /** Events the batch budget discarded, since the last attach. */
+  /**
+   * Events this pass gave up on and will not re-offer, since the last attach
+   * — past the batch budget, or because the breaker opened mid-retry with
+   * nothing left to isolate.
+   */
   droppedForwards: number;
   /** When the most recent drop happened, epoch millis on the local clock. */
   lastDropAtMs: number;

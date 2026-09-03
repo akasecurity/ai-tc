@@ -712,8 +712,7 @@ describe('the batch budget records what it discards', () => {
         // Every call SUCCEEDS, and each one costs 600ms of the budget. That is
         // the case the breaker cannot see: it only counts failures.
         clock += 600;
-        await op();
-        return { ok: true } as ForwardResult<unknown>;
+        return { ok: true, value: await op() } as ForwardResult<unknown>;
       },
     } as unknown as ForwardPolicy;
 
@@ -757,8 +756,7 @@ describe('the batch budget records what it discards', () => {
     const forward: ForwardPolicy = {
       run: async (op: () => Promise<unknown>) => {
         clock += 600;
-        await op();
-        return { ok: true } as ForwardResult<unknown>;
+        return { ok: true, value: await op() } as ForwardResult<unknown>;
       },
     } as unknown as ForwardPolicy;
 
@@ -809,8 +807,7 @@ describe('the live forward stamps what it delivered', () => {
       run: async (op: () => Promise<unknown>) => {
         call += 1;
         if (call % 2 === 1) {
-          await op();
-          return { ok: true } as ForwardResult<unknown>;
+          return { ok: true, value: await op() } as ForwardResult<unknown>;
         }
         return { ok: false, reason: 'unreachable' } as ForwardResult<unknown>;
       },
@@ -918,6 +915,240 @@ describe('the live forward stamps what it delivered', () => {
     // of them is stamped — not left reading as owed.
     expect(singles).toHaveLength(10);
     expect(calls.delivered).toHaveLength(10);
+  });
+
+  it('recovers a chunk the deployment ACCEPTED FEWER of than it was sent', async () => {
+    // The batch ack is an aggregate count, not delivery: `ok: true` with
+    // `accepted` short of `chunk.length` is a well-formed answer the wire
+    // contract permits. Trusting `ok` alone would stamp all ten as delivered
+    // and never re-offer the ones the plane silently dropped.
+    const forward: ForwardPolicy = {
+      run: async (op: () => Promise<unknown>) =>
+        ({ ok: true, value: await op() }) as ForwardResult<unknown>,
+    } as unknown as ForwardPolicy;
+
+    const singles: string[] = [];
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const client = {
+      ...makeClient(calls),
+      // Claims only 7 of the 10 sent — which seven is not knowable from the
+      // ack, so recovery has to re-send all ten.
+      recordAuditEvents: vi.fn((events: readonly unknown[]) =>
+        Promise.resolve({ accepted: 7 }).then((ack) => {
+          calls.batchSizes.push(events.length);
+          return ack;
+        }),
+      ),
+      recordAuditEvent: vi.fn((e: { id: string }) => {
+        singles.push(e.id);
+        return Promise.resolve();
+      }),
+    } as unknown as AttachedClient;
+
+    const { gateway } = build({ forward, client, local: makeLocal(calls) });
+    await gateway.recordToolCalls(
+      Array.from({ length: 10 }, (_, i) => toolCallInput(`call-${String(i)}`)),
+    );
+
+    // The batch attempt happened once, then every row was recovered singly —
+    // safe because a re-send of a row that DID land is a no-op on the receiver.
+    expect(calls.batchSizes).toEqual([10]);
+    expect(singles).toHaveLength(10);
+    expect(calls.delivered).toHaveLength(10);
+  });
+
+  it('re-sends singly against a deployment that REJECTS the batch body', async () => {
+    // The server-side twin of the CLIENT-refused case above: the deployment
+    // answered with a 4xx it considers a body-shape problem, not an outage.
+    // Isolating it the same way costs one event instead of the whole chunk.
+    const bad = toolCallId('s', 'call-3');
+    const forward: ForwardPolicy = {
+      run: async (op: () => Promise<unknown>) => {
+        try {
+          return { ok: true, value: await op() } as ForwardResult<unknown>;
+        } catch {
+          return { ok: false, reason: 'rejected' } as ForwardResult<unknown>;
+        }
+      },
+    } as unknown as ForwardPolicy;
+
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const client = {
+      ...makeClient(calls),
+      recordAuditEvents: vi.fn((events: readonly { id: string }[]) =>
+        events.some((e) => e.id === bad)
+          ? Promise.reject(Object.assign(new Error('unprocessable'), { status: 422 }))
+          : Promise.resolve({ accepted: events.length }),
+      ),
+      recordAuditEvent: vi.fn((e: { id: string }) =>
+        e.id === bad
+          ? Promise.reject(Object.assign(new Error('unprocessable'), { status: 422 }))
+          : Promise.resolve(),
+      ),
+    } as unknown as AttachedClient;
+
+    const { gateway } = build({ forward, client, local: makeLocal(calls) });
+    await gateway.recordToolCalls(
+      Array.from({ length: 10 }, (_, i) => toolCallInput(`call-${String(i)}`)),
+    );
+
+    expect(calls.delivered).toHaveLength(9);
+    expect(calls.delivered).not.toContain(bad);
+  });
+
+  it('does NOT retry a 429 singly — a rate limit is not a body rejection', async () => {
+    // The regression this fix could have introduced in the other direction.
+    // 429 does not classify as `rejected` (forward-policy.ts's own boundary),
+    // so this fake mirrors that: a chunk refused with a 429 status comes back
+    // `unreachable`, which is NOT one of the three reasons this loop retries
+    // per item. Retrying it here would fire up to 50 more requests at the
+    // same already-rate-limited endpoint with no pacing between them — the
+    // exact burst `forwardBatch`'s own docblock says staying serial exists to
+    // avoid.
+    const forward: ForwardPolicy = {
+      run: async (op: () => Promise<unknown>) => {
+        try {
+          return { ok: true, value: await op() } as ForwardResult<unknown>;
+        } catch {
+          // What the real policy now returns for a 429 — never `rejected`.
+          return { ok: false, reason: 'unreachable' } as ForwardResult<unknown>;
+        }
+      },
+    } as unknown as ForwardPolicy;
+
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const recordAuditEvent = vi.fn(() => Promise.resolve());
+    const client = {
+      ...makeClient(calls),
+      recordAuditEvents: vi.fn(() =>
+        Promise.reject(Object.assign(new Error('too many requests'), { status: 429 })),
+      ),
+      recordAuditEvent,
+    } as unknown as AttachedClient;
+
+    const { gateway } = build({ forward, client, local: makeLocal(calls) });
+    await gateway.recordToolCalls(
+      Array.from({ length: 50 }, (_, i) => toolCallInput(`call-${String(i)}`)),
+    );
+
+    // The whole chunk stays pending — no per-item burst, nothing delivered.
+    expect(recordAuditEvent).not.toHaveBeenCalled();
+    expect(calls.delivered).toHaveLength(0);
+  });
+
+  it('counts a single that fails INSIDE the retry, not just the ones never attempted', async () => {
+    // The gap beside the deadline tally: a single that fails within the
+    // per-item pass is neither in `delivered` nor caught by the deadline
+    // check, so without its own accounting it is simply invisible — the same
+    // failure mode the deadline tally exists to prevent, with a different
+    // cause. This one is NOT breaker-open, so the loop must keep going: the
+    // rest of the chunk still deserves its own attempt.
+    const bad = toolCallId('s', 'call-4');
+    // The batch attempt's rejection must classify as `invalid-request` (to
+    // enter the retry) while the one failed SINGLE classifies as `unreachable`
+    // (to prove it does NOT stop the loop) — distinguished by the error's name,
+    // exactly as the real policy distinguishes them.
+    const forward: ForwardPolicy = {
+      run: async (op: () => Promise<unknown>) => {
+        try {
+          return { ok: true, value: await op() } as ForwardResult<unknown>;
+        } catch (err) {
+          const reason =
+            (err as { name?: string }).name === 'RemoteRequestInvalid'
+              ? 'invalid-request'
+              : 'unreachable';
+          return { ok: false, reason } as ForwardResult<unknown>;
+        }
+      },
+    } as unknown as ForwardPolicy;
+
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const client = {
+      ...makeClient(calls),
+      recordAuditEvents: vi.fn(() =>
+        Promise.reject(Object.assign(new Error('invalid'), { name: 'RemoteRequestInvalid' })),
+      ),
+      recordAuditEvent: vi.fn((e: { id: string }) =>
+        e.id === bad ? Promise.reject(new Error('down')) : Promise.resolve(),
+      ),
+    } as unknown as AttachedClient;
+
+    const { gateway, dataDir: dir } = build({ forward, client, local: makeLocal(calls) });
+    await gateway.recordToolCalls(
+      Array.from({ length: 10 }, (_, i) => toolCallInput(`call-${String(i)}`)),
+    );
+
+    // Nine delivered — the loop did not stop at the failed one.
+    expect(calls.delivered).toHaveLength(9);
+    expect(calls.delivered).not.toContain(bad);
+    const drops = readForwardDrops(dir);
+    expect(drops?.droppedForwards).toBe(1);
+  });
+
+  it('stops the WHOLE PASS — not just this chunk — and counts every chunk still owed, the moment the breaker opens mid-retry', async () => {
+    // TWO chunks, deliberately: with only one, `break` and `return` behave
+    // identically, because there is no next chunk for the bug to hide in.
+    // Once a single comes back breaker-open here, every remaining `run()`
+    // call — this chunk's own remainder AND every later chunk's batch
+    // attempt — would answer breaker-open identically at zero network cost.
+    // `breaker-open` is not one of the three reasons the outer gate retries
+    // per item, so a chunk that reaches it via `continue` records NOTHING —
+    // which is what a `break` here used to leave the SECOND chunk to. The
+    // fix counts the full remainder, across every chunk still owed, and
+    // returns from the whole pass rather than merely breaking this loop.
+    let callCount = 0;
+    const forward: ForwardPolicy = {
+      run: async (op: () => Promise<unknown>) => {
+        callCount += 1;
+        if (callCount === 1) {
+          // Chunk 1's own batch attempt: refused, triggering the retry.
+          return { ok: false, reason: 'invalid-request' } as ForwardResult<unknown>;
+        }
+        if (callCount <= 4) {
+          // Three singles succeed, THEN the breaker opens on the fourth.
+          return { ok: true, value: await op() } as ForwardResult<unknown>;
+        }
+        // Everything from here on, including chunk 2's own batch attempt if
+        // it were ever reached, answers breaker-open at zero network cost.
+        return { ok: false, reason: 'breaker-open' } as ForwardResult<unknown>;
+      },
+    } as unknown as ForwardPolicy;
+
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const singles: string[] = [];
+    const client = {
+      ...makeClient(calls),
+      recordAuditEvents: vi.fn(() =>
+        Promise.reject(Object.assign(new Error('invalid'), { name: 'RemoteRequestInvalid' })),
+      ),
+      recordAuditEvent: vi.fn((e: { id: string }) => {
+        singles.push(e.id);
+        return Promise.resolve();
+      }),
+    } as unknown as AttachedClient;
+
+    const { gateway, dataDir: dir } = build({ forward, client, local: makeLocal(calls) });
+    // 100 events is two chunks of 50. Chunk 1's batch is refused; three
+    // singles land, the fourth opens the breaker. Chunk 2 must never even be
+    // ATTEMPTED — the whole pass stops here.
+    await gateway.recordToolCalls(
+      Array.from({ length: 100 }, (_, i) => toolCallInput(`call-${String(i)}`)),
+    );
+
+    // Exactly three singles reached the client and succeeded — the fourth
+    // call answers breaker-open without calling `op()` at all, so this is
+    // the value, not merely a bound on it.
+    expect(singles).toHaveLength(3);
+    expect(calls.delivered).toHaveLength(3);
+    // The client was never asked for chunk 2's batch: only the five calls
+    // chunk 1 itself made (one batch + four singles) ever happened.
+    expect(callCount).toBe(5);
+    const drops = readForwardDrops(dir);
+    // 97, not 47: the remainder covers BOTH chunk 1's own un-retried tail
+    // and the whole of chunk 2, which a `break` would have abandoned to the
+    // outer loop's silent `continue`.
+    expect(drops?.droppedForwards).toBe(97);
+    expect(calls.delivered.length + (drops?.droppedForwards ?? 0)).toBe(100);
   });
 
   it('counts the events a chunk never reached when the deadline lands mid-retry', async () => {
@@ -1083,8 +1314,7 @@ describe('the live forward stamps what it delivered', () => {
     const forward: ForwardPolicy = {
       run: async (op: () => Promise<unknown>) => {
         clock += 600;
-        await op();
-        return { ok: true } as ForwardResult<unknown>;
+        return { ok: true, value: await op() } as ForwardResult<unknown>;
       },
     } as unknown as ForwardPolicy;
 
@@ -1113,8 +1343,13 @@ describe('the live forward stamps what it delivered', () => {
     // opposite bug.
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.length).toBeLessThan(600);
-    // Exactly what landed, and nothing the deadline discarded.
-    expect(calls.delivered).toHaveLength(seen.length);
+    // IDENTITY, not count. `toHaveLength(seen.length)` would pass if the
+    // accumulator had stamped the wrong ids — the first N inputs rather than
+    // the N that came back `ok`. Those coincide here, which is exactly why a
+    // length assertion cannot tell them apart; this pins the join the whole PR
+    // rests on. `reKeyForForward` rewrites inventory ids, not `event.id`, so
+    // `seen`'s own ids are still comparable to what got stamped.
+    expect(calls.delivered).toEqual(seen.map((e) => (e as AuditEventInput).id));
   });
 });
 

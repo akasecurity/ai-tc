@@ -28,7 +28,13 @@ import {
 import type { z } from 'zod';
 
 import type { RemoteResponse } from './http.ts';
-import { RemoteRequestError, RemoteRequestInvalid, RemoteResponseInvalid, send } from './http.ts';
+import {
+  RemoteRequestError,
+  RemoteRequestInvalid,
+  RemoteResponseInvalid,
+  RemoteRouteAbsent,
+  send,
+} from './http.ts';
 
 // The eight routes an attached machine may call, and nothing else.
 //
@@ -83,10 +89,22 @@ export interface RemoteClient {
   /**
    * POST /v1/audit-events/batch — the same facts, several at a time.
    *
-   * Falls back to the single-event route against a deployment that does not
-   * have this one, so a device and a deployment can be upgraded weeks apart.
+   * Against a deployment that predates this route, RAISES `RemoteRouteAbsent`
+   * rather than quietly falling back to the single-event form. The fallback is
+   * one request per event, and whether that is correct depends on a budget only
+   * the CALLER can see: the attach-time drain charges its timeout per request
+   * and is fine, while the live forward bounds the WHOLE call at
+   * `FORWARD_BUDGET_MS` and would turn a working older deployment into a
+   * timeout, a tripped breaker and zero delivered rows.
+   *
+   * So it is opt-in, per call, via `fallbackToSingleEvents`. The default is the
+   * safe one: a caller that has not thought about its budget is told, loudly,
+   * rather than silently handed 50 sequential round trips.
    */
-  recordAuditEvents(events: readonly AuditEventSubmission[]): Promise<AuditEventBatchAckT>;
+  recordAuditEvents(
+    events: readonly AuditEventSubmission[],
+    opts?: { readonly fallbackToSingleEvents?: boolean },
+  ): Promise<AuditEventBatchAckT>;
   /** POST /v1/store-posture — the hourly self-report. */
   reportStorePosture(snapshot: StorePostureSnapshot): Promise<void>;
   /** GET /v1/policy-bundle, conditional on a cached ETag. */
@@ -226,7 +244,7 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
       await sendOne(event);
     },
 
-    async recordAuditEvents(events) {
+    async recordAuditEvents(events, opts) {
       // Validated on the way OUT, like the single-event route and for the same
       // reason: this body carries the one field a deployment refuses on, and
       // catching it here names the defect instead of turning it into a 400 a
@@ -244,13 +262,18 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
 
       // A DEPLOYMENT THAT PREDATES THIS ROUTE answers 404, and that is not a
       // failure — it is an older deployment saying it only speaks the
-      // single-event form. Handled here rather than above, because `okBody`
-      // throws away the response before a caller could look at its status, and
-      // handled here rather than in the caller because a forward policy
-      // collapses every failure into one reason and could not tell 404 from an
-      // outage. The fallback is the same rows, one request each: slower, and
-      // exactly what this route exists to avoid, but correct.
+      // single-event form. DETECTED here rather than above, because `okBody`
+      // throws away the response before a caller could look at its status.
+      //
+      // What to DO about it is not this client's call. The remedy is one
+      // request per event, and that only fits a caller whose budget is charged
+      // per request; under an aggregate budget it is an outage wearing a
+      // compatibility costume. So the default is to hand the caller a fact it
+      // can act on, and the fallback belongs to the callers that asked for it.
       if (response.status === 404) {
+        if (opts?.fallbackToSingleEvents !== true) {
+          throw new RemoteRouteAbsent(ROUTES.auditEventsBatch);
+        }
         for (const event of validated.data.events) await sendOne(event);
         return { accepted: validated.data.events.length };
       }

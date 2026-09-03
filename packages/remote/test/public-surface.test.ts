@@ -33,6 +33,7 @@ const EXPECTED = [
   'RemoteRequestError',
   'RemoteRequestInvalid',
   'RemoteResponseInvalid',
+  'RemoteRouteAbsent',
   'RemoteTransportError',
   'createRemoteClient',
   // The credential-LESS client, and the one addition to this surface allowed to

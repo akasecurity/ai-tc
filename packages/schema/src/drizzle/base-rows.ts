@@ -160,6 +160,16 @@ export interface BaseAuditEventRow<TTime = number> {
   repo: string | null;
   filePath: string | null;
   toolName: string | null;
+  // The usage members a cost model prices beyond the four token counts above
+  // — the service tier that selects the price multiplier, the two ephemeral
+  // cache-write splits, and the web-search request count — surfaced as
+  // generated columns so a token rollup that groups by tier and sums the
+  // rest names columns instead of parsing the bag four times per row. NULL
+  // wherever the llm_call carried no such key, and on every other event kind.
+  serviceTier: string | null;
+  ephemeral1hInputTokens: number | null;
+  ephemeral5mInputTokens: number | null;
+  webSearchRequests: number | null;
 }
 
 /** classified_data — small CLASS dimension keyed by class only. */

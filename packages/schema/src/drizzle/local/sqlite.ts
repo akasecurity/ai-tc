@@ -414,6 +414,29 @@ export const auditEvents = sqliteTable(
     toolName: text(COL.toolName).generatedAlwaysAs(sql`json_extract(attributes, '$.tool_name')`, {
       mode: 'virtual',
     }),
+    // The usage members a cost model prices beyond the four token counts
+    // above: the service tier that selects the price multiplier, the two
+    // ephemeral cache-write splits, and the web-search request count. A
+    // token rollup groups by tier and sums the other three, so a read names
+    // four columns instead of parsing the bag four times per llm_call row.
+    // VIRTUAL like their siblings; the hosted store carries the same four
+    // STORED, so both stores spell the same read.
+    serviceTier: text(COL.serviceTier).generatedAlwaysAs(
+      sql`json_extract(attributes, '$.service_tier')`,
+      { mode: 'virtual' },
+    ),
+    ephemeral1hInputTokens: integer(COL.ephemeral1hInputTokens).generatedAlwaysAs(
+      sql`json_extract(attributes, '$.ephemeral_1h_input_tokens')`,
+      { mode: 'virtual' },
+    ),
+    ephemeral5mInputTokens: integer(COL.ephemeral5mInputTokens).generatedAlwaysAs(
+      sql`json_extract(attributes, '$.ephemeral_5m_input_tokens')`,
+      { mode: 'virtual' },
+    ),
+    webSearchRequests: integer(COL.webSearchRequests).generatedAlwaysAs(
+      sql`json_extract(attributes, '$.web_search_requests')`,
+      { mode: 'virtual' },
+    ),
   },
   (t) => [
     index('idx_audit_parent').on(t.parentId),

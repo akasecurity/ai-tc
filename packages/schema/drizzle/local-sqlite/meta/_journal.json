@@ -183,6 +183,13 @@
       "when": 1788378190124,
       "tag": "0025_audit_capture_attribute_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1788438007213,
+      "tag": "0026_audit_llm_call_usage_columns",
+      "breakpoints": true
     }
   ]
 }

@@ -131,4 +131,8 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0025_audit_capture_attribute_columns',
     sql: "ALTER TABLE `audit_events` ADD `source_tool` text GENERATED ALWAYS AS (json_extract(attributes, '$.source_tool')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `repo` text GENERATED ALWAYS AS (json_extract(attributes, '$.repo')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `file_path` text GENERATED ALWAYS AS (json_extract(attributes, '$.file_path')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `tool_name` text GENERATED ALWAYS AS (json_extract(attributes, '$.tool_name')) VIRTUAL;",
   },
+  {
+    tag: '0026_audit_llm_call_usage_columns',
+    sql: "ALTER TABLE `audit_events` ADD `service_tier` text GENERATED ALWAYS AS (json_extract(attributes, '$.service_tier')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `ephemeral_1h_input_tokens` integer GENERATED ALWAYS AS (json_extract(attributes, '$.ephemeral_1h_input_tokens')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `ephemeral_5m_input_tokens` integer GENERATED ALWAYS AS (json_extract(attributes, '$.ephemeral_5m_input_tokens')) VIRTUAL;--> statement-breakpoint\nALTER TABLE `audit_events` ADD `web_search_requests` integer GENERATED ALWAYS AS (json_extract(attributes, '$.web_search_requests')) VIRTUAL;",
+  },
 ];

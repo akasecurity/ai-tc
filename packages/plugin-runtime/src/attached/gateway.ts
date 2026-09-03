@@ -11,6 +11,7 @@ import type {
 import { bundledDetections } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
+  AuditEventBatchAck,
   AuditEventInput,
   ConfigInventoryReport,
   ConfigScanRecord,
@@ -38,7 +39,13 @@ import type {
   ToolCallInput,
   ToolCallInspection,
 } from '@akasecurity/schema';
-import { actionRank, DEFAULT_ACTIONS, isActionAtLeast, strongerAction } from '@akasecurity/schema';
+import {
+  actionRank,
+  AUDIT_EVENT_BATCH_MAX,
+  DEFAULT_ACTIONS,
+  isActionAtLeast,
+  strongerAction,
+} from '@akasecurity/schema';
 
 import { toEgressIngestRequest } from './egress-wire.ts';
 import { recordForwardDrops } from './forward-drops.ts';
@@ -62,6 +69,20 @@ export interface AttachedClient {
   // `inspections` is present only for a tool_call carrying detected secrets
   // (see recordToolCalls below); the control plane links each to this event.
   recordAuditEvent(event: AuditEventInput & { inspections?: ToolCallInspection[] }): Promise<void>;
+  // The SAME upsert, up to AUDIT_EVENT_BATCH_MAX at a time in one transaction.
+  // Declared here because the object `createRemoteClient` hands this class has
+  // carried it all along — only this interface did not say so, which is the
+  // whole reason `forwardBatch` sent one request per event.
+  //
+  // A deployment that predates the route answers 404, and this caller DOES have
+  // to know which it spoke to. The client raises `RemoteRouteAbsent`,
+  // `ForwardPolicy` classifies it as `route-absent`, and `forwardBatch` re-sends
+  // that chunk one at a time. It must NOT be absorbed inside the client here:
+  // the fallback is 50 sequential round trips, and every one of them would be
+  // charged to the single FORWARD_BUDGET_MS wrapping this call.
+  recordAuditEvents(
+    events: readonly (AuditEventInput & { inspections?: ToolCallInspection[] })[],
+  ): Promise<AuditEventBatchAck>;
   // The throttled self-report of this machine's local store state (see
   // posture-reporter.ts). The response is unused — whether the promise settles
   // is all the throttle needs.
@@ -624,24 +645,43 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
   }
 
   /**
-   * Forward one batch, item by item, under ONE aggregate deadline.
+   * Forward one batch in CHUNKS of AUDIT_EVENT_BATCH_MAX, under ONE aggregate deadline.
    *
-   * Per-item budgets bound each request and nothing bounded their sum — see
-   * BATCH_FORWARD_BUDGET_MS. When the deadline passes the remainder is dropped
-   * rather than sent: the local write has already succeeded, so every caller
-   * has a correct result to return, and a drop is the outcome this path is
-   * built to accept (G8) where a blown hook timeout is not.
+   * This used to send one HTTP request per event, which is what made the batch
+   * budget bite: at 200ms round-trip a 3s budget admitted ~15 events and threw
+   * away everything after them. The same rows now cross 50 at a time over
+   * `POST /v1/audit-events/batch` — the route the attach-time drain has always
+   * used — so the same budget admits ~750. The wire cap is the server's own
+   * constant, sized against server cost, and the client REFUSES a longer array
+   * client-side, so the chunking here is not a convention.
    *
-   * Serial rather than concurrent on purpose. Firing N requests at once would
-   * trade a latency problem for a burst the plane's own per-key rate limiting
-   * would answer with the refusals the breaker then counts.
+   * Still serial, and still for the original reason: firing N requests at once
+   * would trade a latency problem for a burst the plane's per-key rate limiting
+   * answers with the refusals the breaker then counts. Fewer, fuller requests is
+   * the fix; more concurrent ones is not.
    *
-   * WHAT IS DROPPED IS COUNTED. Every other forward failure ends in
-   * `ForwardPolicy.run`'s catch and moves the breaker's file, which is what
-   * lets status call the forward unhealthy; this path returns BEFORE `run` is
-   * reached, so without the tally in `forward-drops.ts` a slow-but-answering
-   * plane produces no failures, keeps the breaker closed, renders a healthy
-   * block, and discards the tail of every batch indefinitely.
+   * When the deadline passes the remainder is dropped rather than sent: the
+   * local write has already succeeded, so every caller has a correct result to
+   * return. What is dropped is COUNTED — this path returns BEFORE
+   * `ForwardPolicy.run` is reached, so without the tally in `forward-drops.ts` a
+   * slow-but-answering plane produces no failures, keeps the breaker closed,
+   * renders a healthy block, and discards the tail of every batch indefinitely.
+   *
+   * BATCH-ATOMIC SETTLEMENT. The receiver wraps a chunk in one transaction, so a
+   * 2xx settles every event in it and a non-2xx settles none — which is why the
+   * whole chunk is stamped on `ok` and none of it otherwise. TWO cases do not
+   * deserve that treatment, and both are re-sent one event at a time:
+   *
+   *   `invalid-request` a chunk the client refused to send at all. One malformed
+   *                     event would otherwise cost the 49 good ones beside it —
+   *                     a new way to lose data introduced by the very change
+   *                     meant to stop losing it.
+   *   `route-absent`    a deployment that predates the batch route. The
+   *                     single-event route is the one it serves, and re-sending
+   *                     here rather than inside the client is what gives each
+   *                     request its own budget instead of 50 inside one.
+   *
+   * Either way the blast radius stays exactly what it was before batching.
    */
   private async forwardBatch<T>(
     inputs: readonly T[],
@@ -660,21 +700,66 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     // stamping would leave exactly the rows that DID arrive reading as owed.
     const delivered: AuditEventInput[] = [];
     try {
-      for (let i = 0; i < inputs.length; i += 1) {
+      for (let i = 0; i < inputs.length; i += AUDIT_EVENT_BATCH_MAX) {
         const now = Date.now();
         if (now >= deadline) {
-          // The remainder, not one item: everything from here on is discarded.
+          // The remainder, not one chunk: everything from here on is discarded.
           recordForwardDrops(this.deps.dataDir, inputs.length - i, now);
           return;
         }
-        const input = inputs[i] as T;
         // Built once per item, then shared by the wire and the stamp — see
-        // recordLlmCall for why a second derivation is the thing to avoid.
-        const event = toEvent(input);
+        // recordLlmCall for why a second derivation is the thing to avoid. The
+        // re-keyed copy goes on the wire; the ORIGINAL is what gets stamped,
+        // because `reKeyForForward` rewrites inventory ids and the row is keyed
+        // on neither.
+        const chunk = inputs.slice(i, i + AUDIT_EVENT_BATCH_MAX).map((input) => toEvent(input));
         const forwarded = await this.deps.forward.run(() =>
-          this.deps.client.recordAuditEvent(reKeyForForward(event, this.remoteInventory)),
+          this.deps.client.recordAuditEvents(
+            chunk.map((event) => reKeyForForward(event, this.remoteInventory)),
+          ),
         );
-        if (forwarded.ok) delivered.push(event);
+        if (forwarded.ok) {
+          delivered.push(...chunk);
+          continue;
+        }
+        // TWO reasons are worth a second pass, one at a time, and they are the
+        // two settled BEFORE the control plane refused anything.
+        //
+        // `invalid-request` — the CLIENT refused the body before any request
+        // went out: a defect in one event, not an outage. Re-sending singly
+        // isolates the bad one instead of charging its 49 neighbours for it.
+        //
+        // `route-absent` — the deployment predates the batch route and serves
+        // only the single-event one. The retry IS the compatibility path, and it
+        // has to live HERE rather than inside the client: each single gets its
+        // own FORWARD_BUDGET_MS through `run`, whereas the client's own fallback
+        // would spend 50 sequential round trips inside the ONE budget wrapping
+        // this call — turning a working older deployment into a timeout, three
+        // of those into an open breaker, and every row into a silent drop while
+        // the status surface called an answering deployment down.
+        //
+        // Every other reason (breaker-open, a refusal, a timeout) applies to the
+        // whole chunk; re-sending it item by item would just spend the budget
+        // failing 50 more times.
+        if (forwarded.reason !== 'invalid-request' && forwarded.reason !== 'route-absent') {
+          continue;
+        }
+        for (const [j, event] of chunk.entries()) {
+          const at = Date.now();
+          if (at >= deadline) {
+            // Counted from HERE, not from the next chunk boundary. The outer
+            // loop's tally starts at `i + AUDIT_EVENT_BATCH_MAX` and would miss
+            // everything this chunk still had — up to 49 events, on exactly the
+            // machine the tally exists for. `return` rather than `break`, so the
+            // outer deadline check cannot count that remainder a second time.
+            recordForwardDrops(this.deps.dataDir, inputs.length - i - j, at);
+            return;
+          }
+          const single = await this.deps.forward.run(() =>
+            this.deps.client.recordAuditEvent(reKeyForForward(event, this.remoteInventory)),
+          );
+          if (single.ok) delivered.push(event);
+        }
       }
     } finally {
       // `finally`, not a line before each exit: the deadline path RETURNS from

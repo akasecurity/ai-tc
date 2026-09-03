@@ -44,5 +44,6 @@ export {
   RemoteRequestError,
   RemoteRequestInvalid,
   RemoteResponseInvalid,
+  RemoteRouteAbsent,
   RemoteTransportError,
 } from './http.ts';

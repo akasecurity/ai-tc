@@ -155,10 +155,12 @@ function EndpointDetail({
   d,
   ep,
   onBack,
+  renderedAt,
 }: {
   d: ShareDestinationDetail;
   ep: EndpointWithSites;
   onBack: () => void;
+  renderedAt: number;
 }) {
   return (
     <>
@@ -210,7 +212,7 @@ function EndpointDetail({
             <ClassTag cls={ep.dataClass} />
           </span>
         </MetaItem>
-        <MetaItem label="Last seen">{relativeTime(ep.lastSeen)}</MetaItem>
+        <MetaItem label="Last seen">{relativeTime(ep.lastSeen, renderedAt)}</MetaItem>
       </div>
 
       <div>
@@ -234,6 +236,13 @@ export interface DataShareDetailViewProps {
   /** Write the per-destination egress decision (`null` clears the override). */
   onSetDecision: (decision: EgressDecision | null) => void;
   isSettingDecision: boolean;
+  /**
+   * The instant this render is measured against, in epoch milliseconds. The host
+   * captures one and every relative label below reads it. Required: a view that
+   * picks its own instant renders one string while the server renders it and
+   * another when the browser hydrates it. See ../lib/relativeTime.ts.
+   */
+  renderedAt: number;
 }
 
 export function DataShareDetailView({
@@ -243,6 +252,7 @@ export function DataShareDetailView({
   onBack,
   onSetDecision,
   isSettingDecision,
+  renderedAt,
 }: DataShareDetailViewProps) {
   // `status` (effective egress state) and `isCustom` (override differs from the
   // trust default) already ride on the destination — read them from there.
@@ -258,7 +268,7 @@ export function DataShareDetailView({
 
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4.5">
         {endpoint ? (
-          <EndpointDetail d={d} ep={endpoint} onBack={onBack} />
+          <EndpointDetail d={d} ep={endpoint} onBack={onBack} renderedAt={renderedAt} />
         ) : (
           <DestDetail d={d} onPick={onPick} />
         )}

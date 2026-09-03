@@ -13,11 +13,13 @@ export interface ExceptionsTableViewProps {
   includeTerminal: boolean;
   onSelect: (id: string) => void;
   /**
-   * Time captured by an SSR host for a stable initial render. Passing this
-   * prevents relative labels — and the expiry-derived state badge — from
-   * crossing a boundary between SSR and hydration.
+   * The instant this render is measured against, in epoch milliseconds. The host
+   * captures one and every relative label below reads it — and the expiry-derived
+   * state badge with them. Required: a view that picks its own instant renders one
+   * string while the server renders it and another when the browser hydrates it.
+   * See ../lib/relativeTime.ts.
    */
-  renderedAt?: number;
+  renderedAt: number;
 }
 
 /**

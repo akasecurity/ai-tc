@@ -102,7 +102,37 @@ const STRUCTURAL_BUDGET_SHARE = 0.7;
  */
 const BATCH_SIZE = AUDIT_EVENT_BATCH_MAX;
 
+/**
+ * Why a pass did not run.
+ *
+ * An ENUM, for the reason `forward-policy.ts` keeps `lastFailure` one and
+ * `history-state.ts` repeats: these values are RENDERED, and a free-form string
+ * built from a caught error can carry the endpoint, a header echo, or a fragment
+ * of the body. Nothing here is derived from a response.
+ *
+ * Every member is a different instruction to a human, which is the whole point:
+ * `no-consent` is answered by `aka sync-history --on`, `credential-unusable` by
+ * re-attaching, `already-running` by waiting, and `breaker-open` by neither.
+ * They were all one bare `null` before, so the command a user reaches for when
+ * nothing is syncing could not say which of seven things had happened.
+ */
+export type HistorySyncSkipReason =
+  | 'not-attached'
+  | 'no-consent'
+  | 'credential-unusable'
+  | 'breaker-open'
+  | 'attachment-unreadable'
+  | 'already-running'
+  | 'failed';
+
+/** A pass that made no attempt, and why. */
+export interface HistorySyncSkipped {
+  attempted: false;
+  reason: HistorySyncSkipReason;
+}
+
 export interface HistorySyncResult {
+  attempted: true;
   outcome: HistorySyncOutcome;
   /** Rows accepted in THIS pass. */
   sent: number;
@@ -152,24 +182,41 @@ export function endpointFingerprint(endpoint: string): string {
   return createHash('sha256').update(endpoint).digest('hex');
 }
 
+// A name that cannot collide with `HistorySyncResult.skipped` — the local row
+// counter both `drain` and `drainCaptures` declare as `let skipped = 0`. That
+// counter shadows this factory inside their own scope, so calling this as
+// `skipped('failed')` there would call a NUMBER, a `TypeError` at runtime
+// rather than a type error at the keyboard; `didNotRun` cannot collide with a
+// field of that name.
+const didNotRun = (reason: HistorySyncSkipReason): HistorySyncSkipped => ({
+  attempted: false,
+  reason,
+});
+
 /**
  * One pass of the background drain: send what has not been sent, mark what has.
  *
  * NEVER THROWS. It runs detached with stdio ignored, so a rejection would be an
  * unhandled rejection nobody reads.
  *
- * Returns `null` for NO ATTEMPT MADE — not attached, no usable credential, no
- * grant, or the forward breaker is open. That is distinct from every recorded
- * outcome, each of which describes something a deployment did, and the caller
- * writes nothing for it: recording one would have status report a deployment
- * this machine never called, and would re-create a file a detach just removed.
+ * Returns a `HistorySyncSkipped` for NO ATTEMPT MADE — not attached, no usable
+ * credential, no grant, or the forward breaker is open. That is distinct from
+ * every recorded outcome, each of which describes something a deployment did,
+ * and the caller writes nothing for it: recording one would have status
+ * report a deployment this machine never called, and would re-create a file
+ * a detach just removed.
+ *
+ * `failed` is the one member of that skip vocabulary for which "no attempt
+ * was made" is approximate rather than exact — see its own arm below for why.
  *
  * ADVANCE ONLY AFTER AN ACK. A row is stamped delivered after the request that
  * carried it was accepted, never before. A crash in between costs one re-send,
  * which the receiving side settles on the row id; the other order would lose the
  * row silently.
  */
-export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistorySyncResult | null> {
+export async function runHistorySync(
+  deps: RunHistorySyncDeps,
+): Promise<HistorySyncResult | HistorySyncSkipped> {
   const now = deps.now ?? ((): number => Date.now());
   const sleep =
     deps.sleep ?? ((ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)));
@@ -179,15 +226,17 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
   let db: LocalDatabase | undefined;
   try {
     const settings = readWorkspaceSettings(deps.base);
-    if (!isAttached(settings)) return null;
+    if (!isAttached(settings)) return didNotRun('not-attached');
     const connection = settings.controlPlane;
-    if (connection === undefined) return null;
-    if (!isHistorySyncConsentValid(settings.historySyncConsent, connection.endpoint)) return null;
+    if (connection === undefined) return didNotRun('not-attached');
+    if (!isHistorySyncConsentValid(settings.historySyncConsent, connection.endpoint)) {
+      return didNotRun('no-consent');
+    }
 
     // The WIDE read: the client below needs the key itself, and this runs in
     // the plugin's own process rather than anywhere a browser can see.
     const state = readControlPlaneCredentialFile(deps.settingsDir, connection);
-    if (!state.usable) return null;
+    if (!state.usable) return didNotRun('credential-unusable');
 
     // READ-ONLY. A long-running child must never write the breaker: its view of
     // plane health would overwrite the hook path's, and the hook path is the one
@@ -203,7 +252,9 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
     // indefinitely by a breaker refusing nothing.
     const nowMs = now();
     const openedAtMs = readForwardHealth(deps.dataDir, nowMs)?.openedAtMs ?? null;
-    if (openedAtMs !== null && nowMs - openedAtMs < BREAKER_COOLDOWN_MS) return null;
+    if (openedAtMs !== null && nowMs - openedAtMs < BREAKER_COOLDOWN_MS) {
+      return didNotRun('breaker-open');
+    }
 
     db = (deps.openStore ?? openLocalDatabase)(deps.dataDir);
     const ledger = db.historySync;
@@ -216,7 +267,7 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
     // overwrite those resolved ids with nothing, degrading a join that was
     // already correct.
     const attachedAtMs = Date.parse(connection.attachedAt);
-    if (!Number.isFinite(attachedAtMs)) return null;
+    if (!Number.isFinite(attachedAtMs)) return didNotRun('attachment-unreadable');
 
     // A change of deployment invalidates every stamp: rows delivered to the
     // place this machine has left are undelivered as far as this one is
@@ -245,7 +296,9 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
     }
 
     const pid = process.pid;
-    if (!ledger.claim(pid, hostname(), now(), HISTORY_LEASE_STALE_MS)) return null;
+    if (!ledger.claim(pid, hostname(), now(), HISTORY_LEASE_STALE_MS)) {
+      return didNotRun('already-running');
+    }
 
     // ONE client, two senders. The lanes differ only in the route they take and
     // the shape they carry; sharing the client keeps them on one connection,
@@ -310,9 +363,17 @@ export async function runHistorySync(deps: RunHistorySyncDeps): Promise<HistoryS
       ledger.release(pid);
     }
   } catch {
-    // Nothing to report to and nowhere to report it. The ledger is unchanged
-    // for anything not acknowledged, so the next pass repeats this one's work.
-    return null;
+    // `failed` rather than a message: the caught value is the one thing here
+    // that could carry a URL or a body fragment into a rendered line.
+    //
+    // The ONE member of this union for which `attempted: false` is
+    // approximate. Every other reason returns before `claim`, so no request
+    // was made; this catch also covers a throw AFTER the drain has sent rows.
+    // It is reported as a non-attempt because the caller does with it exactly
+    // what it does with one — write no state — and the ledger is unchanged
+    // for anything the deployment did not acknowledge, so the next pass
+    // repeats only the work that is actually still owed.
+    return didNotRun('failed');
   } finally {
     try {
       db?.close();
@@ -483,6 +544,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
     outcome = 'interrupted';
   }
   return {
+    attempted: true,
     outcome,
     sent,
     skipped,

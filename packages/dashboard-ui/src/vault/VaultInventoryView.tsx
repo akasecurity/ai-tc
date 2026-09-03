@@ -39,6 +39,13 @@ export interface VaultInventoryViewProps {
   pageStart?: number | undefined;
   // Vaulted values across the whole store, not just this page.
   total?: number | undefined;
+  /**
+   * The instant this render is measured against, in epoch milliseconds. The host
+   * captures one and every relative label below reads it. Required: a view that
+   * picks its own instant renders one string while the server renders it and
+   * another when the browser hydrates it. See ../lib/relativeTime.ts.
+   */
+  renderedAt: number;
 }
 
 const COLUMN_CLASS: Record<string, string> = {
@@ -66,6 +73,7 @@ export function VaultInventoryView({
   loadingNextPage = false,
   pageStart,
   total,
+  renderedAt,
 }: VaultInventoryViewProps) {
   // An empty page the reader PAGED INTO keeps its pager, because Previous is the
   // only way back out — a later page can come back empty (a repeat detection
@@ -111,6 +119,7 @@ export function VaultInventoryView({
                 hasActions={hasActions}
                 onReveal={onReveal}
                 onRevoke={onRevoke}
+                renderedAt={renderedAt}
               />
             ))}
           </TableBody>
@@ -153,9 +162,11 @@ function VaultInventoryRow({
   hasActions,
   onReveal,
   onRevoke,
+  renderedAt,
 }: {
   entry: VaultInventoryEntry;
   hasActions: boolean;
+  renderedAt: number;
   onReveal?: ((pointerId: string) => void) | undefined;
   onRevoke?: ((grantId: string) => void) | undefined;
 }) {
@@ -171,10 +182,10 @@ function VaultInventoryRow({
           <span className="text-xs text-text-2">{String(entry.occurrences)}</span>
         </TableCell>
         <TableCell className={COLUMN_CLASS.firstSeen}>
-          <span className="text-xs text-text-2">{relativeTime(entry.firstSeen)}</span>
+          <span className="text-xs text-text-2">{relativeTime(entry.firstSeen, renderedAt)}</span>
         </TableCell>
         <TableCell className={COLUMN_CLASS.lastSeen}>
-          <span className="text-xs text-text-2">{relativeTime(entry.lastSeen)}</span>
+          <span className="text-xs text-text-2">{relativeTime(entry.lastSeen, renderedAt)}</span>
         </TableCell>
         <TableCell className={COLUMN_CLASS.grant}>
           {grantId === null ? null : <RevealToModelBadge />}
@@ -229,7 +240,9 @@ function VaultInventoryRow({
                     <div>
                       <SightingKindChip kind={sighting.kind} />
                     </div>
-                    <span className="text-text-3">{relativeTime(sighting.lastSeen)}</span>
+                    <span className="text-text-3">
+                      {relativeTime(sighting.lastSeen, renderedAt)}
+                    </span>
                   </li>
                 ))}
               </ul>

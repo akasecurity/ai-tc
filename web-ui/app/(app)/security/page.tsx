@@ -16,6 +16,7 @@ import {
 
 import { RangeSelect } from '../../components/RangeSelect';
 import { db } from '../../lib/db';
+import { renderInstant } from '../../lib/rendered-at';
 import { RecommendedActionsCard } from './RecommendedActionsCard';
 
 // node:sqlite (via @akasecurity/persistence) runs only on the Node.js runtime.
@@ -76,6 +77,11 @@ export default async function SecurityPage({
     label: bucketLabel.format(new Date(p.timestamp)),
   }));
 
+  // One instant for the whole route. The feed below is a SERVER component, so
+  // there is no hydration render here to disagree with — the instant is required
+  // because the view has no clock of its own to fall back on, which is what keeps
+  // it honest if it ever gains a `use client` directive.
+  const renderedAt = renderInstant();
   return (
     <div className="px-8 pb-10 pt-7">
       <PageHead
@@ -100,7 +106,12 @@ export default async function SecurityPage({
       </div>
 
       <div className="mt-4 xl:mt-5">
-        <RecentlyResolvedCardView items={recentlyResolved.items} isLoading={false} error={null} />
+        <RecentlyResolvedCardView
+          items={recentlyResolved.items}
+          isLoading={false}
+          error={null}
+          renderedAt={renderedAt}
+        />
       </div>
     </div>
   );

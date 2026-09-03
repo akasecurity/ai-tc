@@ -1,6 +1,7 @@
 import { PageHead } from '@akasecurity/dashboard-ui';
 
 import { db } from '../../lib/db';
+import { renderInstant } from '../../lib/rendered-at';
 import { DataSharesClient } from './DataSharesClient';
 import { type DataSharesSearchParams, parseQuery, parseSelection } from './filters';
 
@@ -35,6 +36,9 @@ export default async function DataSharesPage({
     q ? Promise.resolve({ items: [] }) : shares.needsReview(),
   ]);
   const destination = dest ? await shares.getDestination(dest) : null;
+  // One instant for the whole route: every relative label below is measured
+  // against it during the server render and again during hydration.
+  const renderedAt = renderInstant();
 
   return (
     <div className="flex h-full min-h-0 flex-col px-8 pb-8 pt-7">
@@ -57,6 +61,7 @@ export default async function DataSharesPage({
         destination={destination}
         selectedDest={dest}
         selectedEndpoint={ep}
+        renderedAt={renderedAt}
       />
     </div>
   );

@@ -14,6 +14,22 @@ export function allRows<T>(stmt: StatementSync, params?: BindParams): T[] {
   return stmt.all(params) as unknown as T[];
 }
 
+/**
+ * `stmt`'s rows streamed via `.iterate()` rather than materialized, cast to
+ * the caller's row type `T` — the same audited cast `allRows` performs, for a
+ * caller reading a scan too large to hold as an array (the findings page's
+ * index-ordered streams over `findingScanSql`).
+ */
+export function* iterateRows<T>(stmt: StatementSync, params?: BindParams): Generator<T> {
+  const rows =
+    params === undefined
+      ? stmt.iterate()
+      : Array.isArray(params)
+        ? stmt.iterate(...params)
+        : stmt.iterate(params);
+  for (const row of rows) yield row as unknown as T;
+}
+
 /** The first row of `stmt` (or undefined), cast to the caller's row type `T`. */
 // `T` appears only in the return type on purpose: the caller names the row
 // shape and the audited cast to it happens here instead of at every call site.

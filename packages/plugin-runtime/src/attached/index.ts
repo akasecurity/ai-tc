@@ -44,12 +44,14 @@ export {
   writeHistorySyncState,
 } from './history-state.ts';
 export type { HistorySyncResult, RunHistorySyncDeps } from './history-sync.ts';
+export type { HistorySyncSkipped, HistorySyncSkipReason } from './history-sync.ts';
 export {
   endpointFingerprint,
   HISTORY_PASS_BUDGET_MS,
   HISTORY_REQUEST_TIMEOUT_MS,
   runHistorySync,
 } from './history-sync.ts';
+export type { HistorySyncPassReport } from './history-sync-entry.ts';
 export { runHistorySyncPass } from './history-sync-entry.ts';
 export type { HistorySyncTriggerDeps } from './history-sync-trigger.ts';
 export {

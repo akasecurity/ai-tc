@@ -143,6 +143,39 @@ describe('aka sync-history', () => {
     expect(io.output().trimEnd().split('\n').length).toBeGreaterThan(3);
   });
 
+  // The whole point of the report line: `--run` used to print only the consent
+  // sentence, which reads identically whether a pass sent everything, sent
+  // nothing, or was never attempted. A user reaching for this command is trying
+  // to find out WHICH, and seven different refusals were one silent `null`.
+  it('says WHY it did nothing on an unattached machine', async () => {
+    const io = recorder();
+    await runSyncHistory(['--run'], deps(io));
+
+    expect(exits).toEqual([]);
+    // Asserted on wording only the REPORT can produce: `describe()` already
+    // says "not attached to a deployment", so an assertion on that phrase passes
+    // with the report line deleted — which is exactly how this test was wrong the
+    // first time. "This pass" is the discriminator.
+    expect(io.output()).toContain('This pass did nothing: there is no deployment to send to.');
+    // Positive control: the consent sentence is still printed beneath it.
+    expect(io.output()).toContain('so it sends nothing');
+  });
+
+  it('names the remedy when the grant is missing, not merely that nothing happened', async () => {
+    // `no-consent` and `not-attached` both left the store untouched and printed
+    // the same thing before. They are different instructions to a human, and the
+    // command is only useful if it gives the right one.
+    attach();
+    const io = recorder();
+    await runSyncHistory(['--run'], deps(io));
+
+    expect(exits).toEqual([]);
+    expect(io.output()).toContain(
+      'This pass did nothing: sending existing activity is switched off.',
+    );
+    expect(io.output()).not.toContain('there is no deployment to send to');
+  });
+
   it('revokes and still runs cleanly when --off and --run are given together', async () => {
     attach();
     await runSyncHistory(['--on'], deps(recorder()));

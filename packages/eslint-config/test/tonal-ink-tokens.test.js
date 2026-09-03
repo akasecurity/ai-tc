@@ -16,7 +16,7 @@ import { noNetworkSyntax, tonalInkTokens } from '../src/index.js';
 const linter = new Linter();
 const LANG = { ecmaVersion: 'latest', sourceType: 'module' };
 
-/** The `no-restricted-syntax` value the three UI packages actually get. */
+/** The `no-restricted-syntax` value `web-ui` gets (`dashboard-ui`/`ui-kit` get the same tonal/network/drizzle selectors via `tonalInkTokensPresentational`, differing only in the ambient-clock scope — see ambient-clock.test.js). */
 const SHIPPED_RULE = tonalInkTokens[0]?.rules?.['no-restricted-syntax'];
 
 function lintTonal(code, rule = SHIPPED_RULE) {

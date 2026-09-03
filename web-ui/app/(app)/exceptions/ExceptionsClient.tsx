@@ -39,6 +39,7 @@ export function ExceptionsClient({
   keyState: FingerprintKeyState;
   activePermanent: ExceptionDescriptor[];
   approvableBlocked: number;
+  /** The instant the server rendered against. */
   renderedAt: number;
 }) {
   // Navigation transition (the blocked-window filter, the audit toggle and row

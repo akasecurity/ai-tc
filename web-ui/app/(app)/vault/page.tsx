@@ -1,6 +1,7 @@
 import { PageHead } from '@akasecurity/dashboard-ui';
 
 import { db } from '../../lib/db';
+import { renderInstant } from '../../lib/rendered-at';
 import { VaultDashboardClient } from './VaultDashboardClient';
 import { VaultLookupClient } from './VaultLookupClient';
 
@@ -28,6 +29,9 @@ export default function VaultPage() {
   // through an action — fetching both whole trails to save one round-trip was
   // the wrong trade once either of them could be long.
   const derefs = db().secretVault.listDerefs();
+  // One instant for the whole route: every relative label below is measured
+  // against it during the server render and again during hydration.
+  const renderedAt = renderInstant();
 
   return (
     <div className="px-8 pb-10 pt-7">
@@ -37,7 +41,12 @@ export default function VaultPage() {
       />
       <div className="flex flex-col gap-8">
         <VaultLookupClient />
-        <VaultDashboardClient inventory={inventory} reuse={reuse} derefs={derefs} />
+        <VaultDashboardClient
+          inventory={inventory}
+          reuse={reuse}
+          derefs={derefs}
+          renderedAt={renderedAt}
+        />
       </div>
     </div>
   );

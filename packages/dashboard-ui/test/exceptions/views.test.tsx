@@ -6,6 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExceptionDetailView } from '../../src/exceptions/ExceptionDetailView.tsx';
 import { ExceptionsTableView } from '../../src/exceptions/ExceptionsTableView.tsx';
 
+// A fixed render instant. These cases assert display contracts rather than
+// ages, so the value only has to be the SAME one every run — but it has to be
+// passed, because the views no longer have a clock of their own to fall back on.
+const RENDERED_AT = Date.parse('2026-07-05T00:00:00.000Z');
+
 // The capability presentation is asymmetric on purpose: a reveal-to-model
 // grant is flagged with a badge on every surface (it lets the raw value reach
 // the model), while suppression — the default — stays unlabelled. Rendered
@@ -51,6 +56,7 @@ describe('ExceptionsTableView capability badge', () => {
   it('flags a reveal-to-model row with the badge', () => {
     const html = renderToStaticMarkup(
       <ExceptionsTableView
+        renderedAt={RENDERED_AT}
         items={[exception({ capability: 'reveal_to_model' })]}
         includeTerminal={false}
         onSelect={noop}
@@ -61,7 +67,12 @@ describe('ExceptionsTableView capability badge', () => {
 
   it('leaves a suppress row unlabelled', () => {
     const html = renderToStaticMarkup(
-      <ExceptionsTableView items={[exception({})]} includeTerminal={false} onSelect={noop} />,
+      <ExceptionsTableView
+        renderedAt={RENDERED_AT}
+        items={[exception({})]}
+        includeTerminal={false}
+        onSelect={noop}
+      />,
     );
     expect(html).not.toContain(BADGE);
   });
@@ -185,7 +196,10 @@ describe('ExceptionDetailView threads renderedAt, not the ambient clock', () => 
 describe('ExceptionDetailView capability presentation', () => {
   it('shows the badge and the consequence callout for a reveal grant', () => {
     const html = renderToStaticMarkup(
-      <ExceptionDetailView exception={exception({ capability: 'reveal_to_model' })} />,
+      <ExceptionDetailView
+        renderedAt={RENDERED_AT}
+        exception={exception({ capability: 'reveal_to_model' })}
+      />,
     );
     expect(html).toContain(BADGE);
     // The consequence must be stated, not implied.
@@ -194,8 +208,79 @@ describe('ExceptionDetailView capability presentation', () => {
   });
 
   it('renders a suppress grant without any capability labelling', () => {
-    const html = renderToStaticMarkup(<ExceptionDetailView exception={exception({})} />);
+    const html = renderToStaticMarkup(
+      <ExceptionDetailView renderedAt={RENDERED_AT} exception={exception({})} />,
+    );
     expect(html).not.toContain(BADGE);
     expect(html).not.toContain('raw form at tool boundaries');
+  });
+});
+
+// The instant these views are given is not just a label input: `exceptionState`
+// derives a grant's lifecycle from it, and ExceptionDetailView renders the
+// revoke form ONLY while that reads `active`. So the two renders of a page —
+// the server's and the browser's hydration of it — can disagree about whether a
+// whole subtree exists, which React resolves by throwing the server's markup
+// away. That is why the argument is required rather than defaulted, and these
+// are what fail if a view goes back to picking its own instant.
+//
+// Each case drives two renders that differ ONLY in `renderedAt`, straddling the
+// fixture's `expiresAt`. Two renders of one input, one boundary between them —
+// which is exactly the shape of the defect.
+describe('the exceptions views read the instant they are given', () => {
+  const EXPIRES = '2026-07-05T00:30:00.000Z';
+  const BEFORE = Date.parse('2026-07-05T00:00:00.000Z');
+  const AFTER = Date.parse('2026-07-05T01:00:00.000Z');
+  const expiring = () => exception({ scope: 'temporary', expiresAt: EXPIRES });
+
+  it('labels the same grant differently on either side of its expiry', () => {
+    const before = renderToStaticMarkup(
+      <ExceptionsTableView
+        items={[expiring()]}
+        includeTerminal
+        onSelect={noop}
+        renderedAt={BEFORE}
+      />,
+    );
+    const after = renderToStaticMarkup(
+      <ExceptionsTableView
+        items={[expiring()]}
+        includeTerminal
+        onSelect={noop}
+        renderedAt={AFTER}
+      />,
+    );
+
+    expect(before).toContain('in 30 minutes');
+    expect(before).toContain('>active<');
+    expect(after).toContain('30 minutes ago');
+    expect(after).toContain('>expired<');
+  });
+
+  it('gates the revoke form on the instant, so the two renders differ in STRUCTURE', () => {
+    // The severe case: not a differing label but a differing tree. The form is
+    // present at BEFORE and absent at AFTER, from the same props.
+    const before = renderToStaticMarkup(
+      <ExceptionDetailView exception={expiring()} onRevoke={noop} renderedAt={BEFORE} />,
+    );
+    const after = renderToStaticMarkup(
+      <ExceptionDetailView exception={expiring()} onRevoke={noop} renderedAt={AFTER} />,
+    );
+
+    expect(before).toContain('Revoke this grant');
+    expect(after).not.toContain('Revoke this grant');
+    // And the chip agrees with the form it gates, at both instants.
+    expect(before).toContain('>active<');
+    expect(after).toContain('>expired<');
+  });
+
+  it('threads the instant into the detail view own labels too', () => {
+    const html = renderToStaticMarkup(
+      <ExceptionDetailView
+        exception={exception({ createdAt: '2026-07-04T23:30:00.000Z' })}
+        renderedAt={BEFORE}
+      />,
+    );
+    expect(html).toContain('30 minutes ago');
   });
 });

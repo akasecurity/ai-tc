@@ -493,20 +493,25 @@ export class SqliteSecurityRepository implements SecurityViews {
 
     const now = this.now();
     const from = now - RANGE_DAYS[range] * DAY_MS;
-    // Rank repos by findings in the window. attributes.repo is extracted in SQL
-    // via json_extract; rows without a repo are excluded. Ranked + sliced in
-    // SQL — tie-break on repo for a stable order.
+    // Rank repos by findings in the window. e.repo is a generated column over
+    // attributes.repo; rows without a repo are excluded. GROUP BY and ORDER BY
+    // both spell the qualified column rather than the bare "repo" alias — a
+    // bare GROUP BY name resolves against a FROM-clause column ahead of a
+    // SELECT alias, while a bare ORDER BY name resolves the other way, so once
+    // audit_events gained its own `repo` column (migration 0025) the two
+    // clauses silently bound to different things in the same statement.
+    // Ranked + sliced in SQL — tie-break on repo for a stable order.
     const rows = allRows<{ repo: string; c: number }>(
       this.db.prepare(
-        `SELECT json_extract(e.attributes, '$.repo') AS repo, count(*) AS c
+        `SELECT e.repo AS repo, count(*) AS c
          FROM inspection_findings f
          JOIN audit_events e ON e.id = f.audit_event_id
          WHERE e.started_at >= :from AND e.started_at < :to
            AND e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
-           AND json_extract(e.attributes, '$.repo') IS NOT NULL
-           AND json_extract(e.attributes, '$.repo') != ''
-         GROUP BY repo
-         ORDER BY c DESC, repo
+           AND e.repo IS NOT NULL
+           AND e.repo != ''
+         GROUP BY e.repo
+         ORDER BY c DESC, e.repo
          LIMIT :limit`,
       ),
       { from, to: now, limit },
@@ -578,7 +583,7 @@ export class SqliteSecurityRepository implements SecurityViews {
         `SELECT f.finding_key AS finding_key,
                 d.rule_id AS rule_id,
                 d.severity AS severity,
-                json_extract(e.attributes, '$.file_path') AS path,
+                e.file_path AS path,
                 COALESCE(f.first_detected_at, e.started_at) AS first_detected_at,
                 latest.resolved_at AS latest_resolved_at
          FROM ${LATEST_RESOLUTION_BY_KEY_SQL} latest

@@ -44,11 +44,19 @@ export function FindingDetailView({
   onSelectInstance,
   onBack,
   footer,
+  renderedAt,
 }: {
   selection: Selection;
   onSelectInstance: (instance: FindingInstance) => void;
   onBack: () => void;
   footer?: ReactNode;
+  /**
+   * The instant this render is measured against, in epoch milliseconds. The host
+   * captures one and every relative label below reads it. Required: a view that
+   * picks its own instant renders one string while the server renders it and
+   * another when the browser hydrates it. See ../lib/relativeTime.ts.
+   */
+  renderedAt: number;
 }) {
   const { finding, instance } = selection;
   const Icon = CATEGORY_ICON_FALLBACK[finding.category] ?? KeyIcon;
@@ -89,7 +97,7 @@ export function FindingDetailView({
             <span className="text-xs text-text-3">
               {grouped
                 ? `${String(finding.instanceCount)} locations · ${String(providerCount)} tool${providerCount > 1 ? 's' : ''}`
-                : `${category} · ${instance.repo} · detected ${relativeTime(instance.detectedAt)}`}
+                : `${category} · ${instance.repo} · detected ${relativeTime(instance.detectedAt, renderedAt)}`}
             </span>
           </div>
         </div>
@@ -144,7 +152,7 @@ export function FindingDetailView({
             <MetaItem label="Action taken">
               <ActionTag action={instance.action} />
             </MetaItem>
-            <MetaItem label="Detected">{relativeTime(instance.detectedAt)}</MetaItem>
+            <MetaItem label="Detected">{relativeTime(instance.detectedAt, renderedAt)}</MetaItem>
             <MetaItem label="Confidence">
               <Confidence confidence={instance.confidence} />
             </MetaItem>

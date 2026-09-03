@@ -66,7 +66,10 @@ function pick<T>(rng: () => number, list: readonly T[]): T {
 }
 
 /** Seed the corpus into `raw` (an open, migrated store) and describe it. */
-export function seedActivityCorpus(raw: DatabaseSync, options: ActivityCorpusOptions): ActivityCorpus {
+export function seedActivityCorpus(
+  raw: DatabaseSync,
+  options: ActivityCorpusOptions,
+): ActivityCorpus {
   const CAPTURES = options.captures;
   const ENDED_RATE = options.endedRate ?? 0.9;
   const GIANT_CAPTURES = options.giantCaptures ?? 1_000;
@@ -139,7 +142,8 @@ export function seedActivityCorpus(raw: DatabaseSync, options: ActivityCorpusOpt
         provider: 'anthropic',
         project: `acme/repo-${String(repo)}`,
         repo: `acme/repo-${String(repo)}`,
-        branches: rng() < 0.3 ? ['main', `feat/module-${String(Math.floor(rng() * 400))}`] : ['main'],
+        branches:
+          rng() < 0.3 ? ['main', `feat/module-${String(Math.floor(rng() * 400))}`] : ['main'],
       }),
     );
   }
@@ -148,7 +152,8 @@ export function seedActivityCorpus(raw: DatabaseSync, options: ActivityCorpusOpt
     const sid = `sess-${String(s)}`;
     const kind = promptless.has(s) ? pick(rng, PROMPTLESS_KINDS) : pick(rng, KINDS);
     const at = EPOCH_MS + i * SPACING_MS;
-    const filePath = kind === 'code_change' ? `src/module-${String(Math.floor(rng() * 400))}.ts` : null;
+    const filePath =
+      kind === 'code_change' ? `src/module-${String(Math.floor(rng() * 400))}.ts` : null;
     insert.run(
       `cap-${String(i)}`,
       kind,

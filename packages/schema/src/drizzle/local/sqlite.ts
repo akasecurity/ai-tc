@@ -444,8 +444,12 @@ export const auditEvents = sqliteTable(
     // only: drizzle-kit splits an expression on its comma and emits it as two
     // quoted column names, so like 0013's `idx_audit_code_change_path` it is
     // written by hand there and declared nowhere here.
-    index('idx_audit_session_prompt').on(t.rootSessionId).where(sql`event_type = 'prompt'`),
-    index('idx_audit_session_share').on(t.rootSessionId).where(sql`event_type = 'share'`),
+    index('idx_audit_session_prompt')
+      .on(t.rootSessionId)
+      .where(sql`event_type = 'prompt'`),
+    index('idx_audit_session_share')
+      .on(t.rootSessionId)
+      .where(sql`event_type = 'share'`),
     // `ended_at` is stamped on almost no row — the local writer closes neither
     // roots nor leaves — so both of these are near-empty in the field. They
     // exist so the liveness fold over an event's OWN end (a long tool call

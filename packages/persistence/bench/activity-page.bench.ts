@@ -59,12 +59,43 @@ const fromIso = (s: Surfaces, days: number): string =>
 
 const READS: readonly (readonly [string, (s: Surfaces) => Promise<unknown>])[] = [
   ['stats: today', (s) => s.activity.stats('UTC')],
-  ['sessions: 7d', (s) => s.activity.listSessions({ from: fromIso(s, 7), excludeEmpty: true, limit: 100 })],
-  ['sessions: 30d', (s) => s.activity.listSessions({ from: fromIso(s, 30), excludeEmpty: true, limit: 100 })],
-  ['sessions: 7d show-empty', (s) => s.activity.listSessions({ from: fromIso(s, 7), excludeEmpty: false, limit: 100 })],
-  ['sessions: 7d harness', (s) => s.activity.listSessions({ from: fromIso(s, 7), excludeEmpty: true, harness: ['codex'], limit: 100 })],
-  ['sessions: 7d q', (s) => s.activity.listSessions({ from: fromIso(s, 7), excludeEmpty: true, q: 'repo-3', limit: 100 })],
-  ['sessions: 30d q', (s) => s.activity.listSessions({ from: fromIso(s, 30), excludeEmpty: true, q: 'repo-3', limit: 100 })],
+  [
+    'sessions: 7d',
+    (s) => s.activity.listSessions({ from: fromIso(s, 7), excludeEmpty: true, limit: 100 }),
+  ],
+  [
+    'sessions: 30d',
+    (s) => s.activity.listSessions({ from: fromIso(s, 30), excludeEmpty: true, limit: 100 }),
+  ],
+  [
+    'sessions: 7d show-empty',
+    (s) => s.activity.listSessions({ from: fromIso(s, 7), excludeEmpty: false, limit: 100 }),
+  ],
+  [
+    'sessions: 7d harness',
+    (s) =>
+      s.activity.listSessions({
+        from: fromIso(s, 7),
+        excludeEmpty: true,
+        harness: ['codex'],
+        limit: 100,
+      }),
+  ],
+  [
+    'sessions: 7d q',
+    (s) =>
+      s.activity.listSessions({ from: fromIso(s, 7), excludeEmpty: true, q: 'repo-3', limit: 100 }),
+  ],
+  [
+    'sessions: 30d q',
+    (s) =>
+      s.activity.listSessions({
+        from: fromIso(s, 30),
+        excludeEmpty: true,
+        q: 'repo-3',
+        limit: 100,
+      }),
+  ],
   ['harness facets: 30d', (s) => s.activity.harnessFacets(s.corpus.endsAt - 30 * DAY_MS)],
   ['token-usage: 7d', (s) => s.activity.tokenReports(s.corpus.endsAt - 7 * DAY_MS)],
   ['token-usage: 30d', (s) => s.activity.tokenReports(s.corpus.endsAt - 30 * DAY_MS)],

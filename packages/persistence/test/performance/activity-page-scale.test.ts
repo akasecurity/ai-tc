@@ -177,8 +177,14 @@ describe(`/activity read costs from ${SMALL_CAPTURES.toLocaleString('en-US')} to
 
   it('every read answered with something at both sizes, so a ratio of 1 is not an empty scope', () => {
     for (const name of READS) {
-      expect(small.matched[name], `${name} matched nothing at ${String(SMALL_CAPTURES)}`).toBeGreaterThan(0);
-      expect(large.matched[name], `${name} matched nothing at ${String(LARGE_CAPTURES)}`).toBeGreaterThan(0);
+      expect(
+        small.matched[name],
+        `${name} matched nothing at ${String(SMALL_CAPTURES)}`,
+      ).toBeGreaterThan(0);
+      expect(
+        large.matched[name],
+        `${name} matched nothing at ${String(LARGE_CAPTURES)}`,
+      ).toBeGreaterThan(0);
     }
   });
 

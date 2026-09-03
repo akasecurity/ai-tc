@@ -51,7 +51,10 @@ const STATS_PROBES: readonly Probe[] = [
   {
     name: 'liveNow',
     statement: (sql) => sql.includes('ended_at IS NULL') && sql.includes('count(*)'),
-    mustUse: [/USING INDEX idx_audit_started_at \(started_at>\?\)/, /INDEX idx_audit_ended_at \(ended_at>\?\)/],
+    mustUse: [
+      /USING INDEX idx_audit_started_at \(started_at>\?\)/,
+      /INDEX idx_audit_ended_at \(ended_at>\?\)/,
+    ],
     mustNotUse: [/CORRELATED SCALAR SUBQUERY/],
   },
 ];
@@ -108,7 +111,10 @@ describe('the activity page probes are served by their own indexes', () => {
     raw = corpusConnection(store.open());
     const corpus = seedActivityCorpus(raw, { captures: CORPUS_CAPTURES });
     const recorded: RecordedQuery[] = [];
-    const activity = new SqliteActivityRepository(recordingConnection(raw, recorded), () => corpus.endsAt);
+    const activity = new SqliteActivityRepository(
+      recordingConnection(raw, recorded),
+      () => corpus.endsAt,
+    );
     void activity.stats('UTC');
     statsStatements = [...recorded];
     recorded.length = 0;

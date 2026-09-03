@@ -484,6 +484,36 @@ export const auditEvents = sqliteTable(
         t.webSearchRequests,
       )
       .where(sql`event_type = 'llm_call' AND attributes IS NOT NULL`),
+    // The activity page's per-session probes (persistence's activity.ts): one
+    // PARTIAL index per kind a rollup reads, so a session's prompts cost its
+    // prompts rather than its rows, and writes of the far more numerous other
+    // kinds do not maintain them. A third, `idx_audit_session_run_key` over
+    // (root_session_id, json_extract(attributes, '$.run_key')) for the
+    // distinct-turns count, is an expression index and lives in migration 0028
+    // only: drizzle-kit splits an expression on its comma and emits it as two
+    // quoted column names, so like 0013's `idx_audit_code_change_path` it is
+    // written by hand there and declared nowhere here.
+    index('idx_audit_session_prompt')
+      .on(t.rootSessionId)
+      .where(sql`event_type = 'prompt'`),
+    index('idx_audit_session_share')
+      .on(t.rootSessionId)
+      .where(sql`event_type = 'share'`),
+    // `ended_at` is stamped on almost no row — the local writer closes neither
+    // roots nor leaves — so both of these are near-empty in the field. They
+    // exist so the liveness fold over an event's OWN end (a long tool call
+    // keeps its session live until it finishes) is a seek at both grains:
+    // "which rows ended in the last thirty minutes" for the live counter, and
+    // "when did this session's last event end" for the page's rollup. The
+    // first carries root_session_id so that range is answered from the index
+    // alone — without it the planner prefers a skip-scan of the second over
+    // every root, which is the per-root walk the counter exists to avoid.
+    index('idx_audit_ended_at')
+      .on(t.endedAt, t.rootSessionId)
+      .where(sql`ended_at IS NOT NULL`),
+    index('idx_audit_session_ended')
+      .on(t.rootSessionId, t.endedAt)
+      .where(sql`ended_at IS NOT NULL`),
   ],
 );
 

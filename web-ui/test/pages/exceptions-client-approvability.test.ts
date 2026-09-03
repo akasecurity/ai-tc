@@ -44,6 +44,10 @@ const { NavigationTransitionProvider } =
   await import('../../app/components/NavigationTransition.tsx');
 
 const CURRENT_VERSION = 4;
+// The instant the "server" rendered against. The blocked fixture below is
+// stamped 30 minutes earlier, so a label reading "30 minutes ago" can only have
+// come from THIS value — the suite's real clock is years away from it.
+const RENDERED_AT = Date.parse('2026-08-01T00:30:00.000Z');
 const FRESH = 'blk-fresh';
 const STALE = 'blk-stale';
 const REFERENCES = [FRESH, STALE] as const;
@@ -115,7 +119,7 @@ function render(keyState: FingerprintKeyState): string {
         keyState,
         activePermanent: [],
         approvableBlocked: 1,
-        renderedAt: Date.parse('2026-08-01T00:30:00.000Z'),
+        renderedAt: RENDERED_AT,
       }),
     ),
   );
@@ -179,7 +183,16 @@ describe('the exceptions client asks blockedRowBlockReason per row', () => {
   });
 });
 
-describe('the exceptions client threads renderedAt into the blocked ledger', () => {
+// The host side of the hydration wiring: dashboard-ui pins that each view USES
+// the instant it is given, and only a render from here can see whether this
+// route actually GIVES one — and gives the same one to both of its children.
+//
+// A missing prop is a compile error now that `renderedAt` is required, so what
+// these catch is the failure that still typechecks: a host that passes some
+// OTHER number. The ambient clock is pinned an hour past RENDERED_AT, so a view
+// that fell back to it reads a different label and each case goes red for a
+// reason this file states rather than one it inherits from the calendar.
+describe('the exceptions client hands its render instant to both child views', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(AMBIENT);
@@ -189,30 +202,17 @@ describe('the exceptions client threads renderedAt into the blocked ledger', () 
   });
 
   it('renders the blocked-at label against the SSR instant, not the ambient clock', () => {
-    // Pins the host-side wiring — `renderedAt={renderedAt}` on
-    // BlockedLedgerView in ExceptionsClient.tsx. Delete it and relativeTime
-    // falls back to the pinned ambient clock, which reads "1 hour ago" for a
-    // fixture blocked at 2026-08-01T00:00 and rendered at 2026-08-01T00:30.
+    // Pins `renderedAt` on BlockedLedgerView in ExceptionsClient.tsx. Drop it
+    // and relativeTime falls back to the pinned ambient clock, which reads
+    // "1 hour ago" for a fixture blocked at 2026-08-01T00:00.
     const markup = render({ status: 'present', version: CURRENT_VERSION });
     expect(markup).toContain('30 minutes ago');
   });
-});
-
-describe('the exceptions client threads renderedAt into the exceptions table', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(AMBIENT);
-  });
-  afterEach(() => {
-    vi.useRealTimers();
-  });
 
   it('renders the expiry label against the SSR instant, not the ambient clock', () => {
-    // Mirrors the ledger pin above, for the sibling view on the same route:
-    // `renderedAt={renderedAt}` on ExceptionsTableView in ExceptionsClient.tsx.
-    // Delete it and relativeTime falls back to the pinned ambient clock, which
-    // reads "30 minutes ago" — the grant already expired — for one expiring at
-    // 2026-08-01T01:00 when rendered at 2026-08-01T00:30.
+    // Mirrors the ledger pin for ExceptionsTableView on the same route. Drop it
+    // and the ambient clock reads "30 minutes ago" — the grant already expired —
+    // for one expiring at 2026-08-01T01:00.
     const markup = renderToStaticMarkup(
       createElement(
         NavigationTransitionProvider,
@@ -225,11 +225,37 @@ describe('the exceptions client threads renderedAt into the exceptions table', (
           keyState: { status: 'present', version: CURRENT_VERSION },
           activePermanent: [],
           approvableBlocked: 0,
-          renderedAt: Date.parse('2026-08-01T00:30:00.000Z'),
+          renderedAt: RENDERED_AT,
         }),
       ),
     );
 
+    expect(markup).toContain('in 30 minutes');
+  });
+
+  it('gives both views the SAME instant, so two labels cannot disagree', () => {
+    // The blocked row is 30 minutes behind RENDERED_AT and the grant expires 30
+    // minutes ahead of it. Both strings in one markup means one instant reached
+    // both children; a host that captured an instant per child would still
+    // satisfy each case above on its own.
+    const markup = renderToStaticMarkup(
+      createElement(
+        NavigationTransitionProvider,
+        null,
+        createElement(ExceptionsClient, {
+          items: [exceptionRow({ expiresAt: '2026-08-01T01:00:00.000Z' })],
+          blocked: [blockedRow(FRESH, CURRENT_VERSION)],
+          includeTerminal: false,
+          blockedWindow: '30m' as const,
+          keyState: { status: 'present', version: CURRENT_VERSION },
+          activePermanent: [],
+          approvableBlocked: 1,
+          renderedAt: RENDERED_AT,
+        }),
+      ),
+    );
+
+    expect(markup).toContain('30 minutes ago');
     expect(markup).toContain('in 30 minutes');
   });
 });

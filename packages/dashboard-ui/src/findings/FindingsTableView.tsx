@@ -76,6 +76,7 @@ export function FindingsTableView({
   emptyState,
   sessionFirings,
   statusFilter,
+  renderedAt,
 }: {
   groups: FindingGroup[];
   /** Visible columns, in display order (caller applies column visibility). */
@@ -123,6 +124,13 @@ export function FindingsTableView({
    * preview window).
    */
   statusFilter?: readonly string[];
+  /**
+   * The instant this render is measured against, in epoch milliseconds. The host
+   * captures one and every relative label below reads it. Required: a view that
+   * picks its own instant renders one string while the server renders it and
+   * another when the browser hydrates it. See ../lib/relativeTime.ts.
+   */
+  renderedAt: number;
 }) {
   return (
     <Card className="flex flex-col overflow-hidden shadow-sm h-full">
@@ -187,7 +195,7 @@ export function FindingsTableView({
                       </TableCell>
                       {columns.map((col) => (
                         <TableCell key={col.id} className={FINDING_COLUMN_CLASS[col.id]}>
-                          {GROUP_CELL[col.id](group)}
+                          {GROUP_CELL[col.id](group, renderedAt)}
                         </TableCell>
                       ))}
                     </TableRow>
@@ -209,7 +217,7 @@ export function FindingsTableView({
                           <TableCell />
                           {columns.map((col) => (
                             <TableCell key={col.id} className={FINDING_COLUMN_CLASS[col.id]}>
-                              {INSTANCE_CELL[col.id](group, instance)}
+                              {INSTANCE_CELL[col.id](group, instance, renderedAt)}
                             </TableCell>
                           ))}
                         </TableRow>
@@ -330,21 +338,24 @@ function StatusCell({ status }: { status: FindingStatus | undefined }) {
 }
 
 /** Per-column renderers for a group row, keyed by column id. */
-const GROUP_CELL: Record<FindingColumn['id'], (g: FindingGroup) => ReactNode> = {
-  severity: (g) => <SeverityBadge severity={g.severity} />,
-  subtype: (g) => <TypeCell finding={g} />,
-  sources: (g) => <ProviderChips ids={g.providers} />,
-  user: (g) => <UsersCell users={g.users} />,
-  locations: (g) => <span className="text-text-3">{g.instanceCount} locations</span>,
-  action: (g) => <AggregateActionTag aggregateAction={g.aggregateAction} />,
-  status: (g) => <StatusCell status={g.status} />,
-  latest: (g) => <span className="text-text-3 text-xs">{relativeTime(g.latestDetectedAt)}</span>,
-};
+const GROUP_CELL: Record<FindingColumn['id'], (g: FindingGroup, renderedAt: number) => ReactNode> =
+  {
+    severity: (g) => <SeverityBadge severity={g.severity} />,
+    subtype: (g) => <TypeCell finding={g} />,
+    sources: (g) => <ProviderChips ids={g.providers} />,
+    user: (g) => <UsersCell users={g.users} />,
+    locations: (g) => <span className="text-text-3">{g.instanceCount} locations</span>,
+    action: (g) => <AggregateActionTag aggregateAction={g.aggregateAction} />,
+    status: (g) => <StatusCell status={g.status} />,
+    latest: (g, renderedAt) => (
+      <span className="text-text-3 text-xs">{relativeTime(g.latestDetectedAt, renderedAt)}</span>
+    ),
+  };
 
 /** Per-column renderers for an instance (sub-)row, keyed by column id. */
 const INSTANCE_CELL: Record<
   FindingColumn['id'],
-  (g: FindingGroup, i: FindingInstance) => ReactNode
+  (g: FindingGroup, i: FindingInstance, renderedAt: number) => ReactNode
 > = {
   severity: (g) => <SeverityBadge severity={g.severity} />,
   subtype: (_g, i) => (
@@ -363,5 +374,7 @@ const INSTANCE_CELL: Record<
   ),
   action: (_g, i) => <ActionTag action={i.action} />,
   status: (_g, i) => <StatusCell status={i.status} />,
-  latest: (_g, i) => <span className="text-text-3 text-xs">{relativeTime(i.detectedAt)}</span>,
+  latest: (_g, i, renderedAt) => (
+    <span className="text-text-3 text-xs">{relativeTime(i.detectedAt, renderedAt)}</span>
+  ),
 };

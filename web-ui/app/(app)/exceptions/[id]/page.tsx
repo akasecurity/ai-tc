@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
 import { db } from '../../../lib/db';
+import { renderInstant } from '../../../lib/rendered-at';
 import { ExceptionDetailClient } from './ExceptionDetailClient';
 
 export const runtime = 'nodejs';
@@ -53,8 +54,7 @@ export default async function ExceptionDetailPage({ params }: { params: Promise<
         // revoke form renders at all — must be calculated against the exact
         // same instant during SSR and hydration; otherwise crossing a boundary
         // between the two changes the text, or the form itself.
-        // eslint-disable-next-line react-hooks/purity -- serialized to the client for hydration parity
-        renderedAt={Date.now()}
+        renderedAt={renderInstant()}
       />
     </div>
   );

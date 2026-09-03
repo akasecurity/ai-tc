@@ -11,6 +11,7 @@ export function ExceptionDetailClient({
   renderedAt,
 }: {
   exception: ExceptionDescriptor;
+  /** The instant the server rendered against. */
   renderedAt: number;
 }) {
   const [error, setError] = useState<string | null>(null);

@@ -27,6 +27,7 @@ export function FindingsLocationsView({
   hasMore = false,
   isLoading = false,
   emptyState,
+  renderedAt,
 }: {
   items: FindingLocationRepo[];
   expandedRepos: ReadonlySet<string>;
@@ -36,6 +37,13 @@ export function FindingsLocationsView({
   hasMore?: boolean;
   isLoading?: boolean;
   emptyState?: ReactNode;
+  /**
+   * The instant this render is measured against, in epoch milliseconds. The host
+   * captures one and every relative label below reads it. Required: a view that
+   * picks its own instant renders one string while the server renders it and
+   * another when the browser hydrates it. See ../lib/relativeTime.ts.
+   */
+  renderedAt: number;
 }) {
   return (
     <Card className="flex h-full min-h-0 flex-col overflow-hidden shadow-sm">
@@ -87,7 +95,7 @@ export function FindingsLocationsView({
                       {repo.files.length} {repo.files.length === 1 ? 'file' : 'files'}
                     </span>
                     <span className="shrink-0 text-xs text-text-3">
-                      {relativeTime(repo.latestDetectedAt)}
+                      {relativeTime(repo.latestDetectedAt, renderedAt)}
                     </span>
                   </button>
 
@@ -96,6 +104,7 @@ export function FindingsLocationsView({
                       <FileRow
                         key={`${repo.repo}\0${file.file}`}
                         file={file}
+                        renderedAt={renderedAt}
                         // The unnamed bucket has no filter that could name it,
                         // so its rows are informational rather than links.
                         onSelect={
@@ -136,8 +145,10 @@ function StatusBadge({ status }: { status: FindingLocationRepo['status'] }) {
 function FileRow({
   file,
   onSelect,
+  renderedAt,
 }: {
   file: FindingLocationFile;
+  renderedAt: number;
   // `| undefined` explicitly: the caller passes undefined for the unnamed
   // bucket, which exactOptionalPropertyTypes distinguishes from omitting it.
   onSelect?: (() => void) | undefined;
@@ -159,7 +170,9 @@ function FileRow({
         {file.ruleIds.join(', ')}
       </span>
       <span className="shrink-0 text-xs text-text-3">{file.instanceCount}</span>
-      <span className="shrink-0 text-xs text-text-3">{relativeTime(file.latestDetectedAt)}</span>
+      <span className="shrink-0 text-xs text-text-3">
+        {relativeTime(file.latestDetectedAt, renderedAt)}
+      </span>
     </div>
   );
 

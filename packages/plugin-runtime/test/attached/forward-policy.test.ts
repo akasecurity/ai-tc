@@ -45,6 +45,28 @@ function refusal(status: number): Error & { status: number } {
   });
 }
 
+/**
+ * An error shaped the way the transport raises one for a route a deployment
+ * does not have. Matched by NAME, exactly as the policy matches it — this
+ * module classifies whatever the injected client throws, and a fake is not
+ * required to be an instance of anything.
+ */
+function routeAbsent(): Error {
+  return Object.assign(new Error('control plane does not serve /v1/audit-events/batch'), {
+    name: 'RemoteRouteAbsent',
+  });
+}
+
+/**
+ * An error shaped the way the client raises one for a body it refused to
+ * send. Matched by NAME, exactly as `isInvalidRequest` matches it.
+ */
+function invalidRequestError(): Error {
+  return Object.assign(new Error('refusing to send a malformed body'), {
+    name: 'RemoteRequestInvalid',
+  });
+}
+
 /** Drive the breaker to open by failing it THRESHOLD times. */
 async function tripOpen(
   policy: { run: (op: () => Promise<unknown>) => Promise<unknown> },
@@ -292,6 +314,109 @@ describe('createForwardPolicy', () => {
         failed(reason as ForwardFailureReason),
       );
       expect(readForwardHealth(dir, 7)?.lastFailure).toBe(reason);
+    });
+
+    it('a route the deployment does not serve becomes route-absent', async () => {
+      const policy = createForwardPolicy({ dir, now: () => 7 });
+      await expect(policy.run(() => Promise.reject(routeAbsent()))).resolves.toEqual(
+        failed('route-absent'),
+      );
+    });
+
+    it('a route-absent PROBE closes the breaker instead of spending the cooldown', async () => {
+      // The half-open path re-stamps `openedAtMs` BEFORE issuing the probe, and
+      // only the success arm clears it. Against a deployment that predates the
+      // batch route the probe IS the batch call, and it 404s by definition — so
+      // an early return here would leave the breaker open with a freshly reset
+      // cooldown and answer every single-event retry the compatibility path
+      // depends on with `breaker-open`: nothing delivered, and nothing counted
+      // either, because the drop tally sits past the reason check.
+      //
+      // A 404 is an ANSWER. Reachability is the only thing the breaker measures,
+      // and this arm has just proved it, so it closes exactly as a success does.
+      let clock = 1_000;
+      const policy = createForwardPolicy({ dir, now: () => clock });
+      await tripOpen(policy);
+      clock += BREAKER_COOLDOWN_MS + 1;
+
+      await expect(policy.run(() => Promise.reject(routeAbsent()))).resolves.toEqual(
+        failed('route-absent'),
+      );
+
+      // The remedy must reach the network, not be suppressed by the call that
+      // discovered it was needed.
+      const op = vi.fn(() => Promise.resolve('ran'));
+      await expect(policy.run(op)).resolves.toEqual(ok('ran'));
+      expect(op).toHaveBeenCalledTimes(1);
+    });
+
+    it('an invalid-request PROBE does not consume the cooldown it was answered inside', async () => {
+      // The same shape as the route-absent bug above, but the fix cannot be the
+      // same fix: nothing reached the network here, so there is no evidence of
+      // reachability to close the breaker on. The correct behaviour is to leave
+      // the breaker exactly as it was found — undo the re-stamp `run()` made
+      // before calling an op that turned out to refuse locally, rather than
+      // either closing it or leaving the re-stamp in place.
+      //
+      // Leaving the re-stamp in place is the bug: `openedAtMs` moves forward to
+      // the probe's own timestamp, so the NEXT probe is now measured from a
+      // point in time nothing was ever learned at, and the caller waits a
+      // second full cooldown for a chance the first one already earned.
+      let clock = 1_000;
+      const policy = createForwardPolicy({ dir, now: () => clock });
+      await tripOpen(policy);
+      clock += BREAKER_COOLDOWN_MS + 1;
+
+      // The half-open probe, answered locally before anything reached a socket.
+      await expect(policy.run(() => Promise.reject(invalidRequestError()))).resolves.toEqual(
+        failed('invalid-request'),
+      );
+
+      // One millisecond later — nowhere near a SECOND full cooldown — the
+      // breaker must already be willing to probe again, because the original
+      // cooldown had already elapsed and nothing legitimately reset it.
+      clock += 1;
+      const op = vi.fn(() => Promise.resolve('ran'));
+      await expect(policy.run(op)).resolves.toEqual(ok('ran'));
+      expect(op).toHaveBeenCalledTimes(1);
+    });
+
+    it('an invalid-request during the half-open window leaves consecutiveFailures and lastFailure untouched', async () => {
+      // Restoring the pre-probe state has to restore ALL of it, not just
+      // `openedAtMs` — a partial restore would silently change what the next
+      // read of `/aka:status` reports, or how many failures the next real
+      // outage needs to re-open the breaker.
+      let clock = 1_000;
+      const policy = createForwardPolicy({ dir, now: () => clock });
+      await tripOpen(policy, () => Object.assign(new Error('down'), { status: 403 }));
+      const before = readForwardHealth(dir, clock);
+      clock += BREAKER_COOLDOWN_MS + 1;
+
+      await expect(policy.run(() => Promise.reject(invalidRequestError()))).resolves.toEqual(
+        failed('invalid-request'),
+      );
+
+      const after = readForwardHealth(dir, clock);
+      expect(after?.lastFailure).toBe(before?.lastFailure);
+      expect(after?.consecutiveFailures).toBe(before?.consecutiveFailures);
+    });
+
+    it('a route the deployment does not serve never moves the breaker', async () => {
+      // The property the reason exists for. An older deployment answers 404 on
+      // EVERY chunk, so if this counted as a failure the third chunk would open
+      // the breaker and suppress every unrelated forward for the cooldown —
+      // against a deployment that is answering everything it understands. Past
+      // the threshold deliberately: at the threshold alone this would pass on an
+      // off-by-one that still opens on the next chunk.
+      const policy = createForwardPolicy({ dir });
+      for (let i = 0; i < BREAKER_FAILURE_THRESHOLD + 2; i++) {
+        await expect(policy.run(() => Promise.reject(routeAbsent()))).resolves.toEqual(
+          failed('route-absent'),
+        );
+      }
+      const op = vi.fn(() => Promise.resolve('ran'));
+      await expect(policy.run(op)).resolves.toEqual(ok('ran'));
+      expect(op).toHaveBeenCalledTimes(1);
     });
 
     it('reads the STATUS, not the message — a 403 in the text is not a 403', async () => {

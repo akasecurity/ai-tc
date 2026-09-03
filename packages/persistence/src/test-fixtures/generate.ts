@@ -83,6 +83,7 @@ import { SOURCE_TOOL } from '@akasecurity/schema';
 import { CAPTURE_EVENT_TYPES_SQL } from '@akasecurity/schema';
 
 import { withTransaction } from '../internal/transactions.ts';
+import { SqliteAuditEventsRepository } from '../repositories/audit-events.ts';
 import { SqliteResolutionsRepository } from '../repositories/resolutions.ts';
 
 /**
@@ -156,7 +157,62 @@ export interface CaptureCorpusOptions {
    * says why.
    */
   readonly resolutionRate?: number;
+  /**
+   * The rules a generated finding may fire under, sampled per finding by
+   * `weight`. Defaults to `DEFAULT_CORPUS_RULES` — the single rule every corpus
+   * carried before this option existed, so a caller that does not set it gets
+   * the same rows it always did.
+   *
+   * The findings page groups by rule, so a one-rule corpus measures its grouped
+   * read against a single group however many findings it holds: every
+   * per-group cost — the preview window, the facet fold, the sort — collapses to
+   * one bucket. A measurement of that page passes a list shaped like an
+   * installed pack set.
+   */
+  readonly rules?: readonly CorpusRule[];
+  /**
+   * The enforcement actions a finding may record, sampled uniformly per
+   * finding. Defaults to `['block']`, which is what every corpus recorded before
+   * this option existed. The action filter and the action facet are trivial on
+   * a corpus that records one action.
+   */
+  readonly actions?: readonly DetectedFinding['actionTaken'][];
+  /**
+   * How many distinct repositories a `code_change` capture may name in
+   * `metadata.repo`. Defaults to 0 — no repo on any capture, as before. The
+   * locations view folds by repo and then file, and a corpus naming none folds
+   * everything into one bucket.
+   */
+  readonly repos?: number;
+  /**
+   * The host tool names a `tool_use` capture may carry in `metadata.toolName`
+   * (`'Bash'`, `'WebFetch'`, …). Defaults to none. The instance reads filter and
+   * facet on it; a corpus carrying none makes that dimension empty.
+   */
+  readonly toolNames?: readonly string[];
+  /**
+   * `tool_call` audit rows written per capture, through the reconciler's own
+   * writer. Defaults to 0. A real store holds more structural rows than capture
+   * rows — half of a measured 67k-row store was `tool_call` — and every findings
+   * read carries a capture-kind predicate whose cost depends on how many rows it
+   * has to reject. A corpus with none measures that predicate against nothing.
+   */
+  readonly structuralPerCapture?: number;
 }
+
+/** One rule a generated finding may fire under. */
+export interface CorpusRule {
+  readonly ruleId: string;
+  readonly category: DetectedFinding['category'];
+  readonly severity: DetectedFinding['severity'];
+  /** Relative sampling weight against the other rules in the list; defaults to 1. */
+  readonly weight?: number;
+}
+
+/** The one rule every corpus fired under before `rules` existed. */
+export const DEFAULT_CORPUS_RULES: readonly CorpusRule[] = [
+  { ruleId: 'secrets/aws-access-key', category: 'secret', severity: 'critical' },
+];
 
 export interface GeneratedCaptureCorpus {
   readonly seed: number;
@@ -176,6 +232,8 @@ export interface GeneratedCaptureCorpus {
   readonly trackableFindings: number;
   /** `finding_resolution` rows that landed — asserted equal to the number generated. */
   readonly resolutions: number;
+  /** `tool_call` rows that landed — asserted equal to the number generated. */
+  readonly structuralRows: number;
   /**
    * The instant just past the last generated event, in epoch milliseconds.
    *
@@ -372,6 +430,29 @@ export function generateCaptureCorpus(
   const findingRate = options.findingRate ?? DEFAULT_FINDING_RATE;
   const spacingMs = options.spacingMs ?? CORPUS_EVENT_SPACING_MS;
   const resolutionRate = options.resolutionRate ?? DEFAULT_RESOLUTION_RATE;
+  const rules = options.rules ?? DEFAULT_CORPUS_RULES;
+  const actions = options.actions ?? DEFAULT_CORPUS_ACTIONS;
+  const repos = options.repos ?? 0;
+  const toolNames = options.toolNames ?? [];
+  const structuralPerCapture = options.structuralPerCapture ?? 0;
+
+  if (rules.length === 0) {
+    throw new RangeError('generateCaptureCorpus: rules must name at least one rule');
+  }
+  if (actions.length === 0) {
+    throw new RangeError('generateCaptureCorpus: actions must name at least one action');
+  }
+  if (!Number.isInteger(repos) || repos < 0) {
+    throw new TypeError(
+      `generateCaptureCorpus: repos must be a non-negative integer, got ${String(repos)}`,
+    );
+  }
+  if (!Number.isInteger(structuralPerCapture) || structuralPerCapture < 0) {
+    throw new TypeError(
+      `generateCaptureCorpus: structuralPerCapture must be a non-negative integer, got ${String(structuralPerCapture)}`,
+    );
+  }
+  const pickRule = weightedPicker(rules);
 
   if (!Number.isInteger(events) || events < 0) {
     throw new TypeError(
@@ -422,8 +503,16 @@ export function generateCaptureCorpus(
   const findingsBaseline = countFindings(target.connection);
   const trackableBaseline = countTrackableFindings(target.connection);
   const resolutionsBaseline = countResolutions(target.connection);
+  const structuralBaseline = countStructuralRows(target.connection);
   let generated = 0;
   let generatedResolutions = 0;
+  let generatedStructural = 0;
+
+  // Structural rows go through the reconciler's own writer, for the reason the
+  // captures go through `recordCapture`: the row is whatever the product writes.
+  // Constructed outside the transaction because its constructor only prepares
+  // statements.
+  const auditEvents = new SqliteAuditEventsRepository(target.connection);
   // The trackable keys THIS call minted, which is not the same set as the
   // trackable keys on disk — see `landedTrackableFindings`.
   const mintedKeys = new Set<string>();
@@ -453,6 +542,17 @@ export function generateCaptureCorpus(
           ? `src/module-${String(Math.floor(rng() * CORPUS_FILE_COUNT))}.ts`
           : undefined;
       const occurredAtMs = CORPUS_EPOCH_MS + i * spacingMs;
+      // Each optional axis draws from the stream only when it is switched on, so
+      // a corpus generated with none of them is byte-identical to one generated
+      // before the options existed.
+      const repo =
+        filePath !== undefined && repos > 0
+          ? `acme/repo-${String(Math.floor(rng() * repos))}`
+          : undefined;
+      const toolName =
+        kind === 'tool_use' && toolNames.length > 0
+          ? toolNames[Math.floor(rng() * toolNames.length)]
+          : undefined;
       const event: IngestEvent = {
         id: seededGuid(rng),
         sourceTool: TOOLS[Math.floor(rng() * TOOLS.length)] ?? SOURCE_TOOL.ClaudeCode,
@@ -465,11 +565,24 @@ export function generateCaptureCorpus(
         // construction rather than by luck.
         contentHash: `corpus-${String(seed)}-${String(i)}`,
         content: seededText(rng, CONTENT_CHARS),
-        metadata: { sessionId, ...(filePath === undefined ? {} : { filePath }) },
+        metadata: {
+          sessionId,
+          ...(filePath === undefined ? {} : { filePath }),
+          ...(repo === undefined ? {} : { repo }),
+          ...(toolName === undefined ? {} : { toolName }),
+        },
       };
 
       const detected: DetectedFinding[] = [];
       if (rng() < findingRate) {
+        const rule = rules.length === 1 ? (rules[0] ?? DEFAULT_CORPUS_RULES[0]) : pickRule(rng());
+        const actionTaken =
+          actions.length === 1
+            ? (actions[0] ?? 'block')
+            : (actions[Math.floor(rng() * actions.length)] ?? 'block');
+        if (rule === undefined) {
+          throw new RangeError('generateCaptureCorpus: no rule to fire under');
+        }
         // TRACKABLE EXACTLY WHEN THE PRODUCT WOULD MAKE IT SO, which is why the
         // condition is `filePath` and not a knob. `@akasecurity/plugin-sdk`'s
         // runtime sets `isAtRest = kind === 'code_change' && filePath !== undefined`
@@ -493,9 +606,9 @@ export function generateCaptureCorpus(
         detected.push({
           id: seededGuid(rng),
           eventId: event.id,
-          ruleId: 'secrets/aws-access-key',
-          category: 'secret',
-          severity: 'critical',
+          ruleId: rule.ruleId,
+          category: rule.category,
+          severity: rule.severity,
           span: { start: 0, end: 8 },
           ...(findingKey === undefined ? {} : { findingKey }),
           // Half the finding-level session dedup key. A constant here would
@@ -504,7 +617,7 @@ export function generateCaptureCorpus(
           // the rate said — the same trap `test/helpers/capture-fixtures.ts`
           // documents, at corpus scale.
           maskedMatch: `A***${String(i)}`,
-          actionTaken: 'block',
+          actionTaken,
           confidence: 0.9,
         });
         generated += 1;
@@ -512,6 +625,25 @@ export function generateCaptureCorpus(
       }
 
       target.recordCapture(event, detected);
+
+      // After the capture, so the session root the capture planted is in place
+      // for the row's foreign key. The id is minted from (session, toolUseId),
+      // so the tool-use id carries the corpus index to keep every row distinct.
+      for (let k = 0; k < structuralPerCapture; k += 1) {
+        auditEvents.insertToolCall({
+          sessionId,
+          toolUseId: `corpus-tu-${String(seed)}-${String(i)}-${String(k)}`,
+          parentId: sessionId,
+          rootSessionId: sessionId,
+          startedAt: new Date(occurredAtMs + k + 1).toISOString(),
+          attributes: {
+            tool_name: toolNames[Math.floor(rng() * Math.max(1, toolNames.length))] ?? 'Bash',
+            target: 'corpus',
+          },
+          inspections: [],
+        });
+        generatedStructural += 1;
+      }
     }
 
     // Resolutions are written from the keys that LANDED, read back out of the
@@ -596,6 +728,18 @@ export function generateCaptureCorpus(
     );
   }
 
+  // The tool_call rows are written by a second repository against a table the
+  // capture check counts only the capture kinds of, so they need their own
+  // check for the same reason the resolutions do.
+  const structuralRows = countStructuralRows(target.connection) - structuralBaseline;
+  if (structuralRows !== generatedStructural) {
+    throw new Error(
+      `generateCaptureCorpus wrote ${String(structuralRows)} tool_call rows, expected ` +
+        `${String(generatedStructural)}. Every findings read rejects structural rows through a ` +
+        'capture-kind predicate, so a corpus that lost them measures that predicate against nothing.',
+    );
+  }
+
   return {
     seed,
     events: landed,
@@ -603,9 +747,37 @@ export function generateCaptureCorpus(
     findings,
     trackableFindings,
     resolutions: resolutionsWritten,
+    structuralRows,
     endsAt: CORPUS_EPOCH_MS + events * spacingMs,
     spacingMs,
   };
+}
+
+/** The action every corpus recorded before `actions` existed. */
+const DEFAULT_CORPUS_ACTIONS: readonly DetectedFinding['actionTaken'][] = ['block'];
+
+/**
+ * A sampler over `rules` by weight: `pick(u)` for a uniform `u` in [0, 1)
+ * returns the rule whose cumulative weight band contains it.
+ */
+function weightedPicker(rules: readonly CorpusRule[]): (u: number) => CorpusRule | undefined {
+  const total = rules.reduce((sum, rule) => sum + (rule.weight ?? 1), 0);
+  return (u: number): CorpusRule | undefined => {
+    let acc = 0;
+    for (const rule of rules) {
+      acc += (rule.weight ?? 1) / total;
+      if (u < acc) return rule;
+    }
+    return rules[rules.length - 1];
+  };
+}
+
+/** `tool_call` rows on disk, for the structural-rows check. */
+function countStructuralRows(connection: DatabaseSync): number {
+  const row = connection
+    .prepare(`SELECT COUNT(*) AS c FROM audit_events WHERE event_type = 'tool_call'`)
+    .get() as { c: number } | undefined;
+  return row?.c ?? 0;
 }
 
 /**

@@ -9,8 +9,8 @@
  *
  * So nothing here spells a query. `recordingConnection` wraps a `DatabaseSync`
  * and hands the repositories a stand-in whose `prepare` returns a statement
- * that remembers the SQL and the parameters each `all`/`get`/`run` was actually
- * called with. Drive the read surface, and what comes back is what ran.
+ * that remembers the SQL and the parameters each `all`/`get`/`run`/`iterate` was
+ * actually called with. Drive the read surface, and what comes back is what ran.
  *
  * Capturing the PARAMETERS matters as much as capturing the SQL. `EXPLAIN QUERY
  * PLAN` re-prepares the statement, and node:sqlite refuses to execute one whose
@@ -32,7 +32,7 @@ import type { DatabaseSync, StatementSync } from 'node:sqlite';
 /** One statement execution: the SQL, and the arguments it was called with. */
 export interface RecordedQuery {
   readonly sql: string;
-  /** Exactly what was passed to `all`/`get`/`run` — spread back in to re-run it. */
+  /** Exactly what was passed to `all`/`get`/`run`/`iterate` — spread back in to re-run it. */
   readonly args: readonly unknown[];
 }
 
@@ -82,7 +82,15 @@ export function recordingConnection(db: DatabaseSync, into: RecordedQuery[]): Da
         const stmt = target.prepare(sql);
         return new Proxy(stmt, {
           get(stmtTarget, stmtProp) {
-            if (stmtProp !== 'all' && stmtProp !== 'get' && stmtProp !== 'run') {
+            // `iterate` is recorded alongside the three materializing calls: the
+            // streaming reads execute through it and nothing else, so a recorder
+            // that skipped it would report those reads as issuing no SQL at all.
+            if (
+              stmtProp !== 'all' &&
+              stmtProp !== 'get' &&
+              stmtProp !== 'run' &&
+              stmtProp !== 'iterate'
+            ) {
               return passThrough(stmtTarget, stmtProp);
             }
             const value: unknown = Reflect.get(stmtTarget, stmtProp, stmtTarget);

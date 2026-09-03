@@ -96,7 +96,15 @@ export const findingResolution = sqliteTable(
       .$defaultFn(() => Date.now()),
   },
   (t) => [
-    index('idx_finding_resolution_key').on(t.findingKey),
+    // Every read of this table asks the same question — the NEWEST row for a
+    // finding key, ordered `created_at DESC, rowid DESC` — either as a
+    // correlated `LIMIT 1` per finding or as a window over every key (see
+    // resolution-sql.ts). With `created_at` in the key a backward scan of one
+    // key's range yields that order directly, so the per-finding lookup is a
+    // single probe and the window sorts only its rowid tie-break. A bare
+    // `finding_key` index answered the equality and left every row of the key
+    // to be sorted, once per statement.
+    index('idx_finding_resolution_key_created').on(t.findingKey, t.createdAt),
     // Serves the resolution-driven /security reads, which ask "which findings
     // were resolved in this window" and therefore drive from a resolved_at range.
     // With finding_key as the table's only index that range had none to scan, so
@@ -386,6 +394,49 @@ export const auditEvents = sqliteTable(
       sql`json_extract(attributes, '$.inspection_ms')`,
       { mode: 'virtual' },
     ),
+    // The capture attributes the findings reads filter, facet and fold on,
+    // surfaced by name for the same reason the token facets are. VIRTUAL like
+    // them: json_extract runs per read either way, and only an index on one
+    // of these would materialize it. Their value here is that a read names a
+    // column, so the store and the hosted control plane — where the same four
+    // are STORED, because parsing the bag there costs a function call per row
+    // — spell the same query.
+    sourceTool: text(COL.sourceTool).generatedAlwaysAs(
+      sql`json_extract(attributes, '$.source_tool')`,
+      { mode: 'virtual' },
+    ),
+    repo: text(COL.repo).generatedAlwaysAs(sql`json_extract(attributes, '$.repo')`, {
+      mode: 'virtual',
+    }),
+    filePath: text(COL.filePath).generatedAlwaysAs(sql`json_extract(attributes, '$.file_path')`, {
+      mode: 'virtual',
+    }),
+    toolName: text(COL.toolName).generatedAlwaysAs(sql`json_extract(attributes, '$.tool_name')`, {
+      mode: 'virtual',
+    }),
+    // The usage members a cost model prices beyond the four token counts
+    // above: the service tier that selects the price multiplier, the two
+    // ephemeral cache-write splits, and the web-search request count. A
+    // token rollup groups by tier and sums the other three, so a read names
+    // four columns instead of parsing the bag four times per llm_call row.
+    // VIRTUAL like their siblings; the hosted store carries the same four
+    // STORED, so both stores spell the same read.
+    serviceTier: text(COL.serviceTier).generatedAlwaysAs(
+      sql`json_extract(attributes, '$.service_tier')`,
+      { mode: 'virtual' },
+    ),
+    ephemeral1hInputTokens: integer(COL.ephemeral1hInputTokens).generatedAlwaysAs(
+      sql`json_extract(attributes, '$.ephemeral_1h_input_tokens')`,
+      { mode: 'virtual' },
+    ),
+    ephemeral5mInputTokens: integer(COL.ephemeral5mInputTokens).generatedAlwaysAs(
+      sql`json_extract(attributes, '$.ephemeral_5m_input_tokens')`,
+      { mode: 'virtual' },
+    ),
+    webSearchRequests: integer(COL.webSearchRequests).generatedAlwaysAs(
+      sql`json_extract(attributes, '$.web_search_requests')`,
+      { mode: 'virtual' },
+    ),
   },
   (t) => [
     index('idx_audit_parent').on(t.parentId),
@@ -407,6 +458,32 @@ export const auditEvents = sqliteTable(
     // the composite indexes above cannot serve because none of them leads with
     // started_at. Without it each batch sorts the whole remaining scope.
     index('idx_audit_started_at').on(t.startedAt),
+    // The token rollups' index: one covering entry per `llm_call` carrying the
+    // usage members the report groups and sums, so a window's rollup is
+    // answered from the index alone — no bag parsed, no row fetched. This is
+    // what makes the usage columns fast HERE: they are VIRTUAL, so a read that
+    // names them against the table recomputes eleven json_extracts per row
+    // (137 ms at 50k rows against 98 ms for parsing the bags in JS), while the
+    // index stores the values once, at write (8.8 ms for a seven-day window,
+    // 38 ms all-time). Partial on `attributes IS NOT NULL` as well as the kind,
+    // so the rollup's own predicate is implied by the index and stays
+    // covering; a call with no bag has no usage to roll up.
+    index('idx_audit_llm_usage')
+      .on(
+        t.startedAt,
+        t.rootSessionId,
+        t.provider,
+        t.model,
+        t.serviceTier,
+        t.inputTokens,
+        t.outputTokens,
+        t.cacheCreationInputTokens,
+        t.cacheReadInputTokens,
+        t.ephemeral1hInputTokens,
+        t.ephemeral5mInputTokens,
+        t.webSearchRequests,
+      )
+      .where(sql`event_type = 'llm_call' AND attributes IS NOT NULL`),
   ],
 );
 

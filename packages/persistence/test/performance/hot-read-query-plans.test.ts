@@ -266,6 +266,7 @@ describe('query plans of every hot dashboard read', () => {
   // per-test shape and would rebuild it three times over.
   let store: OwnedTempStore;
   let plans: Map<string, PlanStep[]>;
+  let statementCounts: Map<string, number>;
 
   beforeAll(async () => {
     store = createTempStore('aka-query-plans-');
@@ -315,9 +316,11 @@ describe('query plans of every hot dashboard read', () => {
     };
 
     plans = new Map();
+    statementCounts = new Map();
     for (const read of HOT_READS) {
       recorded.length = 0;
       read.run(surfaces);
+      statementCounts.set(read.name, recorded.length);
       // EXPLAIN goes through the RAW handle, so the recorder does not capture
       // its own explains and recurse.
       plans.set(
@@ -368,5 +371,16 @@ describe('query plans of every hot dashboard read', () => {
       Object.entries(EXPECTED_FULL_INDEX_SCANS).map(([name, tables]) => [name, [...tables].sort()]),
     );
     expect(actual).toEqual(expected);
+  });
+
+  it('a page-2 flat read is one statement, not two', () => {
+    // The plan-shape pin above cannot see this: the deleted second statement
+    // sought idx_audit_started_at with a SEARCH, contributing no full-index
+    // scan either way, so its absence is invisible to a plan-shape assertion.
+    // Only a statement count states what the page-2 fix actually changed —
+    // listFindingInstances collecting the page inline once the scan passes
+    // the cursor, instead of discarding a first unbounded pass and re-running
+    // scanFindingRows narrowed by a keyset `after` predicate.
+    expect(statementCounts.get('/findings listFindingInstances (page 2)')).toBe(1);
   });
 });

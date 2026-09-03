@@ -499,9 +499,8 @@ export class SqliteSecurityRepository implements SecurityViews {
     // bare GROUP BY name resolves against a FROM-clause column ahead of a
     // SELECT alias, while a bare ORDER BY name resolves the other way, so once
     // audit_events gained its own `repo` column (migration 0025) the two
-    // clauses silently bound to different things in the same statement. See
-    // ai-tc#406's review for the reproduction. Ranked + sliced in SQL —
-    // tie-break on repo for a stable order.
+    // clauses silently bound to different things in the same statement.
+    // Ranked + sliced in SQL — tie-break on repo for a stable order.
     const rows = allRows<{ repo: string; c: number }>(
       this.db.prepare(
         `SELECT e.repo AS repo, count(*) AS c

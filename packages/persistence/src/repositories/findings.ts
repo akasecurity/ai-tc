@@ -618,7 +618,9 @@ export class SqliteFindingsRepository
         ? () => true
         : (row) => {
             const rowMs = isoToEpochMillis(row.occurredAt);
-            return rowMs <= cursor.startedAtMs && (rowMs < cursor.startedAtMs || row.id < cursor.id);
+            return (
+              rowMs <= cursor.startedAtMs && (rowMs < cursor.startedAtMs || row.id < cursor.id)
+            );
           };
 
     const accumulator = createInstanceFacetAccumulator(opts);
@@ -785,7 +787,8 @@ export class SqliteFindingsRepository
    * sorted, and stops the moment every rule has its cap, where the sorted form
    * sorts the whole scope regardless. The true worst case — the rarest rule's
    * wanted instances sitting at the tail of the scope — is one pass over
-   * everything in scope with no sort, which is still that floor.
+   * everything in scope with a block sort of the id tie-break only, never a
+   * sort of the scope, which is still that floor.
    *
    * A row whose rule the aggregate did not see is skipped: the two statements
    * run without a shared snapshot, so a capture landing between them can add a
@@ -828,7 +831,8 @@ export class SqliteFindingsRepository
    * the flat list counts and facets the whole filtered scope, which on a large
    * store is far more rows than any page. The rows come off ONE statement,
    * iterated rather than materialized, in the index order `findingScanSql`
-   * arranges — so the scan is a single pass with no sort, where a sequence of
+   * arranges — so the scan is a single pass with a block sort of the id
+   * tie-break only, never a sort of the scope, where a sequence of
    * keyset-bounded batches re-sorted everything below the cursor on every
    * batch and cost the square of the scope.
    *
@@ -872,10 +876,10 @@ export class SqliteFindingsRepository
    * index probe per keyed row, and a derived table over the whole resolution
    * table would be materialized before the first row streamed.
    */
-  private findingScanSql(scope: {
-    sessionId?: string | undefined;
-    from?: string | undefined;
-  }): { sql: string; params: SQLInputValue[] } {
+  private findingScanSql(scope: { sessionId?: string | undefined; from?: string | undefined }): {
+    sql: string;
+    params: SQLInputValue[];
+  } {
     const conditions = [`+e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})`];
     const params: SQLInputValue[] = [];
 

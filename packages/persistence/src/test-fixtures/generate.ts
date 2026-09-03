@@ -453,6 +453,17 @@ export function generateCaptureCorpus(
     );
   }
   const pickRule = weightedPicker(rules);
+  // rules[0] is provably defined by the `rules.length === 0` check above;
+  // noUncheckedIndexedAccess cannot see across that control-flow boundary, and
+  // this repo's lint bans `!`. One narrowing guard here, immediately beside
+  // the invariant it relies on, stands in for `rules[0]` everywhere below —
+  // so a caller-supplied single rule is never silently swapped for
+  // DEFAULT_CORPUS_RULES' first entry the way a `?? DEFAULT_CORPUS_RULES[0]`
+  // fallback would.
+  const firstRule = rules[0];
+  if (firstRule === undefined) {
+    throw new RangeError('generateCaptureCorpus: unreachable — rules.length === 0 already rejected');
+  }
 
   if (!Number.isInteger(events) || events < 0) {
     throw new TypeError(
@@ -575,14 +586,11 @@ export function generateCaptureCorpus(
 
       const detected: DetectedFinding[] = [];
       if (rng() < findingRate) {
-        const rule = rules.length === 1 ? (rules[0] ?? DEFAULT_CORPUS_RULES[0]) : pickRule(rng());
+        const rule = rules.length === 1 ? firstRule : (pickRule(rng()) ?? firstRule);
         const actionTaken =
           actions.length === 1
             ? (actions[0] ?? 'block')
             : (actions[Math.floor(rng() * actions.length)] ?? 'block');
-        if (rule === undefined) {
-          throw new RangeError('generateCaptureCorpus: no rule to fire under');
-        }
         // TRACKABLE EXACTLY WHEN THE PRODUCT WOULD MAKE IT SO, which is why the
         // condition is `filePath` and not a knob. `@akasecurity/plugin-sdk`'s
         // runtime sets `isAtRest = kind === 'code_change' && filePath !== undefined`

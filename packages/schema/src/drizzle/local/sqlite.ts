@@ -98,12 +98,22 @@ export const findingResolution = sqliteTable(
   (t) => [
     // Every read of this table asks the same question — the NEWEST row for a
     // finding key, ordered `created_at DESC, rowid DESC` — either as a
-    // correlated `LIMIT 1` per finding or as a window over every key (see
-    // resolution-sql.ts). With `created_at` in the key a backward scan of one
-    // key's range yields that order directly, so the per-finding lookup is a
-    // single probe and the window sorts only its rowid tie-break. A bare
-    // `finding_key` index answered the equality and left every row of the key
-    // to be sorted, once per statement.
+    // correlated `LIMIT 1` per finding (`latestResolutionColumnSql`) or as a
+    // window over every key (`LATEST_RESOLUTION_BY_KEY_SQL`, resolution-sql.ts).
+    // With `created_at` in the key a backward scan of one key's range yields
+    // that order directly, so the CORRELATED form's per-finding lookup is a
+    // single probe with no sort at all — a bare `finding_key` index answered
+    // the equality and left every row of the key to be sorted, once per
+    // finding, which is what this replaces there.
+    //
+    // The WINDOW form gets nothing from this: `EXPLAIN QUERY PLAN` over
+    // `LATEST_RESOLUTION_BY_KEY_SQL` is byte-identical under both index
+    // shapes — `SCAN fr USING INDEX <name>` then `USE TEMP B-TREE FOR LAST 2
+    // TERMS OF ORDER BY` either way — because `PARTITION BY finding_key ORDER
+    // BY created_at DESC` still needs a sort per partition regardless of which
+    // index feeds the scan; only a DESC-native index would drop it, and this
+    // one is ASC. `severitySummary` / `mttrTrend` / `recentlyResolved` share
+    // that form and see no change here.
     index('idx_finding_resolution_key_created').on(t.findingKey, t.createdAt),
     // Serves the resolution-driven /security reads, which ask "which findings
     // were resolved in this window" and therefore drive from a resolved_at range.

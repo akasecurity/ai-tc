@@ -46,7 +46,7 @@ import {
 
 import { parseJsonObject } from '../internal/json.ts';
 import { decodeKeysetCursor, encodeKeysetCursor } from '../internal/keyset-cursor.ts';
-import { allRows, countBy, countScalar } from '../internal/rows.ts';
+import { allRows, countBy, countScalar, iterateRows } from '../internal/rows.ts';
 import type {
   DashboardViews,
   FindingInstancesView,
@@ -158,6 +158,35 @@ function deriveInstanceStatus(row: {
     findingKey: row.finding_key,
     latestResolutionStatus: row.latest_status,
   });
+}
+
+/**
+ * `FindingGroupRowJoined` -> `FlatFindingRow`, the one field-by-field mapping
+ * both instance-level scans need: `previewRows`' rows before they enter
+ * `buildFindingGroups` (as `GroupableFindingRow`, which `FlatFindingRow`
+ * structurally satisfies), and `scanFindingRows`' own yield. Kept here rather
+ * than duplicated at both call sites so a column `findingScanSql` starts
+ * projecting is threaded through once, not twice with the risk of the two
+ * drifting — see `scanFindingRows`' generator for what that drift would mean.
+ */
+function toFlatFindingRow(r: FindingGroupRowJoined): FlatFindingRow {
+  return {
+    id: r.id,
+    ruleId: r.rule_id,
+    category: r.category,
+    severity: r.severity,
+    maskedMatch: r.masked_match,
+    actionTaken: r.action_taken,
+    confidence: r.confidence,
+    occurredAt: epochMillisToIso(r.occurred_at),
+    sourceTool: r.source_tool,
+    repo: r.repo ?? '',
+    file: r.file ?? '',
+    ...(r.tool_name === null ? {} : { toolName: r.tool_name }),
+    eventId: r.event_id,
+    ...(r.session_id === null ? {} : { sessionId: r.session_id }),
+    status: deriveInstanceStatus(r),
+  };
 }
 
 // The grouped list's cursor: the sort key of the last group on the page just
@@ -289,7 +318,7 @@ export class SqliteFindingsRepository
       this.db.prepare(
         `SELECT f.id, f.audit_event_id AS event_id, d.rule_id, d.category, d.severity,
                 f.masked_match, f.action_taken, f.confidence, e.started_at AS occurred_at,
-                json_extract(e.attributes, '$.source_tool') AS source_tool,
+                e.source_tool AS source_tool,
                 e.event_type AS kind
          FROM audit_events e
          CROSS JOIN inspection_findings f ON f.audit_event_id = e.id
@@ -416,27 +445,11 @@ export class SqliteFindingsRepository
     });
 
     const rows = this.previewRows(aggregates, {
-      ...(query.sessionId ? { sessionId: query.sessionId } : {}),
-      ...(query.from === undefined ? {} : { from: query.from }),
+      sessionId: query.sessionId,
+      from: query.from,
     });
 
-    const groupable: GroupableFindingRow[] = rows.map((r) => ({
-      id: r.id,
-      ruleId: r.rule_id,
-      category: r.category,
-      severity: r.severity,
-      maskedMatch: r.masked_match,
-      actionTaken: r.action_taken,
-      confidence: r.confidence,
-      occurredAt: epochMillisToIso(r.occurred_at),
-      sourceTool: r.source_tool,
-      repo: r.repo ?? '',
-      file: r.file ?? '',
-      ...(r.tool_name === null ? {} : { toolName: r.tool_name }),
-      eventId: r.event_id,
-      ...(r.session_id === null ? {} : { sessionId: r.session_id }),
-      status: deriveInstanceStatus(r),
-    }));
+    const groupable: GroupableFindingRow[] = rows.map(toFlatFindingRow);
 
     // No overrides/pack names in OSS: detection.name is null, policy is
     // synthesized from category (both unused by the OSS views).
@@ -574,8 +587,10 @@ export class SqliteFindingsRepository
    *
    * The scan runs from the top of the scope on every request, not from the
    * cursor: `totals` and `facets` describe the whole filtered scope and must not
-   * move as the caller pages. Rows are pulled in batches so memory stays flat
-   * while the counting runs, and only the page itself is retained.
+   * move as the caller pages. Rows come off ONE statement, iterated rather
+   * than materialized (`scanFindingRows`), so memory stays flat while the
+   * counting runs — a generator streaming the index order, not a sequence of
+   * fetched batches; only the page itself is retained.
    */
   listFindingInstances(query: ListFindingInstancesQuery): Promise<ListFindingInstancesResponse> {
     const opts: InstanceFilterOptions = {
@@ -592,6 +607,20 @@ export class SqliteFindingsRepository
     const limit = query.limit ?? DEFAULT_FLAT_FINDINGS_LIMIT;
     const cursor = query.cursor === undefined ? null : decodeKeysetCursor(query.cursor);
 
+    // Whether `row` is strictly past `cursor` in the same started_at DESC,
+    // id DESC order the scan already walks — the same disjunction a keyset
+    // predicate would test in SQL (`startedAt <= X AND (startedAt < X OR
+    // id < Y)`), evaluated in JS against the one scan below instead of a
+    // second, narrower statement. `cursor` is captured non-null in the
+    // closure so the null case costs one allocation, not a per-row branch.
+    const isPastCursor: (row: FlatFindingRow) => boolean =
+      cursor === null
+        ? () => true
+        : (row) => {
+            const rowMs = isoToEpochMillis(row.occurredAt);
+            return rowMs <= cursor.startedAtMs && (rowMs < cursor.startedAtMs || row.id < cursor.id);
+          };
+
     const accumulator = createInstanceFacetAccumulator(opts);
     const items: FindingInstanceDetail[] = [];
     let total = 0;
@@ -601,6 +630,14 @@ export class SqliteFindingsRepository
     // the page's end and the batch's end is ever skipped.
     let hasMore = false;
 
+    // ONE scan regardless of page: totals and facets always describe the
+    // whole filtered scope (so paging cannot move them), and that pass
+    // already visits every row a page-2+ request would otherwise re-seek for
+    // — `isPastCursor` collects the page inline instead of discarding this
+    // pass's tail and re-running a second, cursor-bounded scan for it. A
+    // store where the cursor sits deep in the scope no longer pays for that
+    // tail twice, and there is no second snapshot for a concurrent write to
+    // land between.
     for (const row of this.scanFindingRows({
       sessionId: query.sessionId,
       from: query.from,
@@ -608,6 +645,7 @@ export class SqliteFindingsRepository
       accumulator.add(row);
       if (!matchesInstanceFilters(row, opts)) continue;
       total += 1;
+      if (!isPastCursor(row)) continue;
       if (items.length < limit) {
         items.push(toInstanceDetail(row));
         last = row;
@@ -621,64 +659,12 @@ export class SqliteFindingsRepository
         ? encodeKeysetCursor({ startedAtMs: isoToEpochMillis(last.occurredAt), id: last.id })
         : null;
 
-    // The cursor selects the page out of the fully-counted scope rather than
-    // narrowing the scan, so paging cannot change what totals and facets say.
-    if (cursor !== null) {
-      const resumed = this.pageAfter(cursor, opts, limit, query);
-      return Promise.resolve({
-        totals: { findings: total },
-        facets: accumulator.facets(),
-        items: resumed.items,
-        nextCursor: resumed.nextCursor,
-      });
-    }
-
     return Promise.resolve({
       totals: { findings: total },
       facets: accumulator.facets(),
       items,
       nextCursor,
     });
-  }
-
-  /**
-   * The page of matching rows strictly after `cursor`. Separate from the
-   * counting pass because that one starts at the top of the scope by design;
-   * this one narrows the scan with the same keyset predicate the activity list
-   * uses, so a later page costs less than the first rather than more.
-   */
-  private pageAfter(
-    cursor: { startedAtMs: number; id: string },
-    opts: InstanceFilterOptions,
-    limit: number,
-    query: ListFindingInstancesQuery,
-  ): { items: FindingInstanceDetail[]; nextCursor: string | null } {
-    const items: FindingInstanceDetail[] = [];
-    let last: FlatFindingRow | undefined;
-    let hasMore = false;
-
-    for (const row of this.scanFindingRows({
-      sessionId: query.sessionId,
-      from: query.from,
-      after: cursor,
-    })) {
-      if (!matchesInstanceFilters(row, opts)) continue;
-      if (items.length < limit) {
-        items.push(toInstanceDetail(row));
-        last = row;
-      } else {
-        hasMore = true;
-        break;
-      }
-    }
-
-    return {
-      items,
-      nextCursor:
-        hasMore && last
-          ? encodeKeysetCursor({ startedAtMs: isoToEpochMillis(last.occurredAt), id: last.id })
-          : null,
-    };
   }
 
   /**
@@ -791,10 +777,15 @@ export class SqliteFindingsRepository
    * each rule has as many as it can show. The aggregate the caller already holds
    * says how many that is: `min(instanceCount, PREVIEW_INSTANCES_PER_GROUP)`
    * per rule, summed, is the number of rows this scan has to find, and it stops
-   * on the last one. For a store where every rule fires recently that is a few
-   * hundred rows; the worst case — a rule whose last instances are the oldest
-   * in the store — is one pass with no sort, which is still the floor the sorted
-   * form paid before doing any of its work.
+   * on the last one. That sum is bounded by `rules * PREVIEW_INSTANCES_PER_GROUP`
+   * (8,000 at this repo's 40-rule bench corpus), not by a fixed row count — a
+   * store with many firing rules widens it. The bound that DOES hold
+   * unconditionally is the sorted form's floor: this scan visits at most as
+   * many rows as `ROW_NUMBER() OVER (PARTITION BY rule_id …)` would have
+   * sorted, and stops the moment every rule has its cap, where the sorted form
+   * sorts the whole scope regardless. The true worst case — the rarest rule's
+   * wanted instances sitting at the tail of the scope — is one pass over
+   * everything in scope with no sort, which is still that floor.
    *
    * A row whose rule the aggregate did not see is skipped: the two statements
    * run without a shared snapshot, so a capture landing between them can add a
@@ -817,8 +808,7 @@ export class SqliteFindingsRepository
 
     const { sql, params } = this.findingScanSql(scope);
     const taken = new Map<string, number>();
-    for (const row of this.db.prepare(sql).iterate(...params)) {
-      const r = row as unknown as FindingGroupRowJoined;
+    for (const r of iterateRows<FindingGroupRowJoined>(this.db.prepare(sql), params)) {
       const want = wanted.get(r.rule_id);
       if (want === undefined) continue;
       const have = taken.get(r.rule_id) ?? 0;
@@ -842,36 +832,21 @@ export class SqliteFindingsRepository
    * keyset-bounded batches re-sorted everything below the cursor on every
    * batch and cost the square of the scope.
    *
-   * `after` narrows the pass to the rows strictly after a keyset cursor, for
-   * the page reads; `sessionId` and `from` carry ONLY what no facet counts. A
-   * filter dimension narrowed here would be missing from its own facet, which
-   * is computed by excluding that dimension — see listFindingInstances.
+   * `sessionId` and `from` carry ONLY what no facet counts — a filter
+   * dimension narrowed here would be missing from its own facet, which is
+   * computed by excluding that dimension (see listFindingInstances). There is
+   * no `after`/cursor parameter: a keyset page is collected inline from this
+   * same pass (`listFindingInstances`' `isPastCursor`) rather than by a second,
+   * narrower statement, since the counting pass already visits every row a
+   * page-2+ request would otherwise re-seek for.
    */
   private *scanFindingRows(scope: {
     sessionId?: string | undefined;
     from?: string | undefined;
-    after?: { startedAtMs: number; id: string } | undefined;
   }): Generator<FlatFindingRow> {
     const { sql, params } = this.findingScanSql(scope);
-    for (const row of this.db.prepare(sql).iterate(...params)) {
-      const r = row as unknown as FindingGroupRowJoined;
-      yield {
-        id: r.id,
-        ruleId: r.rule_id,
-        category: r.category,
-        severity: r.severity,
-        maskedMatch: r.masked_match,
-        actionTaken: r.action_taken,
-        confidence: r.confidence,
-        occurredAt: epochMillisToIso(r.occurred_at),
-        sourceTool: r.source_tool,
-        repo: r.repo ?? '',
-        file: r.file ?? '',
-        ...(r.tool_name === null ? {} : { toolName: r.tool_name }),
-        eventId: r.event_id,
-        ...(r.session_id === null ? {} : { sessionId: r.session_id }),
-        status: deriveInstanceStatus(r),
-      };
+    for (const r of iterateRows<FindingGroupRowJoined>(this.db.prepare(sql), params)) {
+      yield toFlatFindingRow(r);
     }
   }
 
@@ -892,11 +867,6 @@ export class SqliteFindingsRepository
    *  - **`CROSS JOIN`** pins `audit_events` as the driving table. With plain
    *    JOINs the planner drives from the findings and sorts everything.
    *
-   * The keyset cursor is spelled as an index range plus a boundary filter
-   * (`started_at <= ? AND (started_at < ? OR id < ?)`) rather than the
-   * disjunction the cursor's order implies, so the range half seeks the index
-   * and only the boundary instant pays the second test.
-   *
    * The latest-resolution lookup is the CORRELATED form: only `status` is
    * needed, `idx_finding_resolution_key_created` answers it with one backward
    * index probe per keyed row, and a derived table over the whole resolution
@@ -905,7 +875,6 @@ export class SqliteFindingsRepository
   private findingScanSql(scope: {
     sessionId?: string | undefined;
     from?: string | undefined;
-    after?: { startedAtMs: number; id: string } | undefined;
   }): { sql: string; params: SQLInputValue[] } {
     const conditions = [`+e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})`];
     const params: SQLInputValue[] = [];
@@ -918,19 +887,15 @@ export class SqliteFindingsRepository
       conditions.push('e.started_at >= ?');
       params.push(isoToEpochMillis(scope.from));
     }
-    if (scope.after !== undefined) {
-      conditions.push('e.started_at <= ? AND (e.started_at < ? OR f.id < ?)');
-      params.push(scope.after.startedAtMs, scope.after.startedAtMs, scope.after.id);
-    }
 
     const sql = `SELECT f.id AS id, d.rule_id AS rule_id, d.category AS category,
               d.severity AS severity, f.masked_match AS masked_match,
               f.action_taken AS action_taken, f.confidence AS confidence,
               e.started_at AS occurred_at,
-              json_extract(e.attributes, '$.source_tool') AS source_tool,
-              json_extract(e.attributes, '$.repo') AS repo,
-              json_extract(e.attributes, '$.file_path') AS file,
-              json_extract(e.attributes, '$.tool_name') AS tool_name,
+              e.source_tool AS source_tool,
+              e.repo AS repo,
+              e.file_path AS file,
+              e.tool_name AS tool_name,
               f.audit_event_id AS event_id, e.root_session_id AS session_id,
               e.event_type AS kind, f.finding_key AS finding_key,
               ${latestResolutionStatusSql('f')} AS latest_status
@@ -949,9 +914,9 @@ export class SqliteFindingsRepository
     // Tool names ride as their display label ("via Bash") to mirror
     // buildHaystack — see its doc for why the bare name is not searched.
     const innerSearchColumns = withSearchText
-      ? `, group_concat(DISTINCT json_extract(e.attributes, '$.repo')) AS repos,
-           group_concat(DISTINCT json_extract(e.attributes, '$.file_path')) AS files,
-           group_concat(DISTINCT 'via ' || json_extract(e.attributes, '$.tool_name')) AS tool_names`
+      ? `, group_concat(DISTINCT e.repo) AS repos,
+           group_concat(DISTINCT e.file_path) AS files,
+           group_concat(DISTINCT 'via ' || e.tool_name) AS tool_names`
       : `, NULL AS repos, NULL AS files, NULL AS tool_names`;
 
     const rows = this.db
@@ -972,7 +937,7 @@ export class SqliteFindingsRepository
                       coalesce(latest.status, '') AS status_tuple,
                     count(*) AS tuple_count,
                     max(e.started_at) AS latest_at,
-                    group_concat(DISTINCT json_extract(e.attributes, '$.source_tool')) AS source_tools,
+                    group_concat(DISTINCT e.source_tool) AS source_tools,
                     group_concat(DISTINCT f.action_taken) AS actions_taken
                     ${innerSearchColumns}
                FROM inspection_findings f

@@ -446,7 +446,31 @@ export function createForwardPolicy(deps: ForwardPolicyDeps): ForwardPolicy {
         // A body this machine refused to SEND is a defect here, not a verdict
         // there. Recording it would move the breaker on evidence the control
         // plane never supplied; see ForwardFailureReason.
-        if (isInvalidRequest(err)) return { ok: false, reason: 'invalid-request' };
+        if (isInvalidRequest(err)) {
+          // Undo the half-open re-stamp above, rather than leaving it or
+          // clearing it. Nothing reached the network on this path — the body
+          // was refused before a socket opened — so unlike the SUCCESS arm this
+          // is no evidence of reachability, and unlike `route-absent` it is no
+          // evidence of anything about the deployment at all. The only correct
+          // outcome is for this call to have changed NOTHING: `current` still
+          // holds whatever `load()` returned before `run()` touched the file,
+          // so writing it back exactly undoes the re-stamp.
+          //
+          // Left un-restored, the re-stamp is a real bug and not merely
+          // untidy: `openedAtMs` moves forward to THIS probe's own timestamp,
+          // so the breaker looks like it just opened again and the NEXT probe
+          // is measured from a moment nothing was learned at — a caller
+          // retrying a single malformed event during the half-open window pays
+          // a second full cooldown for a chance the first one already earned.
+          if (current.openedAtMs !== null) {
+            await persist({
+              consecutiveFailures: current.consecutiveFailures,
+              openedAtMs: current.openedAtMs,
+              lastFailure: current.lastFailure,
+            });
+          }
+          return { ok: false, reason: 'invalid-request' };
+        }
         // Beside `invalid-request`, and returned before the breaker write for
         // the same reason: a 404 on a route is this deployment saying which
         // version it speaks, not a refusal and not an outage. Counting it would

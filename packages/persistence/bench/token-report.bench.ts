@@ -1,8 +1,11 @@
 /**
- * The token rollup at a realistic local-store size: every `llm_call` leaf in
- * the window folded per session — as the repository does it today (read every
- * bag, JSON.parse each in JS, fold) against two SQL shapes that name the
- * generated usage columns migration 0026 adds.
+ * The token rollup at a realistic local-store size: the repository's read —
+ * every `llm_call` in the window grouped in SQL over the usage index migration
+ * 0027 adds, one synthetic leaf per group priced once — against the three
+ * shapes it replaced or declined: read every bag and fold it in JS (the read as
+ * it was), a GROUP BY that names the VIRTUAL columns through the general
+ * event-type index (each column a json_extract recomputed per row), and a
+ * GROUP BY over one multi-path json_extract per row.
  *
  * A real single-machine store observed 2026-09-03 held 55k llm_call rows for
  * three months of one user, with ~460-character bags of fifteen keys; the
@@ -11,19 +14,19 @@
  *   pnpm --filter @akasecurity/persistence bench -- bench/token-report.bench.ts
  *
  * MEASURED (arm64 macOS, Node 26, node:sqlite, 50k rows / 500 sessions, min of
- * the run): the JS fold 98 ms; a GROUP BY over the VIRTUAL columns 137 ms; a
- * GROUP BY over one multi-path json_extract per row 495 ms. On this store the
- * fold in JS wins — V8 parses a bag faster than SQLite computes eleven
- * generated expressions over it — so no local read names these columns for
- * speed, and this file is what says so. The columns exist because the hosted
- * store carries the same four STORED (where the read measured 139 → 20 ms) and
- * every store built on the base row must carry the same columns.
+ * the run): see the PR that added 0027 for the table; the point is that a
+ * VIRTUAL column is only faster than the bag when an index stores its value.
+ * Naming the columns against the table recomputes every one per row and loses
+ * to V8 parsing the bag (137 ms against 98 ms); reading them out of the usage
+ * index, where they were computed once at write, wins by the parse it skips
+ * (38 ms all-time, 8.5 ms for a seven-day window against 31 ms).
  *
- * NO ASSERTIONS: a measurement, not a gate.
+ * NO ASSERTIONS: a measurement, not a gate. `token-rollup-plans.test.ts` is
+ * what pins the read to the index.
  */
 import type { DatabaseSync } from 'node:sqlite';
 
-import type { LlmCallLeaf } from '@akasecurity/schema';
+import type { LlmCallAttributes, LlmCallLeaf } from '@akasecurity/schema';
 import { buildTokenReports, defaultCostModel } from '@akasecurity/schema';
 import { bench, describe } from 'vitest';
 
@@ -109,6 +112,14 @@ function leavesOf(rows: GroupedRow[]): LlmCallLeaf[] {
   }));
 }
 
+const READ_BAGS = `
+  SELECT root_session_id AS sessionId, attributes
+    FROM audit_events
+   WHERE event_type = 'llm_call' AND attributes IS NOT NULL AND root_session_id IS NOT NULL`;
+
+// `INDEXED BY idx_audit_type_t`: without it the planner may take the usage
+// index this file exists to compare against, and the case would measure the
+// read above twice.
 const GROUP_BY_COLUMNS = `
   SELECT root_session_id AS sessionId, provider, model, service_tier AS serviceTier,
          coalesce(sum(input_tokens), 0) AS input,
@@ -118,8 +129,8 @@ const GROUP_BY_COLUMNS = `
          coalesce(sum(ephemeral_1h_input_tokens), 0) AS eph1h,
          coalesce(sum(ephemeral_5m_input_tokens), 0) AS eph5m,
          coalesce(sum(web_search_requests), 0) AS webSearch
-    FROM audit_events
-   WHERE event_type = 'llm_call' AND root_session_id IS NOT NULL AND json_valid(attributes)
+    FROM audit_events INDEXED BY idx_audit_type_t
+   WHERE event_type = 'llm_call' AND root_session_id IS NOT NULL AND attributes IS NOT NULL
    GROUP BY root_session_id, provider, model, service_tier`;
 
 // One parse per row: json_extract with several paths returns a JSON array of
@@ -169,7 +180,7 @@ describe(`token rollup over ${String(LLM_CALLS)} llm_call rows in ${String(SESSI
   };
 
   bench(
-    'as today: read every bag, JSON.parse in JS, fold',
+    'the read: SQL GROUP BY over the usage index (0027), fold the groups',
     async () => {
       await setup().activity.tokenReports();
     },
@@ -177,7 +188,25 @@ describe(`token rollup over ${String(LLM_CALLS)} llm_call rows in ${String(SESSI
   );
 
   bench(
-    'SQL GROUP BY over the generated columns (0026), fold the groups',
+    'read every bag, JSON.parse in JS, fold (the read as it was)',
+    () => {
+      const rows = setup().raw.prepare(READ_BAGS).all() as unknown as {
+        sessionId: string;
+        attributes: string;
+      }[];
+      buildTokenReports(
+        rows.map((r) => ({
+          sessionId: r.sessionId,
+          attributes: JSON.parse(r.attributes) as LlmCallAttributes,
+        })),
+        defaultCostModel,
+      );
+    },
+    { time: 3000 },
+  );
+
+  bench(
+    'SQL GROUP BY over the VIRTUAL columns through the event-type index, fold the groups',
     () => {
       const rows = setup().raw.prepare(GROUP_BY_COLUMNS).all() as unknown as GroupedRow[];
       buildTokenReports(leavesOf(rows), defaultCostModel);

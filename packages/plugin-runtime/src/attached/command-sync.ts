@@ -5,8 +5,10 @@
 // same process — never on a hook path, and never inline in a session. The
 // cadence is the policy sync's own fifteen-minute throttle, deliberately
 // unchanged: a command is picked up at the next session entry, and nothing here
-// makes that instant. The dashboard is built to say so rather than imply
-// otherwise.
+// makes that instant. No surface in this repository renders a device-command
+// yet, so an operator's only view of one is whatever the control plane shows;
+// anything claiming a re-scan is immediate would be claiming it on this
+// module's behalf, and this module cannot deliver it.
 import { readControlPlaneCredentialFile, readWorkspaceSettings } from '@akasecurity/persistence';
 import type { PluginConfig, SourceTool } from '@akasecurity/plugin-sdk';
 import { createRemoteClient } from '@akasecurity/remote';
@@ -159,11 +161,11 @@ export async function runCommandSync(deps: RunCommandSyncDeps): Promise<CommandS
   try {
     await withTimeout(
       reason === null
-        ? client.ackCommand(command.id, { outcome: 'reported', projectsForwarded: projects })
+        ? client.ackCommand(command.id, { outcome: 'reported', projectsScanned: projects })
         : client.ackCommand(command.id, {
             outcome: 'failed',
             reason,
-            projectsForwarded: projects,
+            projectsScanned: projects,
           }),
       COMMAND_REQUEST_TIMEOUT_MS,
     );
@@ -182,33 +184,51 @@ export async function runCommandSync(deps: RunCommandSyncDeps): Promise<CommandS
  * The scan scope a serviced command uses, as a description rather than a value:
  * every search root is chosen device-side.
  *
- * This is the SAME default the interactive scan uses — `--discover` with no
- * `--root` sweeps the current directory, and `--root ~` is the explicit,
- * human-typed, machine-wide opt-in. A server-issued command gets the
- * unprivileged half of that rule and has no way to ask for the other one.
+ * ONE WORKTREE, and deliberately the NARROWER of the two modes the interactive
+ * scan offers. `scanWorktree` is what `/aka:scan` runs with no flags: it scans
+ * the directory it is given and does not go looking for others. The wider mode
+ * — `scanAllRepos`, reached interactively only by typing `--discover`, which
+ * `commands/scan.md` titles "Multi-repo scan (opt-in)" — walks four levels down
+ * and returns every repository it finds under the root. A server-issued command
+ * gets the mode a human gets by default, never the one a human has to ask for.
+ *
+ * That distinction is the whole scope argument, so it is worth being exact
+ * about what the wider mode would have meant here. `discoverGitRepos` defaults
+ * `maxDepth` to 4, so a session started in `~/clients` would sweep every
+ * checkout under it and forward all of their findings on one command — three
+ * customers' repositories reported to one deployment. The scan root is chosen
+ * device-side either way and the wire can still name nothing, but "the wire
+ * cannot name the root" is a bound on WHICH directory, never on how much sits
+ * under it. Only the mode bounds that.
  *
  * The detached child inherits its working directory from the session that
- * spawned it, so "the current directory" is the project the user was actually
- * in. That bounds a re-scan to one project per pickup, which is the honest
- * trade: the alternative that would cover more ground is an implicit sweep of
- * the home directory, and this codebase refuses to do that without a person
- * asking for it.
+ * spawned it, so the scanned worktree is the project the user was actually in —
+ * and a session started in a package subdirectory of a monorepo scans that
+ * directory rather than reporting no projects, which is what the discovery walk
+ * would have done, since it only ever descends.
+ *
+ * `--root ~` stays the explicit, human-typed, machine-wide opt-in, and a
+ * command has no way to ask for it: there is no path on the wire to ask WITH.
  */
 export const COMMAND_SCAN_SCOPE = 'the session working directory' as const;
 
 /**
- * The shape of `scanAllRepos`, spelled structurally.
+ * The shape of `scanWorktree`, spelled structurally.
  *
  * Structural rather than imported, because importing `@akasecurity/scanner`
  * here is the dependency cycle `CommandScan` describes. Narrow on purpose: it
  * names only what this adapter passes and reads, so a scanner signature change
  * that matters shows up as a type error at the three call sites rather than
  * being absorbed by an `any`.
+ *
+ * `rootDir` is REQUIRED here even though the scanner defaults it, so the scope
+ * is visibly chosen at the one call site that reasons about it rather than
+ * inherited from a default that could move in another package.
  */
-export type DiscoverScan = (
+export type WorktreeScan = (
   config: PluginConfig,
-  opts: { sourceTool: SourceTool; searchRoots: string[] },
-) => Promise<{ repos: readonly unknown[] }>;
+  opts: { sourceTool: SourceTool; rootDir: string },
+) => Promise<{ scanned: number }>;
 
 /**
  * Build the injected scan from a host's scanner.
@@ -220,15 +240,19 @@ export type DiscoverScan = (
  */
 export function commandScanFor(
   config: PluginConfig,
-  scanAllRepos: DiscoverScan,
+  scanWorktree: WorktreeScan,
   sourceTool: SourceTool,
 ): CommandScan {
   return async () => {
-    const summary = await scanAllRepos(config, {
+    const summary = await scanWorktree(config, {
       sourceTool,
       // Never the home directory implicitly, and never anything the wire named.
-      searchRoots: [process.cwd()],
+      rootDir: process.cwd(),
     });
-    return { projects: summary.repos.length };
+    // 0 or 1: this mode scans exactly one worktree, so the count answers "was
+    // there anything here to scan", not "how many projects were found". A
+    // worktree with no scannable file is the `no_projects` outcome rather than
+    // a report of zero, which is a distinction an operator acts on.
+    return { projects: summary.scanned > 0 ? 1 : 0 };
   };
 }

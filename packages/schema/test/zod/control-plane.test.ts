@@ -475,15 +475,31 @@ describe('DeviceCommand — a verb, never a path', () => {
   it('carries the refusal through the poll envelope, not just the bare command', () => {
     // The shape a device actually parses is the envelope. A strict inner object
     // inside a permissive outer one would let the whole thing through under a
-    // different key.
+    // different key, so this is the assertion that matters — a path arriving in
+    // the COMMAND is refused however it is wrapped.
     expect(
       DeviceCommandPollResponse.safeParse({
         command: { ...VALID, searchRoots: ['/'] },
       }).success,
     ).toBe(false);
-    expect(
-      DeviceCommandPollResponse.safeParse({ command: VALID, searchRoots: ['/'] }).success,
-    ).toBe(false);
+  });
+
+  it('tolerates a field a NEWER deployment added to the envelope', () => {
+    // The other half, and the opposite direction: the envelope is a RESPONSE
+    // shape, so this file's own rule at the top applies — parse leniently, so an
+    // older device keeps working against a newer control plane. A deployment
+    // that starts sending `pollAfterSeconds` must not make every device in the
+    // fleet fail the parse and stop servicing commands entirely.
+    //
+    // The unknown key is STRIPPED rather than kept: nothing downstream should be
+    // able to reach a field this build never reasoned about.
+    const parsed = DeviceCommandPollResponse.safeParse({
+      command: VALID,
+      pollAfterSeconds: 900,
+      searchRoots: ['/'],
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data).toEqual({ command: VALID });
   });
 
   it('treats "no pending command" as an ordinary answer', () => {
@@ -497,16 +513,16 @@ describe('DeviceCommand — a verb, never a path', () => {
  */
 describe('DeviceCommandAckBody', () => {
   it('requires a reason on a failed ack', () => {
-    expect(
-      DeviceCommandAckBody.safeParse({ outcome: 'failed', projectsForwarded: 0 }).success,
-    ).toBe(false);
+    expect(DeviceCommandAckBody.safeParse({ outcome: 'failed', projectsScanned: 0 }).success).toBe(
+      false,
+    );
   });
 
   it('refuses a reason on a reported ack', () => {
     expect(
       DeviceCommandAckBody.safeParse({
         outcome: 'reported',
-        projectsForwarded: 3,
+        projectsScanned: 3,
         reason: 'scan_failed',
       }).success,
     ).toBe(false);
@@ -519,20 +535,20 @@ describe('DeviceCommandAckBody', () => {
       DeviceCommandAckBody.safeParse({
         outcome: 'failed',
         reason: 'disk on fire — call 555-0100',
-        projectsForwarded: 0,
+        projectsScanned: 0,
       }).success,
     ).toBe(false);
   });
 
   it('accepts both well-formed acks', () => {
     expect(
-      DeviceCommandAckBody.safeParse({ outcome: 'reported', projectsForwarded: 2 }).success,
+      DeviceCommandAckBody.safeParse({ outcome: 'reported', projectsScanned: 2 }).success,
     ).toBe(true);
     expect(
       DeviceCommandAckBody.safeParse({
         outcome: 'failed',
         reason: 'no_projects',
-        projectsForwarded: 0,
+        projectsScanned: 0,
       }).success,
     ).toBe(true);
   });

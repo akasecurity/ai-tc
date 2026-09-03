@@ -21,7 +21,7 @@ import type { AttachedCredential, ControlPlaneConnection } from '@akasecurity/sc
 import { SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { DiscoverScan } from '../../src/attached/command-sync.ts';
+import type { WorktreeScan } from '../../src/attached/command-sync.ts';
 
 const pollCommand = vi.fn();
 const ackCommand = vi.fn();
@@ -117,7 +117,7 @@ describe('runCommandSync', () => {
     expect(ackCommand).toHaveBeenCalledWith('cmd_1', {
       outcome: 'failed',
       reason: 'no_projects',
-      projectsForwarded: 0,
+      projectsScanned: 0,
     });
   });
 
@@ -131,7 +131,7 @@ describe('runCommandSync', () => {
     );
     expect(ackCommand).toHaveBeenCalledWith('cmd_1', {
       outcome: 'reported',
-      projectsForwarded: 3,
+      projectsScanned: 3,
     });
   });
 
@@ -156,7 +156,7 @@ describe('runCommandSync', () => {
     expect(ackCommand).toHaveBeenCalledWith('cmd_1', {
       outcome: 'failed',
       reason: 'scan_failed',
-      projectsForwarded: 0,
+      projectsScanned: 0,
     });
   });
 
@@ -176,6 +176,15 @@ describe('runCommandSync', () => {
       }),
     );
 
+    // POSITIVE CONTROL first. Both assertions below run against
+    // `JSON.stringify(ackCommand.mock.calls)`, and an ack that never happened
+    // stringifies to `'[]'` — which contains neither string, so the pair would
+    // pass on a broken ack path rather than on a safe one.
+    expect(ackCommand).toHaveBeenCalledWith('cmd_1', {
+      outcome: 'failed',
+      reason: 'scan_failed',
+      projectsScanned: 0,
+    });
     expect(JSON.stringify(ackCommand.mock.calls)).not.toContain('EACCES');
     expect(JSON.stringify(ackCommand.mock.calls)).not.toContain('.ssh');
   });
@@ -227,30 +236,83 @@ describe('runCommandSync', () => {
 });
 
 describe('commandScanFor', () => {
-  it('chooses its own scope and never accepts one', async () => {
+  // The scope is the privilege, so these drive the adapter directly rather than
+  // through `runCommandSync`: what matters is the exact options object handed to
+  // the scanner, and only a fake standing in for the scanner can see it.
+  it('scans ONE worktree at the session cwd, never a discovery sweep', async () => {
     // The command carries no path — `DeviceCommand.strict()` guarantees that —
     // and this is the other half: the scope handed to the scanner is built here
     // from the process, never from anything that arrived on the wire.
-    let seen: { searchRoots: string[] } | null = null;
-    const scanAllRepos: DiscoverScan = (_config, opts) => {
+    //
+    // Asserted as the WHOLE options object rather than field by field, because
+    // the defect this replaced was a field that was never passed: the adapter
+    // called `scanAllRepos`, whose `maxDepth` defaults to 4, so it swept every
+    // repository under the cwd while every comment around it said one project.
+    // A per-field assertion cannot see an option that is absent; an exact
+    // object can.
+    let seen: unknown = null;
+    const scanWorktree: WorktreeScan = (_config, opts) => {
       seen = opts;
-      return Promise.resolve({ repos: [{}, {}] });
+      return Promise.resolve({ scanned: 4 });
     };
     const { commandScanFor } = await import('../../src/attached/command-sync.ts');
 
     const scan = commandScanFor(
       { dataDir: dataDirOf(base) } as never,
-      scanAllRepos,
+      scanWorktree,
       SOURCE_TOOL.ClaudeCode,
     );
-    await expect(scan()).resolves.toEqual({ projects: 2 });
+    await expect(scan()).resolves.toEqual({ projects: 1 });
 
-    const opts = seen as unknown as { searchRoots: string[] };
-    expect(opts.searchRoots).toEqual([process.cwd()]);
-    // Never the home directory implicitly — the interactive scan's own rule,
-    // and a server-issued command gets the unprivileged half of it. Asserted
-    // against the real home rather than a fixture, because the whole claim is
-    // about what this scope is NOT.
-    expect(opts.searchRoots).not.toContain(homedir());
+    // EXACT: a `searchRoots` or a `maxDepth` appearing here is the sweep coming
+    // back, and `toEqual` is what fails on it.
+    expect(seen).toEqual({ sourceTool: SOURCE_TOOL.ClaudeCode, rootDir: process.cwd() });
+  });
+
+  it('reports one project when the worktree held something, zero when it did not', async () => {
+    // `no_projects` is a distinct outcome an operator acts on, so the count has
+    // to distinguish "scanned an empty worktree" from "scanned a real one". Both
+    // directions, because a hardcoded 1 or a hardcoded 0 each satisfies one.
+    const { commandScanFor } = await import('../../src/attached/command-sync.ts');
+    const config = { dataDir: dataDirOf(base) } as never;
+
+    const found: WorktreeScan = () => Promise.resolve({ scanned: 1 });
+    const empty: WorktreeScan = () => Promise.resolve({ scanned: 0 });
+
+    await expect(commandScanFor(config, found, SOURCE_TOOL.ClaudeCode)()).resolves.toEqual({
+      projects: 1,
+    });
+    await expect(commandScanFor(config, empty, SOURCE_TOOL.ClaudeCode)()).resolves.toEqual({
+      projects: 0,
+    });
+  });
+
+  it('scans the session cwd even when that cwd is the home directory', async () => {
+    // The old comment here claimed the scope is "never the home directory
+    // implicitly" and asserted it with `not.toContain(homedir())` — which was
+    // entailed by the test runner's own cwd rather than by anything the code
+    // did, and went red against a correct implementation if vitest ran from
+    // $HOME. There is no home check and there does not need to be one: the
+    // bound is the MODE. `scanWorktree` on $HOME scans that one directory,
+    // where the discovery sweep would have walked four levels of it.
+    const spy = vi.spyOn(process, 'cwd').mockReturnValue(homedir());
+    try {
+      let seen: unknown = null;
+      const scanWorktree: WorktreeScan = (_config, opts) => {
+        seen = opts;
+        return Promise.resolve({ scanned: 0 });
+      };
+      const { commandScanFor } = await import('../../src/attached/command-sync.ts');
+
+      await commandScanFor(
+        { dataDir: dataDirOf(base) } as never,
+        scanWorktree,
+        SOURCE_TOOL.ClaudeCode,
+      )();
+
+      expect(seen).toEqual({ sourceTool: SOURCE_TOOL.ClaudeCode, rootDir: homedir() });
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

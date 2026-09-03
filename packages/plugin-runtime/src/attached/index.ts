@@ -13,8 +13,8 @@ export type { GatewayMeta } from './factory.ts';
 export type {
   CommandScan,
   CommandSyncOutcome,
-  DiscoverScan,
   RunCommandSyncDeps,
+  WorktreeScan,
 } from './command-sync.ts';
 export {
   COMMAND_REQUEST_TIMEOUT_MS,

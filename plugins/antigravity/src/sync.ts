@@ -25,12 +25,12 @@
  */
 import { commandScanFor, runAttachedSync } from '@akasecurity/plugin-runtime';
 import { loadConfig } from '@akasecurity/plugin-sdk';
-import { scanAllRepos } from '@akasecurity/scanner';
+import { scanWorktree } from '@akasecurity/scanner';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 
 try {
   await runAttachedSync(undefined, {
-    scan: commandScanFor(loadConfig(), scanAllRepos, SOURCE_TOOL.Antigravity),
+    scan: commandScanFor(loadConfig(), scanWorktree, SOURCE_TOOL.Antigravity),
   });
 } catch {
   // Nothing to report to — this process is detached with stdio ignored.

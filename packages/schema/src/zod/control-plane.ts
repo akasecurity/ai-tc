@@ -703,8 +703,20 @@ export type DeviceCommand = z.infer<typeof DeviceCommand>;
 /**
  * `GET /v1/plugin/commands`. `command: null` is the ordinary answer — there is
  * no pending work — and is not an error or an empty-collection special case.
+ *
+ * LENIENT, unlike the `DeviceCommand` it wraps, and the split is deliberate.
+ * This is a RESPONSE parser, so the rule at the top of this file applies: the
+ * contract is owned by the deployment that serves it, and an older device has
+ * to keep working against a newer control plane. A deployment that starts
+ * sending `pollAfterSeconds` or `queueDepth` alongside the command must not
+ * make every device in the fleet fail the parse.
+ *
+ * Strictness on the ENVELOPE would buy nothing anyway: a stray top-level key is
+ * read by nobody, since `runCommandSync` reaches only `command.id`. Strictness
+ * on the COMMAND is the security property, and it stays exactly where it is —
+ * that is the object a path would have to arrive in.
  */
-export const DeviceCommandPollResponse = z.object({ command: DeviceCommand.nullable() }).strict();
+export const DeviceCommandPollResponse = z.object({ command: DeviceCommand.nullable() });
 export type DeviceCommandPollResponse = z.infer<typeof DeviceCommandPollResponse>;
 
 /**
@@ -712,8 +724,15 @@ export type DeviceCommandPollResponse = z.infer<typeof DeviceCommandPollResponse
  * and read back by an operator on the other side, so it is the reason no
  * device-supplied free text can ever reach a human's screen through this
  * channel: there is no `message`, and no member of this union carries one.
+ *
+ * Every member is one a device can actually reach. A `forward_refused` was
+ * declared here once and produced by nothing — the device hands its findings to
+ * a fail-open gateway and never observes whether they landed, so it had no way
+ * to reach that verdict. A closed enum carrying a member no code path can emit
+ * reads as covering a case it does not; add one back when something can send
+ * it.
  */
-export const DeviceCommandFailureReason = z.enum(['scan_failed', 'no_projects', 'forward_refused']);
+export const DeviceCommandFailureReason = z.enum(['scan_failed', 'no_projects']);
 export type DeviceCommandFailureReason = z.infer<typeof DeviceCommandFailureReason>;
 
 /**
@@ -730,14 +749,14 @@ export const DeviceCommandAckBody = z.discriminatedUnion('outcome', [
   z
     .object({
       outcome: z.literal('reported'),
-      projectsForwarded: z.number().int().nonnegative(),
+      projectsScanned: z.number().int().nonnegative(),
     })
     .strict(),
   z
     .object({
       outcome: z.literal('failed'),
       reason: DeviceCommandFailureReason,
-      projectsForwarded: z.number().int().nonnegative(),
+      projectsScanned: z.number().int().nonnegative(),
     })
     .strict(),
 ]);

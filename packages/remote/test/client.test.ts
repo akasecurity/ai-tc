@@ -583,7 +583,7 @@ describe('routes', () => {
     await client.whoami();
     await client.recordProjectEgress(egressRequest);
     await client.pollCommand();
-    await client.ackCommand('cmd_1', { outcome: 'reported', projectsForwarded: 0 });
+    await client.ackCommand('cmd_1', { outcome: 'reported', projectsScanned: 0 });
 
     expect(server.received.map((r) => `${r.method ?? ''} ${r.url ?? ''}`)).toEqual([
       'POST /v1/events',
@@ -615,7 +615,7 @@ describe('routes', () => {
     // The server records every request in this describe, so index from HERE
     // rather than from 0 — `received[0]` is the first case's POST /v1/events.
     const before = server.received.length;
-    await client.ackCommand('../../v1/events', { outcome: 'reported', projectsForwarded: 0 });
+    await client.ackCommand('../../v1/events', { outcome: 'reported', projectsScanned: 0 });
 
     const url = server.received[before]?.url ?? '';
     expect(url).toBe('/v1/plugin/commands/..%2F..%2Fv1%2Fevents/ack');
@@ -671,7 +671,7 @@ describe('routes', () => {
     await expect(
       // A failed ack with no reason — the case the discriminated union exists
       // to stop, caught before it leaves the machine.
-      client.ackCommand('cmd_1', { outcome: 'failed', projectsForwarded: 0 } as never),
+      client.ackCommand('cmd_1', { outcome: 'failed', projectsScanned: 0 } as never),
     ).rejects.toThrow();
 
     expect(server.received).toHaveLength(before);

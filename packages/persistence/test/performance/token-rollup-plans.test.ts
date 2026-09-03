@@ -10,7 +10,7 @@
  * to find one session's (17 ms at 50k, growing with the store). Grouping in
  * SQL over `idx_audit_llm_usage` — one covering entry per call carrying the
  * members the rollup sums — answers the window from the index alone (8.8 ms
- * at 50k) and the session from `idx_audit_session_type` (0.2 ms). What each
+ * at 50k) and the session from a root-led `llm_call` index (0.2 ms). What each
  * read must be seen doing is stated here, so a rewrite that quietly returns
  * to the bags fails.
  *
@@ -80,7 +80,12 @@ const READS: readonly Read[] = [
   {
     name: 'tokenReportForSession',
     run: (a) => a.tokenReportForSession('sess-3'),
-    mustUse: [/SEARCH audit_events USING INDEX idx_audit_session_type \(root_session_id=\?\)/],
+    // Either llm_call partial index led by the root serves the seek — 0028's
+    // run-key index as readily as the session-type one — and the planner is
+    // free to take whichever; what may not happen is a walk of every call.
+    mustUse: [
+      /SEARCH audit_events USING (COVERING )?INDEX idx_audit_session_(type|run_key) \(root_session_id=\?\)/,
+    ],
     mustNotUse: [/idx_audit_type_t/, /idx_audit_events_sync/],
   },
 ];

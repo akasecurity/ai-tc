@@ -1,4 +1,4 @@
-import type { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 
 import type { LlmCallAttributes, TokenRollup } from '@akasecurity/schema';
 import { buildTokenReports, defaultCostModel, HARNESS } from '@akasecurity/schema';
@@ -11,6 +11,8 @@ import {
 } from '../../src/repositories/activity.ts';
 import { purgeSampleData } from '../../src/sample-purge.ts';
 import { seedSampleFixtures } from '../../src/test-fixtures/index.ts';
+import type { RecordedQuery } from '../helpers/query-plans.ts';
+import { recordingConnection } from '../helpers/query-plans.ts';
 import { useTempStore } from '../helpers/temp-store.ts';
 
 const DAY_MS = 86_400_000;
@@ -491,6 +493,24 @@ describe('listSessions — zero-activity sessions', () => {
 });
 
 describe('getSession', () => {
+  it('fetches only the rows the timeline renders — structural rows are filtered in SQL, not in JS', async () => {
+    // A session's `llm_call`/`code_change`/`tool_use` rows outnumber the ones
+    // the timeline shows, and reading them only to drop them in
+    // `buildAuditEvent` costs the detail pane the whole session per open. The
+    // timeline statement must return exactly the events the pane renders.
+    seedSessionA();
+    const recorded: RecordedQuery[] = [];
+    const session = await new SqliteActivityRepository(
+      recordingConnection(raw, recorded),
+      () => NOW,
+    ).getSession('A');
+    const timeline = recorded.find((q) => q.sql.includes('AS target_id'));
+    expect(timeline, 'getSession issued no timeline statement').toBeDefined();
+    if (!timeline) throw new Error('unreachable: asserted above');
+    const fetched = raw.prepare(timeline.sql).all(...(timeline.args as SQLInputValue[]));
+    expect(fetched).toHaveLength(session?.events.length ?? -1);
+  });
+
   it('assembles detail: tokens, tools, rollups, and drops structural rows', async () => {
     seedSessionA();
     const session = await activity().getSession('A');

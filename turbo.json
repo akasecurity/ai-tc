@@ -347,6 +347,7 @@
         "!$TURBO_ROOT$/plugins/claude-code/scripts/**",
         "!$TURBO_ROOT$/plugins/codex/scripts/**",
         "!$TURBO_ROOT$/plugins/antigravity/scripts/**",
+        "!$TURBO_ROOT$/plugins/copilot/scripts/**",
         // plugins/browser-extension's tsup outDir, and the copies of it that
         // cli/scripts/bundle-extension.mjs stages into the CLI package. All
         // three are generated and gitignored, and none is named `dist`, so the

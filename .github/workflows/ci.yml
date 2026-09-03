@@ -765,6 +765,7 @@ jobs:
           --filter=@akasecurity/ai-tc-claude-code
           --filter=@akasecurity/ai-tc-codex
           --filter=@akasecurity/ai-tc-antigravity
+          --filter=@akasecurity/ai-tc-copilot
           --filter=@akasecurity/schema
           --filter=@akasecurity/extract
           --filter=@akasecurity/detections

@@ -63,6 +63,7 @@ const WALLED_PACKAGES = [
   },
   { name: '@akasecurity/ai-tc-codex', dir: 'plugins/codex', file: 'src/backfill.ts' },
   { name: '@akasecurity/ai-tc-antigravity', dir: 'plugins/antigravity', file: 'src/backfill.ts' },
+  { name: '@akasecurity/ai-tc-copilot', dir: 'plugins/copilot', file: 'src/identity.ts' },
   { name: '@akasecurity/detections', dir: 'packages/detections', file: 'src/engine.ts' },
   { name: '@akasecurity/extract', dir: 'packages/extract', file: 'src/csv.ts' },
   { name: '@akasecurity/setup-wizard', dir: 'packages/setup-wizard', file: 'src/index.ts' },

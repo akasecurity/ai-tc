@@ -1,2 +1,2 @@
-/** Placeholder identity for the F0 guard rehearsal — no product behaviour. */
+/** The plugin's own package name. A placeholder: this package ships no product behaviour yet. */
 export const PLUGIN_PACKAGE = '@akasecurity/ai-tc-copilot';

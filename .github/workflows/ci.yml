@@ -458,9 +458,9 @@ jobs:
             turbo-${{ runner.os }}-
 
       - name: Test
-        # --concurrency: see the Test step in the lint job. This leg runs all 20
-        # packages on a hosted macOS runner and was one of the two that failed
-        # on rotating unrelated files.
+        # --concurrency: see the Test step in the lint job. This leg runs the
+        # whole workspace fan-out on a hosted macOS runner and was one of the two
+        # that failed on rotating unrelated files.
         run: pnpm turbo run test --continue --concurrency=2
 
       - name: Save Turbo cache

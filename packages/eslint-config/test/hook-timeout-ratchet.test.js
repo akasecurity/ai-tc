@@ -44,7 +44,6 @@ const TIMEOUTS = {
   '@akasecurity/plugin-sdk': { testTimeout: 20_000, hookTimeout: 20_000 },
   '@akasecurity/scanner': { testTimeout: 20_000, hookTimeout: 20_000 },
   '@akasecurity/ai-tc-antigravity': { testTimeout: 20_000, hookTimeout: 20_000 },
-  '@akasecurity/ai-tc-copilot': { testTimeout: 20_000, hookTimeout: 20_000 },
   '@akasecurity/plugin-browser-extension': { testTimeout: 20_000, hookTimeout: 20_000 },
   '@akasecurity/ai-tc-claude-code': { testTimeout: 20_000, hookTimeout: 20_000 },
   '@akasecurity/ai-tc-codex': { testTimeout: 20_000, hookTimeout: 20_000 },

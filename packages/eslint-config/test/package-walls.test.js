@@ -26,12 +26,16 @@ import {
 // failures landing on whichever file lost the race rather than on the change.
 // Anything new that needs a resolved per-package config belongs in this file.
 //
-// The budget is charged per RESOLUTION, and the wall now reaches every package
-// that ships product code rather than five of them, so this hook resolves 17
-// configs where it once resolved 5. The ceiling is sized against that count on a
-// contended runner, not against the few seconds it takes on an idle machine — a
-// hook that overruns is reported as a timeout, which reads as a budget failure
-// and is not one.
+// The budget is charged per RESOLUTION: the hook resolves one config for every
+// entry in `RESOLVE_TARGETS`, the three tables below spread together. That count
+// is deliberately NOT written here. It was five when the wall covered five
+// packages and is far higher now that the wall reaches every package shipping
+// product code, and a figure in this comment goes stale silently while still
+// reading as the number the ceiling was sized against — which is the one thing
+// a reader checking that sizing would rely on. The ceiling is sized for the
+// whole of that set on a contended runner, not for the few seconds it takes on
+// an idle machine — a hook that overruns is reported as a timeout, which reads
+// as a budget failure and is not one.
 const RESOLVE_TIMEOUT_MS = 120_000;
 
 /**
@@ -166,8 +170,12 @@ const resolved = new Map();
 // for a package whose only config is oddly named, and that disagreement is
 // surfaced HERE rather than left to surface as ESLint's own bare "Could not find
 // config file", which names neither the package nor the reason.
+// Every per-package resolution this suite performs, in one place: what
+// RESOLVE_TIMEOUT_MS is sized against, and what grows when any table above does.
+const RESOLVE_TARGETS = [...WALLED_PACKAGES, ...RELAXED_FILES, ...AMBIENT_CLOCK_TEST_FILES];
+
 beforeAll(async () => {
-  for (const pkg of [...WALLED_PACKAGES, ...RELAXED_FILES, ...AMBIENT_CLOCK_TEST_FILES]) {
+  for (const pkg of RESOLVE_TARGETS) {
     const pkgDir = join(REPO_ROOT, pkg.dir);
     const eslint = new ESLint({ cwd: pkgDir });
     let config;

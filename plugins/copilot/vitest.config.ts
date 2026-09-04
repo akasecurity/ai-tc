@@ -12,8 +12,9 @@ export default defineConfig({
   test: {
     setupFiles: [noNetworkGuard],
     coverage: coverageOptions(import.meta.url),
+    // No timeout overrides: this suite is synchronous assertions with no child
+    // process, no store and no migration template, so it runs on vitest's own
+    // defaults — which is why the package is absent from the ratchet's TIMEOUTS.
     environment: 'node',
-    testTimeout: 20_000,
-    hookTimeout: 20_000,
   },
 });

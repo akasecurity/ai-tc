@@ -59,16 +59,25 @@ function attach(): void {
   writeControlPlaneCredential(settingsDirOf(base), CREDENTIAL);
 }
 
-const deps = (scan?: () => Promise<{ projects: number }>, now?: () => number) => ({
-  base,
-  settingsDir: settingsDirOf(base),
-  ...(scan === undefined ? {} : { scan }),
-  ...(now === undefined ? {} : { now }),
-});
-
 /** Fixed instants either side of COMMAND's own `expiresAt`. */
 const BEFORE_DEADLINE = () => Date.parse(COMMAND.expiresAt) - 1_000;
 const AFTER_DEADLINE = () => Date.parse(COMMAND.expiresAt) + 1_000;
+
+// The clock DEFAULTS rather than falling through to the ambient one, because
+// `runCommandSync` reads `deps.now ?? Date.now` and COMMAND carries a fixed
+// `expiresAt`. Omitting it therefore dated the case rather than leaving it
+// clock-free: every test here that serviced COMMAND passed until the wall clock
+// reached 2026-09-04T12:00:00Z and then failed for good, on a diff that could
+// not touch it — and it failed as `expired`, which reads as a behaviour change
+// in the code under test rather than as a stale fixture. A test that wants the
+// far side of the deadline says so with AFTER_DEADLINE, so the two directions
+// are both explicit and neither depends on when the suite runs.
+const deps = (scan?: () => Promise<{ projects: number }>, now: () => number = BEFORE_DEADLINE) => ({
+  base,
+  settingsDir: settingsDirOf(base),
+  ...(scan === undefined ? {} : { scan }),
+  now,
+});
 
 beforeEach(() => {
   pollCommand.mockReset();

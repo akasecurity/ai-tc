@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { posix } from 'node:path';
@@ -49,8 +50,26 @@ function launchAgentsDir(deps: BackgroundScheduleDeps): string {
   return posix.join((deps.homeDir ?? homedir)(), 'Library', 'LaunchAgents');
 }
 
-function plistPath(deps: BackgroundScheduleDeps): string {
-  return posix.join(launchAgentsDir(deps), `${BACKGROUND_SYNC_LABEL}.plist`);
+/**
+ * The launchd label for a given AKA home — and therefore the plist's
+ * filename, and the target of every `bootout`/`bootstrap` call against it.
+ *
+ * `launchAgentsDir` cannot vary by `base`: launchd loads a LaunchAgent only
+ * from the REAL user's `~/Library/LaunchAgents`, which every `--home` shares.
+ * So the path alone cannot give a non-default home its own slot the way it
+ * does for every other AKA artifact — a machine attached against the real
+ * `~/.aka` and then again against `--home /tmp/scratch` would otherwise write
+ * both plists to the same file, bouncing the first job and, on detach,
+ * booting out and deleting the LaunchAgent for whichever home did not ask.
+ * The label carries that distinction instead, suffixed with a short hash of
+ * `base` so two homes never collide.
+ */
+export function backgroundSyncLabel(base: string): string {
+  return `${BACKGROUND_SYNC_LABEL}.${createHash('sha256').update(base).digest('hex').slice(0, 12)}`;
+}
+
+function plistPath(base: string, deps: BackgroundScheduleDeps): string {
+  return posix.join(launchAgentsDir(deps), `${backgroundSyncLabel(base)}.plist`);
 }
 
 function escapeXml(value: string): string {
@@ -64,14 +83,14 @@ function escapeXml(value: string): string {
 
 // Exported so the test that pins the plist SHAPE and the code that writes it
 // read the same string, rather than a second hand-typed copy drifting from it.
-export function renderPlist(programArguments: readonly string[]): string {
+export function renderPlist(label: string, programArguments: readonly string[]): string {
   const args = programArguments.map((a) => `    <string>${escapeXml(a)}</string>`).join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${BACKGROUND_SYNC_LABEL}</string>
+  <string>${escapeXml(label)}</string>
   <key>ProgramArguments</key>
   <array>
 ${args}
@@ -130,8 +149,16 @@ export function installBackgroundSync(base: string, deps: BackgroundScheduleDeps
     // to schedule a re-invocation of.
     if (reinvoke === null) return;
 
-    const content = renderPlist([reinvoke.command, ...reinvoke.args]);
-    const path = plistPath(deps);
+    const label = backgroundSyncLabel(base);
+    const content = renderPlist(label, [reinvoke.command, ...reinvoke.args]);
+    const path = plistPath(base, deps);
+    // Content-based idempotency: a plist byte-identical to what would be
+    // written is left alone and launchctl is not re-invoked. This can only
+    // see the FILE, not whether launchd still has the job loaded — a job
+    // unloaded out from under an unchanged plist (`launchctl bootout` run by
+    // hand, or any future path that unloads without removing the file) is not
+    // re-bootstrapped by a later re-attach until something else changes the
+    // plist. Self-healing at next login, when launchd re-reads the directory.
     if ((deps.readFile ?? defaultReadFile)(path) === content) return;
 
     (
@@ -153,32 +180,43 @@ export function installBackgroundSync(base: string, deps: BackgroundScheduleDeps
     // install has nothing loaded (a harmless no-op refusal), and a refresh
     // must replace an already-loaded job rather than leave it running under
     // its old argv.
-    launchctl(['bootout', `${domain}/${BACKGROUND_SYNC_LABEL}`]);
-    launchctl(['bootstrap', domain, path]);
+    launchctl(['bootout', `${domain}/${label}`]);
+    // bootstrap's result IS reported, unlike bootout's: by this point the
+    // previously-working job has already been booted out, so a bootstrap
+    // failure (a malformed plist, launchd's own "Bootstrap failed: 5:
+    // Input/output error") leaves the machine with no scheduler and this is
+    // the only signal available to say so.
+    if (!launchctl(['bootstrap', domain, path])) {
+      process.stderr.write(`[aka] background-sync: launchctl bootstrap failed for ${label}\n`);
+    }
   } catch {
     // Best-effort — see the doc comment above.
   }
 }
 
 /**
- * Remove the LaunchAgent, best-effort. Called from `aka detach` alongside
- * every other piece of attachment-derived state (see
- * `clearAttachmentDerivedState`) — this is not one of the files it removes,
- * since a LaunchAgent plist does not live under the AKA data dir it sweeps.
+ * Remove the LaunchAgent, best-effort. Called from both surfaces that detach
+ * a machine — `aka detach`, alongside every other piece of
+ * attachment-derived state (see `clearAttachmentDerivedState`), and the
+ * dashboard's own detach action — this is not one of the files
+ * `clearAttachmentDerivedState` removes, since a LaunchAgent plist does not
+ * live under the AKA data dir it sweeps. `base` must be the SAME home that
+ * was passed to `installBackgroundSync`, since it is what the label (and so
+ * the plist filename and bootout target) is keyed on.
  */
-export function uninstallBackgroundSync(deps: BackgroundScheduleDeps = {}): void {
+export function uninstallBackgroundSync(base: string, deps: BackgroundScheduleDeps = {}): void {
   try {
     if ((deps.platform ?? process.platform) !== 'darwin') return;
     (deps.runLaunchctl ?? defaultRunLaunchctl)([
       'bootout',
-      `${guiDomain()}/${BACKGROUND_SYNC_LABEL}`,
+      `${guiDomain()}/${backgroundSyncLabel(base)}`,
     ]);
     (
       deps.removeFile ??
       ((p: string) => {
         rmSync(p, { force: true });
       })
-    )(plistPath(deps));
+    )(plistPath(base, deps));
   } catch {
     // Best-effort — see installBackgroundSync.
   }

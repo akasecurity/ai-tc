@@ -72,7 +72,7 @@ export interface AttachDeps {
    * tests never touch a real LaunchAgent. See
    * @akasecurity/local-ops/background-schedule for what each does. */
   installBackgroundSync?: (base: string) => void;
-  uninstallBackgroundSync?: () => void;
+  uninstallBackgroundSync?: (base: string) => void;
   /** The administrative overlay, injectable so a suite is not at the mercy of
    * whatever the developer's own machine is enrolled in. `null` means
    * unmanaged; omitted means read the real system paths. */
@@ -574,8 +574,10 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
   }
   removeControlPlaneCredential(settingsDirOf(base));
   clearDerived(dataDirOf(base));
-  // Best-effort, alongside every other piece of attachment-derived state.
-  (deps.uninstallBackgroundSync ?? uninstallBackgroundSync)();
+  // Best-effort, alongside every other piece of attachment-derived state. The
+  // SAME base this command resolved above — the LaunchAgent's label is keyed
+  // on it, so passing anything else targets a different machine's job.
+  (deps.uninstallBackgroundSync ?? uninstallBackgroundSync)(base);
 
   io.out(
     had

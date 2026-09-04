@@ -360,6 +360,46 @@ describe('detach', () => {
     expect(io.output()).toContain('was not attached');
     expect(exits).toEqual([]);
   });
+
+  it('passes the RESOLVED --home to uninstallBackgroundSync, never the real default', () => {
+    // Regression: `uninstallBackgroundSync` used to be called with no
+    // arguments at all, so it fell back to the real home unconditionally —
+    // `aka detach --home /tmp/scratch` on a machine already attached against
+    // the real ~/.aka would boot out and delete the LaunchAgent belonging to
+    // the user's ACTUAL machine while reporting it touched a throwaway.
+    // `deps.base` is deliberately omitted, as in the `--home` suite above —
+    // the FLAG has to be what resolves it.
+    const seen: string[] = [];
+    const io = scriptedPrompter({ interactive: true });
+    runDetach(['--home', base], {
+      deviceAttach: notOffered,
+      managedSettings: null,
+      installBackgroundSync: () => undefined,
+      uninstallBackgroundSync: (b: string) => {
+        seen.push(b);
+      },
+      prompter: io,
+      exit: (code: number) => exits.push(code),
+    });
+    expect(seen).toEqual([base]);
+  });
+
+  it('passes the RESOLVED --home to installBackgroundSync on attach, the same way', async () => {
+    const seen: string[] = [];
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', ENDPOINT, '--home', base, '--no-sync-history'], {
+      deviceAttach: notOffered,
+      managedSettings: null,
+      verify,
+      installBackgroundSync: (b: string) => {
+        seen.push(b);
+      },
+      uninstallBackgroundSync: () => undefined,
+      prompter: io,
+      exit: (code: number) => exits.push(code),
+    });
+    expect(seen).toEqual([base]);
+  });
 });
 
 describe('status', () => {

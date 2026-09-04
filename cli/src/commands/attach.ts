@@ -1,4 +1,4 @@
-import { cliVersion } from '@akasecurity/local-ops';
+import { cliVersion, installBackgroundSync, uninstallBackgroundSync } from '@akasecurity/local-ops';
 import {
   applyOnboarding,
   clearAttachmentDerivedState,
@@ -68,6 +68,11 @@ export type DeviceAttachRunner = (input: {
 export interface AttachDeps {
   /** The browser-approval path. Replaced wholesale in tests. */
   deviceAttach?: DeviceAttachRunner;
+  /** The macOS background-sync scheduler install/uninstall, injectable so
+   * tests never touch a real LaunchAgent. See
+   * @akasecurity/local-ops/background-schedule for what each does. */
+  installBackgroundSync?: (base: string) => void;
+  uninstallBackgroundSync?: () => void;
   /** The administrative overlay, injectable so a suite is not at the mercy of
    * whatever the developer's own machine is enrolled in. `null` means
    * unmanaged; omitted means read the real system paths. */
@@ -366,6 +371,11 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     return;
   }
 
+  // Best-effort, macOS only today: closes the gap where this host never
+  // reopens a session to trigger SessionStart's own drain. Never blocks or
+  // fails the attach — see @akasecurity/local-ops/background-schedule.
+  (deps.installBackgroundSync ?? installBackgroundSync)(base);
+
   io.out(
     [
       `Attached to ${args.label ?? endpoint}.`,
@@ -564,6 +574,8 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
   }
   removeControlPlaneCredential(settingsDirOf(base));
   clearDerived(dataDirOf(base));
+  // Best-effort, alongside every other piece of attachment-derived state.
+  (deps.uninstallBackgroundSync ?? uninstallBackgroundSync)();
 
   io.out(
     had

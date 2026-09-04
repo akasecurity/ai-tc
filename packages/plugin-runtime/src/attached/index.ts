@@ -10,6 +10,18 @@ export type { GatewayMeta } from './factory.ts';
 // The device identity, and ONLY that: `aka attach` has to tell a deployment
 // which machine is asking, and reading it through the same store the posture
 // reporter uses is what keeps one laptop from presenting two identities.
+export type {
+  CommandScan,
+  CommandSyncOutcome,
+  RunCommandSyncDeps,
+  WorktreeScan,
+} from './command-sync.ts';
+export {
+  COMMAND_REQUEST_TIMEOUT_MS,
+  COMMAND_SCAN_SCOPE,
+  commandScanFor,
+  runCommandSync,
+} from './command-sync.ts';
 export type { ControlPlaneFailure } from './failure.ts';
 export { classifyFailure } from './failure.ts';
 export type { ForwardDrops } from './forward-drops.ts';

@@ -118,6 +118,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'readWorkspaceSettings',
   'removeControlPlaneCredential',
   'rotateFingerprintKey',
+  'seedCaptureBacklogOwed',
   'settingsDir',
   'shareCallSiteId',
   'shareDestinationId',

@@ -10,10 +10,16 @@ import {
   readControlPlaneCredentialFile,
   readWorkspaceSettings,
   removeControlPlaneCredential,
+  seedCaptureBacklogOwed,
   settingsDir,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import { createRemoteClient } from '@akasecurity/remote';
+import type {
+  HistorySyncConsent,
+  HistorySyncConsentChoice,
+  WorkspaceSettings,
+} from '@akasecurity/schema';
 import {
   AttachInput,
   HistoricalAccess,
@@ -67,6 +73,57 @@ export interface SaveSettingsResult {
 // 'use server' module must be an async Server Action, so a formatter defined
 // here would be testable only by driving the whole write it describes.
 
+/**
+ * The history-sync field of the merge, pulled out of the updater below so the
+ * grant's own backfill instant can be reported back to the caller rather than
+ * only to the write. Same three-way logic as before extraction: 'unchanged'
+ * keeps whatever is on file, 'revoked' or no endpoint clears it, and 'granted'
+ * either keeps an already-valid grant as-is (so its acknowledgedAt survives an
+ * unrelated save) or stamps a fresh one.
+ *
+ * `backfillAsOf` is undefined only for 'unchanged' and a decline — 'granted'
+ * always returns one, whether the grant it resolved to was fresh or kept, so
+ * the caller's capture backfill (`seedCaptureBacklogOwed`) gets ANOTHER
+ * attempt every time a human deliberately re-asks for it, not only the one
+ * time it happened to produce a new grant record. `seedCaptureBacklogOwed` is
+ * best-effort and silent by design — a locked or unwritable store at grant
+ * time must not turn a successful consent into a reported failure — and
+ * `aka attach` / `aka sync-history --on` get their own retry for free because
+ * a human can simply run either again. This is the dashboard's only way to
+ * offer the same thing: bounded to the grant's OWN acknowledgedAt either way,
+ * never widened to "now", so a retry recovers exactly what the original grant
+ * promised and nothing a later save happens to add.
+ */
+function resolveHistorySyncConsent(
+  requested: HistorySyncConsentChoice,
+  current: WorkspaceSettings,
+): { consent: HistorySyncConsent | undefined; backfillAsOf: number | undefined } {
+  if (requested === 'unchanged') {
+    return { consent: current.historySyncConsent, backfillAsOf: undefined };
+  }
+  if (requested === 'revoked' || current.controlPlane === undefined) {
+    return { consent: undefined, backfillAsOf: undefined };
+  }
+  if (
+    current.historySyncConsent !== undefined &&
+    isHistorySyncConsentValid(current.historySyncConsent, current.controlPlane.endpoint)
+  ) {
+    return {
+      consent: current.historySyncConsent,
+      backfillAsOf: Date.parse(current.historySyncConsent.acknowledgedAt),
+    };
+  }
+  const grantedAt = Date.now();
+  return {
+    consent: {
+      acknowledgedAt: new Date(grantedAt).toISOString(),
+      payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+      endpoint: current.controlPlane.endpoint,
+    },
+    backfillAsOf: grantedAt,
+  };
+}
+
 // eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
 export async function saveSettings(input: unknown): Promise<SaveSettingsResult> {
   const parsed = parseActionInput(SaveSettingsInput, input);
@@ -83,6 +140,12 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
   ) {
     return { ok: false, error: 'Invalid settings value.' };
   }
+  // Set inside the updater below, iff 'granted' resolved to a valid consent —
+  // never for 'unchanged' or a decline. Read only after the write below has
+  // succeeded, so the capture backfill runs for a grant this call actually
+  // made and committed, never for one that was attempted and then rolled back
+  // by a thrown ManagedFieldError.
+  let historySyncBackfillAsOf: number | undefined;
   try {
     // Derived inside applyOnboarding's write lock, not before it: `current` is
     // read back on the far side of the merge that is about to happen, so a
@@ -90,70 +153,71 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
     // instead would carry a stale grant across a concurrent revoke — from the
     // wizard, or from a second tab — and write it back, silently reinstating
     // consent the user had just withdrawn.
-    applyOnboarding((current) => ({
-      historicalAccess: historicalAccess.data,
-      // Grant records fresh consent at the current payload version; revoke
-      // clears it (undefined ⇒ dropped by the schema on the merged write).
-      // REQUIRED on the input, so an omitted field can no longer read as a
-      // revocation of a live egress grant.
-      // THREE answers, matching the history-sync grant below. 'unchanged' is what
-      // an untouched row sends, and it is what stops an unrelated save from
-      // deleting this grant the moment MODEL_JUDGE_PAYLOAD_VERSION is bumped —
-      // and, today, from rewriting acknowledgedAt on every save. A still-valid
-      // grant is kept as-is for the same reason the vault grant is.
-      modelJudgeConsent:
-        data.modelJudgeConsent === 'unchanged'
-          ? current.modelJudgeConsent
-          : data.modelJudgeConsent === 'revoked'
+    applyOnboarding((current) => {
+      const { consent, backfillAsOf } = resolveHistorySyncConsent(data.historySyncConsent, current);
+      historySyncBackfillAsOf = backfillAsOf;
+      return {
+        historicalAccess: historicalAccess.data,
+        // Grant records fresh consent at the current payload version; revoke
+        // clears it (undefined ⇒ dropped by the schema on the merged write).
+        // REQUIRED on the input, so an omitted field can no longer read as a
+        // revocation of a live egress grant.
+        // THREE answers, matching the history-sync grant below. 'unchanged' is what
+        // an untouched row sends, and it is what stops an unrelated save from
+        // deleting this grant the moment MODEL_JUDGE_PAYLOAD_VERSION is bumped —
+        // and, today, from rewriting acknowledgedAt on every save. A still-valid
+        // grant is kept as-is for the same reason the vault grant is.
+        modelJudgeConsent:
+          data.modelJudgeConsent === 'unchanged'
+            ? current.modelJudgeConsent
+            : data.modelJudgeConsent === 'revoked'
+              ? undefined
+              : isModelJudgeConsentValid(current.modelJudgeConsent)
+                ? current.modelJudgeConsent
+                : {
+                    acknowledgedAt: new Date().toISOString(),
+                    payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION,
+                  },
+        // The vault grant is stamped HERE, never accepted from the client — the
+        // input is only the choice string, so a caller-supplied acknowledgedAt or
+        // version has no path in. 'on' records the current time at the current
+        // consent version; if a still-valid grant is already on file it is kept
+        // as-is so its acknowledgedAt survives unrelated edits. 'off' clears the
+        // field entirely: future vaulting stops, but entries already stored remain
+        // until the vault is purged.
+        vaultConsent:
+          vaultChoice === 'off'
             ? undefined
-            : isModelJudgeConsentValid(current.modelJudgeConsent)
-              ? current.modelJudgeConsent
-              : {
-                  acknowledgedAt: new Date().toISOString(),
-                  payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION,
-                },
-      // The vault grant is stamped HERE, never accepted from the client — the
-      // input is only the choice string, so a caller-supplied acknowledgedAt or
-      // version has no path in. 'on' records the current time at the current
-      // consent version; if a still-valid grant is already on file it is kept
-      // as-is so its acknowledgedAt survives unrelated edits. 'off' clears the
-      // field entirely: future vaulting stops, but entries already stored remain
-      // until the vault is purged.
-      vaultConsent:
-        vaultChoice === 'off'
-          ? undefined
-          : isVaultConsentValid(current.vaultConsent)
-            ? current.vaultConsent
-            : { acknowledgedAt: new Date().toISOString(), version: VAULT_CONSENT_VERSION },
-      // The history grant names the deployment it covers, and that name is read
-      // inside the lock for the same reason as the grants above: a machine
-      // detached from another tab must not have a grant written back naming the
-      // deployment it just left. No endpoint on file means nothing to grant
-      // against, so the grant cannot be recorded at all. A still-valid grant is
-      // kept as-is so its acknowledgedAt survives unrelated edits.
-      // THREE answers, and 'unchanged' is the one an unrelated save sends. A
-      // boolean here forced every save to assert something about this grant, and
-      // both assertions are wrong for a STALE one: granting re-consents to a
-      // widened payload nobody affirmed, revoking deletes the record and every
-      // surface that explains why sharing is paused.
-      historySyncConsent:
-        data.historySyncConsent === 'unchanged'
-          ? current.historySyncConsent
-          : data.historySyncConsent === 'revoked' || current.controlPlane === undefined
-            ? undefined
-            : isHistorySyncConsentValid(current.historySyncConsent, current.controlPlane.endpoint)
-              ? current.historySyncConsent
-              : {
-                  acknowledgedAt: new Date().toISOString(),
-                  payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
-                  endpoint: current.controlPlane.endpoint,
-                },
-      vaultInlineReveal: inlineReveal.data,
-    }));
+            : isVaultConsentValid(current.vaultConsent)
+              ? current.vaultConsent
+              : { acknowledgedAt: new Date().toISOString(), version: VAULT_CONSENT_VERSION },
+        // The history grant names the deployment it covers, and that name is read
+        // inside the lock for the same reason as the grants above: a machine
+        // detached from another tab must not have a grant written back naming the
+        // deployment it just left. No endpoint on file means nothing to grant
+        // against, so the grant cannot be recorded at all. A still-valid grant is
+        // kept as-is so its acknowledgedAt survives unrelated edits.
+        // THREE answers, and 'unchanged' is the one an unrelated save sends. A
+        // boolean here forced every save to assert something about this grant, and
+        // both assertions are wrong for a STALE one: granting re-consents to a
+        // widened payload nobody affirmed, revoking deletes the record and every
+        // surface that explains why sharing is paused. See resolveHistorySyncConsent
+        // above for the logic itself.
+        historySyncConsent: consent,
+        vaultInlineReveal: inlineReveal.data,
+      };
+    });
   } catch (error) {
     if (error instanceof ManagedFieldError)
       return { ok: false, error: managedRefusal(error.fields) };
     return { ok: false, error: SETTINGS_WRITE_ERROR };
+  }
+  // The capture half of the grant — see seedCaptureBacklogOwed and the
+  // resolver's own doc comment above for why this retries on every 'granted'
+  // save, not only the one that stamps a fresh record. `aka attach` and
+  // `aka sync-history --on` are the other two call sites.
+  if (historySyncBackfillAsOf !== undefined) {
+    seedCaptureBacklogOwed(dataDir(), historySyncBackfillAsOf);
   }
   revalidatePath('/settings');
   return { ok: true };

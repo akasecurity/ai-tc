@@ -232,11 +232,14 @@ describe('runCommandSync', () => {
     attach();
     pollCommand.mockResolvedValue(COMMAND);
     ackCommand.mockRejectedValue(new Error('ETIMEDOUT'));
+    const scan = vi.fn(() => Promise.resolve({ projects: 2 }));
     const { runCommandSync } = await import('../../src/attached/command-sync.ts');
 
-    await expect(runCommandSync(deps(() => Promise.resolve({ projects: 2 })))).resolves.toBe(
-      'unreachable',
-    );
+    await expect(runCommandSync(deps(scan, BEFORE_DEADLINE))).resolves.toBe('unreachable');
+    // Positive control: without BEFORE_DEADLINE this case still passes, but by
+    // the expiry route — the scan is never invoked and the assertion above
+    // holds for the wrong reason. See the four sibling cases this mirrors.
+    expect(scan).toHaveBeenCalled();
   });
 });
 

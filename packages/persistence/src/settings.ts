@@ -212,6 +212,7 @@ function lockableKeysTouched(
   if (changed('vaultKeyCustody')) keys.push('vaultKeyCustody');
   if (changed('vaultInlineReveal')) keys.push('vaultInlineReveal');
   if (changed('dataSharesInPlace')) keys.push('dataSharesInPlace');
+  if (changed('redactFallback')) keys.push('redactFallback');
 
   // Grants compare on whether one is in force, not on the record's identity.
   if (
@@ -244,6 +245,7 @@ function pinnedKeys(managed: ManagedSettings | null): ManagedSettingKey[] {
   if (values.vaultInlineReveal !== undefined) keys.push('vaultInlineReveal');
   if (values.modelJudgeConsent !== undefined) keys.push('modelJudgeConsent');
   if (values.dataSharesInPlace !== undefined) keys.push('dataSharesInPlace');
+  if (values.redactFallback !== undefined) keys.push('redactFallback');
   return keys;
 }
 
@@ -282,6 +284,7 @@ function withoutManagedKeys(
   if (strip('vaultInlineReveal')) delete out.vaultInlineReveal;
   if (strip('modelJudgeConsent')) delete out.modelJudgeConsent;
   if (strip('dataSharesInPlace')) delete out.dataSharesInPlace;
+  if (strip('redactFallback')) delete out.redactFallback;
   return out;
 }
 

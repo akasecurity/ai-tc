@@ -150,6 +150,7 @@ export function overlayManagedSettings(
   if (values.vaultKeyCustody !== undefined) merged.vaultKeyCustody = values.vaultKeyCustody;
   if (values.vaultInlineReveal !== undefined) merged.vaultInlineReveal = values.vaultInlineReveal;
   if (values.dataSharesInPlace !== undefined) merged.dataSharesInPlace = values.dataSharesInPlace;
+  if (values.redactFallback !== undefined) merged.redactFallback = values.redactFallback;
 
   if (values.vaultConsent !== undefined) {
     merged.vaultConsent = values.vaultConsent

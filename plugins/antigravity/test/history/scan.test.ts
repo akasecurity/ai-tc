@@ -33,6 +33,7 @@ function config(dataDir: string, historicalAccess: 'full' | 'session-only'): Plu
       dataSharesInPlace: true,
       vaultKeyCustody: 'file',
       vaultInlineReveal: 'masked',
+      redactFallback: 'warn',
     },
     dataDir,
     dbPath: join(dataDir, 'aka.db'),

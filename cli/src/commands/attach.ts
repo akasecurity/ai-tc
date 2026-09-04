@@ -374,6 +374,15 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // Best-effort, macOS only today: closes the gap where this host never
   // reopens a session to trigger SessionStart's own drain. Never blocks or
   // fails the attach — see @akasecurity/local-ops/background-schedule.
+  //
+  // INSTALLED UNCONDITIONALLY, even when historyConsent is undefined (a
+  // decline, or --no-sync-history): `aka sync-history --on` is the only way
+  // to grant consent after the fact, and it installs nothing itself — so
+  // gating this on consent would leave a machine that grants later with no
+  // scheduler until its next `aka attach`. A declined machine's scheduled
+  // pass is a genuine no-op (`runHistorySyncPass` returns the 'no-consent'
+  // skip reason and forwards nothing) rather than a silent cost, which is
+  // what makes installing ahead of consent the cheaper failure mode.
   (deps.installBackgroundSync ?? installBackgroundSync)(base);
 
   io.out(

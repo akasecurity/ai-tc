@@ -116,9 +116,9 @@ describe('runCommandSync', () => {
     pollCommand.mockResolvedValue(COMMAND);
     const { runCommandSync } = await import('../../src/attached/command-sync.ts');
 
-    await expect(runCommandSync(deps(() => Promise.resolve({ projects: 0 })))).resolves.toBe(
-      'failed',
-    );
+    await expect(
+      runCommandSync(deps(() => Promise.resolve({ projects: 0 }), BEFORE_DEADLINE)),
+    ).resolves.toBe('failed');
     expect(ackCommand).toHaveBeenCalledWith('cmd_1', {
       outcome: 'failed',
       reason: 'no_projects',
@@ -131,9 +131,9 @@ describe('runCommandSync', () => {
     pollCommand.mockResolvedValue(COMMAND);
     const { runCommandSync } = await import('../../src/attached/command-sync.ts');
 
-    await expect(runCommandSync(deps(() => Promise.resolve({ projects: 3 })))).resolves.toBe(
-      'reported',
-    );
+    await expect(
+      runCommandSync(deps(() => Promise.resolve({ projects: 3 }), BEFORE_DEADLINE)),
+    ).resolves.toBe('reported');
     expect(ackCommand).toHaveBeenCalledWith('cmd_1', {
       outcome: 'reported',
       projectsScanned: 3,
@@ -154,7 +154,7 @@ describe('runCommandSync', () => {
       runCommandSync(
         deps(() => {
           throw new Error('EACCES /Users/someone/private');
-        }),
+        }, BEFORE_DEADLINE),
       ),
     ).resolves.toBe('failed');
 
@@ -178,7 +178,7 @@ describe('runCommandSync', () => {
     await runCommandSync(
       deps(() => {
         throw new Error(secret);
-      }),
+      }, BEFORE_DEADLINE),
     );
 
     // POSITIVE CONTROL first. Both assertions below run against

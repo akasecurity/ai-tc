@@ -1,7 +1,7 @@
 {
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "aka-antigravity",
-  "version": "0.9.9",
+  "version": "0.9.10",
   "description": "AI Traffic Control — inspect and govern AI prompts in Antigravity. Detection runs locally; events are recorded to a local SQLite store on your machine.",
   "hooks": "./hooks.json",
   "skills": "./skills",

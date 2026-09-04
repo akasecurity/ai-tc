@@ -1,5 +1,4 @@
 import { existsSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { describe, expect, it } from 'vitest';
@@ -258,6 +257,39 @@ describe('SqliteHistorySyncRepository — which deployment the stamps are for', 
     expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
     // ...while the structural rows the new deployment IS entitled to came back.
     expect(db.historySync.counts(ALL)).toMatchObject({ pending: 3 });
+  });
+
+  // THE GAP BEFORE THE FIRST DRAIN PASS. B's own live path can mark a capture
+  // owed from the moment `aka attach` writes the descriptor — before the
+  // drain ever reaches `rearmFor` for this switch — so a marker it sets in
+  // that gap must survive the same disown that clears A's leftovers. The
+  // disown tells the two apart by which side of the switch the row's
+  // `started_at` falls on, never by an explicit backfill bound (there is
+  // none here — this is B's OWN live path, not a consent-time re-mark).
+  it('keeps a marker the NEW deployment already set through the same disown', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.rearmFor('fingerprint-a', ALL);
+
+    const switchToB = T0 + 20 * MINUTE;
+    db.auditEvents.ensureSessionRoot('s-2', at(25 * MINUTE));
+    db.auditEvents.insertAuditEvent({
+      id: 's-2-prompt',
+      eventType: 'prompt',
+      rootSessionId: 's-2',
+      parentId: 's-2',
+      startedAt: at(25 * MINUTE),
+      content: "text of B's own live-path capture",
+    });
+    // B's gateway, forwarding live and failing to deliver, in the gap between
+    // the attach and the drain's first pass under B.
+    db.historySync.markCaptureOwed('s-2-prompt');
+
+    db.historySync.rearmFor('fingerprint-b', switchToB);
+
+    // A's leftover is gone — nobody has re-marked it for B.
+    // B's own marker, on a row recorded after the switch, survives.
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-2-prompt']);
   });
 
   // THE OTHER HALF OF THE SAME LEAK, in the opposite direction: a caller that
@@ -931,15 +963,20 @@ describe('seedCaptureBacklogOwed — the shared consent-time backfill helper', (
     expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
   });
 
-  it('is silent, not thrown, when the store cannot be opened', () => {
-    // A plain file where a directory belongs: ensureDataDirSync's mkdir fails
-    // with ENOTDIR on every platform, which is the fault this helper exists to
-    // absorb — the grant it is called after has already been recorded.
-    const blocker = join(store.home, 'blocker-file');
-    writeFileSync(blocker, '');
+  // The store must EXIST for this to exercise anything: the existsSync guard
+  // above returns before ever reaching openLocalDatabase for a path that does
+  // not exist, which is exactly what the sibling case below covers. "Cannot
+  // be opened" means the file is there and unreadable as a database — write
+  // the bytes SQLITE_NOTADB rejects, past the guard, and let the catch below
+  // absorb the real open failure. Without this, the fail-open catch at
+  // history-backfill.ts is covered by nothing: this helper runs AFTER the
+  // grant has already been recorded and reported successful, so the swallow
+  // is the whole safety argument for that path.
+  it('is silent, not thrown, when the store exists but cannot be opened', () => {
+    writeFileSync(store.dbFile, 'not a database');
 
     expect(() => {
-      seedCaptureBacklogOwed(join(blocker, 'data'), Date.now());
+      seedCaptureBacklogOwed(store.dataDir, Date.now());
     }).not.toThrow();
   });
 

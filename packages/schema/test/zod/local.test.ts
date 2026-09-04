@@ -335,6 +335,12 @@ describe('isHistorySyncConsentValid', () => {
 //                                     historyLines — what `aka status` prints,
 //                                     including the paused-grant branch
 //   README.md                         the [^egress] footnote
+//   SECURITY.md                       the "Data in transit" section's
+//                                     sync-history paragraph — pinned by no
+//                                     other test; at-rest-docs.test.ts scopes
+//                                     to "## Data at rest" and
+//                                     privacy-claims.test.ts reads only the
+//                                     three READMEs
 //
 // v2 widened the subject from the pre-attach backlog to everything the machine
 // still owes its deployment, which brought CAPTURE rows — and their prompt,

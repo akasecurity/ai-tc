@@ -427,16 +427,24 @@ export class SqliteHistorySyncRepository {
     // `rearmFor`'s caller then has the chance to re-mark B's OWN backlog in the
     // SAME transaction (its optional third argument, applied after this wipe):
     // what a human granted FOR B, at the instant they granted it, which is a
-    // fact about B and survives the switch on purpose. What does NOT survive
-    // is everything else this statement clears — not only A's own leftover
-    // attempts, but also any marker B's own live path had already set on a
-    // row at or after that instant, since this statement discards every
-    // marker regardless of which deployment's writer set it and the re-mark
-    // restores only what the grant covers. That narrower loss predates this
-    // method reasoning about either half.
+    // fact about B and survives the switch on purpose.
+    //
+    // BOUNDED BY THE ATTACH INSTANT (`rearmFor`'s own `backlogBefore`), not
+    // left unconditional. A's leftover markers are all on rows with
+    // `started_at` strictly before this switch — A's live path could only
+    // have marked a capture while this machine was still attached to A. B's
+    // OWN live path can mark a capture owed from the moment `aka attach`
+    // writes the descriptor, which is before the drain's first pass ever
+    // reaches this method — so a marker B's own gateway set in that gap sits
+    // on a row with `started_at` at or after the bound and must survive. An
+    // unconditional wipe could not tell the two apart; this bound can, because
+    // which deployment could possibly have written a given marker is exactly
+    // what which side of the switch its row falls on.
     this.disownCapturesStmt = db.prepare(
       `UPDATE audit_events SET outbox_owed = NULL
-        WHERE outbox_owed IS NOT NULL AND event_type IN (${CAPTURE_TYPE_LIST})`,
+        WHERE outbox_owed IS NOT NULL
+          AND event_type IN (${CAPTURE_TYPE_LIST})
+          AND started_at < :attachedAt`,
     );
     this.rearmStmt = db.prepare(
       `UPDATE audit_events SET synced_at = NULL
@@ -738,6 +746,11 @@ export class SqliteHistorySyncRepository {
    * and a fingerprint mismatch that has not yet committed re-enters this
    * method on the very next pass. Omit it (the structural-only tests do) to
    * exercise the disown in isolation.
+   *
+   * The disown is bounded by `backlogBefore` too, which is what keeps it from
+   * eating this same call's own re-mark: a marker the NEW deployment's live
+   * path has already set, on a row recorded after the switch, sits on the
+   * surviving side of that bound rather than the cleared one.
    */
   rearmFor(fingerprint: string, backlogBefore: number, backfillCapturesBefore?: number): void {
     this.ensureRowStmt.run();
@@ -756,7 +769,7 @@ export class SqliteHistorySyncRepository {
         // silently empty the outbox at the moment it started filling. What must
         // be disowned is a marker the PREVIOUS deployment's forward wrote.
         if (previous !== null && previous !== undefined && previous !== fingerprint) {
-          this.disownCapturesStmt.run();
+          this.disownCapturesStmt.run({ attachedAt: backlogBefore });
         }
         if (backfillCapturesBefore !== undefined) {
           this.markCaptureBacklogOwedStmt.run({ before: backfillCapturesBefore });

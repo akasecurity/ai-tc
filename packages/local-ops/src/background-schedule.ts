@@ -21,7 +21,11 @@ import { reinvokeArgv } from './self-exec.ts';
 // the first exists so far; the other two stay a deliberate no-op rather than
 // guess at a shape nobody has built and tested.
 
-export const BACKGROUND_SYNC_LABEL = 'com.akasecurity.aka.background-sync';
+// Not exported: it is a prefix `backgroundSyncLabel` builds on, not a label
+// any caller should use on its own — a consumer that read the name and
+// bootout'd `gui/<uid>/com.akasecurity.aka.background-sync` would target
+// nothing, since every real job's label carries the per-base hash suffix.
+const BACKGROUND_SYNC_LABEL = 'com.akasecurity.aka.background-sync';
 
 // Coarser than plugin-runtime's HISTORY_SYNC_THROTTLE_MS (5 min) on purpose:
 // this path exists for when nothing else is running the drain, not to compete

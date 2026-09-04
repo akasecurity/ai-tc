@@ -3,7 +3,6 @@ export { applyCliUpdate, applyPluginUpdate, installAgentPlugin } from './apply.t
 export type { BackgroundScheduleDeps } from './background-schedule.ts';
 export {
   BACKGROUND_SYNC_INTERVAL_SECONDS,
-  BACKGROUND_SYNC_LABEL,
   backgroundSyncLabel,
   installBackgroundSync,
   renderPlist,

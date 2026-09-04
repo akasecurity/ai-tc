@@ -15,7 +15,6 @@ import {
 
 const BASE = '/home/x';
 const OTHER_BASE = '/tmp/scratch';
-const REINVOKE = { command: '/usr/bin/aka', args: ['sync-history', '--run', '--home', BASE] };
 const DOMAIN = `gui/${String(process.getuid?.() ?? 0)}`;
 const LABEL = backgroundSyncLabel(BASE);
 const PLIST_PATH = `/Users/x/Library/LaunchAgents/${LABEL}.plist`;
@@ -27,7 +26,16 @@ function harness(overrides: Partial<BackgroundScheduleDeps> = {}) {
   const deps: BackgroundScheduleDeps = {
     platform: 'darwin',
     homeDir: () => '/Users/x',
-    reinvoke: () => REINVOKE,
+    // Built from the arguments it is actually called with, not a hardcoded
+    // constant: a stub that ignores `subcommand`/`extraArgs` cannot tell a
+    // correct `base` from a wrong one, since it returns the same payload
+    // either way. This is what makes the plist-content assertions below (and
+    // the two-bases case) prove `base` really reaches `reinvoke`, rather than
+    // merely matching a literal the harness happened to embed.
+    reinvoke: (subcommand, extraArgs = []) => ({
+      command: '/usr/bin/aka',
+      args: [subcommand, ...extraArgs],
+    }),
     readFile: (p) => files.get(p) ?? null,
     writeFile: (p, data) => {
       files.set(p, data);
@@ -127,7 +135,10 @@ describe('installBackgroundSync', () => {
 
     installBackgroundSync(BASE, {
       ...deps,
-      reinvoke: () => ({ command: '/usr/local/bin/aka', args: ['sync-history', '--run'] }),
+      reinvoke: (subcommand, extraArgs = []) => ({
+        command: '/usr/local/bin/aka',
+        args: [subcommand, ...extraArgs],
+      }),
     });
 
     expect(files.get(PLIST_PATH)).toContain('<string>/usr/local/bin/aka</string>');
@@ -155,12 +166,7 @@ describe('installBackgroundSync', () => {
     const { deps: depsA, files: filesA } = harness();
     installBackgroundSync(BASE, depsA);
 
-    const { deps: depsB, files: filesB } = harness({
-      reinvoke: () => ({
-        command: '/usr/bin/aka',
-        args: ['sync-history', '--run', '--home', OTHER_BASE],
-      }),
-    });
+    const { deps: depsB, files: filesB } = harness();
     installBackgroundSync(OTHER_BASE, depsB);
 
     const labelA = backgroundSyncLabel(BASE);

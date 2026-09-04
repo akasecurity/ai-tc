@@ -315,15 +315,19 @@ export function createPluginRuntime(
     // Doing it in the hook instead is what left an escalated deny recorded as
     // 'redact'; a downgrade recorded that way would be worse still, claiming a
     // masking that never happened while the raw value went through.
-    if (!rewritable && action === 'redact') return builtinPolicyToAction(redactFallback);
+    const resolved =
+      !rewritable && action === 'redact' ? builtinPolicyToAction(redactFallback) : action;
+    // The ceiling reads the DEGRADED action: a fallback of 'block' is capped
+    // exactly as a policy of 'block' is, so an inability to redact cannot buy
+    // more enforcement than the mode allows.
     if (
       ENFORCEMENT_CEILING_ENABLED &&
       policyMode === 'warn' &&
-      (action === 'block' || action === 'redact')
+      (resolved === 'block' || resolved === 'redact')
     ) {
       return 'warn';
     }
-    return action;
+    return resolved;
   }
 
   function decide(

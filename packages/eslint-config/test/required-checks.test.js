@@ -128,7 +128,7 @@ function matrixValues(source, key) {
 // boundary is `(?![\w:])` rather than `\b` because `:` is a NON-word character,
 // so `pnpm lint\b` also matches `pnpm lint:root` — and that is not a hypothetical
 // spelling, it is a script this repo really has. Swapping the step to it drops
-// `turbo run lint` (all twenty packages) and `check:portability`, leaving only
+// `turbo run lint` (every package) and `check:portability`, leaving only
 // the repo-root pass, while every assertion below goes on passing. The negative
 // class deliberately excludes a SPACE, so an argument appended after the script
 // name still matches: that is what lets this double as the positive control for
@@ -941,7 +941,7 @@ describe('the Windows legs', () => {
   // about the tree, so derive it rather than asserting it in a comment: a package
   // whose lint script drops `*.config.*` takes its root config files out of every
   // lint pass on every platform, and this job would stay green throughout —
-  // twenty-one other scripts still expand, so nothing here reddens.
+  // twenty-four other scripts still expand, so nothing here reddens.
   //
   // The count is pinned first for the usual reason: an empty list satisfies a
   // `for` loop over it without checking anything. It is a floor AND a ceiling, so
@@ -958,8 +958,8 @@ describe('the Windows legs', () => {
       expect(lintScript, `${dir} declares no lint script`).not.toBe('');
       expect(lintScript, `${dir}'s lint script targets no *.config.* glob`).toContain('*.config.*');
     }
-    // And the repo-root pass, which is the twenty-third invocation rather than a
-    // twenty-third package — it is the only one covering files no package owns.
+    // And the repo-root pass, which is one more invocation rather than one more
+    // package — it is the only one covering files no package owns.
     expect(rootScripts()['lint:root']).toContain('*.config.*');
   });
 });

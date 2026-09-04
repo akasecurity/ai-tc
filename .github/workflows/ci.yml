@@ -778,7 +778,7 @@ jobs:
           --filter=@akasecurity/eslint-config
           --filter=@akasecurity/plugin-browser-extension
 
-      # web-ui's suite runs in its OWN turbo invocation, AFTER the fourteen
+      # web-ui's suite runs in its OWN turbo invocation, AFTER the sixteen
       # above rather than beside them, and the reason is a measured pairing
       # rather than a hunch about load: `@akasecurity/persistence#test` and
       # `@akasecurity/web-ui#test` are the two heaviest fsync-bound suites in
@@ -865,7 +865,7 @@ jobs:
         run: pnpm turbo run test --concurrency=1 --filter=@akasecurity/web-ui --filter=@akasecurity/dashboard-ui
 
       # The installer suite runs in its OWN turbo invocation too, AFTER the
-      # fourteen above and the dashboard step, rather than beside any of them.
+      # sixteen above and the dashboard step, rather than beside any of them.
       # It is by far the most disk-expensive suite in the workspace on this
       # platform — it copies, zips and expands a real ~115 MB PE — and under
       # `--concurrency=2` it was therefore always running alongside one of the
@@ -892,7 +892,7 @@ jobs:
       # told about, so undeclared it would hash-match a cached run without it
       # and replay a green in which the case skipped. It sits on this step
       # alone rather than the whole job because this is the only package that
-      # reads it — the other fifteen were being hashed against a variable none
+      # reads it — the other eighteen were being hashed against a variable none
       # of them consults. That is also why web-ui is not folded into this
       # invocation, though both are single-package serial steps: it would put
       # this variable into web-ui#test's hash for no reason.

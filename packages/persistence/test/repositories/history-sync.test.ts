@@ -1,5 +1,6 @@
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 
 import { describe, expect, it } from 'vitest';
 
@@ -50,6 +51,17 @@ function seedSession(db: LocalDatabase, sessionId: string, offsetMs: number): vo
   // delivery. Without it the row is one nothing ever attempted, which the drain
   // deliberately does not offer.
   db.historySync.markCaptureOwed(`${sessionId}-prompt`);
+}
+
+// Reads `outbox_owed` straight off the row rather than through
+// `pendingCaptureRows`, whose own SQL already excludes every non-capture
+// event type — a test asserting a type exclusion by reading through that
+// reader would pass whether or not the writer under test carried the same
+// exclusion itself.
+function outboxOwed(raw: DatabaseSync, id: string): boolean {
+  const row = raw.prepare('SELECT outbox_owed FROM audit_events WHERE id = :id').get({ id }) as
+    { outbox_owed: number | null } | undefined;
+  return row?.outbox_owed === 1;
 }
 
 describe('SqliteHistorySyncRepository — what is pending', () => {
@@ -820,9 +832,12 @@ describe('SqliteHistorySyncRepository — the consent-time backfill', () => {
   // capture-lane read — see the sibling test above. The backfill shares
   // CAPTURE_TYPE_LIST with the drain's own read, so this pins that the NEW
   // writer respects the same exclusion rather than assuming it from the
-  // reader alone.
+  // reader alone — reading `outbox_owed` directly, never through
+  // `pendingCaptureRows`, whose own type filter would hide a writer that lost
+  // its own.
   it('never marks a code_change, whatever else is on disk', () => {
     const db = store.open();
+    const raw = store.openRaw();
     db.auditEvents.ensureSessionRoot('s-1', at(0));
     db.auditEvents.insertAuditEvent({
       id: 's-1-scan',
@@ -835,20 +850,23 @@ describe('SqliteHistorySyncRepository — the consent-time backfill', () => {
     });
 
     db.historySync.markCaptureBacklogOwed(ALL);
-    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+    expect(outboxOwed(raw, 's-1-scan')).toBe(false);
   });
 
   // Structural rows are the other lane entirely and must never be pulled into
   // this one — they already have their own re-arm on the structural drain.
+  // Read the same way as the case above, for the same reason: through
+  // `pendingCaptureRows` this would pass whether or not the writer excluded
+  // them, since that reader already does.
   it('never marks a structural row', () => {
     const db = store.open();
+    const raw = store.openRaw();
     seedSession(db, 's-1', 0);
 
     db.historySync.markCaptureBacklogOwed(ALL);
-    const owedIds = db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id);
-    expect(owedIds).toEqual(['s-1-prompt']);
-    expect(owedIds).not.toContain('s-1-llm');
-    expect(owedIds).not.toContain('s-1-tool');
+    expect(outboxOwed(raw, 's-1-llm')).toBe(false);
+    expect(outboxOwed(raw, 's-1-tool')).toBe(false);
+    expect(outboxOwed(raw, 's-1-prompt')).toBe(true);
   });
 
   it('is idempotent: a repeat call over the same window changes nothing further', () => {
@@ -923,6 +941,18 @@ describe('seedCaptureBacklogOwed — the shared consent-time backfill helper', (
     expect(() => {
       seedCaptureBacklogOwed(join(blocker, 'data'), Date.now());
     }).not.toThrow();
+  });
+
+  // A machine that has never run `aka init` has no capture backlog to mark by
+  // definition. Without this, the call below would build the store and run
+  // every migration in the ledger to mark zero rows — mirrors the same guard
+  // on the same `aka attach` prompt path in `readLocalHistoryPreview`.
+  it('does not create a store on a machine that has never run init', () => {
+    expect(existsSync(store.dbFile)).toBe(false);
+
+    seedCaptureBacklogOwed(store.dataDir, Date.now());
+
+    expect(existsSync(store.dbFile)).toBe(false);
   });
 });
 

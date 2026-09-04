@@ -151,14 +151,15 @@ together, from then on — it does not reach what has already been sent, and wha
 has been sent cannot be recalled.
 
 The separate `aka sync-history` grant covers two things, and the rule reaches
-one of them. The backfill of activity recorded before you attached sends the
-record of that activity rather than event content, so the rule does not apply
-to it. The other is the drain of anything a live send could not deliver, which
-sends the capture as the store holds it — for a prompt, an assistant reply or a
-tool result, its text. There the rule applies exactly as it does to a live
-forward: **under monitor or warn the matched value is drained as it was seen**,
-and every detection ships on monitor, so on a default install that is what a
-drain sends.
+both of them. The backfill of activity recorded before you attached marks that
+activity for delivery the same way a live send would have; for a prompt, an
+assistant reply or a tool result, what it sends is that text, not just the
+record that the activity happened. The other is the drain of anything a live
+send could not deliver, which sends the capture as the store holds it. Both
+send the same content a live forward would have, so the rule applies exactly
+as it does there: **under monitor or warn the matched value is drained as it
+was seen**, and every detection ships on monitor, so on a default install that
+is what a backfill or a drain sends.
 
 Attaching is opt-in and inert until both an endpoint and an access key are on
 disk; `aka status` says what a machine is attached to and `aka detach` ends the

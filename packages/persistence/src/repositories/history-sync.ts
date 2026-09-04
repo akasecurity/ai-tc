@@ -427,8 +427,13 @@ export class SqliteHistorySyncRepository {
     // `rearmFor`'s caller then has the chance to re-mark B's OWN backlog in the
     // SAME transaction (its optional third argument, applied after this wipe):
     // what a human granted FOR B, at the instant they granted it, which is a
-    // fact about B and survives the switch on purpose. What must not survive
-    // is a marker that fact did not produce — A's own leftover attempts.
+    // fact about B and survives the switch on purpose. What does NOT survive
+    // is everything else this statement clears — not only A's own leftover
+    // attempts, but also any marker B's own live path had already set on a
+    // row at or after that instant, since this statement discards every
+    // marker regardless of which deployment's writer set it and the re-mark
+    // restores only what the grant covers. That narrower loss predates this
+    // method reasoning about either half.
     this.disownCapturesStmt = db.prepare(
       `UPDATE audit_events SET outbox_owed = NULL
         WHERE outbox_owed IS NOT NULL AND event_type IN (${CAPTURE_TYPE_LIST})`,

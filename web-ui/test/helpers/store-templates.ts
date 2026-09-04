@@ -1,9 +1,9 @@
 // The pre-built stores this package's suites copy from, instead of migrating a
 // fresh one per test.
 //
-// `createStoreTemplate` is at the repo root because four packages need the same
-// shape; what belongs here is the build step. Two are worth having, because the
-// two costs a web-ui suite pays are separable:
+// `createStoreTemplate` is at the repo root because several packages need the
+// same shape; what belongs here is the build step. Two are worth having,
+// because the two costs a web-ui suite pays are separable:
 //
 //   `emptyStore`      — the schema alone, for a suite that seeds its own rows.
 //   `withBundledPacks` — the schema plus the installed ruleset, for the action

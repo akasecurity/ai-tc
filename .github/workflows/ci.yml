@@ -909,10 +909,9 @@ jobs:
           path: .turbo/cache
           key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
 
-  # Windows lint leg: every `lint` script in this workspace carries a GLOB — all
-  # twenty-two packages target `*.config.*`, and so does the repo-root
-  # `lint:root`, which is the twenty-third invocation rather than a
-  # twenty-third package —
+  # Windows lint leg: every `lint` script in this workspace carries a GLOB —
+  # every package targets `*.config.*`, and so does the repo-root `lint:root`,
+  # which is one more invocation rather than one more package —
   # and WHO EXPANDS IT is decided by the platform, not by the script. On POSIX
   # the shell expands the pattern and hands eslint concrete filenames; `cmd.exe`
   # does not glob at all, so eslint receives the literal pattern and runs its
@@ -960,7 +959,9 @@ jobs:
   # than extrapolated (`gh run view 31536100993 --repo akasecurity/ai-tc`): the
   # Lint step 1m49s, the whole job 2m41s. The same `pnpm lint` at `Cached: 0` on
   # an M-series Mac is 72s for all twenty packages plus 6.5s for lint:root and
-  # 0.6s for check:portability.
+  # 0.6s for check:portability — taken 2026-08-12, when the workspace held
+  # twenty packages rather than today's larger set, so read it as the figure of
+  # that date and not as a current one.
   #
   # So the ~10x factor the test leg above documents does NOT transfer to lint —
   # here it is about 1.5x. Size a lint budget off a lint measurement; the factor

@@ -128,7 +128,7 @@ function matrixValues(source, key) {
 // boundary is `(?![\w:])` rather than `\b` because `:` is a NON-word character,
 // so `pnpm lint\b` also matches `pnpm lint:root` — and that is not a hypothetical
 // spelling, it is a script this repo really has. Swapping the step to it drops
-// `turbo run lint` (all twenty packages) and `check:portability`, leaving only
+// `turbo run lint` (every package) and `check:portability`, leaving only
 // the repo-root pass, while every assertion below goes on passing. The negative
 // class deliberately excludes a SPACE, so an argument appended after the script
 // name still matches: that is what lets this double as the positive control for

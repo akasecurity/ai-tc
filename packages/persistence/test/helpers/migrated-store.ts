@@ -1,9 +1,9 @@
 // The one pre-migrated store every suite in this worker copies from.
 //
-// `createStoreTemplate` is at the repo root because six packages need this
-// shape; what belongs here is the build step — the persistence-specific half —
-// and a single module-scope instance, so every suite loaded into a worker
-// shares one build rather than one each.
+// `createStoreTemplate` is at the repo root because several packages need
+// this shape; what belongs here is the build step — the persistence-specific
+// half — and a single module-scope instance, so every suite loaded into a
+// worker shares one build rather than one each.
 //
 // Deliberately empty beyond what `openLocalDatabase` itself writes (the schema,
 // the migration ledger, the default policies). A template carrying fixture rows

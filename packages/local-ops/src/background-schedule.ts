@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { posix } from 'node:path';
 
 import { runCapture } from './exec.ts';
 import { reinvokeArgv } from './self-exec.ts';
@@ -42,11 +42,15 @@ export interface BackgroundScheduleDeps {
 }
 
 function launchAgentsDir(deps: BackgroundScheduleDeps): string {
-  return join((deps.homeDir ?? homedir)(), 'Library', 'LaunchAgents');
+  // POSIX always, not the host's native separator: every caller here is
+  // already gated to a real macOS host by the darwin check in the two
+  // exported functions, so the path this builds is a POSIX path regardless
+  // of which OS the TEST SUITE happens to run on.
+  return posix.join((deps.homeDir ?? homedir)(), 'Library', 'LaunchAgents');
 }
 
 function plistPath(deps: BackgroundScheduleDeps): string {
-  return join(launchAgentsDir(deps), `${BACKGROUND_SYNC_LABEL}.plist`);
+  return posix.join(launchAgentsDir(deps), `${BACKGROUND_SYNC_LABEL}.plist`);
 }
 
 function escapeXml(value: string): string {

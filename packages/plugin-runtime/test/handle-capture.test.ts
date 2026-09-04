@@ -37,6 +37,7 @@ function config(dataDir: string): PluginConfig {
       dataSharesInPlace: true,
       vaultKeyCustody: 'file',
       vaultInlineReveal: 'masked',
+      redactFallback: 'warn',
     },
     dataDir,
     dbPath: join(dataDir, 'aka.db'),

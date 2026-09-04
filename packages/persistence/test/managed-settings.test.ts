@@ -8,6 +8,7 @@ import {
   isFieldManaged,
   MANAGED_SETTINGS_FILENAME,
   managedByLabel,
+  ManagedSettingKey,
   MODEL_JUDGE_PAYLOAD_VERSION,
   VAULT_CONSENT_VERSION,
 } from '@akasecurity/schema';
@@ -765,4 +766,153 @@ describe('applyOnboarding — refusing an administratively locked write', () => 
       ManagedFieldError,
     );
   });
+});
+
+// Every lockable key, driven through all four hand-written per-key lists.
+//
+// `overlayManagedSettings` (managed-settings.ts) and `lockableKeysTouched`,
+// `pinnedKeys` and `withoutManagedKeys` (settings.ts) each spell their keys out
+// by hand. Nothing derived them from the schema, so a key added to
+// `ManagedSettingKey` and `ManagedSettingsValues` and then forgotten in any one
+// of the four left the whole suite GREEN while that key was silently
+// unmanageable — an administrator's pin ignored, or a lock that refuses
+// nothing.
+//
+// The table below closes that, and it is deliberately a `Record<ManagedSettingKey, …>`:
+// a member added to the enum fails to COMPILE here until someone writes down
+// what pinning it should do, and the three cases then fail at RUNTIME if any of
+// the four lists does not handle it. Structural exhaustiveness alone would not
+// do — a key can be present in every list and still be handled wrongly — so
+// each case asserts behaviour a user would notice.
+interface KeySample {
+  /** What an administrator writes under `values`. */
+  readonly pin: Partial<ManagedSettings['values']>;
+  /** A user answer that DIFFERS from the pin, so a lock has something to refuse. */
+  readonly userAnswer: Partial<WorkspaceSettings>;
+  /** A user answer equal to the pinned value — the form echoing the pin back. */
+  readonly echoAnswer: Partial<WorkspaceSettings>;
+  /** The observable this key controls. */
+  readonly read: (s: WorkspaceSettings) => unknown;
+  readonly underPin: unknown;
+  readonly underUser: unknown;
+}
+
+const grant = () => ({ acknowledgedAt: new Date().toISOString(), version: VAULT_CONSENT_VERSION });
+const judgeGrant = () => ({
+  acknowledgedAt: new Date().toISOString(),
+  payloadVersion: MODEL_JUDGE_PAYLOAD_VERSION,
+});
+
+const KEY_SAMPLES = {
+  runMode: {
+    pin: { runMode: 'attached', controlPlane: { endpoint: 'https://cp.example' } },
+    userAnswer: { runMode: 'standalone' },
+    echoAnswer: { runMode: 'attached' },
+    read: (s) => s.runMode,
+    underPin: 'attached',
+    underUser: 'standalone',
+  },
+  historicalAccess: {
+    pin: { historicalAccess: 'session-only' },
+    userAnswer: { historicalAccess: 'full' },
+    echoAnswer: { historicalAccess: 'session-only' },
+    read: (s) => s.historicalAccess,
+    underPin: 'session-only',
+    underUser: 'full',
+  },
+  vaultConsent: {
+    pin: { vaultConsent: true },
+    userAnswer: { vaultConsent: undefined },
+    echoAnswer: { vaultConsent: grant() },
+    read: (s) => s.vaultConsent !== undefined,
+    underPin: true,
+    underUser: false,
+  },
+  vaultKeyCustody: {
+    pin: { vaultKeyCustody: 'keychain' },
+    userAnswer: { vaultKeyCustody: 'file' },
+    echoAnswer: { vaultKeyCustody: 'keychain' },
+    read: (s) => s.vaultKeyCustody,
+    underPin: 'keychain',
+    underUser: 'file',
+  },
+  vaultInlineReveal: {
+    pin: { vaultInlineReveal: 'off' },
+    userAnswer: { vaultInlineReveal: 'full' },
+    echoAnswer: { vaultInlineReveal: 'off' },
+    read: (s) => s.vaultInlineReveal,
+    underPin: 'off',
+    underUser: 'full',
+  },
+  modelJudgeConsent: {
+    pin: { modelJudgeConsent: true },
+    userAnswer: { modelJudgeConsent: undefined },
+    echoAnswer: { modelJudgeConsent: judgeGrant() },
+    read: (s) => s.modelJudgeConsent !== undefined,
+    underPin: true,
+    underUser: false,
+  },
+  redactFallback: {
+    pin: { redactFallback: 'block' },
+    userAnswer: { redactFallback: 'monitor' },
+    echoAnswer: { redactFallback: 'block' },
+    read: (s) => s.redactFallback,
+    underPin: 'block',
+    underUser: 'monitor',
+  },
+  dataSharesInPlace: {
+    pin: { dataSharesInPlace: true },
+    userAnswer: { dataSharesInPlace: false },
+    echoAnswer: { dataSharesInPlace: true },
+    read: (s) => s.dataSharesInPlace,
+    underPin: true,
+    underUser: false,
+  },
+} satisfies Record<ManagedSettingKey, KeySample>;
+
+describe('every lockable key is handled by all four per-key lists', () => {
+  const entries = Object.entries(KEY_SAMPLES) as [ManagedSettingKey, KeySample][];
+
+  it('drives every member of ManagedSettingKey', () => {
+    // The table is compile-checked exhaustive; this says so at runtime too, so
+    // a reader of a failure below knows the sweep was complete.
+    expect(entries.map(([k]) => k).sort()).toEqual([...ManagedSettingKey.options].sort());
+  });
+
+  it.each(entries)('%s: an administrator pin reaches the effective settings', (_key, sample) => {
+    // Covers overlayManagedSettings. A key missing from it reads back as the
+    // product default and the administrator's answer is silently ignored.
+    applyOnboarding(sample.userAnswer, base, null);
+    const managed: ManagedSettings = { specVersion: 1, values: sample.pin, lockedFields: [] };
+    expect(sample.read(readEffectiveSettings(base, managed).settings)).toEqual(sample.underPin);
+  });
+
+  it.each(entries)('%s: a lock refuses a change away from the pin, naming it', (key, sample) => {
+    // Covers lockableKeysTouched. A key missing from it is a lock that refuses
+    // nothing — the write succeeds and the administrator's decision is lost.
+    applyOnboarding(sample.userAnswer, base, null);
+    const managed: ManagedSettings = { specVersion: 1, values: sample.pin, lockedFields: [key] };
+    let caught: unknown;
+    try {
+      applyOnboarding(sample.userAnswer, base, managed);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught, `${key}: locking it refused nothing`).toBeInstanceOf(ManagedFieldError);
+    expect((caught as ManagedFieldError).fields).toContain(key);
+  });
+
+  it.each(entries)(
+    '%s: an unlocked pin is not persisted into the user own file',
+    (_key, sample) => {
+      // Covers pinnedKeys and withoutManagedKeys together. A key missing from
+      // either lets the administrator's answer land in settings.json, where it
+      // outlives the managed file and reads as the user's own choice.
+      applyOnboarding(sample.userAnswer, base, null);
+      const managed: ManagedSettings = { specVersion: 1, values: sample.pin, lockedFields: [] };
+      // The form renders the effective (pinned) value and posts it back.
+      applyOnboarding(sample.echoAnswer, base, managed);
+      expect(sample.read(readWorkspaceSettings(base))).toEqual(sample.underUser);
+    },
+  );
 });

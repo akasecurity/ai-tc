@@ -11,7 +11,7 @@ import type {
   SourceTool,
   WorkspaceSettings,
 } from '@akasecurity/schema';
-import { isActionAtLeast, strongerAction } from '@akasecurity/schema';
+import { builtinPolicyToAction, isActionAtLeast, strongerAction } from '@akasecurity/schema';
 
 import type { DataGateway } from './data-gateway.ts';
 import { buildIngestEvent, contentHashOf } from './events.ts';
@@ -152,6 +152,8 @@ export function createPluginRuntime(
     bundlesPacked = true;
   }
   const policyMode = settings.policy;
+  // What a resolved `redact` degrades to on a field the host cannot rewrite.
+  const redactFallback = settings.redactFallback;
   const dataDir = opts?.dataDir;
   let rules: Rule[] = [];
   // Runs the scan under a hard wall-clock bound when the ruleset carries any
@@ -303,9 +305,17 @@ export function createPluginRuntime(
   function actionForFinding(
     finding: MatchResult,
     excepted?: ReadonlySet<MatchResult>,
+    rewritable = true,
   ): ActionTaken {
     if (excepted?.has(finding)) return 'allow';
     const action = resolveAction(finding.ruleId, finding.category);
+    // A redact the CALLER cannot carry out degrades here, in the one place the
+    // action is resolved, so the decision the hook emits, the findings row and
+    // the blocked-detections ledger cannot disagree about what was enforced.
+    // Doing it in the hook instead is what left an escalated deny recorded as
+    // 'redact'; a downgrade recorded that way would be worse still, claiming a
+    // masking that never happened while the raw value went through.
+    if (!rewritable && action === 'redact') return builtinPolicyToAction(redactFallback);
     if (
       ENFORCEMENT_CEILING_ENABLED &&
       policyMode === 'warn' &&
@@ -320,10 +330,12 @@ export function createPluginRuntime(
     findings: MatchResult[],
     text: string,
     excepted?: ReadonlySet<MatchResult>,
+    rewritable = true,
   ): CaptureResult {
     if (findings.length === 0) return { action: 'log', text, findings: [] };
 
-    const actionFor = (finding: MatchResult): ActionTaken => actionForFinding(finding, excepted);
+    const actionFor = (finding: MatchResult): ActionTaken =>
+      actionForFinding(finding, excepted, rewritable);
 
     // `worst` already reflects the legacy global ceiling: actionForFinding caps
     // block/redact to warn when it is enabled, so the collapse inherits the cap
@@ -468,6 +480,7 @@ export function createPluginRuntime(
     excepted: ReadonlySet<MatchResult>,
     ctx: ExceptionEvalContext,
     fpCache: Map<MatchResult, string>,
+    rewritable = true,
   ): Promise<BlockedDetectionRef[]> {
     const references: BlockedDetectionRef[] = [];
     try {
@@ -479,7 +492,7 @@ export function createPluginRuntime(
         // The same per-finding resolution the findings write uses, so the ledger
         // and the findings table agree by construction on what was enforced
         // (excepted findings resolve to 'allow' and are skipped here).
-        const action = actionForFinding(finding, excepted);
+        const action = actionForFinding(finding, excepted, rewritable);
         if (action !== 'block' && action !== 'redact') continue;
         const fp = fingerprintOf(key, finding, fpCache);
         const pair = `${finding.ruleId}:${fp}`;
@@ -518,6 +531,7 @@ export function createPluginRuntime(
     text: string,
     context: ScanContext | undefined,
     ctx: ExceptionEvalContext,
+    rewritable = true,
   ): Promise<{ decision: CaptureResult; excepted: Set<MatchResult>; exceptionIds: string[] }> {
     try {
       await ensureInitialized();
@@ -539,8 +553,14 @@ export function createPluginRuntime(
       const findings = dropShieldedFindings(matched, shielded.spans);
       const fpCache = new Map<MatchResult, string>();
       const { excepted, exceptionIds } = await applyExceptions(findings, ctx, fpCache);
-      const decision = decide(findings, text, excepted);
-      const blockedReferences = await recordBlockedDetections(decision, excepted, ctx, fpCache);
+      const decision = decide(findings, text, excepted, rewritable);
+      const blockedReferences = await recordBlockedDetections(
+        decision,
+        excepted,
+        ctx,
+        fpCache,
+        rewritable,
+      );
       if (blockedReferences.length > 0) decision.blockedReferences = blockedReferences;
       return { decision, excepted, exceptionIds };
     } catch {
@@ -590,6 +610,7 @@ export function createPluginRuntime(
         metadata: input.metadata,
         preAuthorizedGrantIds: opts.preAuthorizedGrantIds,
       },
+      opts.rewritable,
     );
     // 'with-findings' (the historical backfill) only persists messages that
     // actually leaked something, so a 30-day transcript sweep doesn't flood the
@@ -622,7 +643,7 @@ export function createPluginRuntime(
       // Total over ActionTaken and free of anything that can throw — it runs
       // inside the catch-all below, where a fault would cost the row entirely.
       const maskedFindings = decision.findings.filter((match) =>
-        isActionAtLeast(actionForFinding(match, excepted), 'redact'),
+        isActionAtLeast(actionForFinding(match, excepted, opts.rewritable), 'redact'),
       );
       const storedContent =
         maskedFindings.length > 0 ? redact(input.text, maskedFindings) : input.text;
@@ -694,7 +715,7 @@ export function createPluginRuntime(
           severity: match.severity,
           span: match.span,
           maskedMatch,
-          actionTaken: actionForFinding(match, excepted),
+          actionTaken: actionForFinding(match, excepted, opts.rewritable),
           confidence: match.confidence,
           ...(findingKey ? { findingKey } : {}),
         };
@@ -767,6 +788,20 @@ export interface CaptureOptions {
   // Grant ids already spent by this capture's own pointer crossing (see
   // ExceptionEvalContext.preAuthorizedGrantIds).
   preAuthorizedGrantIds?: readonly string[];
+  // Whether the CALLER can carry out a redaction on this text. Default true.
+  //
+  // Set false for a field the host offers no way to rewrite — Antigravity's
+  // PreToolUse has no `updatedInput` at all, and Codex and Claude Code decline
+  // to mask a field that EXECUTES, since masking would change what runs. A
+  // resolved `redact` then degrades to `settings.redactFallback` HERE, inside
+  // the one action resolution, rather than in the hook after the fact: the
+  // enforcement decision, `findings.actionTaken` and the blocked-detections
+  // ledger all read that resolution, so recording it anywhere else lets the
+  // audit trail claim a redaction that never happened.
+  //
+  // Per FIELD, not per host: a host that can rewrite some inputs keeps true
+  // redaction on those, and the same capture path serves both.
+  rewritable?: boolean;
 }
 
 export interface PluginRuntime {

@@ -669,6 +669,7 @@ describe('per-detection policy drives enforcement (installed_packs.policy_id)', 
     dataSharesInPlace: true,
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
+    redactFallback: 'warn',
   };
 
   // Seed the installed pack (so an installed_packs row exists), then optionally

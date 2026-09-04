@@ -3,6 +3,8 @@ import type {
   AttachDeviceRequest as AttachDeviceRequestT,
   AttachTokenResponse as AttachTokenResponseT,
   AuditEventBatchAck as AuditEventBatchAckT,
+  DeviceCommand as DeviceCommandT,
+  DeviceCommandAckBody as DeviceCommandAckBodyT,
   EgressIngestRequest as EgressIngestRequestT,
   IngestAck as IngestAckT,
   IngestBatch,
@@ -17,6 +19,8 @@ import {
   AttachDeviceGrant,
   AttachTokenResponse,
   AuditEventBatchAck,
+  DeviceCommandAckBody,
+  DeviceCommandPollResponse,
   EgressIngestRequest,
   IngestAck,
   PluginWhoami,
@@ -36,14 +40,20 @@ import {
   send,
 } from './http.ts';
 
-// The eight routes an attached machine may call, and nothing else.
+// The ten routes an attached machine may call, and nothing else.
 //
 // The set is small on purpose and is the same set a deployment scopes a
-// credential to: six writes and two self-scoped reads. There is deliberately
-// no way to ask this client for anything organization-wide — a credential on a
-// laptop should not be able to read what other people's machines reported, and
-// a client that cannot express the request is a stronger guarantee than a
-// server that refuses it.
+// credential to: seven writes and three self-scoped reads. There is
+// deliberately no way to ask this client for anything organization-wide — a
+// credential on a laptop should not be able to read what other people's
+// machines reported, and a client that cannot express the request is a
+// stronger guarantee than a server that refuses it.
+//
+// The last two are the device-command channel, and they stay inside that rule
+// rather than bending it. The poll is SELF-SCOPED — it asks what this machine
+// has been told to do and can express no other question — and the ack reports
+// only on a command id the poll itself returned. Neither can name another
+// machine, and neither widens what a laptop credential can read.
 //
 // Every response is PARSED, never cast. The bodies arrive from a host named in
 // a settings file, so "the deployment said so" is not a type guarantee; a
@@ -59,7 +69,22 @@ const ROUTES = {
   policyBundle: '/v1/policy-bundle',
   whoami: '/v1/plugin/whoami',
   shares: '/v1/shares',
+  commands: '/v1/plugin/commands',
 } as const;
+
+/**
+ * The ack route for one command.
+ *
+ * Built here rather than inlined so the encoding is not optional. `id` comes
+ * off the wire — it is the deployment's own identifier, echoed back — and
+ * pasting it into a path unencoded would let a `../` in it walk the URL onto a
+ * different route on the same host, with this machine's credential attached.
+ * The id is `printable(128)` at the parse boundary, which excludes control
+ * characters but not slashes or dots, so the encoding is what closes it.
+ */
+function ackRoute(id: string): string {
+  return `${ROUTES.commands}/${encodeURIComponent(id)}/ack`;
+}
 
 export interface RemoteClientOptions {
   /** Where the deployment lives, already checked with `isSafeEndpoint`. */
@@ -116,6 +141,19 @@ export interface RemoteClient {
    * to the wire-boundary-safe shape (no snippet, hashed projectKey).
    */
   recordProjectEgress(request: EgressIngestRequestT): Promise<void>;
+  /**
+   * GET /v1/plugin/commands — what this machine has been asked to do, or
+   * `null` for nothing pending.
+   *
+   * A DEPLOYMENT THAT PREDATES THIS ROUTE answers 404, and that is not a
+   * failure — it is an older deployment saying it has no command channel. It
+   * comes back as `null`, the same as "nothing pending", so a device and a
+   * deployment can be upgraded weeks apart. Same reasoning as the audit-events
+   * batch fallback above.
+   */
+  pollCommand(): Promise<DeviceCommandT | null>;
+  /** POST /v1/plugin/commands/:id/ack — what this machine did about one. */
+  ackCommand(id: string, body: DeviceCommandAckBodyT): Promise<void>;
 }
 
 /** Header value as a single string; Node reports repeats as an array. */
@@ -328,6 +366,32 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
         ...common,
         method: 'POST',
         url: url(ROUTES.shares),
+        body: JSON.stringify(validated.data),
+      });
+      okBody(response);
+    },
+
+    async pollCommand() {
+      const response = await send({ ...common, method: 'GET', url: url(ROUTES.commands) });
+      // See the interface: an older deployment has no such route, and that is
+      // "no command", not an outage to report or retry.
+      if (response.status === 404) return null;
+      return parsed(DeviceCommandPollResponse, okBody(response), ROUTES.commands).command;
+    },
+
+    async ackCommand(id, body) {
+      // Validated on the way OUT, the same discipline as recordAuditEvent and
+      // recordProjectEgress: a body this device assembles wrongly must name the
+      // local defect rather than arrive as a 400 that a fail-open caller
+      // swallows, leaving the command outstanding until it expires with no
+      // record of why.
+      const validated = DeviceCommandAckBody.safeParse(body);
+      const route = ackRoute(id);
+      if (!validated.success) throw new RemoteRequestInvalid(route, validated.error);
+      const response = await send({
+        ...common,
+        method: 'POST',
+        url: url(route),
         body: JSON.stringify(validated.data),
       });
       okBody(response);

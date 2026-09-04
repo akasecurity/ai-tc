@@ -11,6 +11,9 @@ import {
   AttachTokenIssued,
   AttachTokenResponse,
   ControlPlaneErrorBody,
+  DeviceCommand,
+  DeviceCommandAckBody,
+  DeviceCommandPollResponse,
   IngestAck,
   PluginWhoami,
   RecordAuditEventRequest,
@@ -418,5 +421,135 @@ describe('AttachDeviceGrant', () => {
   it('requires a positive expiry and interval', () => {
     expect(AttachDeviceGrant.safeParse({ ...grant, expiresIn: 0 }).success).toBe(false);
     expect(AttachDeviceGrant.safeParse({ ...grant, interval: -1 }).success).toBe(false);
+  });
+});
+
+/**
+ * The device-command channel's one security-critical shape.
+ *
+ * A deployment tells an attached machine a VERB. It must never be able to tell
+ * it a PATH — the scan scope is the privilege here, and a command that could
+ * name a directory would turn fleet hygiene into remote file discovery against
+ * whatever the agent user can read. The device chooses its own scope; nothing
+ * on the wire can influence it.
+ *
+ * These cases assert the REJECTION, not merely that the happy path parses. A
+ * permissive object would satisfy every "it parses a valid command" test ever
+ * written while silently carrying `searchRoots` straight through to a
+ * filesystem walk.
+ */
+describe('DeviceCommand — a verb, never a path', () => {
+  const VALID = {
+    id: 'cmd_01J8',
+    kind: 'shares_rescan',
+    issuedAt: '2026-09-03T12:00:00.000Z',
+    expiresAt: '2026-09-04T12:00:00.000Z',
+  };
+
+  it('accepts the command a deployment is allowed to send', () => {
+    expect(DeviceCommand.safeParse(VALID).success).toBe(true);
+  });
+
+  // One case per key that could steer a filesystem walk. Named individually
+  // rather than looped over a list alone, so a failure says WHICH key got
+  // through.
+  it.each([
+    ['searchRoots', { searchRoots: ['/Users/someone'] }],
+    ['rootDir', { rootDir: '/' }],
+    ['path', { path: '/Users/someone/.ssh' }],
+    ['maxDepth', { maxDepth: 99 }],
+    ['excludePaths', { excludePaths: [] }],
+    ['cwd', { cwd: '/etc' }],
+  ])('refuses a command carrying %s', (_key, extra) => {
+    expect(DeviceCommand.safeParse({ ...VALID, ...extra }).success).toBe(false);
+  });
+
+  it('refuses an unrecognised verb rather than half-understanding it', () => {
+    // No catch-all member, deliberately — unlike AttachTokenResponse. An
+    // unrecognised attach STATUS means "keep waiting", which is safe; an
+    // unrecognised COMMAND would be an instruction this build cannot reason
+    // about, so it must not parse at all.
+    expect(DeviceCommand.safeParse({ ...VALID, kind: 'exfiltrate' }).success).toBe(false);
+  });
+
+  it('carries the refusal through the poll envelope, not just the bare command', () => {
+    // The shape a device actually parses is the envelope. A strict inner object
+    // inside a permissive outer one would let the whole thing through under a
+    // different key, so this is the assertion that matters — a path arriving in
+    // the COMMAND is refused however it is wrapped.
+    expect(
+      DeviceCommandPollResponse.safeParse({
+        command: { ...VALID, searchRoots: ['/'] },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('tolerates a field a NEWER deployment added to the envelope', () => {
+    // The other half, and the opposite direction: the envelope is a RESPONSE
+    // shape, so this file's own rule at the top applies — parse leniently, so an
+    // older device keeps working against a newer control plane. A deployment
+    // that starts sending `pollAfterSeconds` must not make every device in the
+    // fleet fail the parse and stop servicing commands entirely.
+    //
+    // The unknown key is STRIPPED rather than kept: nothing downstream should be
+    // able to reach a field this build never reasoned about.
+    const parsed = DeviceCommandPollResponse.safeParse({
+      command: VALID,
+      pollAfterSeconds: 900,
+      searchRoots: ['/'],
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data).toEqual({ command: VALID });
+  });
+
+  it('treats "no pending command" as an ordinary answer', () => {
+    expect(DeviceCommandPollResponse.safeParse({ command: null }).success).toBe(true);
+  });
+});
+
+/**
+ * The ack contract, held at the parse boundary rather than in a comment: a
+ * failure must say why, and a success must not smuggle a reason.
+ */
+describe('DeviceCommandAckBody', () => {
+  it('requires a reason on a failed ack', () => {
+    expect(DeviceCommandAckBody.safeParse({ outcome: 'failed', projectsScanned: 0 }).success).toBe(
+      false,
+    );
+  });
+
+  it('refuses a reason on a reported ack', () => {
+    expect(
+      DeviceCommandAckBody.safeParse({
+        outcome: 'reported',
+        projectsScanned: 3,
+        reason: 'scan_failed',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('refuses device-supplied free text as a reason', () => {
+    // The closed enum is what keeps a device from putting arbitrary text on an
+    // operator's screen through the roster.
+    expect(
+      DeviceCommandAckBody.safeParse({
+        outcome: 'failed',
+        reason: 'disk on fire — call 555-0100',
+        projectsScanned: 0,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts both well-formed acks', () => {
+    expect(
+      DeviceCommandAckBody.safeParse({ outcome: 'reported', projectsScanned: 2 }).success,
+    ).toBe(true);
+    expect(
+      DeviceCommandAckBody.safeParse({
+        outcome: 'failed',
+        reason: 'no_projects',
+        projectsScanned: 0,
+      }).success,
+    ).toBe(true);
   });
 });

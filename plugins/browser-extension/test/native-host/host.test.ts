@@ -38,6 +38,7 @@ function config(tool: WebSourceTool | undefined): PluginConfig {
       dataSharesInPlace: true,
       vaultKeyCustody: 'file',
       vaultInlineReveal: 'masked',
+      redactFallback: 'warn',
     },
     dataDir: dir,
     dbPath: join(dir, 'aka.db'),

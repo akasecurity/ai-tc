@@ -87,6 +87,12 @@ interface CommonProps {
   tools: string[];
   repo: string;
   file: string;
+  /**
+   * The instant the SERVER rendered against, passed down for the same reason
+   * `from` is: every relative label has to read one instant, and a client that
+   * read its own would render different text than the HTML it is hydrating.
+   */
+  renderedAt: number;
 }
 
 type ViewProps =
@@ -118,6 +124,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
     tools,
     repo,
     file,
+    renderedAt,
   } = props;
   const pathname = usePathname();
   const { isPending, push } = useNavigationTransition();
@@ -298,6 +305,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
             columnVisibility={columnVisibility}
             sessionHref={sessionHref}
             emptyState={emptyState}
+            renderedAt={renderedAt}
           />
         )}
         {props.view === 'flat' && (
@@ -311,12 +319,14 @@ export function FindingsClient(props: CommonProps & ViewProps) {
             repo={repo}
             file={file}
             emptyState={emptyState}
+            renderedAt={renderedAt}
           />
         )}
         {props.view === 'files' && (
           <LocationsView
             data={props.locations}
             emptyState={emptyState}
+            renderedAt={renderedAt}
             onSelectFile={(nextRepo, nextFile) => {
               // Drill into one file's findings: the flat view is the one that
               // can filter down to a single location.
@@ -345,6 +355,7 @@ function GroupedView({
   columnVisibility,
   sessionHref,
   emptyState,
+  renderedAt,
 }: {
   data: ListGroupedFindingsResponse;
   filters: FindingsFilters;
@@ -355,6 +366,7 @@ function GroupedView({
   columnVisibility: ColumnVisibility;
   sessionHref: string | null;
   emptyState: React.ReactNode;
+  renderedAt: number;
 }) {
   // Each entry is one fetched page; `cursors[i]` is what fetches the page
   // after `pages[i]`. Stepping forward past the cached frontier fetches and
@@ -442,6 +454,7 @@ function GroupedView({
   return (
     <>
       <FindingsTableView
+        renderedAt={renderedAt}
         groups={groups}
         columns={visibleColumns}
         selection={selected}
@@ -482,6 +495,7 @@ function GroupedView({
         <SheetContent className="p-0" aria-describedby={undefined}>
           {selected && (
             <FindingDetailView
+              renderedAt={renderedAt}
               selection={selected}
               onSelectInstance={(instance) => {
                 setSelected({ finding: selected.finding, instance });
@@ -527,6 +541,7 @@ function FlatView({
   repo,
   file,
   emptyState,
+  renderedAt,
 }: {
   data: ListFindingInstancesResponse;
   filters: FindingsFilters;
@@ -537,6 +552,7 @@ function FlatView({
   repo: string;
   file: string;
   emptyState: React.ReactNode;
+  renderedAt: number;
 }) {
   const [pages, setPages] = useState<FindingInstanceDetail[][]>([data.items]);
   const [cursors, setCursors] = useState<(string | null)[]>([data.nextCursor]);
@@ -590,6 +606,7 @@ function FlatView({
   return (
     <>
       <FindingsFlatTableView
+        renderedAt={renderedAt}
         items={items}
         selectedId={selectedInstanceId}
         onSelect={(instance) => {
@@ -614,6 +631,7 @@ function FlatView({
         <SheetContent className="p-0" aria-describedby={undefined}>
           {selected && (
             <FindingDetailView
+              renderedAt={renderedAt}
               // The flat list has no group to step back to — every row IS a
               // single instance, so the drawer opens narrowed and stays there.
               selection={{ finding: instanceAsGroup(selected), instance: selected }}
@@ -633,10 +651,12 @@ function LocationsView({
   data,
   emptyState,
   onSelectFile,
+  renderedAt,
 }: {
   data: ListFindingLocationsResponse;
   emptyState: React.ReactNode;
   onSelectFile: (repo: string, file: string) => void;
+  renderedAt: number;
 }) {
   const [expandedRepos, setExpandedRepos] = useState<ReadonlySet<string>>(
     // Open the worst-severity repo by default so the view is never a list of
@@ -646,6 +666,7 @@ function LocationsView({
 
   return (
     <FindingsLocationsView
+      renderedAt={renderedAt}
       items={data.items}
       expandedRepos={expandedRepos}
       onToggleRepo={(repo) => {

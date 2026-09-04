@@ -27,8 +27,15 @@ function startOfLocalDay(d: Date): number {
  * `Yesterday` / `Mon, Jun 8`. Computed from `startedAt` client-side — the API
  * returns the timestamp, never the label (see the activity API spec's "Day
  * grouping is computed client-side" note).
+ *
+ * `now` is required rather than defaulted to `new Date()` — see relativeTime.ts
+ * for why a default here is the same hydration hole with better manners. This
+ * decides whether a session buckets under `Today` or `Yesterday`, which is a
+ * STRUCTURAL label: it is also the React key groupSessionsByDay assigns each
+ * day section, so a server/hydration disagreement here doesn't just relabel a
+ * heading, it makes React discard and remount the whole section.
  */
-export function dayLabel(iso: string, now: Date = new Date()): string {
+export function dayLabel(iso: string, now: Date): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
   const diffDays = Math.round((startOfLocalDay(now) - startOfLocalDay(d)) / DAY_MS);
@@ -66,12 +73,18 @@ export function eventTime(iso: string): string {
  * Human duration derived from the timestamp pair: `46m` / `1h 12m`. An open
  * (`active`) session has no `endedAt`, so it measures against `now` and gets a
  * `· live` suffix — matching the design's "46m · live" pill.
+ *
+ * `now` is required for the same reason as `dayLabel`'s: an open session
+ * measures its span against it, so a server render and the hydration render
+ * that follows disagree on the duration whenever they straddle a minute
+ * boundary — the same hydration-discard class `relativeTime`'s required
+ * argument closes, reached through a sibling helper.
  */
 export function durationLabel(
   startedAt: string,
   endedAt: string | null,
   status: SessionStatus,
-  now: number = Date.now(),
+  now: number,
 ): string {
   const start = Date.parse(startedAt);
   if (Number.isNaN(start)) return '';
@@ -111,11 +124,14 @@ export { formatCostTotal, formatUsd } from '@akasecurity/schema';
  * order — the server returns a flat `items[]`, the day headings are a view
  * concern (see `dayLabel`). A session with an unparseable `startedAt` falls
  * into an empty-label bucket rather than being dropped.
+ *
+ * `now` is required and threaded straight into `dayLabel` — this is the
+ * severe case of the class: `day` becomes each section's React key below, so a
+ * server/hydration disagreement here doesn't relabel a heading, it hands React
+ * a different key set and the whole day-section subtree is discarded and
+ * remounted rather than patched.
  */
-export function groupSessionsByDay(
-  items: ActivitySessionSummary[],
-  now: Date = new Date(),
-): SessionDay[] {
+export function groupSessionsByDay(items: ActivitySessionSummary[], now: Date): SessionDay[] {
   const groups: SessionDay[] = [];
   for (const session of items) {
     const day = dayLabel(session.startedAt, now);

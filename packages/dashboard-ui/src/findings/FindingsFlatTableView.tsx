@@ -73,6 +73,7 @@ export function FindingsFlatTableView({
   isLoading = false,
   emptyState,
   showUserColumn = false,
+  renderedAt,
 }: {
   items: FindingInstanceDetail[];
   /** The row rendered as selected ('' for none). */
@@ -96,6 +97,13 @@ export function FindingsFlatTableView({
   total?: number;
   isLoading?: boolean;
   emptyState?: ReactNode;
+  /**
+   * The instant this render is measured against, in epoch milliseconds. The host
+   * captures one and every relative label below reads it. Required: a view that
+   * picks its own instant renders one string while the server renders it and
+   * another when the browser hydrates it. See ../lib/relativeTime.ts.
+   */
+  renderedAt: number;
 }) {
   return (
     <Card className="flex h-full min-h-0 flex-col overflow-hidden shadow-sm">
@@ -195,7 +203,7 @@ export function FindingsFlatTableView({
                     </TableCell>
                     <TableCell className={FINDING_COLUMN_CLASS.latest}>
                       <span className="text-text-3 text-xs">
-                        {relativeTime(instance.detectedAt)}
+                        {relativeTime(instance.detectedAt, renderedAt)}
                       </span>
                     </TableCell>
                   </TableRow>

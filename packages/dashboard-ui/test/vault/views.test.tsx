@@ -6,6 +6,11 @@ import { DerefAuditTableView } from '../../src/vault/DerefAuditTableView.tsx';
 import { VaultInventoryView } from '../../src/vault/VaultInventoryView.tsx';
 import { VaultReuseView } from '../../src/vault/VaultReuseView.tsx';
 
+// A fixed render instant. These cases assert display contracts rather than
+// ages, so the value only has to be the SAME one every run — but it has to be
+// passed, because the views no longer have a clock of their own to fall back on.
+const RENDERED_AT = Date.parse('2026-07-05T00:00:00.000Z');
+
 // Static-render coverage for the vault views (this package's test environment
 // is node, with no DOM). Everything a view receives is already raw-free —
 // masked previews, locations, counts — so the assertions here pin the display
@@ -108,6 +113,7 @@ describe('VaultInventoryView', () => {
   it('flags only rows covered by an active reveal grant', () => {
     const html = renderToStaticMarkup(
       <VaultInventoryView
+        renderedAt={RENDERED_AT}
         entries={[
           entry({ pointerId: 'ptr-granted', revealGrantId: 'grant-1' }),
           entry({ pointerId: 'ptr-plain', maskedMatch: 'ghp_****MASK' }),
@@ -118,7 +124,9 @@ describe('VaultInventoryView', () => {
   });
 
   it('renders each sighting with its location and kind chip', () => {
-    const html = renderToStaticMarkup(<VaultInventoryView entries={[entry({})]} />);
+    const html = renderToStaticMarkup(
+      <VaultInventoryView renderedAt={RENDERED_AT} entries={[entry({})]} />,
+    );
     expect(html).toContain('~/.claude/projects/demo/transcript.jsonl');
     expect(html).toContain('Transcript');
     // The consequence of a written pointer is stated, not implied.
@@ -127,17 +135,25 @@ describe('VaultInventoryView', () => {
 
   it('renders row actions only when the callbacks are supplied', () => {
     const rows = [entry({ revealGrantId: 'grant-1' })];
-    const readOnly = renderToStaticMarkup(<VaultInventoryView entries={rows} />);
+    const readOnly = renderToStaticMarkup(
+      <VaultInventoryView renderedAt={RENDERED_AT} entries={rows} />,
+    );
     expect(readOnly).not.toContain('Reveal</button>');
     expect(readOnly).not.toContain('Revoke grant');
     const actionable = renderToStaticMarkup(
-      <VaultInventoryView entries={rows} onReveal={() => undefined} onRevoke={() => undefined} />,
+      <VaultInventoryView
+        renderedAt={RENDERED_AT}
+        entries={rows}
+        onReveal={() => undefined}
+        onRevoke={() => undefined}
+      />,
     );
     expect(actionable).toContain('Reveal</button>');
     expect(actionable).toContain('Revoke grant');
     // No revoke affordance without an active grant to revoke.
     const ungranted = renderToStaticMarkup(
       <VaultInventoryView
+        renderedAt={RENDERED_AT}
         entries={[entry({})]}
         onReveal={() => undefined}
         onRevoke={() => undefined}
@@ -147,7 +163,7 @@ describe('VaultInventoryView', () => {
   });
 
   it('states the honest empty state', () => {
-    const html = renderToStaticMarkup(<VaultInventoryView entries={[]} />);
+    const html = renderToStaticMarkup(<VaultInventoryView renderedAt={RENDERED_AT} entries={[]} />);
     expect(html).toContain('Nothing vaulted yet');
   });
 
@@ -158,6 +174,7 @@ describe('VaultInventoryView', () => {
   it('keeps the pager on an empty page the reader paged into', () => {
     const stranded = renderToStaticMarkup(
       <VaultInventoryView
+        renderedAt={RENDERED_AT}
         entries={[]}
         hasPreviousPage={true}
         hasNextPage={false}
@@ -184,6 +201,7 @@ describe('VaultInventoryView', () => {
   it('shows no pager on an empty first page, even when one is wired', () => {
     const fresh = renderToStaticMarkup(
       <VaultInventoryView
+        renderedAt={RENDERED_AT}
         entries={[]}
         hasPreviousPage={false}
         hasNextPage={false}
@@ -201,13 +219,15 @@ describe('VaultInventoryView', () => {
   it('states the truncation rather than the footer when the caller cannot page', () => {
     const rows = [entry({ pointerId: 'ptr-a' }), entry({ pointerId: 'ptr-b' })];
     // Nothing beyond the page and no way to page: neither branch renders.
-    const complete = renderToStaticMarkup(<VaultInventoryView entries={rows} />);
+    const complete = renderToStaticMarkup(
+      <VaultInventoryView renderedAt={RENDERED_AT} entries={rows} />,
+    );
     expect(complete).not.toContain(FOOTER);
     expect(complete).not.toContain('the rest are in the store');
     // More rows exist and there is no callback to reach them — saying so is
     // the honest render, and silence would hide the missing rows entirely.
     const truncated = renderToStaticMarkup(
-      <VaultInventoryView entries={rows} hasNextPage={true} />,
+      <VaultInventoryView renderedAt={RENDERED_AT} entries={rows} hasNextPage={true} />,
     );
     expect(truncated).not.toContain(FOOTER);
     expect(truncated).toContain('Showing the first 2 values — the rest are in the store.');
@@ -217,6 +237,7 @@ describe('VaultInventoryView', () => {
     const rows = [entry({ pointerId: 'ptr-a' }), entry({ pointerId: 'ptr-b' })];
     const more = renderToStaticMarkup(
       <VaultInventoryView
+        renderedAt={RENDERED_AT}
         entries={rows}
         hasNextPage={true}
         onNextPage={() => undefined}
@@ -232,6 +253,7 @@ describe('VaultInventoryView', () => {
     // pager a vanishing Next would also remove the reader's way back.
     const done = renderToStaticMarkup(
       <VaultInventoryView
+        renderedAt={RENDERED_AT}
         entries={rows}
         hasNextPage={false}
         onNextPage={() => undefined}
@@ -252,6 +274,7 @@ describe('VaultInventoryView', () => {
     const rows = [entry({ pointerId: 'ptr-a' }), entry({ pointerId: 'ptr-b' })];
     const first = renderToStaticMarkup(
       <VaultInventoryView
+        renderedAt={RENDERED_AT}
         entries={rows}
         hasNextPage={true}
         onNextPage={() => undefined}
@@ -264,6 +287,7 @@ describe('VaultInventoryView', () => {
 
     const second = renderToStaticMarkup(
       <VaultInventoryView
+        renderedAt={RENDERED_AT}
         entries={rows}
         hasNextPage={true}
         hasPreviousPage={true}
@@ -281,6 +305,7 @@ describe('VaultInventoryView', () => {
   it('disables the footer button while a page is in flight', () => {
     const html = renderToStaticMarkup(
       <VaultInventoryView
+        renderedAt={RENDERED_AT}
         entries={[entry({})]}
         hasNextPage={true}
         onNextPage={() => undefined}
@@ -295,6 +320,7 @@ describe('VaultInventoryView', () => {
     // hold for a button that is disabled whatever the caller passes.
     const idle = renderToStaticMarkup(
       <VaultInventoryView
+        renderedAt={RENDERED_AT}
         entries={[entry({})]}
         hasNextPage={true}
         onNextPage={() => undefined}
@@ -310,6 +336,7 @@ describe('VaultInventoryView', () => {
     const rows = [entry({ pointerId: 'ptr-a' }), entry({ pointerId: 'ptr-b' })];
     const html = renderToStaticMarkup(
       <VaultInventoryView
+        renderedAt={RENDERED_AT}
         entries={rows}
         hasNextPage={true}
         onNextPage={() => undefined}
@@ -320,7 +347,12 @@ describe('VaultInventoryView', () => {
     expect(html).toContain('1–2 of 40 values</p>');
     // With no total the view claims only what it can see.
     const untotalled = renderToStaticMarkup(
-      <VaultInventoryView entries={rows} hasNextPage={true} onNextPage={() => undefined} />,
+      <VaultInventoryView
+        renderedAt={RENDERED_AT}
+        entries={rows}
+        hasNextPage={true}
+        onNextPage={() => undefined}
+      />,
     );
     expect(untotalled).toContain('2 shown</p>');
     expect(untotalled).not.toContain('2 of');
@@ -457,6 +489,7 @@ describe('DerefAuditTableView', () => {
   it('hides batched rows behind a muted count line by default', () => {
     const html = renderToStaticMarkup(
       <DerefAuditTableView
+        renderedAt={RENDERED_AT}
         rows={[deref({})]}
         hiddenBatched={4}
         showBatched={false}
@@ -470,6 +503,7 @@ describe('DerefAuditTableView', () => {
   it('shows batched rows with their pointerCount under the flag', () => {
     const html = renderToStaticMarkup(
       <DerefAuditTableView
+        renderedAt={RENDERED_AT}
         rows={[deref({ reason: 'display', pointerCount: 12 })]}
         hiddenBatched={0}
         showBatched={true}
@@ -482,6 +516,7 @@ describe('DerefAuditTableView', () => {
   it('marks a refused model crossing with the prominence hook', () => {
     const html = renderToStaticMarkup(
       <DerefAuditTableView
+        renderedAt={RENDERED_AT}
         rows={[deref({ target: 'model', reason: 'model-input', outcome: 'refused' })]}
         hiddenBatched={0}
         showBatched={false}
@@ -494,6 +529,7 @@ describe('DerefAuditTableView', () => {
   it('marks a revealed model crossing and its grant prefix', () => {
     const html = renderToStaticMarkup(
       <DerefAuditTableView
+        renderedAt={RENDERED_AT}
         rows={[
           deref({
             target: 'model',
@@ -514,6 +550,7 @@ describe('DerefAuditTableView', () => {
   it('renders a purge as a distinguished event line', () => {
     const html = renderToStaticMarkup(
       <DerefAuditTableView
+        renderedAt={RENDERED_AT}
         rows={[deref({ reason: 'purge', outcome: 'unavailable', pointerCount: 7 })]}
         hiddenBatched={0}
         showBatched={false}
@@ -527,12 +564,23 @@ describe('DerefAuditTableView', () => {
   it('states the truncation rather than the footer when the caller cannot page', () => {
     const rows = [deref({}), deref({ id: 'second-row-id' })];
     const complete = renderToStaticMarkup(
-      <DerefAuditTableView rows={rows} hiddenBatched={0} showBatched={false} />,
+      <DerefAuditTableView
+        renderedAt={RENDERED_AT}
+        rows={rows}
+        hiddenBatched={0}
+        showBatched={false}
+      />,
     );
     expect(complete).not.toContain(FOOTER);
     expect(complete).not.toContain('Showing the most recent');
     const truncated = renderToStaticMarkup(
-      <DerefAuditTableView rows={rows} hiddenBatched={0} showBatched={false} hasNextPage={true} />,
+      <DerefAuditTableView
+        renderedAt={RENDERED_AT}
+        rows={rows}
+        hiddenBatched={0}
+        showBatched={false}
+        hasNextPage={true}
+      />,
     );
     expect(truncated).not.toContain(FOOTER);
     expect(truncated).toContain('Showing the most recent 2 resolutions.');
@@ -542,6 +590,7 @@ describe('DerefAuditTableView', () => {
     const rows = [deref({}), deref({ id: 'second-row-id' })];
     const more = renderToStaticMarkup(
       <DerefAuditTableView
+        renderedAt={RENDERED_AT}
         rows={rows}
         hiddenBatched={0}
         showBatched={false}
@@ -556,6 +605,7 @@ describe('DerefAuditTableView', () => {
     expect(more).not.toContain('Showing the most recent');
     const done = renderToStaticMarkup(
       <DerefAuditTableView
+        renderedAt={RENDERED_AT}
         rows={rows}
         hiddenBatched={0}
         showBatched={false}
@@ -574,6 +624,7 @@ describe('DerefAuditTableView', () => {
     const rows = [deref({}), deref({ id: 'second-row-id' })];
     const html = renderToStaticMarkup(
       <DerefAuditTableView
+        renderedAt={RENDERED_AT}
         rows={rows}
         hiddenBatched={0}
         showBatched={false}
@@ -587,6 +638,7 @@ describe('DerefAuditTableView', () => {
     expect(html).toContain('Loading…');
     const idle = renderToStaticMarkup(
       <DerefAuditTableView
+        renderedAt={RENDERED_AT}
         rows={rows}
         hiddenBatched={0}
         showBatched={false}
@@ -605,6 +657,7 @@ describe('DerefAuditTableView', () => {
     const rows = [deref({}), deref({ id: 'second-row-id' })];
     const hidden = renderToStaticMarkup(
       <DerefAuditTableView
+        renderedAt={RENDERED_AT}
         rows={rows}
         hiddenBatched={4}
         showBatched={false}
@@ -621,6 +674,7 @@ describe('DerefAuditTableView', () => {
     // page footer is untouched by that switch.
     const shown = renderToStaticMarkup(
       <DerefAuditTableView
+        renderedAt={RENDERED_AT}
         rows={rows}
         hiddenBatched={4}
         showBatched={true}
@@ -640,9 +694,13 @@ describe('raw-value hygiene', () => {
   it('never renders a raw-shaped credential from raw-free props', () => {
     const html = renderToStaticMarkup(
       <>
-        <VaultInventoryView entries={[entry({ revealGrantId: 'grant-1' })]} />
+        <VaultInventoryView
+          renderedAt={RENDERED_AT}
+          entries={[entry({ revealGrantId: 'grant-1' })]}
+        />
         <VaultReuseView entries={[entry({ occurrences: 2 })]} />
         <DerefAuditTableView
+          renderedAt={RENDERED_AT}
           rows={[deref({ target: 'model', reason: 'model-input', outcome: 'revealed' })]}
           hiddenBatched={2}
           showBatched={false}
@@ -659,6 +717,7 @@ describe('raw-value hygiene', () => {
     const html = renderToStaticMarkup(
       <>
         <VaultInventoryView
+          renderedAt={RENDERED_AT}
           entries={[entry({ revealGrantId: 'grant-1' })]}
           hasNextPage={true}
           onNextPage={() => undefined}
@@ -672,6 +731,7 @@ describe('raw-value hygiene', () => {
           total={40}
         />
         <DerefAuditTableView
+          renderedAt={RENDERED_AT}
           rows={[deref({ target: 'model', reason: 'model-input', outcome: 'revealed' })]}
           hiddenBatched={2}
           showBatched={false}

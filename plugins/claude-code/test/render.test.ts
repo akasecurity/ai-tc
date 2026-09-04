@@ -1230,6 +1230,7 @@ describe('runQuery — against a seeded standalone gateway', () => {
         dataSharesInPlace: true,
         vaultKeyCustody: 'file',
         vaultInlineReveal: 'masked',
+        redactFallback: 'warn',
       },
       dataDir,
       dbPath: join(dataDir, 'aka.db'),

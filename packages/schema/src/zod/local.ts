@@ -31,13 +31,15 @@ import type {
   InventoryInput,
   SourceProjectInput,
 } from './meta.ts';
+import { RedactFallback } from './policy.ts';
 import type { Rule } from './rule.ts';
 import { VaultConsent, VaultInlineReveal, VaultKeyCustody } from './vault.ts';
 
 // A changelog marker for the WorkspaceSettings shape, not a migration trigger:
 // v2 added historicalAccess; v3 added dataSharesInPlace; v4 added
 // modelJudgeConsent; v5 added the secret-vault fields (vaultConsent,
-// vaultKeyCustody, vaultInlineReveal); v6 added historySyncConsent. Nothing
+// vaultKeyCustody, vaultInlineReveal); v6 added historySyncConsent; v7 added
+// redactFallback. Nothing
 // reads it, and nothing re-stamps it — the `.default()` below only fills when
 // the key is absent, and applyOnboarding's merge preserves whatever an existing
 // settings.json already carries. So an already-onboarded machine keeps the
@@ -45,7 +47,7 @@ import { VaultConsent, VaultInlineReveal, VaultKeyCustody } from './vault.ts';
 // added so far has been optional/defaulted (backward compatible), which is why
 // no migration has been needed. Re-stamp this on write before relying on it to
 // gate one.
-export const WORKSPACE_SETTINGS_SPEC_VERSION = 6;
+export const WORKSPACE_SETTINGS_SPEC_VERSION = 7;
 
 // The payload-shape version the /aka:setup model-judge sends to the model API.
 // Recorded alongside a user's modelJudgeConsent so a consent granted against an
@@ -260,6 +262,19 @@ export const WorkspaceSettings = z.object({
   vaultKeyCustody: VaultKeyCustody.default('file'),
   // How a pointer renders in assistant prose on screen (see VaultInlineReveal).
   vaultInlineReveal: VaultInlineReveal.default('masked'),
+  // What a `redact` policy degrades to on a FIELD the host cannot rewrite in
+  // place. Not a handling policy: the policy has already resolved to redact,
+  // and this only says what happens when the host offers no channel to carry it
+  // out — Antigravity's PreToolUse has no updatedInput at all, and Codex and
+  // Claude Code decline to mask a field that EXECUTES because masking would
+  // change what runs. Per FIELD rather than per host, so a host that can
+  // rewrite some inputs keeps true redaction on those.
+  //
+  // Spelled in the built-in policy vocabulary rather than as a fresh enum, so
+  // an attached machine's merge is `strongerAction` over the one action ladder
+  // and no second rank order exists to drift from it. 'deny' is a host wire
+  // word and stays out of the stored value.
+  redactFallback: RedactFallback.default('warn'),
   // Absent until /aka:setup completes; its presence is what "onboarded" means.
   onboardedAt: z.iso.datetime().optional(),
   // Records that the user consented to sending findings to the model API for

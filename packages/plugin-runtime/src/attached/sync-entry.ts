@@ -1,5 +1,8 @@
 import { dataDir, defaultDataDir, settingsDir } from '@akasecurity/persistence';
 
+import type { CommandScan } from './command-sync.ts';
+import { runCommandSync } from './command-sync.ts';
+import type { PolicySyncOutcome } from './policy-sync.ts';
 import { runPolicySync } from './policy-sync.ts';
 import { writeSyncState } from './sync-state.ts';
 
@@ -21,16 +24,60 @@ import { writeSyncState } from './sync-state.ts';
  * describes something a control plane did or failed to do — writing one here
  * would have status report a plane this machine never called, and would
  * re-create a file a detach had just removed.
+ *
+ * `deps.scan` adds the device-command channel to the same child. It is optional
+ * because not every host can service a command: the browser extension's native
+ * host ships no scanner, and a host that cannot scan must not poll — a command
+ * it received and could never run would sit outstanding on an operator's roster
+ * until it expired, which reads exactly like a machine that is switched off.
  */
-export async function runAttachedSync(base: string = defaultDataDir()): Promise<void> {
+export async function runAttachedSync(
+  base: string = defaultDataDir(),
+  deps: { scan?: CommandScan | undefined } = {},
+): Promise<void> {
+  let policyOutcome: PolicySyncOutcome | null = null;
   try {
     const result = await runPolicySync({
       base,
       settingsDir: settingsDir(base),
       dataDir: dataDir(base),
     });
-    if (result !== null) writeSyncState(dataDir(base), result);
+    if (result !== null) {
+      policyOutcome = result.outcome;
+      writeSyncState(dataDir(base), result);
+    }
   } catch {
     // Nothing to report to and nowhere to report it.
+  }
+
+  // The credential this process holds was just refused, and re-presenting it on
+  // another route in the same second cannot go differently: `unauthorized` is a
+  // 401, the credential itself no longer accepted, which is not a property of
+  // any one route. Skipping saves a round trip that is certain to fail — and
+  // the user is not left uninformed by it, because the pull that learned this
+  // has already written the outcome `/aka:status` renders.
+  //
+  // `forbidden` is deliberately NOT included. A 403 can mean "this key is
+  // scoped away from THIS route" (see `failure.ts`), and the policy bundle is a
+  // read with no write-role guard while the command channel is a different
+  // route — so a 403 there is not proof of a 403 here, and declining to even
+  // ask would be this device deciding on the deployment's behalf.
+  if (policyOutcome === 'unauthorized') return;
+
+  // AFTER the policy pull, and in its own try. Ordered that way because the
+  // scan the command triggers reads the policy the pull just cached, so a
+  // command serviced first would scan against the previous ruleset.
+  //
+  // Separately caught rather than sharing the block above: a policy pull that
+  // threw must not also silently cancel the command channel, and a command that
+  // fails must not lose the sync state the pull already wrote. Two independent
+  // jobs sharing one child, not one job in two halves.
+  try {
+    await runCommandSync({ base, settingsDir: settingsDir(base), scan: deps.scan });
+  } catch {
+    // Same contract: nothing is waiting on this process. `runCommandSync` is
+    // documented never to throw, so reaching here is a bug rather than an
+    // expected path — and the response to a bug in a detached child is still to
+    // exit quietly rather than to take the sync down with it.
   }
 }

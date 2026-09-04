@@ -51,6 +51,13 @@ export interface DataSharesTableViewProps {
   onToggle: (id: string) => void;
   onOpenDest: (id: string) => void;
   onOpenEndpoint: (id: string, endpointId: string) => void;
+  /**
+   * The instant this render is measured against, in epoch milliseconds. The host
+   * captures one and every relative label below reads it. Required: a view that
+   * picks its own instant renders one string while the server renders it and
+   * another when the browser hydrates it. See ../lib/relativeTime.ts.
+   */
+  renderedAt: number;
 }
 
 function ClassCell({ classes }: { classes: DataClass[] }) {
@@ -66,12 +73,14 @@ function ClassCell({ classes }: { classes: DataClass[] }) {
 
 function GroupRow({
   d,
+  renderedAt,
   expanded,
   selected,
   onToggle,
   onOpen,
 }: {
   d: ShareDestinationSummary;
+  renderedAt: number;
   expanded: boolean;
   selected: boolean;
   onToggle: () => void;
@@ -149,7 +158,7 @@ function GroupRow({
         {d.callSiteCount === 1 ? '' : 's'}
       </TableCell>
       <TableCell className="whitespace-nowrap text-xs text-text-3">
-        {relativeTime(d.lastSeen)}
+        {relativeTime(d.lastSeen, renderedAt)}
       </TableCell>
     </TableRow>
   );
@@ -157,10 +166,12 @@ function GroupRow({
 
 function EndpointRow({
   ep,
+  renderedAt,
   selected,
   onClick,
 }: {
   ep: EndpointSummary;
+  renderedAt: number;
   selected: boolean;
   onClick: () => void;
 }) {
@@ -196,7 +207,7 @@ function EndpointRow({
         <b className="text-text">{ep.callSiteCount}</b> call{ep.callSiteCount === 1 ? '' : 's'}
       </TableCell>
       <TableCell className="whitespace-nowrap text-xs text-text-3">
-        {relativeTime(ep.lastSeen)}
+        {relativeTime(ep.lastSeen, renderedAt)}
       </TableCell>
     </TableRow>
   );
@@ -211,6 +222,7 @@ export function DataSharesTableView({
   onToggle,
   onOpenDest,
   onOpenEndpoint,
+  renderedAt,
 }: DataSharesTableViewProps) {
   return (
     <Table>
@@ -234,6 +246,7 @@ export function DataSharesTableView({
             <Fragment key={d.id}>
               <GroupRow
                 d={d}
+                renderedAt={renderedAt}
                 expanded={isExp}
                 selected={groupSel}
                 onToggle={bindId(onToggle, d.id)}
@@ -244,6 +257,7 @@ export function DataSharesTableView({
                   <EndpointRow
                     key={ep.id}
                     ep={ep}
+                    renderedAt={renderedAt}
                     selected={
                       drawerOpen && selection?.id === d.id && selection.endpointId === ep.id
                     }

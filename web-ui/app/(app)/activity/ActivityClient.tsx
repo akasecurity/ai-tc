@@ -5,6 +5,7 @@ import {
   SessionDetailView,
   SessionListView,
   type TimeRange,
+  useRenderClock,
 } from '@akasecurity/dashboard-ui';
 import type {
   ActivitySession,
@@ -41,6 +42,7 @@ export function ActivityClient({
   emptyCount,
   showEmpty,
   expanded,
+  renderedAt,
 }: {
   sessions: ActivitySessionSummary[];
   detail: ActivitySession | null;
@@ -62,7 +64,17 @@ export function ActivityClient({
   showEmpty: boolean;
   /** Whether the full-width session inspector is open (?view=full). */
   expanded: boolean;
+  /**
+   * The instant the SERVER rendered against. Advanced through useRenderClock
+   * below rather than read directly, so hydration matches this exact value
+   * and then the clock resumes moving — a session-list day heading and an
+   * in-progress "· live" duration chip both derive from it, and a client that
+   * never advanced past the server's instant would freeze both for the life
+   * of this component instead of merely matching hydration once.
+   */
+  renderedAt: number;
 }) {
+  const renderClock = useRenderClock(renderedAt);
   const pathname = usePathname();
   const { isPending, push: pushUrl, replace: replaceUrl } = useNavigationTransition();
 
@@ -152,6 +164,7 @@ export function ActivityClient({
     linkHref,
     isLoading: false,
     error: null,
+    renderedAt: renderClock,
     // Tool chips deep-link to the flat findings view filtered to that
     // tool. `?tool=` is a real filter on the capturing event's recorded
     // tool name, where the previous `?q=via Bash` was a text match
@@ -178,6 +191,7 @@ export function ActivityClient({
     >
       <Card className="flex w-85 shrink-0 flex-col overflow-hidden shadow-sm">
         <SessionListView
+          renderedAt={renderClock}
           sessions={sessions}
           selectedId={selectedId}
           onSelect={(id) => {

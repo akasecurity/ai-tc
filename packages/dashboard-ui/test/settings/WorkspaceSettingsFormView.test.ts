@@ -400,6 +400,7 @@ describe('stale grant enables the one-save re-consent', () => {
     dataSharesInPlace: true,
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
+    redactFallback: 'warn',
     vaultConsent: {
       acknowledgedAt: '2020-01-01T00:00:00.000Z',
       version: VAULT_CONSENT_VERSION + 1,
@@ -511,6 +512,7 @@ describe('stale history-sync grant', () => {
     dataSharesInPlace: true,
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
+    redactFallback: 'warn',
     historySyncConsent: consent,
   });
 
@@ -605,6 +607,7 @@ describe('the connection section', () => {
     dataSharesInPlace: true,
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
+    redactFallback: 'warn',
   };
 
   const attached: WorkspaceSettings = {
@@ -794,6 +797,7 @@ describe('administratively locked rows', () => {
     dataSharesInPlace: true,
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
+    redactFallback: 'warn',
   };
 
   const lockedHtml = (): string =>
@@ -843,6 +847,7 @@ describe('the enforcement pointer', () => {
     dataSharesInPlace: true,
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
+    redactFallback: 'warn',
   };
 
   it('links to the Detections page and offers no control of its own', () => {
@@ -888,6 +893,7 @@ describe('the connection section, credential state', () => {
     dataSharesInPlace: true,
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
+    redactFallback: 'warn',
   };
 
   const attached: WorkspaceSettings = {

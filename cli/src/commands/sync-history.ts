@@ -6,6 +6,7 @@ import {
   readWorkspaceSettings,
   seedCaptureBacklogOwed,
 } from '@akasecurity/persistence';
+import type { HistorySyncPassReport } from '@akasecurity/plugin-runtime';
 import { runHistorySyncPass } from '@akasecurity/plugin-runtime';
 import type { HistorySyncConsent, WorkspaceSettings } from '@akasecurity/schema';
 import {
@@ -95,8 +96,8 @@ export async function runSyncHistory(argv: string[], deps: SyncHistoryDeps = {})
   if (values.on === true || values.off === true) {
     if (values.run !== true) return;
     // Re-read: the pass reads the grant that was just written.
-    await runHistorySyncPass(base);
-    io.out(`${describe(readWorkspaceSettings(base))}\n`);
+    const report = await runHistorySyncPass(base);
+    io.out(`${reportLine(report)}\n${describe(readWorkspaceSettings(base))}\n`);
     return;
   }
   if (values.run === true) {
@@ -104,11 +105,51 @@ export async function runSyncHistory(argv: string[], deps: SyncHistoryDeps = {})
     // script beside it, and its single-executable build makes `process.execPath`
     // the `aka` binary rather than node — so a spawn from here would fail
     // silently, which is the one outcome a command called `--run` must not have.
-    await runHistorySyncPass(base);
-    io.out(`${describe(readWorkspaceSettings(base))}\n`);
+    const report = await runHistorySyncPass(base);
+    io.out(`${reportLine(report)}\n${describe(readWorkspaceSettings(base))}\n`);
     return;
   }
   io.out(`${describe(settings)}\n`);
+}
+
+/**
+ * What the pass did, in one line.
+ *
+ * `--run` used to print only the consent sentence, which is the same before and
+ * after a pass and is silent about seven different ways of doing nothing. Each
+ * line below names the remedy where there is one, because "nothing happened" is
+ * the answer a user is trying to get past.
+ *
+ * A RECORD rather than a switch with a `default`: the union is closed and this
+ * package owns both halves of it (`HistorySyncOutcome` and
+ * `HistorySyncSkipReason` both live in `@akasecurity/plugin-runtime`, inlined
+ * into this bundle — `cli/tsup.config.ts`'s `noExternal` makes the CLI and that
+ * package one typechecked artifact, never two skewed at runtime), so there is no
+ * REPORT this build fails to recognise, only a MEMBER added later. A `default`
+ * would answer that with a sentence that is wrong rather than merely vague — a
+ * new outcome is far likelier to resemble `ok` than to resemble nothing — where
+ * `satisfies Record<HistorySyncPassReport, string>` fails the build at the line
+ * that has to change.
+ */
+const REPORT_LINES = {
+  ok: 'This pass sent what was waiting.',
+  interrupted: 'This pass sent some of what was waiting; run it again to continue.',
+  unreachable: 'This pass could not reach the deployment. Nothing was sent; it stays queued.',
+  refused: 'This pass was refused by the deployment. Re-attach with `aka attach --url <url>`.',
+  'not-attached': 'This pass did nothing: there is no deployment to send to.',
+  'no-consent': 'This pass did nothing: sending existing activity is switched off.',
+  'credential-unusable':
+    'This pass did nothing: the stored credential cannot be used. Re-attach to repair it.',
+  'breaker-open':
+    'This pass did nothing: forwarding is paused after repeated failures, and resumes on its own.',
+  'attachment-unreadable':
+    'This pass did nothing: the recorded attachment time is unreadable. Re-attach to repair it.',
+  'already-running': 'This pass did nothing: another pass is already running.',
+  failed: 'This pass could not complete. Nothing was lost; it stays queued for the next one.',
+} as const satisfies Record<HistorySyncPassReport, string>;
+
+function reportLine(report: HistorySyncPassReport): string {
+  return REPORT_LINES[report];
 }
 
 function grant(

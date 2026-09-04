@@ -58,8 +58,12 @@ const attachWithGrant = (): void => {
 describe('runHistorySyncPass', () => {
   // The child runs detached with stdio ignored: a rejection would be an
   // unhandled rejection nobody ever reads.
-  it('never throws on a machine that was never attached', async () => {
-    await expect(runHistorySyncPass(home)).resolves.toBeUndefined();
+  it('never throws on a machine that was never attached, and says why', async () => {
+    // It used to resolve `undefined` here, which is what made `--run` silent:
+    // the command could not distinguish this from a pass that ran and sent
+    // nothing. The state-writing behaviour below is unchanged — a pass that made
+    // no attempt still writes no file; only the report reaches the caller.
+    await expect(runHistorySyncPass(home)).resolves.toBe('not-attached');
   });
 
   // Writing state for a pass that was never made would have status describe a
@@ -153,7 +157,11 @@ describe('runHistorySyncPass', () => {
 
     await runHistorySyncPass(home, {
       sleep: () => Promise.resolve(),
-      sendBatch: () => Promise.resolve(),
+      // Unreachable in these cases — the one structural row seeded is
+      // stamped at the attach instant, not before it, so it never enters the
+      // backlog these tests drain — but still typed as a real sender rather
+      // than a bare resolve now that the caller reads what it settled.
+      sendBatch: (events) => Promise.resolve({ settled: events.length }),
       sendCaptures: () => Promise.resolve({ settled: 0 }),
     });
     expect(readHistorySyncState(dataDirOf(home))?.skippedTotal).toBe(1);
@@ -162,7 +170,11 @@ describe('runHistorySyncPass', () => {
     // while the row stayed gone for ever.
     await runHistorySyncPass(home, {
       sleep: () => Promise.resolve(),
-      sendBatch: () => Promise.resolve(),
+      // Unreachable in these cases — the one structural row seeded is
+      // stamped at the attach instant, not before it, so it never enters the
+      // backlog these tests drain — but still typed as a real sender rather
+      // than a bare resolve now that the caller reads what it settled.
+      sendBatch: (events) => Promise.resolve({ settled: events.length }),
       sendCaptures: () => Promise.resolve({ settled: 0 }),
     });
     expect(readHistorySyncState(dataDirOf(home))?.skippedTotal).toBe(1);
@@ -215,7 +227,11 @@ describe('runHistorySyncPass', () => {
     // false — the branch under test — with no network and no clock involved.
     await runHistorySyncPass(home, {
       sleep: () => Promise.resolve(),
-      sendBatch: () => Promise.resolve(),
+      // Unreachable in these cases — the one structural row seeded is
+      // stamped at the attach instant, not before it, so it never enters the
+      // backlog these tests drain — but still typed as a real sender rather
+      // than a bare resolve now that the caller reads what it settled.
+      sendBatch: (events) => Promise.resolve({ settled: events.length }),
       sendCaptures: () => Promise.resolve({ settled: 0 }),
     });
     const after = readHistorySyncState(dataDirOf(home));

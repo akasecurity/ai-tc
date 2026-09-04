@@ -36,6 +36,13 @@ export interface DerefAuditTableViewProps {
   loadingNextPage?: boolean;
   // 1-based position of this window's first row in the whole trail.
   pageStart?: number | undefined;
+  /**
+   * The instant this render is measured against, in epoch milliseconds. The host
+   * captures one and every relative label below reads it. Required: a view that
+   * picks its own instant renders one string while the server renders it and
+   * another when the browser hydrates it. See ../lib/relativeTime.ts.
+   */
+  renderedAt: number;
 }
 
 // Model-target crossings are the anomaly signal this trail exists for, so both
@@ -73,6 +80,7 @@ export function DerefAuditTableView({
   onPreviousPage,
   loadingNextPage = false,
   pageStart,
+  renderedAt,
 }: DerefAuditTableViewProps) {
   const toggle =
     onToggleBatched === undefined ? null : (
@@ -139,7 +147,9 @@ export function DerefAuditTableView({
                 // distinguished line — the record that values were destroyed
                 // outlives the values.
                 <TableRow key={row.id} data-purge="" className="bg-surface-2">
-                  <TableCell className="text-xs text-text-2">{relativeTime(row.at)}</TableCell>
+                  <TableCell className="text-xs text-text-2">
+                    {relativeTime(row.at, renderedAt)}
+                  </TableCell>
                   <TableCell colSpan={5} className="text-xs font-medium text-text-2">
                     Vault purge —{' '}
                     {row.pointerCount === 1 ? 'a pointer' : `${String(row.pointerCount)} pointers`}{' '}
@@ -155,7 +165,9 @@ export function DerefAuditTableView({
                     isBatchedDerefReason(row.reason) && 'text-text-3',
                   )}
                 >
-                  <TableCell className="text-xs text-text-2">{relativeTime(row.at)}</TableCell>
+                  <TableCell className="text-xs text-text-2">
+                    {relativeTime(row.at, renderedAt)}
+                  </TableCell>
                   <TableCell className="text-xs">{DEREF_REASON_LABEL[row.reason]}</TableCell>
                   <TableCell className="text-xs">
                     {row.target === 'model' ? (

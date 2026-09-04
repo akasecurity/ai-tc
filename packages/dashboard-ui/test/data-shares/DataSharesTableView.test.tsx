@@ -4,9 +4,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { DataSharesTableView } from '../../src/data-shares/DataSharesTableView.tsx';
 import { destination, endpoint, group } from './fixtures.ts';
 
+// A fixed render instant. These cases assert display contracts rather than
+// ages, so the value only has to be the SAME one every run — but it has to be
+// passed, because the views no longer have a clock of their own to fall back on.
+const RENDERED_AT = Date.parse('2026-07-05T00:00:00.000Z');
+
 function render(props: Partial<Parameters<typeof DataSharesTableView>[0]> = {}) {
   return renderToStaticMarkup(
     <DataSharesTableView
+      renderedAt={RENDERED_AT}
       group={group()}
       expanded={{}}
       selection={null}

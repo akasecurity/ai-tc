@@ -105,6 +105,7 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/local-ops': 65, //                  66.75
   '@akasecurity/audit-gate': 61, //                 62.88
   '@akasecurity/ai-tc-antigravity': 59, //          60.96
+  '@akasecurity/ai-tc-copilot': 99, //              100 (F0 skeleton only — RE-MEASURE when real source lands)
   '@akasecurity/ai-tc-codex': 58, //                59.78
   '@akasecurity/plugin-browser-extension': 57, //   58.02
   '@akasecurity/cli': 51, //                        52.66

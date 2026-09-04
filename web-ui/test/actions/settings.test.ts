@@ -139,6 +139,41 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     expect(readWorkspaceSettings().vaultInlineReveal).toBe('full');
   });
 
+  // The mirror of the stale case above: a grant that is ALREADY valid for the
+  // current payload version and endpoint must survive a 'granted' re-save
+  // byte-for-byte — kept as-is rather than re-stamped, so its acknowledgedAt
+  // does not drift on every unrelated save and no fresh backfill fires for a
+  // grant that was never actually renewed.
+  it("keeps an already-valid grant as-is when 'granted' is saved again", async () => {
+    const current = {
+      acknowledgedAt: '2020-01-01T00:00:00.000Z',
+      payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+      endpoint: ENDPOINT,
+    };
+    const { applyOnboarding } = await import('@akasecurity/persistence');
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: '2020-01-01T00:00:00.000Z' },
+        historySyncConsent: current,
+      },
+      join(home, '.aka'),
+    );
+
+    const res = await saveSettings({
+      historicalAccess: 'session-only',
+      modelJudgeConsent: 'revoked',
+      historySyncConsent: 'granted',
+      vaultConsent: 'off',
+      // A real unrelated edit, or the save proves nothing about a re-stamp it
+      // never had cause to make.
+      vaultInlineReveal: 'full',
+    });
+    expect(res.ok).toBe(true);
+    expect(readWorkspaceSettings().historySyncConsent).toEqual(current);
+    expect(readWorkspaceSettings().vaultInlineReveal).toBe('full');
+  });
+
   it('still revokes on an explicit revoked, stale grant or not', async () => {
     const { applyOnboarding } = await import('@akasecurity/persistence');
     applyOnboarding(

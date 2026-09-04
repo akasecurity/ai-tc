@@ -1,6 +1,10 @@
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
+import { seedCaptureBacklogOwed } from '../../src/history-backfill.ts';
 import { SqliteHistorySyncRepository } from '../../src/repositories/history-sync.ts';
 import type { RecordedQuery } from '../helpers/query-plans.ts';
 import { explain, recordingConnection } from '../helpers/query-plans.ts';
@@ -815,6 +819,43 @@ describe('SqliteHistorySyncRepository — the consent-time backfill', () => {
 
     db.historySync.markCaptureBacklogOwed(ALL);
     expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+  });
+});
+
+// `seedCaptureBacklogOwed` is the module-level wrapper the three consent-time
+// grant sites call — a separate open/mark/close on the SAME file, never a
+// method on an already-open handle. These pin its two properties: it really
+// does open the store and reach the repository method above, and a store it
+// cannot open does not turn a successful consent into a reported failure.
+describe('seedCaptureBacklogOwed — the shared consent-time backfill helper', () => {
+  it('opens the store, marks the backlog owed, and closes the handle', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-prompt',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(MINUTE),
+      content: 'text of a prompt',
+    });
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+
+    seedCaptureBacklogOwed(store.dataDir, T0 + 2 * MINUTE);
+
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+  });
+
+  it('is silent, not thrown, when the store cannot be opened', () => {
+    // A plain file where a directory belongs: ensureDataDirSync's mkdir fails
+    // with ENOTDIR on every platform, which is the fault this helper exists to
+    // absorb — the grant it is called after has already been recorded.
+    const blocker = join(store.home, 'blocker-file');
+    writeFileSync(blocker, '');
+
+    expect(() => {
+      seedCaptureBacklogOwed(join(blocker, 'data'), Date.now());
+    }).not.toThrow();
   });
 });
 

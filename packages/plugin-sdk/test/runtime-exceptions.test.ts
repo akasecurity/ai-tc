@@ -52,6 +52,7 @@ function settings(policy: 'redact' | 'warn' = 'redact'): WorkspaceSettings {
     dataSharesInPlace: true,
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
+    redactFallback: 'warn',
   };
 }
 

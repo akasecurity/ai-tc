@@ -19,6 +19,7 @@ const SETTINGS: WorkspaceSettings = {
   dataSharesInPlace: true,
   vaultKeyCustody: 'file',
   vaultInlineReveal: 'masked',
+  redactFallback: 'warn',
 };
 
 const EMPTY_BUNDLE: PolicyBundle = {

@@ -35,6 +35,50 @@ import type { BlockedDetectionRef, CaptureInput, CaptureResult } from './types.t
 const ENFORCEMENT_CEILING_ENABLED = false as boolean;
 
 /**
+ * The legacy global ceiling, as a pure function of the three things that decide
+ * it: 'warn' handling mode floors block/redact to warn, and leaves every other
+ * action alone.
+ *
+ * `enabled` is a PARAMETER rather than a read of ENFORCEMENT_CEILING_ENABLED,
+ * so the capped branch can be driven while the flag itself ships at false.
+ * Without that seam the whole path is dormant and unexecuted, and the first
+ * thing to run it would be the flag flip.
+ */
+export function applyEnforcementCeiling(
+  action: ActionTaken,
+  policyMode: WorkspaceSettings['policy'],
+  enabled: boolean,
+): ActionTaken {
+  if (!enabled || policyMode !== 'warn') return action;
+  return action === 'block' || action === 'redact' ? 'warn' : action;
+}
+
+/**
+ * A resolved action, degraded for a field the host cannot rewrite and then
+ * capped by the ceiling — in that ORDER, which is the whole property.
+ *
+ * The degradation runs FIRST so the ceiling reads the degraded action: a
+ * fallback of 'block' is capped exactly as a policy of 'block' is, and an
+ * inability to redact cannot buy more enforcement than the mode allows.
+ * Composed here rather than inline in `actionForFinding` because that ordering
+ * is what a test has to reach; calling `applyEnforcementCeiling` alone cannot
+ * see it, so an early return that skipped the cap would still pass.
+ */
+export function resolveEnforcedAction(
+  action: ActionTaken,
+  opts: {
+    policyMode: WorkspaceSettings['policy'];
+    redactFallback: WorkspaceSettings['redactFallback'];
+    rewritable: boolean;
+    ceilingEnabled: boolean;
+  },
+): ActionTaken {
+  const degraded =
+    !opts.rewritable && action === 'redact' ? builtinPolicyToAction(opts.redactFallback) : action;
+  return applyEnforcementCeiling(degraded, opts.policyMode, opts.ceilingEnabled);
+}
+
+/**
  * Start of an added-latency measurement, or `undefined` if the clock could not
  * be read. `performance.now()` is monotonic — a wall clock stepped by NTP mid-
  * capture can run backwards and produce a negative duration, which would drag a
@@ -297,33 +341,32 @@ export function createPluginRuntime(
   // blocked secret with a warned code-context match applies 'block' to the
   // former and 'warn' to the latter.
   //
-  // The legacy global ceiling is applied HERE so this stays the single
+  // The legacy global ceiling is applied THROUGH this function — inside the
+  // `resolveEnforcedAction` it delegates to — so this stays the single
   // definition of the action that actually applied: when it is enabled, 'warn'
   // handling mode floors block/redact to warn. `decide`'s aggregate collapse and
   // the findings audit trail both resolve through this function, so neither can
-  // record a stronger action than the capture actually took.
+  // record a stronger action than the capture actually took. The delegate is
+  // pure and takes the flag as an argument, so the capped branch is reachable
+  // from a test while the flag itself ships at false.
   function actionForFinding(
     finding: MatchResult,
     excepted?: ReadonlySet<MatchResult>,
     rewritable = true,
   ): ActionTaken {
     if (excepted?.has(finding)) return 'allow';
-    const action = resolveAction(finding.ruleId, finding.category);
-    // A redact the CALLER cannot carry out degrades here, in the one place the
-    // action is resolved, so the decision the hook emits, the findings row and
-    // the blocked-detections ledger cannot disagree about what was enforced.
-    // Doing it in the hook instead is what left an escalated deny recorded as
+    // A redact the CALLER cannot carry out degrades in the one place the action
+    // is resolved, so the decision the hook emits, the findings row and the
+    // blocked-detections ledger cannot disagree about what was enforced. Doing
+    // it in the hook instead is what left an escalated deny recorded as
     // 'redact'; a downgrade recorded that way would be worse still, claiming a
     // masking that never happened while the raw value went through.
-    if (!rewritable && action === 'redact') return builtinPolicyToAction(redactFallback);
-    if (
-      ENFORCEMENT_CEILING_ENABLED &&
-      policyMode === 'warn' &&
-      (action === 'block' || action === 'redact')
-    ) {
-      return 'warn';
-    }
-    return action;
+    return resolveEnforcedAction(resolveAction(finding.ruleId, finding.category), {
+      policyMode,
+      redactFallback,
+      rewritable,
+      ceilingEnabled: ENFORCEMENT_CEILING_ENABLED,
+    });
   }
 
   function decide(

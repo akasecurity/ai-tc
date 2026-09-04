@@ -290,8 +290,16 @@ export async function runHistorySync(
     let backlogBefore: number;
     if (recorded.fingerprint !== fingerprint) {
       // A different deployment. Nothing sent to the last one counts here, so
-      // the stamps go and a fresh boundary is frozen.
-      ledger.rearmFor(fingerprint, attachedAtMs);
+      // the stamps go and a fresh boundary is frozen. The consent check above
+      // has already confirmed `settings.historySyncConsent` is valid for THIS
+      // endpoint, so it is safe to re-apply its own backfill in the same
+      // transaction as the wipe — the grant this consent describes is for the
+      // deployment being armed, not the one being left, and the CLI's own
+      // earlier call to `seedCaptureBacklogOwed` (at attach time) is exactly
+      // what this repeats: this method's disown above cannot tell that grant's
+      // markers apart from the previous deployment's leftover ones, so both go,
+      // and this puts B's own back.
+      ledger.rearmFor(fingerprint, attachedAtMs, attachedAtMs);
       backlogBefore = attachedAtMs;
     } else if (recorded.backlogBefore === undefined) {
       // The same deployment, with the boundary RELEASED — a detach happened and
@@ -652,12 +660,16 @@ async function drainCaptures(
     // iteration stamped or skipped everything it took, so the unstamped set has
     // shrunk and the next page is simply the new head of it. An offset over a
     // set being mutated underneath would step past rows.
-    // `backlogBefore` is the attachment boundary, and this lane reads the side of
-    // it the structural lane does not: captures recorded FROM the attachment
-    // onwards, which the live path owed and did not deliver. Older captures are
-    // pre-attach history and belong to the structural lane, which sends them
-    // without their text — draining them here would put a machine's whole local
-    // history of prompts on the wire under copy that promises the opposite.
+    // This lane has no boundary of its own: `pendingCaptureRows` reads
+    // whatever carries `outbox_owed = 1`, whichever of the two writers set it.
+    // The live forward path sets it only for a capture recorded FROM the
+    // attachment onwards, which it owed and did not deliver — that half is
+    // bounded by `backlogBefore` implicitly, because nothing before it was
+    // ever live-forwarded. The other writer, `markCaptureBacklogOwed`, sets it
+    // for whatever pre-attach backlog was on disk at the instant a human
+    // granted existing-history consent, WITH its text — that is the grant's
+    // own design, not a leak this lane needs to guard against. A row reaching
+    // here is owed for one of those two reasons; this loop enforces neither.
     const rows = d.ledger.pendingCaptureRows(CAPTURE_BATCH_SIZE, d.now() - CAPTURE_GRACE_MS);
     if (rows.length === 0) return { sent, skipped };
 

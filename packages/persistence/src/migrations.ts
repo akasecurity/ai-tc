@@ -1014,9 +1014,18 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
   // capture rows — that is exactly the set that grows without bound.
   //
   // PARTIAL for the reason the sweep's index below is: an owed row exists only
-  // between a failed forward and the drain that settles it, so the index stays a
-  // handful of entries wide however large the store gets, and the writes that
-  // never touch the column — nearly all of them — do not maintain it at all.
+  // between being marked and the drain that settles it, so the writes that never
+  // touch the column — nearly all of them — do not maintain it at all. WIDTH is a
+  // separate claim, and only the LIVE forward path's own marking keeps it to a
+  // handful: it marks one row at a time, transiently, between a failed forward
+  // and the drain that settles it. `markCaptureBacklogOwedStmt` is the other
+  // writer, and it marks in bulk — everything on disk as of one grant, at once —
+  // so the machine this design is aimed at, one that ran detached and
+  // accumulated capture rows, is exactly the one whose FIRST backfill can put its
+  // whole unsynced capture set into this index at once. It still narrows the
+  // set the drain has to consider from every unsettled capture to only the owed
+  // ones, and the drain settles it back down over the sessions that follow — the
+  // width just is not bounded to "a handful" the instant a grant lands.
   //
   // Its COLUMNS mirror idx_audit_events_sync deliberately, and that is what makes
   // the planner take it: with fewer, it prices the wider index higher and picks

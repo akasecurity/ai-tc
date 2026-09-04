@@ -74,31 +74,44 @@ export interface SaveSettingsResult {
 // here would be testable only by driving the whole write it describes.
 
 /**
- * The history-sync field of the merge, pulled out of the updater below so its
- * FRESH-grant instant can be reported back to the caller rather than only to
- * the write. Same three-way logic as before extraction: 'unchanged' keeps
- * whatever is on file, 'revoked' or no endpoint clears it, an already-valid
- * grant is kept as-is (so its acknowledgedAt survives an unrelated save), and
- * only the remaining case — no valid grant on file, and the answer is not a
- * decline — is a FRESH grant.
+ * The history-sync field of the merge, pulled out of the updater below so the
+ * grant's own backfill instant can be reported back to the caller rather than
+ * only to the write. Same three-way logic as before extraction: 'unchanged'
+ * keeps whatever is on file, 'revoked' or no endpoint clears it, and 'granted'
+ * either keeps an already-valid grant as-is (so its acknowledgedAt survives an
+ * unrelated save) or stamps a fresh one.
  *
- * `freshGrantAt` is undefined unless this call is the one that produced a new
- * grant; the caller's capture backfill (`seedCaptureBacklogOwed`) runs only
- * then, same as `aka attach` and `aka sync-history --on` run it only at their
- * own grant sites.
+ * `backfillAsOf` is undefined only for 'unchanged' and a decline — 'granted'
+ * always returns one, whether the grant it resolved to was fresh or kept, so
+ * the caller's capture backfill (`seedCaptureBacklogOwed`) gets ANOTHER
+ * attempt every time a human deliberately re-asks for it, not only the one
+ * time it happened to produce a new grant record. `seedCaptureBacklogOwed` is
+ * best-effort and silent by design — a locked or unwritable store at grant
+ * time must not turn a successful consent into a reported failure — and
+ * `aka attach` / `aka sync-history --on` get their own retry for free because
+ * a human can simply run either again. This is the dashboard's only way to
+ * offer the same thing: bounded to the grant's OWN acknowledgedAt either way,
+ * never widened to "now", so a retry recovers exactly what the original grant
+ * promised and nothing a later save happens to add.
  */
 function resolveHistorySyncConsent(
   requested: HistorySyncConsentChoice,
   current: WorkspaceSettings,
-): { consent: HistorySyncConsent | undefined; freshGrantAt: number | undefined } {
+): { consent: HistorySyncConsent | undefined; backfillAsOf: number | undefined } {
   if (requested === 'unchanged') {
-    return { consent: current.historySyncConsent, freshGrantAt: undefined };
+    return { consent: current.historySyncConsent, backfillAsOf: undefined };
   }
   if (requested === 'revoked' || current.controlPlane === undefined) {
-    return { consent: undefined, freshGrantAt: undefined };
+    return { consent: undefined, backfillAsOf: undefined };
   }
-  if (isHistorySyncConsentValid(current.historySyncConsent, current.controlPlane.endpoint)) {
-    return { consent: current.historySyncConsent, freshGrantAt: undefined };
+  if (
+    current.historySyncConsent !== undefined &&
+    isHistorySyncConsentValid(current.historySyncConsent, current.controlPlane.endpoint)
+  ) {
+    return {
+      consent: current.historySyncConsent,
+      backfillAsOf: Date.parse(current.historySyncConsent.acknowledgedAt),
+    };
   }
   const grantedAt = Date.now();
   return {
@@ -107,7 +120,7 @@ function resolveHistorySyncConsent(
       payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
       endpoint: current.controlPlane.endpoint,
     },
-    freshGrantAt: grantedAt,
+    backfillAsOf: grantedAt,
   };
 }
 
@@ -127,12 +140,12 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
   ) {
     return { ok: false, error: 'Invalid settings value.' };
   }
-  // Set inside the updater below, iff it resolves a FRESH history-sync grant —
-  // never for 'unchanged', a decline, or a kept-valid grant. Read only after
-  // the write below has succeeded, so the capture backfill runs for a grant
-  // this call actually made and committed, never for one that was attempted
-  // and then rolled back by a thrown ManagedFieldError.
-  let freshHistorySyncGrantAt: number | undefined;
+  // Set inside the updater below, iff 'granted' resolved to a valid consent —
+  // never for 'unchanged' or a decline. Read only after the write below has
+  // succeeded, so the capture backfill runs for a grant this call actually
+  // made and committed, never for one that was attempted and then rolled back
+  // by a thrown ManagedFieldError.
+  let historySyncBackfillAsOf: number | undefined;
   try {
     // Derived inside applyOnboarding's write lock, not before it: `current` is
     // read back on the far side of the merge that is about to happen, so a
@@ -141,8 +154,8 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
     // wizard, or from a second tab — and write it back, silently reinstating
     // consent the user had just withdrawn.
     applyOnboarding((current) => {
-      const { consent, freshGrantAt } = resolveHistorySyncConsent(data.historySyncConsent, current);
-      freshHistorySyncGrantAt = freshGrantAt;
+      const { consent, backfillAsOf } = resolveHistorySyncConsent(data.historySyncConsent, current);
+      historySyncBackfillAsOf = backfillAsOf;
       return {
         historicalAccess: historicalAccess.data,
         // Grant records fresh consent at the current payload version; revoke
@@ -199,11 +212,12 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
       return { ok: false, error: managedRefusal(error.fields) };
     return { ok: false, error: SETTINGS_WRITE_ERROR };
   }
-  // The capture half of a fresh grant — see seedCaptureBacklogOwed. `aka attach`
-  // and `aka sync-history --on` call it at their own grant sites; this is the
-  // third.
-  if (freshHistorySyncGrantAt !== undefined) {
-    seedCaptureBacklogOwed(dataDir(), freshHistorySyncGrantAt);
+  // The capture half of the grant — see seedCaptureBacklogOwed and the
+  // resolver's own doc comment above for why this retries on every 'granted'
+  // save, not only the one that stamps a fresh record. `aka attach` and
+  // `aka sync-history --on` are the other two call sites.
+  if (historySyncBackfillAsOf !== undefined) {
+    seedCaptureBacklogOwed(dataDir(), historySyncBackfillAsOf);
   }
   revalidatePath('/settings');
   return { ok: true };

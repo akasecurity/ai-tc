@@ -203,13 +203,12 @@ describe('SqliteHistorySyncRepository — which deployment the stamps are for', 
   });
 
   // The capture half does NOT re-arm, and that is the rule rather than an
-  // omission. A capture recorded under deployment A is pre-attach relative to B,
-  // and the grant says the pre-attach half sends the record of activity, not its
-  // text — so B is entitled to the structural rows (which do re-arm, above) and
-  // not to the prompts. Re-arming captures would also be inert: the capture lane
-  // reads `started_at >= :since`, so every row a deployment change clears sits
-  // on the wrong side of the new boundary and is never offered again. The only
-  // effect would be to un-stamp delivered rows for ever.
+  // omission. A DELIVERED capture was sent to A under A's own grant, and B has
+  // no claim on what A already received — re-arming it would resend A's text to
+  // a deployment A's grant never named. Re-arming would also be inert regardless:
+  // the capture lane reads `started_at >= :since`, so every row a deployment
+  // change clears sits on the wrong side of the new boundary and is never
+  // offered again. The only effect would be to un-stamp delivered rows for ever.
   it('leaves delivered CAPTURES stamped when the deployment changes', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
@@ -247,6 +246,74 @@ describe('SqliteHistorySyncRepository — which deployment the stamps are for', 
     expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
     // ...while the structural rows the new deployment IS entitled to came back.
     expect(db.historySync.counts(ALL)).toMatchObject({ pending: 3 });
+  });
+
+  // THE OTHER HALF OF THE SAME LEAK, in the opposite direction: a caller that
+  // has ALREADY confirmed a valid grant for the deployment being armed passes
+  // its own bound as the third argument, and the disown above must not eat it.
+  // Without this, a machine that grants existing-history consent while
+  // attaching to B has that grant's own markers wiped the moment the drain
+  // notices the fingerprint changed — before it ever reads them — because the
+  // disown cannot tell "a marker A's forward left" from "a marker B's OWN
+  // grant just set" apart by looking at the column alone.
+  //
+  // Built by hand rather than through seedSession, which marks its own
+  // capture owed to simulate A's live forward — a different fact from the one
+  // this test is isolating, and one the sibling test above already covers.
+  it('keeps a fresh backfill for the NEW deployment through the same disown', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-prompt',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(MINUTE),
+      content: 'text of a pre-attach prompt',
+    });
+    // Attached to A first — the real order, and the one that matters: nothing
+    // has marked this row owed to anybody yet.
+    db.historySync.rearmFor('fingerprint-a', ALL);
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+
+    // The CLI's own seedCaptureBacklogOwed, at the instant a human grants
+    // existing-history consent for B — before the drain has run even once
+    // under B, exactly as `aka attach` orders it.
+    db.historySync.markCaptureBacklogOwed(T0 + 10 * MINUTE);
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+
+    // The drain's first pass under B. Consent was already confirmed valid for
+    // B before this call is reachable — see runHistorySync — so the caller
+    // passes the SAME bound as the third argument.
+    db.historySync.rearmFor('fingerprint-b', ALL, T0 + 10 * MINUTE);
+
+    // B's own grant survives the switch that just disowned A's leftovers (of
+    // which there were none here — the point is that the disown running at
+    // all does not also take B's marker with it).
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+  });
+
+  // The bound is still a bound: a capture recorded AFTER the grant it is
+  // reapplying is the live forward path's to mark, not this repair's — passing
+  // the third argument must not silently widen into that territory.
+  it('does not reapply the backfill to a capture recorded after its own bound', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-prompt',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(5 * MINUTE),
+      content: 'text of a prompt recorded after the grant',
+    });
+    db.historySync.rearmFor('fingerprint-a', ALL);
+    db.historySync.markCaptureBacklogOwed(T0 + 2 * MINUTE);
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+
+    db.historySync.rearmFor('fingerprint-b', ALL, T0 + 2 * MINUTE);
+
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
   });
 
   // The other side of that rule, and the one I only found by breaking it: this
@@ -919,6 +986,22 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     // partial index changes is WHAT is sorted. Its entries are owed rows only,
     // so both the seek and the sort are bounded by the outbox rather than by
     // every unsettled capture in a table with no retention policy.
+  });
+
+  // The consent-time backfill's own WHERE clause — unbounded below, like the
+  // read above, and run at every fresh or repeated grant rather than once.
+  // What it MARKS is a separate concern from what it SEEKS: this pins only
+  // that finding the rows to mark is an index SEARCH, never a table scan —
+  // idx_audit_outbox_owed itself is what the marked set then grows, which is
+  // a write-cost property the migration comment on that index states, not
+  // one an EXPLAIN QUERY PLAN of this statement can show.
+  it('finds the capture backlog to mark on the index, not by scanning', () => {
+    const plan = planFor((ledger) => {
+      ledger.markCaptureBacklogOwed(ALL);
+    });
+    expect(plan).toContain('idx_audit_type_t');
+    expect(plan).toContain('SEARCH');
+    expect(plan).not.toContain('SCAN audit_events');
   });
 
   // The one WRITE in this block, and the reason it needs its own index.

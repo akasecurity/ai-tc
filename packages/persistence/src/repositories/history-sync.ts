@@ -415,17 +415,20 @@ export class SqliteHistorySyncRepository {
     // The capture lane wants the opposite of that, which is why it is a separate
     // statement rather than a wider WHERE:
     //
-    // A capture recorded under deployment A is pre-attach relative to B, and the
-    // grant says the pre-attach half sends the record of activity, not its text.
-    // B is entitled to the structural rows — which it gets, because those DO
-    // re-arm above — and not to the prompts.
+    // A marker on this column says "a live forward under ONE deployment owed
+    // this row", and that deployment is A's, not B's — B never asked for A's
+    // undelivered captures, and could not have: `outbox_owed` carries no
+    // deployment identity of its own, only the ledger row it sits beside does.
+    // Left set across the switch, the drain would read A's markers as B's and
+    // ship A's prompts, with their text, to a deployment that never saw them.
+    // So EVERY marker is cleared here, unconditionally, whichever writer set
+    // it — the live path above, or `markCaptureBacklogOwedStmt` below.
     //
-    // The marker is what carries that now, so it is CLEARED rather than left:
-    // `outbox_owed` says "a live forward owed this row", and the forward that
-    // owed it was A's. Left set, the drain would read it as owed to B and ship
-    // A's prompts, with their text, to a deployment that never saw them —
-    // exactly the leak the removed floor was reset to prevent. Set-only would
-    // have made this marker worse than the bound it replaced.
+    // `rearmFor`'s caller then has the chance to re-mark B's OWN backlog in the
+    // SAME transaction (its optional third argument, applied after this wipe):
+    // what a human granted FOR B, at the instant they granted it, which is a
+    // fact about B and survives the switch on purpose. What must not survive
+    // is a marker that fact did not produce — A's own leftover attempts.
     this.disownCapturesStmt = db.prepare(
       `UPDATE audit_events SET outbox_owed = NULL
         WHERE outbox_owed IS NOT NULL AND event_type IN (${CAPTURE_TYPE_LIST})`,
@@ -709,15 +712,29 @@ export class SqliteHistorySyncRepository {
    *
    * Delivery is a fact about ONE recipient: rows sent to the deployment a
    * machine has just left are undelivered as far as the new one is concerned.
-   * All three in one transaction, so a crash between them cannot leave stamps
-   * attributed to the wrong deployment, or a boundary that belongs to another.
+   * All four in one transaction, so a crash between them cannot leave stamps
+   * attributed to the wrong deployment, a boundary that belongs to another, or
+   * a disown with no re-mark to follow it.
    *
    * The boundary is written HERE and only here, which is what freezes it: a
    * re-attach to the SAME deployment (a key rotation) leaves the fingerprint
    * unchanged, so this never runs and the backlog does not widen back over rows
    * the live path has since delivered.
+   *
+   * `backfillCapturesBefore` is the caller's OWN "now" at the instant a human
+   * granted existing-history consent for the deployment this call is arming —
+   * the same instant `backlogBefore` freezes — passed only when that grant is
+   * valid, since this method has no way to check consent itself and must not
+   * mark a row owed for a machine that never agreed to it. Applied AFTER the
+   * disown above, in the SAME transaction: what the disown clears is a marker
+   * a DIFFERENT deployment's forward left, never this one's own grant, so the
+   * two cannot race and a crash between them cannot strand the ledger disowned
+   * with nothing re-marked — the transaction either lands whole or not at all,
+   * and a fingerprint mismatch that has not yet committed re-enters this
+   * method on the very next pass. Omit it (the structural-only tests do) to
+   * exercise the disown in isolation.
    */
-  rearmFor(fingerprint: string, backlogBefore: number): void {
+  rearmFor(fingerprint: string, backlogBefore: number, backfillCapturesBefore?: number): void {
     this.ensureRowStmt.run();
     withTransaction(
       this.db,
@@ -735,6 +752,9 @@ export class SqliteHistorySyncRepository {
         // be disowned is a marker the PREVIOUS deployment's forward wrote.
         if (previous !== null && previous !== undefined && previous !== fingerprint) {
           this.disownCapturesStmt.run();
+        }
+        if (backfillCapturesBefore !== undefined) {
+          this.markCaptureBacklogOwedStmt.run({ before: backfillCapturesBefore });
         }
         this.setFingerprintStmt.run({ fingerprint, backlogBefore });
       },

@@ -700,6 +700,124 @@ describe('SqliteHistorySyncRepository — captures the outbox still owes', () =>
   });
 });
 
+// The consent-time backfill: the one OTHER writer of `outbox_owed`, and the
+// one that reaches a capture the live forward path never touched — a machine
+// that ran the whole thing detached has none of its captures marked by
+// anything else. Deliberately a separate describe block from the section
+// above: those tests are the drain's read, given a marker; these are about
+// what writes the marker in the first place.
+describe('SqliteHistorySyncRepository — the consent-time backfill', () => {
+  it('marks an unattempted capture owed, as of the bound', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-prompt',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(MINUTE),
+      content: 'text of a pre-attach prompt',
+    });
+    // No markCaptureOwed call — this row is exactly what the live forward path
+    // never reaches, because it was never attempted.
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+
+    db.historySync.markCaptureBacklogOwed(T0 + 2 * MINUTE);
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+  });
+
+  // `before` is the caller's OWN "now" at the moment consent was granted, never
+  // a boundary this call re-derives — so a capture recorded at or after it must
+  // not be swept in, even though it is unattempted in exactly the same way.
+  it('does not reach a capture recorded at or after the bound', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-prompt',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(5 * MINUTE),
+      content: 'text of a prompt recorded after the grant',
+    });
+
+    db.historySync.markCaptureBacklogOwed(T0 + 2 * MINUTE);
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+  });
+
+  // code_change is a capture kind and is deliberately excluded from every
+  // capture-lane read — see the sibling test above. The backfill shares
+  // CAPTURE_TYPE_LIST with the drain's own read, so this pins that the NEW
+  // writer respects the same exclusion rather than assuming it from the
+  // reader alone.
+  it('never marks a code_change, whatever else is on disk', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-scan',
+      eventType: 'code_change',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(MINUTE),
+      content: 'the entire contents of a source file',
+      contentHash: 'd'.repeat(64),
+    });
+
+    db.historySync.markCaptureBacklogOwed(ALL);
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+  });
+
+  // Structural rows are the other lane entirely and must never be pulled into
+  // this one — they already have their own re-arm on the structural drain.
+  it('never marks a structural row', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+
+    db.historySync.markCaptureBacklogOwed(ALL);
+    const owedIds = db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id);
+    expect(owedIds).toEqual(['s-1-prompt']);
+    expect(owedIds).not.toContain('s-1-llm');
+    expect(owedIds).not.toContain('s-1-tool');
+  });
+
+  it('is idempotent: a repeat call over the same window changes nothing further', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-prompt',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(MINUTE),
+      content: 'text of a prompt',
+    });
+
+    db.historySync.markCaptureBacklogOwed(ALL);
+    db.historySync.markCaptureBacklogOwed(ALL);
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+  });
+
+  // A row the drain already settled must stay settled: `synced_at IS NULL` is
+  // part of the same WHERE clause the drain's own read uses, not an extra
+  // guard bolted on.
+  it('does not re-open a capture that already synced', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-prompt',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(MINUTE),
+      content: 'text of a prompt',
+    });
+    db.historySync.markSynced(['s-1-prompt'], T0);
+
+    db.historySync.markCaptureBacklogOwed(ALL);
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+  });
+});
+
 // The ledger's reads used to scan `audit_events` — the table captures land in.
 // The comments on idx_audit_events_sync and idx_audit_claimed claim the indexes
 // serve them; these pin that claim, because a comment cannot notice when a

@@ -966,20 +966,25 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
   // attached gateway, so it is never marked, and the window it sits in stops
   // being something anyone has to reason about.
   //
-  // NO BACKFILL, and refusing one is the decision rather than an omission. A
-  // store upgrading from the window-based drain carries rows that design
-  // considered owed and this one cannot: nothing recorded whether a forward was
-  // ever attempted for them. The only column that could seed this is
-  // `backlog_before`, and seeding from it would re-import the DETACHED window —
-  // the precise leak the marker exists to close, reintroduced by the migration
-  // that closes it. So those rows stay unmarked and are never sent.
+  // NO BACKFILL HERE, and refusing one at THIS site is the decision rather than
+  // an omission. A store upgrading from the window-based drain carries rows
+  // that design considered owed and this migration cannot: nothing recorded
+  // whether a forward was ever attempted for them, and the only column that
+  // could seed one is `backlog_before` — seeding from it here would re-import
+  // the DETACHED window, the precise leak the marker exists to close,
+  // reintroduced by the migration that closes it.
   //
-  // The cost is real and worth naming: on a machine attached today, captures the
-  // live path already failed to deliver are dropped from the outbox by this
-  // upgrade, and `capturesPending` reads false, so status reports the machine as
-  // caught up while the deployment never receives them. That is the safe
-  // direction — it sends nothing the grant did not cover — but it is a loss, and
-  // silent.
+  // That is scoped to THIS SITE. `SqliteHistorySyncRepository.markCaptureBacklogOwed`
+  // is the deliberate backfill: it runs once, outside any migration, at the
+  // moment a human grants existing-history consent (`aka attach`'s
+  // `askAboutHistory`), bounded to what is on disk at that instant rather than
+  // to a boundary a later pass could widen. So a row left unmarked by this
+  // migration is not permanently unreachable — it is reachable the next time
+  // this machine attaches and its owner says yes, and the consent copy states
+  // that before it happens. What stays true here is narrower than it once
+  // was: a machine that upgrades this column WITHOUT ever attaching, or whose
+  // owner declines, sends none of it, and `capturesPending` reads false for
+  // exactly the rows nobody has yet been asked about.
   if (!columns.includes('outbox_owed')) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN outbox_owed integer`);
   }

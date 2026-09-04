@@ -226,6 +226,7 @@ export class SqliteHistorySyncRepository {
   private readonly freezeBoundaryStmt: StatementSync;
   private readonly captureRowsStmt: StatementSync;
   private readonly markOwedStmt: StatementSync;
+  private readonly markCaptureBacklogOwedStmt: StatementSync;
   private readonly captureSkipCountStmt: StatementSync;
   private readonly disownCapturesStmt: StatementSync;
   private readonly partitionStmt: StatementSync;
@@ -278,10 +279,20 @@ export class SqliteHistorySyncRepository {
     // approximates it, and got both ends wrong — rows a previous attachment left
     // owed fell below a boundary that a re-attach moved, and the entire DETACHED
     // span sat above it, so a machine that ran three weeks unattached would have
-    // shipped every prompt in those weeks, with text, on re-attaching. Neither
-    // is reachable now: a capture recorded while detached never passes through
-    // the attached gateway, so nothing marks it, and no window has to be reasoned
-    // about at all.
+    // shipped every prompt in those weeks, with text, on re-attaching the moment
+    // it opened a session, whether or not anyone asked. A capture recorded while
+    // detached never passes through the attached gateway, so the LIVE forward
+    // path never marks it, and no ongoing drain pass has a time window to reason
+    // about.
+    //
+    // The one other writer of this column is `markCaptureBacklogOwedStmt` below,
+    // and it is a deliberate exception rather than a second inference route: it
+    // runs exactly ONCE, at the moment a human grants existing-history consent
+    // (`aka attach`'s `askAboutHistory`), bounded to what was on disk at that
+    // instant rather than to a boundary that moves on every later pass. The
+    // three-weeks failure mode above was an AUTOMATIC, ongoing inference nobody
+    // asked for; this is a single explicit action the consent copy already
+    // describes before it runs.
     //
     // `:before` is a GRACE WINDOW rather than a boundary. It buys quiet, not
     // correctness: it keeps this pass off rows the live forward is probably
@@ -312,6 +323,18 @@ export class SqliteHistorySyncRepository {
     // marker on a settled row would start to mean something.
     this.markOwedStmt = db.prepare(
       `UPDATE audit_events SET outbox_owed = 1 WHERE id = :id AND synced_at IS NULL`,
+    );
+
+    // The consent-time backfill: everything this machine already has, as of the
+    // moment a human said yes. `:before` is passed by the caller as "now" at
+    // that moment — never re-derived here — so the set marked owed is exactly
+    // the backlog the consent prompt already showed a count for, not a boundary
+    // that could later widen. Idempotent: a row already marked stays marked.
+    this.markCaptureBacklogOwedStmt = db.prepare(
+      `UPDATE audit_events SET outbox_owed = 1
+        WHERE synced_at IS NULL
+          AND event_type IN (${CAPTURE_TYPE_LIST})
+          AND started_at < :before`,
     );
 
     this.stampStmt = db.prepare(
@@ -536,6 +559,24 @@ export class SqliteHistorySyncRepository {
    */
   markCaptureOwed(id: string): void {
     this.markOwedStmt.run({ id });
+  }
+
+  /**
+   * Mark every capture already on disk as owed, as of `before`.
+   *
+   * The consent-time backfill, called once from `aka attach` when a human
+   * grants existing-history consent — never from an ongoing drain pass, and
+   * never inferred from a boundary that could later move. `before` is the
+   * caller's own "now" at the moment consent was granted, so what this marks
+   * is exactly the backlog the consent prompt already counted, not whatever a
+   * later re-attach or key rotation might widen it to.
+   *
+   * Returns how many rows matched, for the caller to log or test against. Not a
+   * count of NEWLY marked rows — a row still unsynced from an earlier call
+   * matches again and is counted again, the same as `UPDATE`'s own `changes`.
+   */
+  markCaptureBacklogOwed(before: number): number {
+    return Number(this.markCaptureBacklogOwedStmt.run({ before }).changes);
   }
 
   /** Record delivery. Called only AFTER the far side has accepted the rows. */

@@ -75,7 +75,22 @@ export const MODEL_JUDGE_PAYLOAD_VERSION = 1;
 // authorized by attaching and is unaffected. Declining only means an
 // undelivered capture is DROPPED rather than retained and retried — exactly the
 // behaviour of every release before the outbox existed.
-export const HISTORY_SYNC_PAYLOAD_VERSION = 2;
+//
+// v3 WIDENS THE SUBJECT AGAIN, inside the same "everything this machine still
+// owes" scope v2 opened — not a third lane, but the CAPTURE lane reaching
+// further back. Through v2, a capture recorded before this machine ever
+// attached could never be marked owed at all: `outbox_owed` was set only by a
+// live forward that ran while attached, and a pre-attach capture never passed
+// through that path. v3 adds ONE other writer of that marker —
+// `markCaptureBacklogOwed`, called once from `aka attach` at the instant a
+// human grants this consent, bounded to what is already on disk at that
+// moment. So as of v3 the pre-attach backlog is no longer structural-only: it
+// is marked owed and drains through the exact same capture lane, with the
+// same masking rule, as a capture the live path failed to deliver. Every v2
+// grant is invalidated and re-asked, for the same reason v1's was — declining
+// now changes what text can leave the machine for a set of rows it did not
+// before.
+export const HISTORY_SYNC_PAYLOAD_VERSION = 3;
 
 // How the plugin runs.
 //   'standalone' — everything against the local store under ~/.aka. No other
@@ -253,11 +268,11 @@ export const WorkspaceSettings = z.object({
   // covers the current payload and must be re-granted.
   modelJudgeConsent: ModelJudgeConsent.optional(),
   // Records that the user consented to the DEFERRED send — the outbox — along
-  // with the payload shape and the endpoint they agreed to. Since payload v2
-  // that covers both the pre-attach backlog and undelivered captures (which
-  // carry prompt/reply text in `content`); the key name predates the widening.
-  // Absent until granted, and a grant for a different endpoint or an older
-  // payload no longer counts.
+  // with the payload shape and the endpoint they agreed to. Since payload v3
+  // that covers the pre-attach backlog AND undelivered captures alike, and both
+  // carry prompt/reply/tool-output text in `content`; the key name predates
+  // both widenings. Absent until granted, and a grant for a different endpoint
+  // or an older payload no longer counts.
   historySyncConsent: HistorySyncConsent.optional(),
 });
 export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;

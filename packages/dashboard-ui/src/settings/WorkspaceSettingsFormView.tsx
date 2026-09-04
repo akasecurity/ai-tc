@@ -114,11 +114,11 @@ export const HISTORY_SYNC_SECTION_DESCRIPTION =
   'Whether activity this machine has not delivered to the deployment it is attached to may be ' +
   'sent later. Two kinds qualify: what was already recorded before it attached, and anything a ' +
   'live send could not deliver because the deployment was unreachable or refused the ' +
-  'credential. The first is the record of activity only: which sessions ran and when, in which ' +
-  'project, repo and branch, token usage and model per call, which tools were called with their ' +
-  'inputs truncated and every detected secret already masked, and what was detected in those ' +
-  'inputs. The second is what was captured, and for a prompt, an assistant reply or a tool ' +
-  'result that INCLUDES ITS TEXT. What is masked in that text follows the policy assigned to ' +
+  'credential. Both are sent the same way: which sessions ran and when, in which project, repo ' +
+  'and branch, token usage and model per call, which tools were called with their inputs ' +
+  'truncated and every detected secret already masked, what was detected in those inputs, and ' +
+  'the prompts, assistant replies and tool results themselves — for which a captured one ' +
+  'INCLUDES ITS TEXT. What is masked in that text follows the policy assigned to ' +
   'the detection that flagged the value: it is masked only where that policy is redact or ' +
   'block, and under monitor or warn the value is sent as it was seen, as is everything outside ' +
   'a flagged span. Every detection ships on monitor, so on a default install nothing in that ' +
@@ -138,7 +138,7 @@ export const HISTORY_SYNC_CHOICES: Choice<HistorySyncChoice>[] = [
     value: 'granted',
     label: 'Shared',
     description:
-      'Undelivered activity may be sent later — including the text of captured prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block.',
+      'Activity from before this machine attached, and anything undelivered since, may be sent later — including the text of prompts, replies and tool results, in which a value is masked only where the detection that flagged it is set to redact or block.',
   },
 ];
 
@@ -149,8 +149,9 @@ export const HISTORY_SYNC_STALE_BADGE = 'Paused';
 
 export const HISTORY_SYNC_STALE_NOTICE =
   'Your grant was recorded against an older version of this setting, which did not cover the ' +
-  'text of captured prompts, replies and tool results — sending is paused until you re-consent. ' +
-  'Saving with "Shared" selected re-consents to the current version.';
+  'text of the activity recorded before this machine attached — only what a live send failed ' +
+  'to deliver afterward — sending is paused until you re-consent. Saving with "Shared" ' +
+  'selected re-consents to the current version.';
 
 // This is a custody change from one-way redaction: with the grant, a detected
 // value survives as recoverable ciphertext instead of being destroyed. The form

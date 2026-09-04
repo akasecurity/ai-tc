@@ -129,11 +129,19 @@ describe('runAttachedSync — the device-command pass', () => {
   it('services a command, so the block is reached at all', async () => {
     attach();
     getPolicyBundle.mockRejectedValue(new Error('ECONNREFUSED'));
+    // Relative to the real clock, not a hardcoded pair of instants:
+    // `runAttachedSync`'s own deps expose no `now` to inject (unlike
+    // `runCommandSync`'s direct suite, which pins fixed instants either side
+    // of `expiresAt`), because production always runs this against the real
+    // wall clock and widening the entry's surface just for this test would
+    // be a seam nothing else needs. A future absolute date goes stale the
+    // moment the calendar catches up to it — this test is not about expiry
+    // at all, so it only needs `expiresAt` to stay comfortably ahead.
     pollCommand.mockResolvedValue({
       id: 'cmd_1',
       kind: 'shares_rescan',
-      issuedAt: '2026-09-03T00:00:00.000Z',
-      expiresAt: '2026-09-04T00:00:00.000Z',
+      issuedAt: new Date(Date.now() - 3_600_000).toISOString(),
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
     });
 
     const { runAttachedSync } = await import('../../src/attached/sync-entry.ts');

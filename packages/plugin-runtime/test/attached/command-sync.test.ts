@@ -43,15 +43,11 @@ const CREDENTIAL: AttachedCredential = {
   apiKey: 'not-a-real-key-6a1f8e3b7d25',
 };
 
-// Relative to the real clock, not a hardcoded pair of instants: most cases
-// below call deps(scan) with no `now`, so runCommandSync falls back to the
-// real wall clock against this fixture's own expiresAt. A future absolute
-// date goes stale the moment the calendar catches up to it.
 const COMMAND = {
   id: 'cmd_1',
   kind: 'shares_rescan' as const,
-  issuedAt: new Date(Date.now() - 3_600_000).toISOString(),
-  expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+  issuedAt: '2026-09-03T12:00:00.000Z',
+  expiresAt: '2026-09-04T12:00:00.000Z',
 };
 
 function attach(): void {
@@ -60,8 +56,8 @@ function attach(): void {
 }
 
 /** Fixed instants either side of COMMAND's own `expiresAt`. */
-const BEFORE_DEADLINE = () => Date.parse(COMMAND.expiresAt) - 1_000;
-const AFTER_DEADLINE = () => Date.parse(COMMAND.expiresAt) + 1_000;
+const BEFORE_DEADLINE = () => Date.parse('2026-09-04T11:59:59.000Z');
+const AFTER_DEADLINE = () => Date.parse('2026-09-04T12:00:01.000Z');
 
 // The clock DEFAULTS rather than falling through to the ambient one, because
 // `runCommandSync` reads `deps.now ?? Date.now` and COMMAND carries a fixed

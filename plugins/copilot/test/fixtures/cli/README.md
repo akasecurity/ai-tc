@@ -94,3 +94,66 @@ confirmed live (this is what produced every fixture here):
 - Tool name observed: `bash` (lowercase). `toolArgs` for it carries
   `command`, `description`, `mode: "sync"`, `initial_wait: 30` — the last two
   not mentioned anywhere in the epic's table.
+
+## Second pass: `modifiedArgs`, `ask`, and why it stopped there
+
+Same CLI, same auth method, later the same day. Two more `preToolUse` fields
+confirmed live; three more events attempted and blocked by an environment
+condition, documented rather than silently dropped.
+
+- **`modifiedArgs` genuinely rewrites the call.** The hook returned
+  `{"modifiedArgs":{"command":"echo modified-by-hook"}}` for a call whose
+  original command was `echo MODIFYME-original`. The transcript ran the
+  _rewritten_ command — `modified-by-hook` appeared in the output, the
+  original string never did. Confirmed by effect, not by echoing the input
+  back.
+
+- **`permissionDecision: "ask"` resolves to a denial in non-interactive
+  mode — it does not hang.** First attempt looked like a hang (25s, no
+  stdout, process killed) and that reading would have been wrong. The debug
+  log for that run states the mechanism precisely, from the runtime's own
+  internals rather than from stdout text:
+
+  ```
+  [DEBUG] [rust:copilot_runtime::session::session_helpers] respondToPermission:
+    requestId=70118366-..., kind=denied-no-approval-rule-and-could-not-request-from-user
+  ```
+
+  So `ask` fails closed when there is nobody to ask, rather than blocking a
+  headless run forever. Worth relying on rather than assuming: a policy that
+  maps to `ask` on this surface is safe in CI/automation contexts by this
+  mechanism, not despite it.
+
+- **A real tool-name fingerprint, from the session's own tool-selection
+  log**, is worth recording since #411's table names none of these: `bash`,
+  `read_bash`, `stop_bash`, `list_bash`, `apply_patch`, `view`, `web_fetch`,
+  `fetch_copilot_cli_documentation`, `skill`, `sql`, `session_store_sql`,
+  `read_agent`, `list_agents`, `write_agent`, `rg`, `glob`, **`task`** (a
+  real subagent-delegation tool exists — worth using to drive
+  `subagentStart`/`subagentStop` in a follow-up), plus a `github-mcp-server`
+  MCP server wired in **by default**, contributing several
+  `github-mcp-server-*` tools without being asked for.
+
+- **A context-budget wall is what ended this pass, and it is NOT the
+  default MCP server** — that was the first suspect, and it was ruled out
+  live rather than assumed. Every invocation after this point — across a
+  fresh `$COPILOT_HOME`, a fresh login, and `--disable-builtin-mcps` —
+  failed identically and immediately (0 AI credits, ~3-7s) with:
+
+  ```
+  Static system messages and tool definitions exceed the model's usable context budget.
+  ```
+
+  Ruled out before stopping: not this session's accumulated state (a
+  brand-new `$COPILOT_HOME` with a fresh login failed the same way on its
+  first prompt); not the built-in MCP tools specifically
+  (`--disable-builtin-mcps` made no difference); not a bad `--model` guess
+  mattering (the flag's own error for an invalid name gives no list of
+  valid ones to try). Reads as an account/entitlement condition — this
+  account's available model tier may not have room for the CLI's own
+  baseline system prompt plus its default tool set, independent of anything
+  a hook or this spike did. `postToolUseFailure`, `preMcpToolCall`,
+  `subagentStart`/`subagentStop`, `preCompact`, `notification`, and
+  `errorOccurred` remain undriven because of this, not from lack of a
+  plan — the `task` tool above and a deliberately-failing `view` call were
+  both queued and never got to run.

@@ -180,6 +180,13 @@ export interface RunHistorySyncDeps {
   sendBatch?: (events: readonly RecordAuditEventRequest[]) => Promise<{ settled: number }>;
   /** Injected alongside sendBatch in tests; the capture lane's route. */
   sendCaptures?: (events: readonly IngestEvent[]) => Promise<{ settled: number }>;
+  /**
+   * The single-event route, used for exactly one row rather than the batch
+   * route's aggregate ack. Resolves void: unlike `sendBatch`, there is no
+   * `settled` count to under-read, because there is nothing left to split a
+   * batch of one into — see sendChunk's `sendSingleRow`.
+   */
+  sendOne?: (event: RecordAuditEventRequest) => Promise<void>;
 }
 
 /** sha256 of the endpoint. Nothing reads the address back; only sameness matters. */
@@ -305,12 +312,13 @@ export async function runHistorySync(
       return didNotRun('already-running');
     }
 
-    // ONE client, two senders. The lanes differ only in the route they take and
-    // the shape they carry; sharing the client keeps them on one connection,
-    // one timeout and — the part that matters — one credential read. A second
-    // `createRemoteClient` here would be a second place to get that wrong.
+    // ONE client, three senders. The lanes differ only in the route they take
+    // and the shape they carry; sharing the client keeps them on one
+    // connection, one timeout and — the part that matters — one credential
+    // read. A second `createRemoteClient` here would be a second place to get
+    // that wrong.
     const client =
-      deps.sendBatch !== undefined && deps.sendCaptures !== undefined
+      deps.sendBatch !== undefined && deps.sendCaptures !== undefined && deps.sendOne !== undefined
         ? undefined
         : createRemoteClient({
             endpoint: connection.endpoint,
@@ -322,7 +330,7 @@ export async function runHistorySync(
       deps.sendBatch ??
       (async (events: readonly RecordAuditEventRequest[]): Promise<{ settled: number }> => {
         // THROWS rather than optional-chains. `client` is undefined only when
-        // both senders were injected, in which case this closure is unreachable
+        // every sender was injected, in which case this closure is unreachable
         // — but `await client?.recordAuditEvents(...)` would resolve silently if
         // the construction condition above ever changed, and the caller reads a
         // resolved promise as "delivered" and stamps the rows synced. That is
@@ -341,14 +349,30 @@ export async function runHistorySync(
         // upsert settles a duplicate resend silently, so unlike the capture
         // ack there is no separate `duplicates` term to add in. Returned
         // rather than discarded, so the caller can tell "the call resolved"
-        // from "the deployment actually took the batch" — see sendChunk.
+        // from "the deployment actually took the batch" — see sendChunk. This
+        // route is for more than one row; a chunk of exactly one goes out
+        // through `sendOne` instead, below.
         return { settled: ack.accepted };
+      });
+
+    const sendOne =
+      deps.sendOne ??
+      (async (event: RecordAuditEventRequest): Promise<void> => {
+        // Symmetric with `send` above: unreachable when every sender was
+        // injected, and loud rather than silent if that ever stops being true.
+        if (client === undefined) throw new Error('history sync: no transport');
+        // Resolves void — there is no partial-accept count to read, which is
+        // the whole reason a chunk of one goes out here rather than through
+        // `recordAuditEvents` with a length-1 array: a batch ack naming fewer
+        // accepted than sent cannot be split any further, so at size one it
+        // has to be answerable outright. See sendChunk's `sendSingleRow`.
+        await client.recordAuditEvent(event);
       });
 
     const sendCaptures =
       deps.sendCaptures ??
       (async (events: readonly IngestEvent[]): Promise<{ settled: number }> => {
-        // Symmetric with `send` above: unreachable when both senders were
+        // Symmetric with `send` above: unreachable when every sender was
         // injected, and loud rather than silent if that ever stops being true.
         if (client === undefined) throw new Error('history sync: no transport');
         const ack = await client.ingestEvents({ events: [...events] });
@@ -362,6 +386,7 @@ export async function runHistorySync(
       return await drain({
         ledger,
         send,
+        sendOne,
         sendCaptures,
         now,
         sleep,
@@ -397,11 +422,19 @@ export async function runHistorySync(
 interface DrainDeps {
   ledger: LocalDatabase['historySync'];
   /**
-   * The structural lane's sender. Returns how many the deployment took, so
-   * the caller can tell "your batch landed" from "the call returned" — see
-   * sendChunk.
+   * The structural lane's BATCH sender, for a chunk of more than one row.
+   * Returns how many the deployment took, so the caller can tell "your batch
+   * landed" from "the call returned" — see sendChunk.
    */
   send: (events: readonly RecordAuditEventRequest[]) => Promise<{ settled: number }>;
+  /**
+   * The structural lane's SINGLE-EVENT sender, for a chunk of exactly one row.
+   * Resolves void rather than an ack: there is no partial-accept count to
+   * misread at size one, which is the whole reason this is a different route
+   * from `send` rather than `send` called with a length-1 array — see
+   * sendChunk's `sendSingleRow`.
+   */
+  sendOne: (event: RecordAuditEventRequest) => Promise<void>;
   /**
    * The CAPTURE lane's sender — a different route from `send`, never a variant
    * of it. Returns how many the deployment took, so the caller can tell "your
@@ -836,17 +869,20 @@ async function sendCapturesWithRetries(
  * should not normally be reached: the client validates its own body before
  * sending, and today's backend keeps `accepted` at the chunk's own length on
  * every return — but this plugin talks to deployments it does not ship.
+ *
+ * A chunk of exactly one is never sent through this route at all — see
+ * `sendSingleRow`, below, for why an aggregate ack cannot be trusted at that
+ * size either way, in whichever direction it is misread.
  */
 async function sendChunk(
   d: DrainDeps,
   chunk: readonly { id: string; event: RecordAuditEventRequest }[],
   beat: () => void,
 ): Promise<ChunkResult> {
-  const outcome = await sendWithRetries(
-    d,
-    chunk.map((c) => c.event),
-    beat,
-  );
+  const only = chunk.length === 1 ? chunk[0] : undefined;
+  if (only !== undefined) return await sendSingleRow(d, only, beat);
+
+  const outcome = await sendWithRetries(d, () => d.send(chunk.map((c) => c.event)), beat);
   if (outcome.verdict === 'sent') {
     const settled = outcome.settled;
     // The deployment did not take the whole batch. The comparison is against
@@ -861,13 +897,10 @@ async function sendChunk(
       // batch: the read has no cursor, so a deployment that consistently
       // under-accepts (one capping at 30, say) re-reads the same rows next
       // pass, under-accepts again, and wedges the lane for ever while
-      // reporting a reachable deployment as unreachable.
-      if (chunk.length > 1) return await isolateStructural(d, chunk, beat);
-      // A single row the deployment accepted the request for and then took
-      // nothing of. Not a rejection — nothing threw — so it is not skippable
-      // without inventing a verdict the deployment never gave. Stop, and
-      // leave it owed.
-      return { sent: 0, skipped: 0, stopped: 'unreachable' };
+      // reporting a reachable deployment as unreachable. `chunk.length` is
+      // more than one here — the branch above already took the size-one case
+      // out over the unambiguous route.
+      return await isolateStructural(d, chunk, beat);
     }
     d.ledger.markSynced(
       chunk.map((c) => c.id),
@@ -878,24 +911,63 @@ async function sendChunk(
   if (outcome.verdict === 'refused' || outcome.verdict === 'unreachable') {
     return { sent: 0, skipped: 0, stopped: outcome.verdict };
   }
-  // Rejected on its merits. One row is at fault and the answer does not say
-  // which, so find it rather than lose the batch.
-  const only = chunk.length === 1 ? chunk[0] : undefined;
-  if (only !== undefined) {
-    d.ledger.markSkipped([only.id]);
-    return { sent: 0, skipped: 1 };
-  }
+  // Rejected on its merits, and more than one row — isolate rather than lose
+  // rows that were fine for one that was not.
   return await isolateStructural(d, chunk, beat);
 }
 
 /**
- * Re-send a batch one row at a time.
+ * Send the one row a batch could not be split any further than, over the
+ * SINGLE-EVENT route rather than the counting one.
+ *
+ * `sendChunk`'s batch route reads `AuditEventBatchAck.accepted` to tell
+ * "the call resolved" from "the deployment took it" — necessary because a
+ * multi-row batch can be split and re-sent until the answer is unambiguous.
+ * At size one there is nothing left to split into, so that same aggregate ack
+ * is unanswerable however it is read: trusting a resolved call unconditionally
+ * re-introduces the original over-count defect (a `{accepted: 0}` reply on an
+ * idempotent re-send of an already-delivered row — the crash-before-`markSynced`
+ * case the module docblock names — would then be indistinguishable from a
+ * genuine refusal and stop the pass forever), while trusting `accepted` at
+ * face value re-introduces the opposite one (a deployment whose duplicate
+ * count the ack has no field for reads as a hard stop, wedging both lanes on
+ * a row that already landed). `d.sendOne` sidesteps the count entirely: it
+ * resolves void, so a 2xx is unconditionally delivery and a throw is
+ * unconditionally not, the same way `client.recordAuditEvent` already
+ * disambiguates the live forward path's own per-item fallback.
+ */
+async function sendSingleRow(
+  d: DrainDeps,
+  one: { id: string; event: RecordAuditEventRequest },
+  beat: () => void,
+): Promise<ChunkResult> {
+  const outcome = await sendWithRetries(
+    d,
+    () => d.sendOne(one.event).then(() => ({ settled: 1 }) as const),
+    beat,
+  );
+  if (outcome.verdict === 'sent') {
+    d.ledger.markSynced([one.id], d.now());
+    return { sent: 1, skipped: 0 };
+  }
+  if (outcome.verdict === 'refused' || outcome.verdict === 'unreachable') {
+    return { sent: 0, skipped: 0, stopped: outcome.verdict };
+  }
+  // Rejected on its merits — exactly one row is at fault, and it is this one.
+  d.ledger.markSkipped([one.id]);
+  return { sent: 0, skipped: 1 };
+}
+
+/**
+ * Re-send a batch one row at a time, each over the single-event route.
  *
  * The structural twin of `isolate`: shared by the two answers that name no
  * row — a rejection on the merits, and an ack that took only some of the
  * batch. Both are aggregate verdicts over a body that has to be taken apart
  * before anything can be said about a particular row, and neither may cost
- * the rows that were fine.
+ * the rows that were fine. Recursing through `sendChunk` rather than calling
+ * `sendSingleRow` directly is deliberate: it is what routes each row through
+ * the unambiguous single-event send rather than a length-1 batch call.
  */
 async function isolateStructural(
   d: DrainDeps,
@@ -930,26 +1002,31 @@ async function isolateStructural(
  * `sendCapturesWithRetries` does for the capture lane, so the caller can tell
  * "the call resolved" from "the deployment took the whole batch" — see
  * sendChunk.
+ *
+ * Takes the attempt itself as a thunk, rather than `(d, events)`, so the one
+ * ladder serves both `sendChunk`'s batch route and `sendSingleRow`'s
+ * single-event one — they differ in what one attempt does, never in how a
+ * failed one is retried.
  */
 async function sendWithRetries(
   d: DrainDeps,
-  events: readonly RecordAuditEventRequest[],
+  attempt: () => Promise<{ settled: number }>,
   beat: () => void,
 ): Promise<{ verdict: 'sent'; settled: number } | { verdict: Exclude<RowVerdict, 'sent'> }> {
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+  for (let i = 0; i < MAX_ATTEMPTS; i += 1) {
     try {
-      const { settled } = await d.send(events);
+      const { settled } = await attempt();
       return { verdict: 'sent', settled };
     } catch (err) {
       const kind = classify(err);
       if (kind === 'refused') return { verdict: 'refused' };
       if (kind === 'skip') return { verdict: 'skip' };
-      if (attempt === MAX_ATTEMPTS - 1) return { verdict: 'unreachable' };
+      if (i === MAX_ATTEMPTS - 1) return { verdict: 'unreachable' };
       // Full jitter: several machines that failed together must not retry
       // together. The deployment's own retry-after is not available — the
       // transport carries the status alone, deliberately, so that a
       // server-authored string can never reach a log or a status line.
-      const ceiling = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** attempt);
+      const ceiling = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** i);
       // Before the sleep, not after: the gap this covers is the request that
       // just timed out plus the wait that follows it.
       beat();

@@ -136,8 +136,36 @@ function attach(opts: { grantFor?: string; credential?: boolean } = {}): void {
 }
 
 /** The pass, with time and pacing under the test's control. */
+type SendBatch = NonNullable<Parameters<typeof runHistorySync>[0]['sendBatch']>;
+
+/**
+ * A default `sendOne` derived from a test's own `sendBatch` mock, for the
+ * suites written before the single-event route split off it — routing a
+ * length-1 call through the same mock keeps every existing assertion about
+ * what `sendBatch` was called with intact. A test asserting the single-event
+ * route's OWN contract (a resolved call needs no settled count, unlike this
+ * shim) passes `sendOne` itself, which `run` below lets win.
+ *
+ * Overloaded on the argument's own optionality rather than left as one
+ * `| undefined` signature: `exactOptionalPropertyTypes` refuses `sendOne:
+ * undefined` as a stand-in for omitting the key, so a call site that always
+ * has a `sendBatch` (never `undefined`) needs a return type that says so.
+ */
+function deriveSendOne(sendBatch: SendBatch): (event: RecordAuditEventRequest) => Promise<void>;
+function deriveSendOne(
+  sendBatch: SendBatch | undefined,
+): ((event: RecordAuditEventRequest) => Promise<void>) | undefined;
+function deriveSendOne(sendBatch: SendBatch | undefined) {
+  if (sendBatch === undefined) return undefined;
+  return async (event: RecordAuditEventRequest) => {
+    const { settled } = await sendBatch([event]);
+    if (settled < 1) throw new Error('test double: sendBatch settled nothing for one row');
+  };
+}
+
 const run = (over: Partial<Parameters<typeof runHistorySync>[0]> = {}) => {
   let clock = T0;
+  const sendOne = deriveSendOne(over.sendBatch);
   return runHistorySync({
     base: home,
     settingsDir: settingsDirOf(home),
@@ -148,6 +176,7 @@ const run = (over: Partial<Parameters<typeof runHistorySync>[0]> = {}) => {
       return Promise.resolve();
     },
     random: () => 0,
+    ...(sendOne !== undefined ? { sendOne } : {}),
     ...over,
   });
 };
@@ -367,42 +396,74 @@ describe('runHistorySync — failures', () => {
     attach({ grantFor: ENDPOINT });
     seedRows(1); // one session root + one llm_call: a batch of 2
     const batchSizes: number[] = [];
-    const delivered: string[] = [];
+    const singles: string[] = [];
 
     const result = await run({
       // Claims only one of the two sent as a batch — which one is not
-      // knowable from the ack, so recovery has to re-send both singly.
+      // knowable from the ack, so recovery has to isolate.
       sendBatch: (events: readonly RecordAuditEventRequest[]) => {
         batchSizes.push(events.length);
-        if (events.length > 1) return Promise.resolve({ settled: 1 });
-        delivered.push(...events.map((e) => e.id));
-        return Promise.resolve({ settled: events.length });
+        return Promise.resolve({ settled: 1 });
+      },
+      // Isolation re-sends each row over the SINGLE-EVENT route rather than a
+      // length-1 call through the batch mock above — a resolved call here
+      // needs no settled count to trust; see sendChunk's `sendSingleRow`.
+      sendOne: (event: RecordAuditEventRequest) => {
+        singles.push(event.id);
+        return Promise.resolve();
       },
     });
 
-    // The batch attempt happened once, then every row was recovered through
-    // the SAME route one at a time — unlike the live forward path, this lane
-    // has no separate single-event route to fall back to.
-    expect(batchSizes).toEqual([2, 1, 1]);
-    expect(delivered).toEqual(['s-0', 's-0-llm']);
+    // The batch attempt happened once; both rows were then recovered singly,
+    // each over the unambiguous route rather than a second batch call.
+    expect(batchSizes).toEqual([2]);
+    expect(singles).toEqual(['s-0', 's-0-llm']);
     expect(attempted(result).outcome).toBe('ok');
     expect(attempted(result).sent).toBe(2);
     expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ pending: 0, sent: 2 });
   });
 
-  // The floor under that: a SINGLE row the deployment answered a 2xx for and
-  // then took nothing of is not stampable — the ack gave no verdict to skip
-  // on, and nothing threw — so it stays owed and the pass stops rather than
-  // inventing a verdict the deployment never gave.
-  it('leaves a single structural row owed when the deployment takes none of it', async () => {
+  // The floor under that: a chunk of exactly one row never goes through the
+  // batch route's aggregate ack at all, precisely because that ack is
+  // unanswerable at size one — see `sendSingleRow`'s own docblock. A resolved
+  // single-event call is therefore delivery outright, including the case the
+  // module's own docblock names: a crash between an ack and `markSynced`
+  // means the next pass re-sends a row the deployment already has, and an
+  // idempotent re-delivery must not read as a stall.
+  it('marks a lone pending row delivered on a resolved single-event send', async () => {
     attach({ grantFor: ENDPOINT });
-    seedRows(1);
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      // A session root with no child event is one pending structural row —
+      // no isolation needed to reach `sendSingleRow` from the top.
+      db.auditEvents.ensureSessionRoot('s-lone', new Date(T0 - 86_400_000).toISOString());
+    } finally {
+      db.close();
+    }
 
-    const result = await run({ sendBatch: () => Promise.resolve({ settled: 0 }) });
+    const result = await run({ sendOne: () => Promise.resolve() });
+
+    expect(attempted(result).outcome).toBe('ok');
+    expect(attempted(result).sent).toBe(1);
+    expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ pending: 0, sent: 1 });
+  });
+
+  // The other side of that route: nothing threw before, and now something
+  // genuinely does — a real connectivity failure, not an ambiguous ack — so
+  // the row stays owed and the pass reports the deployment unreachable.
+  it('leaves a lone pending row owed when the single-event route cannot be reached', async () => {
+    attach({ grantFor: ENDPOINT });
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.auditEvents.ensureSessionRoot('s-lone', new Date(T0 - 86_400_000).toISOString());
+    } finally {
+      db.close();
+    }
+
+    const result = await run({ sendOne: () => Promise.reject(new Error('socket hang up')) });
 
     expect(attempted(result).outcome).toBe('unreachable');
-    expect(attempted(result).sent).toBe(0);
-    expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ pending: 2, sent: 0 });
+    expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ pending: 1, sent: 0 });
   });
 
   // Hitting the budget PAUSES the drain rather than failing it: the remainder
@@ -1009,6 +1070,7 @@ describe('runHistorySync — the capture lane', () => {
       },
       random: () => 0,
       sendBatch: l.sendBatch,
+      sendOne: deriveSendOne(l.sendBatch),
       sendCaptures: l.sendCaptures,
     });
 
@@ -1042,6 +1104,7 @@ describe('runHistorySync — the capture lane', () => {
       },
       random: () => 0,
       sendBatch: l.sendBatch,
+      sendOne: deriveSendOne(l.sendBatch),
       sendCaptures: l.sendCaptures,
     });
 

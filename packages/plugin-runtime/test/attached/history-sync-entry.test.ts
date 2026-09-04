@@ -157,7 +157,11 @@ describe('runHistorySyncPass', () => {
 
     await runHistorySyncPass(home, {
       sleep: () => Promise.resolve(),
-      sendBatch: () => Promise.resolve(),
+      // Unreachable in these cases — the one structural row seeded is
+      // stamped at the attach instant, not before it, so it never enters the
+      // backlog these tests drain — but still typed as a real sender rather
+      // than a bare resolve now that the caller reads what it settled.
+      sendBatch: (events) => Promise.resolve({ settled: events.length }),
       sendCaptures: () => Promise.resolve({ settled: 0 }),
     });
     expect(readHistorySyncState(dataDirOf(home))?.skippedTotal).toBe(1);
@@ -166,7 +170,11 @@ describe('runHistorySyncPass', () => {
     // while the row stayed gone for ever.
     await runHistorySyncPass(home, {
       sleep: () => Promise.resolve(),
-      sendBatch: () => Promise.resolve(),
+      // Unreachable in these cases — the one structural row seeded is
+      // stamped at the attach instant, not before it, so it never enters the
+      // backlog these tests drain — but still typed as a real sender rather
+      // than a bare resolve now that the caller reads what it settled.
+      sendBatch: (events) => Promise.resolve({ settled: events.length }),
       sendCaptures: () => Promise.resolve({ settled: 0 }),
     });
     expect(readHistorySyncState(dataDirOf(home))?.skippedTotal).toBe(1);
@@ -219,7 +227,11 @@ describe('runHistorySyncPass', () => {
     // false — the branch under test — with no network and no clock involved.
     await runHistorySyncPass(home, {
       sleep: () => Promise.resolve(),
-      sendBatch: () => Promise.resolve(),
+      // Unreachable in these cases — the one structural row seeded is
+      // stamped at the attach instant, not before it, so it never enters the
+      // backlog these tests drain — but still typed as a real sender rather
+      // than a bare resolve now that the caller reads what it settled.
+      sendBatch: (events) => Promise.resolve({ settled: events.length }),
       sendCaptures: () => Promise.resolve({ settled: 0 }),
     });
     const after = readHistorySyncState(dataDirOf(home));

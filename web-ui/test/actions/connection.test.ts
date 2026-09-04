@@ -57,7 +57,8 @@ vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 // which is not a side effect any case in this file should have. Its own
 // behaviour is covered by @akasecurity/local-ops's background-schedule suite.
 const backgroundSync = vi.hoisted(() => ({ uninstallCalls: [] as string[] }));
-vi.mock('@akasecurity/local-ops', () => ({
+vi.mock('@akasecurity/local-ops', async (importActual) => ({
+  ...(await importActual()),
   uninstallBackgroundSync: (base: string) => {
     backgroundSync.uninstallCalls.push(base);
   },

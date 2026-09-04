@@ -338,12 +338,14 @@
         "!$TURBO_ROOT$/web-ui/out/**",
         "!$TURBO_ROOT$/web-ui/next-env.d.ts",
         "!$TURBO_ROOT$/cli/web-ui/**",
-        // All three CLI plugins' tsup outDirs. None is named `dist`, so the
+        // The CLI plugins' build outDirs. None is named `dist`, so the
         // blanket dist exclusion above does not reach them — and being listed in
         // .gitignore does not reach them either, exactly as the `.turbo` note
         // above records: a `$TURBO_ROOT$` glob hashes an untracked file anyway.
-        // Without all three, every plugin build perturbs this task's hash and
-        // costs a full re-run of the guard suite.
+        // Without them, every plugin build perturbs this task's hash and costs a
+        // full re-run of the guard suite. plugins/copilot builds nothing yet —
+        // that entry reserves the path, so the exclusion is already in place on
+        // the commit that first writes to it.
         "!$TURBO_ROOT$/plugins/claude-code/scripts/**",
         "!$TURBO_ROOT$/plugins/codex/scripts/**",
         "!$TURBO_ROOT$/plugins/antigravity/scripts/**",

@@ -3,6 +3,7 @@
   "version": "0.9.9",
   "description": "AI Traffic Control — inspect and govern AI prompts in GitHub Copilot",
   "license": "Apache-2.0",
+  "private": true,
   "type": "module",
   "repository": {
     "type": "git",
@@ -10,15 +11,6 @@
     "directory": "plugins/copilot"
   },
   "homepage": "https://github.com/akasecurity/ai-tc/tree/main/plugins/copilot",
-  "files": [
-    "hooks",
-    "skills",
-    "scripts"
-  ],
-  "publishConfig": {
-    "registry": "https://registry.npmjs.org",
-    "access": "public"
-  },
   "scripts": {
     "lint": "eslint src test *.config.*",
     "test": "vitest run",
@@ -32,7 +24,6 @@
     "@types/node": "^24.13.3",
     "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9.39.5",
-    "tsup": "^8.0.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.11"
   }

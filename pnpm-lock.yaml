@@ -779,9 +779,6 @@ importers:
       eslint:
         specifier: ^9.39.5
         version: 9.39.5(jiti@2.7.0)
-      tsup:
-        specifier: ^8.0.0
-        version: 8.5.1(jiti@2.7.0)(postcss@8.5.26)(tsx@4.23.12)(typescript@5.9.3)(yaml@2.9.0)
       typescript:
         specifier: ^5.8.0
         version: 5.9.3

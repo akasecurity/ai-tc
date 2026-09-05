@@ -5,6 +5,7 @@ import type {
   ManagedContext,
   ManagedSettingKey,
   ModelJudgeConsentChoice,
+  WebChatCaptureConsentChoice,
   WorkspaceSettings,
 } from '@akasecurity/schema';
 import {
@@ -15,6 +16,7 @@ import {
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
   isVaultConsentValid,
+  isWebChatCaptureConsentValid,
   managedByLabel,
   NO_MANAGED_CONTEXT,
 } from '@akasecurity/schema';
@@ -151,6 +153,94 @@ export const HISTORY_SYNC_STALE_NOTICE =
   'Your grant was recorded against an older version of this setting, which did not cover the ' +
   'text of captured prompts, replies and tool results — sending is paused until you re-consent. ' +
   'Saving with "Shared" selected re-consents to the current version.';
+
+// The grant covering what the browser extension may write down from a web chat.
+// Its own consent rather than a corner of an existing one, because it records a
+// class of thing nothing recorded before: per-turn model and token metadata, the
+// tool calls a reply made, and the reply's own text.
+type WebChatChoice = 'granted' | 'revoked';
+
+export const WEB_CHAT_SECTION_LABEL = 'Web chat capture';
+
+// The full disclosure, shown in the expanded body. Four things it has to do,
+// and the last is the one easiest to lose:
+//
+//   name every class of thing the grant covers, rather than "records your chats"
+//   qualify the reply text by the mode in force — the stored `responses` answer
+//     decides which replies are kept, and this page has no control for it
+//   qualify the MASKING by the same standard the history-sync row states above,
+//     because it is the same mechanism: stored text is masked only where the
+//     detection that flagged the value resolves to redact or stronger, and
+//     every detection ships on monitor. "Masked at every detected span" would
+//     promise a default install a protection it does not have
+//   keep ENFORCEMENT out of the bargain. Blocking, redaction and warnings on
+//     what a user sends are not gated on this grant, so a machine that never
+//     answers is protected exactly as before. Copy implying otherwise tells a
+//     user they are turning protection off.
+//
+// It also declines to say the recording stays on this machine: an attached
+// machine forwards what it records to its deployment like any other activity,
+// and that reader is the one who most needs to be told.
+export const WEB_CHAT_SECTION_DESCRIPTION =
+  'Permission for the AKA browser extension to record what it observes on a web chat — ChatGPT ' +
+  'and Claude.ai. Per assistant turn it may record the model, the token counts the site reported, ' +
+  'and the name of each tool call the reply made with its salient argument masked; plus the reply ' +
+  'text itself, for the replies this machine is set to keep — by default only a reply a scan ' +
+  'found something in. What is masked in that text follows the policy assigned to the detection ' +
+  'that flagged the value: it is masked only where that policy is redact, vault or block, and ' +
+  'under monitor or warn the value is stored as it was seen, as is everything outside a flagged ' +
+  'span. Every detection ships on monitor, so on a default install nothing in that text is ' +
+  'masked. Your own messages are already recorded and this grant does not widen that; account, ' +
+  'plan and quota data are not covered by it. What is recorded goes to the local store under ' +
+  '~/.aka, and on a machine attached to a deployment it is forwarded there like any other ' +
+  'activity — this grant opens no outbound path of its own. It covers what is written down, not ' +
+  'what is protected: blocking, redaction and warnings on what you send run whether or not it is ' +
+  'given. Revoking stops future recording; it does not erase what is already stored.';
+
+export const WEB_CHAT_CHOICES: Choice<WebChatChoice>[] = [
+  {
+    value: 'revoked',
+    label: 'Not granted',
+    description:
+      'The extension records nothing new from a web chat — no per-turn metadata and no reply ' +
+      'text (default — never assumed). Enforcement is unaffected: what you send is still ' +
+      'blocked, redacted or warned on exactly as before.',
+  },
+  {
+    value: 'granted',
+    label: 'Granted',
+    description:
+      'The extension may record per-turn model, token and masked tool-call metadata, and may ' +
+      'store the assistant reply text this machine is set to keep under ~/.aka — in which a ' +
+      'value is masked only where the detection that flagged it is set to redact, vault or ' +
+      'block, and every detection ships on monitor.',
+  },
+];
+
+// The one-word form of WEB_CHAT_STALE_NOTICE, for the collapsed summary — same
+// reason as VAULT_STALE_BADGE: the row shows the STORED answer ("Granted"),
+// which is not what is in force, so the summary carries the contradiction.
+//
+// "Expired" rather than the siblings' "Paused" deliberately. Paused states what
+// is HAPPENING, and this surface records an answer; what acts on it is the
+// browser extension's own recording path. What this badge can say truthfully is
+// that the grant no longer counts.
+export const WEB_CHAT_STALE_BADGE = 'Expired';
+
+export const WEB_CHAT_STALE_NOTICE =
+  'Your grant was recorded against an older version of this setting, which covered less than is ' +
+  'recorded now, so it no longer counts as consent. Saving with "Granted" selected re-consents ' +
+  'to the current version.';
+
+// A grant recorded against another consent version no longer authorizes
+// anything — the version moved because what is recorded widened. The row still
+// has to say the grant is there and dormant, and that re-saving re-consents at
+// the current version.
+export function webChatCaptureStale(webChatCapture: WorkspaceSettings['webChatCapture']): boolean {
+  return (
+    webChatCapture?.consent !== undefined && !isWebChatCaptureConsentValid(webChatCapture.consent)
+  );
+}
 
 // This is a custody change from one-way redaction: with the grant, a detected
 // value survives as recoverable ciphertext instead of being destroyed. The form
@@ -453,6 +543,11 @@ export interface WorkspaceSettingsFormViewProps {
       // what an unrelated save sends, so it asserts nothing about this grant.
       historySyncConsent: HistorySyncConsentChoice;
       vaultConsent: VaultConsentChoice;
+      // THREE answers again, and for the reason the two above carry: an
+      // untouched row must be able to say "leave it alone", or an unrelated save
+      // re-stamps this grant's acknowledgedAt — or deletes it outright the
+      // moment its consent version is bumped.
+      webChatCaptureConsent: WebChatCaptureConsentChoice;
     },
   ) => void;
   // Register this machine against an organization's deployment, and undo that.
@@ -557,6 +652,25 @@ export function WorkspaceSettingsFormView({
     settings.historySyncConsent,
     settings.controlPlane?.endpoint,
   );
+  // VALIDITY, not presence, and TOUCHED rather than a seed comparison — the
+  // model-judge row's shape, for the same two reasons. A grant recorded against
+  // another version authorizes nothing, so it must not render as "Granted"; and
+  // a seed cannot stand in for an answer, because both seeds are wrong for a
+  // stale grant.
+  const initialWebChat: WebChatChoice = isWebChatCaptureConsentValid(
+    settings.webChatCapture?.consent,
+  )
+    ? 'granted'
+    : 'revoked';
+  const [webChat, setWebChat] = useState<WebChatChoice>(initialWebChat);
+  const [webChatTouched, setWebChatTouched] = useState(false);
+  const answerWebChat = (choice: WebChatChoice): void => {
+    setWebChatTouched(true);
+    setWebChat(choice);
+  };
+  // Read once: the badge and the row's default-open state must agree about
+  // staleness, and two separate calls could not disagree loudly.
+  const webChatStale = webChatCaptureStale(settings.webChatCapture);
   const [vaultConsent, setVaultConsent] = useState(vaultChoiceOf(settings.vaultConsent));
   const [inlineReveal, setInlineReveal] = useState(settings.vaultInlineReveal);
 
@@ -584,7 +698,11 @@ export function WorkspaceSettingsFormView({
     // one it was. Any deliberate answer is an edit here, because the row's
     // stored state and its seed disagree.
     historySyncTouched ||
-    modelJudgeTouched;
+    modelJudgeTouched ||
+    // TOUCHED, for the reason the two above are: a stale grant seeds 'revoked',
+    // so declining it in place moves no comparison here and Save would stay
+    // disabled with the badge undismissable.
+    webChatTouched;
 
   return (
     <div className="flex max-w-4xl flex-col gap-7">
@@ -637,6 +755,35 @@ export function WorkspaceSettingsFormView({
             <p className="mb-3 text-xs text-text-3" data-slot="model-judge-disclosure">
               {MODEL_JUDGE_SECTION_DESCRIPTION}
             </p>
+          }
+        />
+        <SettingRow
+          label={WEB_CHAT_SECTION_LABEL}
+          // The one-line summary; the FULL disclosure is in the expanded body
+          // below, where it does not crowd the page.
+          description="Whether the browser extension may record what it sees on a web chat."
+          name="webChatCaptureConsent"
+          choices={WEB_CHAT_CHOICES}
+          value={webChat}
+          onChange={answerWebChat}
+          // NO `managed` prop, and that is a decision rather than an omission.
+          // An administrator pinning a consent key materialises a GRANT on the
+          // user's behalf when the pinned value is true, so making this lockable
+          // would let an organization consent to recording a person's web chats
+          // for them. This key is deliberately outside ManagedSettingKey.
+          alert={webChatStale ? WEB_CHAT_STALE_BADGE : undefined}
+          defaultOpen={webChatStale}
+          notice={
+            <>
+              {webChatStale && (
+                <p className="mb-3 text-xs text-sev-high-ink" data-slot="web-chat-stale-notice">
+                  {WEB_CHAT_STALE_NOTICE}
+                </p>
+              )}
+              <p className="mb-3 text-xs text-text-3" data-slot="web-chat-disclosure">
+                {WEB_CHAT_SECTION_DESCRIPTION}
+              </p>
+            </>
           }
         />
         {isAttached(settings) && (
@@ -729,6 +876,15 @@ export function WorkspaceSettingsFormView({
                   : 'revoked'
                 : 'unchanged',
               vaultConsent,
+              // UNTOUCHED means unchanged, not 'no' — the same rule the two
+              // rows above follow. A boolean here would re-stamp this grant's
+              // acknowledgedAt on every unrelated save, and delete it outright
+              // on everyone's next save once its consent version is bumped.
+              webChatCaptureConsent: webChatTouched
+                ? webChat === 'granted'
+                  ? 'granted'
+                  : 'revoked'
+                : 'unchanged',
               vaultInlineReveal: inlineReveal,
             });
           }}

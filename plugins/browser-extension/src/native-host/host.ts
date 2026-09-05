@@ -155,6 +155,20 @@ export async function handleRequest(
         ...(result.blockedReferences ? { blockedReferences: result.blockedReferences } : {}),
       };
     }
+    default: {
+      // A request type the wire contract defines but this host has no handler
+      // for yet. Answered rather than dropped: background.ts holds a pending
+      // entry per requestId, so a silent drop leaves its caller waiting for the
+      // relay deadline instead of learning at once. `isHostRequest` refuses
+      // these before runHost ever reaches here, so the reply a real extension
+      // sees is that validator's — this branch answers a direct caller.
+      return {
+        type: 'error',
+        requestId: request.requestId,
+        ok: false,
+        message: `unsupported request type: ${request.type}`,
+      };
+    }
   }
 }
 

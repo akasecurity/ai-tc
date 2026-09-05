@@ -50,4 +50,16 @@ export const chatgptAdapter: ProviderAdapter = {
     sendButton.click();
     return true;
   },
+
+  // The network half is UNIMPLEMENTED for this site: the endpoint paths and
+  // stream shapes chatgpt.com actually uses are not known to this repository
+  // and are not guessed here. An empty `endpoints` generates an empty entry in
+  // the tap's build-time table, so the tap forwards nothing from this site and
+  // the parsers below are never reached. An adapter that matches nothing is
+  // honest; one that matches a guessed URL reads as coverage while observing
+  // the wrong traffic, or none.
+  endpoints: [],
+  requiredPaths: { request: [], response: [] },
+  parseRequest: () => ({ requiredPathsSeen: false }),
+  parseStream: () => ({ push: () => undefined, end: () => null }),
 };

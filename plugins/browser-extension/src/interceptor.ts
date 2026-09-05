@@ -27,8 +27,14 @@ export function createSubmitInterceptor(opts: {
   sessionId: string;
   relay: (request: BackgroundRequest) => Promise<BackgroundResponse>;
   showBanner: (message: string, tone: BannerTone) => void;
+  // Called once per message that actually left the composer, and never for one
+  // this interceptor stopped. The network path counts each of these as a turn
+  // it must see an exchange for, so a decision that blocks — or a redact it
+  // could not carry out, or a send button that went missing — must not be
+  // charged to it: nothing was sent, so nothing on the network can answer.
+  noteSend: () => void;
 }): SubmitInterceptor {
-  const { adapter, sessionId, relay, showBanner } = opts;
+  const { adapter, sessionId, relay, showBanner, noteSend } = opts;
   let bypassNextSubmit = false;
   // One decision at a time per composer. Without it, Enter pressed twice while
   // a slow host is still deciding relays the same text twice — two rows in the
@@ -46,7 +52,18 @@ export function createSubmitInterceptor(opts: {
     setTimeout(() => {
       bypassNextSubmit = false;
     }, 0);
-    if (adapter.submit(composer)) return true;
+    if (adapter.submit(composer)) {
+      // After the send, not before: submit() clicks the site's own button, so
+      // the request it starts is already on its way when this runs and the
+      // network path can pair the two. Wrapped because health reporting may
+      // never break the send it is reporting on.
+      try {
+        noteSend();
+      } catch {
+        // A reporting fault costs the count, never the message.
+      }
+      return true;
+    }
     // Selector drift: there was no send button to click. handleSubmit has
     // already preventDefault()ed the user's own send, so nothing sent this
     // message and nothing else is going to. Staying silent here is the worst

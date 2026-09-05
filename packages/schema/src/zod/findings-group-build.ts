@@ -1,21 +1,23 @@
-// Pure findings grouping + enum translation. No I/O, no side
-// effects. Shared by every findings read path (e.g. the SQLite adapter in
-// @akasecurity/persistence; callers layer overrides/pack-names/cursor
-// pagination on top), so the grouped-findings shape can never drift between
-// callers.
+// Pure finding-TYPE folding + enum translation. No I/O, no side effects.
+// Shared by every findings read path (e.g. the SQLite adapter in
+// @akasecurity/persistence; callers layer pack-names and cursor pagination on
+// top), so the type-level shape can never drift between callers.
 //
-// The grouping algorithm and the DB↔API enum mappings are NORMATIVE (derived
-// from the findings spec enum tables). Keep this a behavior-preserving home for
-// that logic — callers add their own concerns (overrides, pack names, cursors)
-// around these primitives.
+// The fold and the DB↔API enum mappings are NORMATIVE (derived from the findings
+// spec enum tables). Keep this a behavior-preserving home for that logic —
+// callers add their own concerns (pack names, cursors) around these primitives.
+//
+// Nothing here materializes a finding: a type is built from its store-side
+// aggregate alone, and the findings OF a type are a separate keyset-paged read
+// (ListFindingInstancesQuery, scoped to `subtype`). That split is what removes
+// the per-type cap this module used to impose.
 import type {
   FindingAction,
   FindingFacetItem,
   FindingFacets,
-  FindingGroup,
-  FindingInstance,
   FindingProvider,
   FindingStatus,
+  FindingTypeSummary,
   FindingUser,
   Severity,
 } from './finding.ts';
@@ -138,8 +140,8 @@ export function toDbProviderFilter(apiProvider: FindingProvider): string[] {
 // ─── Grouping ────────────────────────────────────────────────────────────────
 
 /**
- * A finding row (a finding joined with its parent event), the input
- * to buildFindingGroups. Callers project their storage rows onto this shape:
+ * A finding row (a finding joined with its parent event), the input to the
+ * instance-level build. Callers project their storage rows onto this shape:
  * the SQLite adapter maps the
  * findings⋈events join. `occurredAt` is ISO; `repo`/`file` come from the event
  * metadata (empty string when absent). Severity/category/actionTaken carry the
@@ -241,18 +243,6 @@ export function deriveFindingStatus(row: {
   return 'open';
 }
 
-/** The distinct people among a group's rows, by id, first occurrence first. */
-function distinctUsers(instances: FindingInstance[]): FindingUser[] {
-  const seen = new Set<string>();
-  const users: FindingUser[] = [];
-  for (const i of instances) {
-    if (i.user === undefined || seen.has(i.user.id)) continue;
-    seen.add(i.user.id);
-    users.push(i.user);
-  }
-  return users;
-}
-
 /** A stable order for a store-supplied user list: by label, then id. */
 function sortUsers(users: FindingUser[]): FindingUser[] {
   return [...users].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
@@ -275,6 +265,17 @@ function sortUsers(users: FindingUser[]): FindingUser[] {
 export interface FindingGroupAggregate {
   /** Exact instance count across ALL instances, not just the preview. */
   instanceCount: number;
+  /**
+   * The rule's severity, as the raw DB value.
+   *
+   * A property of the RULE rather than of any finding — every finding of one
+   * rule shares it — so a store's `GROUP BY rule_id` carries it for free. It
+   * lives here rather than being read off a row because the type-level build
+   * has no rows at all: see buildFindingTypes.
+   */
+  severity?: string;
+  /** The rule's category, as the raw DB value. Per-rule, exactly as `severity`. */
+  category?: string;
   /** Distinct raw event.sourceTool values across ALL instances. */
   sourceTools: string[];
   /** Distinct raw findings.action_taken values across ALL instances. */
@@ -319,169 +320,80 @@ export interface FindingGroupAggregate {
   searchText?: string;
 }
 
-export interface BuildGroupsOptions {
-  /** findingId → DB action override. Absent ⇒ no overrides. */
-  overrides?: Map<string, string>;
+export interface BuildFindingTypesOptions {
   /** ruleId → pack display name. Absent ⇒ detection.name is null. */
   packNames?: Map<string, string>;
-  /**
-   * ruleId → whole-group folds (see FindingGroupAggregate). Absent for a
-   * ruleId ⇒ every fold is derived from that group's rows, which are then
-   * assumed complete.
-   *
-   * MUTUALLY EXCLUSIVE with `overrides`: the aggregate folds an action set the
-   * store computed over rows the overrides were never applied to, so
-   * `aggregateAction` and the action filter would honor the stored actions
-   * while `instances[].action` honors the overrides. Pass one or the other.
-   */
-  aggregates?: Map<string, FindingGroupAggregate>;
 }
 
 /**
- * Group GroupableFindingRow[] by ruleId into FindingGroup[]. Rows are expected
- * newest-first (that order is preserved into each group's instances). An
- * override in `opts.overrides` takes precedence over the row's actionTaken.
+ * Whole-group aggregates → FindingTypeSummary[], one per ruleId.
  *
- * With `opts.aggregates`, `rows` may carry only a bounded preview of each
- * group's newest instances — see FindingGroupAggregate.
+ * There are no rows. Every field is folded by the caller's store in SQL and
+ * arrives on the aggregate, which is the whole point: answering "which rules
+ * are firing" costs one `GROUP BY rule_id` and never materializes a finding.
+ * The read that shows a type's findings is a separate, keyset-paged instance
+ * query scoped to `subtype: [id]`, so no per-type cap bounds what a reader can
+ * reach.
+ *
+ * The raw DB values arrive UNMAPPED (sourceTools, actionsTaken, statusInputs,
+ * severity, category) and are translated here by the same mappers every other
+ * path uses, so SQL never restates an enum mapping.
+ *
+ * Iteration order is the map's own; callers sort with sortFindingTypes.
  */
-export function buildFindingGroups(
-  rows: GroupableFindingRow[],
-  opts: BuildGroupsOptions = {},
-): FindingGroup[] {
-  const overrides = opts.overrides;
+export function buildFindingTypes(
+  aggregates: ReadonlyMap<string, FindingGroupAggregate>,
+  opts: BuildFindingTypesOptions = {},
+): FindingTypeSummary[] {
   const packNames = opts.packNames;
-  const aggregates = opts.aggregates;
+  const types: FindingTypeSummary[] = [];
 
-  // Collect rows per ruleId, preserving order (rows arrive newest-first).
-  const byRuleId = new Map<string, GroupableFindingRow[]>();
-  for (const row of rows) {
-    const existing = byRuleId.get(row.ruleId);
-    if (existing) existing.push(row);
-    else byRuleId.set(row.ruleId, [row]);
-  }
+  for (const [ruleId, agg] of aggregates) {
+    // Sorted for the same reason providers are: a store's own dedup order need
+    // not be stable between identical requests, and cells render in array order.
+    const users = sortUsers(agg.users ?? []);
 
-  const groups: FindingGroup[] = [];
+    // Several source tools can fold onto one provider ('api'), so dedup after
+    // mapping, then sort — a set that reshuffles per request would flap the chips.
+    const providers = [...new Set(agg.sourceTools.map(toApiProvider))].sort();
 
-  for (const [ruleId, ruleRows] of byRuleId) {
-    const instances: FindingInstance[] = ruleRows.map((r): FindingInstance => {
-      const effectiveDbAction = overrides?.get(r.id) ?? r.actionTaken;
-      return {
-        id: r.id,
-        provider: toApiProvider(r.sourceTool),
-        repo: r.repo,
-        file: r.file,
-        ...(r.toolName === undefined ? {} : { toolName: r.toolName }),
-        ...(r.eventId === undefined ? {} : { eventId: r.eventId }),
-        ...(r.sessionId === undefined ? {} : { sessionId: r.sessionId }),
-        ...(r.user === undefined ? {} : { user: r.user }),
-        action: toApiAction(effectiveDbAction),
-        detectedAt: r.occurredAt,
-        confidence: r.confidence,
-        status: r.status,
-      };
-    });
-
-    // Every fold below reads the whole group: from the store's aggregate when
-    // one is supplied (the rows are then only a preview), else from the rows.
-    const agg = aggregates?.get(ruleId);
-
-    // users: the distinct people across the whole group. From the aggregate
-    // when one is supplied — sorted, as providers are below, because a store's
-    // own dedup order need not be stable between identical requests and the
-    // cell renders in array order. With an aggregate that carries no users the
-    // group carries none: the rows are only a preview, and a fold over them
-    // would name the preview's people as the group's. Without an aggregate the
-    // rows are the whole group, so fold them, dedup by id, first occurrence
-    // first (newest-first).
-    const users: FindingUser[] = agg ? sortUsers(agg.users ?? []) : distinctUsers(instances);
-
-    // latestDetectedAt: ISO strings sort lexically, so string max works.
-    const latestDetectedAt =
-      agg?.latestDetectedAt ??
-      ruleRows.reduce<string>(
-        (max, r) => (r.occurredAt > max ? r.occurredAt : max),
-        ruleRows[0]?.occurredAt ?? new Date(0).toISOString(),
-      );
-
-    // providers: from the rows, dedup preserving order of first occurrence
-    // (newest-first). An aggregate's sourceTools arrive in whatever order the
-    // store's own dedup produced, which need not be stable between identical
-    // requests — several tools can also fold onto one provider ('api') — so
-    // sort after mapping. Callers render these in array order; a set that
-    // reshuffles per request would flap the chips.
-    const seenProviders = new Set<string>();
-    const providers = (
-      agg
-        ? [...new Set(agg.sourceTools.map(toApiProvider))].sort()
-        : instances.map((i) => i.provider)
-    ).filter((p) => {
-      if (seenProviders.has(p)) return false;
-      seenProviders.add(p);
-      return true;
-    });
-
-    // The group's distinct actions, then aggregateAction: uniform → value;
-    // mixed → null.
-    const actionSet = new Set(
-      agg ? agg.actionsTaken.map(toApiAction) : instances.map((i) => i.action),
-    );
+    // Distinct actions, then aggregateAction: uniform → value; mixed → null.
+    const actionSet = new Set(agg.actionsTaken.map(toApiAction));
     const aggregateAction = actionSet.size === 1 ? ([...actionSet][0] ?? null) : null;
-
-    const severity = (ruleRows[0]?.severity ?? 'low') as Severity;
-
-    const detection = {
-      id: ruleId,
-      name: packNames?.get(ruleId) ?? null,
-    };
 
     // policy: synthesized by category — id = `category:{apiCategory}`, name =
     // apiCategory display string (findings have no FK to a specific policy yet).
-    const apiCategory = toApiCategory(ruleRows[0]?.category ?? 'custom');
-    const policy = { id: `category:${apiCategory}`, name: apiCategory };
+    const apiCategory = toApiCategory(agg.category ?? 'custom');
 
-    const match = {
-      maskedValue: ruleRows[0]?.maskedMatch ?? '',
-      contextPrefix: '', // empty (pending privacy review)
-    };
-
-    const status = foldGroupStatus(
-      agg ? agg.statusInputs.map(deriveFindingStatus) : instances.map((i) => i.status),
-    );
-
-    const group: FindingGroup = {
+    const type: FindingTypeSummary = {
       id: ruleId,
       category: apiCategory,
       subtype: ruleId, // human label comes with pack metadata later
-      severity,
-      match,
-      detection,
-      policy,
-      instanceCount: agg?.instanceCount ?? instances.length,
+      severity: (agg.severity ?? 'low') as Severity,
+      detection: { id: ruleId, name: packNames?.get(ruleId) ?? null },
+      policy: { id: `category:${apiCategory}`, name: apiCategory },
+      instanceCount: agg.instanceCount,
       providers,
       aggregateAction,
-      latestDetectedAt,
-      instances,
-      status,
+      latestDetectedAt: agg.latestDetectedAt,
+      status: foldGroupStatus(agg.statusInputs.map(deriveFindingStatus)),
       ...(users.length > 0 ? { users } : {}),
     };
 
-    // Prime the whole-group caches while the aggregate is in hand: `instances`
-    // is only a preview, so neither the free text nor the action set can be
-    // recovered from the built group alone (see groupHaystack / groupActions).
-    // A store that skips searchText (no `q` to answer) leaves the haystack cold
-    // rather than priming one from the preview that nothing will read.
-    if (agg) {
-      actionsCache.set(group, [...actionSet]);
-      if (agg.searchText !== undefined) {
-        haystackCache.set(group, buildHaystack(group, agg.searchText));
-      }
+    // Prime the whole-group caches while the aggregate is in hand: neither the
+    // free text nor the action set can be recovered from the built summary
+    // alone (see typeHaystack / typeActions). A store that skips searchText (no
+    // `q` to answer) leaves the haystack cold rather than priming one nothing
+    // will read.
+    actionsCache.set(type, [...actionSet]);
+    if (agg.searchText !== undefined) {
+      haystackCache.set(type, buildHaystack(type, agg.searchText));
     }
 
-    groups.push(group);
+    types.push(type);
   }
 
-  return groups;
+  return types;
 }
 
 // ─── Filtering ───────────────────────────────────────────────────────────────
@@ -497,65 +409,57 @@ export interface FindingFilterOptions {
   subtype?: string[] | undefined;
 }
 
-// The lowercased free-text haystack for a group is immutable once the group is
+// The lowercased free-text haystack for a type is immutable once the type is
 // built, but applyFindingFilters runs several times per request (once per facet
 // dimension in computeFindingFacets, plus the final filtered set). Memoise it
-// per group object so the join/lowercase happens once instead of once per pass.
-// Keyed weakly so groups are collected with the request that produced them (no
+// per object so the join/lowercase happens once instead of once per pass.
+// Keyed weakly so entries are collected with the request that produced them (no
 // cross-request leak).
-const haystackCache = new WeakMap<FindingGroup, string>();
+const haystackCache = new WeakMap<FindingTypeSummary, string>();
 
 /**
- * The searchable text of a group: subtype, category, maskedMatch, policy name,
- * id, and each instance's repo/file/toolName/id. A toolName is folded as its
- * display label ("via Bash") so a `q` for it matches exactly what the
- * Locations column shows — the bare name alone would collide with file paths
- * (q "Read" hitting every README). `extra` carries whole-group instance text
- * for stores whose `instances` is only a preview (see
- * FindingGroupAggregate.searchText) — buildFindingGroups primes the cache with
- * it, so this stays the ONE definition of what `q` matches.
+ * The searchable text of a type: subtype, category, policy name and id, plus
+ * `extra` — the store's whole-type instance text (distinct repos/files/toolNames;
+ * see FindingGroupAggregate.searchText), which buildFindingTypes primes the
+ * cache with. A toolName is folded there as its display label ("via Bash") so a
+ * `q` for it matches exactly what the Locations column shows — the bare name
+ * alone would collide with file paths (q "Read" hitting every README).
+ *
+ * This is the ONE definition of what `q` matches on the types list. It reaches
+ * no finding-level text of its own: a type carries no instances and no masked
+ * value, so a `q` for a masked fragment or a raw finding id is answered by the
+ * INSTANCE read (rowHaystack in findings-flat-build.ts), not here.
  */
-function buildHaystack(g: FindingGroup, extra?: string): string {
+function buildHaystack(t: FindingTypeSummary, extra?: string): string {
   return [
-    g.subtype,
-    g.category,
-    g.match.maskedValue,
-    g.policy.name,
-    g.id,
-    ...g.instances.map((i) => i.repo),
-    ...g.instances.map((i) => i.file),
-    ...g.instances.map((i) => (i.toolName ? `via ${i.toolName}` : '')),
-    ...g.instances.map((i) => i.id),
-    // The people: the whole group's list when the store folded one, plus the
-    // preview's own — the two overlap, and a haystack does not mind.
-    ...(g.users ?? []).map((u) => u.name),
-    ...g.instances.map((i) => i.user?.name ?? ''),
+    t.subtype,
+    t.category,
+    t.policy.name,
+    t.id,
+    ...(t.users ?? []).map((u) => u.name),
     ...(extra === undefined ? [] : [extra]),
   ]
     .join(' ')
     .toLowerCase();
 }
 
-function groupHaystack(g: FindingGroup): string {
-  const cached = haystackCache.get(g);
+function typeHaystack(t: FindingTypeSummary): string {
+  const cached = haystackCache.get(t);
   if (cached !== undefined) return cached;
-  const haystack = buildHaystack(g);
-  haystackCache.set(g, haystack);
+  const haystack = buildHaystack(t);
+  haystackCache.set(t, haystack);
   return haystack;
 }
 
-// The group's distinct actions. Cached (and, for preview-backed groups, primed
-// by buildFindingGroups from the store's aggregate) for the same reasons as
-// haystackCache: filtering runs several times per request, and `g.instances`
-// may hold only a preview of the group.
-const actionsCache = new WeakMap<FindingGroup, FindingAction[]>();
+// The type's distinct actions, primed by buildFindingTypes from the store's
+// aggregate. Cached for the same reason as haystackCache: filtering runs several
+// times per request. A summary carries no instances, so an unprimed entry has
+// nothing to fold and reports none — which only happens for a hand-built summary
+// in a test, never for one this module produced.
+const actionsCache = new WeakMap<FindingTypeSummary, FindingAction[]>();
 
-function groupActions(g: FindingGroup): FindingAction[] {
-  const cached = actionsCache.get(g);
-  if (cached !== undefined) return cached;
-  const actions = [...new Set(g.instances.map((i) => i.action))];
-  actionsCache.set(g, actions);
-  return actions;
+function typeActions(t: FindingTypeSummary): FindingAction[] {
+  return actionsCache.get(t) ?? [];
 }
 
 /**
@@ -582,26 +486,26 @@ export function countInstancesByStatus(
 }
 
 export function applyFindingFilters(
-  groups: FindingGroup[],
+  types: FindingTypeSummary[],
   opts: FindingFilterOptions,
-): FindingGroup[] {
-  let filtered = groups;
+): FindingTypeSummary[] {
+  let filtered = types;
 
   if (opts.severity && opts.severity.length > 0) {
     const sevSet = new Set(opts.severity);
     filtered = filtered.filter((g) => sevSet.has(g.severity));
   }
 
-  // Provider: keep groups with at least one instance on a matching provider.
+  // Provider: keep types with at least one finding on a matching provider.
   if (opts.providers && opts.providers.length > 0) {
     const providerSet = new Set(opts.providers);
     filtered = filtered.filter((g) => g.providers.some((p) => providerSet.has(p)));
   }
 
-  // Action: keep groups where at least one instance has a matching action.
+  // Action: keep types where at least one finding has a matching action.
   if (opts.actions && opts.actions.length > 0) {
     const actionSet = new Set(opts.actions);
-    filtered = filtered.filter((g) => groupActions(g).some((a) => actionSet.has(a)));
+    filtered = filtered.filter((t) => typeActions(t).some((a) => actionSet.has(a)));
   }
 
   if (opts.subtype && opts.subtype.length > 0) {
@@ -609,24 +513,23 @@ export function applyFindingFilters(
     filtered = filtered.filter((g) => subtypeSet.has(g.subtype));
   }
 
-  // Status: matches the GROUP's folded status (see foldGroupStatus), not "any
-  // instance matches" as provider/action do — the Status column shows exactly
-  // this one value, so a filtered row's badge always reads a requested status.
-  // The undefined guard is defensive for callers that build groups from rows
-  // without statuses (FindingGroup.status is optional in the contract); the
-  // SQLite store derives a status for every instance, so its groups always
-  // carry one.
+  // Status: matches the TYPE's folded status (see foldGroupStatus), not "any
+  // finding matches" as provider/action do — the status shown is exactly this
+  // one value, so a filtered row always reads a requested status. The undefined
+  // guard is defensive for callers whose aggregate carries no statuses (the
+  // field is optional in the contract); the SQLite store derives a status for
+  // every finding, so its types always carry one.
   if (opts.statuses && opts.statuses.length > 0) {
     const statusSet = new Set(opts.statuses);
     filtered = filtered.filter((g) => g.status !== undefined && statusSet.has(g.status));
   }
 
-  // q: case-insensitive substring over the group's cached search haystack
-  // (subtype, category, maskedMatch, policy name, id, and each instance's
-  // repo/file/id) — see groupHaystack.
+  // q: case-insensitive substring over the type's cached search haystack
+  // (subtype, category, policy name, id and the store's whole-type repo/file/
+  // toolName text) — see typeHaystack.
   if (opts.q) {
     const q = opts.q.toLowerCase();
-    filtered = filtered.filter((g) => groupHaystack(g).includes(q));
+    filtered = filtered.filter((t) => typeHaystack(t).includes(q));
   }
 
   return filtered;
@@ -642,18 +545,18 @@ const SEVERITY_RANK = SEVERITY_ORDER as Partial<Record<string, number>>;
 /**
  * The findings list's sort order: severity rank, then most recent, then id.
  *
- * The id tie-break makes the order TOTAL. Two groups can legitimately share a
+ * The id tie-break makes the order TOTAL. Two types can legitimately share a
  * severity and a latestDetectedAt, and without a third key their relative order
  * is whatever the sort happened to produce — which a keyset cursor cannot
- * resume from, because "everything after this group" is then ambiguous. Only
- * groups tied on both other keys are affected.
+ * resume from, because "everything after this one" is then ambiguous. Only
+ * types tied on both other keys are affected.
  *
- * Takes the fields it compares rather than a whole FindingGroup so a cursor can
- * be compared against the list without being inflated into one.
+ * Takes the fields it compares rather than a whole summary so a cursor can be
+ * compared against the list without being inflated into one.
  */
 export function compareFindingGroupOrder(
-  a: Pick<FindingGroup, 'severity' | 'latestDetectedAt' | 'id'>,
-  b: Pick<FindingGroup, 'severity' | 'latestDetectedAt' | 'id'>,
+  a: Pick<FindingTypeSummary, 'severity' | 'latestDetectedAt' | 'id'>,
+  b: Pick<FindingTypeSummary, 'severity' | 'latestDetectedAt' | 'id'>,
 ): number {
   const rankA = SEVERITY_RANK[a.severity] ?? -1;
   const rankB = SEVERITY_RANK[b.severity] ?? -1;
@@ -665,21 +568,24 @@ export function compareFindingGroupOrder(
   return a.id.localeCompare(b.id);
 }
 
-export function sortFindingGroups(groups: FindingGroup[]): FindingGroup[] {
-  return [...groups].sort(compareFindingGroupOrder);
+export function sortFindingTypes(types: FindingTypeSummary[]): FindingTypeSummary[] {
+  return [...types].sort(compareFindingGroupOrder);
 }
 
 // ─── Facets (per-filter-excluded counts) ─────────────────────────────────────
 
 /**
  * Per-dimension facet counts, each computed by applying all filters EXCEPT that
- * dimension's own — so "how many groups if I also pick X?" stays answerable.
+ * dimension's own — so "how many types if I also pick X?" stays answerable.
+ *
+ * Counts TYPES, which is the unit this list pages. The instance read computes
+ * its own facets over findings; a surface showing both states which is which.
  */
 export function computeFindingFacets(
-  allGroups: FindingGroup[],
+  allTypes: FindingTypeSummary[],
   opts: FindingFilterOptions,
 ): FindingFacets {
-  const forSeverity = applyFindingFilters(allGroups, {
+  const forSeverity = applyFindingFilters(allTypes, {
     providers: opts.providers,
     actions: opts.actions,
     statuses: opts.statuses,
@@ -691,7 +597,7 @@ export function computeFindingFacets(
     severityMap.set(g.severity, (severityMap.get(g.severity) ?? 0) + 1);
   }
 
-  const forProvider = applyFindingFilters(allGroups, {
+  const forProvider = applyFindingFilters(allTypes, {
     actions: opts.actions,
     statuses: opts.statuses,
     q: opts.q,
@@ -703,7 +609,7 @@ export function computeFindingFacets(
     for (const p of g.providers) providerMap.set(p, (providerMap.get(p) ?? 0) + 1);
   }
 
-  const forAction = applyFindingFilters(allGroups, {
+  const forAction = applyFindingFilters(allTypes, {
     providers: opts.providers,
     statuses: opts.statuses,
     q: opts.q,
@@ -712,10 +618,10 @@ export function computeFindingFacets(
   });
   const actionMap = new Map<string, number>();
   for (const g of forAction) {
-    for (const a of groupActions(g)) actionMap.set(a, (actionMap.get(a) ?? 0) + 1);
+    for (const a of typeActions(g)) actionMap.set(a, (actionMap.get(a) ?? 0) + 1);
   }
 
-  const forSubtype = applyFindingFilters(allGroups, {
+  const forSubtype = applyFindingFilters(allTypes, {
     providers: opts.providers,
     actions: opts.actions,
     statuses: opts.statuses,
@@ -725,11 +631,11 @@ export function computeFindingFacets(
   const subtypeMap = new Map<string, number>();
   for (const g of forSubtype) subtypeMap.set(g.subtype, (subtypeMap.get(g.subtype) ?? 0) + 1);
 
-  // A status-less group (possible only for callers whose rows carry no
+  // A status-less type (possible only for callers whose aggregate carries no
   // statuses — the SQLite store always derives one) contributes to no bucket:
   // the filter can't select it either, so a count it can never reach would
   // misstate the dimension.
-  const forStatus = applyFindingFilters(allGroups, {
+  const forStatus = applyFindingFilters(allTypes, {
     providers: opts.providers,
     actions: opts.actions,
     q: opts.q,

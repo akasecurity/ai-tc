@@ -22,7 +22,7 @@ export default function AppError({
   reset: () => void;
 }) {
   return (
-    <div className="px-8 pb-10 pt-7">
+    <div className="p-6">
       <Card className="mx-auto max-w-lg">
         <CardContent className="flex flex-col items-center gap-4 py-10 text-center">
           <span className="flex size-11 items-center justify-center rounded-full bg-sev-critical-fill">

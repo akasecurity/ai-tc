@@ -206,7 +206,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
   const sessionHref = session ? `/activity?id=${encodeURIComponent(session)}` : null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col px-8 pb-10 pt-7">
+    <div className="flex h-full min-h-0 flex-col p-6">
       <PageHead
         title="Findings"
         sub="Every sensitive-data finding across providers"

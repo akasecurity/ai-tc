@@ -114,7 +114,7 @@ export default function UpdatesPage() {
   const renderedAt = renderInstant();
 
   return (
-    <div className="px-8 pb-10 pt-7">
+    <div className="p-6">
       <PageHead
         title="Updates"
         sub="Installed vs latest for the CLI and agent plugins — the web twin of `aka update`"

@@ -15,7 +15,7 @@ export default function NewExceptionPage() {
   const options = rules.map((r) => ({ id: r.id, name: r.name }));
 
   return (
-    <div className="px-8 pb-10 pt-7">
+    <div className="p-6">
       <div className="pb-4 text-xs">
         <Link href="/exceptions" className="text-text-3 hover:text-text-2">
           ← All exceptions

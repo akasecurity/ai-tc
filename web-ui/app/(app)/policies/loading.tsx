@@ -7,7 +7,7 @@ import {
 export default function Loading() {
   return (
     // Mirrors page.tsx's wrapper, including the lg-gated height cap.
-    <div aria-busy className="flex min-h-full flex-col px-8 pb-8 pt-7 lg:h-full lg:min-h-0">
+    <div aria-busy className="flex min-h-full flex-col p-6 lg:h-full lg:min-h-0">
       <PageHeadSkeleton />
       <CompactStatStripSkeleton />
       <MasterDetailSkeleton stacksBelowLg listWidth="w-80" />

@@ -44,7 +44,7 @@ export default function SettingsPage() {
   const credentialState = readControlPlaneCredentialState(settingsDir(), settings.controlPlane);
 
   return (
-    <div className="px-8 pb-10 pt-7">
+    <div className="p-6">
       <PageHead title="Settings" sub="Workspace configuration for this machine." />
       <SettingsClient settings={settings} managed={managed} credentialState={credentialState} />
     </div>

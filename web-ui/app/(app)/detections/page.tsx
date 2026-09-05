@@ -108,7 +108,7 @@ export default async function DetectionsPage({
     },
   ];
   return (
-    <div className="flex h-full min-h-0 flex-col px-8 pb-8 pt-7">
+    <div className="flex h-full min-h-0 flex-col p-6">
       <PageHead title="Detections" sub="Rules that generate findings from code, prompts & pastes" />
 
       {showsVaultDrift(vaultDrift) && (

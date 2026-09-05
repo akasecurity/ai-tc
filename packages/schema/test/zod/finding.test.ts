@@ -13,7 +13,7 @@ import {
   FindingProvider,
   FindingStatus,
   FindingUser,
-  ListGroupedFindingsQuery,
+  ListFindingTypesQuery,
   ResolutionMethod,
 } from '../../src/zod/finding.ts';
 import { Policy } from '../../src/zod/policy.ts';
@@ -250,9 +250,9 @@ describe('FindingPolicyRef', () => {
   });
 });
 
-describe('ListGroupedFindingsQuery.severity', () => {
+describe('ListFindingTypesQuery.severity', () => {
   it('accepts Severity[] values (not FindingAction[])', () => {
-    const result = ListGroupedFindingsQuery.safeParse({ severity: ['critical', 'high'] });
+    const result = ListFindingTypesQuery.safeParse({ severity: ['critical', 'high'] });
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.severity).toEqual(['critical', 'high']);
@@ -260,8 +260,8 @@ describe('ListGroupedFindingsQuery.severity', () => {
   });
 
   it('rejects FindingAction values in severity field', () => {
-    expect(ListGroupedFindingsQuery.safeParse({ severity: ['blocked'] }).success).toBe(false);
-    expect(ListGroupedFindingsQuery.safeParse({ severity: ['monitored'] }).success).toBe(false);
+    expect(ListFindingTypesQuery.safeParse({ severity: ['blocked'] }).success).toBe(false);
+    expect(ListFindingTypesQuery.safeParse({ severity: ['monitored'] }).success).toBe(false);
   });
 });
 

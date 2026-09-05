@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { FindingGroup } from '../../src/zod/index.ts';
+import type { FindingTypeSummary } from '../../src/zod/index.ts';
 import {
   addToLocation,
   compareFindingGroupOrder,
@@ -9,7 +9,7 @@ import {
   foldGroupStatus,
   matchesInstanceFilters,
   newLocationAccumulator,
-  sortFindingGroups,
+  sortFindingTypes,
   toInstanceDetail,
 } from '../../src/zod/index.ts';
 
@@ -186,8 +186,8 @@ describe('toInstanceDetail', () => {
 
 describe('compareFindingGroupOrder', () => {
   const group = (
-    over: Partial<FindingGroup>,
-  ): Pick<FindingGroup, 'severity' | 'latestDetectedAt' | 'id'> => ({
+    over: Partial<FindingTypeSummary>,
+  ): Pick<FindingTypeSummary, 'severity' | 'latestDetectedAt' | 'id'> => ({
     severity: 'critical',
     latestDetectedAt: '2026-01-01T00:00:00.000Z',
     id: 'a',
@@ -219,19 +219,19 @@ describe('compareFindingGroupOrder', () => {
     // degrading to a restart from the top rather than skipping rows.
     expect(
       compareFindingGroupOrder(
-        group({ severity: 'bogus' as FindingGroup['severity'] }),
+        group({ severity: 'bogus' as FindingTypeSummary['severity'] }),
         group({ severity: 'low' }),
       ),
     ).toBeLessThan(0);
   });
 
-  it('is the comparator sortFindingGroups uses', () => {
+  it('is the comparator sortFindingTypes uses', () => {
     const groups = [
       { severity: 'low', latestDetectedAt: '2026-01-03T00:00:00.000Z', id: 'x' },
       { severity: 'critical', latestDetectedAt: '2026-01-01T00:00:00.000Z', id: 'z' },
       { severity: 'critical', latestDetectedAt: '2026-01-01T00:00:00.000Z', id: 'y' },
-    ] as FindingGroup[];
-    expect(sortFindingGroups(groups).map((g) => g.id)).toEqual(['y', 'z', 'x']);
+    ] as FindingTypeSummary[];
+    expect(sortFindingTypes(groups).map((g) => g.id)).toEqual(['y', 'z', 'x']);
   });
 });
 

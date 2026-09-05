@@ -1,4 +1,4 @@
-import type { FindingAction, FindingInstance, FindingStatus } from '@akasecurity/schema';
+import type { FindingAction } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { formatConfidence } from '../../src/findings/FindingDetailView.tsx';
@@ -9,61 +9,23 @@ import {
   CATEGORY_LABEL,
   categoryLabel,
   categoryStyle,
-  filterInstancesByStatus,
   FINDING_STATUS_META,
   FINDING_STATUSES,
-  FINDINGS_COLUMNS,
   findingStatusMeta,
   SEVERITIES,
   USER_COLUMN_TITLE,
 } from '../../src/findings/meta.ts';
 import { KeyIcon } from '../../src/shared/icons.tsx';
 
-// Minimal FindingInstance fixture — only `id` and `status` vary per test.
-function buildInstance(id: string, status?: FindingStatus): FindingInstance {
-  return {
-    id,
-    provider: 'claudecode',
-    repo: 'acme/api',
-    file: 'src/a.ts',
-    action: 'allowed',
-    detectedAt: '2026-01-01T00:00:00.000Z',
-    confidence: 0.9,
-    ...(status ? { status } : {}),
-  };
-}
-
-describe('FINDINGS_COLUMNS', () => {
-  it('lists every column the table renders, User between Sources and Locations', () => {
-    expect(FINDINGS_COLUMNS.map((c) => c.id)).toEqual([
-      'severity',
-      'subtype',
-      'sources',
-      'user',
-      'locations',
-      'action',
-      'status',
-      'latest',
-    ]);
-    expect(FINDINGS_COLUMNS.find((c) => c.id === 'user')?.header).toBe('User');
-  });
-
-  // A bare "User" on a security dashboard is read as "the person who did this",
-  // but attribution is the principal that INGESTED the event — for an org-level
-  // ingest key, the admin who minted it rather than whoever ran the job. The
-  // caveat used to live only in a backend repository docblock that no rendering
-  // surface repeated.
-  it('discloses on the User column that attribution is the ingesting principal', () => {
-    const title = FINDINGS_COLUMNS.find((c) => c.id === 'user')?.title;
-    expect(title).toBe(USER_COLUMN_TITLE);
-    expect(title).toMatch(/ingested by/i);
-    expect(title).toMatch(/api key/i);
-  });
-
-  it('leaves every other column undisclosed — the label already says what it is', () => {
-    expect(FINDINGS_COLUMNS.filter((c) => c.title !== undefined).map((c) => c.id)).toEqual([
-      'user',
-    ]);
+// A bare "User" on a security dashboard is read as "the person who did this",
+// but attribution is the principal that INGESTED the event — for an org-level
+// ingest key, the admin who minted it rather than whoever ran the job. The
+// caveat used to live only in a backend repository docblock that no rendering
+// surface repeated; it is the flat findings table's User header title now.
+describe('USER_COLUMN_TITLE', () => {
+  it('discloses that attribution is the ingesting principal', () => {
+    expect(USER_COLUMN_TITLE).toMatch(/ingested by/i);
+    expect(USER_COLUMN_TITLE).toMatch(/api key/i);
   });
 });
 
@@ -217,48 +179,5 @@ describe('formatConfidence', () => {
     expect(formatConfidence(0.7)).toEqual({ label: 'Medium · 0.70', tone: 'text-sev-high-ink' });
     expect(formatConfidence(0.69)).toEqual({ label: 'Low · 0.69', tone: 'text-text-2' });
     expect(formatConfidence(0)).toEqual({ label: 'Low · 0.00', tone: 'text-text-2' });
-  });
-});
-
-describe('filterInstancesByStatus', () => {
-  const instances: FindingInstance[] = [
-    buildInstance('i-open', 'open'),
-    buildInstance('i-handled', 'handled'),
-    buildInstance('i-resolved', 'resolved'),
-    buildInstance('i-dismissed', 'dismissed'),
-    buildInstance('i-legacy'), // no status (predates the resolution feature)
-  ];
-
-  it('keeps only instances whose own status is among the selected ones', () => {
-    expect(filterInstancesByStatus(instances, ['open'])).toEqual([instances[0]]);
-    expect(filterInstancesByStatus(instances, ['handled'])).toEqual([instances[1]]);
-  });
-
-  it('keeps the union when several statuses are selected', () => {
-    expect(filterInstancesByStatus(instances, ['open', 'resolved'])).toEqual([
-      instances[0],
-      instances[2],
-    ]);
-  });
-
-  it('excludes a legacy instance with no status when a status is selected', () => {
-    const legacyOnly = instances.filter((i) => i.id === 'i-legacy');
-    expect(filterInstancesByStatus(legacyOnly, ['open'])).toEqual([]);
-  });
-
-  it('returns every instance unchanged for an empty selection', () => {
-    expect(filterInstancesByStatus(instances, [])).toEqual(instances);
-  });
-
-  it('returns every instance unchanged when no status filter is given', () => {
-    expect(filterInstancesByStatus(instances, undefined)).toEqual(instances);
-  });
-
-  it('never empties out a group the store already deemed visible', () => {
-    // foldGroupStatus only assigns a candidate status to a group when at
-    // least one instance carries it — so filtering that SAME group's
-    // instances by the SAME status can never yield an empty expanded list.
-    const mixed = [buildInstance('i1', 'handled'), buildInstance('i2', 'dismissed')];
-    expect(filterInstancesByStatus(mixed, ['handled'])).toHaveLength(1);
   });
 });

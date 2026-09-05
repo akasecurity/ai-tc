@@ -73,6 +73,8 @@ export function FindingsFlatTableView({
   isLoading = false,
   emptyState,
   showUserColumn = false,
+  pinnedType = false,
+  header,
   renderedAt,
 }: {
   items: FindingInstanceDetail[];
@@ -98,6 +100,27 @@ export function FindingsFlatTableView({
   isLoading?: boolean;
   emptyState?: ReactNode;
   /**
+   * Every row here belongs to the SAME finding type — the caller has pinned one
+   * (the master/detail view, whose list names it beside this table). Two columns
+   * change:
+   *
+   *   - **Severity is dropped.** It is a property of the RULE, so every row would
+   *     carry the same badge down a column.
+   *   - **Type becomes Value.** The type name and its icon are already on screen;
+   *     what actually distinguishes these rows is each finding's own masked
+   *     value, so the column keeps that and sheds the rest.
+   *
+   * Default false, so the unpinned list renders exactly as it always has.
+   */
+  pinnedType?: boolean;
+  /**
+   * Rendered above the table, INSIDE this card. A caller that needs a title
+   * strip passes it here rather than wrapping this component in a card of its
+   * own — two nested cards draw two borders and two corner radii, which is
+   * plainly visible where they meet.
+   */
+  header?: ReactNode;
+  /**
    * The instant this render is measured against, in epoch milliseconds. The host
    * captures one and every relative label below reads it. Required: a view that
    * picks its own instant renders one string while the server renders it and
@@ -107,6 +130,7 @@ export function FindingsFlatTableView({
 }) {
   return (
     <Card className="flex h-full min-h-0 flex-col overflow-hidden shadow-sm">
+      {header}
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {isLoading ? (
           <div className="flex flex-col gap-2 py-2">
@@ -122,8 +146,12 @@ export function FindingsFlatTableView({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className={FINDING_COLUMN_CLASS.severity}>Severity</TableHead>
-                <TableHead className={FINDING_COLUMN_CLASS.type}>Type</TableHead>
+                {!pinnedType && (
+                  <TableHead className={FINDING_COLUMN_CLASS.severity}>Severity</TableHead>
+                )}
+                <TableHead className={FINDING_COLUMN_CLASS.type}>
+                  {pinnedType ? 'Value' : 'Type'}
+                </TableHead>
                 <TableHead className={FINDING_COLUMN_CLASS.sources}>Source</TableHead>
                 {showUserColumn && (
                   <TableHead className={FINDING_COLUMN_CLASS.user} title={USER_COLUMN_TITLE}>
@@ -148,28 +176,36 @@ export function FindingsFlatTableView({
                       onSelect(instance);
                     }}
                   >
-                    <TableCell className={FINDING_COLUMN_CLASS.severity}>
-                      <SeverityBadge severity={instance.severity} />
-                    </TableCell>
+                    {!pinnedType && (
+                      <TableCell className={FINDING_COLUMN_CLASS.severity}>
+                        <SeverityBadge severity={instance.severity} />
+                      </TableCell>
+                    )}
                     <TableCell className={FINDING_COLUMN_CLASS.type}>
-                      <div className="flex items-center gap-2.5">
-                        <span
-                          className={cn(
-                            'flex size-7 shrink-0 items-center justify-center rounded-lg',
-                            categoryStyle(instance.category),
-                          )}
-                        >
-                          <Icon aria-hidden focusable={false} className="size-3.5" />
+                      {pinnedType ? (
+                        <span className="font-mono text-ui text-text wrap-anywhere">
+                          {instance.match.maskedValue}
                         </span>
-                        <div className="min-w-0">
-                          <div className="text-ui font-semibold text-text wrap-anywhere">
-                            {instance.subtype}
-                          </div>
-                          <div className="font-mono text-xs text-text-3 wrap-anywhere">
-                            {instance.match.maskedValue}
+                      ) : (
+                        <div className="flex items-center gap-2.5">
+                          <span
+                            className={cn(
+                              'flex size-7 shrink-0 items-center justify-center rounded-lg',
+                              categoryStyle(instance.category),
+                            )}
+                          >
+                            <Icon aria-hidden focusable={false} className="size-3.5" />
+                          </span>
+                          <div className="min-w-0">
+                            <div className="text-ui font-semibold text-text wrap-anywhere">
+                              {instance.subtype}
+                            </div>
+                            <div className="font-mono text-xs text-text-3 wrap-anywhere">
+                              {instance.match.maskedValue}
+                            </div>
                           </div>
                         </div>
-                      </div>
+                      )}
                     </TableCell>
                     <TableCell className={FINDING_COLUMN_CLASS.sources}>
                       <ProviderTag provider={instance.provider} />

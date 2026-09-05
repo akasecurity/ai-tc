@@ -1,21 +1,18 @@
 'use client';
 
 import {
-  ColumnsMenu,
-  type ColumnVisibility,
   FindingDetailView,
-  FINDINGS_COLUMNS,
+  FindingLevelFilters,
   FINDINGS_VIEW_LABEL,
   FINDINGS_VIEWS,
   type FindingsFilters,
   FindingsFlatTableView,
   FindingsLocationsView,
-  FindingsTableView,
   FindingsToolbarView,
   type FindingsView,
+  FindingTypesListView,
   PageHead,
   rangeLabel,
-  type Selection,
   TIME_RANGE_OPTIONS,
   type TimeRange,
 } from '@akasecurity/dashboard-ui';
@@ -24,11 +21,12 @@ import type {
   FindingInstanceDetail,
   ListFindingInstancesResponse,
   ListFindingLocationsResponse,
-  ListGroupedFindingsResponse,
+  ListFindingTypesResponse,
 } from '@akasecurity/schema';
 import {
   Badge,
   Button,
+  Card,
   cn,
   DropdownMenu,
   DropdownMenuContent,
@@ -45,36 +43,19 @@ import { useCallback, useState, useTransition } from 'react';
 import { TerminalIcon, XIcon } from '../../components/icons';
 import { useNavigationTransition } from '../../components/NavigationTransition';
 import { useDebouncedUrlQuery } from '../../lib/useDebouncedUrlQuery';
-import { loadMoreFindingInstances, loadMoreGroupedFindings } from './actions';
-import { buildFindingsParams, toGroupedQuery, toInstancesQuery } from './filters';
-
-// The local store is single-user, so no finding carries a user to show — the
-// User column would render as a column of dashes.
-const LOCAL_COLUMNS = FINDINGS_COLUMNS.filter((c) => c.id !== 'user');
-
-/**
- * The ?finding= deep link → the drawer's Selection: a group id opens the grouped
- * view; an instance id opens that instance narrowed inside its group. Unknown ids
- * (stale links, instances outside the preview page) resolve to null — no drawer.
- */
-function findSelection(groups: FindingGroup[], id: string): Selection | null {
-  if (!id) return null;
-  const group = groups.find((g) => g.id === id);
-  if (group) return { finding: group };
-  for (const g of groups) {
-    const instance = g.instances.find((i) => i.id === id);
-    if (instance) return { finding: g, instance };
-  }
-  return null;
-}
+import { loadMoreFindingInstances, loadMoreFindingTypes } from './actions';
+import {
+  buildFindingsParams,
+  toFindingTypesQuery,
+  toInstancesQuery,
+  toTypeInstancesQuery,
+} from './filters';
 
 interface CommonProps {
   filters: FindingsFilters;
   query: string;
   /** Session id the list is scoped to ('' when unscoped). */
   session: string;
-  /** The ?finding= deep-link target ('' when absent). */
-  selectedId: string;
   /** The resolved time window, or null for all time. */
   range: TimeRange | null;
   /**
@@ -96,7 +77,24 @@ interface CommonProps {
 }
 
 type ViewProps =
-  | { view: 'grouped'; data: ListGroupedFindingsResponse }
+  | {
+      view: 'grouped';
+      /** The left panel: one page of finding types. */
+      types: ListFindingTypesResponse;
+      /**
+       * The right panel: one page of the selected type's findings. Null only
+       * when no type is selected, which means the type list itself is empty.
+       */
+      instances: ListFindingInstancesResponse | null;
+      /** The selected type's rule id ('' when the list is empty). */
+      selectedRule: string;
+      /**
+       * The finding a `?finding=` deep link named, resolved server-side by a
+       * primary-key seek — so it opens the drawer whatever page of the right
+       * panel it would naturally sort to, and however old it is.
+       */
+      deepLinkedInstance: FindingInstanceDetail | null;
+    }
   | { view: 'flat'; flat: ListFindingInstancesResponse }
   | { view: 'files'; locations: ListFindingLocationsResponse };
 
@@ -118,7 +116,6 @@ export function FindingsClient(props: CommonProps & ViewProps) {
     filters,
     query: initialQuery,
     session,
-    selectedId,
     range,
     from,
     tools,
@@ -130,7 +127,10 @@ export function FindingsClient(props: CommonProps & ViewProps) {
   const { isPending, push } = useNavigationTransition();
   const view = props.view;
 
-  const [columnVisibility, setColumnVisibility] = useState<ColumnVisibility>({});
+  // The selected type rides every push, so changing a filter keeps the type the
+  // reader was looking at. It is view-scoped: buildFindingsParams writes it only
+  // under `grouped`.
+  const rule = props.view === 'grouped' ? props.selectedRule : '';
 
   const buildUrl = useCallback(
     (
@@ -143,6 +143,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
         tools?: string[];
         repo?: string;
         file?: string;
+        rule?: string;
       } = {},
     ) => {
       const qs = buildFindingsParams(nextFilters, nextQuery, nextSession, {
@@ -151,10 +152,11 @@ export function FindingsClient(props: CommonProps & ViewProps) {
         tools: overrides.tools ?? tools,
         repo: overrides.repo ?? repo,
         file: overrides.file ?? file,
+        rule: overrides.rule ?? rule,
       }).toString();
       return qs ? `${pathname}?${qs}` : pathname;
     },
-    [pathname, view, range, tools, repo, file],
+    [pathname, view, range, tools, repo, file, rule],
   );
 
   // Search box + debounce/resync/cancel invariants live in the shared hook; a
@@ -174,6 +176,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
         tools?: string[];
         repo?: string;
         file?: string;
+        rule?: string;
       },
     ) => {
       onNavigate(nextQuery);
@@ -205,11 +208,25 @@ export function FindingsClient(props: CommonProps & ViewProps) {
 
   const sessionHref = session ? `/activity?id=${encodeURIComponent(session)}` : null;
 
+  // The page tally. Both views count the same two things — findings in scope and
+  // the types they fall under — from whichever read owns that scope. The
+  // locations view counts repos and files instead, so it shows none.
+  const tally =
+    props.view === 'grouped'
+      ? { findings: props.types.totals.findings, types: props.types.totals.types }
+      : props.view === 'flat'
+        ? { findings: props.flat.totals.findings, types: props.flat.facets.subtype.length }
+        : null;
+
   return (
     <div className="flex h-full min-h-0 flex-col px-8 pb-10 pt-7">
       <PageHead
         title="Findings"
-        sub="Every sensitive-data finding across providers"
+        // Page-level, and deliberately not beside a filter. In the By-type view
+        // these describe the TYPE list, which the detail panel's own filters do
+        // not narrow — sat next to them, a number that never moved read as a
+        // filter that had stopped working.
+        sub={tally ? <Tally findings={tally.findings} types={tally.types} /> : PAGE_SUB}
         actions={
           <div className="flex items-center gap-2">
             <RangeFilter
@@ -227,40 +244,34 @@ export function FindingsClient(props: CommonProps & ViewProps) {
                 // dropped rather than left as ones the page would ignore.
                 pushState(filters, query, session, {
                   view: next,
-                  ...(next === 'grouped' ? { tools: [], repo: '', file: '' } : {}),
+                  ...(next === 'grouped' ? { tools: [], repo: '', file: '' } : { rule: '' }),
                   ...(next === 'files' ? { repo: '', file: '' } : {}),
                 });
               }}
             />
-            {view === 'grouped' && (
-              <ColumnsMenu
-                columns={LOCAL_COLUMNS}
-                visibility={columnVisibility}
-                onChange={setColumnVisibility}
-              />
-            )}
           </div>
         }
       />
 
-      {/* The locations view has no facets of its own — it counts repos and
-          files, where the toolbar's dimensions count findings. */}
-      {props.view !== 'files' && (
-        <FindingsToolbarView
-          facets={props.view === 'flat' ? props.flat.facets : props.data.facets}
-          filters={filters}
-          onFiltersChange={(next) => {
-            pushState(next, query, session);
-          }}
-          query={query}
-          onQueryChange={setQuery}
-          findingCount={
-            props.view === 'flat' ? props.flat.totals.findings : props.data.totals.findings
-          }
-          typeCount={
-            props.view === 'flat' ? props.flat.facets.subtype.length : props.data.totals.groups
-          }
-        />
+      {/* Only the flat view has a toolbar. The locations view has no facets of
+          its own (it counts repos and files), and the By-type view splits its
+          filters between the two panels — each beside the rows it narrows. */}
+      {props.view === 'flat' && (
+        // The gap below sits HERE rather than on the panels container, because
+        // the By-type view renders neither this nor, usually, the scope chips —
+        // and a top margin on the container would then push its panels down
+        // from nothing at all. Spacing belongs to whatever creates the need.
+        <div className="mb-4">
+          <FindingsToolbarView
+            facets={props.flat.facets}
+            filters={filters}
+            onFiltersChange={(next) => {
+              pushState(next, query, session);
+            }}
+            query={query}
+            onQueryChange={setQuery}
+          />
+        </div>
       )}
 
       <ScopeChips
@@ -279,9 +290,9 @@ export function FindingsClient(props: CommonProps & ViewProps) {
           pushState(filters, query, session, { repo: '', file: '' });
         }}
         transcriptOnly={
-          props.view === 'grouped' && props.data.sessionFirings
-            ? Object.entries(props.data.sessionFirings).filter(
-                ([rule]) => !props.data.items.some((g) => g.id === rule),
+          props.view === 'grouped' && props.types.sessionFirings
+            ? Object.entries(props.types.sessionFirings).filter(
+                ([ruleId]) => !props.types.items.some((t) => t.id === ruleId),
               )
             : []
         }
@@ -290,22 +301,33 @@ export function FindingsClient(props: CommonProps & ViewProps) {
       <div
         aria-busy={isPending}
         className={cn(
-          'mt-4 min-h-0 flex-1 transition-shadow duration-150',
+          'min-h-0 flex-1 transition-shadow duration-150',
           isPending && 'rounded-lg ring-2 ring-primary/70 ring-inset',
         )}
       >
         {props.view === 'grouped' && (
-          <GroupedView
-            data={props.data}
+          <TypesMasterDetail
+            types={props.types}
+            instances={props.instances}
+            selectedRule={props.selectedRule}
+            deepLinkedInstance={props.deepLinkedInstance}
             filters={filters}
             query={query}
+            onQueryChange={setQuery}
             session={session}
-            selectedId={selectedId}
             from={from}
-            columnVisibility={columnVisibility}
             sessionHref={sessionHref}
             emptyState={emptyState}
             renderedAt={renderedAt}
+            onSelectRule={(nextRule) => {
+              pushState(filters, query, session, { rule: nextRule });
+            }}
+            onSeverityChange={(next) => {
+              pushState({ ...filters, severity: next }, query, session);
+            }}
+            onFiltersChange={(next) => {
+              pushState(next, query, session);
+            }}
           />
         )}
         {props.view === 'flat' && (
@@ -343,152 +365,339 @@ export function FindingsClient(props: CommonProps & ViewProps) {
   );
 }
 
+const PAGE_SUB = 'Every sensitive-data finding across providers';
+
+/**
+ * The page subtitle: what the page is, then what is currently in scope.
+ *
+ * One middot separates the two, and the tally's own units are comma-separated
+ * rather than middot-separated — nesting the same separator would read as three
+ * peers instead of a description followed by its numbers.
+ */
+function Tally({ findings, types }: { findings: number; types: number }) {
+  return (
+    <>
+      {PAGE_SUB} · <span className="font-semibold text-text">{findings.toLocaleString()}</span>
+      {findings === 1 ? ' finding' : ' findings'},{' '}
+      <span className="font-semibold text-text">{types.toLocaleString()}</span>
+      {types === 1 ? ' type' : ' types'}
+    </>
+  );
+}
+
 // ─── Views ───────────────────────────────────────────────────────────────────
 
-function GroupedView({
-  data,
+/**
+ * The By-type view: a paginated list of finding TYPES on the left, and the
+ * selected type's findings — themselves paginated — on the right.
+ *
+ * The two sides are independent reads, so neither caps the other. Selecting a
+ * type pushes the URL (the server owns which type is selected, so the panels
+ * cannot disagree); paging either side calls a Server Action and keeps a local
+ * page cache, so neither creates a history entry nor disturbs the other.
+ */
+function TypesMasterDetail({
+  types,
+  instances,
+  selectedRule,
+  deepLinkedInstance,
   filters,
   query,
+  onQueryChange,
   session,
-  selectedId,
   from,
-  columnVisibility,
   sessionHref,
   emptyState,
   renderedAt,
+  onSelectRule,
+  onSeverityChange,
+  onFiltersChange,
 }: {
-  data: ListGroupedFindingsResponse;
+  types: ListFindingTypesResponse;
+  instances: ListFindingInstancesResponse | null;
+  selectedRule: string;
+  deepLinkedInstance: FindingInstanceDetail | null;
   filters: FindingsFilters;
   query: string;
+  onQueryChange: (next: string) => void;
   session: string;
-  selectedId: string;
   from: string | null;
-  columnVisibility: ColumnVisibility;
   sessionHref: string | null;
   emptyState: React.ReactNode;
   renderedAt: number;
+  onSelectRule: (rule: string) => void;
+  onSeverityChange: (next: string[]) => void;
+  onFiltersChange: (next: FindingsFilters) => void;
 }) {
-  // Each entry is one fetched page; `cursors[i]` is what fetches the page
-  // after `pages[i]`. Stepping forward past the cached frontier fetches and
-  // appends; stepping back just moves `pageIndex` — the page is still here.
-  const [pages, setPages] = useState<FindingGroup[][]>([data.items]);
-  const [cursors, setCursors] = useState<(string | null)[]>([data.nextCursor]);
+  const typePages = usePagedList(types, types.items, types.nextCursor, (cursor, pages) =>
+    loadMoreFindingTypes({
+      // Built from the SERVER-RENDERED filters, never the live debounced query:
+      // a click during the debounce window would otherwise page a differently
+      // filtered set into this one.
+      ...toFindingTypesQuery(filters, query, session, { ...(from ? { from } : {}) }),
+      cursor,
+    }).then((next) => ({
+      // The selected type is appended to page 0 out of sort order (see
+      // ListFindingTypesQuery.includeId) and resurfaces here at its natural
+      // cursor position once paging reaches it — drop the repeat so a page never
+      // shows the same type twice.
+      items: dedupeAgainstPages(pages, next.items),
+      next,
+    })),
+  );
+
+  const selectedType = types.items.find((t) => t.id === selectedRule) ?? null;
+
+  // The per-rule transcript-firing tally (session-scoped lists only) — surfaces
+  // in the drawer footer so the "45 triggered vs 6 listed" gap is explained
+  // where the reader is looking.
+  const selectedFirings = types.sessionFirings ? (types.sessionFirings[selectedRule] ?? 0) : null;
+
+  return (
+    <div className="grid h-full min-h-0 grid-cols-1 gap-4 lg:grid-cols-[352px_1fr]">
+      <FindingTypesListView
+        types={typePages.items}
+        activeId={selectedRule}
+        onSelect={(t) => {
+          onSelectRule(t.id);
+        }}
+        query={query}
+        onQueryChange={onQueryChange}
+        severityCounts={new Map(types.facets.severity.map((f) => [f.value, f.count]))}
+        selectedSeverities={filters.severity}
+        onSeverityChange={onSeverityChange}
+        onNextPage={typePages.onNextPage}
+        onPreviousPage={typePages.onPreviousPage}
+        hasNextPage={typePages.hasNextPage}
+        hasPreviousPage={typePages.hasPreviousPage}
+        loadingNextPage={typePages.loading}
+        pageStart={typePages.pageStart}
+        total={types.totals.types}
+        {...(emptyState === undefined ? {} : { emptyState })}
+      />
+
+      {instances && selectedType ? (
+        <InstancesPanel
+          key={selectedRule}
+          data={instances}
+          pinnedType
+          // The type name only. How many findings it has is already on its row
+          // in the list and in this panel's own paginator — a third copy would
+          // just be a number to keep in step with two others.
+          header={
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+              <h2 className="truncate text-sm font-semibold text-text">{selectedType.subtype}</h2>
+              {/* Inside the panel they act on, which says what no caption
+                  could: these narrow THESE findings. Their counts come from
+                  this panel's own read, so each answers "what happens if I
+                  pick this?" about the rows below it. */}
+              <div className="flex flex-wrap items-center gap-2">
+                <FindingLevelFilters
+                  facets={instances.facets}
+                  filters={filters}
+                  onFiltersChange={onFiltersChange}
+                />
+              </div>
+            </div>
+          }
+          loadMore={(cursor) =>
+            loadMoreFindingInstances({
+              ...toTypeInstancesQuery(filters, selectedRule, session, {
+                ...(from ? { from } : {}),
+              }),
+              cursor,
+            })
+          }
+          initialSelected={deepLinkedInstance}
+          emptyState={
+            <p className="py-8 text-center text-sm text-text-3">
+              No findings of this type match these filters.
+            </p>
+          }
+          renderDrawerFooter={() =>
+            sessionHref ? (
+              <SessionFooter firings={selectedFirings} sessionHref={sessionHref} />
+            ) : undefined
+          }
+          renderedAt={renderedAt}
+        />
+      ) : (
+        <Card className="grid h-full min-h-0 place-items-center p-8 text-center text-sm text-text-3">
+          {types.items.length === 0
+            ? // `emptyState` is set only for an EMPTY STORE; with filters active
+              // it is undefined, and rendering it alone left a blank card beside
+              // a list that was explaining itself. Mirror the list's fallback.
+              (emptyState ?? 'No types match these filters.')
+            : 'Select a type to see its findings.'}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A keyset-paged list's client-side page cache.
+ *
+ * Each entry is one fetched page; `cursors[i]` fetches the page after
+ * `pages[i]`. Stepping forward past the cached frontier fetches and appends;
+ * stepping back just moves `pageIndex` — the page is still here. Shared by both
+ * panels so the two caches are independent by construction rather than by two
+ * copies of the same bookkeeping agreeing.
+ */
+function usePagedList<T>(
+  forResponse: object,
+  firstPage: T[],
+  // The cursor that fetches the page AFTER `firstPage`. Required, never
+  // defaulted: a default reads as safe at every call site that omits it, and
+  // omitting it leaves `hasNextPage` false on page 1 — a Next button that is
+  // disabled on a list which plainly has more, with nothing thrown and nothing
+  // logged. Required, the compiler names each caller that has to supply one.
+  firstCursor: string | null,
+  fetchAfter: (
+    cursor: string,
+    pages: T[][],
+  ) => Promise<{ items: T[]; next: { nextCursor: string | null } }>,
+) {
+  const [pages, setPages] = useState<T[][]>([firstPage]);
+  const [cursors, setCursors] = useState<(string | null)[]>([firstCursor]);
   const [pageIndex, setPageIndex] = useState(0);
   const [loading, startLoading] = useTransition();
 
-  // Reset the cache when the server hands back a different first page —
-  // checked DURING RENDER against the data object's identity, not in an effect.
-  // An effect would commit one frame in which the previous query's page is
-  // rendered under the new one, with duplicate React keys.
-  const [forData, setForData] = useState(data);
-  if (forData !== data) {
-    setForData(data);
-    setPages([data.items]);
-    setCursors([data.nextCursor]);
+  // Reset the cache when the server hands back a different first page — checked
+  // DURING RENDER against the response object's identity, not in an effect. An
+  // effect would commit one frame in which the previous query's page is rendered
+  // under the new one, with duplicate React keys.
+  const [forData, setForData] = useState(forResponse);
+  if (forData !== forResponse) {
+    setForData(forResponse);
+    setPages([firstPage]);
+    setCursors([firstCursor]);
     setPageIndex(0);
   }
 
-  const groups = pages[pageIndex] ?? [];
-  const hasNextPage = pageIndex + 1 < pages.length || cursors[pageIndex] !== null;
-
-  const onNextPage = () => {
-    if (!needsFetch(pages.length, pageIndex)) {
-      setPageIndex((i) => i + 1);
-      return;
-    }
-    const cursor = cursors[pageIndex];
-    if (cursor === null) return;
-    startLoading(async () => {
-      // Built from the SERVER-RENDERED filters, never the live debounced
-      // query: a click during the debounce window would otherwise page a
-      // different filtered set into this one.
-      const next = await loadMoreGroupedFindings({
-        ...toGroupedQuery(filters, query, session, {
-          ...(from ? { from } : {}),
-        }),
-        cursor,
+  return {
+    pages,
+    items: pages[pageIndex] ?? [],
+    pageStart: pageStartOf(pages, pageIndex),
+    hasNextPage: pageIndex + 1 < pages.length || cursors[pageIndex] !== null,
+    hasPreviousPage: pageIndex > 0,
+    loading,
+    onPreviousPage: () => {
+      setPageIndex((i) => Math.max(0, i - 1));
+    },
+    onNextPage: () => {
+      if (!needsFetch(pages.length, pageIndex)) {
+        setPageIndex((i) => i + 1);
+        return;
+      }
+      const cursor = cursors[pageIndex];
+      if (cursor === null || cursor === undefined) return;
+      startLoading(async () => {
+        const { items, next } = await fetchAfter(cursor, pages);
+        setPages((prev) => [...prev, items]);
+        setCursors((prev) => [...prev, next.nextCursor]);
+        setPageIndex((i) => i + 1);
       });
-      // page 0's `?finding=` deep link is appended out of sort order (see
-      // ListGroupedFindingsQuery.includeId) and resurfaces here at its natural
-      // cursor position once paging reaches it — drop the repeat so a page
-      // never shows the same group twice. Once dropped, this page contributes
-      // one fewer row than it fetched, which is what lets pageStartOf's running
-      // sum catch back up to the true position after being one row ahead of it
-      // on the pages in between.
-      const fresh = dedupeAgainstPages(pages, next.items);
-      setPages((prev) => [...prev, fresh]);
-      setCursors((prev) => [...prev, next.nextCursor]);
-      setPageIndex((i) => i + 1);
-    });
+    },
   };
+}
 
-  const onPreviousPage = () => {
-    setPageIndex((i) => Math.max(0, i - 1));
-  };
-
-  const [selected, setSelected] = useState<Selection | null>(() =>
-    findSelection(data.items, selectedId),
+/**
+ * A paginated list of findings plus its detail drawer — the right-hand panel of
+ * the By-type view, and the whole of the flat view. One component rather than
+ * two so the two cannot drift; what differs between them arrives as props.
+ */
+function InstancesPanel({
+  data,
+  loadMore,
+  emptyState,
+  renderedAt,
+  pinnedType = false,
+  header,
+  initialSelected = null,
+  renderDrawerFooter,
+}: {
+  data: ListFindingInstancesResponse;
+  loadMore: (cursor: string) => Promise<ListFindingInstancesResponse>;
+  emptyState: React.ReactNode;
+  renderedAt: number;
+  pinnedType?: boolean;
+  header?: React.ReactNode;
+  /**
+   * A finding the server resolved from a `?finding=` deep link. It opens the
+   * drawer directly rather than being looked up in `data`, which is what lets
+   * the link resolve a finding that sorts onto no page this panel has fetched.
+   */
+  initialSelected?: FindingInstanceDetail | null;
+  renderDrawerFooter?: (instance: FindingInstanceDetail) => React.ReactNode;
+}) {
+  const paged = usePagedList(data, data.items, data.nextCursor, (cursor) =>
+    loadMore(cursor).then((next) => ({ items: next.items, next })),
   );
-  // Re-seed the drawer when an in-app navigation lands with a different
-  // ?finding= (the client component survives RSC re-renders, so the initializer
-  // alone would miss it). State-adjustment-during-render, not an effect. Only a
-  // NON-empty id re-seeds: the param draining to '' just means an ordinary
-  // filter/search push dropped the one-shot ?finding=, which says nothing about
-  // whatever the user has selected since — nulling here would snap shut a
-  // drawer they opened by hand during a pending debounced search.
-  const [appliedDeepLink, setAppliedDeepLink] = useState(selectedId);
-  if (appliedDeepLink !== selectedId) {
-    setAppliedDeepLink(selectedId);
-    if (selectedId) setSelected(findSelection(data.items, selectedId));
+  const [selectedInstanceId, setSelectedInstanceId] = useState(initialSelected?.id ?? '');
+
+  // Re-seed when an in-app navigation lands with a DIFFERENT deep-linked
+  // finding. The initializer alone misses it: this component survives RSC
+  // re-renders, and it is keyed by the selected type, so two findings of the
+  // SAME type never remount it. State-adjustment-during-render, not an effect.
+  //
+  // Only a non-empty id re-seeds. The param draining to null just means an
+  // ordinary filter or search push dropped the one-shot `?finding=`, which says
+  // nothing about whatever the reader has selected since — clearing here would
+  // snap shut a drawer they opened by hand during a pending debounced search.
+  const [appliedDeepLink, setAppliedDeepLink] = useState(initialSelected?.id ?? '');
+  if (appliedDeepLink !== (initialSelected?.id ?? '')) {
+    setAppliedDeepLink(initialSelected?.id ?? '');
+    if (initialSelected) setSelectedInstanceId(initialSelected.id);
   }
 
-  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(new Set());
-  const visibleColumns = LOCAL_COLUMNS.filter((c) => columnVisibility[c.id] !== false);
+  // The deep-linked finding is shown even when this page does not contain it;
+  // otherwise the selection names a row on the current page.
+  const selected =
+    (initialSelected?.id === selectedInstanceId ? initialSelected : null) ??
+    paged.items.find((i) => i.id === selectedInstanceId) ??
+    null;
 
-  // The selected group's transcript-firing tally (session-scoped lists only) —
-  // surfaces in the drawer footer so the "45 triggered vs 6 listed" gap is
-  // explained right where the user is looking.
-  const selectedFirings =
-    selected && data.sessionFirings ? (data.sessionFirings[selected.finding.id] ?? 0) : null;
+  // Paging closes the drawer rather than leaving it pointing at a row the new
+  // page no longer contains.
+  const step = (move: () => void) => {
+    setSelectedInstanceId('');
+    move();
+  };
+
+  const table = (
+    <FindingsFlatTableView
+      renderedAt={renderedAt}
+      {...(header === undefined ? {} : { header })}
+      items={paged.items}
+      selectedId={selectedInstanceId}
+      pinnedType={pinnedType}
+      onSelect={(instance) => {
+        setSelectedInstanceId(instance.id);
+      }}
+      total={data.totals.findings}
+      pageStart={paged.pageStart}
+      hasNextPage={paged.hasNextPage}
+      hasPreviousPage={paged.hasPreviousPage}
+      loadingNextPage={paged.loading}
+      onNextPage={() => {
+        step(paged.onNextPage);
+      }}
+      onPreviousPage={() => {
+        step(paged.onPreviousPage);
+      }}
+      {...(emptyState === undefined ? {} : { emptyState })}
+    />
+  );
 
   return (
     <>
-      <FindingsTableView
-        renderedAt={renderedAt}
-        groups={groups}
-        columns={visibleColumns}
-        selection={selected}
-        expandedIds={expandedIds}
-        onToggleExpand={(groupId) => {
-          setExpandedIds((prev) => {
-            const next = new Set(prev);
-            if (next.has(groupId)) next.delete(groupId);
-            else next.add(groupId);
-            return next;
-          });
-        }}
-        onSelectGroup={(group) => {
-          setSelected({ finding: group });
-        }}
-        onSelectInstance={(group, instance) => {
-          setSelected({ finding: group, instance });
-        }}
-        statusFilter={filters.status}
-        {...(data.sessionFirings ? { sessionFirings: data.sessionFirings } : {})}
-        {...(emptyState === undefined ? {} : { emptyState })}
-        onNextPage={onNextPage}
-        onPreviousPage={onPreviousPage}
-        hasNextPage={hasNextPage}
-        hasPreviousPage={pageIndex > 0}
-        loadingNextPage={loading}
-        pageStart={pageStartOf(pages, pageIndex)}
-        total={data.totals.groups}
-      />
+      {table}
 
       <Sheet
         open={selected !== null}
         onOpenChange={(open) => {
-          if (!open) setSelected(null);
+          if (!open) setSelectedInstanceId('');
         }}
       >
         {/* No description in this drawer — opt out of Radix's aria-describedby. */}
@@ -496,38 +705,41 @@ function GroupedView({
           {selected && (
             <FindingDetailView
               renderedAt={renderedAt}
-              selection={selected}
-              onSelectInstance={(instance) => {
-                setSelected({ finding: selected.finding, instance });
-              }}
+              // Every row IS a single finding, so the drawer opens narrowed and
+              // stays there — there is no group to step back to.
+              selection={{ finding: instanceAsGroup(selected), instance: selected }}
+              onSelectInstance={() => undefined}
               onBack={() => {
-                setSelected({ finding: selected.finding });
+                setSelectedInstanceId('');
               }}
-              footer={
-                sessionHref ? (
-                  <div className="flex flex-col items-start gap-2">
-                    {selectedFirings !== null && (
-                      <p className="text-xs text-text-3">
-                        {selectedFirings > 0
-                          ? `Fired ${String(selectedFirings)} times in this session's transcript — the session's "triggered" tally counts every firing, this drawer shows unique values.`
-                          : `Caught by live enforcement only — not re-detected in this session's transcript.`}
-                      </p>
-                    )}
-                    <Link
-                      href={sessionHref}
-                      className="inline-flex items-center gap-1.5 text-ui font-semibold text-primary underline-offset-2 hover:underline"
-                    >
-                      <TerminalIcon aria-hidden focusable={false} className="size-3.5" />
-                      View session in Activity
-                    </Link>
-                  </div>
-                ) : undefined
-              }
+              {...(renderDrawerFooter ? { footer: renderDrawerFooter(selected) } : {})}
             />
           )}
         </SheetContent>
       </Sheet>
     </>
+  );
+}
+
+/** The drawer footer on a session-scoped list: the firing tally + a way back. */
+function SessionFooter({ firings, sessionHref }: { firings: number | null; sessionHref: string }) {
+  return (
+    <div className="flex flex-col items-start gap-2">
+      {firings !== null && (
+        <p className="text-xs text-text-3">
+          {firings > 0
+            ? `Fired ${String(firings)} times in this session's transcript — the session's "triggered" tally counts every firing, this drawer shows unique values.`
+            : `Caught by live enforcement only — not re-detected in this session's transcript.`}
+        </p>
+      )}
+      <Link
+        href={sessionHref}
+        className="inline-flex items-center gap-1.5 text-ui font-semibold text-primary underline-offset-2 hover:underline"
+      >
+        <TerminalIcon aria-hidden focusable={false} className="size-3.5" />
+        View session in Activity
+      </Link>
+    </div>
   );
 }
 
@@ -554,96 +766,26 @@ function FlatView({
   emptyState: React.ReactNode;
   renderedAt: number;
 }) {
-  const [pages, setPages] = useState<FindingInstanceDetail[][]>([data.items]);
-  const [cursors, setCursors] = useState<(string | null)[]>([data.nextCursor]);
-  const [pageIndex, setPageIndex] = useState(0);
-  const [loading, startLoading] = useTransition();
-  const [selectedInstanceId, setSelectedInstanceId] = useState('');
-
-  const [forData, setForData] = useState(data);
-  if (forData !== data) {
-    setForData(data);
-    setPages([data.items]);
-    setCursors([data.nextCursor]);
-    setPageIndex(0);
-  }
-
-  const items = pages[pageIndex] ?? [];
-  const selected = items.find((i) => i.id === selectedInstanceId) ?? null;
-  const hasNextPage = pageIndex + 1 < pages.length || cursors[pageIndex] !== null;
-
-  const onNextPage = () => {
-    // Paging closes the detail drawer rather than leaving it silently pointing
-    // at a row `items` (now just the new page) no longer contains.
-    setSelectedInstanceId('');
-    if (!needsFetch(pages.length, pageIndex)) {
-      setPageIndex((i) => i + 1);
-      return;
-    }
-    const cursor = cursors[pageIndex];
-    if (cursor === null) return;
-    startLoading(async () => {
-      const next = await loadMoreFindingInstances({
-        ...toInstancesQuery(filters, query, session, {
-          ...(from ? { from } : {}),
-          ...(tools.length ? { tools } : {}),
-          ...(repo ? { repo } : {}),
-          ...(file ? { file } : {}),
-        }),
-        cursor,
-      });
-      setPages((prev) => [...prev, next.items]);
-      setCursors((prev) => [...prev, next.nextCursor]);
-      setPageIndex((i) => i + 1);
-    });
-  };
-
-  const onPreviousPage = () => {
-    setSelectedInstanceId('');
-    setPageIndex((i) => Math.max(0, i - 1));
-  };
-
   return (
-    <>
-      <FindingsFlatTableView
-        renderedAt={renderedAt}
-        items={items}
-        selectedId={selectedInstanceId}
-        onSelect={(instance) => {
-          setSelectedInstanceId(instance.id);
-        }}
-        total={data.totals.findings}
-        pageStart={pageStartOf(pages, pageIndex)}
-        hasNextPage={hasNextPage}
-        hasPreviousPage={pageIndex > 0}
-        loadingNextPage={loading}
-        onNextPage={onNextPage}
-        onPreviousPage={onPreviousPage}
-        {...(emptyState === undefined ? {} : { emptyState })}
-      />
-
-      <Sheet
-        open={selected !== null}
-        onOpenChange={(open) => {
-          if (!open) setSelectedInstanceId('');
-        }}
-      >
-        <SheetContent className="p-0" aria-describedby={undefined}>
-          {selected && (
-            <FindingDetailView
-              renderedAt={renderedAt}
-              // The flat list has no group to step back to — every row IS a
-              // single instance, so the drawer opens narrowed and stays there.
-              selection={{ finding: instanceAsGroup(selected), instance: selected }}
-              onSelectInstance={() => undefined}
-              onBack={() => {
-                setSelectedInstanceId('');
-              }}
-            />
-          )}
-        </SheetContent>
-      </Sheet>
-    </>
+    <InstancesPanel
+      data={data}
+      renderedAt={renderedAt}
+      emptyState={emptyState}
+      loadMore={(cursor) =>
+        loadMoreFindingInstances({
+          // Built from the SERVER-RENDERED filters, never the live debounced
+          // query: a click during the debounce window would otherwise page a
+          // different filtered set into this one.
+          ...toInstancesQuery(filters, query, session, {
+            ...(from ? { from } : {}),
+            ...(tools.length ? { tools } : {}),
+            ...(repo ? { repo } : {}),
+            ...(file ? { file } : {}),
+          }),
+          cursor,
+        })
+      }
+    />
   );
 }
 
@@ -842,7 +984,7 @@ function ScopeChips({
 }) {
   if (!sessionHref && tools.length === 0 && !repo && !file) return null;
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-2 text-ui text-text-2">
+    <div className="mb-4 mt-3 flex flex-wrap items-center gap-2 text-ui text-text-2">
       {sessionHref && (
         <>
           <span>Showing findings enforced live in session</span>

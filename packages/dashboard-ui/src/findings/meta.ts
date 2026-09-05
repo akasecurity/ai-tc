@@ -175,31 +175,6 @@ export function instanceLocationLabel(instance: FindingInstance): string {
 export const USER_COLUMN_TITLE =
   'Ingested by — the session user, or the owner of the api key that posted the event. An org-level ingest key names the key’s owner, not whoever ran the job.';
 
-/** The findings table's column identity + header, in display order. */
-export interface FindingColumn {
-  id: 'severity' | 'subtype' | 'sources' | 'user' | 'locations' | 'action' | 'status' | 'latest';
-  header: string;
-  /** Hover/assistive disclosure for a header whose one-word label under-states
-   * what the column means — see USER_COLUMN_TITLE. */
-  title?: string;
-}
-
-/**
- * Every column the findings table can render. `user` reads
- * `FindingInstance.user`, which only a store that attributes findings to
- * people sets — a caller over a single-user store omits that column.
- */
-export const FINDINGS_COLUMNS: FindingColumn[] = [
-  { id: 'severity', header: 'Severity' },
-  { id: 'subtype', header: 'Type' },
-  { id: 'sources', header: 'Sources' },
-  { id: 'user', header: 'User', title: USER_COLUMN_TITLE },
-  { id: 'locations', header: 'Locations' },
-  { id: 'action', header: 'Action' },
-  { id: 'status', header: 'Status' },
-  { id: 'latest', header: 'Latest' },
-];
-
 /** Lifecycle-status pill label + Badge variant (see @akasecurity/ui-kit's Badge). */
 export interface FindingStatusMeta {
   label: string;
@@ -231,29 +206,6 @@ export const findingStatusMeta = (status: string): FindingStatusMeta => {
  * literal's key order IS the display order.
  */
 export const FINDING_STATUSES = Object.keys(FINDING_STATUS_META) as FindingStatus[];
-
-/**
- * Filters a single group's instances by the SAME statuses that decided the
- * group itself is visible (the store matches a group's derived status against
- * them — see applyFindingFilters). Without this, an expanded group under an
- * active filter shows every instance regardless of status — including ones
- * that don't match — which is confusing under a filter that promised to narrow
- * the view down to those statuses. An empty/absent selection is a no-op.
- *
- * CAN return empty for a group the store correctly kept: the group's status
- * folds over EVERY instance, while `group.instances` is only a preview of the
- * newest — every instance carrying a requested status may be older than the
- * preview window (the store pre-narrows the preview the same way, so this is
- * a pass-through then). Views render an explicit notice for that case rather
- * than an empty expansion.
- */
-export function filterInstancesByStatus(
-  instances: FindingInstance[],
-  statuses: readonly string[] | undefined,
-): FindingInstance[] {
-  if (!statuses || statuses.length === 0) return instances;
-  return instances.filter((i) => i.status !== undefined && statuses.includes(i.status));
-}
 
 /** The five multi-select filter dimensions of the findings toolbar. */
 export interface FindingsFilters {
@@ -300,9 +252,6 @@ export const FINDINGS_VIEW_LABEL: Record<FindingsView, string> = {
   flat: 'All findings',
   files: 'By location',
 };
-
-/** Column-visibility map: column id → visible. Absent id ⇒ visible. */
-export type ColumnVisibility = Partial<Record<FindingColumn['id'], boolean>>;
 
 /** The findings drawer target: a group, optionally narrowed to one instance. */
 export interface Selection {

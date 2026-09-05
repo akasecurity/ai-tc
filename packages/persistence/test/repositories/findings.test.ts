@@ -113,12 +113,12 @@ function seed(): void {
   });
 }
 
-describe('SqliteFindingsRepository.listGroupedFindings', () => {
+describe('SqliteFindingsRepository.listFindingTypes', () => {
   it('groups findings by rule with instances, providers and totals', async () => {
     seed();
-    const res = await db.findings.listGroupedFindings({});
+    const res = await db.findings.listFindingTypes({});
 
-    expect(res.totals).toEqual({ findings: 3, groups: 2 });
+    expect(res.totals).toEqual({ findings: 3, types: 2 });
     // Sorted critical-first, so aws-key leads.
     expect(res.items.map((g) => g.id)).toEqual(['aws-key', 'email']);
 
@@ -128,9 +128,10 @@ describe('SqliteFindingsRepository.listGroupedFindings', () => {
     expect(awsKey?.aggregateAction).toBeNull(); // block + warn → Mixed
     expect(awsKey?.latestDetectedAt).toBe('2026-01-03T00:00:00.000Z');
 
-    // Instances carry repo/file from the event metadata.
-    const files = awsKey?.instances.map((i) => i.file).sort();
-    expect(files).toEqual(['a.ts', 'b.ts']);
+    // The type carries no findings; its findings are their own read, and THEY
+    // carry the repo/file from the event metadata.
+    const found = await db.findings.listFindingInstances({ subtype: ['aws-key'] });
+    expect(found.items.map((i) => i.file).sort()).toEqual(['a.ts', 'b.ts']);
 
     // code_context maps to the API category source_code.
     expect(res.items[1]?.category).toBe('source_code');
@@ -139,10 +140,10 @@ describe('SqliteFindingsRepository.listGroupedFindings', () => {
 
   it('applies filters and keeps per-filter-excluded facets', async () => {
     seed();
-    const res = await db.findings.listGroupedFindings({ severity: ['low'] });
+    const res = await db.findings.listFindingTypes({ severity: ['low'] });
 
     expect(res.items.map((g) => g.id)).toEqual(['email']);
-    expect(res.totals).toEqual({ findings: 1, groups: 1 });
+    expect(res.totals).toEqual({ findings: 1, types: 1 });
     // Severity facet still reports both levels (its own filter is excluded).
     expect(res.facets.severity.map((s) => s.value).sort()).toEqual(['critical', 'low']);
   });
@@ -150,17 +151,17 @@ describe('SqliteFindingsRepository.listGroupedFindings', () => {
   it('filters by provider and free-text search over repo/file', async () => {
     seed();
     expect(
-      (await db.findings.listGroupedFindings({ provider: ['cursor'] })).items.map((g) => g.id),
+      (await db.findings.listFindingTypes({ provider: ['cursor'] })).items.map((g) => g.id),
     ).toEqual(['aws-key']);
-    expect(
-      (await db.findings.listGroupedFindings({ q: 'acme/web' })).items.map((g) => g.id),
-    ).toEqual(['aws-key']);
+    expect((await db.findings.listFindingTypes({ q: 'acme/web' })).items.map((g) => g.id)).toEqual([
+      'aws-key',
+    ]);
   });
 
   it('returns an empty result for an empty store', async () => {
-    const res = await db.findings.listGroupedFindings({});
+    const res = await db.findings.listFindingTypes({});
     expect(res.items).toEqual([]);
-    expect(res.totals).toEqual({ findings: 0, groups: 0 });
+    expect(res.totals).toEqual({ findings: 0, types: 0 });
     expect(res.nextCursor).toBeNull();
   });
 
@@ -175,15 +176,14 @@ describe('SqliteFindingsRepository.listGroupedFindings', () => {
       toolName: 'Bash',
     });
 
-    const res = await db.findings.listGroupedFindings({});
-    const instance = res.items[0]?.instances[0];
-    expect(instance?.file).toBe('');
-    expect(instance?.toolName).toBe('Bash');
+    const found = await db.findings.listFindingInstances({ subtype: ['env-kv'] });
+    expect(found.items[0]?.file).toBe('');
+    expect(found.items[0]?.toolName).toBe('Bash');
 
-    expect(
-      (await db.findings.listGroupedFindings({ q: 'via bash' })).items.map((g) => g.id),
-    ).toEqual(['env-kv']);
-    expect((await db.findings.listGroupedFindings({ q: 'via webfetch' })).items).toEqual([]);
+    expect((await db.findings.listFindingTypes({ q: 'via bash' })).items.map((g) => g.id)).toEqual([
+      'env-kv',
+    ]);
+    expect((await db.findings.listFindingTypes({ q: 'via webfetch' })).items).toEqual([]);
   });
 });
 
@@ -191,7 +191,7 @@ describe('SqliteFindingsRepository.listGroupedFindings', () => {
 // grouped list to findings whose event metadata carries that session, so the
 // same query/response shape serves both the whole-store page and the
 // session-filtered deep link (/findings?session=…).
-describe('SqliteFindingsRepository.listGroupedFindings — sessionId scope', () => {
+describe('SqliteFindingsRepository.listFindingTypes — sessionId scope', () => {
   const SESSION_A = 'aaaaaaaa-1111-4111-8111-111111111111';
   const SESSION_B = 'bbbbbbbb-2222-4222-8222-222222222222';
 
@@ -238,42 +238,50 @@ describe('SqliteFindingsRepository.listGroupedFindings — sessionId scope', () 
 
   it('scopes items, totals and instance counts to the session', async () => {
     seedSessions();
-    const res = await db.findings.listGroupedFindings({ sessionId: SESSION_A });
+    const res = await db.findings.listFindingTypes({ sessionId: SESSION_A });
 
-    expect(res.totals).toEqual({ findings: 2, groups: 2 });
+    expect(res.totals).toEqual({ findings: 2, types: 2 });
     expect(res.items.map((g) => g.id)).toEqual(['aws-key', 'email']);
-    // Only the session's own instance — not session B's, not the sessionless one.
+    // Only the session's own finding — not session B's, not the sessionless one.
     expect(res.items[0]?.instanceCount).toBe(1);
-    expect(res.items[0]?.instances.map((i) => i.file)).toEqual(['a.ts']);
+    expect(
+      (
+        await db.findings.listFindingInstances({ sessionId: SESSION_A, subtype: ['aws-key'] })
+      ).items.map((i) => i.file),
+    ).toEqual(['a.ts']);
     expect(res.items[0]?.latestDetectedAt).toBe('2026-01-03T00:00:00.000Z');
   });
 
   it('excludes findings whose events carry no sessionId', async () => {
     seedSessions();
-    const res = await db.findings.listGroupedFindings({ sessionId: SESSION_B });
+    const res = await db.findings.listFindingTypes({ sessionId: SESSION_B });
 
-    expect(res.totals).toEqual({ findings: 1, groups: 1 });
-    expect(res.items[0]?.instances.map((i) => i.file)).toEqual(['c.ts']);
+    expect(res.totals).toEqual({ findings: 1, types: 1 });
+    expect(
+      (await db.findings.listFindingInstances({ sessionId: SESSION_B })).items.map((i) => i.file),
+    ).toEqual(['c.ts']);
   });
 
   it('returns empty for a session with no findings', async () => {
     seedSessions();
-    const res = await db.findings.listGroupedFindings({ sessionId: 'no-such-session' });
+    const res = await db.findings.listFindingTypes({ sessionId: 'no-such-session' });
 
     expect(res.items).toEqual([]);
-    expect(res.totals).toEqual({ findings: 0, groups: 0 });
+    expect(res.totals).toEqual({ findings: 0, types: 0 });
   });
 
   it('composes with the other filters and scopes facets to the session', async () => {
     seedSessions();
-    const res = await db.findings.listGroupedFindings({
+    const res = await db.findings.listFindingTypes({
       sessionId: SESSION_B,
       severity: ['critical'],
     });
 
     // Session B holds one of the store's three critical aws-key instances.
-    expect(res.totals).toEqual({ findings: 1, groups: 1 });
-    expect(res.items[0]?.instances.map((i) => i.file)).toEqual(['c.ts']);
+    expect(res.totals).toEqual({ findings: 1, types: 1 });
+    expect(
+      (await db.findings.listFindingInstances({ sessionId: SESSION_B })).items.map((i) => i.file),
+    ).toEqual(['c.ts']);
     // Facets honor the session scope: session B has no low finding, so the
     // severity facet (own filter excluded) lists critical only.
     expect(res.facets.severity.map((s) => s.value)).toEqual(['critical']);
@@ -282,13 +290,68 @@ describe('SqliteFindingsRepository.listGroupedFindings — sessionId scope', () 
   it('search text scoping: a q that only matches another session finds nothing', async () => {
     seedSessions();
     // 'acme/web' belongs to session B's finding; scoped to A it must not match.
-    const res = await db.findings.listGroupedFindings({ sessionId: SESSION_A, q: 'acme/web' });
+    const res = await db.findings.listFindingTypes({ sessionId: SESSION_A, q: 'acme/web' });
     expect(res.items).toEqual([]);
   });
 
   // The Activity page's link label: a bare COUNT over the session's live
   // findings, not the grouped pipeline — it must not pay the whole-store
   // aggregate cost just to produce one number.
+  // A rule can hold SEVERAL inspection_definitions rows — one per version, which
+  // is what the definitions writer mints on a version bump — and a pack update
+  // may move a rule between severities. The type must then report the version
+  // that actually fired most recently, not an arbitrary pick across versions.
+  //
+  // 'low' → 'medium' is the discriminating pair, and the DIRECTION matters:
+  // alphabetically 'low' sorts first, so picking across versions by min() yields
+  // the OLD severity while the newest finding fired under 'medium'. The reverse
+  // pairing ('medium' → 'low') passes under either rule, since there min()
+  // happens to agree with newest-wins — a fixture that proves nothing.
+  it('takes severity and category from the version that fired most recently', async () => {
+    const raw = store.openRaw();
+    for (const [defId, sev, cat, version] of [
+      ['def-v1', 'low', 'pii', '1'],
+      ['def-v2', 'medium', 'secret', '2'],
+    ] as const) {
+      raw
+        .prepare(
+          `INSERT INTO inspection_definitions
+             (id, rule_id, name, category, severity, definition, version)
+           VALUES (?, 'versioned-rule', 'versioned-rule', ?, ?, '{}', ?)`,
+        )
+        .run(defId, cat, sev, version);
+    }
+    // The v1 finding is OLDER; the v2 finding is the newest, so v2's severity
+    // and category are the rule's.
+    for (const [findingId, defId, at] of [
+      ['f-old', 'def-v1', 1_000],
+      ['f-new', 'def-v2', 2_000],
+    ] as const) {
+      raw
+        .prepare(
+          `INSERT INTO audit_events (id, event_type, started_at, content)
+           VALUES (?, 'tool_use', ?, '')`,
+        )
+        .run(`ev-${findingId}`, at);
+      raw
+        .prepare(
+          `INSERT INTO inspection_findings
+             (id, audit_event_id, inspection_definition_id, span_start, span_end,
+              masked_match, action_taken, confidence)
+           VALUES (?, ?, ?, 0, 1, '••', 'log', 1)`,
+        )
+        .run(findingId, `ev-${findingId}`, defId);
+    }
+
+    const res = await db.findings.listFindingTypes({});
+    const type = res.items.find((t) => t.id === 'versioned-rule');
+    expect(type).toBeDefined();
+    // Both findings belong to the one rule however many versions it has.
+    expect(type?.instanceCount).toBe(2);
+    expect(type?.severity).toBe('medium');
+    expect(type?.category).toBe('secret');
+  });
+
   it('sessionFindingsCount tallies the session without the grouped pipeline', async () => {
     seedSessions();
     expect(await db.findings.sessionFindingsCount(SESSION_A)).toBe(2);
@@ -349,11 +412,11 @@ describe('SqliteFindingsRepository.listGroupedFindings — sessionId scope', () 
     seedTranscriptFirings(SESSION_A, 'aws-key', 3);
     seedTranscriptFirings(SESSION_A, 'transcript-only-rule', 5);
 
-    const res = await db.findings.listGroupedFindings({ sessionId: SESSION_A });
+    const res = await db.findings.listFindingTypes({ sessionId: SESSION_A });
     expect(res.sessionFirings).toEqual({ 'aws-key': 3, 'transcript-only-rule': 5 });
 
     // Another session's firings never leak in.
-    const other = await db.findings.listGroupedFindings({ sessionId: SESSION_B });
+    const other = await db.findings.listFindingTypes({ sessionId: SESSION_B });
     expect(other.sessionFirings).toEqual({});
   });
 
@@ -361,7 +424,7 @@ describe('SqliteFindingsRepository.listGroupedFindings — sessionId scope', () 
     seedSessions();
     seedTranscriptFirings(SESSION_A, 'aws-key', 3);
 
-    const res = await db.findings.listGroupedFindings({});
+    const res = await db.findings.listFindingTypes({});
     expect(res.sessionFirings).toBeUndefined();
   });
 });
@@ -504,7 +567,7 @@ describe('insertFindings — finding_key upsert (re-scan reconciliation)', () =>
 // distinct ruleId so its group is a single-instance group and the instance
 // status equals the group status, except the final "mixed" case which checks
 // group-level open-dominates precedence explicitly.
-describe('SqliteFindingsRepository.listGroupedFindings — per-finding status', () => {
+describe('SqliteFindingsRepository.listFindingTypes — per-finding status', () => {
   it('in-flight (kind != code_change) is born handled, regardless of any resolution row', async () => {
     record({
       occurredAt: '2026-01-01T00:00:00.000Z',
@@ -514,19 +577,25 @@ describe('SqliteFindingsRepository.listGroupedFindings — per-finding status', 
       filePath: 'a.ts',
     });
 
-    const res = await db.findings.listGroupedFindings({});
+    const res = await db.findings.listFindingTypes({});
     const group = res.items.find((g) => g.id === 'in-flight-rule');
-    expect(group?.instances[0]?.status).toBe('handled');
     expect(group?.status).toBe('handled');
+    // The same classifier reaches the findings read the detail panel
+    // renders, so the two can never disagree about one row's status.
+    const found = await db.findings.listFindingInstances({ subtype: ['in-flight-rule'] });
+    expect(found.items[0]?.status).toBe('handled');
   });
 
   it('at-rest, tracked, no resolution row → open', async () => {
     recordAtRest({ findingKey: 'key-open', ruleId: 'open-rule' });
 
-    const res = await db.findings.listGroupedFindings({});
+    const res = await db.findings.listFindingTypes({});
     const group = res.items.find((g) => g.id === 'open-rule');
-    expect(group?.instances[0]?.status).toBe('open');
     expect(group?.status).toBe('open');
+    // The same classifier reaches the findings read the detail panel
+    // renders, so the two can never disagree about one row's status.
+    const found = await db.findings.listFindingInstances({ subtype: ['open-rule'] });
+    expect(found.items[0]?.status).toBe('open');
   });
 
   it('at-rest, tracked, latest resolution "resolved" → resolved', async () => {
@@ -539,10 +608,13 @@ describe('SqliteFindingsRepository.listGroupedFindings — per-finding status', 
       evidence: '',
     });
 
-    const res = await db.findings.listGroupedFindings({});
+    const res = await db.findings.listFindingTypes({});
     const group = res.items.find((g) => g.id === 'resolved-rule');
-    expect(group?.instances[0]?.status).toBe('resolved');
     expect(group?.status).toBe('resolved');
+    // The same classifier reaches the findings read the detail panel
+    // renders, so the two can never disagree about one row's status.
+    const found = await db.findings.listFindingInstances({ subtype: ['resolved-rule'] });
+    expect(found.items[0]?.status).toBe('resolved');
   });
 
   // Legacy pre-resolution-feature at-rest rows (finding_key IS NULL) can never
@@ -556,10 +628,13 @@ describe('SqliteFindingsRepository.listGroupedFindings — per-finding status', 
   it('at-rest, legacy untracked (finding_key IS NULL) → open', async () => {
     recordAtRest({ ruleId: 'legacy-rule' }); // no findingKey
 
-    const res = await db.findings.listGroupedFindings({});
+    const res = await db.findings.listFindingTypes({});
     const group = res.items.find((g) => g.id === 'legacy-rule');
-    expect(group?.instances[0]?.status).toBe('open');
     expect(group?.status).toBe('open');
+    // The same classifier reaches the findings read the detail panel
+    // renders, so the two can never disagree about one row's status.
+    const found = await db.findings.listFindingInstances({ subtype: ['legacy-rule'] });
+    expect(found.items[0]?.status).toBe('open');
   });
 
   // The Status toolbar filter is a store-side filter like severity/provider —
@@ -589,42 +664,41 @@ describe('SqliteFindingsRepository.listGroupedFindings — per-finding status', 
     });
 
     it('keeps only groups whose derived status was requested', async () => {
-      const res = await db.findings.listGroupedFindings({ status: ['open'] });
+      const res = await db.findings.listFindingTypes({ status: ['open'] });
       expect(res.items.map((g) => g.id)).toEqual(['open-rule']);
     });
 
     it('treats an empty status selection as no filter at all', async () => {
       // Pins the "empty array == filter absent" contract at the persistence
-      // boundary: every group returns, totals stay unscoped, and no group's
-      // instance preview is narrowed.
-      const res = await db.findings.listGroupedFindings({ status: [] });
+      // boundary: every type returns and totals stay unscoped.
+      const res = await db.findings.listFindingTypes({ status: [] });
       expect(res.items.map((g) => g.id).sort()).toEqual([
         'handled-rule',
         'open-rule',
         'resolved-rule',
       ]);
-      expect(res.totals).toEqual({ findings: 3, groups: 3 });
-      expect(res.items.every((g) => g.instances.length === 1)).toBe(true);
+      expect(res.totals).toEqual({ findings: 3, types: 3 });
+      expect(res.items.every((g) => g.instanceCount === 1)).toBe(true);
     });
 
     it('keeps the union when several statuses are requested', async () => {
-      const res = await db.findings.listGroupedFindings({ status: ['open', 'resolved'] });
+      const res = await db.findings.listFindingTypes({ status: ['open', 'resolved'] });
       expect(res.items.map((g) => g.id).sort()).toEqual(['open-rule', 'resolved-rule']);
     });
 
     it('narrows totals to the filtered set (not just the fetched page)', async () => {
-      expect((await db.findings.listGroupedFindings({})).totals).toEqual({
+      expect((await db.findings.listFindingTypes({})).totals).toEqual({
         findings: 3,
-        groups: 3,
+        types: 3,
       });
-      expect((await db.findings.listGroupedFindings({ status: ['open'] })).totals).toEqual({
+      expect((await db.findings.listFindingTypes({ status: ['open'] })).totals).toEqual({
         findings: 1,
-        groups: 1,
+        types: 1,
       });
     });
 
     it('reports a status facet excluding its own filter, and applies it to the others', async () => {
-      const res = await db.findings.listGroupedFindings({ status: ['open'] });
+      const res = await db.findings.listFindingTypes({ status: ['open'] });
       // The status facet still counts every status, so the user can switch…
       expect(new Map(res.facets.status.map((f) => [f.value, f.count]))).toEqual(
         new Map([
@@ -638,13 +712,13 @@ describe('SqliteFindingsRepository.listGroupedFindings — per-finding status', 
     });
 
     it('composes with the other filters', async () => {
-      const res = await db.findings.listGroupedFindings({
+      const res = await db.findings.listFindingTypes({
         status: ['open'],
         severity: ['critical'],
       });
       expect(res.items.map((g) => g.id)).toEqual(['open-rule']);
       expect(
-        (await db.findings.listGroupedFindings({ status: ['open'], severity: ['low'] })).items,
+        (await db.findings.listFindingTypes({ status: ['open'], severity: ['low'] })).items,
       ).toEqual([]);
     });
 
@@ -667,23 +741,33 @@ describe('SqliteFindingsRepository.listGroupedFindings — per-finding status', 
         filePath: 'c.ts',
       });
 
-      const res = await db.findings.listGroupedFindings({ status: ['open'] });
+      const res = await db.findings.listFindingTypes({ status: ['open'] });
       const group = res.items.find((g) => g.id === 'open-rule');
       expect(group?.status).toBe('open');
       // instanceCount stays the whole-group tally; the preview and the totals
       // are status-scoped.
       expect(group?.instanceCount).toBe(3);
-      expect(group?.instances.map((i) => i.status)).toEqual(['open']);
-      expect(res.totals).toEqual({ findings: 1, groups: 1 });
+      expect(res.totals).toEqual({ findings: 1, types: 1 });
+      // And the findings read — what the detail panel shows — narrows to the
+      // matching ones, so the panel beside this row cannot contradict it.
+      const found = await db.findings.listFindingInstances({
+        subtype: ['open-rule'],
+        status: ['open'],
+      });
+      expect(found.items.map((i) => i.status)).toEqual(['open']);
     });
 
-    it('keeps a group whose matching instances all sit outside the preview (empty narrowed preview)', async () => {
-      // More in-flight (handled) instances than the preview holds, all NEWER
-      // than open-rule's one open instance: the preview window is entirely
-      // handled, yet the group folds to open on the strength of the older row.
-      // The filter must keep the group, totals must count only the open
-      // instance, and the narrowed preview is legitimately EMPTY — the view
-      // layer renders an explicit notice for this case.
+    // This case used to assert the OPPOSITE. With a 200-row preview per group,
+    // a type whose matching findings all sat outside that window expanded to
+    // NOTHING, and the view had to explain the empty expansion. The findings of
+    // a type are their own keyset-paged read now, so a match past the old window
+    // is simply reachable — the behaviour this change exists to produce,
+    // asserted at a size the old preview could not have covered.
+    it('reaches a matching finding far outside any fixed window', async () => {
+      // More in-flight (handled) findings than the old preview held, all NEWER
+      // than open-rule's one open finding: under the old read the window was
+      // entirely handled and the open row was unreachable.
+      //
       // One transaction, not 205: recordCapture commits per call, and a commit
       // apiece costs seconds of fsync on the Windows CI filesystem — the cost
       // seedBulk() below is written the way it is to avoid. Each nested
@@ -701,12 +785,27 @@ describe('SqliteFindingsRepository.listGroupedFindings — per-finding status', 
         }
       });
 
-      const res = await db.findings.listGroupedFindings({ status: ['open'] });
+      const res = await db.findings.listFindingTypes({ status: ['open'] });
       const group = res.items.find((g) => g.id === 'open-rule');
       expect(group?.status).toBe('open');
       expect(group?.instanceCount).toBe(206);
-      expect(group?.instances).toEqual([]);
-      expect(res.totals).toEqual({ findings: 1, groups: 1 });
+      expect(res.totals).toEqual({ findings: 1, types: 1 });
+
+      // Page the findings read to the end and find the open one — 205 rows
+      // older than the newest, i.e. outside any 200-row window.
+      let cursor: string | null = null;
+      const statuses: (string | undefined)[] = [];
+      do {
+        const page = await db.findings.listFindingInstances({
+          subtype: ['open-rule'],
+          limit: 50,
+          ...(cursor === null ? {} : { cursor }),
+        });
+        statuses.push(...page.items.map((i) => i.status));
+        cursor = page.nextCursor;
+      } while (cursor !== null);
+      expect(statuses).toHaveLength(206);
+      expect(statuses.filter((st) => st === 'open')).toHaveLength(1);
     });
   });
 
@@ -727,11 +826,13 @@ describe('SqliteFindingsRepository.listGroupedFindings — per-finding status', 
       occurredAt: '2026-01-02T00:00:00.000Z',
     });
 
-    const res = await db.findings.listGroupedFindings({});
+    const res = await db.findings.listFindingTypes({});
     const group = res.items.find((g) => g.id === 'mixed-rule');
     expect(group?.instanceCount).toBe(2);
-    expect(new Set(group?.instances.map((i) => i.status))).toEqual(new Set(['handled', 'open']));
     expect(group?.status).toBe('open');
+    // The two findings that produced that fold, from the read that shows them.
+    const found = await db.findings.listFindingInstances({ subtype: ['mixed-rule'] });
+    expect(new Set(found.items.map((i) => i.status))).toEqual(new Set(['handled', 'open']));
   });
 });
 
@@ -794,7 +895,7 @@ describe('SqliteFindingsRepository.healthSummary — resolution lifecycle', () =
   });
 });
 
-// A store larger than any one group's instance PREVIEW. listGroupedFindings
+// A store larger than any one group's instance PREVIEW. listFindingTypes
 // aggregates the group-wide numbers SQL-side, so every count/fold below must
 // reflect ALL instances even though `instances` only ever carries the newest
 // PREVIEW_INSTANCES_PER_GROUP of them. BULK is deliberately > the 2000-row read
@@ -868,7 +969,7 @@ function seedBulk(intoDir: string, opts: { ruleId?: string } = {}): void {
   }
 }
 
-describe('SqliteFindingsRepository.listGroupedFindings — stores larger than the preview', () => {
+describe('SqliteFindingsRepository.listFindingTypes — stores larger than the preview', () => {
   // Every assertion in this block reads the same BULK-instance store and none
   // writes, so it is seeded ONCE here rather than per test: re-seeding 2600 rows
   // seven times is enough disk traffic to time out the workers running beside
@@ -895,24 +996,27 @@ describe('SqliteFindingsRepository.listGroupedFindings — stores larger than th
   });
 
   it('counts every instance rather than saturating at the old 2000-row cap', async () => {
-    const res = await bulkDb.findings.listGroupedFindings({});
+    const res = await bulkDb.findings.listFindingTypes({});
 
-    expect(res.totals).toEqual({ findings: BULK, groups: 1 });
+    expect(res.totals).toEqual({ findings: BULK, types: 1 });
     expect(res.items[0]?.instanceCount).toBe(BULK);
   });
 
-  it('caps the instances preview without capping the count', async () => {
-    const group = (await bulkDb.findings.listGroupedFindings({})).items[0];
-
-    // The preview is bounded and holds the NEWEST instances...
-    expect(group?.instances.length).toBeLessThan(BULK);
-    expect(group?.instances[0]?.file).toBe(`src/f${String(BULK - 1)}.ts`);
-    // ...while the count beside it still speaks for the whole group.
+  // The read that replaced the capped preview: a type carries no findings at
+  // all, and its findings come back newest-first from their own keyset-paged
+  // read, which no per-type bound truncates.
+  it('carries no findings on the type, and pages them newest-first from the instance read', async () => {
+    const group = (await bulkDb.findings.listFindingTypes({})).items[0];
+    expect(group).not.toHaveProperty('instances');
     expect(group?.instanceCount).toBe(BULK);
+
+    const first = await bulkDb.findings.listFindingInstances({ subtype: ['bulk-rule'], limit: 50 });
+    expect(first.items[0]?.file).toBe(`src/f${String(BULK - 1)}.ts`);
+    expect(first.totals.findings).toBe(BULK);
   });
 
   it('folds providers, actions and latest over instances outside the preview', async () => {
-    const group = (await bulkDb.findings.listGroupedFindings({})).items[0];
+    const group = (await bulkDb.findings.listFindingTypes({})).items[0];
 
     // The cursor/redact instance is the oldest row, far outside the preview —
     // only the SQL aggregate can still see it.
@@ -925,17 +1029,15 @@ describe('SqliteFindingsRepository.listGroupedFindings — stores larger than th
 
   it('filters and facets on an instance outside the preview', async () => {
     // Provider, action and free-text all match ONLY the oldest instance.
-    expect(
-      (await bulkDb.findings.listGroupedFindings({ provider: ['cursor'] })).items,
-    ).toHaveLength(1);
-    expect(
-      (await bulkDb.findings.listGroupedFindings({ action: ['redacted'] })).items,
-    ).toHaveLength(1);
-    expect((await bulkDb.findings.listGroupedFindings({ q: 'acme/ancient' })).items).toHaveLength(
+    expect((await bulkDb.findings.listFindingTypes({ provider: ['cursor'] })).items).toHaveLength(
       1,
     );
+    expect((await bulkDb.findings.listFindingTypes({ action: ['redacted'] })).items).toHaveLength(
+      1,
+    );
+    expect((await bulkDb.findings.listFindingTypes({ q: 'acme/ancient' })).items).toHaveLength(1);
 
-    const facets = (await bulkDb.findings.listGroupedFindings({})).facets;
+    const facets = (await bulkDb.findings.listFindingTypes({})).facets;
     expect(facets.provider.map((f) => f.value).sort()).toEqual(['claudecode', 'cursor']);
     expect(facets.action.map((f) => f.value).sort()).toEqual(['blocked', 'redacted']);
   });
@@ -946,19 +1048,19 @@ describe('SqliteFindingsRepository.listGroupedFindings — stores larger than th
   it('matches a buried instance on file path, and still filters when q finds nothing', async () => {
     // src/f0.ts belongs to the oldest instance — thousands of rows outside the
     // newest-200 preview.
-    expect((await bulkDb.findings.listGroupedFindings({ q: 'src/f0.ts' })).items).toHaveLength(1);
-    expect((await bulkDb.findings.listGroupedFindings({ q: 'no-such-repo' })).items).toEqual([]);
-    expect((await bulkDb.findings.listGroupedFindings({ q: 'no-such-repo' })).totals).toEqual({
+    expect((await bulkDb.findings.listFindingTypes({ q: 'src/f0.ts' })).items).toHaveLength(1);
+    expect((await bulkDb.findings.listFindingTypes({ q: 'no-such-repo' })).items).toEqual([]);
+    expect((await bulkDb.findings.listFindingTypes({ q: 'no-such-repo' })).totals).toEqual({
       findings: 0,
-      groups: 0,
+      types: 0,
     });
   });
 
   it('counts and lists identically whether or not a q is supplied', async () => {
-    const withoutQ = await bulkDb.findings.listGroupedFindings({});
+    const withoutQ = await bulkDb.findings.listFindingTypes({});
     // 'acme' matches every instance's repo, so the filtered set is the whole
     // store — the q path must agree with the no-q path it skips the fetch on.
-    const withQ = await bulkDb.findings.listGroupedFindings({ q: 'acme' });
+    const withQ = await bulkDb.findings.listFindingTypes({ q: 'acme' });
 
     expect(withQ.totals).toEqual(withoutQ.totals);
     expect(withQ.items.map((g) => g.id)).toEqual(withoutQ.items.map((g) => g.id));
@@ -981,9 +1083,9 @@ describe('SqliteFindingsRepository.listGroupedFindings — stores larger than th
     });
     seedBulk(store.dataDir);
 
-    const res = await db.findings.listGroupedFindings({});
+    const res = await db.findings.listFindingTypes({});
 
     expect(res.items.map((g) => g.id).sort()).toEqual(['bulk-rule', 'buried-rule']);
-    expect(res.totals).toEqual({ findings: BULK + 1, groups: 2 });
+    expect(res.totals).toEqual({ findings: BULK + 1, types: 2 });
   });
 });

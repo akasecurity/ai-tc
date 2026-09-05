@@ -394,8 +394,91 @@ describe('SqliteFindingsRepository.listFindingLocations', () => {
   });
 });
 
-describe('SqliteFindingsRepository.listGroupedFindings pagination', () => {
-  // Distinct rules so each becomes its own group; the grouped list pages GROUPS.
+// The read the `?finding=` deep link resolves through. It is a primary-key seek
+// rather than anything derived from a list page, which is the whole point: the
+// id a link carries can name a finding far older than any page a reader would
+// otherwise have to walk to.
+describe('SqliteFindingsRepository.findingInstance', () => {
+  it('resolves an id to a detail whose groupId is the rule id', async () => {
+    record({
+      occurredAt: '2026-01-03T00:00:00.000Z',
+      sourceTool: 'claude-code',
+      ruleId: 'aws-key',
+      repo: 'acme/api',
+      filePath: 'a.ts',
+      sessionId: 'sess-1',
+    });
+    const listed = (await db.findings.listFindingInstances({})).items[0];
+    expect(listed).toBeDefined();
+
+    const found = await db.findings.findingInstance(listed?.id ?? '');
+    expect(found?.groupId).toBe('aws-key');
+    expect(found?.subtype).toBe('aws-key');
+    expect(found?.file).toBe('a.ts');
+    expect(found?.sessionId).toBe('sess-1');
+  });
+
+  it('returns null for an unknown id', async () => {
+    expect(await db.findings.findingInstance('no-such-finding')).toBeNull();
+  });
+
+  // The non-vacuous one: the OLDEST finding of a large type, which the read this
+  // replaced could only see if it fell inside a fixed 200-row preview. Seek it
+  // directly and it resolves regardless of how many newer findings bury it.
+  it('resolves the oldest finding of a large type, which no page bound reaches', async () => {
+    const BURIED = 250;
+    await db.transaction(() => {
+      for (let i = 0; i < BURIED; i += 1) {
+        record({
+          occurredAt: new Date(Date.UTC(2026, 1, 1) + i * 1000).toISOString(),
+          sourceTool: 'claude-code',
+          ruleId: 'buried-rule',
+          repo: 'acme/api',
+          filePath: `deep/f${String(i)}.ts`,
+        });
+      }
+    });
+
+    // Walk to the end to learn the oldest one's id, then seek it cold.
+    let cursor: string | null = null;
+    let oldest: { id: string; file: string } | undefined;
+    do {
+      const page = await db.findings.listFindingInstances({
+        subtype: ['buried-rule'],
+        limit: 50,
+        ...(cursor === null ? {} : { cursor }),
+      });
+      oldest = page.items.at(-1) ?? oldest;
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    expect(oldest?.file).toBe('deep/f0.ts');
+
+    const found = await db.findings.findingInstance(oldest?.id ?? '');
+    expect(found?.file).toBe('deep/f0.ts');
+    expect(found?.groupId).toBe('buried-rule');
+  });
+
+  // It RESOLVES an id; whether the row would survive the list's filters is a
+  // different question, and hiding the target because a filter excludes it is
+  // worse than showing it.
+  it('ignores the filters a list would apply', async () => {
+    record({
+      occurredAt: '2026-01-03T00:00:00.000Z',
+      sourceTool: 'claude-code',
+      ruleId: 'aws-key',
+      severity: 'critical',
+      repo: 'acme/api',
+      filePath: 'a.ts',
+    });
+    const listed = (await db.findings.listFindingInstances({})).items[0];
+    // A filter that excludes it from every list still leaves it resolvable.
+    expect((await db.findings.listFindingInstances({ severity: ['low'] })).items).toHaveLength(0);
+    expect((await db.findings.findingInstance(listed?.id ?? ''))?.id).toBe(listed?.id);
+  });
+});
+
+describe('SqliteFindingsRepository.listFindingTypes pagination', () => {
+  // Distinct rules so each becomes its own type; this list pages TYPES.
   function seedGroups(n: number): void {
     for (let i = 0; i < n; i += 1) {
       record({
@@ -413,8 +496,8 @@ describe('SqliteFindingsRepository.listGroupedFindings pagination', () => {
     const seen: string[] = [];
     let cursor: string | undefined;
     for (let page = 0; page < 10; page += 1) {
-      const res: Awaited<ReturnType<typeof db.findings.listGroupedFindings>> =
-        await db.findings.listGroupedFindings({
+      const res: Awaited<ReturnType<typeof db.findings.listFindingTypes>> =
+        await db.findings.listFindingTypes({
           limit: 5,
           ...(cursor === undefined ? {} : { cursor }),
         });
@@ -429,15 +512,15 @@ describe('SqliteFindingsRepository.listGroupedFindings pagination', () => {
 
   it('reports a null cursor at exhaustion', async () => {
     seedGroups(3);
-    const res = await db.findings.listGroupedFindings({ limit: 5 });
+    const res = await db.findings.listFindingTypes({ limit: 5 });
     expect(res.items).toHaveLength(3);
     expect(res.nextCursor).toBeNull();
   });
 
   it('keeps totals and facets page-independent', async () => {
     seedGroups(12);
-    const first = await db.findings.listGroupedFindings({ limit: 5 });
-    const second = await db.findings.listGroupedFindings({
+    const first = await db.findings.listFindingTypes({ limit: 5 });
+    const second = await db.findings.listFindingTypes({
       limit: 5,
       cursor: first.nextCursor ?? '',
     });
@@ -447,8 +530,8 @@ describe('SqliteFindingsRepository.listGroupedFindings pagination', () => {
 
   it('restarts from the top on an undecodable cursor', async () => {
     seedGroups(6);
-    const fresh = await db.findings.listGroupedFindings({ limit: 3 });
-    const restarted = await db.findings.listGroupedFindings({ limit: 3, cursor: 'garbage' });
+    const fresh = await db.findings.listFindingTypes({ limit: 3 });
+    const restarted = await db.findings.listFindingTypes({ limit: 3, cursor: 'garbage' });
     expect(restarted.items.map((g) => g.id)).toEqual(fresh.items.map((g) => g.id));
   });
 
@@ -460,20 +543,20 @@ describe('SqliteFindingsRepository.listGroupedFindings pagination', () => {
     const bogus = Buffer.from(
       JSON.stringify({ sev: 'not-a-severity', t: '2026-01-01T00:00:00.000Z', id: 'x' }),
     ).toString('base64url');
-    const fresh = await db.findings.listGroupedFindings({ limit: 3 });
-    const restarted = await db.findings.listGroupedFindings({ limit: 3, cursor: bogus });
+    const fresh = await db.findings.listFindingTypes({ limit: 3 });
+    const restarted = await db.findings.listFindingTypes({ limit: 3, cursor: bogus });
     expect(restarted.items.map((g) => g.id)).toEqual(fresh.items.map((g) => g.id));
   });
 
   it('appends an includeId group that sorts past the page', async () => {
     seedGroups(12);
-    const first = await db.findings.listGroupedFindings({ limit: 3 });
+    const first = await db.findings.listFindingTypes({ limit: 3 });
     const onPage = new Set(first.items.map((g) => g.id));
-    const all = await db.findings.listGroupedFindings({ limit: 100 });
+    const all = await db.findings.listFindingTypes({ limit: 100 });
     const offPage = all.items.find((g) => !onPage.has(g.id));
     expect(offPage).toBeDefined();
 
-    const withDeepLink = await db.findings.listGroupedFindings({
+    const withDeepLink = await db.findings.listFindingTypes({
       limit: 3,
       includeId: offPage?.id ?? '',
     });
@@ -486,45 +569,50 @@ describe('SqliteFindingsRepository.listGroupedFindings pagination', () => {
 
   it('does not duplicate an includeId group already on the page', async () => {
     seedGroups(12);
-    const first = await db.findings.listGroupedFindings({ limit: 3 });
+    const first = await db.findings.listFindingTypes({ limit: 3 });
     const onPageId = first.items[0]?.id ?? '';
-    const res = await db.findings.listGroupedFindings({ limit: 3, includeId: onPageId });
+    const res = await db.findings.listFindingTypes({ limit: 3, includeId: onPageId });
     expect(res.items).toHaveLength(3);
     expect(res.items.filter((g) => g.id === onPageId)).toHaveLength(1);
   });
 
-  it('resolves an includeId naming an instance, not just a group', async () => {
+  // `includeId` names a RULE only. An instance id is resolved by
+  // findingInstance instead — a primary-key seek, so unlike the old preview
+  // scan it reaches a finding of any age (see its own cases below).
+  it('ignores an includeId naming an instance rather than a type', async () => {
     seedGroups(12);
-    const all = await db.findings.listGroupedFindings({ limit: 100 });
-    const offPage = all.items.at(-1);
-    const instanceId = offPage?.instances[0]?.id ?? '';
+    const all = await db.findings.listFindingTypes({ limit: 100 });
+    const offPage = all.items.at(-1)?.id ?? '';
+    const instanceId =
+      (await db.findings.listFindingInstances({ subtype: [offPage] })).items[0]?.id ?? '';
     expect(instanceId).not.toBe('');
 
-    const res = await db.findings.listGroupedFindings({ limit: 3, includeId: instanceId });
-    expect(res.items.at(-1)?.id).toBe(offPage?.id);
+    const plain = await db.findings.listFindingTypes({ limit: 3 });
+    const res = await db.findings.listFindingTypes({ limit: 3, includeId: instanceId });
+    expect(res.items.map((g) => g.id)).toEqual(plain.items.map((g) => g.id));
   });
 
   it('ignores an unknown includeId', async () => {
     seedGroups(6);
-    const plain = await db.findings.listGroupedFindings({ limit: 3 });
-    const res = await db.findings.listGroupedFindings({ limit: 3, includeId: 'no-such-id' });
+    const plain = await db.findings.listFindingTypes({ limit: 3 });
+    const res = await db.findings.listFindingTypes({ limit: 3, includeId: 'no-such-id' });
     expect(res.items.map((g) => g.id)).toEqual(plain.items.map((g) => g.id));
   });
 
-  it('scopes aggregates and previews to the from bound together', async () => {
+  it('scopes the type read and the findings read to the from bound alike', async () => {
     seed();
-    const res = await db.findings.listGroupedFindings({ from: '2026-01-02T00:00:00.000Z' });
+    const from = '2026-01-02T00:00:00.000Z';
+    const res = await db.findings.listFindingTypes({ from });
 
     // The 2026-01-01 'email' row falls outside the window entirely.
-    expect(res.totals).toEqual({ findings: 2, groups: 1 });
-    const awsKey = res.items[0];
-    // instanceCount comes from the aggregate query and instances from the
-    // preview query — the bound has to reach both or they disagree.
-    expect(awsKey?.instanceCount).toBe(2);
-    expect(awsKey?.instances).toHaveLength(2);
+    expect(res.totals).toEqual({ findings: 2, types: 1 });
+    expect(res.items[0]?.instanceCount).toBe(2);
+    // The two panels read the same window, or the count on the left disagrees
+    // with the rows on the right.
+    expect((await db.findings.listFindingInstances({ from })).totals.findings).toBe(2);
   });
 
-  it('carries event and session linkage on preview instances', async () => {
+  it('carries event and session linkage on each finding', async () => {
     const eventId = record({
       occurredAt: '2026-01-03T00:00:00.000Z',
       sourceTool: 'claude-code',
@@ -532,8 +620,8 @@ describe('SqliteFindingsRepository.listGroupedFindings pagination', () => {
       repo: 'acme/api',
       sessionId: 'sess-9',
     });
-    const res = await db.findings.listGroupedFindings({});
-    expect(res.items[0]?.instances[0]?.eventId).toBe(eventId);
-    expect(res.items[0]?.instances[0]?.sessionId).toBe('sess-9');
+    const found = await db.findings.listFindingInstances({ subtype: ['aws-key'] });
+    expect(found.items[0]?.eventId).toBe(eventId);
+    expect(found.items[0]?.sessionId).toBe('sess-9');
   });
 });

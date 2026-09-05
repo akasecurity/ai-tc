@@ -9,7 +9,7 @@ import { useTempStore } from '../helpers/temp-store.ts';
 
 // PINS the status↔bucket contract between the two resolution read surfaces:
 //
-//   - SqliteFindingsRepository.listGroupedFindings (per-finding Status column)
+//   - SqliteFindingsRepository.listFindingTypes (per-finding Status column)
 //   - SqliteSecurityRepository.severitySummary (caught / needs-remediation)
 //
 // Both derive from the same latest-resolution-wins SQL (resolution-sql.ts), but
@@ -112,7 +112,7 @@ describe('list status ↔ severity-card bucket consistency', () => {
       evidence: '{}',
     });
 
-    const list = await db.findings.listGroupedFindings({});
+    const list = await db.findings.listFindingTypes({});
     // A group's id IS its ruleId (buildFindingGroups groups by rule).
     const statusByRule = new Map(list.items.map((g) => [g.id, g.status]));
     expect(statusByRule.get('r-inflight')).toBe('handled');

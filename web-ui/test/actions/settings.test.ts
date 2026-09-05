@@ -2,10 +2,15 @@ import { readFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
+import type * as Persistence from '@akasecurity/persistence';
 import { readWorkspaceSettings } from '@akasecurity/persistence';
-import type { SaveSettingsInput } from '@akasecurity/schema';
-import { HISTORY_SYNC_PAYLOAD_VERSION, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
-import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import type { SaveSettingsInput, WebChatCaptureConsentChoice } from '@akasecurity/schema';
+import {
+  HISTORY_SYNC_PAYLOAD_VERSION,
+  VAULT_CONSENT_VERSION,
+  WEB_CHAT_CAPTURE_CONSENT_VERSION,
+} from '@akasecurity/schema';
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import { saveSettings } from '../../app/(app)/settings/actions.ts';
 import { tempHomes } from '../helpers/temp-home.ts';
@@ -28,6 +33,35 @@ vi.mock('node:os', async (importActual) => {
 });
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 
+// The seam the lock proof at the bottom of this file needs, and nothing else
+// uses it: a hook that runs at the moment `saveSettings` CALLS applyOnboarding,
+// which is after any read the action made for itself and before the one
+// applyOnboarding makes inside its lock. Writing settings.json here therefore
+// stands in for a second writer that committed in exactly that window.
+//
+// `applyOnboarding` alone is wrapped; every other export is the real one, so the
+// store, the schema merge and the file lock are all genuine.
+const beforeMerge = vi.hoisted(() => ({ run: undefined as (() => void) | undefined }));
+vi.mock('@akasecurity/persistence', async (importActual) => {
+  const actual = await importActual<typeof Persistence>();
+  return {
+    ...actual,
+    applyOnboarding: (
+      answers: Parameters<typeof actual.applyOnboarding>[0],
+      base?: string,
+      managedOverride?: Parameters<typeof actual.applyOnboarding>[2],
+    ) => {
+      // ONE-SHOT. The hook writes settings.json through this same export, so a
+      // hook left armed re-enters itself forever; taking it before calling also
+      // says what it stands in for — one other writer, committing once.
+      const hook = beforeMerge.run;
+      beforeMerge.run = undefined;
+      hook?.();
+      return actual.applyOnboarding(answers, base, managedOverride);
+    },
+  };
+});
+
 // Homes are removed when this FILE finishes, not after each test: the store
 // app/lib/db.ts opens under them stays open, and Windows will not delete a
 // directory a handle still holds. See the helper.
@@ -48,6 +82,13 @@ beforeEach(() => {
   osHome.dir = home;
 });
 
+// The hook is one-shot, but a case that arms it and then refuses before
+// applyOnboarding is reached would leave it armed for the next test. The home
+// itself is removed by the helper when this file finishes, not here.
+afterEach(() => {
+  beforeMerge.run = undefined;
+});
+
 const ENDPOINT = 'https://plane.example.com';
 
 describe('saveSettings — the redact fallback', () => {
@@ -62,6 +103,7 @@ describe('saveSettings — the redact fallback', () => {
         historySyncConsent: 'unchanged',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
+        webChatCaptureConsent: 'unchanged',
         redactFallback: value,
         bodyRetention: { enabled: false, retainDays: 30 },
       });
@@ -81,6 +123,7 @@ describe('saveSettings — the redact fallback', () => {
       historySyncConsent: 'unchanged',
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'block',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -91,6 +134,7 @@ describe('saveSettings — the redact fallback', () => {
       historySyncConsent: 'unchanged',
       vaultConsent: 'off',
       vaultInlineReveal: 'full',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'redact',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -110,6 +154,7 @@ describe('saveSettings — the redact fallback', () => {
       historySyncConsent: 'unchanged',
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 7,
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -133,6 +178,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -164,6 +210,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'off',
       // A real unrelated edit, so this is a save that had to do something.
       vaultInlineReveal: 'full',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -208,6 +255,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'off',
       // A real unrelated edit, or the save proves nothing.
       vaultInlineReveal: 'full',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -251,6 +299,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       // A real unrelated edit, or the save proves nothing about a re-stamp it
       // never had cause to make.
       vaultInlineReveal: 'full',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -312,6 +361,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'granted',
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -348,6 +398,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -362,6 +413,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -381,6 +433,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       // The unrelated edit. It has to be a field that really changes, or the
       // second save proves nothing about a re-stamp it never had cause to make.
       vaultInlineReveal: 'off',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -398,6 +451,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -409,6 +463,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -429,6 +484,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -440,6 +496,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'granted',
       vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -458,6 +515,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'revoked',
       vaultConsent: forged as unknown as string,
       vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -497,6 +555,7 @@ describe('stale-grant re-consent and inline reveal', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -513,6 +572,7 @@ describe('stale-grant re-consent and inline reveal', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: true, retainDays: 7 },
     });
@@ -541,6 +601,7 @@ describe('stale-grant re-consent and inline reveal', () => {
         historySyncConsent: 'revoked',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
+        webChatCaptureConsent: 'unchanged',
         redactFallback: 'warn',
         bodyRetention: { enabled: true, retainDays },
       });
@@ -558,6 +619,7 @@ describe('stale-grant re-consent and inline reveal', () => {
         historySyncConsent: 'revoked',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
+        webChatCaptureConsent: 'unchanged',
         bodyRetention,
       });
       expect(res.ok).toBe(false);
@@ -572,6 +634,7 @@ describe('stale-grant re-consent and inline reveal', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'full',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -584,9 +647,273 @@ describe('stale-grant re-consent and inline reveal', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'loud',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(bad.ok).toBe(false);
+  });
+});
+
+// The browser extension's web-chat capture writes down a class of thing nothing
+// wrote down before — per-turn model and token metadata, the tool calls a reply
+// made, and the reply's own text — so it carries its own versioned grant. This
+// surface is where a person gives and withdraws it.
+//
+// Every case here uses a payload the ACTION was given, never a module constant
+// standing in for one, and every one that asserts an absence carries a positive
+// control beside it: a refused save leaves a seeded grant untouched too, which
+// is exactly what several of these assert.
+describe('saveSettings — the web-chat capture grant', () => {
+  // The full payload with one field varied, so no case can pass because it
+  // quietly omitted something.
+  const payload = (
+    webChatCaptureConsent: WebChatCaptureConsentChoice,
+    overrides: Partial<Record<string, unknown>> = {},
+  ): Record<string, unknown> => ({
+    historicalAccess: 'session-only',
+    modelJudgeConsent: 'unchanged',
+    historySyncConsent: 'unchanged',
+    vaultConsent: 'off',
+    vaultInlineReveal: 'masked',
+    webChatCaptureConsent,
+    redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
+    ...overrides,
+  });
+
+  const seed = async (block: unknown): Promise<void> => {
+    const { applyOnboarding } = await import('@akasecurity/persistence');
+    applyOnboarding({ webChatCapture: block as never }, join(home, '.aka'));
+  };
+
+  it("records a server-stamped grant at the current version on 'granted'", async () => {
+    const before = Date.now();
+    const res = await saveSettings(payload('granted'));
+    expect(res).toEqual({ ok: true });
+
+    const block = readWorkspaceSettings().webChatCapture;
+    expect(block?.consent?.version).toBe(WEB_CHAT_CAPTURE_CONSENT_VERSION);
+    // Minted by the action itself, so it lands inside this test's own window —
+    // there is no input path for a caller to supply one.
+    const acknowledged = Date.parse(block?.consent?.acknowledgedAt ?? '');
+    expect(acknowledged).toBeGreaterThanOrEqual(before);
+    expect(acknowledged).toBeLessThanOrEqual(Date.now());
+    // And the two modes come out at the schema's own defaults rather than being
+    // invented here: reply text only where a scan found something, no account
+    // data.
+    expect(block?.responses).toBe('with-findings');
+    expect(block?.account).toBe(false);
+  });
+
+  it("keeps the original acknowledgedAt when 'granted' is saved again", async () => {
+    await saveSettings(payload('granted'));
+    const first = readWorkspaceSettings().webChatCapture?.consent;
+    expect(first).toBeDefined();
+
+    // Let the clock move, so a re-stamp could not coincide with the first.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const res = await saveSettings(payload('granted', { vaultInlineReveal: 'off' }));
+    expect(res).toEqual({ ok: true });
+
+    const again = readWorkspaceSettings();
+    expect(again.vaultInlineReveal).toBe('off'); // the unrelated edit landed
+    expect(again.webChatCapture?.consent).toEqual(first);
+  });
+
+  it("drops the grant from the persisted file on 'revoked', keeping the modes", async () => {
+    await saveSettings(payload('granted'));
+    expect(rawSettings()).toContain('webChatCapture');
+
+    const res = await saveSettings(payload('revoked'));
+    expect(res).toEqual({ ok: true });
+
+    // Gone from the raw JSON, not merely parsed away: the absence of the key is
+    // what "not granted" means to every reader of this file.
+    const stored = (JSON.parse(rawSettings()) as { webChatCapture?: Record<string, unknown> })
+      .webChatCapture;
+    expect(stored).toBeDefined();
+    expect('consent' in (stored ?? {})).toBe(false);
+    expect(readWorkspaceSettings().webChatCapture?.consent).toBeUndefined();
+    // Revoking stops future recording; it says nothing about what is already
+    // stored, and it must not reset the answers beside it either.
+    expect(stored?.responses).toBe('with-findings');
+  });
+
+  it("leaves the grant and its acknowledgedAt alone on 'unchanged'", async () => {
+    const granted = {
+      responses: 'with-findings',
+      account: false,
+      consent: { acknowledgedAt: '2020-01-01T00:00:00.000Z', version: 1 },
+    };
+    await seed(granted);
+
+    // A real unrelated edit, or this save had no cause to touch anything.
+    const res = await saveSettings(payload('unchanged', { vaultInlineReveal: 'full' }));
+
+    // THE POSITIVE CONTROL. Without it every assertion below is satisfied by a
+    // save that was REFUSED, which leaves the seeded block untouched too.
+    expect(res.ok).toBe(true);
+    expect(readWorkspaceSettings().vaultInlineReveal).toBe('full');
+    expect(readWorkspaceSettings().webChatCapture).toEqual(granted);
+  });
+
+  // The response mode and the account answer have no control on this page yet.
+  // The action still has to write the whole block, because applyOnboarding
+  // merges at the TOP level — so a block written without them REPLACES what was
+  // there, and a machine set from anywhere else loses its answer to an unrelated
+  // save here.
+  it('carries the response mode and the account answer forward', async () => {
+    await seed({
+      responses: 'always',
+      account: true,
+      consent: { acknowledgedAt: '2020-01-01T00:00:00.000Z', version: 1 },
+    });
+
+    const res = await saveSettings(payload('unchanged', { historicalAccess: 'full' }));
+    expect(res.ok).toBe(true);
+    expect(readWorkspaceSettings().historicalAccess).toBe('full'); // positive control
+
+    const block = readWorkspaceSettings().webChatCapture;
+    expect(block?.responses).toBe('always');
+    expect(block?.account).toBe(true);
+  });
+
+  it('refuses a payload that omits the answer, rather than reading it as a revocation', async () => {
+    // The defect this field's requiredness exists to prevent: modelJudgeConsent
+    // was optional and an absent field was read as `false`, so any caller that
+    // simply did not mention it silently revoked a live grant.
+    const granted = {
+      responses: 'with-findings',
+      account: false,
+      consent: { acknowledgedAt: '2020-01-01T00:00:00.000Z', version: 1 },
+    };
+    await seed(granted);
+    const before = rawSettings();
+
+    const withoutTheAnswer = { ...payload('granted') };
+    delete withoutTheAnswer.webChatCaptureConsent;
+    const res = await saveSettings(withoutTheAnswer);
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('webChatCaptureConsent');
+    // The grant is still there, byte for byte — an omitting caller revoked
+    // nothing.
+    expect(readWorkspaceSettings().webChatCapture).toEqual(granted);
+    expect(rawSettings()).toBe(before);
+  });
+
+  it('rejects a client-supplied grant object — there is no input path for a timestamp', async () => {
+    const forged = {
+      acknowledgedAt: '2001-01-01T00:00:00.000Z',
+      version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+    };
+    const res = await saveSettings(payload('granted', { webChatCaptureConsent: forged }));
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('webChatCaptureConsent');
+    expect(() => rawSettings()).toThrow(); // nothing was ever written
+
+    // And the contract itself admits only the three answers — no object shape
+    // exists for a caller to smuggle a back-dated acknowledgement through. Read
+    // off the SCHEMA type, not the action's parameter, which is `unknown` by
+    // design so a non-object payload is refused rather than throwing.
+    expectTypeOf<SaveSettingsInput['webChatCaptureConsent']>().toEqualTypeOf<
+      'granted' | 'revoked' | 'unchanged'
+    >();
+  });
+
+  it("saving 'granted' over a STALE grant re-stamps at the current version", async () => {
+    await seed({
+      responses: 'with-findings',
+      account: false,
+      // Any parseable version that is not the current one is stale; versions
+      // below 1 fail the schema, so this simulates the other epoch upward.
+      consent: {
+        acknowledgedAt: '2020-01-01T00:00:00.000Z',
+        version: WEB_CHAT_CAPTURE_CONSENT_VERSION + 1,
+      },
+    });
+
+    const res = await saveSettings(payload('granted'));
+    expect(res.ok).toBe(true);
+    const consent = readWorkspaceSettings().webChatCapture?.consent;
+    expect(consent?.version).toBe(WEB_CHAT_CAPTURE_CONSENT_VERSION);
+    expect(consent?.acknowledgedAt).not.toBe('2020-01-01T00:00:00.000Z');
+  });
+});
+
+// The grant is derived INSIDE applyOnboarding's write lock, over the settings
+// that lock is about to merge into — not read out beforehand and carried in.
+// The difference is invisible on a quiet machine and is the whole point on a
+// busy one: the plugin's wizard, the CLI and this dashboard are three processes
+// over one settings.json, so a value read before the lock can be written back
+// over an answer another writer committed in between.
+describe('saveSettings derives the web-chat grant inside the write lock', () => {
+  const payload = (
+    webChatCaptureConsent: WebChatCaptureConsentChoice,
+  ): Record<string, unknown> => ({
+    historicalAccess: 'session-only',
+    modelJudgeConsent: 'unchanged',
+    historySyncConsent: 'unchanged',
+    vaultConsent: 'off',
+    vaultInlineReveal: 'masked',
+    webChatCaptureConsent,
+    redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
+  });
+
+  it('does not resurrect a grant a concurrent revoke removed', async () => {
+    const { applyOnboarding } = await import('@akasecurity/persistence');
+    // A live grant, which is what the page rendered and what an 'unchanged'
+    // save is about to preserve.
+    applyOnboarding(
+      {
+        webChatCapture: {
+          responses: 'with-findings',
+          account: false,
+          consent: {
+            acknowledgedAt: '2020-01-01T00:00:00.000Z',
+            version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+          },
+        },
+      },
+      join(home, '.aka'),
+    );
+
+    // The second writer, committing between the request being built and the
+    // merge. A grant derived before the lock is the one above; a grant derived
+    // inside it is this one — absent.
+    beforeMerge.run = () => {
+      applyOnboarding(
+        { webChatCapture: { responses: 'with-findings', account: false } },
+        join(home, '.aka'),
+      );
+    };
+
+    const res = await saveSettings(payload('unchanged'));
+    expect(res.ok).toBe(true);
+
+    // The revocation stands. Reading the grant out before the call would carry
+    // it across this write and reinstate consent the user had just withdrawn,
+    // with the save reporting success either way.
+    expect(readWorkspaceSettings().webChatCapture?.consent).toBeUndefined();
+  });
+
+  it('the same save DOES keep a grant nothing revoked', async () => {
+    // The positive control: without it the case above is satisfied by an action
+    // that drops the grant on every 'unchanged' save.
+    const { applyOnboarding } = await import('@akasecurity/persistence');
+    const consent = {
+      acknowledgedAt: '2020-01-01T00:00:00.000Z',
+      version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+    };
+    applyOnboarding(
+      { webChatCapture: { responses: 'with-findings', account: false, consent } },
+      join(home, '.aka'),
+    );
+
+    const res = await saveSettings(payload('unchanged'));
+    expect(res.ok).toBe(true);
+    expect(readWorkspaceSettings().webChatCapture?.consent).toEqual(consent);
   });
 });

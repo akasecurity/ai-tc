@@ -38,7 +38,7 @@ import {
 } from '@akasecurity/ui-kit';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useCallback, useState, useTransition } from 'react';
+import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 
 import { TerminalIcon, XIcon } from '../../components/icons';
 import { useNavigationTransition } from '../../components/NavigationTransition';
@@ -215,7 +215,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
     props.view === 'grouped'
       ? { findings: props.types.totals.findings, types: props.types.totals.types }
       : props.view === 'flat'
-        ? { findings: props.flat.totals.findings, types: props.flat.facets.subtype.length }
+        ? { findings: props.flat.totals.findings, types: flatTypeCount(props.flat, filters) }
         : null;
 
   return (
@@ -313,6 +313,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
             deepLinkedInstance={props.deepLinkedInstance}
             filters={filters}
             query={query}
+            serverQuery={initialQuery}
             onQueryChange={setQuery}
             session={session}
             from={from}
@@ -334,7 +335,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
           <FlatView
             data={props.flat}
             filters={filters}
-            query={query}
+            serverQuery={initialQuery}
             session={session}
             from={from}
             tools={tools}
@@ -363,6 +364,26 @@ export function FindingsClient(props: CommonProps & ViewProps) {
       </div>
     </div>
   );
+}
+
+/**
+ * How many TYPES the flat view's filters actually leave in scope.
+ *
+ * `facets.subtype` cannot be read as that number. A facet is computed with its
+ * OWN dimension excluded — `matchesInstanceFilters(row, opts, 'subtype')` skips
+ * the subtype check — because it exists to answer "how many would I get if I
+ * also picked X?". Read as a count of what is in scope it is simply the wrong
+ * question: under `?view=flat&type=aws-key` the findings half of the tally is
+ * filtered while the types half still lists every rule in the store.
+ *
+ * Re-applying the excluded dimension recovers the count: an entry survives
+ * every other filter already, so intersecting with the selected subtypes leaves
+ * the rules matching all of them.
+ */
+function flatTypeCount(flat: ListFindingInstancesResponse, filters: FindingsFilters): number {
+  if (filters.type.length === 0) return flat.facets.subtype.length;
+  const selected = new Set(filters.type);
+  return flat.facets.subtype.filter((f) => selected.has(f.value)).length;
 }
 
 const PAGE_SUB = 'Every sensitive-data finding across providers';
@@ -403,6 +424,7 @@ function TypesMasterDetail({
   deepLinkedInstance,
   filters,
   query,
+  serverQuery,
   onQueryChange,
   session,
   from,
@@ -418,7 +440,14 @@ function TypesMasterDetail({
   selectedRule: string;
   deepLinkedInstance: FindingInstanceDetail | null;
   filters: FindingsFilters;
+  /** The live, debounced term — the search box's controlled value. */
   query: string;
+  /**
+   * The term the SERVER rendered against. The type list's cursor was minted
+   * under it, so the load-more below must pair the two; the live term would
+   * page a differently filtered list from a cursor that never described it.
+   */
+  serverQuery: string;
   onQueryChange: (next: string) => void;
   session: string;
   from: string | null;
@@ -434,7 +463,7 @@ function TypesMasterDetail({
       // Built from the SERVER-RENDERED filters, never the live debounced query:
       // a click during the debounce window would otherwise page a differently
       // filtered set into this one.
-      ...toFindingTypesQuery(filters, query, session, { ...(from ? { from } : {}) }),
+      ...toFindingTypesQuery(filters, serverQuery, session, { ...(from ? { from } : {}) }),
       cursor,
     }).then((next) => ({
       // The selected type is appended to page 0 out of sort order (see
@@ -575,6 +604,16 @@ function usePagedList<T>(
     setPageIndex(0);
   }
 
+  // Mirrors the current response for the async continuation below, which needs
+  // the LATEST one rather than the one its own closure captured. Written in an
+  // effect rather than in the reset above: a ref may not be touched during
+  // render. The gap that leaves — between the reset's commit and this effect —
+  // cannot hold the continuation, which is parked on a Server Action round trip.
+  const forDataRef = useRef(forResponse);
+  useEffect(() => {
+    forDataRef.current = forResponse;
+  }, [forResponse]);
+
   return {
     pages,
     items: pages[pageIndex] ?? [],
@@ -592,8 +631,16 @@ function usePagedList<T>(
       }
       const cursor = cursors[pageIndex];
       if (cursor === null || cursor === undefined) return;
+      // The response this fetch belongs to. The reset above runs during RENDER,
+      // so a server re-render can land while this promise is outstanding — a
+      // debounced search push is the ordinary way, and clicking Next does not
+      // cancel that debounce. Without this check the continuation appends the
+      // previous query's rows onto the new page 0 and moves to them: the reader
+      // gets page 2 of the old filter, labelled as page 2 of the new one.
+      const epoch = forResponse;
       startLoading(async () => {
         const { items, next } = await fetchAfter(cursor, pages);
+        if (epoch !== forDataRef.current) return;
         setPages((prev) => [...prev, items]);
         setCursors((prev) => [...prev, next.nextCursor]);
         setPageIndex((i) => i + 1);
@@ -746,7 +793,7 @@ function SessionFooter({ firings, sessionHref }: { firings: number | null; sessi
 function FlatView({
   data,
   filters,
-  query,
+  serverQuery,
   session,
   from,
   tools,
@@ -757,7 +804,12 @@ function FlatView({
 }: {
   data: ListFindingInstancesResponse;
   filters: FindingsFilters;
-  query: string;
+  /**
+   * The term the SERVER rendered against, never the live debounced one. The
+   * cursor below was minted under this term; pairing it with a newer one pages
+   * into a differently filtered list.
+   */
+  serverQuery: string;
   session: string;
   from: string | null;
   tools: string[];
@@ -776,7 +828,7 @@ function FlatView({
           // Built from the SERVER-RENDERED filters, never the live debounced
           // query: a click during the debounce window would otherwise page a
           // different filtered set into this one.
-          ...toInstancesQuery(filters, query, session, {
+          ...toInstancesQuery(filters, serverQuery, session, {
             ...(from ? { from } : {}),
             ...(tools.length ? { tools } : {}),
             ...(repo ? { repo } : {}),

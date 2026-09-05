@@ -49,14 +49,14 @@ const FINDING_COLUMN_CLASS: Record<FlatColumnId, string> = {
 /**
  * The flat findings table — one row per finding, newest first.
  *
- * The sibling of FindingsTableView, which folds by rule. This one answers "what
+ * The sibling of FindingTypesListView, which lists rules. This one answers "what
  * happened most recently" and so has no expansion: every row is already a single
  * location, and the counts it shows are findings rather than types.
  *
  * Fully presentational. Selection and pagination state are the caller's; `items`
  * is only the current page's rows, not everything fetched so far.
  *
- * Layout contract: as with FindingsTableView, the card fills its container and
+ * Layout contract: as with FindingTypesListView, the card fills its container and
  * scrolls internally, so it needs a height-constrained parent.
  */
 export function FindingsFlatTableView({

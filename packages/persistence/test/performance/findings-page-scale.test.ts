@@ -15,7 +15,21 @@
  * its cost is the `GROUP BY rule_id` and nothing else. That makes it a cleaner
  * control than the read it replaced, whose cost was part-determined by the
  * corpus's rule-weight mix (its per-group preview stopped once every rule was
- * full). Re-take the ratio rather than carrying a number across that change.
+ * full).
+ *
+ * The two thresholds are carried across from the read this replaced, and that is
+ * a decision rather than an oversight: both are order-of-magnitude separators,
+ * not tuned numbers. Re-taken on THIS read (arm64 macOS, Node 24, fastest-of-25
+ * across 2k -> 20k events):
+ *
+ *   typesInSession       0.218 -> 0.231 ms   ratio 1.06
+ *   flatInSession        0.089 -> 0.083 ms   ratio 0.94
+ *   locationsInSession   0.065 -> 0.066 ms   ratio 1.02
+ *   typesAll (control)   1.474 -> 22.206 ms  ratio 15.07
+ *
+ * The flat three sit near 1 against a ceiling of 3, and the control reads 15.07
+ * against a floor of 2 — a linear cost would read ~10, and this one exceeds it
+ * because the aggregate's own work grows with the store on top of the scan.
  *
  * What CAN be flat is a SCOPED read. `?session=` narrows every one of the three
  * views to one session's findings, and a session's size is a property of the

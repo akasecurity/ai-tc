@@ -14,9 +14,11 @@
 // Renders are static: renderToStaticMarkup runs no effects and fires no
 // handlers, so this covers what the route puts on the page, not what clicking
 // it does. That is the half the other two suites cannot reach — and it is also
-// the limit: anything inside a Radix popover (every filter's own options and
-// their counts) never reaches the markup, because a static render never opens
-// one.
+// the limit, in two ways. Anything inside a Radix popover (every filter's own
+// options and their counts) never reaches the markup, because a static render
+// never opens one. And `suppressHydrationWarning` is a React directive rather
+// than an attribute, so it is stripped from the output — the tally's locale
+// acknowledgement is visible in the source and assertable from nowhere here.
 import type {
   FindingFacets,
   FindingInstanceDetail,
@@ -221,8 +223,53 @@ describe('findings client — the By-type view', () => {
     // The findings total spans every listed type; the type count is the list's
     // own length. Both describe the whole scope, which is why they sit here and
     // not beside a filter that cannot move them.
-    expect(html).toContain('6,456');
-    expect(html).toContain('2</span> types');
+    //
+    // Asserted THROUGH toLocaleString rather than against a literal `6,456`:
+    // the thousands separator is the RUNNER's, so a hardcoded one fails
+    // wherever LANG is not en-*.
+    expect(html).toContain((6456).toLocaleString());
+    expect(html).toContain('types');
+  });
+});
+
+// P1: the flat tally's two halves must answer the same question. `facets.subtype`
+// is computed with its OWN dimension excluded, so read as a scope count it
+// reports every rule in the store while the findings half is filtered. An empty
+// `type` filter makes that self-exclusion a no-op, which is why this case sets
+// a non-empty one — the only shape that binds the expression.
+describe('findings client — the flat tally under a type filter', () => {
+  const threeRules = [
+    { value: AWS, count: 3 },
+    { value: TODO, count: 9 },
+    { value: 'pii/email', count: 5 },
+  ];
+
+  it('counts only the types the filter selected', () => {
+    const html = render({
+      view: 'flat',
+      filters: { ...EMPTY_FILTERS, type: [AWS] },
+      flat: {
+        ...instances([instance('f1')]),
+        totals: { findings: 3 },
+        facets: facets({ subtype: threeRules }),
+      },
+    });
+    expect(html).toContain('1</span> type');
+    // The unfiltered rule count must not reach the page.
+    expect(html).not.toContain('3</span> types');
+  });
+
+  it('falls back to every rule in scope when no type is filtered', () => {
+    const html = render({
+      view: 'flat',
+      filters: EMPTY_FILTERS,
+      flat: {
+        ...instances([instance('f1')]),
+        totals: { findings: 17 },
+        facets: facets({ subtype: threeRules }),
+      },
+    });
+    expect(html).toContain('3</span> types');
   });
 });
 

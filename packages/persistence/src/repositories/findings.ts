@@ -482,6 +482,13 @@ export class SqliteFindingsRepository
     // open findings, and counting its whole tally would report findings the
     // filter excluded. The per-status counts come from the aggregate's
     // statusInputs; the whole-type instanceCount is the unfiltered total.
+    //
+    // `severity`, `provider` and `action` get NO such narrowing, so under those
+    // this sums the whole tally of every matching type. That is visible: a rule
+    // whose severity moved between versions is kept on its newest one and still
+    // contributes its older findings, so this number can exceed what
+    // listFindingInstances reports for the same filters. Closing it needs
+    // per-dimension counts on the aggregate, which only statusInputs carries.
     const statusFilter = query.status ?? [];
     const totals = {
       findings: sorted.reduce((acc, t) => {
@@ -538,7 +545,7 @@ export class SqliteFindingsRepository
 
   /**
    * One row per rule_id, folding EVERY instance of the group into the values
-   * buildFindingGroups cannot recover from a preview. Bounded by the number of
+   * buildFindingTypes cannot recover from an aggregate. Bounded by the number of
    * distinct rule_ids (the installed packs' rules), not by the store's size.
    *
    * A single scan, folded in two levels: the inner SELECT groups by
@@ -787,28 +794,6 @@ export class SqliteFindingsRepository
   }
 
   /**
-   * The one statement both instance-level scans run: every finding in scope,
-   * joined to its event and definition, newest first.
-   *
-   * THE PLAN IS THE POINT, and two things in the SQL exist only to pin it —
-   * the same two `recentFindings` documents at length, for the same reason:
-   *
-   *  - **`+e.event_type`** makes the capture-kind predicate non-indexable, so
-   *    the planner cannot pick `idx_audit_type_t` and then sort. That index
-   *    yields `started_at` order per event type, not across the four, so
-   *    satisfying the ORDER BY from it would need a merge SQLite does not do.
-   *    Freed of it, the planner walks `idx_audit_started_at` backwards — or
-   *    `idx_audit_session` for a session scope, which is also `started_at`
-   *    ordered within the session — and the order falls out of the index.
-   *  - **`CROSS JOIN`** pins `audit_events` as the driving table. With plain
-   *    JOINs the planner drives from the findings and sorts everything.
-   *
-   * The latest-resolution lookup is the CORRELATED form: only `status` is
-   * needed, `idx_finding_resolution_key_created` answers it with one backward
-   * index probe per keyed row, and a derived table over the whole resolution
-   * table would be materialized before the first row streamed.
-   */
-  /**
    * One finding by its own id, or null when no such row exists.
    *
    * A primary-key seek on `inspection_findings`, so its cost does not grow with
@@ -841,6 +826,28 @@ export class SqliteFindingsRepository
     return Promise.resolve(row === undefined ? null : toInstanceDetail(toFlatFindingRow(row)));
   }
 
+  /**
+   * The one statement both instance-level scans run: every finding in scope,
+   * joined to its event and definition, newest first.
+   *
+   * THE PLAN IS THE POINT, and two things in the SQL exist only to pin it —
+   * the same two `recentFindings` documents at length, for the same reason:
+   *
+   *  - **`+e.event_type`** makes the capture-kind predicate non-indexable, so
+   *    the planner cannot pick `idx_audit_type_t` and then sort. That index
+   *    yields `started_at` order per event type, not across the four, so
+   *    satisfying the ORDER BY from it would need a merge SQLite does not do.
+   *    Freed of it, the planner walks `idx_audit_started_at` backwards — or
+   *    `idx_audit_session` for a session scope, which is also `started_at`
+   *    ordered within the session — and the order falls out of the index.
+   *  - **`CROSS JOIN`** pins `audit_events` as the driving table. With plain
+   *    JOINs the planner drives from the findings and sorts everything.
+   *
+   * The latest-resolution lookup is the CORRELATED form: only `status` is
+   * needed, `idx_finding_resolution_key_created` answers it with one backward
+   * index probe per keyed row, and a derived table over the whole resolution
+   * table would be materialized before the first row streamed.
+   */
   private findingScanSql(scope: { sessionId?: string | undefined; from?: string | undefined }): {
     sql: string;
     params: SQLInputValue[];
@@ -963,7 +970,7 @@ export class SqliteFindingsRepository
           latestDetectedAt: epochMillisToIso(r.latest_at),
           // Free text only — joined and substring-matched, so group_concat's
           // commas need no unpicking (a repo/path containing one still matches).
-          // Left undefined (not '') when unfetched, so buildFindingGroups can
+          // Left undefined (not '') when unfetched, so buildFindingTypes can
           // tell "no q this request" from "a group with no repo/file at all"
           // and skip priming a haystack nothing will read.
           ...(withSearchText

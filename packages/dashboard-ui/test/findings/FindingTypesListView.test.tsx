@@ -95,6 +95,34 @@ describe('FindingTypesListView', () => {
     expect((html.match(/aria-pressed="true"/g) ?? []).length).toBe(2);
   });
 
+  // A page can arrive EMPTY and still have somewhere to go back to: the caller
+  // appends the selected type to page 0 out of sort order, and dropping that
+  // repeat when paging reaches its natural position can empty the page. Gated on
+  // the row count, the footer carrying Previous vanished at exactly the moment
+  // it was the only way out — a dead end, not a cosmetic gap.
+  it('keeps the paginator on an empty page so Previous is still reachable', () => {
+    const html = render({
+      types: [],
+      hasPreviousPage: true,
+      hasNextPage: false,
+      onNextPage: vi.fn(),
+      onPreviousPage: vi.fn(),
+    });
+    expect(html).toContain('data-slot="pagination-previous"');
+    expect(html).toContain('data-slot="pagination"');
+  });
+
+  it('still omits the paginator when there is nowhere to go at all', () => {
+    const html = render({
+      types: [],
+      hasPreviousPage: false,
+      hasNextPage: false,
+      onNextPage: vi.fn(),
+      onPreviousPage: vi.fn(),
+    });
+    expect(html).not.toContain('data-slot="pagination"');
+  });
+
   it('renders the caller empty state instead of the default when given one', () => {
     expect(render({ types: [] })).toContain('No types match these filters.');
     expect(render({ types: [], emptyState: 'Nothing captured yet' })).toContain(

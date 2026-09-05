@@ -225,7 +225,13 @@ export function FindingTypesListView({
         )}
       </div>
 
-      {onNextPage && types.length > 0 && (
+      {/* Gated on the PAGINATION state, not on `types.length`. A page can arrive
+          empty and still have somewhere to go back to: the caller appends the
+          selected type to page 0 out of sort order, and dropping that repeat
+          when paging reaches its natural position can empty the page entirely.
+          Gated on the row count, the footer carrying Previous then vanishes at
+          exactly the moment it is the only way out. */}
+      {onNextPage && (hasPreviousPage || hasNextPage || types.length > 0) && (
         <Pagination>
           <PaginationPrevious
             disabled={!hasPreviousPage || loadingNextPage}

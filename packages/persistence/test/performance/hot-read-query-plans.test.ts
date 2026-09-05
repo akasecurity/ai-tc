@@ -242,10 +242,16 @@ const EXPECTED_FULL_INDEX_SCANS: Readonly<Record<string, readonly string[]>> = {
   // the latest-resolution derived table the aggregate joins, shared with the
   // three `/security` reads above. The session-scoped types read drives from
   // `idx_audit_session` instead, so only that derived table remains.
-  // No `audit_events` entry, and its absence is the measurable result of this
+  // No `audit_events` entry, and its absence is a plan-SHAPE consequence of this
   // read dropping its second pass: the preview scan carried `+e.event_type` to
   // pin its own plan, which made it a full index scan of the table on every
   // default page load. The aggregate alone does not need it.
+  //
+  // NOT a claim the work went. The aggregate still joins `audit_events` under
+  // `event_type IN (…)` with no `+`, so the planner takes `idx_audit_type_t` and
+  // the read still visits every capture event — as range SEARCHes rather than
+  // one SCAN. `findings-page-scale.test.ts` asserts this read GROWS, and this
+  // file's own header says why an entry set cannot settle that either way.
   '/findings listFindingTypes': ['finding_resolution'],
   '/findings listFindingTypes (session)': ['finding_resolution'],
   // Empty, and that is the assertion: a primary-key seek touches no table in

@@ -361,8 +361,13 @@ export const MAX_FINDING_TYPES_LIMIT = 100;
 
 export const ListFindingTypesQuery = z.object({
   // NOTE: severity filters by Severity (critical/high/medium/low), not by
-  // FindingAction. Severity is a property of the RULE — every finding of one
-  // type shares it — so this dimension narrows types and nothing else.
+  // FindingAction. It narrows TYPES: a type's severity is the one its newest
+  // firing version carries, and this list pages types.
+  //
+  // That is NOT a claim the findings of a type share it. A rule can hold several
+  // definition versions at different severities, so a type kept by this filter
+  // can hold findings that individually do not match — see totals.findings on
+  // ListFindingTypesResponse, which counts them all.
   severity: z.array(Severity).optional(),
   subtype: z.array(z.string()).optional(),
   provider: z.array(FindingProvider).optional(),
@@ -395,6 +400,16 @@ export type ListFindingTypesQuery = z.infer<typeof ListFindingTypesQuery>;
 export const ListFindingTypesResponse = z
   .object({
     totals: z.object({
+      // Findings belonging to the matching TYPES — not findings that each match
+      // the filters. The filters here select types, so a type that survives
+      // contributes its whole instanceCount.
+      //
+      // `status` is the one exception, narrowed per finding via
+      // countInstancesByStatus. `severity`, `provider` and `action` are not, so
+      // this can exceed what the instance read reports for the same filters: a
+      // rule whose severity moved between versions is kept on its newest and
+      // still counts its older findings. Narrowing the other three needs
+      // per-dimension counts the aggregate does not carry today.
       findings: z.number().int().nonnegative(),
       // Counts TYPES, which is the unit this read pages. The instance read's
       // own totals count findings; the two deliberately answer different

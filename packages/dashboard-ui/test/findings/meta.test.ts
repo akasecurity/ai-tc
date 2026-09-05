@@ -59,7 +59,7 @@ describe('CATEGORY_ICON_FALLBACK', () => {
   });
 
   // Regression: this table backs `CATEGORY_ICON_FALLBACK[cat] ?? KeyIcon` at
-  // every findings call site (FindingsTableView, FindingsFlatTableView,
+  // every findings call site (FindingTypesListView, FindingsFlatTableView,
   // FindingDetailView), and the result is rendered directly as a JSX tag
   // (`<Icon />`) — so it can't be guarded behind an Object.hasOwn wrapper
   // function the way categoryStyle and categoryLabel are: a component derived
@@ -145,7 +145,7 @@ describe('FINDING_STATUS_META / findingStatusMeta', () => {
     }
   });
 
-  // Regression: FindingsTableView, FindingsFlatTableView and
+  // Regression: FindingTypesListView, FindingsFlatTableView and
   // FindingsLocationsView all read FINDING_STATUS_META[status] directly once
   // status was known to be defined — but defined isn't the same as validated.
   // 'constructor' resolves the Object function (truthy), so `.badge` is

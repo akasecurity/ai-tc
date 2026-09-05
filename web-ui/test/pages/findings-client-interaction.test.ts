@@ -184,6 +184,8 @@ const panel = (): ParentNode => {
   expect(cards, 'expected a type list and a findings panel').toHaveLength(2);
   return cards[1] as ParentNode;
 };
+const typeList = (): ParentNode =>
+  container.querySelectorAll('[data-slot="card"]')[0] as ParentNode;
 const panelNext = () => byText('button[data-slot="pagination-next"]', 'Next', panel());
 const panelPrev = () => byText('button[data-slot="pagination-previous"]', 'Previous', panel());
 const clickPanelNext = async () => {
@@ -216,6 +218,86 @@ describe('By-type view — selection and filters ride the URL', () => {
     // The selection rides every push; losing it would drop the reader back to
     // the first type every time they touched a filter.
     expect(url).toContain(`rule=${encodeURIComponent(AWS)}`);
+  });
+});
+
+// P2: the cursor was minted under the SERVER's term, so the load-more must pair
+// the two. Passing the live debounced value instead pages a differently filtered
+// list from a cursor that never described it — silently, since a filtered list
+// is a subsequence and the slice simply starts past the rows that should have
+// been on page 1.
+//
+// The shape that binds it is a server term DIFFERENT from the live one, which is
+// what a click inside the 300 ms debounce window produces.
+// N1: the page cache is reset during RENDER against the response's identity, so
+// a server re-render can land while a fetch is outstanding — a debounced search
+// push is the ordinary way, and clicking Next does not cancel that debounce.
+// Without an epoch check the continuation appends the previous query's rows onto
+// the new page 0 and moves to them: page 2 of the old filter, labelled as page 2
+// of the new one.
+//
+// Deterministic because the fetch is a promise this test resolves by hand, so
+// the re-render is guaranteed to land between the click and the continuation.
+describe('By-type view — a server re-render mid-fetch', () => {
+  it('drops the in-flight page rather than appending it to the new list', async () => {
+    let release: ((r: ListFindingInstancesResponse) => void) | undefined;
+    loadMoreFindingInstances.mockReturnValue(
+      new Promise<ListFindingInstancesResponse>((resolve) => {
+        release = resolve;
+      }),
+    );
+    mount();
+
+    // Start the fetch; it is now parked.
+    act(() => {
+      panelNext()?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(loadMoreFindingInstances).toHaveBeenCalledTimes(1);
+
+    // The server answers a filter change with a NEW response object, which is
+    // what the cache keys its reset on.
+    mount({ instances: pageOf(['g1'], null) });
+    expect(container.textContent).toContain('MASK-g1');
+
+    // The old fetch now lands.
+    await act(async () => {
+      release?.(pageOf(['stale-1'], null));
+      await Promise.resolve();
+    });
+
+    // It belongs to a list that is no longer on screen.
+    expect(container.textContent).not.toContain('MASK-stale-1');
+    expect(container.textContent).toContain('MASK-g1');
+  });
+});
+
+describe('By-type view — load-more pairs the cursor with the term it was minted under', () => {
+  it('sends the server-rendered query, not the live debounced one', async () => {
+    loadMoreFindingTypes.mockResolvedValue({
+      totals: { findings: 84, types: 2 },
+      facets: FACETS,
+      items: [type(TODO)],
+      nextCursor: null,
+    });
+    // The server rendered against '' and the reader has since typed 'aws'.
+    // The type list needs a cursor of its own, or its Next is disabled.
+    mount({ query: '', types: { ...TYPES, nextCursor: 'types-cursor-1' } });
+    const box = container.querySelector('input[aria-label="Search finding types"]');
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(box, 'aws');
+      box?.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    const next = byText('button[data-slot="pagination-next"]', 'Next', typeList());
+    await act(async () => {
+      next?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(loadMoreFindingTypes).toHaveBeenCalledTimes(1);
+    const query = loadMoreFindingTypes.mock.calls[0]?.[0] as Record<string, unknown>;
+    // 'aws' is the live term; pairing it with this cursor is the defect.
+    expect(query.q).toBeUndefined();
   });
 });
 

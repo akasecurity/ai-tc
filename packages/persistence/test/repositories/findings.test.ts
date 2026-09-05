@@ -812,7 +812,7 @@ describe('SqliteFindingsRepository.listFindingTypes — per-finding status', () 
   it('a group with mixed instance statuses derives its group status via open-dominates precedence', async () => {
     // Same ruleId, two instances: one in-flight (handled), one at-rest and
     // still open — the group must read 'open' even though one instance is
-    // already handled (open-dominates, see buildFindingGroups).
+    // already handled (open-dominates, see foldGroupStatus).
     record({
       occurredAt: '2026-01-03T00:00:00.000Z',
       sourceTool: 'claude-code',

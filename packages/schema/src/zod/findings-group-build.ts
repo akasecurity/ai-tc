@@ -266,11 +266,13 @@ export interface FindingGroupAggregate {
   /** Exact instance count across ALL instances, not just the preview. */
   instanceCount: number;
   /**
-   * The rule's severity, as the raw DB value.
+   * The rule's severity, as the raw DB value — the one its NEWEST firing
+   * version carries.
    *
-   * A property of the RULE rather than of any finding — every finding of one
-   * rule shares it — so a store's `GROUP BY rule_id` carries it for free. It
-   * lives here rather than being read off a row because the type-level build
+   * Not necessarily the severity of every finding under that rule: a rule holds
+   * one definition row per version, and a version bump may move it, so a store
+   * resolves this to the newest and the older findings keep theirs. It lives on
+   * the aggregate rather than being read off a row because the type-level build
    * has no rows at all: see buildFindingTypes.
    */
   severity?: string;
@@ -299,7 +301,7 @@ export interface FindingGroupAggregate {
    * The distinct people across ALL instances, already resolved to display
    * labels by the store. Optional: a store that attributes findings to no one
    * leaves it out, and the group then carries no `users` at all — never a fold
-   * over the preview rows, which would name the preview's people as the
+   * over a bounded sample, which would name that sample's people as the
    * group's.
    */
   users?: FindingUser[];
@@ -308,14 +310,16 @@ export interface FindingGroupAggregate {
    * across ALL instances, folded into the search haystack so `q` still matches
    * a group whose only hit sits outside the preview.
    *
-   * REQUIRED whenever the caller goes on to filter by `q`: left out, the
-   * haystack falls back to the preview and a `q` matching only a buried
-   * instance silently misses. Omit it only for a request with no `q` — it is
-   * the one aggregate whose size tracks the store rather than the rule count.
+   * REQUIRED whenever the caller goes on to filter by `q`. There is no fallback
+   * to fall back TO: a type carries no instances, so `buildHaystack(t, undefined)`
+   * holds subtype, category, policy name, id and users and no finding text at
+   * all — a `q` for a repo, file or tool then matches NOTHING rather than
+   * missing a buried row. Omit it only for a request with no `q`; it is the one
+   * aggregate whose size tracks the store rather than the rule count.
    *
-   * Instance IDs are deliberately NOT included (repos/files only). A `q` that
-   * is a raw finding id therefore reaches only the preview's instances, unlike
-   * the row path, which folds every instance's id into the haystack.
+   * Instance IDs are deliberately NOT included (repos/files/tool labels only), so
+   * a `q` that is a raw finding id is answered by the INSTANCE read, whose own
+   * haystack folds it in.
    */
   searchText?: string;
 }

@@ -394,6 +394,16 @@ const PAGE_SUB = 'Every sensitive-data finding across providers';
  * One middot separates the two, and the tally's own units are comma-separated
  * rather than middot-separated — nesting the same separator would read as three
  * peers instead of a description followed by its numbers.
+ *
+ * The LOCALE half is not closeable here. This is a `'use client'` module, so the
+ * subtitle renders twice, and `toLocaleString` renders in the renderer's own
+ * locale — a Node host on en-US emits `6,456` where a de-DE browser hydrates
+ * `6.456`. Passing an instant reconciles a clock and does not touch this;
+ * `suppressHydrationWarning` would silence the warning without reconciling
+ * anything, and is deliberately NOT used, because the mismatch here is text the
+ * reader can see rather than an attribute they cannot. React re-renders the
+ * subtree and the browser's own separator wins, which is the right outcome —
+ * nothing structural depends on the string.
  */
 function Tally({ findings, types }: { findings: number; types: number }) {
   return (

@@ -238,7 +238,12 @@ export function FindingTypesListView({
             onClick={onPreviousPage}
           />
           <PaginationStatus>
-            {total === undefined || pageStart === undefined
+            {/* An EMPTY page takes the count branch, not the range one. A page
+                can arrive empty behind a live cursor — the caller drops the
+                appended selection once paging reaches its natural position — and
+                the range then runs backwards (`52–51 of 51`), directly above the
+                Previous button that is the only way out of it. */}
+            {types.length === 0 || total === undefined || pageStart === undefined
               ? `${String(types.length)} shown`
               : `${String(pageStart)}–${String(pageStart + types.length - 1)} of ${String(total)} types`}
           </PaginationStatus>

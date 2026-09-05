@@ -14,11 +14,15 @@
 // Renders are static: renderToStaticMarkup runs no effects and fires no
 // handlers, so this covers what the route puts on the page, not what clicking
 // it does. That is the half the other two suites cannot reach — and it is also
-// the limit, in two ways. Anything inside a Radix popover (every filter's own
-// options and their counts) never reaches the markup, because a static render
-// never opens one. And `suppressHydrationWarning` is a React directive rather
-// than an attribute, so it is stripped from the output — the tally's locale
-// acknowledgement is visible in the source and assertable from nowhere here.
+// the limit. Anything inside a Radix popover (every filter's own options and
+// their counts) never reaches the markup, because a static render never opens
+// one.
+//
+// The tally's locale behaviour is out of reach for a different reason: the
+// separator in `6,456` is the RUNNER's, so the assertion below goes through
+// toLocaleString rather than a literal. That the mismatch is ACKNOWLEDGED — a
+// doc line on `Tally`, the form HarnessOverview's formatEvent uses — is a
+// property of the source, and this suite reads markup. Nothing here pins it.
 import type {
   FindingFacets,
   FindingInstanceDetail,

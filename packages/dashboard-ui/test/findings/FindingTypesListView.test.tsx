@@ -107,9 +107,19 @@ describe('FindingTypesListView', () => {
       hasNextPage: false,
       onNextPage: vi.fn(),
       onPreviousPage: vi.fn(),
+      // The state a deduped-empty page really arrives in: page 2 of a 51-type
+      // list whose 51st was appended to page 0 and dropped as a repeat here.
+      pageStart: 52,
+      total: 51,
     });
     expect(html).toContain('data-slot="pagination-previous"');
-    expect(html).toContain('data-slot="pagination"');
+
+    // And the label beside it must not read backwards. The range branch would
+    // render `52–51 of 51 types` — pageStart to pageStart-1 — directly above the
+    // button that is the only way out. Reading the STATUS is the half the
+    // original pair of cases omitted, which is how that shipped.
+    const status = /pagination-status[^>]*>([^<]*)</.exec(html)?.[1];
+    expect(status).toBe('0 shown');
   });
 
   it('still omits the paginator when there is nowhere to go at all', () => {

@@ -133,7 +133,7 @@ export default async function ActivityPage({
     },
   ];
   return (
-    <div className="flex h-full min-h-0 flex-col px-8 pb-8 pt-7">
+    <div className="flex h-full min-h-0 flex-col p-6">
       {/* Token usage sits in the filter bar beside the range picker rather than
           in a card of its own: it is a per-range summary like the range itself,
           and the vertical band it used to occupy is the session list's. */}

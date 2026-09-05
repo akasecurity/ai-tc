@@ -83,7 +83,7 @@ export default async function SecurityPage({
   // it honest if it ever gains a `use client` directive.
   const renderedAt = renderInstant();
   return (
-    <div className="px-8 pb-10 pt-7">
+    <div className="p-6">
       <PageHead
         title="Security"
         sub="Data-exposure posture across all AI traffic"

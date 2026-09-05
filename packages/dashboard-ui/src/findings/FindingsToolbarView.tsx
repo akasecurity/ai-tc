@@ -1,19 +1,11 @@
 'use client';
 
 import type { FindingFacets, FindingProvider } from '@akasecurity/schema';
-import { Button, cn, Popover, PopoverContent, PopoverTrigger } from '@akasecurity/ui-kit';
+import { cn, Popover, PopoverContent, PopoverTrigger } from '@akasecurity/ui-kit';
 
-import { numberFormat } from '../security/widget-shared.tsx';
-import { CheckIcon, ChevronDownIcon, SearchIcon, SlidersIcon } from '../shared/icons.tsx';
+import { CheckIcon, ChevronDownIcon, SearchIcon } from '../shared/icons.tsx';
 import { PROVIDERS } from '../shared/Provider.tsx';
-import {
-  type ColumnVisibility,
-  FINDING_STATUS_META,
-  FINDING_STATUSES,
-  type FindingColumn,
-  type FindingsFilters,
-  SEVERITIES,
-} from './meta.ts';
+import { FINDING_STATUS_META, FINDING_STATUSES, type FindingsFilters, SEVERITIES } from './meta.ts';
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -44,45 +36,29 @@ function withSelected(
   return [...options, ...missing];
 }
 
-/** Filter bar shown above the findings table — severity / type / provider / action / status. */
-export function FindingsToolbarView({
+/**
+ * The three FINDING-level filter dimensions: provider, action and status.
+ *
+ * Its own component because it is rendered in two places that must stay
+ * identical — the flat view's toolbar below, and the By-type view's detail
+ * panel, where these narrow the findings of the selected type. Severity, type
+ * and the search box are deliberately NOT here: they select TYPES, so in the
+ * master/detail view they live with the type list instead.
+ *
+ * The facets it counts against are whatever the caller hands it, which is the
+ * point: in the flat view they count the whole list, and in the detail panel
+ * they count within the selected type — so "what happens if I pick this?" is
+ * answered about the rows the control actually acts on.
+ */
+export function FindingLevelFilters({
   facets,
   filters,
   onFiltersChange,
-  query,
-  onQueryChange,
-  findingCount,
-  typeCount,
 }: {
   facets: FindingFacets;
   filters: FindingsFilters;
   onFiltersChange: (next: FindingsFilters) => void;
-  query: string;
-  onQueryChange: (next: string) => void;
-  findingCount: number;
-  typeCount: number;
 }) {
-  // Severities and statuses are closed enums, so they always render in display
-  // order with counts from the facet (absent ⇒ 0) — no value can drop out of
-  // the list. Type/provider/action are facet-driven, each run through
-  // withSelected so a selected value the facet omits stays deselectable.
-  const severityCount = new Map(facets.severity.map((f) => [f.value, f.count]));
-  const severityOptions: Option[] = SEVERITIES.map((s) => ({
-    value: s,
-    label: capitalize(s),
-    count: severityCount.get(s) ?? 0,
-  }));
-  const statusCount = new Map(facets.status.map((f) => [f.value, f.count]));
-  const statusOptions: Option[] = FINDING_STATUSES.map((s) => ({
-    value: s,
-    label: FINDING_STATUS_META[s].label,
-    count: statusCount.get(s) ?? 0,
-  }));
-  const typeOptions = withSelected(
-    facets.subtype.map((f) => ({ value: f.value, label: f.value, count: f.count })),
-    filters.type,
-    (value) => value,
-  );
   const providerOptions = withSelected(
     facets.provider.map((f) => ({ value: f.value, label: providerLabel(f.value), count: f.count })),
     filters.provider,
@@ -92,6 +68,89 @@ export function FindingsToolbarView({
     facets.action.map((f) => ({ value: f.value, label: capitalize(f.value), count: f.count })),
     filters.action,
     capitalize,
+  );
+  const statusCount = new Map(facets.status.map((f) => [f.value, f.count]));
+  const statusOptions = FINDING_STATUSES.map((value) => ({
+    value,
+    label: FINDING_STATUS_META[value].label,
+    count: statusCount.get(value) ?? 0,
+  }));
+
+  const set = (key: keyof FindingsFilters, next: string[]) => {
+    onFiltersChange({ ...filters, [key]: next });
+  };
+
+  return (
+    <>
+      <MultiSelectFilter
+        label="Provider"
+        options={providerOptions}
+        selected={filters.provider}
+        onChange={(next) => {
+          set('provider', next);
+        }}
+      />
+      <MultiSelectFilter
+        label="Action"
+        options={actionOptions}
+        selected={filters.action}
+        onChange={(next) => {
+          set('action', next);
+        }}
+      />
+      <MultiSelectFilter
+        label="Status"
+        options={statusOptions}
+        selected={filters.status}
+        onChange={(next) => {
+          set('status', next);
+        }}
+      />
+    </>
+  );
+}
+
+/**
+ * The flat view's filter bar: search, severity, type, and the three
+ * finding-level dimensions.
+ *
+ * It carries NO tally. The findings/types counts are page-level and live under
+ * the page title, because in the master/detail view they answer a question no
+ * single control here acts on — a count sitting beside a filter that cannot
+ * move it reads as a filter that stopped working.
+ */
+export function FindingsToolbarView({
+  facets,
+  filters,
+  onFiltersChange,
+  query,
+  onQueryChange,
+}: {
+  facets: FindingFacets;
+  filters: FindingsFilters;
+  onFiltersChange: (next: FindingsFilters) => void;
+  query: string;
+  onQueryChange: (next: string) => void;
+}) {
+  // Severity and type are here because in THIS view one list carries both
+  // levels, so every dimension narrows the same rows. The master/detail view
+  // renders no toolbar at all: its type-level controls sit with the type list
+  // and its finding-level ones with the findings, each beside what it acts on.
+  //
+  // Severity is a closed enum, so it always renders in display order with counts
+  // from the facet (absent ⇒ 0) — no value can drop out of the list. Type is
+  // facet-driven and run through withSelected so a selected value the facet
+  // omits stays deselectable.
+  const severityCount = new Map(facets.severity.map((f) => [f.value, f.count]));
+  const severityOptions: Option[] = SEVERITIES.map((s) => ({
+    value: s,
+    label: capitalize(s),
+    count: severityCount.get(s) ?? 0,
+  }));
+  const typeOptions = withSelected(
+    facets.subtype.map((f) => ({ value: f.value, label: f.value, count: f.count })),
+    filters.type,
+    (value) => value,
   );
 
   const set = (key: keyof FindingsFilters, next: string[]) => {
@@ -129,37 +188,7 @@ export function FindingsToolbarView({
           set('type', next);
         }}
       />
-      <MultiSelectFilter
-        label="Provider"
-        options={providerOptions}
-        selected={filters.provider}
-        onChange={(next) => {
-          set('provider', next);
-        }}
-      />
-      <MultiSelectFilter
-        label="Action"
-        options={actionOptions}
-        selected={filters.action}
-        onChange={(next) => {
-          set('action', next);
-        }}
-      />
-      <MultiSelectFilter
-        label="Status"
-        options={statusOptions}
-        selected={filters.status}
-        onChange={(next) => {
-          set('status', next);
-        }}
-      />
-      <span className="h-6 bg-border w-px" />
-      <span className="text-sm text-text-3">
-        <span className="font-semibold text-text">{numberFormat.format(findingCount)}</span> finding
-        {findingCount === 1 ? '' : 's'} ·{' '}
-        <span className="font-semibold text-text">{numberFormat.format(typeCount)}</span> type
-        {typeCount === 1 ? '' : 's'}
-      </span>
+      <FindingLevelFilters facets={facets} filters={filters} onFiltersChange={onFiltersChange} />
     </div>
   );
 }
@@ -236,63 +265,6 @@ function MultiSelectFilter({
             Clear
           </button>
         )}
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-/**
- * Column-visibility menu for the header "Columns" button. Visibility is a plain
- * `{ id: boolean }` map (absent ⇒ visible). Deselecting the last visible column
- * resets to all-visible — "nothing selected" means "everything selected".
- */
-export function ColumnsMenu({
-  columns,
-  visibility,
-  onChange,
-}: {
-  columns: FindingColumn[];
-  visibility: ColumnVisibility;
-  onChange: (next: ColumnVisibility) => void;
-}) {
-  const isVisible = (id: FindingColumn['id']) => visibility[id] !== false;
-  const visibleCount = columns.filter((c) => isVisible(c.id)).length;
-
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button variant="outline">
-          <SlidersIcon /> Columns
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="min-w-44 p-1">
-        {columns.map((column) => {
-          const checked = isVisible(column.id);
-          return (
-            <button
-              key={column.id}
-              type="button"
-              onClick={() => {
-                if (checked && visibleCount === 1) {
-                  onChange({}); // reset to all-visible
-                } else {
-                  onChange({ ...visibility, [column.id]: !checked });
-                }
-              }}
-              className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-text hover:bg-surface-2"
-            >
-              <span
-                className={cn(
-                  'flex size-4 shrink-0 items-center justify-center rounded border',
-                  checked ? 'border-primary-solid bg-primary-solid text-text-inv' : 'border-border',
-                )}
-              >
-                {checked && <CheckIcon className="size-3" />}
-              </span>
-              {column.header}
-            </button>
-          );
-        })}
       </PopoverContent>
     </Popover>
   );

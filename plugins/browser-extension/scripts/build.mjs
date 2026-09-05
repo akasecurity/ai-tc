@@ -19,7 +19,33 @@ const BROWSER_ENTRIES = {
   background: 'src/background.ts',
   content: 'src/content.ts',
   popup: 'src/popup/index.ts',
+  // The MAIN-world network tap. It is its own entry rather than part of
+  // content.js because it runs in the page's own JS context: bundling it with
+  // anything else would put that code in the page too, and the bundle guard in
+  // test/tap-bundle.test.ts reads this emitted file expecting a tap and
+  // nothing more.
+  tap: 'src/tap.ts',
 };
+
+// The endpoints the MAIN-world tap forwards, compiled INTO the bundle rather
+// than sent to it. The tap takes no commands: it shares the page's window event
+// target, so a table it could be told at runtime is a table the page could set,
+// and what the tap forwards is what AKA goes on to persist.
+//
+// Each entry is `{ host, path }` — an exact host and a RegExp source the tap
+// anchors at the start of the path. The host half is not decoration: a bare
+// pattern tested against a whole URL forwards any origin that happens to carry
+// the pattern text, and the tap runs on pages whose own script chooses the
+// origins it fetches.
+//
+// Empty today, because no adapter declares an endpoint yet — so the shipped tap
+// matches nothing and forwards nothing. When adapters gain their network half,
+// derive the list here from src/providers/registry.ts so the two cannot drift;
+// nothing about it is hand-written in src/tap.ts, which only declares the name
+// and an empty fallback.
+function tapEndpoints() {
+  return [];
+}
 
 async function buildBrowser() {
   const entryPoints = Object.fromEntries(
@@ -29,6 +55,11 @@ async function buildBrowser() {
   const options = {
     entryPoints,
     outdir: join(root, 'dist'),
+    define: {
+      // Substituted into src/tap.ts's `declare const`. Only the tap references
+      // the name, so the other entries are unaffected.
+      AKA_TAP_ENDPOINTS: JSON.stringify(tapEndpoints()),
+    },
     bundle: true,
     // IIFE everywhere (background included): MV3 service workers don't need
     // to be ES modules, and content scripts / the popup page can't load ESM

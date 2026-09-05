@@ -6,10 +6,16 @@
  * ## Which reads can be flat at all
  *
  * The unscoped findings reads are linear in the store BY DESIGN: totals and
- * facets describe every finding in scope, so an unscoped `listGroupedFindings`
+ * facets describe every finding in scope, so an unscoped `listFindingTypes`
  * has to visit every finding to count them. That read is the CONTROL here — it
  * is asserted to GROW, and if it goes flat the harness has stopped measuring
  * growth and every other case in this file is worthless.
+ *
+ * It is now a PURE aggregate scan: the type read materializes no findings, so
+ * its cost is the `GROUP BY rule_id` and nothing else. That makes it a cleaner
+ * control than the read it replaced, whose cost was part-determined by the
+ * corpus's rule-weight mix (its per-group preview stopped once every rule was
+ * full). Re-take the ratio rather than carrying a number across that change.
  *
  * What CAN be flat is a SCOPED read. `?session=` narrows every one of the three
  * views to one session's findings, and a session's size is a property of the
@@ -121,11 +127,11 @@ interface Scale {
   readonly samples: Record<string, number[]>;
 }
 
-const READS = ['groupedInSession', 'flatInSession', 'locationsInSession', 'groupedAll'] as const;
+const READS = ['typesInSession', 'flatInSession', 'locationsInSession', 'typesAll'] as const;
 type ReadName = (typeof READS)[number];
 
 /** The three session-scoped reads that must stay flat; the fourth is the control. */
-const FLAT_READS: readonly ReadName[] = ['groupedInSession', 'flatInSession', 'locationsInSession'];
+const FLAT_READS: readonly ReadName[] = ['typesInSession', 'flatInSession', 'locationsInSession'];
 
 async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Scale> {
   const db = store.open();
@@ -162,12 +168,11 @@ async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Sc
   const sessionId = sessionRow?.id ?? '';
 
   const run: Record<ReadName, () => Promise<number>> = {
-    groupedInSession: async () =>
-      (await findings.listGroupedFindings({ sessionId })).totals.findings,
+    typesInSession: async () => (await findings.listFindingTypes({ sessionId })).totals.findings,
     flatInSession: async () => (await findings.listFindingInstances({ sessionId })).totals.findings,
     locationsInSession: async () =>
       (await findings.listFindingLocations({ sessionId })).totals.findings,
-    groupedAll: async () => (await findings.listGroupedFindings({})).totals.findings,
+    typesAll: async () => (await findings.listFindingTypes({})).totals.findings,
   };
 
   const matched: Record<string, number> = {};
@@ -259,13 +264,13 @@ describe(`/findings read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
     });
   }
 
-  it('the unscoped grouped read grows with the store (the positive control)', () => {
-    const smallest = fastest(small.samples.groupedAll ?? []);
-    const largest = fastest(large.samples.groupedAll ?? []);
+  it('the unscoped types read grows with the store (the positive control)', () => {
+    const smallest = fastest(small.samples.typesAll ?? []);
+    const largest = fastest(large.samples.typesAll ?? []);
     const ratio = largest / smallest;
     expect(
       ratio,
-      `groupedAll read ${smallest.toFixed(3)} ms at small and ${largest.toFixed(3)} ms at large — ` +
+      `typesAll read ${smallest.toFixed(3)} ms at small and ${largest.toFixed(3)} ms at large — ` +
         `a ratio of ${ratio.toFixed(3)}. It counts every finding in the store and must grow; ` +
         `flat here means the harness is no longer measuring growth`,
     ).toBeGreaterThan(CONTROL_FLOOR);

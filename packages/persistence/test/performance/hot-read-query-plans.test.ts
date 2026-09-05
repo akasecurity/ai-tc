@@ -113,6 +113,8 @@ interface Surfaces {
   readonly now: number;
   /** A cursor into the flat list, so the keyset page read is driven with a real one. */
   readonly secondPageCursor: string;
+  /** A real finding id, so the deep-link seek is driven with one that resolves. */
+  readonly findingId: string;
 }
 
 const HOT_READS: readonly HotRead[] = [
@@ -126,14 +128,21 @@ const HOT_READS: readonly HotRead[] = [
   { name: '/security recentlyResolved', run: (c) => c.security.recentlyResolved() },
   { name: '/security recentFindings', run: (c) => c.findings.recentFindings({ limit: 500 }) },
   // --- /findings: three views over one filtered set ---------------------------
-  // Each view is its own read, and the session-scoped grouped read is listed
+  // Each view is its own read, and the session-scoped types read is listed
   // separately because the scope changes which index drives the scan.
-  { name: '/findings listGroupedFindings', run: (c) => c.findings.listGroupedFindings({}) },
+  { name: '/findings listFindingTypes', run: (c) => c.findings.listFindingTypes({}) },
   {
-    name: '/findings listGroupedFindings (session)',
-    run: (c) => c.findings.listGroupedFindings({ sessionId: c.sessionId }),
+    name: '/findings listFindingTypes (session)',
+    run: (c) => c.findings.listFindingTypes({ sessionId: c.sessionId }),
   },
   { name: '/findings listFindingInstances', run: (c) => c.findings.listFindingInstances({}) },
+  // The `?finding=` deep link's resolver. A primary-key seek, so it must appear
+  // in NO full-scan bucket below — if it ever does, the deep link has stopped
+  // being cheap and has started costing what a list page costs.
+  {
+    name: '/findings findingInstance',
+    run: (c) => c.findings.findingInstance(c.findingId),
+  },
   {
     name: '/findings listFindingInstances (page 2)',
     run: (c) => c.findings.listFindingInstances({ cursor: c.secondPageCursor }),
@@ -218,22 +227,32 @@ const EXPECTED_FULL_INDEX_SCANS: Readonly<Record<string, readonly string[]>> = {
   '/security recentFindings': ['audit_events'],
   // The findings page. Every unscoped read here walks `idx_audit_started_at`
   // in DESC order the way `recentFindings` does, and for the same reason: the
-  // order the page wants falls out of the index, so nothing is sorted. Two of
-  // the three are UNBOUNDED by design — the flat list and the locations fold
-  // count and facet every finding in scope, so the scan is the answer — and
-  // the ratio in `findings-page-scale.test.ts` is what states that they are
-  // flat in the STORE once a scope narrows them. The grouped read's scan
-  // stops early too, but NOT on a fixed row count the way `recentFindings`'
-  // LIMIT does: it stops once every rule has its preview cap, and that sum
-  // (`rules * PREVIEW_INSTANCES_PER_GROUP`) grows with the rule count, so a
-  // plan cannot show the bound and neither can this comment overstate it as
-  // constant — see `previewRows`' docblock in findings.ts for the real one.
-  // Its `finding_resolution` entry is the latest-resolution derived table the
-  // aggregate joins, shared with the three `/security` reads above. The
-  // session-scoped grouped read drives from `idx_audit_session` instead, so
-  // only that derived table remains.
-  '/findings listGroupedFindings': ['audit_events', 'finding_resolution'],
-  '/findings listGroupedFindings (session)': ['finding_resolution'],
+  // order the page wants falls out of the index, so nothing is sorted. All of
+  // these are UNBOUNDED by design — the flat list and the locations fold count
+  // and facet every finding in scope, and the TYPES read aggregates every
+  // finding to count them, so the scan IS the answer — and the ratio in
+  // `findings-page-scale.test.ts` is what states that they are flat in the
+  // STORE once a scope narrows them.
+  //
+  // The types read is a pure `GROUP BY rule_id` with no second pass: it
+  // materializes no findings, so nothing here stops early and nothing needs a
+  // per-rule bound. (It used to make a second, preview pass that stopped once
+  // every rule had its cap — a bound that grew with the rule count and that a
+  // plan could not show. That pass is gone.) Its `finding_resolution` entry is
+  // the latest-resolution derived table the aggregate joins, shared with the
+  // three `/security` reads above. The session-scoped types read drives from
+  // `idx_audit_session` instead, so only that derived table remains.
+  // No `audit_events` entry, and its absence is the measurable result of this
+  // read dropping its second pass: the preview scan carried `+e.event_type` to
+  // pin its own plan, which made it a full index scan of the table on every
+  // default page load. The aggregate alone does not need it.
+  '/findings listFindingTypes': ['finding_resolution'],
+  '/findings listFindingTypes (session)': ['finding_resolution'],
+  // Empty, and that is the assertion: a primary-key seek touches no table in
+  // full. It is written down rather than omitted because this map is compared
+  // EXACTLY in both directions, so an entry going non-empty here would mean the
+  // deep-link resolver had started costing what a list page costs.
+  '/findings findingInstance': [],
   '/findings listFindingInstances': ['audit_events'],
   // ONE statement, the same one page 1 runs: the page-2 items are collected
   // inline once the scan passes the cursor (listFindingInstances'
@@ -302,6 +321,13 @@ describe('query plans of every hot dashboard read', () => {
       firstPage.nextCursor,
       'corpus produced fewer findings than one flat page, so the keyset read has no page to seek',
     ).toBeTypeOf('string');
+    // A real id, for the same reason the cursor is real: findingInstance on an
+    // unknown id still runs its statement, but a plan taken from a seek that
+    // matched nothing is a plan for a read the page never makes.
+    expect(
+      firstPage.items[0]?.id,
+      'corpus produced no finding to drive the deep-link seek',
+    ).toBeTypeOf('string');
 
     const recorded: RecordedQuery[] = [];
     const spy = recordingConnection(raw, recorded);
@@ -313,6 +339,7 @@ describe('query plans of every hot dashboard read', () => {
       sessionId: sessionRow?.id ?? '',
       now: corpus.endsAt,
       secondPageCursor: firstPage.nextCursor ?? '',
+      findingId: firstPage.items[0]?.id ?? '',
     };
 
     plans = new Map();

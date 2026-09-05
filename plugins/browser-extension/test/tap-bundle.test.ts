@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { RESPONSE_TEXT_MAX_BYTES } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { TAP_ENDPOINTS } from '../src/tap-endpoints.ts';
 import { TAP_CHANNEL } from '../src/tap-protocol.ts';
 
 // The tap runs in the PAGE's own JS context, with the page's own authority. The
@@ -213,6 +214,40 @@ describe('the built tap bundle', () => {
 
   it('stays small enough to have no dependency in it', () => {
     expect(BUILT.length).toBeLessThan(SIZE_CEILING_BYTES);
+  });
+
+  it('had its endpoint table injected at build time', () => {
+    // The tap reads `typeof AKA_TAP_ENDPOINTS === 'undefined' ? [] : …`, so a
+    // build that stops substituting the define does not fail — it emits a tap
+    // that falls back to an empty table and forwards nothing, while reporting
+    // itself patched and healthy. That is the one failure this design cannot
+    // see from the outside, and the substitution is what this can see: with the
+    // define in play esbuild folds the guard away and the identifier is gone
+    // from the artifact; without it the name survives as an undeclared global.
+    //
+    // Non-vacuous today, with an empty table: it fails on a dropped define
+    // whether or not any adapter declares an endpoint.
+    expect(BUILT).not.toContain('AKA_TAP_ENDPOINTS');
+  });
+
+  it('carries every endpoint the adapter registry declares', () => {
+    // Vacuous while no adapter declares one, and kept for the moment that
+    // changes — which is the moment the tap first observes real traffic. A
+    // build that hard-coded an empty table would pass every other check in this
+    // file and forward nothing.
+    //
+    // A containment check over the emitted text rather than a parse: the table
+    // is inlined as a minified object literal, so its keys are unquoted and its
+    // shape is esbuild's business, but the host and the pattern survive as
+    // string literals with only their backslashes re-escaped.
+    for (const endpoint of TAP_ENDPOINTS) {
+      expect(BUILT, `the tap bundle does not name the host ${endpoint.host}`).toContain(
+        endpoint.host,
+      );
+      expect(BUILT, `the tap bundle does not carry the pattern for ${endpoint.host}`).toContain(
+        endpoint.path.replace(/\\/g, '\\\\'),
+      );
+    }
   });
 
   it('speaks the handshake tag the protocol module declares', () => {

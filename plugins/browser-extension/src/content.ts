@@ -19,6 +19,8 @@ import { createSubmitInterceptor } from './interceptor.ts';
 import type { BackgroundRequest, BackgroundResponse } from './messaging.ts';
 import { resolveAdapter } from './providers/registry.ts';
 import type { ProviderAdapter } from './providers/types.ts';
+import type { SharedScope } from './tab-session.ts';
+import { notifyDomSend, resolveSessionId } from './tab-session.ts';
 
 const adapter = resolveAdapter(location.hostname);
 if (adapter) {
@@ -29,12 +31,24 @@ if (adapter) {
 // nothing here is allowed to await. session_start is fired and left to settle
 // on its own (see below).
 function bootstrap(activeAdapter: ProviderAdapter): void {
-  const sessionId = crypto.randomUUID();
+  // Shared with the network path rather than minted here: the two run as
+  // separate content scripts in one isolated world, and a second id would put
+  // this tab's prompts under a different session root than the exchanges that
+  // answered them.
+  const scope = window as unknown as SharedScope;
+  const sessionId = resolveSessionId(scope);
   const interceptor = createSubmitInterceptor({
     adapter: activeAdapter,
     sessionId,
     relay,
     showBanner,
+    // A send that actually left the composer is this tab's one observation
+    // that the user asked for a turn. The network path counts it as a turn it
+    // must see an exchange for, so a run of sends with no exchange behind them
+    // is how a tap that installed and sees nothing becomes visible.
+    noteSend: () => {
+      notifyDomSend(scope);
+    },
   });
 
   let composer: HTMLElement | null = null;

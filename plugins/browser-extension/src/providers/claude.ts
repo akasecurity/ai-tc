@@ -45,4 +45,14 @@ export const claudeAdapter: ProviderAdapter = {
     sendButton.click();
     return true;
   },
+
+  // Same as chatgpt.ts: the network half is UNIMPLEMENTED, because claude.ai's
+  // endpoint paths and stream shapes are not known to this repository and are
+  // not guessed. An empty `endpoints` puts nothing in the tap's build-time
+  // table, so nothing from this site is forwarded and the parsers below are
+  // never reached.
+  endpoints: [],
+  requiredPaths: { request: [], response: [] },
+  parseRequest: () => ({ requiredPathsSeen: false }),
+  parseStream: () => ({ push: () => undefined, end: () => null }),
 };

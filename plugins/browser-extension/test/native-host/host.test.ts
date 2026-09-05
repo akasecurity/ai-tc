@@ -64,6 +64,39 @@ describe('handleRequest (native-messaging host)', () => {
     });
   });
 
+  it('answers a request type it declares but has no handler for, rather than dropping it', async () => {
+    // `exchange` and `capture_status` are on the wire so the bridge can relay
+    // them; nothing here implements either yet. background.ts holds a pending
+    // entry per requestId, so a silent drop leaves its caller waiting out the
+    // relay deadline instead of learning at once. In a real extension
+    // `isHostRequest` refuses these first — this is the direct caller's path.
+    const response = await handleRequest(
+      {
+        type: 'capture_status',
+        requestId: 'u1',
+        sessionId: 's1',
+        tool: 'claude-ai',
+        status: {
+          patched: true,
+          live: false,
+          blind: false,
+          sendsSeenDom: 0,
+          exchangesSeenNet: 0,
+          parseFailures: 0,
+          unparsedBodies: 0,
+          shapeMisses: [],
+        },
+      },
+      config,
+    );
+    expect(response).toEqual({
+      type: 'error',
+      requestId: 'u1',
+      ok: false,
+      message: 'unsupported request type: capture_status',
+    });
+  });
+
   it('opens a session root for session_start, stamping the tab hostname as harness_interface', async () => {
     const response = await handleRequest(
       {

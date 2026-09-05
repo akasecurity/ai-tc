@@ -37,6 +37,47 @@ describe('isHostRequest', () => {
     ).toBe(true);
   });
 
+  it('refuses the two shapes this host declares but does not yet handle', () => {
+    // `exchange` and `capture_status` are on the wire so the isolated-world
+    // bridge can relay them, and nothing here implements either. Accepting
+    // them would answer a caller `ok` for a payload that is then discarded,
+    // which is a worse report than the refusal. Whichever way the handler
+    // eventually lands, it has to move this case with it.
+    expect(
+      isHostRequest({
+        type: 'exchange',
+        requestId: 'r5',
+        sessionId: 's1',
+        tool: 'claude-ai',
+        exchange: {
+          messageId: 'm1',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          usageSource: 'site',
+          toolCalls: [],
+          truncated: false,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isHostRequest({
+        type: 'capture_status',
+        requestId: 'r6',
+        sessionId: 's1',
+        tool: 'claude-ai',
+        status: {
+          patched: true,
+          live: false,
+          blind: false,
+          sendsSeenDom: 0,
+          exchangesSeenNet: 0,
+          parseFailures: 0,
+          unparsedBodies: 0,
+          shapeMisses: [],
+        },
+      }),
+    ).toBe(false);
+  });
+
   it('rejects a request without a string requestId', () => {
     expect(isHostRequest({ type: 'ping' })).toBe(false);
     expect(isHostRequest({ type: 'ping', requestId: 7 })).toBe(false);

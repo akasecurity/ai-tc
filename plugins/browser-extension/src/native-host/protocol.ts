@@ -1,5 +1,5 @@
 import type { BlockedDetectionRef } from '@akasecurity/plugin-sdk';
-import type { ActionTaken } from '@akasecurity/schema';
+import type { ActionTaken, WebCaptureStatus, WebExchange } from '@akasecurity/schema';
 import { EventKind, SOURCE_TOOL } from '@akasecurity/schema';
 
 // The web chat UIs this native host serves — the narrower SET of wire ids this
@@ -35,6 +35,32 @@ export interface CaptureRequest {
   text: string;
 }
 
+// One assistant turn as the isolated-world bridge parsed it off the network.
+// Carries what the DOM path cannot see: the model, the token counts the site
+// itself reported, the server-side tool calls, and the response text.
+//
+// `exchange` is a `WebExchange` on the wire. This interface is what
+// background.ts relays and is not a substitute for parsing the payload where
+// it lands — see `isHostRequest` below for what this host does with one today.
+export interface ExchangeRequest {
+  type: 'exchange';
+  requestId: string;
+  sessionId: string;
+  tool: WebSourceTool;
+  exchange: WebExchange;
+}
+
+// What one tab's interception is actually doing. Reported so a tap that
+// installed and sees nothing is distinguishable from a tab nobody used —
+// installation alone is not visibility.
+export interface CaptureStatusRequest {
+  type: 'capture_status';
+  requestId: string;
+  sessionId: string;
+  tool: WebSourceTool;
+  status: WebCaptureStatus;
+}
+
 export interface PingRequest {
   type: 'ping';
   requestId: string;
@@ -45,7 +71,13 @@ export interface HealthRequest {
   requestId: string;
 }
 
-export type HostRequest = SessionStartRequest | CaptureRequest | PingRequest | HealthRequest;
+export type HostRequest =
+  | SessionStartRequest
+  | CaptureRequest
+  | ExchangeRequest
+  | CaptureStatusRequest
+  | PingRequest
+  | HealthRequest;
 
 export interface SessionStartResponse {
   type: 'session_start';
@@ -140,6 +172,11 @@ export function isHostRequest(value: unknown): value is HostRequest {
     case 'health':
       return true;
     default:
+      // 'exchange' and 'capture_status' fall here on purpose: they are declared
+      // on the wire so the isolated-world bridge can relay them, and this host
+      // has no handler for either yet. Accepting a shape nothing implements
+      // would report success for a payload that was then discarded, which is
+      // worse than the 'unrecognized request' reply this produces.
       return false;
   }
 }

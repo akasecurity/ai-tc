@@ -1,0 +1,798 @@
+// @vitest-environment jsdom
+import { describe, expect, it, vi } from 'vitest';
+
+import { installTap } from '../src/tap.ts';
+import type { TapToPage } from '../src/tap-protocol.ts';
+
+// A scriptable stand-in for the page's own fetch. Every case asserts the page
+// gets back exactly what this returned — the tap must be invisible to it.
+function fakeFetch(body: string, init: { status?: number } = {}) {
+  const calls: { input: RequestInfo | URL; init: RequestInit | undefined }[] = [];
+  const fn = (input: RequestInfo | URL, requestInit?: RequestInit): Promise<Response> => {
+    calls.push({ input, init: requestInit });
+    return Promise.resolve(new Response(body, { status: init.status ?? 200 }));
+  };
+  return { fn, calls };
+}
+
+// The patched entry point, reached the way the page reaches it. `win` is a bare
+// object in these cases, so the DOM lib's own `fetch` signature is not on it.
+function fetchOn(win: Window) {
+  return (
+    win as unknown as { fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> }
+  ).fetch;
+}
+
+// The bridge side of the port: collects everything the tap emits.
+function harness() {
+  const seen: TapToPage[] = [];
+  const channel = new MessageChannel();
+  channel.port1.onmessage = (event: MessageEvent) => {
+    seen.push(event.data as TapToPage);
+  };
+  channel.port1.start();
+  // Deliberately typed `unknown`: there is no bridge → tap message shape any
+  // more, and the one case that uses this is proving exactly that.
+  const send = (message: unknown): void => {
+    channel.port1.postMessage(message);
+  };
+  // Let the microtask/message queue drain.
+  const settle = (): Promise<void> =>
+    new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+  const of = <T extends TapToPage['type']>(type: T) =>
+    seen.filter((m): m is Extract<TapToPage, { type: T }> => m.type === type);
+  // For a drain that spans many reads, where one macrotask is not enough. Gives
+  // up rather than hanging, so a property that never holds fails on its own
+  // assertion instead of on the runner's timeout.
+  const waitFor = async (predicate: () => boolean): Promise<void> => {
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      if (predicate()) return;
+      await settle();
+    }
+  };
+  return { seen, port: channel.port2, send, settle, of, waitFor };
+}
+
+// The one endpoint the fetch cases forward, passed to installTap the way the
+// build passes its generated table: an exact host plus a path pattern the tap
+// anchors at the start of the path.
+const CONVERSATION = { host: 'site.test', path: '/api/conversation' };
+// A table that matches every path on the one host — never every host, which is
+// not a table the build can emit.
+const EVERYTHING = { host: 'site.test', path: '.*' };
+
+// A window whose `fetch` cannot be replaced. Assignment to a non-writable
+// property throws in strict mode, which is what the fetch half has to survive.
+function frozenFetchWindow(
+  fn: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+) {
+  const win = {} as unknown as Window;
+  Object.defineProperty(win, 'fetch', { value: fn, writable: false, configurable: false });
+  return win;
+}
+
+// A scriptable XMLHttpRequest. A fresh class per case, because installTap
+// patches the PROTOTYPE and a shared class would carry one case's patch into
+// the next. `open`/`send` here are the originals the tap must call through to;
+// `respond` is the test's own handle on the response lifecycle.
+//
+// `status`, `responseType` and `responseText` are PROTOTYPE ACCESSORS over
+// private fields, which is where a real XMLHttpRequest carries them. The tap
+// reads them through the prototype descriptor with the instance as receiver, so
+// a double exposing them as own data properties would make two things
+// untestable at once: that read, and the case where a page defines an own
+// property over one of them.
+function makeXhrClass() {
+  return class FakeXhr {
+    #status = 0;
+    #responseType = '';
+    #responseText = '';
+    #responseTextThrows = false;
+    #sending = false;
+
+    opened: { method: string; url: string } | null = null;
+    sent: unknown[] = [];
+    listeners: { type: string; fn: () => void; once: boolean }[] = [];
+
+    get status(): number {
+      return this.#status;
+    }
+
+    get responseType(): string {
+      return this.#responseType;
+    }
+
+    set responseType(value: string) {
+      this.#responseType = value;
+    }
+
+    get responseText(): string {
+      if (this.#responseTextThrows) {
+        throw new Error('responseText is not available for this state');
+      }
+      return this.#responseText;
+    }
+
+    addEventListener(type: string, fn: () => void, options?: { once?: boolean }): void {
+      this.listeners.push({ type, fn, once: options?.once === true });
+    }
+
+    open(method: string, url: string): void {
+      // A real open() over a send that is still in flight ABORTS it, and that
+      // abort fires the earlier send's own `loadend` from inside this call —
+      // which is the only way the tap's state-identity check is ever reached.
+      if (this.#sending) {
+        this.#sending = false;
+        this.#status = 0;
+        this.#responseText = '';
+        this.#dispatchLoadend();
+      }
+      this.opened = { method, url };
+    }
+
+    send(body?: unknown): void {
+      this.#sending = true;
+      this.sent.push(body);
+    }
+
+    // Delivers a response for whatever send is in flight. `text` is optional so
+    // a case can arrange for responseText to throw first.
+    respond(status: number, text?: string): void {
+      this.#sending = false;
+      this.#status = status;
+      if (text !== undefined) this.#responseText = text;
+      this.#dispatchLoadend();
+    }
+
+    // Makes the prototype getter throw, the way a real one does for a state it
+    // cannot serve as text.
+    failResponseText(): void {
+      this.#responseTextThrows = true;
+    }
+
+    loadendListeners(): number {
+      return this.listeners.filter((l) => l.type === 'loadend').length;
+    }
+
+    #dispatchLoadend(): void {
+      for (const entry of [...this.listeners]) {
+        if (entry.type !== 'loadend') continue;
+        if (entry.once) this.listeners = this.listeners.filter((l) => l !== entry);
+        entry.fn();
+      }
+    }
+  };
+}
+
+function xhrWindow() {
+  const Xhr = makeXhrClass();
+  return { win: { XMLHttpRequest: Xhr } as unknown as Window, create: () => new Xhr() };
+}
+
+describe('installTap: the command surface', () => {
+  it('accepts no message, so nothing in the page can widen what it forwards', async () => {
+    const { fn } = fakeFetch('telemetry');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+
+    // Installed with an EMPTY table, exactly as the shipped build installs it.
+    installTap(win, h.port, []);
+    // A well-formed command that would match everything. The page shares this
+    // window's event target and can take the transferred port off the
+    // handshake, so a tap that read from it would be a tap the page — not the
+    // build — decides the reach of, and what the tap forwards is what AKA goes
+    // on to persist.
+    h.send({ type: 'configure', endpoints: [{ host: 'site.test', path: '.*' }] });
+    await h.settle();
+    await fetchOn(win)('https://site.test/api/conversation');
+    await h.settle();
+
+    expect(h.of('request')).toHaveLength(0);
+    expect(h.of('chunk')).toHaveLength(0);
+  });
+
+  it('forwards that same table when the BUILD supplies it — the control on the case above', async () => {
+    // Without this, "forwarded nothing" is satisfied by a harness that never
+    // reaches the tap at all, and the refusal above proves nothing.
+    const { fn } = fakeFetch('telemetry');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+
+    installTap(win, h.port, [EVERYTHING]);
+    await fetchOn(win)('https://site.test/api/conversation');
+    await h.settle();
+
+    expect(h.of('request')).toHaveLength(1);
+  });
+});
+
+describe('installTap: what counts as a match', () => {
+  it('forwards nothing from a foreign origin whose URL carries the pattern text', async () => {
+    // An endpoint is a SITE's endpoint. Tested against a whole href with no
+    // host check, the pattern matches any origin that happens to contain the
+    // text — and the tap runs on pages whose own script chooses what origins to
+    // fetch, so that is traffic the page picks and AKA then records as the
+    // site's own.
+    const { fn } = fakeFetch('not the site');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    // The pattern text in a foreign origin's path…
+    await fetchOn(win)('https://evil.test/api/conversation');
+    // …in a foreign origin's query, on an innocent path…
+    await fetchOn(win)('https://evil.test/collect?next=/api/conversation');
+    // …in the RIGHT host's query…
+    await fetchOn(win)('https://site.test/collect?next=/api/conversation');
+    // …and on the right host but further along the path, which the anchor is
+    // what refuses.
+    await fetchOn(win)('https://site.test/redirect/api/conversation');
+    await h.settle();
+
+    expect(h.of('request')).toHaveLength(0);
+
+    // The positive control on the same matcher: the genuine host and path still
+    // forward, so the absences above are the host and anchor checks working
+    // rather than the table having stopped matching anything at all.
+    await fetchOn(win)('https://site.test/api/conversation');
+    await h.settle();
+    expect(h.of('request')).toHaveLength(1);
+  });
+
+  it("reads a Request's url and method off the prototype, not off the instance", async () => {
+    // fetch resolves a Request through its internal slots, so an own property
+    // defined over the prototype accessor changes what the TAP sees and nothing
+    // about where the browser goes. Read that way, page script can have a
+    // fabricated exchange recorded against a matched endpoint while the real
+    // request goes somewhere else entirely.
+    const { fn, calls } = fakeFetch('body');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    const disguised = new Request('https://evil.test/collect', {
+      method: 'POST',
+      body: '{"exfil":1}',
+    });
+    Object.defineProperty(disguised, 'url', {
+      value: 'https://site.test/api/conversation',
+      configurable: true,
+    });
+    Object.defineProperty(disguised, 'method', { value: 'GET', configurable: true });
+    await fetchOn(win)(disguised);
+    await h.settle();
+
+    expect(h.of('request')).toHaveLength(0);
+    // And the page's own call still went out exactly as it wrote it.
+    expect(calls).toHaveLength(1);
+
+    // The positive control on the same read: an unshadowed Request forwards,
+    // carrying the values the prototype reports.
+    const genuine = new Request('https://site.test/api/conversation', {
+      method: 'POST',
+      body: '{"prompt":"hi"}',
+    });
+    await fetchOn(win)(genuine);
+    await h.settle();
+
+    expect(h.of('request')[0]).toMatchObject({
+      url: 'https://site.test/api/conversation',
+      method: 'POST',
+      body: '{"prompt":"hi"}',
+    });
+  });
+});
+
+describe('installTap: the fetch half', () => {
+  it('reports what it patched, and an empty table forwards nothing', async () => {
+    const { fn } = fakeFetch('body');
+    const win = { fetch: fn, XMLHttpRequest: undefined } as unknown as Window;
+    const h = harness();
+
+    installTap(win, h.port, []);
+    await fetchOn(win)('https://site.test/api/conversation');
+    await h.settle();
+
+    expect(h.of('patched')[0]).toMatchObject({ fetch: true, xhr: false });
+    expect(h.of('request')).toHaveLength(0);
+  });
+
+  it("patches XHR and reports the blind spot when the page's fetch cannot be replaced", async () => {
+    // The whole fail-open property in one case: an unwritable `fetch` used to
+    // throw straight out of installTap, so the XHR half was never patched and
+    // neither `ready` nor `patched` was ever posted — the bridge saw silence
+    // where it should have seen a reported blind spot.
+    const { fn } = fakeFetch('body');
+    const { win: xhrWin, create } = xhrWindow();
+    const win = frozenFetchWindow(fn);
+    (win as unknown as { XMLHttpRequest: unknown }).XMLHttpRequest = (
+      xhrWin as unknown as { XMLHttpRequest: unknown }
+    ).XMLHttpRequest;
+    const h = harness();
+
+    installTap(win, h.port, [CONVERSATION]);
+    await h.settle();
+
+    expect(h.of('ready')).toHaveLength(1);
+    expect(h.of('patched')[0]).toMatchObject({ fetch: false, xhr: true });
+
+    // And the XHR half really is live, not merely reported as live.
+    const xhr = create();
+    xhr.open('POST', 'https://site.test/api/conversation');
+    xhr.send('{"prompt":"hi"}');
+    xhr.respond(200, 'assistant reply');
+    await h.settle();
+    expect(h.of('request')).toHaveLength(1);
+  });
+
+  it('forwards a matched request and its response, and returns the page its own body', async () => {
+    const { fn, calls } = fakeFetch('hello from the site');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+
+    installTap(win, h.port, [CONVERSATION]);
+
+    const response = await fetchOn(win)('https://site.test/api/conversation', {
+      method: 'POST',
+      body: '{"prompt":"hi"}',
+    });
+    // The page's own body is intact and readable — the tap consumed a clone.
+    expect(await response.text()).toBe('hello from the site');
+    // And the site's own call went out exactly as it wrote it.
+    expect(calls[0]?.init?.body).toBe('{"prompt":"hi"}');
+
+    await h.settle();
+    expect(h.of('request')[0]).toMatchObject({ method: 'POST', body: '{"prompt":"hi"}' });
+    expect(
+      h
+        .of('chunk')
+        .map((m) => m.text)
+        .join(''),
+    ).toBe('hello from the site');
+    expect(h.of('end')[0]).toMatchObject({ status: 200, ok: true });
+  });
+
+  it('ignores a request no endpoint matches', async () => {
+    const { fn } = fakeFetch('telemetry');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+
+    installTap(win, h.port, [CONVERSATION]);
+    await fetchOn(win)('https://site.test/api/telemetry');
+    await h.settle();
+
+    expect(h.of('request')).toHaveLength(0);
+  });
+
+  it('reads no request body until the URL has matched', async () => {
+    // Body planning used to run BEFORE the match check, so every Request-object
+    // fetch was cloned and read — work on traffic the tap ignores, and a
+    // promise abandoned with nobody to handle its rejection.
+    const { fn } = fakeFetch('telemetry');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+
+    // Spied on the PROTOTYPE, and before the install: the tap captures
+    // Request.prototype.clone while it is the only script that has run, so a
+    // spy on the instance — or one added after — is bypassed by design. This is
+    // the only seam left that can see whether a body was read.
+    const clone = vi.spyOn(Request.prototype, 'clone');
+    try {
+      installTap(win, h.port, [CONVERSATION]);
+
+      const ignored = new Request('https://site.test/api/telemetry', {
+        method: 'POST',
+        body: '{"beacon":1}',
+      });
+      await fetchOn(win)(ignored);
+      await h.settle();
+
+      expect(clone).not.toHaveBeenCalled();
+      expect(ignored.bodyUsed).toBe(false);
+
+      // The positive control: a Request the table DOES match is still read, so
+      // the assertion above is the match check working and not the Request
+      // branch having stopped reading bodies at all.
+      const watched = new Request('https://site.test/api/conversation', {
+        method: 'POST',
+        body: '{"prompt":"hi"}',
+      });
+      await fetchOn(win)(watched);
+      await h.settle();
+
+      expect(clone).toHaveBeenCalledTimes(1);
+      expect(h.of('request')[0]).toMatchObject({ method: 'POST', body: '{"prompt":"hi"}' });
+    } finally {
+      clone.mockRestore();
+    }
+  });
+
+  it('lets the page through untouched when its own forwarding throws', async () => {
+    const { fn } = fakeFetch('still fine');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+    // A port that throws on every post is the whole failure class: the tap must
+    // swallow it and the page must never notice.
+    vi.spyOn(h.port, 'postMessage').mockImplementation(() => {
+      throw new Error('port is gone');
+    });
+
+    const response = await fetchOn(win)('https://site.test/api/conversation');
+    expect(await response.text()).toBe('still fine');
+  });
+
+  it('propagates a rejected fetch to the page unchanged, and closes the exchange', async () => {
+    // Two properties in one call, because they are the same moment. The page's
+    // promise rejects with the reason it was given — the tap's own reporting
+    // rides a SIDE chain that the returned promise never passes through. And
+    // the exchange the tap opened with `request` is closed: without a
+    // terminator the bridge holds that id for the life of the page.
+    const boom = new Error('offline');
+    const win = { fetch: () => Promise.reject(boom) } as unknown as Window;
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    await expect(fetchOn(win)('https://site.test/api/conversation')).rejects.toBe(boom);
+    await h.settle();
+
+    expect(h.of('request')).toHaveLength(1);
+    expect(h.of('error')[0]).toMatchObject({ reason: 'aborted' });
+    expect(h.of('end')).toHaveLength(1);
+  });
+
+  it('closes an exchange whose response body errored', async () => {
+    // An abort of the page's own read — the site's stop button — or a dropped
+    // connection errors the stream, so the tap's reader rejects instead of ever
+    // reaching `done`. Without a terminator on that path the bridge holds the
+    // id for the life of the page.
+    //
+    // Deliberately no surviving chunk to assert on: erroring a stream discards
+    // what is queued in it, and the response pipeline pulls the source ahead of
+    // the tap's own read, so a chunk enqueued before the error does not reach
+    // the tap at all. Measured, not assumed.
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error('connection dropped'));
+      },
+    });
+    const win = {
+      fetch: () => Promise.resolve(new Response(stream)),
+    } as unknown as Window;
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    await fetchOn(win)('https://site.test/api/conversation');
+    await h.waitFor(() => h.of('end').length > 0);
+
+    expect(h.of('request')).toHaveLength(1);
+    expect(h.of('error')[0]).toMatchObject({ reason: 'tap_error' });
+    expect(h.of('end')).toHaveLength(1);
+  });
+
+  it('reports a fault inside its own read callback rather than rejecting into the page', async () => {
+    // A throw inside the reader callback is not caught by the promise's own
+    // rejection handler — it rejects the chain that handler belongs to, and
+    // nothing downstream handles that, so it surfaces in the page's realm as an
+    // unhandled rejection. A chunk that is not bytes makes the decode throw
+    // exactly there.
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue('not bytes' as unknown as Uint8Array);
+        controller.close();
+      },
+    });
+    const win = {
+      fetch: () => Promise.resolve(new Response(stream)),
+    } as unknown as Window;
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    await fetchOn(win)('https://site.test/api/conversation');
+    await h.waitFor(() => h.of('end').length > 0);
+
+    expect(h.of('error')[0]).toMatchObject({ reason: 'tap_error' });
+    expect(h.of('end')).toHaveLength(1);
+  });
+
+  it("reports a request body it cannot read rather than consuming the page's stream", async () => {
+    const { fn } = fakeFetch('ok');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('streamed'));
+        controller.close();
+      },
+    });
+    await fetchOn(win)('https://site.test/api/conversation', {
+      method: 'POST',
+      body: stream as unknown as BodyInit,
+      // @ts-expect-error duplex is required for a stream body and is not in the DOM lib here
+      duplex: 'half',
+    });
+    await h.settle();
+
+    expect(h.of('error')[0]).toMatchObject({ reason: 'unparsed_body' });
+    // The report is only half of it: a stream has ONE reader, so a tap that
+    // reported and then read anyway would have emptied the page's own request.
+    // An unlocked stream is what says it was left alone.
+    expect(stream.locked).toBe(false);
+    // And nothing further is followed about a request the tap could not read.
+    // That exchange was never opened, so it is closed by nothing.
+    expect(h.of('chunk')).toHaveLength(0);
+    expect(h.of('end')).toHaveLength(0);
+  });
+
+  it('proceeds when a deferred request body never settles', async () => {
+    // A Request whose body is a stream the page never closes: `duplex: 'half'`
+    // lets the server answer first, so without a deadline the tap would hold a
+    // response clone — whose tee buffers the whole response — on a promise that
+    // never resolves, for the life of the page.
+    const never = new ReadableStream<Uint8Array>({
+      start() {
+        // Deliberately never enqueues and never closes.
+      },
+    });
+    const request = new Request('https://site.test/api/conversation', {
+      method: 'POST',
+      body: never,
+      duplex: 'half',
+    } as RequestInit & { duplex: string });
+    const { fn } = fakeFetch('assistant reply');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    vi.useFakeTimers();
+    try {
+      await fetchOn(win)(request);
+      // Far past any deadline the tap could be holding, so the case pins the
+      // property rather than a particular number.
+      await vi.advanceTimersByTimeAsync(60_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    await h.waitFor(() => h.of('end').length > 0);
+
+    // The exchange opened with no body rather than not opening at all…
+    expect(h.of('request')[0]).toMatchObject({ method: 'POST', body: null });
+    // …and the response was drained and the exchange closed.
+    expect(h.of('chunk').map((m) => m.text)).toEqual(['assistant reply']);
+    expect(h.of('end')).toHaveLength(1);
+  });
+
+  it('stops pulling a response at its byte ceiling and says the exchange was cut', async () => {
+    // The tap reads a clone, and a tee's branches are independent: nothing tells
+    // it the page abandoned its own branch, so an unbounded pump keeps a
+    // download the page gave up on alive for as long as the server sends. The
+    // ceiling is what bounds that. The source here would go on to twice the
+    // ceiling, so an uncapped tap terminates too — and fails on the counts
+    // below rather than hanging.
+    const MIB = 1024 * 1024;
+    const CEILING_MIB = 4;
+    let pulls = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls > CEILING_MIB * 2) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(new Uint8Array(MIB).fill(0x61));
+      },
+    });
+    const win = {
+      fetch: () => Promise.resolve(new Response(stream)),
+    } as unknown as Window;
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    await fetchOn(win)('https://site.test/api/conversation');
+    await h.waitFor(() => h.of('end').length > 0);
+
+    expect(h.of('error')[0]).toMatchObject({ reason: 'truncated' });
+    // Exactly the ceiling, not the whole source: the cut is where it says it is.
+    expect(h.of('chunk')).toHaveLength(CEILING_MIB);
+    // Still ended, so the chunks before the cut are usable and the bridge is
+    // not left holding an open id.
+    expect(h.of('end')).toHaveLength(1);
+    // And it really stopped pulling, which is the point — the chunk count alone
+    // would be satisfied by a tap that read the whole source and forwarded less
+    // of it. Bounded by the source's own length rather than by the ceiling: the
+    // tee reads ahead by a chunk or two into the branch nobody is draining.
+    expect(pulls).toBeLessThan(CEILING_MIB * 2);
+  });
+});
+
+describe('installTap: the XHR half', () => {
+  it('forwards a matched send as request, chunk and end, in that order', async () => {
+    const { win, create } = xhrWindow();
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    const xhr = create();
+    xhr.open('POST', 'https://site.test/api/conversation');
+    xhr.send('{"prompt":"hi"}');
+    xhr.respond(200, 'assistant reply');
+    await h.settle();
+
+    // The page's own call reached the originals with the arguments it wrote.
+    expect(xhr.opened).toEqual({ method: 'POST', url: 'https://site.test/api/conversation' });
+    expect(xhr.sent).toEqual(['{"prompt":"hi"}']);
+
+    expect(
+      h.seen.filter((m) => m.type !== 'ready' && m.type !== 'patched').map((m) => m.type),
+    ).toEqual(['request', 'chunk', 'end']);
+    expect(h.of('request')[0]).toMatchObject({
+      method: 'POST',
+      url: 'https://site.test/api/conversation',
+      body: '{"prompt":"hi"}',
+    });
+    expect(h.of('chunk')[0]).toMatchObject({ text: 'assistant reply' });
+    expect(h.of('end')[0]).toMatchObject({ status: 200, ok: true });
+  });
+
+  it('forwards nothing for a send no endpoint matches', async () => {
+    const { win, create } = xhrWindow();
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    const xhr = create();
+    xhr.open('POST', 'https://site.test/api/telemetry');
+    xhr.send('{"beacon":1}');
+    xhr.respond(200, 'telemetry accepted');
+    await h.settle();
+
+    expect(h.seen.filter((m) => m.type !== 'ready' && m.type !== 'patched')).toEqual([]);
+    // The original still ran, so the page's request is unaffected.
+    expect(xhr.sent).toEqual(['{"beacon":1}']);
+  });
+
+  it('reads a response off the prototype, not off a property defined over it', async () => {
+    // Same class as the Request case above, reached through the other
+    // transport: shadowing an accessor on the instance changes what the tap
+    // reports and nothing about what the server actually sent, so a page could
+    // have arbitrary content recorded as a matched endpoint's reply.
+    const { win, create } = xhrWindow();
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    const xhr = create();
+    xhr.open('POST', 'https://site.test/api/conversation');
+    xhr.send('{"prompt":"hi"}');
+    Object.defineProperty(xhr, 'responseText', { value: 'FABRICATED', configurable: true });
+    Object.defineProperty(xhr, 'status', { value: 999, configurable: true });
+    Object.defineProperty(xhr, 'responseType', { value: 'blob', configurable: true });
+    xhr.respond(200, 'the real body');
+    await h.settle();
+
+    expect(h.of('chunk').map((m) => m.text)).toEqual(['the real body']);
+    expect(h.of('end')[0]).toMatchObject({ status: 200, ok: true });
+  });
+
+  it("never reports a reused request's later response under the first send's id", async () => {
+    // An XHR object is reusable. A `loadend` listener added per send used to
+    // stay attached for the life of the object, so the SECOND response fired it
+    // again and posted that body under the FIRST send's id — bytes from a URL
+    // no pattern matched, forwarded and then persisted.
+    const { win, create } = xhrWindow();
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    const xhr = create();
+    xhr.open('POST', 'https://site.test/api/conversation');
+    xhr.send('{"prompt":"hi"}');
+    xhr.respond(200, 'matched body');
+
+    xhr.open('POST', 'https://site.test/api/telemetry');
+    xhr.send('{"beacon":1}');
+    xhr.respond(200, 'UNMATCHED BODY');
+    await h.settle();
+
+    expect(h.of('chunk').map((m) => m.text)).toEqual(['matched body']);
+    expect(h.of('request')).toHaveLength(1);
+    expect(h.of('end')).toHaveLength(1);
+    // The mechanism, not just the outcome: a listener that reported is retired,
+    // so a long-lived request object accumulates none.
+    expect(xhr.loadendListeners()).toBe(0);
+  });
+
+  it('stays silent when a request is re-opened before its own response arrived', async () => {
+    // The other half of the same defence, and the one `once` cannot cover.
+    // Re-opening ABORTS the send in flight, and the abort fires that send's own
+    // `loadend` from inside open() — so the listener does run, with a status of
+    // 0 and no body. Without the state-identity check it reports that as the
+    // matched exchange's `end`.
+    const { win, create } = xhrWindow();
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    const xhr = create();
+    xhr.open('POST', 'https://site.test/api/conversation');
+    xhr.send('{"prompt":"hi"}');
+    xhr.open('POST', 'https://site.test/api/telemetry');
+    xhr.send('{"beacon":1}');
+    xhr.respond(200, 'UNMATCHED BODY');
+    await h.settle();
+
+    expect(h.of('request')).toHaveLength(1);
+    expect(h.of('chunk')).toHaveLength(0);
+    expect(h.of('end')).toHaveLength(0);
+  });
+
+  it('forwards no body for a responseType it cannot read as text', async () => {
+    const { win, create } = xhrWindow();
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    const xhr = create();
+    xhr.responseType = 'arraybuffer';
+    xhr.open('POST', 'https://site.test/api/conversation');
+    xhr.send('{"prompt":"hi"}');
+    xhr.respond(200, 'bytes that are not text');
+    await h.settle();
+
+    expect(h.of('chunk')).toHaveLength(0);
+    // The exchange still ends, so the bridge is not left holding an open id.
+    expect(h.of('end')[0]).toMatchObject({ status: 200, ok: true });
+  });
+
+  it('reports tap_error rather than throwing into the page when responseText throws', async () => {
+    const { win, create } = xhrWindow();
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    const xhr = create();
+    xhr.open('POST', 'https://site.test/api/conversation');
+    xhr.send('{"prompt":"hi"}');
+    xhr.failResponseText();
+    // The page dispatches its own loadend; a throw escaping here would land in
+    // the site's event loop, which is the one thing the tap may never do.
+    expect(() => {
+      xhr.respond(200);
+    }).not.toThrow();
+    await h.settle();
+
+    expect(h.of('error')[0]).toMatchObject({ reason: 'tap_error' });
+    expect(h.of('chunk')).toHaveLength(0);
+    // A fault still closes the exchange it opened.
+    expect(h.of('end')).toHaveLength(1);
+  });
+
+  it('reports a send body it cannot read and follows nothing further', async () => {
+    const { win, create } = xhrWindow();
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    const xhr = create();
+    xhr.open('POST', 'https://site.test/api/conversation');
+    xhr.send(new ArrayBuffer(8));
+    xhr.respond(200, 'assistant reply');
+    await h.settle();
+
+    expect(h.of('error')[0]).toMatchObject({ reason: 'unparsed_body' });
+    expect(h.of('request')).toHaveLength(0);
+    expect(h.of('chunk')).toHaveLength(0);
+    // Nothing was opened, so nothing is closed.
+    expect(h.of('end')).toHaveLength(0);
+  });
+
+  it('forwards nothing for a send that was never opened', async () => {
+    const { win, create } = xhrWindow();
+    const h = harness();
+    installTap(win, h.port, [EVERYTHING]);
+
+    const xhr = create();
+    xhr.send('{"prompt":"hi"}');
+    xhr.respond(200, 'assistant reply');
+    await h.settle();
+
+    expect(h.seen.filter((m) => m.type !== 'ready' && m.type !== 'patched')).toEqual([]);
+    expect(xhr.sent).toEqual(['{"prompt":"hi"}']);
+  });
+});

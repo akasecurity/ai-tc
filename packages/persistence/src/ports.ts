@@ -19,6 +19,7 @@ import type {
   DetectionStats,
   EnforcementActionsResponse,
   FileDetail,
+  FindingInstanceDetail,
   FindingsTimeseriesResponse,
   FindingView,
   GetActivityStatsResponse,
@@ -36,8 +37,8 @@ import type {
   ListFindingInstancesResponse,
   ListFindingLocationsQuery,
   ListFindingLocationsResponse,
-  ListGroupedFindingsQuery,
-  ListGroupedFindingsResponse,
+  ListFindingTypesQuery,
+  ListFindingTypesResponse,
   ListHarnessesResponse,
   ListPoliciesResponse,
   ListProjectsResponse,
@@ -73,16 +74,21 @@ export interface FindingsReadPort {
 }
 
 /**
- * Grouped findings read. Groups findings by ruleId (with per-filter-excluded
+ * Finding TYPES read. Folds findings by ruleId (with per-filter-excluded
  * facets) into the same @akasecurity/schema response the dashboards consume, so the
  * Findings page renders identically across surfaces. Not on the shared
  * FindingsReadPort, so a read-only adapter is not forced to implement it — the
- * local store IS the findings service. No overrides / pack names / cursor.
+ * local store IS the findings service. No pack names.
+ *
+ * It materializes no findings: a type is built from its store-side aggregate
+ * alone, and the findings OF a type come from FindingInstancesView scoped to
+ * `subtype`. That split is what lets both lists page without either bounding
+ * the other.
  */
-export interface GroupedFindingsView {
-  listGroupedFindings(query: ListGroupedFindingsQuery): Promise<ListGroupedFindingsResponse>;
+export interface FindingTypesView {
+  listFindingTypes(query: ListFindingTypesQuery): Promise<ListFindingTypesResponse>;
   /** How many live-enforced findings belong to this session — a bare COUNT, so
-   * a caller labeling a link never pays the grouped pipeline. */
+   * a caller labeling a link never pays the types pipeline. */
   sessionFindingsCount(sessionId: string): Promise<number>;
 }
 
@@ -90,14 +96,28 @@ export interface GroupedFindingsView {
  * Instance-level findings reads: the flat newest-first list, and the same
  * findings folded by location (repo → file).
  *
- * Separate from GroupedFindingsView because the unit differs — these page and
- * count FINDINGS where the grouped view pages and counts RULES — and because
- * their status filter matches each instance's own derived status rather than
- * its group's fold. Both are served by the same store as the grouped view.
+ * Separate from FindingTypesView because the unit differs — these page and
+ * count FINDINGS where that view pages and counts RULES — and because their
+ * status filter matches each instance's own derived status rather than its
+ * type's fold. Both are served by the same store.
  */
 export interface FindingInstancesView {
   listFindingInstances(query: ListFindingInstancesQuery): Promise<ListFindingInstancesResponse>;
   listFindingLocations(query: ListFindingLocationsQuery): Promise<ListFindingLocationsResponse>;
+  /**
+   * One finding by its own id, or null when no such row exists.
+   *
+   * A primary-key seek, deliberately unfiltered: it RESOLVES an id (the
+   * Findings page's one-shot `?finding=` deep link), and whether that row would
+   * survive the list's current filters is a different question — hiding the
+   * target because a filter excludes it is worse than showing it. Because it
+   * seeks rather than scans, it resolves a finding of any age, which no list
+   * page can promise.
+   *
+   * `groupId` on the result IS the rule id, so one read answers both "which
+   * type is this?" and "what does the drawer show?".
+   */
+  findingInstance(id: string): Promise<FindingInstanceDetail | null>;
 }
 
 /** Aggregated dashboard reads — independent of the findings row shape. */
@@ -135,7 +155,7 @@ export interface InstalledPacksReadPort {
  * detections service. It has no rule registry, so `update` is always null and
  * the `updates` filter is always empty. Reuses the pure @akasecurity/schema builders
  * (buildDetectionsList / rowToDetectionDetail) so the shapes never drift from
- * the published contract. Not on a cross-adapter port, like GroupedFindingsView
+ * the published contract. Not on a cross-adapter port, like FindingTypesView
  * / SecurityViews.
  */
 export interface DetectionsReadPort {

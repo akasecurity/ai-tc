@@ -11,12 +11,14 @@ import {
   parseRange,
   parseRepo,
   parseSelectedFinding,
+  parseSelectedRule,
   parseSession,
   parseTools,
   parseView,
-  toGroupedQuery,
+  toFindingTypesQuery,
   toInstancesQuery,
   toLocationsQuery,
+  toTypeInstancesQuery,
 } from './filters';
 import { FindingsClient } from './FindingsClient';
 
@@ -31,9 +33,12 @@ export const metadata = { title: 'Findings' };
 // deep-links here with ?session=… (scopes the list), ?finding=… (opens the
 // detail sheet) and ?tool=/?range= (carries its own scope).
 //
-// The three views are three different reads, not one read shaped three ways —
-// they page by different units and their status filter means different things
-// (see the store's FindingInstancesView).
+// The three views are different reads, not one read shaped three ways — they
+// page by different units and their status filter means different things (see
+// the store's FindingInstancesView). The default By-type view is a master/detail
+// pair: a keyset-paged list of TYPES and, beside it, a keyset-paged list of the
+// selected type's FINDINGS. Neither bounds the other, so no per-type cap exists
+// and both sides page as far as the store goes.
 export default async function FindingsPage({
   searchParams,
 }: {
@@ -76,7 +81,6 @@ export default async function FindingsPage({
         filters={filters}
         query={query}
         session={session}
-        selectedId={selectedId}
         range={range}
         from={from}
         tools={tools}
@@ -98,7 +102,6 @@ export default async function FindingsPage({
         filters={filters}
         query={query}
         session={session}
-        selectedId={selectedId}
         range={range}
         from={from}
         tools={tools}
@@ -109,20 +112,68 @@ export default async function FindingsPage({
     );
   }
 
-  const data = await db().findings.listGroupedFindings({
-    ...toGroupedQuery(filters, query, session, scope),
-    // Resolve the one-shot deep link even when it sorts past the first page.
-    ...(selectedId ? { includeId: selectedId } : {}),
+  // ─── The By-type view: two reads, and the selection resolved between them ──
+  //
+  // The type list and the findings panel are separate keyset-paged reads, so
+  // neither bounds the other — which is the whole point of the split. Resolving
+  // which type is selected happens HERE rather than in the client so the two
+  // panels can never disagree about it.
+  const requestedRule = parseSelectedRule(sp);
+
+  // A `?finding=` id may name a type or a single finding, and the Activity page
+  // emits the latter. One primary-key seek settles it: `groupId` IS the rule id,
+  // so this both selects the left row and supplies the drawer — without it, a
+  // finding older than the panel's first page could be resolved by nothing.
+  const deepLinkedInstance = selectedId ? await db().findings.findingInstance(selectedId) : null;
+
+  const types = await db().findings.listFindingTypes({
+    ...toFindingTypesQuery(filters, query, session, scope),
+    // Keep the selected type present in the list however far it sorts, so
+    // selecting one from a later page does not make it vanish from the list
+    // that is showing it as selected.
+    ...(deepLinkedInstance
+      ? { includeId: deepLinkedInstance.groupId }
+      : requestedRule
+        ? { includeId: requestedRule }
+        : {}),
   });
+
+  // Fall back to the first listed type when nothing is pinned, or when what is
+  // pinned did not survive the type-level filters — a selection the list does
+  // not contain would render a panel beside a list that disowns it.
+  // A pinned type is honoured only when the list actually contains it. That
+  // applies to the deep-linked one too: `includeId` appends it when it survives
+  // the type filters, but when it does not, `findDeepLinked` finds nothing to
+  // append and selecting it anyway renders a panel beside a list that disowns
+  // it — the client's `instances && selectedType` guard then falls through to
+  // "Select a type" and the deep link resolves to nothing at all.
+  const pinnedRule = deepLinkedInstance?.groupId ?? requestedRule;
+  const selectedRule =
+    pinnedRule && types.items.some((t) => t.id === pinnedRule)
+      ? pinnedRule
+      : (types.items[0]?.id ?? '');
+
+  // The drawer opens only on the type that is actually selected; a deep link
+  // whose type the filters excluded selects the first listed type instead, and
+  // opening its drawer over a different type's findings would be a lie.
+  const drawerInstance = deepLinkedInstance?.groupId === selectedRule ? deepLinkedInstance : null;
+
+  const instances = selectedRule
+    ? await db().findings.listFindingInstances(
+        toTypeInstancesQuery(filters, selectedRule, session, scope),
+      )
+    : null;
 
   return (
     <FindingsClient
       view="grouped"
-      data={data}
+      types={types}
+      instances={instances}
+      selectedRule={selectedRule}
+      deepLinkedInstance={drawerInstance}
       filters={filters}
       query={query}
       session={session}
-      selectedId={selectedId}
       range={range}
       from={from}
       tools={tools}

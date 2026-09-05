@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   loadMoreFindingInstances,
-  loadMoreGroupedFindings,
+  loadMoreFindingTypes,
 } from '../../app/(app)/findings/actions.ts';
 import { emptyStore } from '../helpers/store-templates.ts';
 
@@ -129,22 +129,47 @@ describe('loadMoreFindingInstances', () => {
   });
 });
 
-describe('loadMoreGroupedFindings', () => {
-  it('returns the page after the cursor without repeating a group', async () => {
+describe('loadMoreFindingTypes', () => {
+  it('returns the page after the cursor without repeating a type', async () => {
     seed(12);
-    const first = await loadMoreGroupedFindings({ limit: 2 });
+    const first = await loadMoreFindingTypes({ limit: 2 });
     expect(first.items).toHaveLength(2);
     expect(first.nextCursor).not.toBeNull();
 
-    const second = await loadMoreGroupedFindings({ limit: 2, cursor: first.nextCursor });
+    const second = await loadMoreFindingTypes({ limit: 2, cursor: first.nextCursor });
     const ids = new Set([...first.items, ...second.items].map((g) => g.id));
     expect(ids.size).toBe(first.items.length + second.items.length);
   });
 
   it('rejects a malformed query at the boundary', async () => {
     seed(1);
-    await expect(loadMoreGroupedFindings({ status: ['nope'] })).rejects.toThrow();
-    await expect(loadMoreGroupedFindings({ limit: -1 })).rejects.toThrow();
-    await expect(loadMoreGroupedFindings('a string')).rejects.toThrow();
+    await expect(loadMoreFindingTypes({ status: ['nope'] })).rejects.toThrow();
+    await expect(loadMoreFindingTypes({ limit: -1 })).rejects.toThrow();
+    await expect(loadMoreFindingTypes('a string')).rejects.toThrow();
+  });
+
+  it('counts types across the whole scope, not just the page', async () => {
+    seed(12);
+    const page = await loadMoreFindingTypes({ limit: 2 });
+    expect(page.items).toHaveLength(2);
+    expect(page.totals.types).toBe(4);
+  });
+});
+
+// The detail panel's read: one type's findings, which is the half the old
+// grouped read folded in as a bounded preview. It is the same action the flat
+// view drives, scoped by `subtype`.
+describe('loadMoreFindingInstances scoped to one type', () => {
+  it('returns only that type’s findings, and pages them', async () => {
+    seed(12);
+    const page = await loadMoreFindingInstances({ subtype: ['rule-0'], limit: 5 });
+    expect(page.items.length).toBeGreaterThan(0);
+    expect(new Set(page.items.map((i) => i.subtype))).toEqual(new Set(['rule-0']));
+  });
+
+  it('rejects a malformed subtype at the boundary', async () => {
+    seed(1);
+    await expect(loadMoreFindingInstances({ subtype: 'rule-0' })).rejects.toThrow();
+    await expect(loadMoreFindingInstances({ subtype: [1] })).rejects.toThrow();
   });
 });

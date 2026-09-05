@@ -79,7 +79,13 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/detections': 98, //                 99.14
   '@akasecurity/scanner': 95, //                    96.80
   '@akasecurity/extract': 95, //                    96.61
-  '@akasecurity/persistence': 94, //                95.97
+  // 94, NOT 95: macOS reports 96.13 but WINDOWS reports 94.89, and the floor
+  // belongs to the platform that reads lowest. This package skips cases on
+  // Windows on cost (the WAL bound needs 20k separate commits), so its coverage
+  // there is structurally lower and always will be. Raising this to match a
+  // macOS reading fails the Windows leg with every test passing — the job dies
+  // on the threshold, which reads nothing like a coverage problem in the log.
+  '@akasecurity/persistence': 94, //                94.89 (win) / 96.13 (macOS)
   // The transport is small and driven end to end against a real loopback
   // server, so there is no seam left uncovered — the floor is high because the
   // package is one module of sending and one of routes, not because the bar was
@@ -90,7 +96,7 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/coverage-gate': 93, //              94.80
   '@akasecurity/plugin-sdk': 91, //                 92.62
   '@akasecurity/setup-wizard': 89, //               90.38
-  '@akasecurity/schema': 84, //                     85.59
+  '@akasecurity/schema': 87, //                     88.96
   '@akasecurity/portability-gate': 84, //           85.58
   // Both gates keep every DECISION in lib.ts behind an injected io seam — which
   // exit code, which message — so the suite drives all four exit paths without

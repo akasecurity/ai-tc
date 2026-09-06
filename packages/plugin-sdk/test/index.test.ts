@@ -70,6 +70,7 @@ import * as barrel from '../src/index.ts';
 const PUBLIC_VALUE_EXPORTS = [
   'DATA_DIR_MODE',
   'DATA_FILE_MODE',
+  'DRIFT_MIN_PARSE_FAILURES',
   'EGRESS_CODE_EXTENSIONS',
   'EGRESS_VERSION_MATERIAL',
   'ISOLATED_PROBE_BUDGET_MS',
@@ -80,6 +81,8 @@ const PUBLIC_VALUE_EXPORTS = [
   'PROJECT_WALK_BOUNDS',
   'RawEgressError',
   'THIRTY_DAYS_MS',
+  'WEB_CAPTURE_DRIFT_STATES',
+  'WEB_CAPTURE_POSTURE_RULES',
   'aggregateTokenUsage',
   'antigravityProviderFromModelId',
   'applyCategoryPosture',
@@ -109,6 +112,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'decideProhibitedModelTurn',
   'defaultCostModel',
   'defaultDataDir',
+  'deriveWebCaptureState',
   'describePointerSafe',
   'detectPostureChanges',
   'detokenizeText',
@@ -139,6 +143,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'modelFromTranscript',
   'modelFromTranscriptTail',
   'normalizeModelId',
+  'offersCaptureStatusReader',
   'offersMaintenance',
   'prohibitedModelMessage',
   'providerFromModelId',
@@ -176,6 +181,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'tokenizeText',
   'tokenizeValue',
   'uniqueRuleIds',
+  'webCaptureDriftFires',
   'withLayer',
 ];
 

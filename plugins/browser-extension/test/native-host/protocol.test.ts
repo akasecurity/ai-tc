@@ -179,6 +179,29 @@ describe('isHostRequest', () => {
     expect(isHostRequest({ type: 'shutdown', requestId: 'r1' })).toBe(false);
   });
 
+  it('accepts capture_state — it carries no fields beyond requestId', () => {
+    expect(isHostRequest({ type: 'capture_state', requestId: 'r7' })).toBe(true);
+  });
+
+  it('refuses a capture_state frame with no requestId', () => {
+    expect(isHostRequest({ type: 'capture_state' })).toBe(false);
+  });
+
+  it('accepts a capture_status frame from a build with no conversationEndpoints', () => {
+    // VALID_STATUS carries no conversationEndpoints field at all — the shape
+    // an older extension build sends. It defaults to 0 on the schema side, so
+    // it must not be rejected here.
+    expect(
+      isHostRequest({
+        type: 'capture_status',
+        requestId: 'r8',
+        sessionId: 's1',
+        tool: 'chatgpt',
+        status: VALID_STATUS,
+      }),
+    ).toBe(true);
+  });
+
   it('rejects malformed payloads', () => {
     expect(isHostRequest(null)).toBe(false);
     expect(isHostRequest('ping')).toBe(false);

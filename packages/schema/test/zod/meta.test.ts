@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { auditEvents } from '../../src/drizzle/local/sqlite.ts';
 import {
   toAuditEventRow,
   toClassifiedDataRow,
@@ -53,6 +54,21 @@ describe('canonical attribute vocabulary', () => {
     for (const t of ['session', 'tool_call', 'prompt', 'response', 'code_change']) {
       expect(AuditEventType.safeParse(t).success).toBe(true);
     }
+  });
+
+  it('capture_status is an AuditEventType', () => {
+    expect(AuditEventType.safeParse('capture_status').success).toBe(true);
+  });
+
+  it('the drizzle column enum and AuditEventType name the same members', () => {
+    // Closes the three-restatement hazard on the drizzle side: base-rows.ts and
+    // sqlite.ts each restate the member list as LITERALS (adherence.test.ts
+    // pins the type-level agreement), and this is the runtime check that the
+    // enum actually installed on the column names the same set as the Zod
+    // discriminator — a member added to one and not the other passes
+    // typecheck (a fresh `enum:` array is still a valid string[]) and fails
+    // only here.
+    expect(new Set(auditEvents.eventType.enumValues)).toEqual(new Set(AuditEventType.options));
   });
 
   it('InventoryInput requires a non-empty identity key', () => {

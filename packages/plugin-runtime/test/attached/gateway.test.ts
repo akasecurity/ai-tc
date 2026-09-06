@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { toolCallId } from '@akasecurity/persistence';
-import type { DataGateway, LocalStoreMaintenance } from '@akasecurity/plugin-sdk';
+import type {
+  CaptureStatusReader,
+  DataGateway,
+  LocalStoreMaintenance,
+} from '@akasecurity/plugin-sdk';
 import { hasLocalStoreMaintenance } from '@akasecurity/plugin-sdk';
 import type {
   AuditEventInput,
@@ -98,7 +102,10 @@ interface Calls {
  * fake that returned promises for them would hide exactly the bug the composite
  * has to avoid.
  */
-function makeLocal(calls: Calls, overrides: Partial<DataGateway & LocalStoreMaintenance> = {}) {
+function makeLocal(
+  calls: Calls,
+  overrides: Partial<DataGateway & LocalStoreMaintenance & CaptureStatusReader> = {},
+) {
   const base: Record<string, unknown> = {};
   for (const name of PORT_METHODS) {
     base[name] = vi.fn((...args: unknown[]) => {
@@ -165,7 +172,13 @@ function makeLocal(calls: Calls, overrides: Partial<DataGateway & LocalStoreMain
     calls.order.push('local.markAuditEventsDelivered');
     for (const event of events) calls.delivered.push(event.id);
   });
-  return Object.assign(base, overrides) as unknown as DataGateway & LocalStoreMaintenance;
+  base.readCaptureStatuses = vi.fn(() => {
+    calls.order.push('local.readCaptureStatuses');
+    return Promise.resolve([]);
+  });
+  return Object.assign(base, overrides) as unknown as DataGateway &
+    LocalStoreMaintenance &
+    CaptureStatusReader;
 }
 
 function makeClient(calls: Calls, overrides: Partial<AttachedClient> = {}): AttachedClient {
@@ -335,6 +348,19 @@ describe('every DataGateway method delegates to the inner local gateway', () => 
           : 'arg';
     await Reflect.apply(methods[name] as (a?: unknown) => Promise<unknown>, gateway, [arg]);
     expect((local as unknown as Record<string, ReturnType<typeof vi.fn>>)[name]).toHaveBeenCalled();
+  });
+});
+
+// readCaptureStatuses is on CaptureStatusReader, not DataGateway, so it is
+// deliberately outside PORT_METHODS above — a separate, explicit case rather
+// than folded into the generic loop.
+describe('readCaptureStatuses', () => {
+  it('delegates the capture-status read and forwards nothing', async () => {
+    const { gateway, local } = build();
+    await gateway.readCaptureStatuses();
+    expect(
+      (local as unknown as Record<string, ReturnType<typeof vi.fn>>).readCaptureStatuses,
+    ).toHaveBeenCalled();
   });
 });
 

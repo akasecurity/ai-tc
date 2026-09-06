@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { DataGateway, LocalStoreMaintenance } from '@akasecurity/plugin-sdk';
+import type {
+  CaptureStatusReader,
+  DataGateway,
+  LocalStoreMaintenance,
+} from '@akasecurity/plugin-sdk';
 import { createPluginRuntime, registerRulePack } from '@akasecurity/plugin-sdk';
 import type { Policy, PolicyBundle, WorkspaceSettings } from '@akasecurity/schema';
 import { Rule } from '@akasecurity/schema';
@@ -91,7 +95,9 @@ const bundleOf = (
   fetchedAt: '2026-01-01T00:00:00.000Z',
 });
 
-function makeLocalStore(bundle: PolicyBundle): DataGateway & LocalStoreMaintenance {
+function makeLocalStore(
+  bundle: PolicyBundle,
+): DataGateway & LocalStoreMaintenance & CaptureStatusReader {
   return {
     recordCapture: () => Promise.resolve(),
     ensureInventory: () => Promise.resolve({}),
@@ -149,6 +155,7 @@ function makeLocalStore(bundle: PolicyBundle): DataGateway & LocalStoreMaintenan
     markCaptureDelivered: () => undefined,
     markCaptureOwed: () => undefined,
     markAuditEventsDelivered: () => undefined,
+    readCaptureStatuses: () => Promise.resolve([]),
   };
 }
 

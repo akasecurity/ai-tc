@@ -9,11 +9,22 @@ import {
   SOURCE_TOOL,
   SourceTool,
   TOOL_TO_HARNESS,
+  WebSourceTool,
 } from '../../src/zod/harness-map.ts';
 
 describe('SourceTool enum', () => {
   it('accepts claude-ai as a first-class source', () => {
     expect(SourceTool.safeParse('claude-ai').success).toBe(true);
+  });
+});
+
+describe('WebSourceTool', () => {
+  it('is exactly the two web chat wire ids', () => {
+    expect(WebSourceTool.options).toEqual(['chatgpt', 'claude-ai']);
+  });
+
+  it('excludes every non-web SourceTool member', () => {
+    expect(WebSourceTool.safeParse('claude-code').success).toBe(false);
   });
 });
 

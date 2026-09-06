@@ -16,6 +16,7 @@
  * frame is skipped rather than crashing the host, and any request that throws
  * gets an `error` response instead of taking the process down.
  */
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import type { Readable, Writable } from 'node:stream';
 
@@ -25,11 +26,18 @@ import type {
   ResolvedCodexProvider,
   ResolvedProvider,
 } from '@akasecurity/plugin-sdk';
-import { loadConfig, scanText } from '@akasecurity/plugin-sdk';
-import type { ActionTaken, SourceTool } from '@akasecurity/schema';
+import {
+  deriveWebCaptureState,
+  loadConfig,
+  offersCaptureStatusReader,
+  scanText,
+} from '@akasecurity/plugin-sdk';
+import type { ActionTaken, SourceTool, StoredCaptureStatus } from '@akasecurity/schema';
 import {
   isWebChatCaptureConsentValid,
+  pickReportedCaptureStatus,
   SOURCE_TOOL,
+  toCaptureStatusAttributes,
   WebCaptureStatus,
   webChatCaptureOf,
   WebExchange,
@@ -49,6 +57,10 @@ const WEB_TOOL_TO_SOURCE: Record<WebSourceTool, SourceTool> = {
   [SOURCE_TOOL.ClaudeAi]: SOURCE_TOOL.ClaudeAi,
 };
 
+// Every site this host serves, in the schema's own declared order — derived
+// from the map above rather than re-listed, so the two cannot drift.
+const WEB_SOURCE_TOOLS = Object.keys(WEB_TOOL_TO_SOURCE) as WebSourceTool[];
+
 // The build identity the attached posture report stamps (see
 // `resolveDataGateway`'s `meta.pluginBuild`). Read from this package's own
 // manifest at bundle time — the installed host ships as a single script with
@@ -67,11 +79,11 @@ export interface TrackedCaptureStatus {
   observedAt: string;
 }
 
-// In memory, per host process, and deliberately not persisted: the local
-// store has no AuditEventType for a capture status and inventing an on-disk
-// home would put a second unlocked read-modify-write under ~/.aka. A Chrome
-// restart forgets it, and a separate process (`aka extension status`) cannot
-// read it — the status-surface task decides where a durable home lives.
+// In memory, per host process — a write-through CACHE rather than the system
+// of record. The durable home is the `capture_status` audit_events row the
+// `capture_status` case below writes on every report; this map exists only as
+// a fail-open fallback for `capture_state`, so a contended or unopenable store
+// still answers this process's own recent reports.
 const captureStatuses = new Map<string, TrackedCaptureStatus>();
 
 /** The last capture status this PROCESS was told about for a session. */
@@ -89,6 +101,16 @@ function recordCaptureStatus(sessionId: string, record: TrackedCaptureStatus): v
     if (oldest === undefined) break;
     captureStatuses.delete(oldest);
   }
+}
+
+// The fail-open fallback `capture_state` reaches for: this process's own
+// reports for a site, newest first. Not gated on consent — it reads back what
+// was already recorded, and the response's own `consented` field is what says
+// whether anything new is being recorded at all.
+function trackedFor(tool: WebSourceTool): TrackedCaptureStatus[] {
+  return [...captureStatuses.values()]
+    .filter((record) => record.tool === tool)
+    .sort((a, b) => (a.observedAt < b.observedAt ? 1 : a.observedAt > b.observedAt ? -1 : 0));
 }
 
 // chatgpt.com / claude.ai are each single-backend web apps — there's no local
@@ -355,12 +377,74 @@ export async function handleRequest(
           message: 'malformed capture status payload',
         };
       }
+      const observedAt = new Date().toISOString();
       recordCaptureStatus(request.sessionId, {
         tool: request.tool,
         status: parsed.data,
-        observedAt: new Date().toISOString(),
+        observedAt,
       });
+      // The durable home: a `capture_status` audit_events row, so a restarted
+      // host and a separate process (`aka extension status`) both have
+      // somewhere to read the same answer from. No explicit session-root stub
+      // — recordAuditEvent ensures the root itself whenever rootSessionId !==
+      // id (see StandaloneDataGateway.recordAuditEvent).
+      const gateway = resolveDataGateway(config);
+      try {
+        await gateway.recordAuditEvent({
+          id: randomUUID(),
+          eventType: 'capture_status',
+          startedAt: observedAt,
+          parentId: request.sessionId,
+          rootSessionId: request.sessionId,
+          attributes: toCaptureStatusAttributes(parsed.data, request.tool),
+        });
+      } catch {
+        // Fail-open: a contended store costs this report and nothing else.
+        // The in-memory copy above still answers this process's own popup
+        // queries.
+      } finally {
+        await gateway.close();
+      }
       return { type: 'capture_status', requestId: request.requestId, ok: true, accepted: true };
+    }
+    case 'capture_state': {
+      const config = configForTool(undefined);
+      const webChat = webChatCaptureOf(config.settings);
+      let stored: StoredCaptureStatus[] = [];
+      const gateway = resolveDataGateway(config);
+      try {
+        if (offersCaptureStatusReader(gateway)) stored = await gateway.readCaptureStatuses();
+      } catch {
+        stored = [];
+      } finally {
+        await gateway.close();
+      }
+      const sites = WEB_SOURCE_TOOLS.map((tool) => {
+        // Both sources in one preference order, newest first, then the same
+        // pick the store's own read makes. A stored row is not preferred for
+        // being stored: under a fault that permits reads but refuses writes it
+        // is the older answer, and preferring it positionally would report a
+        // state this process has already been told is out of date. On an exact
+        // tie the stored row leads, being the system of record.
+        const storedRecord = stored.find((s) => s.tool === tool);
+        const candidates: (StoredCaptureStatus | TrackedCaptureStatus)[] = [
+          ...(storedRecord === undefined ? [] : [storedRecord]),
+          ...trackedFor(tool),
+        ].sort((a, b) => (a.observedAt < b.observedAt ? 1 : a.observedAt > b.observedAt ? -1 : 0));
+        const record = pickReportedCaptureStatus(candidates);
+        return {
+          tool,
+          state: deriveWebCaptureState(record?.status),
+          ...(record !== undefined ? { observedAt: record.observedAt } : {}),
+        };
+      });
+      return {
+        type: 'capture_state',
+        requestId: request.requestId,
+        ok: true,
+        consented: isWebChatCaptureConsentValid(webChat.consent),
+        sites,
+      };
     }
     default: {
       // A request type this contract does not define at all — every type it

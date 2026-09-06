@@ -19,6 +19,7 @@ import type {
   RuleProbeVerdict,
   SessionTokenReport,
   SimpleDetectionPolicy,
+  StoredCaptureStatus,
   ToolCallInput,
 } from '@akasecurity/schema';
 
@@ -330,4 +331,21 @@ export function hasLocalStoreMaintenance(
   return Object.keys(LOCAL_STORE_MAINTENANCE_MEMBERS).every((member) =>
     offersMaintenance(gateway, member as keyof LocalStoreMaintenance),
   );
+}
+
+/**
+ * Reading back what a browser tab reported about its own network capture.
+ *
+ * Its own capability rather than a `DataGateway` member: only an implementation
+ * with a local store can answer, and a gateway that cannot simply does not
+ * offer it — the caller then falls back to whatever it holds in memory.
+ */
+export interface CaptureStatusReader {
+  readCaptureStatuses(): Promise<StoredCaptureStatus[]>;
+}
+
+export function offersCaptureStatusReader(
+  gateway: DataGateway,
+): gateway is DataGateway & CaptureStatusReader {
+  return typeof (gateway as Partial<CaptureStatusReader>).readCaptureStatuses === 'function';
 }

@@ -45,6 +45,14 @@ export const BLIND_WINDOW_MS = 5_000;
 // dropped — while a run of them is the tap seeing nothing at all.
 export const BLIND_STRIKES = 3;
 
+// Monotone counters are bucketed at this value in the report SIGNATURE (never
+// in the reported status itself) so a busy tab reports on transitions instead
+// of once per message. Any consumer threshold read over a counter this bounds
+// must sit at or below it, or a status that crossed it is not reported until
+// the tab closes — test/bridge-constants.test.ts pins that against
+// @akasecurity/detections' DRIFT_MIN_PARSE_FAILURES.
+export const STATUS_COUNTER_CAP = 3;
+
 // The most response text one exchange carries to the host.
 //
 // A COPY of RESPONSE_TEXT_MAX_BYTES in @akasecurity/schema, which this bundle
@@ -86,6 +94,8 @@ export interface Bridge {
   onTapMessage(message: TapToPage): void;
   status(): WebCaptureStatus;
   noteDomSend(): void;
+  /** Relay the current status now, whatever the signature says. */
+  reportStatus(): void;
 }
 
 /** Whether `text` is longer than `max` bytes, without encoding when it need not. */
@@ -171,6 +181,13 @@ interface InFlight {
 export function createBridge(options: BridgeOptions): Bridge {
   const { adapter, sessionId, relay, now } = options;
   const endpoints = compileEndpoints(adapter);
+  // Counted off the COMPILED list, not the declared one: an endpoint whose
+  // pattern failed to compile (see compileEndpoints' own catch) classifies
+  // nothing, so it must be reported as not declared rather than as
+  // declared-and-silent. Conversation-kind only — an account endpoint cannot
+  // observe a turn, so counting it would put a site into the drift-eligible
+  // states while nothing could ever answer a DOM send.
+  const conversationEndpoints = endpoints.filter((e) => e.kind === 'conversation').length;
   const inFlight = new Map<number, InFlight>();
   // DOM sends still waiting for a network turn to answer them, oldest first.
   const pendingSends: number[] = [];
@@ -184,6 +201,10 @@ export function createBridge(options: BridgeOptions): Bridge {
   let parseFailures = 0;
   let unparsedBodies = 0;
   let blindStrikes = 0;
+  // The signature of the last status actually relayed — null until the first
+  // report goes out, which is deliberately suppressed until the tap says it
+  // patched (see maybeReport).
+  let reported: string | null = null;
 
   function classify(url: string): EndpointKind | null {
     let parsed: URL;
@@ -385,6 +406,56 @@ export function createBridge(options: BridgeOptions): Bridge {
     }
   }
 
+  function currentStatus(): WebCaptureStatus {
+    sweepBlind();
+    return {
+      // A tap that installed with neither transport captured sees nothing,
+      // which is a blind spot rather than a patch.
+      patched: patchedFetch || patchedXhr,
+      live,
+      blind: blindStrikes >= BLIND_STRIKES,
+      sendsSeenDom,
+      exchangesSeenNet,
+      parseFailures,
+      unparsedBodies,
+      shapeMisses: [...shapeMisses],
+      conversationEndpoints,
+    };
+  }
+
+  // A signature of `status()`, bucketing every monotone counter at
+  // STATUS_COUNTER_CAP — so a busy tab reports on a TRANSITION (patched, live,
+  // blind, a new shape miss, crossing the cap) rather than once per message,
+  // while the reported status itself always carries the real counts.
+  function reportSignature(s: WebCaptureStatus): string {
+    return [
+      s.patched,
+      s.live,
+      s.blind,
+      s.conversationEndpoints,
+      s.shapeMisses.length,
+      Math.min(s.parseFailures, STATUS_COUNTER_CAP),
+      Math.min(s.unparsedBodies, STATUS_COUNTER_CAP),
+    ].join('|');
+  }
+
+  function maybeReport(): void {
+    const status = currentStatus();
+    // Suppressed until the tap has posted `patched`: reporting before then
+    // writes a transient "unpatched" row into every tab on every load, which
+    // is worse than the one honest limit this leaves (see bridge.ts's module
+    // doc and the status-surface design).
+    if (!patchedFetch && !patchedXhr && reported === null) return;
+    const signature = reportSignature(status);
+    if (signature === reported) return;
+    reported = signature;
+    try {
+      relay({ type: 'capture_status', sessionId, tool: adapter.id, status });
+    } catch {
+      // An unreachable relay loses this report; the next transition retries.
+    }
+  }
+
   return {
     onTapMessage(message: TapToPage): void {
       try {
@@ -396,28 +467,28 @@ export function createBridge(options: BridgeOptions): Bridge {
         if ('id' in message) inFlight.delete(message.id);
       }
       sweepBlind();
+      maybeReport();
     },
 
     status(): WebCaptureStatus {
-      sweepBlind();
-      return {
-        // A tap that installed with neither transport captured sees nothing,
-        // which is a blind spot rather than a patch.
-        patched: patchedFetch || patchedXhr,
-        live,
-        blind: blindStrikes >= BLIND_STRIKES,
-        sendsSeenDom,
-        exchangesSeenNet,
-        parseFailures,
-        unparsedBodies,
-        shapeMisses: [...shapeMisses],
-      };
+      return currentStatus();
     },
 
     noteDomSend(): void {
       sweepBlind();
       sendsSeenDom += 1;
       pendingSends.push(now());
+      maybeReport();
+    },
+
+    reportStatus(): void {
+      const status = currentStatus();
+      reported = reportSignature(status);
+      try {
+        relay({ type: 'capture_status', sessionId, tool: adapter.id, status });
+      } catch {
+        // Nothing left to report to on a page that is already unloading.
+      }
     },
   };
 }
@@ -513,6 +584,12 @@ export function installBridge(options: InstallOptions): Bridge | null {
   });
   attachTap(win, (message) => {
     bridge.onTapMessage(message);
+  });
+  // The tab's final word on its own capture status. `pagehide` rather than a
+  // timer: a timer in a content script is one more thing to leak on
+  // navigation (see sweepBlind's own comment), and this reporter adds none.
+  win.addEventListener('pagehide', () => {
+    bridge.reportStatus();
   });
   return bridge;
 }

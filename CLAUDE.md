@@ -928,10 +928,11 @@ anything, so it is never a substitute for passing an instant.
 
 See `skills/write-detection-rule/SKILL.md`. A rule PR carrying fewer than 2 positive or
 2 negative fixtures is rejected by CI — `packages/detections/test/engine.test.ts` asserts
-the bar per rule, and `packages/detections/test/posture/config-posture.test.ts` asserts it
-for posture rules. Both read it from `packages/detections/test/helpers/fixture-bar.ts`, so
-the number and its message live in one place; the count is of DISTINCT cases, because a
-repeated fixture exercises nothing the first one did not.
+the bar per rule, and each posture suite under `packages/detections/test/posture/` asserts
+it for its own rules. Every one of them reads it from
+`packages/detections/test/helpers/fixture-bar.ts`, so the number and its message live in
+one place; the count is of DISTINCT cases, because a repeated fixture exercises nothing the
+first one did not.
 
 Any change to the `installed_packs` / `available_packs` **write semantics** must extend the
 legacy-writers suite (`packages/persistence/test/repositories/legacy-writers.test.ts`) — it

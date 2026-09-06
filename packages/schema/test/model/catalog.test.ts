@@ -319,6 +319,10 @@ describe('the provider vocabulary the product actually stores', () => {
     'openai',
     // provider-antigravity.ts — AntigravityProvider
     'google',
+    // protocol.ts's WEB_SOURCE_TOOLS — written as llm_call.provider by the
+    // browser extension's native host (never the vendor id)
+    'chatgpt',
+    'claude-ai',
     // resolver miss values
     'unknown',
   ];
@@ -330,6 +334,42 @@ describe('the provider vocabulary the product actually stores', () => {
     const mapped = platformForProvider(provider) !== null;
     const declaredUnpriceable = UNPRICEABLE_PROVIDERS.includes(provider);
     expect(mapped || declaredUnpriceable, provider).toBe(true);
+  });
+
+  it('never prices web-chat providers at API rates, so subscription traffic is never billed as API usage', () => {
+    // The web-chat host stamps the web tool id (`chatgpt`/`claude-ai`), never
+    // the vendor id, precisely so this stays null.
+    expect(
+      defaultCostModel.costFor({
+        provider: 'chatgpt',
+        model: 'gpt-4o',
+        usage: { inputTokens: 1_000 },
+      }),
+    ).toBeNull();
+    expect(
+      defaultCostModel.costFor({
+        provider: 'claude-ai',
+        model: 'claude-opus-5',
+        usage: { inputTokens: 1_000 },
+      }),
+    ).toBeNull();
+    // Positive control: the SAME models, under the VENDOR id, price as real
+    // numbers — proving the provider string, not the model, is what makes the
+    // web-tool id null.
+    expect(
+      defaultCostModel.costFor({
+        provider: 'openai',
+        model: 'gpt-4o',
+        usage: { inputTokens: 1_000 },
+      }),
+    ).toBeTypeOf('number');
+    expect(
+      defaultCostModel.costFor({
+        provider: 'anthropic',
+        model: 'claude-opus-5',
+        usage: { inputTokens: 1_000 },
+      }),
+    ).toBeTypeOf('number');
   });
 
   it('prices a Gemini call from the provider string the resolver records', () => {

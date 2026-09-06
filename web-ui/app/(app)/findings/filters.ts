@@ -131,6 +131,28 @@ export function parseSelectedRule(sp: FindingsSearchParams): string {
 }
 
 /**
+ * The selected location (?loc=…), or '' when none is pinned.
+ *
+ * A SELECTION, not a filter — the same distinction parseSelectedRule draws, and
+ * for the same reason: it decides which findings the detail panel reads and
+ * touches neither the location list's totals nor its facets. It is DURABLE too,
+ * rewritten on every push, so a reader clicking a filter keeps the location they
+ * were reading.
+ *
+ * Deliberately its own param rather than the `?repo=`/`?file=` pair, which is
+ * the FLAT view's scope filter. One name doing both jobs would mean a selection
+ * that narrows the very list it is selecting from — the list would collapse to
+ * the single row just picked, which is why toLocationsQuery omits the pair
+ * outright. Exactly the `?rule=` versus `?type=` split, one view over.
+ *
+ * The value is opaque and stays that way here: the page resolves it by matching
+ * it against the ids the store minted, so nothing in the browser decodes it.
+ */
+export function parseSelectedLocation(sp: FindingsSearchParams): string {
+  return typeof sp.loc === 'string' ? sp.loc.trim() : '';
+}
+
+/**
  * Filters + search → the persistence finding-TYPES query.
  *
  * Only the two TYPE-level dimensions reach it, and that split is the design
@@ -229,9 +251,17 @@ export function toInstancesQuery(
 }
 
 /**
- * Filters + search → the locations query. `repo`/`file` are absent by design:
- * this view IS the repo/file breakdown, so narrowing it to one would leave a
- * tree of exactly one node.
+ * Filters + search → the locations query.
+ *
+ * EVERY toolbar dimension reaches it, unlike toFindingTypesQuery, which takes
+ * only the two that select types. Nothing here is a property of a location: its
+ * severity, status, rules, count and age are each a fold over the findings that
+ * landed in it, so a dimension held back from this read would leave the row
+ * describing findings the panel beside it does not list.
+ *
+ * `repo`/`file` are absent by design, and that is not the same omission: this
+ * view IS the repo/file breakdown, so narrowing it to one would leave a list of
+ * exactly one row. They reach the PANEL instead — see toLocationInstancesQuery.
  */
 export function toLocationsQuery(
   filters: FindingsFilters,
@@ -250,6 +280,39 @@ export function toLocationsQuery(
     ...(session ? { sessionId: session } : {}),
     ...(scope.from ? { from: scope.from } : {}),
     ...(scope.tools?.length ? { tool: scope.tools } : {}),
+  };
+}
+
+/**
+ * The locations panel's query: every finding AT one location, under the same
+ * filters the list itself ran.
+ *
+ * Built by SPREADING the list query rather than restating its fields, which is
+ * what makes the page's central invariant structural: a location row's
+ * `instanceCount` is what this read reports, so the two cannot drift by someone
+ * adding a dimension to one and not the other. The complement of
+ * toTypeInstancesQuery, which narrows a type's findings — but where that one
+ * drops the dimensions the type list already applied, this one keeps every
+ * single one. A location owns none of its fields, so every filter moves the fold
+ * on the row, and a dimension applied to only one side would put a row reading
+ * 12 findings beside a panel showing 3.
+ *
+ * `repo` and `file` are set UNGUARDED, empty string included. That is the whole
+ * mechanism behind selecting the no-repo/no-file bucket: omitting an empty value
+ * — which every other builder here does, correctly, for scope params — would ask
+ * for every finding in the store instead of the one location's.
+ */
+export function toLocationInstancesQuery(
+  filters: FindingsFilters,
+  q: string,
+  location: { repo: string; file: string },
+  session = '',
+  scope: FindingsScope = {},
+): ListFindingInstancesQuery {
+  return {
+    ...toLocationsQuery(filters, q, session, scope),
+    repo: location.repo,
+    file: location.file,
   };
 }
 
@@ -291,6 +354,10 @@ export function buildFindingsParams(
   // which survives into a shared link and reads as a selection that stopped
   // working. `view` is undefined for the default (grouped) view.
   if (view === 'grouped' && url.rule) sp.set('rule', url.rule);
+  // The selected LOCATION, and only where a panel reads it — same reasoning as
+  // `rule` above. Written under `files` alone, so it cannot survive into a
+  // shared link for a view that would ignore it.
+  if (view === 'files' && url.loc) sp.set('loc', url.loc);
   if (url.range) sp.set('range', url.range);
   // The instance-level filters exist only where a view can honor them. Writing
   // them under `grouped` would leave a param the page silently ignores, which
@@ -310,6 +377,8 @@ export interface FindingsUrlState {
   view?: FindingsView | undefined;
   /** The selected finding type — see parseSelectedRule. Grouped view only. */
   rule?: string | undefined;
+  /** The selected location — see parseSelectedLocation. Locations view only. */
+  loc?: string | undefined;
   range?: TimeRange | null | undefined;
   tools?: string[] | undefined;
   repo?: string | undefined;

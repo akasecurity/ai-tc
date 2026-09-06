@@ -132,6 +132,7 @@ function seedStraddlingFixture(): void {
 
 type ClientProps = ComponentProps<typeof FindingsClient>;
 type GroupedProps = Extract<ClientProps, { view: 'grouped' }>;
+type LocationProps = Extract<ClientProps, { view: 'files' }>;
 
 // Render the route the way Next calls it — `searchParams` arrives as a promise —
 // and return the props it hands the client component.
@@ -139,14 +140,29 @@ type GroupedProps = Extract<ClientProps, { view: 'grouped' }>;
 // `element.type` is asserted rather than assumed: if the page ever returns a
 // wrapper instead, every prop below reads `undefined`, and a suite that only
 // checked the numbers would report the wrong reason for going red.
-async function renderPage(params: Record<string, string> = {}): Promise<GroupedProps> {
+//
+// Parameterised by the arm it expects, because two of the three views are
+// master/detail pairs now and each resolves its own selection server-side.
+// Asserting the arm is what keeps the cast below honest.
+async function renderView<V extends ClientProps['view']>(
+  view: V,
+  params: Record<string, string> = {},
+): Promise<Extract<ClientProps, { view: V }>> {
   const element = (await FindingsPage({
     searchParams: Promise.resolve(params),
   })) as ReactElement<ClientProps>;
   expect(element.type).toBe(FindingsClient);
   const props = element.props;
-  expect(props.view).toBe('grouped');
-  return props as GroupedProps;
+  expect(props.view).toBe(view);
+  return props as Extract<ClientProps, { view: V }>;
+}
+
+async function renderPage(params: Record<string, string> = {}): Promise<GroupedProps> {
+  return renderView('grouped', params);
+}
+
+async function renderLocations(params: Record<string, string> = {}): Promise<LocationProps> {
+  return renderView('files', { ...params, view: 'files' });
 }
 
 describe('findings page — the two panels are separately scoped', () => {
@@ -289,6 +305,133 @@ describe('findings page — an empty store', () => {
     expect(props.selectedRule).toBe('');
     // No type means no panel query to make — not an empty one against a type
     // that does not exist.
+    expect(props.instances).toBeNull();
+  });
+});
+
+// The By-location view resolves its selection the same way the By-type one does
+// — server-side, so the two panels cannot disagree — but over a pair rather than
+// a single id, and with every filter reaching BOTH reads.
+describe('findings page — the locations view', () => {
+  it('lists a row per (repo, file) and selects the worst when nothing is pinned', async () => {
+    seedStraddlingFixture();
+    const props = await renderLocations();
+
+    // Three findings at three distinct files of one repo. Worst severity first,
+    // then most recent — a.ts and b.ts are both critical and the seed steps the
+    // clock, so the LATER of the two leads. Asserting the whole order rather
+    // than a set is what makes that second key non-vacuous here.
+    expect(props.locations.items.map((l) => l.file)).toEqual(['b.ts', 'a.ts', 'c.ts']);
+    expect(props.locations.totals).toEqual({ findings: 3, locations: 3 });
+    expect(props.selectedLocation?.file).toBe('b.ts');
+    // And the panel is that location's findings, not the whole list's.
+    expect(props.instances?.items.map((i) => i.file)).toEqual(['b.ts']);
+  });
+
+  it('pins the location ?loc= names, and leaves the list alone', async () => {
+    seedStraddlingFixture();
+    const first = await renderLocations();
+    const target = first.locations.items[2];
+    expect(target?.file).toBe('c.ts');
+
+    const props = await renderLocations({ loc: target?.id ?? '' });
+    expect(props.selectedLocation?.id).toBe(target?.id);
+    expect(props.instances?.items.map((i) => i.file)).toEqual(['c.ts']);
+    // A selection is not a filter: the list is untouched by it.
+    expect(props.locations.items.map((l) => l.file)).toEqual(['b.ts', 'a.ts', 'c.ts']);
+  });
+
+  // The whole reason the row count and the panel total can be trusted against
+  // each other: one filter set, both reads.
+  it('narrows the list AND the panel with the same filter', async () => {
+    seedStraddlingFixture();
+    const props = await renderLocations({ severity: 'low' });
+
+    expect(props.locations.items.map((l) => l.file)).toEqual(['c.ts']);
+    expect(props.selectedLocation?.file).toBe('c.ts');
+    expect(props.instances?.totals.findings).toBe(props.selectedLocation?.instanceCount);
+  });
+
+  it('falls back to the first row when the pinned location is filtered out', async () => {
+    seedStraddlingFixture();
+    const all = await renderLocations();
+    const critical = all.locations.items[0];
+
+    // `b.ts` holds a critical finding, so a `low` filter excludes it. A
+    // selection the list does not contain would render a panel beside a list
+    // that disowns it.
+    const props = await renderLocations({ loc: critical?.id ?? '', severity: 'low' });
+    expect(props.selectedLocation?.file).toBe('c.ts');
+  });
+
+  it('resolves a ?finding= deep link to the location that holds it', async () => {
+    seedStraddlingFixture();
+    const all = await renderLocations();
+    const target = all.locations.items[1];
+    const panel = await renderLocations({ loc: target?.id ?? '' });
+    const finding = panel.instances?.items[0];
+    expect(finding?.file).toBe('a.ts');
+
+    // The link names a FINDING; the page turns it into a location by seeking the
+    // row, which carries its own repo and file.
+    const props = await renderLocations({ finding: finding?.id ?? '' });
+    expect(props.selectedLocation?.file).toBe('a.ts');
+    expect(props.deepLinkedInstance?.id).toBe(finding?.id);
+  });
+
+  it('leaves the drawer closed when the deep link and the selection disagree', async () => {
+    seedStraddlingFixture();
+    const all = await renderLocations();
+    const panel = await renderLocations({ loc: all.locations.items[0]?.id ?? '' });
+    const critical = panel.instances?.items[0];
+
+    // The finding is at `b.ts`, which a `low` filter excludes, so the page
+    // selects the surviving location instead — and must not open a drawer over
+    // a different location's findings.
+    const props = await renderLocations({ finding: critical?.id ?? '', severity: 'low' });
+    expect(props.selectedLocation?.file).toBe('c.ts');
+    expect(props.deepLinkedInstance).toBeNull();
+  });
+
+  // The reason includeId exists on this read, and why it matters more here than
+  // for types. Selecting a row pushes the URL, the server re-renders, and the
+  // client's page cache resets to page 0 — so a selection that sorts onto a
+  // LATER page has to be carried into the list explicitly or the page's own
+  // containment check drops it back to the first row.
+  //
+  // The fixture must exceed one page (50) for this to test anything: with three
+  // locations everything is on page 0, includeId never fires, and removing it
+  // entirely leaves every other case in this file green.
+  it('keeps a selection that sorts past the first page', async () => {
+    seed(
+      Array.from({ length: 60 }, (_, i) => ({
+        ruleId: CRITICAL_RULE,
+        severity: 'critical' as const,
+        sourceTool: 'claude-code' as const,
+        action: 'block' as const,
+        file: `f${String(i).padStart(2, '0')}.ts`,
+      })),
+    );
+    const first = await renderLocations();
+    expect(first.locations.items).toHaveLength(50);
+    expect(first.locations.totals.locations).toBe(60);
+
+    // The oldest file sorts last of the sixty, so it is not on page 0 — the
+    // control that keeps the rest of this case honest.
+    const offPage = 'f00.ts';
+    expect(first.locations.items.map((l) => l.file)).not.toContain(offPage);
+    const target = `acme%2Fapi/${encodeURIComponent(offPage)}`;
+
+    const props = await renderLocations({ loc: target });
+    expect(props.selectedLocation?.file).toBe(offPage);
+    expect(props.locations.items.map((l) => l.file)).toContain(offPage);
+    expect(props.instances?.items.map((i) => i.file)).toEqual([offPage]);
+  });
+
+  it('selects nothing on an empty store rather than throwing', async () => {
+    const props = await renderLocations();
+    expect(props.locations.items).toEqual([]);
+    expect(props.selectedLocation).toBeNull();
     expect(props.instances).toBeNull();
   });
 });

@@ -1,4 +1,5 @@
 import { rangeToFromIso } from '@akasecurity/dashboard-ui';
+import { encodeLocationId } from '@akasecurity/schema';
 
 import { db } from '../../lib/db';
 import { renderInstant } from '../../lib/rendered-at';
@@ -11,12 +12,14 @@ import {
   parseRange,
   parseRepo,
   parseSelectedFinding,
+  parseSelectedLocation,
   parseSelectedRule,
   parseSession,
   parseTools,
   parseView,
   toFindingTypesQuery,
   toInstancesQuery,
+  toLocationInstancesQuery,
   toLocationsQuery,
   toTypeInstancesQuery,
 } from './filters';
@@ -92,13 +95,67 @@ export default async function FindingsPage({
   }
 
   if (view === 'files') {
-    const data = await db().findings.listFindingLocations(
-      toLocationsQuery(filters, query, session, scope),
-    );
+    // ─── The By-location view: two reads, and the selection resolved between ──
+    //
+    // The same shape as the By-type branch below, for the same reason: two
+    // independently paged reads, with which row is selected settled HERE so the
+    // panels can never disagree about it.
+    //
+    // What differs is that every filter reaches BOTH reads. A location owns none
+    // of its fields — severity, status, rules and count are each a fold over the
+    // findings that landed in it — so a dimension applied to only one side would
+    // leave a row describing findings the panel does not list.
+    const requestedLocation = parseSelectedLocation(sp);
+
+    // A `?finding=` id names a location as directly as it names a type: a
+    // finding carries its own repo and file, so this one primary-key seek both
+    // selects the left row and supplies the drawer, without being bounded by
+    // what any page happens to hold.
+    const deepLinkedInstance = selectedId ? await db().findings.findingInstance(selectedId) : null;
+    const deepLinkedId = deepLinkedInstance
+      ? encodeLocationId(deepLinkedInstance.repo, deepLinkedInstance.file)
+      : '';
+
+    const locations = await db().findings.listFindingLocations({
+      ...toLocationsQuery(filters, query, session, scope),
+      // Keep the selected location in the list however far it sorts. This
+      // matters far more here than for types: selecting a row pushes the URL,
+      // which re-renders and resets the client's page cache to page 0, and with
+      // distinct (repo, file) pairs running into the thousands a selection off
+      // page 0 is the ordinary case rather than a deep-link corner.
+      ...(deepLinkedId
+        ? { includeId: deepLinkedId }
+        : requestedLocation
+          ? { includeId: requestedLocation }
+          : {}),
+    });
+
+    // Fall back to the first listed location when nothing is pinned, or when
+    // what is pinned did not survive the filters — a selection the list does not
+    // contain would render a panel beside a list that disowns it.
+    const pinned = deepLinkedId || requestedLocation;
+    const selected = locations.items.find((l) => l.id === pinned) ?? locations.items[0] ?? null;
+
+    // The drawer opens only on the location that is actually selected; a deep
+    // link whose location the filters excluded selects the first listed one
+    // instead, and opening its drawer over another location's findings would be
+    // a lie.
+    const drawerInstance =
+      deepLinkedInstance && deepLinkedId === selected?.id ? deepLinkedInstance : null;
+
+    const locationInstances = selected
+      ? await db().findings.listFindingInstances(
+          toLocationInstancesQuery(filters, query, selected, session, scope),
+        )
+      : null;
+
     return (
       <FindingsClient
         view="files"
-        locations={data}
+        locations={locations}
+        instances={locationInstances}
+        selectedLocation={selected}
+        deepLinkedInstance={drawerInstance}
         filters={filters}
         query={query}
         session={session}

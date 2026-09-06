@@ -26,8 +26,10 @@
 import type {
   FindingFacets,
   FindingInstanceDetail,
+  FindingLocationSummary,
   FindingTypeSummary,
   ListFindingInstancesResponse,
+  ListFindingLocationsResponse,
   ListFindingTypesResponse,
 } from '@akasecurity/schema';
 import type React from 'react';
@@ -121,6 +123,29 @@ function instances(items: FindingInstanceDetail[]): ListFindingInstancesResponse
   };
 }
 
+function location(over: Partial<FindingLocationSummary> = {}): FindingLocationSummary {
+  return {
+    id: 'acme%2Fapi/cfg%2F.env',
+    repo: 'acme/api',
+    file: 'cfg/.env',
+    instanceCount: 12,
+    maxSeverity: 'critical',
+    latestDetectedAt: '2026-01-01T22:00:00.000Z',
+    status: 'open',
+    ruleIds: [AWS],
+    ...over,
+  };
+}
+
+function locations(items: FindingLocationSummary[]): ListFindingLocationsResponse {
+  return {
+    totals: { findings: 6456, locations: items.length },
+    facets: facets(),
+    items,
+    nextCursor: null,
+  };
+}
+
 const COMMON = {
   filters: EMPTY_FILTERS,
   query: '',
@@ -154,6 +179,18 @@ function grouped(over: Record<string, unknown> = {}): string {
     types: types([type(AWS), type(TODO, { severity: 'low', instanceCount: 7 })]),
     instances: instances([instance('f1'), instance('f2')]),
     selectedRule: AWS,
+    deepLinkedInstance: null,
+    ...over,
+  });
+}
+
+function files(over: Record<string, unknown> = {}): string {
+  const items = [location(), location({ id: 'other', file: 'src/db.ts', maxSeverity: 'high' })];
+  return render({
+    view: 'files',
+    locations: locations(items),
+    instances: instances([instance('f1'), instance('f2')]),
+    selectedLocation: items[0],
     deepLinkedInstance: null,
     ...over,
   });
@@ -287,13 +324,69 @@ describe('findings client — the other views', () => {
     }
   });
 
-  it('renders the locations view without a toolbar, which has no facets of its own', () => {
-    const html = render({
-      view: 'files',
-      locations: { totals: { repos: 0, files: 0, findings: 0 }, items: [], nextCursor: null },
-    });
-    expect(html).not.toContain('Search findings…');
+  // The inverse of the By-type case above, and the inverse of what this view
+  // used to do. Every dimension narrows BOTH of its reads, because a location
+  // owns none of the fields on its row, so all of them belong in one toolbar
+  // over the pair rather than split between the panels.
+  it('gives the locations view the whole toolbar, and puts none of it in the panel', () => {
+    const html = files();
+
+    expect(html).toContain('Search findings…');
+    for (const label of ['Severity', 'Type', 'Provider', 'Action', 'Status']) {
+      expect(html).toContain(`>${label}<`);
+    }
+    // FIVE filter popovers and no more. Counting the label text would count the
+    // findings table's own column headers too — `>Provider<` appears twice for
+    // that reason alone — so this counts the popover triggers, which only a
+    // filter renders. A sixth would be the panel growing its own copy of a
+    // control that writes the same param as the one above it.
+    expect((html.match(/aria-haspopup="dialog"/g) ?? []).length).toBe(5);
+    // And no second search box: the list has no search of its own here, unlike
+    // the type list, because the toolbar's already writes the same `?q=`.
     expect(html).not.toContain('Search types…');
+  });
+
+  it("pairs the location list with the selected location's findings", () => {
+    const html = files();
+
+    // Left: the location rows, repo as context and file as the subject.
+    expect(html).toContain('acme/api');
+    expect(html).toContain('cfg/.env');
+    expect(html).toContain('src/db.ts');
+    // Right: the panel names what it is showing, and lists that location's
+    // findings.
+    expect(html).toContain('MASK-f1');
+    // Two cards, not a border inside a border: the panel's header is a slot in
+    // the table's own card rather than a wrapper around it.
+    expect((html.match(/data-slot="card"/g) ?? []).length).toBe(2);
+  });
+
+  // Two different empties, and the panel has to tell them apart the way the list
+  // does. With filters active the store may be full and the query simply
+  // fruitless; with none active the store itself is empty and the reader needs
+  // the onboarding hint instead.
+  it('mirrors the list rather than leaving a blank card beside it', () => {
+    const filtered = files({
+      locations: locations([]),
+      instances: null,
+      selectedLocation: null,
+      filters: { ...EMPTY_FILTERS, severity: ['critical'] },
+    });
+    expect(filtered).toContain('No locations match these filters');
+
+    const emptyStore = files({
+      locations: locations([]),
+      instances: null,
+      selectedLocation: null,
+    });
+    expect(emptyStore).toContain('No findings yet');
+  });
+
+  it('counts LOCATIONS in the tally, and does not call them types', () => {
+    const html = files();
+    expect(html).toContain((6456).toLocaleString());
+    expect(html).toContain('locations');
+    expect(html).not.toContain('types');
   });
 
   it('shows the session scope chip and keeps a way back to Activity', () => {

@@ -91,8 +91,8 @@ export { SessionListView } from './activity/SessionListView.tsx';
 // sections without forking the body.
 export { ActionTag, AggregateActionTag } from './findings/ActionTag.tsx';
 export { FindingDetailView, formatConfidence } from './findings/FindingDetailView.tsx';
+export { FindingLocationsListView } from './findings/FindingLocationsListView.tsx';
 export { FindingsFlatTableView } from './findings/FindingsFlatTableView.tsx';
-export { FindingsLocationsView } from './findings/FindingsLocationsView.tsx';
 export { FindingLevelFilters, FindingsToolbarView } from './findings/FindingsToolbarView.tsx';
 export { FindingTypesListView } from './findings/FindingTypesListView.tsx';
 export {

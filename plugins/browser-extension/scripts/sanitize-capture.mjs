@@ -287,12 +287,18 @@ async function main() {
     if (args.survey) return;
 
     writeFileSync(args.out, result.text);
+    // An approval the detector overrode means the operator listed something
+    // credential-shaped. Nothing leaks — it was replaced — but saying so only on
+    // the --survey path left the normal run reporting a clean success, which is
+    // the outcome that reads as "my approvals were applied".
+    const overridden = result.report.flaggedKeys.length + result.report.flaggedValues.length;
     process.stderr.write(
       `sanitized fixture written to ${args.out}: ${String(result.report.leaves)} leaves scanned, ` +
         `${String(result.report.preservedKeys.length)} key(s) and ` +
         `${String(result.report.preservedValues.length)} value(s) preserved verbatim, ` +
         `${String(result.report.smallIntegersKept)} small integer(s) and ` +
-        `${String(result.report.booleansKept)} boolean(s) kept verbatim\n`,
+        `${String(result.report.booleansKept)} boolean(s) kept verbatim, ` +
+        `${String(overridden)} approval(s) overridden by the detector\n`,
     );
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });

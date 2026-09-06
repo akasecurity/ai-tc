@@ -78,10 +78,9 @@ function LocationRow({
         <SeverityBadge severity={location.maxSeverity} />
         <span
           className={cn(
-            'min-w-0 flex-1 truncate text-xs',
-            location.repo ? 'font-mono text-text-3' : 'italic text-text-3',
+            'min-w-0 flex-1 text-xs break-words [word-break:break-word]',
+            location.repo ? 'text-text-3' : 'italic text-text-3',
           )}
-          title={location.repo}
         >
           {location.repo || 'No repository recorded'}
         </span>
@@ -92,12 +91,16 @@ function LocationRow({
         )}
       </div>
 
+      {/* Wrapped, never truncated. Tailwind's `truncate` puts the ellipsis at the
+          END, which on a path elides the filename — the one part that
+          distinguishes two rows under the same directory, and the part a reader
+          is scanning for. `[word-break:break-word]` is what lets a long
+          unbroken segment wrap instead of overflowing the panel. */}
       <div
         className={cn(
-          'mt-1 truncate text-sm font-semibold',
-          location.file ? 'font-mono text-text' : 'italic text-text-3',
+          'mt-1 text-sm font-semibold break-words [word-break:break-word]',
+          location.file ? 'text-text' : 'italic text-text-3',
         )}
-        title={location.file}
       >
         {location.file || 'No file recorded'}
       </div>

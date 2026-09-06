@@ -985,11 +985,16 @@ function LocationsMasterDetail({
           key={selectedLocation.id}
           data={instances}
           header={
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
-              <h2 className="truncate font-mono text-sm font-semibold text-text">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-b border-border px-4 py-3">
+              {/* Wrapped, not truncated, and in the normal font — the same
+                  treatment the row carries, and for the same reason: a trailing
+                  ellipsis elides the filename, which is the part a reader has
+                  come here to confirm. Truncating it here was worse than in the
+                  row, because there is no `title` to recover it from. */}
+              <h2 className="min-w-0 text-sm font-semibold break-words [word-break:break-word] text-text">
                 {selectedLocation.file || 'No file recorded'}
               </h2>
-              <span className="shrink-0 text-xs text-text-3">
+              <span className="text-xs break-words [word-break:break-word] text-text-3">
                 {selectedLocation.repo || 'No repository recorded'}
               </span>
             </div>

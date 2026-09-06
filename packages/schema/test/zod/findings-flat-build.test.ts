@@ -375,6 +375,28 @@ describe('encodeLocationId', () => {
     expect(encodeLocationId('a/b', 'c')).not.toBe(encodeLocationId('a', 'b/c'));
   });
 
+  // encodeURIComponent RAISES on a lone surrogate, and event metadata arrives as
+  // JSON, where a `\uD800` escape parses into exactly that. Unhandled, one such
+  // path takes out the whole locations read while it projects — not that row,
+  // the entire page under every filter.
+  it('survives a path carrying a lone surrogate, and keeps real astral characters', () => {
+    const loneHigh = 'a\uD800b';
+    const loneLow = 'a\uDC00b';
+    // The control: these are the inputs the platform refuses, so a version that
+    // stopped sanitising would throw here rather than quietly differing.
+    expect(() => encodeURIComponent(loneHigh)).toThrow();
+    expect(() => encodeURIComponent(loneLow)).toThrow();
+
+    expect(() => encodeLocationId(loneHigh, 'c.ts')).not.toThrow();
+    expect(() => encodeLocationId('acme/api', loneLow)).not.toThrow();
+
+    // Sanitising is lossy only for the broken input. A VALID surrogate pair is a
+    // real character and has to survive, or every emoji-bearing path would
+    // collapse onto one id.
+    expect(encodeLocationId('a😀b', 'c.ts')).not.toBe(encodeLocationId('a🚀b', 'c.ts'));
+    expect(encodeLocationId('acme/api', 'c.ts')).toBe('acme%2Fapi/c.ts');
+  });
+
   // The no-repo/no-file bucket is a real location and often the largest, so its
   // token has to be a token: something a URL carries and a reader can tell from
   // an absent param.

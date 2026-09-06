@@ -5,7 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { dataDir, type LocalDatabase, openLocalDatabase } from '@akasecurity/persistence';
-import type { DetectedFinding, IngestEvent } from '@akasecurity/schema';
+import {
+  type DetectedFinding,
+  type IngestEvent,
+  MAX_FINDING_LOCATIONS_LIMIT,
+} from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
@@ -204,6 +208,15 @@ describe('loadMoreFindingLocations', () => {
     await expect(loadMoreFindingLocations({ severity: 'critical' })).rejects.toThrow();
     await expect(loadMoreFindingLocations({ limit: 0 })).rejects.toThrow();
     await expect(loadMoreFindingLocations({ limit: 10_000 })).rejects.toThrow();
+    // The ceiling itself, both sides, against the LITERAL rather than the
+    // constant. Written as `{ limit: MAX }` accepted and `{ limit: MAX + 1 }`
+    // rejected it reads like a boundary test and is a tautology — true for
+    // whatever the constant happens to say, so it moves with it silently. This
+    // read used to accept 500; pinning the number is what makes narrowing it a
+    // decision in two places rather than a drift in one.
+    expect(MAX_FINDING_LOCATIONS_LIMIT).toBe(100);
+    await expect(loadMoreFindingLocations({ limit: 100 })).resolves.toBeDefined();
+    await expect(loadMoreFindingLocations({ limit: 101 })).rejects.toThrow();
     await expect(loadMoreFindingLocations({ includeId: 7 })).rejects.toThrow();
     await expect(loadMoreFindingLocations('not-an-object')).rejects.toThrow();
   });

@@ -384,9 +384,15 @@ describe('findings client — the other views', () => {
 
   it('counts LOCATIONS in the tally, and does not call them types', () => {
     const html = files();
-    expect(html).toContain((6456).toLocaleString());
-    expect(html).toContain('locations');
-    expect(html).not.toContain('types');
+    // Scoped to the subtitle rather than the whole document: an absence
+    // assertion over the page would redden for any unrelated label that happened
+    // to contain the word, pointing a reader at the tally when nothing about it
+    // had changed.
+    const sub = /<p[^>]*>((?:(?!<\/p>).)*findings(?:(?!<\/p>).)*)<\/p>/.exec(html)?.[1] ?? '';
+    expect(sub, 'no subtitle found to read the tally from').not.toBe('');
+    expect(sub).toContain((6456).toLocaleString());
+    expect(sub).toContain('locations');
+    expect(sub).not.toContain('types');
   });
 
   it('shows the session scope chip and keeps a way back to Activity', () => {

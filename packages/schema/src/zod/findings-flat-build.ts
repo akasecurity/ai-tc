@@ -354,5 +354,31 @@ export function compareLocationOrder(a: LocationOrderKey, b: LocationOrderKey): 
  * selection check, the read's includeId, and the client's page dedupe.
  */
 export function encodeLocationId(repo: string, file: string): string {
-  return `${encodeURIComponent(repo)}/${encodeURIComponent(file)}`;
+  return `${encodePart(repo)}/${encodePart(file)}`;
+}
+
+/**
+ * One half of a location id, percent-encoded — and never throwing.
+ *
+ * `encodeURIComponent` raises URIError on a LONE SURROGATE, and event metadata
+ * reaches the store as JSON, where a `\uD800` escape parses into exactly that.
+ * One such path would otherwise take out the whole locations read while it
+ * projected its rows: not that row, the entire page, under every filter. Nothing
+ * else on this path fails that way.
+ *
+ * A lone surrogate is replaced with U+FFFD before encoding. That is lossy, and
+ * safely so — the id is compared only for equality and is derived
+ * deterministically from the pair on both sides of every comparison, so two
+ * locations still collide only if their paths already differ nowhere but in an
+ * unpaired surrogate. The repo and file the row DISPLAYS are untouched.
+ */
+function encodePart(value: string): string {
+  // The `u` flag is what makes this narrow, and it is the whole trick: under
+  // Unicode mode the pattern matches code POINTS, and a valid surrogate pair is
+  // one code point outside this range — so only UNPAIRED surrogates match. Drop
+  // the flag and the same class matches both halves of every astral character,
+  // collapsing every emoji-bearing path onto one id. Hand-rolled lookarounds for
+  // "a high surrogate not followed by a low one" are the same thing spelled out,
+  // and buy nothing.
+  return encodeURIComponent(value.replace(/[\uD800-\uDFFF]/gu, '\uFFFD'));
 }

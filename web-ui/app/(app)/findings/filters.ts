@@ -6,6 +6,7 @@ import {
 } from '@akasecurity/dashboard-ui';
 import {
   FindingAction,
+  type FindingLocationSummary,
   FindingProvider,
   FindingStatus,
   type ListFindingInstancesQuery,
@@ -305,7 +306,7 @@ export function toLocationsQuery(
 export function toLocationInstancesQuery(
   filters: FindingsFilters,
   q: string,
-  location: { repo: string; file: string },
+  location: Pick<FindingLocationSummary, 'repo' | 'file'>,
   session = '',
   scope: FindingsScope = {},
 ): ListFindingInstancesQuery {

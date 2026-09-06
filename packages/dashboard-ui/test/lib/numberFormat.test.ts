@@ -5,6 +5,18 @@ import { describe, expect, it } from 'vitest';
 import { compactCount, numberFormat } from '../../src/lib/numberFormat.ts';
 
 /**
+ * The child's own deadline, and the budget the case that spawns it runs under.
+ *
+ * The child's has to sit well BELOW the case's, or vitest wins the race: it kills
+ * the test and reports a bare timeout, losing the try/catch that would otherwise
+ * turn a slow or unstartable host into an honest skip. This package declares no
+ * testTimeout, so the default is 5s — too close to a spawn that can take seconds
+ * on a loaded runner — which is why the case carries an explicit budget.
+ */
+const CHILD_TIMEOUT_MS = 5_000;
+const CASE_TIMEOUT_MS = 20_000;
+
+/**
  * What this module formats when the HOST's default locale is something else.
  *
  * It has to be a child process: Intl resolves its default locale once, when the
@@ -36,7 +48,7 @@ function formatUnder(
          })))`,
         spec,
       ],
-      { env: { LANG: lang, LC_ALL: lang }, encoding: 'utf8', timeout: 30_000 },
+      { env: { LANG: lang, LC_ALL: lang }, encoding: 'utf8', timeout: CHILD_TIMEOUT_MS },
     );
     return JSON.parse(out) as { pinned: string; compact: string; hostDefault: string };
   } catch {
@@ -60,27 +72,31 @@ describe('numberFormat', () => {
   // runner that already defaults to en-US, which is every runner this repo uses:
   // an in-process assertion that `numberFormat.format(1234)` is '1,234' is green
   // whether or not the locale is pinned.
-  it('formats the same under a host locale that is not en-US', (ctx) => {
-    const de = formatUnder('de_DE.UTF-8');
-    // Two ways a host cannot answer this: it could not start the child at all,
-    // or it started one that ignored LANG — and on the second, a pinned and an
-    // unpinned formatter agree, so there is nothing here to observe. Skipping
-    // says so; a pass would claim a check that never ran. The `return` is
-    // unreachable (ctx.skip throws) and is what narrows `de` below.
-    if (de === null || de.hostDefault === '1,234') {
-      ctx.skip(
-        de === null
-          ? 'this host could not start a child with a bare environment'
-          : 'this host ignored LANG, so a pinned and an unpinned formatter agree here',
-      );
-      return;
-    }
-    expect(de.hostDefault).toBe('1.234');
-    expect(de.pinned).toBe('1,234');
-    // The compact form rides the same pin, and its decimal separator is the
-    // half that would move.
-    expect(de.compact).toBe('1.2k');
-  });
+  it(
+    'formats the same under a host locale that is not en-US',
+    { timeout: CASE_TIMEOUT_MS },
+    (ctx) => {
+      const de = formatUnder('de_DE.UTF-8');
+      // Two ways a host cannot answer this: it could not start the child at all,
+      // or it started one that ignored LANG — and on the second, a pinned and an
+      // unpinned formatter agree, so there is nothing here to observe. Skipping
+      // says so; a pass would claim a check that never ran. The `return` is
+      // unreachable (ctx.skip throws) and is what narrows `de` below.
+      if (de === null || de.hostDefault === '1,234') {
+        ctx.skip(
+          de === null
+            ? 'this host could not start a child with a bare environment'
+            : 'this host ignored LANG, so a pinned and an unpinned formatter agree here',
+        );
+        return;
+      }
+      expect(de.hostDefault).toBe('1.234');
+      expect(de.pinned).toBe('1,234');
+      // The compact form rides the same pin, and its decimal separator is the
+      // half that would move.
+      expect(de.compact).toBe('1.2k');
+    },
+  );
 });
 
 describe('compactCount', () => {

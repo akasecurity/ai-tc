@@ -137,7 +137,7 @@ export function cutToBytes(text: string, maxBytes: number): { text: string; trun
 }
 
 /** Resolve a dotted field path against an object, `undefined` for any miss. */
-function resolveField(root: unknown, path: string): unknown {
+export function resolveField(root: unknown, path: string): unknown {
   let value: unknown = root;
   for (const segment of path.split('.')) {
     if (typeof value !== 'object' || value === null) return undefined;
@@ -146,10 +146,10 @@ function resolveField(root: unknown, path: string): unknown {
   return value;
 }
 
-interface CompiledEndpoint {
-  host: string;
-  path: RegExp;
-  kind: EndpointKind;
+export interface CompiledEndpoint {
+  readonly host: string;
+  readonly path: RegExp;
+  readonly kind: EndpointKind;
 }
 
 // The same rule the tap compiles: the host is matched EXACTLY and the path
@@ -157,7 +157,7 @@ interface CompiledEndpoint {
 // site cannot reach another origin's URL that merely contains its text. Built
 // from the same declarations, so the two sides agree about what a forwarded URL
 // is.
-function compileEndpoints(adapter: ProviderAdapter): CompiledEndpoint[] {
+export function compileEndpoints(adapter: ProviderAdapter): CompiledEndpoint[] {
   const compiled: CompiledEndpoint[] = [];
   for (const endpoint of adapter.endpoints) {
     try {
@@ -172,6 +172,31 @@ function compileEndpoints(adapter: ProviderAdapter): CompiledEndpoint[] {
     }
   }
   return compiled;
+}
+
+/**
+ * Classify a forwarded URL against a compiled endpoint table: exact host
+ * match, path anchored at its start. `null` when the URL does not parse or no
+ * endpoint claims it.
+ */
+export function classifyCompiled(
+  compiled: readonly CompiledEndpoint[],
+  url: string,
+): EndpointKind | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // A URL whose host cannot be read is one no endpoint can claim.
+    return null;
+  }
+  for (const endpoint of compiled) {
+    if (parsed.host !== endpoint.host) continue;
+    // The query rides along so a pattern MAY key on one; the anchor is what
+    // stops a query reaching a pattern written against a path.
+    if (endpoint.path.test(`${parsed.pathname}${parsed.search}`)) return endpoint.kind;
+  }
+  return null;
 }
 
 interface InFlight {
@@ -219,20 +244,7 @@ export function createBridge(options: BridgeOptions): Bridge {
   let reported: string | null = null;
 
   function classify(url: string): EndpointKind | null {
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      // A URL whose host cannot be read is one no endpoint can claim.
-      return null;
-    }
-    for (const endpoint of endpoints) {
-      if (parsed.host !== endpoint.host) continue;
-      // The query rides along so a pattern MAY key on one; the anchor is what
-      // stops a query reaching a pattern written against a path.
-      if (endpoint.path.test(`${parsed.pathname}${parsed.search}`)) return endpoint.kind;
-    }
-    return null;
+    return classifyCompiled(endpoints, url);
   }
 
   // Retire every DOM send whose window has closed with nothing to answer it.

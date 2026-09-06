@@ -48,6 +48,27 @@ describe('FindingLocationsListView', () => {
     expect(html).toContain('2h');
   });
 
+  // The count is short enough for the column, and the exact number stays
+  // reachable — compact notation rounds across its own boundary, so a reader
+  // cannot tell '10k' from ten thousand without it.
+  it('shortens a large count and keeps the exact one on the title', () => {
+    const html = render({ locations: [location({ instanceCount: 1234 })] });
+    expect(html).toContain('>1.2k<');
+    expect(html).toContain('title="1,234 findings"');
+    // The long form is NOT what the column shows.
+    expect(html).not.toContain('>1,234<');
+  });
+
+  it('leaves a small count alone, and says "finding" once', () => {
+    const one = render({ locations: [location({ instanceCount: 1 })] });
+    expect(one).toContain('>1<');
+    expect(one).toContain('title="1 finding"');
+
+    const few = render({ locations: [location({ instanceCount: 486 })] });
+    expect(few).toContain('>486<');
+    expect(few).toContain('title="486 findings"');
+  });
+
   // The bucket a finding lands in when its event recorded neither key. It is
   // often the largest location in a real store, and the tree this replaced
   // rendered it as a plain div — visible, and impossible to open.

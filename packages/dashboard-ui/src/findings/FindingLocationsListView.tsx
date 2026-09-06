@@ -34,6 +34,7 @@ import {
 } from '@akasecurity/ui-kit';
 import type { ReactNode } from 'react';
 
+import { compactCount, numberFormat } from '../lib/numberFormat.ts';
 import { relativeTimeShort } from '../lib/relativeTime.ts';
 import { findingStatusMeta } from './meta.ts';
 
@@ -117,8 +118,17 @@ function LocationRow({
           ))}
           {hidden > 0 && <span className="shrink-0 text-label text-text-3">+{hidden} more</span>}
         </span>
-        <span className="shrink-0 text-xs font-semibold tabular-nums text-text-2">
-          {location.instanceCount}
+        {/* Compact, with the exact count on the title. The short form rounds
+            across its own boundary — 9,999 reads `10k` — so the number a reader
+            might act on has to stay reachable. Both formatters pin en-US, so
+            neither is a hydration mismatch. */}
+        <span
+          className="shrink-0 text-xs font-semibold tabular-nums text-text-2"
+          title={`${numberFormat.format(location.instanceCount)} ${
+            location.instanceCount === 1 ? 'finding' : 'findings'
+          }`}
+        >
+          {compactCount(location.instanceCount)}
         </span>
         <span className="shrink-0 text-xs text-text-3">
           {relativeTimeShort(location.latestDetectedAt, renderedAt)}

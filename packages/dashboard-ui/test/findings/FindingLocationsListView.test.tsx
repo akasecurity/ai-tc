@@ -100,7 +100,12 @@ describe('FindingLocationsListView', () => {
     expect(html).toContain('slack-token');
     // Five rules, three spelled out.
     expect(html).toContain('+2 more');
-    expect(html).not.toContain('stripe-key');
+    // …and the two it elides are still reachable. `+2 more` names a count and
+    // not the rules, and the panel beside this row lists findings rather than
+    // distinct rules, so without this the two hidden names appear nowhere at all.
+    expect(html).toContain('title="aws-key\ngithub-token\nslack-token\nstripe-key\ngcp-key"');
+    // Not rendered as a chip — the point is that it is recoverable, not shown.
+    expect(html).not.toContain('>stripe-key<');
   });
 
   it('says nothing about a remainder when every rule fits', () => {

@@ -107,7 +107,19 @@ function LocationRow({
       </div>
 
       <div className="mt-1 flex min-w-0 items-center gap-1.5">
-        <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+        {/* The whole list on the title, for the reason the count carries its
+            exact number: the row shows a lossy summary, so what it elides has to
+            stay reachable. `+N more` says how many rules are hidden and nothing
+            about which, and the panel beside this one lists FINDINGS — recovering
+            the distinct rules from it means paging every one of them.
+
+            A title is a mouse affordance and reaches neither keyboard nor touch.
+            That is a real limit rather than a hidden one: the number stays on
+            screen for everyone, and only the names need a hover. */}
+        <span
+          className="flex min-w-0 flex-1 flex-wrap items-center gap-1"
+          title={location.ruleIds.join('\n')}
+        >
           {shown.map((ruleId) => (
             <span
               key={ruleId}

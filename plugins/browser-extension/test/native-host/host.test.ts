@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,10 +15,14 @@ import type {
   WebChatResponseCapture,
   WebExchange,
 } from '@akasecurity/schema';
-import { RESPONSE_TEXT_MAX_BYTES, WEB_CHAT_CAPTURE_CONSENT_VERSION } from '@akasecurity/schema';
+import {
+  RESPONSE_TEXT_MAX_BYTES,
+  toCaptureStatusAttributes,
+  WEB_CHAT_CAPTURE_CONSENT_VERSION,
+} from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { removeTree, removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import type { ConfigForTool } from '../../src/native-host/host.ts';
 import { handleRequest, readCaptureStatus } from '../../src/native-host/host.ts';
 import type { HostRequest, WebSourceTool } from '../../src/native-host/protocol.ts';
@@ -29,12 +34,25 @@ const AWS_EXAMPLE_KEY = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
 
 let dir: string;
 
+// The cases below that need a store of their own mkdtemp a root outside `dir`,
+// so the teardown for `dir` cannot reach it. Each root is collected here and
+// drained with the rest — every one of them holds a migrated SQLite store, so
+// leaving them behind is megabytes of $TMPDIR per run.
+const scratchRoots: string[] = [];
+
+function scratchRoot(prefix: string): string {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  scratchRoots.push(root);
+  return root;
+}
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'aka-native-host-'));
 });
 
 afterEach(() => {
   removeTree(dir);
+  removeTrees(scratchRoots.splice(0));
 });
 
 function config(tool: WebSourceTool | undefined, webChat?: WebChatCapture): PluginConfig {
@@ -1047,6 +1065,7 @@ const VALID_STATUS: WebCaptureStatus = {
   parseFailures: 0,
   unparsedBodies: 0,
   shapeMisses: [],
+  conversationEndpoints: 1,
 };
 
 describe('capture_status', () => {
@@ -1060,6 +1079,7 @@ describe('capture_status', () => {
       parseFailures: 0,
       unparsedBodies: 0,
       shapeMisses: ['adapter.model'],
+      conversationEndpoints: 1,
     };
     const response = await handleRequest(
       {
@@ -1157,6 +1177,308 @@ describe('capture_status', () => {
     expect(response.type).toBe('error');
     if (response.type !== 'error') throw new Error('expected an error response');
     // Positive control first: the message is really the fixed string.
+    expect(response.message).toBe('malformed capture status payload');
+    expectNoEchoOf(JSON.stringify(response), SECRET_EXAMPLE);
+  });
+});
+
+describe('capture_status durable write', () => {
+  it('a reported status outlives the process that received it', async () => {
+    const dataDir = join(scratchRoot('aka-capture-status-durable-'), 'aka');
+    const status: WebCaptureStatus = {
+      patched: true,
+      live: true,
+      blind: false,
+      sendsSeenDom: 4,
+      exchangesSeenNet: 4,
+      parseFailures: 0,
+      unparsedBodies: 0,
+      shapeMisses: ['message.id'],
+      conversationEndpoints: 2,
+    };
+    const cfgForTool: ConfigForTool = (tool) => ({
+      ...config(tool, webChatSettings()),
+      dataDir,
+      dbPath: join(dataDir, 'aka.db'),
+    });
+    await handleRequest(
+      {
+        type: 'capture_status',
+        requestId: 'durable-1',
+        sessionId: 'durable-session',
+        tool: 'claude-ai',
+        status,
+      },
+      cfgForTool,
+    );
+
+    // A SECOND connection, opened after the handler returned — the point is
+    // that a different process/connection sees it, not this process's own
+    // in-memory map.
+    const second = openLocalDatabase(dataDir);
+    try {
+      const records = second.captureStatus.latest();
+      const record = records.find((r) => r.tool === 'claude-ai');
+      expect(record?.status).toEqual(status);
+    } finally {
+      second.close();
+    }
+  });
+
+  it('the row hangs off the session root', async () => {
+    const dataDir = join(scratchRoot('aka-capture-status-root-'), 'aka');
+    const sessionId = 'durable-session-root';
+    const cfgForTool: ConfigForTool = (tool) => ({
+      ...config(tool, webChatSettings()),
+      dataDir,
+      dbPath: join(dataDir, 'aka.db'),
+    });
+    await handleRequest(
+      {
+        type: 'capture_status',
+        requestId: 'durable-2',
+        sessionId,
+        tool: 'chatgpt',
+        status: VALID_STATUS,
+      },
+      cfgForTool,
+    );
+
+    const raw = new DatabaseSync(join(dataDir, 'aka.db'));
+    try {
+      const row = raw
+        .prepare('SELECT root_session_id, event_type FROM audit_events WHERE event_type = ?')
+        .get('capture_status') as { root_session_id: string; event_type: string } | undefined;
+      expect(row?.root_session_id).toBe(sessionId);
+      const root = raw
+        .prepare('SELECT event_type FROM audit_events WHERE id = ?')
+        .get(sessionId) as { event_type: string } | undefined;
+      expect(root?.event_type).toBe('session');
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('records nothing without consent', async () => {
+    const dataDir = join(scratchRoot('aka-capture-status-noconsent-'), 'aka');
+    const cfgForTool: ConfigForTool = (tool) => ({
+      ...config(tool),
+      dataDir,
+      dbPath: join(dataDir, 'aka.db'),
+    });
+    const response = await handleRequest(
+      {
+        type: 'capture_status',
+        requestId: 'durable-3',
+        sessionId: 'durable-noconsent',
+        tool: 'chatgpt',
+        status: VALID_STATUS,
+      },
+      cfgForTool,
+    );
+    expect(response).toMatchObject({ accepted: false, skipped: 'no-consent' });
+
+    const second = openLocalDatabase(dataDir);
+    try {
+      expect(second.captureStatus.latest()).toEqual([]);
+    } finally {
+      second.close();
+    }
+  });
+
+  it('records nothing with a stale consent version', async () => {
+    const dataDir = join(scratchRoot('aka-capture-status-stale-'), 'aka');
+    const staleConfig = (tool: WebSourceTool | undefined): PluginConfig => ({
+      ...config(tool, webChatSettings('with-findings', WEB_CHAT_CAPTURE_CONSENT_VERSION - 1)),
+      dataDir,
+      dbPath: join(dataDir, 'aka.db'),
+    });
+    const response = await handleRequest(
+      {
+        type: 'capture_status',
+        requestId: 'durable-4',
+        sessionId: 'durable-stale',
+        tool: 'chatgpt',
+        status: VALID_STATUS,
+      },
+      staleConfig,
+    );
+    expect(response).toMatchObject({ accepted: false, skipped: 'no-consent' });
+
+    const second = openLocalDatabase(dataDir);
+    try {
+      expect(second.captureStatus.latest()).toEqual([]);
+    } finally {
+      second.close();
+    }
+  });
+
+  it('a refused store write costs the report and nothing else', async () => {
+    const real = standaloneGatewayFactory({
+      dataDir: scratchRoot('aka-cs-fault-'),
+    } as PluginConfig);
+    // A shadow object: prototype-delegates everything to `real` except
+    // recordAuditEvent, which every fail-open write on this path must survive.
+    const faulty = Object.create(real) as typeof real;
+    faulty.recordAuditEvent = () => Promise.reject(new Error('store contention'));
+    const restore = setDefaultGatewayFactory(() => faulty);
+    try {
+      const response = await handleRequest(
+        {
+          type: 'capture_status',
+          requestId: 'durable-5',
+          sessionId: 'durable-fault',
+          tool: 'chatgpt',
+          status: VALID_STATUS,
+        },
+        consentedConfig(),
+      );
+      expect(response).toEqual({
+        type: 'capture_status',
+        requestId: 'durable-5',
+        ok: true,
+        accepted: true,
+      });
+    } finally {
+      // The handler's own `finally` already closed `faulty` (delegated
+      // through to `real`) — a second close here would throw on an
+      // already-closed handle.
+      restore();
+    }
+  });
+});
+
+describe('capture_state', () => {
+  it('derives standby from a stored zero-endpoint status', async () => {
+    const dataDir = join(scratchRoot('aka-capture-state-standby-'), 'aka');
+    const cfgForTool: ConfigForTool = (tool) => ({
+      ...config(tool, webChatSettings()),
+      dataDir,
+      dbPath: join(dataDir, 'aka.db'),
+    });
+    await handleRequest(
+      {
+        type: 'capture_status',
+        requestId: 'state-standby-1',
+        sessionId: 'state-standby-session',
+        tool: 'chatgpt',
+        status: { ...VALID_STATUS, conversationEndpoints: 0 },
+      },
+      cfgForTool,
+    );
+    const response = await handleRequest(
+      { type: 'capture_state', requestId: 'state-2' },
+      cfgForTool,
+    );
+    if (response.type !== 'capture_state') throw new Error('expected capture_state');
+    const chatgpt = response.sites.find((s) => s.tool === 'chatgpt');
+    expect(chatgpt?.state).toBe('standby');
+  });
+
+  it('falls back to this process own map when the store answers nothing', async () => {
+    const dataDir1 = join(scratchRoot('aka-capture-state-fallback-1-'), 'aka');
+    const dataDir2 = join(scratchRoot('aka-capture-state-fallback-2-'), 'aka');
+    await handleRequest(
+      {
+        type: 'capture_status',
+        requestId: 'state-fb-1',
+        sessionId: 'state-fallback-session',
+        tool: 'claude-ai',
+        // `live` only becomes true when an exchange parses, so the count goes
+        // with it — a status carrying one without the other is a shape the
+        // bridge cannot produce.
+        status: { ...VALID_STATUS, conversationEndpoints: 1, live: true, exchangesSeenNet: 1 },
+      },
+      (tool) => ({
+        ...config(tool, webChatSettings()),
+        dataDir: dataDir1,
+        dbPath: join(dataDir1, 'aka.db'),
+      }),
+    );
+    // A DIFFERENT (empty) dataDir for the capture_state read — the store
+    // answers nothing for this site, so the in-memory map is what's left.
+    const response = await handleRequest(
+      { type: 'capture_state', requestId: 'state-fb-2' },
+      (tool) => ({
+        ...config(tool, webChatSettings()),
+        dataDir: dataDir2,
+        dbPath: join(dataDir2, 'aka.db'),
+      }),
+    );
+    if (response.type !== 'capture_state') throw new Error('expected capture_state');
+    const claudeAi = response.sites.find((s) => s.tool === 'claude-ai');
+    expect(claudeAi?.state).toBe('active');
+  });
+
+  it('prefers this process own newer report over an older stored row', async () => {
+    // The durable write is fail-open, so a store that still READS while
+    // refusing WRITES loses every later report — and a stored row preferred
+    // for being stored then reports a state this process has been told is out
+    // of date. Stood in for by writing the newer report into a different
+    // dataDir, which is what a refused write leaves behind.
+    const readDir = join(scratchRoot('aka-capture-state-stale-read-'), 'aka');
+    const lostDir = join(scratchRoot('aka-capture-state-stale-lost-'), 'aka');
+    const db = openLocalDatabase(readDir);
+    try {
+      db.auditEvents.insertAuditEvent({
+        id: randomUUID(),
+        eventType: 'capture_status',
+        startedAt: '2020-01-01T00:00:00.000Z',
+        attributes: toCaptureStatusAttributes(
+          { ...VALID_STATUS, blind: true, sendsSeenDom: 3 },
+          'chatgpt',
+        ),
+      });
+    } finally {
+      db.close();
+    }
+
+    await handleRequest(
+      {
+        type: 'capture_status',
+        requestId: 'state-stale-1',
+        sessionId: 'state-stale-session',
+        tool: 'chatgpt',
+        status: { ...VALID_STATUS, live: true, exchangesSeenNet: 1 },
+      },
+      (tool) => ({
+        ...config(tool, webChatSettings()),
+        dataDir: lostDir,
+        dbPath: join(lostDir, 'aka.db'),
+      }),
+    );
+
+    const response = await handleRequest(
+      { type: 'capture_state', requestId: 'state-stale-2' },
+      (tool) => ({
+        ...config(tool, webChatSettings()),
+        dataDir: readDir,
+        dbPath: join(readDir, 'aka.db'),
+      }),
+    );
+    if (response.type !== 'capture_state') throw new Error('expected capture_state');
+    expect(response.sites.find((s) => s.tool === 'chatgpt')?.state).toBe('active');
+  });
+
+  it('reports consented: false with no valid consent', async () => {
+    const response = await handleRequest({ type: 'capture_state', requestId: 'state-3' }, config);
+    expect(response).toMatchObject({ type: 'capture_state', consented: false });
+  });
+
+  it('an error path carries no raw payload text', async () => {
+    const badStatus = { ...VALID_STATUS, sendsSeenDom: -1, shapeMisses: [SECRET_EXAMPLE] };
+    const response = await handleRequest(
+      {
+        type: 'capture_status',
+        requestId: 'state-echo',
+        sessionId: 'state-echo-session',
+        tool: 'chatgpt',
+        status: badStatus,
+      },
+      consentedConfig(),
+    );
+    expect(response.type).toBe('error');
+    if (response.type !== 'error') throw new Error('expected an error response');
     expect(response.message).toBe('malformed capture status payload');
     expectNoEchoOf(JSON.stringify(response), SECRET_EXAMPLE);
   });

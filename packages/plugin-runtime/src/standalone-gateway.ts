@@ -15,6 +15,7 @@ import {
 } from '@akasecurity/persistence';
 import type {
   CaptureRecord,
+  CaptureStatusReader,
   DataGateway,
   LlmCallLeaf,
   LocalStoreMaintenance,
@@ -46,6 +47,7 @@ import type {
   RuleProbeVerdict,
   SessionTokenReport,
   SimpleDetectionPolicy,
+  StoredCaptureStatus,
   ToolCallInput,
 } from '@akasecurity/schema';
 
@@ -64,7 +66,9 @@ import { PLUGIN_RECORDER_BINARY } from './recorder.ts';
  * + install-if-absent into installed_packs — never mutating an existing
  * installed row; updates are manual).
  */
-export class StandaloneDataGateway implements DataGateway, LocalStoreMaintenance {
+export class StandaloneDataGateway
+  implements DataGateway, LocalStoreMaintenance, CaptureStatusReader
+{
   private readonly db: LocalDatabase;
   // Kept for the fingerprint key lookup (exception.key lives beside the store).
   private readonly dataDir: string;
@@ -209,6 +213,10 @@ export class StandaloneDataGateway implements DataGateway, LocalStoreMaintenance
 
   readSessionProvider(sessionId: string): Promise<string | undefined> {
     return Promise.resolve(this.db.auditEvents.sessionProvider(sessionId));
+  }
+
+  readCaptureStatuses(): Promise<StoredCaptureStatus[]> {
+    return Promise.resolve(this.db.captureStatus.latest());
   }
 
   facets(): Promise<InventoryFacets> {

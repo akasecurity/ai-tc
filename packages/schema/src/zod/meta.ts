@@ -62,6 +62,12 @@ export const AuditEventType = z
     // audit_event_id), and its started_at is the "scanned Nm ago" the read
     // surface renders.
     'config_scan',
+    // One row per reported browser-extension capture status, hung off the web
+    // session root. The durable home of what one tab's network interception
+    // is doing — a write-through of the native host's in-memory tracker, so a
+    // second process (aka extension status) and a restarted host both have
+    // somewhere to read it back from.
+    'capture_status',
   ])
   .meta({ id: 'AuditEventType' });
 export type AuditEventType = z.infer<typeof AuditEventType>;
@@ -327,6 +333,29 @@ export const CaptureAttributes = z
   })
   .catchall(z.unknown());
 export type CaptureAttributes = z.infer<typeof CaptureAttributes>;
+
+// The attribute bag a `capture_status` audit row carries — the persisted,
+// snake_case projection of WebCaptureStatus (web-capture.ts), plus the tool
+// under the CANONICAL `source_tool` key so it lands in the generated column
+// migration 0025 already promotes (a read can then name a column instead of
+// parsing every bag). Every field optional and `.catchall(z.unknown())`, same
+// style as every other bag here: a validated projection, not a routed shape,
+// so no `.meta({ id })`.
+export const CaptureStatusAttributes = z
+  .object({
+    source_tool: z.string().optional(),
+    patched: z.boolean().optional(),
+    live: z.boolean().optional(),
+    blind: z.boolean().optional(),
+    sends_seen_dom: z.number().int().nonnegative().optional(),
+    exchanges_seen_net: z.number().int().nonnegative().optional(),
+    parse_failures: z.number().int().nonnegative().optional(),
+    unparsed_bodies: z.number().int().nonnegative().optional(),
+    shape_misses: z.array(z.string()).optional(),
+    conversation_endpoints: z.number().int().nonnegative().optional(),
+  })
+  .catchall(z.unknown());
+export type CaptureStatusAttributes = z.infer<typeof CaptureStatusAttributes>;
 
 // One detected-secret hit to attach to a tool_call as an `inspection_finding`
 // (Layer 2b). Carries the rule IDENTITY (not a definition id) + the masked hit; the

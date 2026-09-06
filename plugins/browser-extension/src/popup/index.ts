@@ -1,12 +1,63 @@
 /**
  * Minimal popup status UI: native-host connection state, a whole-store
- * findings tally (via the health relay — see native-host/protocol.ts), and a
- * quick link to `aka dashboard`. Mirrors the CLI plugins' onboarding/health
- * surfaces, much smaller — this is a glance, not a dashboard.
+ * findings tally (via the health relay — see native-host/protocol.ts), a
+ * per-site network-capture line, and a quick link to `aka dashboard`. Mirrors
+ * the CLI plugins' onboarding/health surfaces, much smaller — this is a
+ * glance, not a dashboard.
  */
 import type { BackgroundRequest, BackgroundResponse } from '../messaging.ts';
+import type {
+  CaptureStateResponse,
+  WebCaptureState,
+  WebSourceTool,
+} from '../native-host/protocol.ts';
 
 const DASHBOARD_URL = 'http://localhost:4319/security';
+
+// Annotated Record<WebSourceTool, …> so a site added to the schema subset
+// fails to compile here until it is given a label (§2's convention).
+const SITE_LABELS: Record<WebSourceTool, string> = {
+  chatgpt: 'ChatGPT',
+  'claude-ai': 'Claude.ai',
+};
+
+// Mirrors @akasecurity/detections' WEB_CAPTURE_DRIFT_STATES. Duplicated
+// rather than imported: this file ships in esbuild's BROWSER bundle, and
+// @akasecurity/detections — like @akasecurity/plugin-sdk, which wraps it —
+// pulls in Node-only code (node:sqlite, node:worker_threads) that cannot
+// resolve for a browser target. bridge.ts keeps its own copy of
+// RESPONSE_TEXT_MAX_BYTES for the identical reason.
+//
+// Typed against the vocabulary so a typo is a compile error, and exported so
+// popup.test.ts can hold it equal to the original — the copy is only as good
+// as the check that keeps it true, which is the half of the bridge's precedent
+// that matters.
+export const DRIFT_STATES: ReadonlySet<WebCaptureState> = new Set<WebCaptureState>([
+  'blind',
+  'degraded',
+]);
+
+/** Render the network-capture section from a `capture_state` reply. */
+export function renderCaptureSites(response: CaptureStateResponse): void {
+  const section = document.getElementById('capture-section');
+  const notEnabled = document.getElementById('capture-not-enabled');
+  const sitesEl = document.getElementById('capture-sites');
+  if (!section || !notEnabled || !sitesEl) return;
+  section.hidden = false;
+  if (!response.consented) {
+    notEnabled.hidden = false;
+    sitesEl.replaceChildren();
+    return;
+  }
+  notEnabled.hidden = true;
+  const rows = response.sites.map((site) => {
+    const row = document.createElement('div');
+    row.className = `row ${DRIFT_STATES.has(site.state) ? 'tone-error' : 'muted'}`;
+    row.textContent = `${SITE_LABELS[site.tool]}: ${site.state}`;
+    return row;
+  });
+  sitesEl.replaceChildren(...rows);
+}
 
 function relay(request: BackgroundRequest): Promise<BackgroundResponse> {
   return chrome.runtime.sendMessage<BackgroundRequest, BackgroundResponse>(request);
@@ -27,7 +78,8 @@ function setFindings(count: number): void {
   row.hidden = false;
 }
 
-async function refresh(): Promise<void> {
+/** Exported for its own test — re-invoked under a stubbed relay. */
+export async function refresh(): Promise<void> {
   const ping = await relay({ type: 'ping' }).catch((): BackgroundResponse => ({
     type: 'error',
     requestId: undefined,
@@ -48,6 +100,16 @@ async function refresh(): Promise<void> {
     message: 'relay failed',
   }));
   if (health.type === 'health') setFindings(health.findings);
+
+  const captureState = await relay({ type: 'capture_state' }).catch((): BackgroundResponse => ({
+    type: 'error',
+    requestId: undefined,
+    ok: false,
+    message: 'relay failed',
+  }));
+  // A non-capture_state reply (an old host that predates this request type)
+  // leaves the section hidden — it starts `hidden` in the markup.
+  if (captureState.type === 'capture_state') renderCaptureSites(captureState);
 }
 
 document.getElementById('open-dashboard')?.addEventListener('click', () => {

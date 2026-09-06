@@ -516,6 +516,25 @@ describe('listSessions — zero-activity sessions', () => {
     expect(res.items.map((s) => s.id)).toEqual(['P']);
     expect(res.emptyCount).toBe(0);
   });
+
+  // A browser tab reports its own capture status on every load — even one
+  // nobody typed a message in — so a session whose only child is that report
+  // is exactly the ghost shape above, on a different event type. Positive
+  // control at the end: adding a real prompt makes the same session listed,
+  // which is what proves this case is not passing on a broken excludeEmpty
+  // read.
+  it('a session whose only child is a capture status is not listed as activity', async () => {
+    insertSession({ id: 'W', startedAt: NOW - HOUR_MS, attributes: {} });
+    insertEvent({ id: 'W1', sessionId: 'W', type: 'capture_status', startedAt: NOW - HOUR_MS + 1 });
+
+    const empty = await activity().listSessions({ limit: 50, excludeEmpty: true });
+    expect(empty.items.map((s) => s.id)).toEqual([]);
+    expect(empty.emptyCount).toBe(1);
+
+    insertEvent({ id: 'W2', sessionId: 'W', type: 'prompt', startedAt: NOW - HOUR_MS + 2 });
+    const withPrompt = await activity().listSessions({ limit: 50, excludeEmpty: true });
+    expect(withPrompt.items.map((s) => s.id)).toEqual(['W']);
+  });
 });
 
 describe('getSession', () => {

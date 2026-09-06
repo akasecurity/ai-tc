@@ -527,46 +527,82 @@ export const ListFindingInstancesResponse = z
   .meta({ id: 'ListFindingInstancesResponse' });
 export type ListFindingInstancesResponse = z.infer<typeof ListFindingInstancesResponse>;
 
-// ─── Location-grouped findings list ──────────────────────────────────────────
+// ─── Location findings list (the "By location" master/detail pair) ──────────
 
-// Findings folded by where they live — repository, then file. The grouping keys
-// come from the capturing event's attributes (repo / file_path); there is no
-// finding↔inventory-asset relation in the local store to group by instead.
+// Findings folded by WHERE they live — one row per (repo, file) pair. The
+// grouping keys come from the capturing event's attributes (repo / file_path);
+// there is no finding↔inventory-asset relation in the local store to group by
+// instead.
+//
+// The exact sibling of FindingTypeSummary above, and it pages the same way: the
+// findings AT a location come from the instance-level read scoped to `repo` +
+// `file`, which carries a real keyset cursor, so neither list bounds the other
+// and nothing is capped.
+//
+// ONE FLAT SHAPE, not a repo row nesting file rows. A rollup can only be paged
+// by repo, which leaves the file list inside it unbounded — a repo with
+// thousands of findings-bearing files renders every one of them on a single
+// page, which is the shape the by-type list was rebuilt to remove. Sorting
+// worst-first across flat pairs puts the locations worth working at the top
+// whichever repo they fall in.
 
-export const FindingLocationFile = z
+export const FindingLocationSummary = z
   .object({
-    // Empty when the instances carried no file path (a prompt or a tool call
-    // with no file attribution).
-    file: z.string(),
-    instanceCount: z.number().int().nonnegative(),
-    maxSeverity: Severity,
-    latestDetectedAt: z.iso.datetime(),
-    // Folded from the instances' derived statuses with the same
-    // open-dominates precedence a group uses.
-    status: FindingStatus.optional(),
-    // Distinct rules seen at this location, capped — the row shows them as
-    // chips, and the count is what conveys scale.
-    ruleIds: z.array(z.string()),
-  })
-  .meta({ id: 'FindingLocationFile' });
-export type FindingLocationFile = z.infer<typeof FindingLocationFile>;
-
-export const FindingLocationRepo = z
-  .object({
+    // Opaque, stable, minted from the pair by encodeLocationId. It exists
+    // because a location's identity is two values and a URL param carries one:
+    // `?loc=` names a location the way `?rule=` names a type. Only ever compared
+    // for EQUALITY — the page's selection check, this read's `includeId`, the
+    // client's page dedupe — never decoded, and never a sort key.
+    id: z.string(),
     /** Empty when the instances carried no repo attribute. */
     repo: z.string(),
+    // Empty when the instances carried no file path (a prompt, or a tool call
+    // with no file attribution). Both halves empty is a real location — usually
+    // the largest one in a store — and is selectable like any other.
+    file: z.string(),
     instanceCount: z.number().int().nonnegative(),
+    // The WORST severity present, not the first row's. It is this list's primary
+    // sort key, so it is also what explains why a row is where it is, and it is
+    // how a reader decides what to open without opening everything.
     maxSeverity: Severity,
     latestDetectedAt: z.iso.datetime(),
+    // Folded from the instances' derived statuses with the same open-dominates
+    // precedence a group uses, so it answers "is anything left to do here" and
+    // not much more: a location holding 1 open among 40 resolved reads like one
+    // holding 40 open. That loss is accepted — the panel beside this list
+    // carries each finding's own status, and instanceCount sits next to the
+    // badge.
     status: FindingStatus.optional(),
-    files: z.array(FindingLocationFile),
+    // Every distinct rule seen at this location, UNCAPPED — so the length is a
+    // tally rather than a sample and a row can say how many there are. Bounded
+    // by the ruleset, not by the store. The view bounds what it DISPLAYS.
+    ruleIds: z.array(z.string()),
   })
-  .meta({ id: 'FindingLocationRepo' });
-export type FindingLocationRepo = z.infer<typeof FindingLocationRepo>;
+  .meta({ id: 'FindingLocationSummary' });
+export type FindingLocationSummary = z.infer<typeof FindingLocationSummary>;
 
-// Query schema — NO `.meta({ id })` (see ListFindingTypesQuery and the
-// SHAPE IDS note in zod/index.ts). `limit` caps the REPO rows returned; a repo's files are not
-// separately paged.
+/**
+ * Default page size when the query omits `limit`, matching the other two lists
+ * so every findings view pages identically.
+ */
+export const DEFAULT_FINDING_LOCATIONS_LIMIT = 50;
+/**
+ * The ceiling `limit` is rejected past. Named rather than left inline so the
+ * number has a referent to check against, as MAX_FINDING_TYPES_LIMIT and
+ * MAX_FLAT_FINDINGS_LIMIT do. Set SEPARATELY from both: three distinct contracts
+ * paging three different units, so no cap is derived from another.
+ */
+export const MAX_FINDING_LOCATIONS_LIMIT = 100;
+
+// Query schema — NO `.meta({ id })` (see ListFindingTypesQuery and the SHAPE IDS
+// note in zod/index.ts).
+//
+// Every dimension below narrows the FINDINGS first and the locations fall out of
+// what survives, so a row's `instanceCount` is always exactly what the
+// instance-level read reports for the same filters scoped to that pair. That is
+// why the view renders one toolbar over both panels rather than splitting the
+// filters between them: a location owns none of its fields, so every one of them
+// is a fold that any dimension can move.
 export const ListFindingLocationsQuery = z.object({
   severity: z.array(Severity).optional(),
   subtype: z.array(z.string()).optional(),
@@ -579,21 +615,45 @@ export const ListFindingLocationsQuery = z.object({
   q: z.string().optional(),
   sessionId: z.string().optional(),
   from: z.iso.datetime().optional(),
-  limit: z.coerce.number().int().min(1).max(500).optional(),
+  // A LOCATION id (see FindingLocationSummary.id) that must appear in the page
+  // even when the cursor has already advanced past its sort position — the
+  // counterpart of ListFindingTypesQuery.includeId, and needed far more often
+  // here. Selecting a row pushes the URL, which re-renders the server and resets
+  // the client's page cache to page 0; with distinct (repo, file) pairs running
+  // into the thousands, a selection sitting off page 0 is the ordinary case
+  // rather than a deep-link corner. Never affects totals, facets or the cursor.
+  includeId: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(MAX_FINDING_LOCATIONS_LIMIT).optional(),
+  cursor: z.string().optional(),
 });
 export type ListFindingLocationsQuery = z.infer<typeof ListFindingLocationsQuery>;
 
 export const ListFindingLocationsResponse = z
   .object({
     totals: z.object({
+      // Findings matching the filters across the whole scope. Unlike the types
+      // read's same-named field this needs no caveat: the filters here narrow
+      // per finding, so this is the sum of every row's instanceCount.
       findings: z.number().int().nonnegative(),
-      repos: z.number().int().nonnegative(),
-      files: z.number().int().nonnegative(),
+      // Counts LOCATIONS, the unit this read pages — the number the paginator
+      // states. The facets beside it count FINDINGS (see below); a surface
+      // showing both says which is which.
+      locations: z.number().int().nonnegative(),
     }),
-    /** Sorted by max severity, then most recent. */
-    items: z.array(FindingLocationRepo),
-    /** Whether `limit` truncated the repo list. */
-    hasMore: z.boolean(),
+    // Counts in FINDINGS, where the types response counts types, each dimension
+    // still excluding its own filter. Deliberately not locations: counting those
+    // needs a set of location keys per dimension per value — memory tracking the
+    // store times the vocabulary, in a read whose scan promises flat memory —
+    // and the cheap per-location version is not an approximation but WRONG. A
+    // location holding {claudecode, block} and {codex, warn} would survive
+    // provider=claudecode AND action=warn, under which no single finding
+    // matches, so the facet would contradict the instanceCount this whole view
+    // rests on. Findings also keep the toolbar in the same unit as the page
+    // tally and the panel it sits above.
+    facets: FindingFacets,
+    /** Sorted by max severity, then most recent, then (repo, file). */
+    items: z.array(FindingLocationSummary),
+    nextCursor: z.string().nullable(),
   })
   .meta({ id: 'ListFindingLocationsResponse' });
 export type ListFindingLocationsResponse = z.infer<typeof ListFindingLocationsResponse>;

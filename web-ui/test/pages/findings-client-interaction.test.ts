@@ -489,6 +489,20 @@ describe('findings client — the By-location view', () => {
     expect(query.cursor).toBe('cursor-1');
   });
 
+  // A location has no per-location transcript tally the way a type has a
+  // per-rule one, so the drawer's footer passes null and must render the link
+  // ALONE. Passing 0 instead would print "Caught by live enforcement only",
+  // which is a claim about the transcript that nothing here measured.
+  it('offers the session link in the drawer without inventing a firing tally', () => {
+    mountFiles({ session: 'sess-1', deepLinkedInstance: instance('f1') });
+    const drawer = [...document.querySelectorAll('[role="dialog"]')].find(
+      (el) => !container.contains(el),
+    );
+    expect(drawer, 'the deep-linked drawer did not open').toBeTruthy();
+    expect(drawer?.textContent).toContain('View session in Activity');
+    expect(drawer?.textContent).not.toContain('this session');
+  });
+
   it('pages the location list from its own cursor', async () => {
     loadMoreFindingLocations.mockResolvedValue(
       locationsPage([location({ id: 'other', file: 'src/x.ts' })], null),

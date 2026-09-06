@@ -38,10 +38,18 @@ export const metadata = { title: 'Findings' };
 //
 // The three views are different reads, not one read shaped three ways — they
 // page by different units and their status filter means different things (see
-// the store's FindingInstancesView). The default By-type view is a master/detail
-// pair: a keyset-paged list of TYPES and, beside it, a keyset-paged list of the
-// selected type's FINDINGS. Neither bounds the other, so no per-type cap exists
-// and both sides page as far as the store goes.
+// the store's FindingInstancesView).
+//
+// Two of them are master/detail pairs, each a keyset-paged list beside a
+// keyset-paged list of the selected row's FINDINGS: By-type pages TYPES, and
+// By-location pages (repo, file) LOCATIONS. Neither side bounds the other in
+// either view, so nothing is capped and both page as far as the store goes.
+//
+// They differ in how the filters are shared, and the difference is not
+// cosmetic. By-type splits them — severity selects types, provider/action/status
+// narrow the panel — because severity is a property of the rule. By-location
+// cannot: a location owns none of its fields, so every dimension reaches both of
+// its reads, which is why that view renders one toolbar over the pair.
 export default async function FindingsPage({
   searchParams,
 }: {

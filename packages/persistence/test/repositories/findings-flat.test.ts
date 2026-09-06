@@ -422,6 +422,10 @@ describe('SqliteFindingsRepository.listFindingLocations', () => {
       { severity: ['critical'] },
       { action: ['blocked'] },
       { status: ['handled'] },
+      // `q` is a dimension like any other here: it matches the finding's own
+      // haystack, which carries the repo and the file, so it narrows the panel
+      // exactly as it narrows the list.
+      { q: 'aws-key' },
     ];
     for (const filters of dimensions) {
       const locations = await db.findings.listFindingLocations(filters);

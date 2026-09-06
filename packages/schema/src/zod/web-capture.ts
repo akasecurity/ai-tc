@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+import type { WebSourceTool } from './harness-map.ts';
+import { CaptureStatusAttributes } from './meta.ts';
+
 // The wire shapes the browser extension's native-messaging host validates, and
 // the projections it turns into audit rows.
 //
@@ -96,5 +99,107 @@ export const WebCaptureStatus = z.object({
   // The adapter-declared JSON key paths that were absent from a real payload —
   // the earliest signal that a site's contract moved.
   shapeMisses: z.array(z.string()).default([]),
+  // How many `kind: 'conversation'` endpoints the reporting tab's adapter
+  // compiled. Zero means this build declares none for the site, so observing
+  // nothing is the design rather than a fault — the one fact that separates a
+  // site nobody has surveyed yet from one whose contract moved. Defaulted so a
+  // build predating the field is read as declaring nothing rather than refused.
+  conversationEndpoints: z.number().int().nonnegative().default(0),
 });
 export type WebCaptureStatus = z.infer<typeof WebCaptureStatus>;
+
+/**
+ * Whether a report says anything about the site's turn path.
+ *
+ * False for a tab that installed, has conversation endpoints to watch, and has
+ * seen no exchange, no fault and no missing field — a page that has just
+ * loaded, or one whose only activity so far is DOM sends the network path has
+ * not yet given up on. Such a report carries no verdict about the site.
+ *
+ * A build that declares no endpoints, and a tab whose tap did not install, both
+ * count as saying something: each is a statement about this build rather than
+ * an absence of evidence.
+ */
+export function webCaptureStatusObservedTurnPath(status: WebCaptureStatus): boolean {
+  if (!status.patched) return true;
+  if (status.conversationEndpoints === 0) return true;
+  return (
+    status.blind ||
+    status.shapeMisses.length > 0 ||
+    status.parseFailures > 0 ||
+    status.unparsedBodies > 0 ||
+    status.exchangesSeenNet > 0
+  );
+}
+
+/**
+ * The report a surface should show, from candidates in preference order
+ * (newest first).
+ *
+ * The first candidate that observed the turn path wins, so a run of
+ * watching-only reports ahead of it does not replace it. Without that, the
+ * newest report always wins and a page load — which relays a fresh
+ * nothing-seen-yet report the moment the tap says it patched — silently
+ * replaces the report that told the user to reload the tab, before anything
+ * has re-tested what was wrong. A report that DID observe the turn path
+ * replaces it immediately, so a site whose next turn is captured clears at
+ * once.
+ *
+ * With no such candidate the newest is returned, so a site that has only ever
+ * been watched still shows its newest state.
+ */
+export function pickReportedCaptureStatus<T extends { status: WebCaptureStatus }>(
+  candidates: readonly T[],
+): T | undefined {
+  return candidates.find((c) => webCaptureStatusObservedTurnPath(c.status)) ?? candidates[0];
+}
+
+/** One site's reported status, as the local store holds it. */
+export interface StoredCaptureStatus {
+  tool: WebSourceTool;
+  /** When the host received it, ISO-8601 — the row's own `started_at`. */
+  observedAt: string;
+  status: WebCaptureStatus;
+}
+
+// WebCaptureStatus <-> the snake_case CaptureStatusAttributes bag an
+// audit_events row carries. `source_tool` rides the canonical key so the
+// generated column (migration 0025) can name it directly, exactly as
+// toCaptureAttributes/toCaptureDefinitionInput do for the capture-grain bags
+// in local.ts.
+export function toCaptureStatusAttributes(
+  status: WebCaptureStatus,
+  tool: WebSourceTool,
+): CaptureStatusAttributes {
+  return {
+    source_tool: tool,
+    patched: status.patched,
+    live: status.live,
+    blind: status.blind,
+    sends_seen_dom: status.sendsSeenDom,
+    exchanges_seen_net: status.exchangesSeenNet,
+    parse_failures: status.parseFailures,
+    unparsed_bodies: status.unparsedBodies,
+    shape_misses: status.shapeMisses,
+    conversation_endpoints: status.conversationEndpoints,
+  };
+}
+
+/** `null` for a bag that is not a status this version can read. */
+export function fromCaptureStatusAttributes(bag: unknown): WebCaptureStatus | null {
+  const parsedBag = CaptureStatusAttributes.safeParse(bag);
+  if (!parsedBag.success) return null;
+  const b = parsedBag.data;
+  const parsedStatus = WebCaptureStatus.safeParse({
+    patched: b.patched,
+    live: b.live,
+    blind: b.blind,
+    sendsSeenDom: b.sends_seen_dom,
+    exchangesSeenNet: b.exchanges_seen_net,
+    parseFailures: b.parse_failures,
+    unparsedBodies: b.unparsed_bodies,
+    shapeMisses: b.shape_misses,
+    conversationEndpoints: b.conversation_endpoints,
+  });
+  return parsedStatus.success ? parsedStatus.data : null;
+}

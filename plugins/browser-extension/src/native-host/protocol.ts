@@ -1,18 +1,21 @@
-import type { BlockedDetectionRef } from '@akasecurity/plugin-sdk';
-import type { ActionTaken } from '@akasecurity/schema';
-import { EventKind, SOURCE_TOOL, WebCaptureStatus, WebExchange } from '@akasecurity/schema';
+import type { BlockedDetectionRef, WebCaptureState } from '@akasecurity/plugin-sdk';
+import type { ActionTaken, WebSourceTool } from '@akasecurity/schema';
+import {
+  EventKind,
+  WebCaptureStatus,
+  WebExchange,
+  WebSourceTool as WebSourceToolEnum,
+} from '@akasecurity/schema';
 
-// The web chat UIs this native host serves — the narrower SET of wire ids this
-// RPC contract accepts, taken FROM the registry rather than spelled again beside
-// it. content.ts's provider registry is the one place new web providers (Gemini,
-// DeepSeek, T3 Chat, …) get added, and each addition extends this list +
-// WEB_TOOL_TO_SOURCE in host.ts together.
-//
-// Narrowing by listing members keeps that property while making the ids
-// themselves unspellable here: a value that is not a SourceTool cannot be added
-// to this list, and a member respelled upstream moves this union with it.
-const WEB_SOURCE_TOOLS = [SOURCE_TOOL.ChatGpt, SOURCE_TOOL.ClaudeAi] as const;
-export type WebSourceTool = (typeof WEB_SOURCE_TOOLS)[number];
+// The web chat UIs this native host serves. The SET now lives in
+// @akasecurity/schema as a `SourceTool.extract([...])` narrowing, so the CLI's
+// status surface enumerates the same sites without a second copy of the list.
+const WEB_SOURCE_TOOLS = WebSourceToolEnum.options;
+export type { WebSourceTool } from '@akasecurity/schema';
+// Re-exported so the popup — which cannot import @akasecurity/plugin-sdk in a
+// browser bundle — can still type its own state handling against the real
+// vocabulary. A type import erases, so this costs the bundle nothing.
+export type { WebCaptureState } from '@akasecurity/plugin-sdk';
 
 export interface SessionStartRequest {
   type: 'session_start';
@@ -62,6 +65,12 @@ export interface CaptureStatusRequest {
   status: WebCaptureStatus;
 }
 
+/** What every web chat site's capture is doing, for the popup. */
+export interface CaptureStateRequest {
+  type: 'capture_state';
+  requestId: string;
+}
+
 export interface PingRequest {
   type: 'ping';
   requestId: string;
@@ -77,6 +86,7 @@ export type HostRequest =
   | CaptureRequest
   | ExchangeRequest
   | CaptureStatusRequest
+  | CaptureStateRequest
   | PingRequest
   | HealthRequest;
 
@@ -132,6 +142,21 @@ export interface CaptureStatusResponse {
   skipped?: 'no-consent';
 }
 
+export interface CaptureStateResponse {
+  type: 'capture_state';
+  requestId: string;
+  ok: true;
+  // False when no valid web-chat capture consent is recorded: nothing is being
+  // observed or stored, which is a different answer from "nothing was seen".
+  consented: boolean;
+  sites: {
+    tool: WebSourceTool;
+    state: WebCaptureState;
+    // Absent when this site has never reported.
+    observedAt?: string;
+  }[];
+}
+
 export interface PingResponse {
   type: 'ping';
   requestId: string;
@@ -164,6 +189,7 @@ export type HostResponse =
   | CaptureResponse
   | ExchangeResponse
   | CaptureStatusResponse
+  | CaptureStateResponse
   | PingResponse
   | HealthResponse
   | ErrorResponse;
@@ -222,6 +248,7 @@ export function isHostRequest(value: unknown): value is HostRequest {
         isWebSourceTool(v.tool) &&
         WebCaptureStatus.safeParse(v.status).success
       );
+    case 'capture_state':
     case 'ping':
     case 'health':
       return true;

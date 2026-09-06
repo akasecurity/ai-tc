@@ -26,6 +26,15 @@ export {
   configPostureDefinitions,
   evaluateConfigPosture,
 } from './posture/config-posture.ts';
+export type { WebCaptureState, WebCaptureStateCopy } from './posture/web-capture-posture.ts';
+export {
+  deriveWebCaptureState,
+  DRIFT_MIN_PARSE_FAILURES,
+  WEB_CAPTURE_DRIFT_STATES,
+  WEB_CAPTURE_POSTURE_RULES,
+  webCaptureDriftFires,
+  webCaptureStateCopy,
+} from './posture/web-capture-posture.ts';
 export type { ProbeClock, RuleTiming, RuleTimingVerdict } from './security/redos-probe.ts';
 export { checkRuleTiming } from './security/redos-probe.ts';
 export type { TabularMatch, TabularTable } from './tabular.ts';

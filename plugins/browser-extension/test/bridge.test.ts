@@ -9,6 +9,7 @@ import {
   installBridge,
   REQUEST_BODY_MAX_BYTES,
   RESPONSE_TEXT_MAX_BYTES,
+  STATUS_COUNTER_CAP,
 } from '../src/bridge.ts';
 import type { BackgroundRequest } from '../src/messaging.ts';
 import type {
@@ -740,9 +741,11 @@ describe('cutToBytes', () => {
 // things the handshake owes.
 function fakeWindow() {
   const listeners: ((event: MessageEvent) => void)[] = [];
+  const pagehideListeners: (() => void)[] = [];
   const win = {
     addEventListener: (type: string, listener: (event: MessageEvent) => void) => {
       if (type === 'message') listeners.push(listener);
+      else if (type === 'pagehide') pagehideListeners.push(listener as unknown as () => void);
     },
     removeEventListener: (type: string, listener: (event: MessageEvent) => void) => {
       const at = listeners.indexOf(listener);
@@ -760,7 +763,10 @@ function fakeWindow() {
       ...overrides,
     });
   };
-  return { win: win as unknown as Window, dispatch, deliverHandshake, listeners };
+  const firePagehide = (): void => {
+    for (const listener of [...pagehideListeners]) listener();
+  };
+  return { win: win as unknown as Window, dispatch, deliverHandshake, firePagehide, listeners };
 }
 
 function fakePort() {
@@ -928,5 +934,115 @@ describe('installBridge, the wiring itself', () => {
     expect(() => {
       notifyDomSend(h.scope);
     }).not.toThrow();
+  });
+});
+
+describe('reporting capture status', () => {
+  function statuses(
+    relayed: BackgroundRequest[],
+  ): Extract<BackgroundRequest, { type: 'capture_status' }>[] {
+    return relayed.filter(
+      (r): r is Extract<BackgroundRequest, { type: 'capture_status' }> =>
+        r.type === 'capture_status',
+    );
+  }
+
+  it('reports how many conversation endpoints the adapter compiled', () => {
+    // fakeAdapter() declares one conversation + one account endpoint.
+    const h = harness();
+    h.feed({ type: 'patched', fetch: true, xhr: false });
+    expect(h.bridge.status().conversationEndpoints).toBe(1);
+  });
+
+  it('does not report an endpoint whose pattern cannot be compiled as declared', () => {
+    const throwing: ProviderAdapter = {
+      ...fakeAdapter(),
+      endpoints: [
+        {
+          host: 'site.test',
+          // A pattern object whose `.source` getter throws — `new RegExp`
+          // reading it fails, so compileEndpoints' own catch drops the entry.
+          get path(): RegExp {
+            throw new Error('boom');
+          },
+          kind: 'conversation',
+        },
+      ],
+    };
+    const h = harness(throwing);
+    expect(h.bridge.status().conversationEndpoints).toBe(0);
+  });
+
+  it('reports once the tap says it patched, and not before', () => {
+    const h = harness();
+    h.feed({ type: 'ready' });
+    expect(statuses(h.relayed)).toHaveLength(0);
+    h.feed({ type: 'patched', fetch: true, xhr: false });
+    expect(statuses(h.relayed)).toHaveLength(1);
+  });
+
+  it('does not re-report an unchanged signature', () => {
+    const h = harness();
+    h.feed({ type: 'patched', fetch: true, xhr: false });
+    const before = statuses(h.relayed).length;
+    for (let i = 0; i < 50; i += 1) {
+      h.feed(request(100 + i));
+      h.feed({ type: 'chunk', id: 100 + i, text: 'x' });
+      h.feed({ type: 'end', id: 100 + i, status: 200, ok: true });
+    }
+    // Every one of those exchanges succeeds identically, so `live`/counts move
+    // but the SIGNATURE (bucketed) does not past the first transition.
+    expect(statuses(h.relayed).length).toBeLessThanOrEqual(before + 1);
+  });
+
+  it('a state change re-reports, carrying the exact (unbucketed) counts', () => {
+    const h = harness();
+    h.feed({ type: 'patched', fetch: true, xhr: false });
+    h.feed(request(), { type: 'chunk', id: 1, text: 'a' });
+    h.feed({ type: 'end', id: 1, status: 200, ok: true }); // goes live
+    const reports = statuses(h.relayed);
+    const last = reports[reports.length - 1];
+    expect(last?.status.exchangesSeenNet).toBe(1);
+  });
+
+  it('buckets counters so a busy tab does not report per failure', () => {
+    const failing = fakeAdapter({
+      parseRequest: () => {
+        throw new Error('bad body');
+      },
+    });
+    const h = harness(failing);
+    h.feed({ type: 'patched', fetch: true, xhr: false });
+    // One exchange first, so `live` has already made its one-time transition
+    // and only the parseFailures-bucket transitions are what the loop below
+    // measures.
+    h.feed(request(199), { type: 'end', id: 199, status: 200, ok: true });
+    const baseline = statuses(h.relayed).length;
+    for (let i = 0; i < STATUS_COUNTER_CAP + 5; i += 1) {
+      h.feed(request(200 + i));
+      h.feed({ type: 'end', id: 200 + i, status: 200, ok: true });
+    }
+    // parseFailures climbs through STATUS_COUNTER_CAP distinct bucketed
+    // values and then stops changing the signature — never one report per
+    // failure, of which there are STATUS_COUNTER_CAP + 5.
+    expect(statuses(h.relayed).length).toBeLessThanOrEqual(baseline + STATUS_COUNTER_CAP);
+  });
+
+  it('reports the final status unconditionally on pagehide', () => {
+    const win = fakeWindow();
+    const relayed: BackgroundRequest[] = [];
+    const clock = fakeClock();
+    installBridge({
+      win: win.win,
+      hostname: 'claude.ai',
+      relay: (request) => {
+        relayed.push(request);
+      },
+      now: clock.now,
+    });
+    // No signature change pending — nothing has happened on the page yet, and
+    // the pre-patched suppression would otherwise hold this back too.
+    win.firePagehide();
+    expect(statuses(relayed)).toHaveLength(1);
   });
 });

@@ -47,6 +47,7 @@ import { DB_FILENAME, ensureDataDirSync, tightenPerms } from './paths.ts';
 import { SqliteActivityRepository } from './repositories/activity.ts';
 import { SqliteAuditEventsRepository } from './repositories/audit-events.ts';
 import { SqliteBodyRetentionRepository } from './repositories/body-retention.ts';
+import { SqliteCaptureStatusRepository } from './repositories/capture-status.ts';
 import { SqliteClassifiedDataRepository } from './repositories/classified-data.ts';
 import { SqliteConfigInventoryRepository } from './repositories/config-inventory.ts';
 import { SqliteDetectionsRepository } from './repositories/detections.ts';
@@ -179,6 +180,10 @@ export interface LocalDatabase {
   readonly inventory: SqliteInventoryRepository;
   readonly sourceProject: SqliteSourceProjectRepository;
   readonly auditEvents: SqliteAuditEventsRepository;
+  // Read side of the browser extension's reported capture status — see
+  // SqliteCaptureStatusRepository's own doc comment for why it is a separate
+  // repository rather than a method on auditEvents.
+  readonly captureStatus: SqliteCaptureStatusRepository;
   readonly classifiedData: SqliteClassifiedDataRepository;
   readonly inspectionDefinitions: SqliteInspectionDefinitionsRepository;
   readonly inspectionFindings: SqliteInspectionFindingsRepository;
@@ -423,6 +428,7 @@ function openAndInitialize(file: string, base: string) {
       activity: new SqliteActivityRepository(db),
       sourceProject: new SqliteSourceProjectRepository(db),
       auditEvents: new SqliteAuditEventsRepository(db),
+      captureStatus: new SqliteCaptureStatusRepository(db),
       classifiedData: new SqliteClassifiedDataRepository(db),
       inspectionDefinitions: new SqliteInspectionDefinitionsRepository(db),
       inspectionFindings: new SqliteInspectionFindingsRepository(db),
@@ -471,6 +477,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     activity,
     sourceProject,
     auditEvents,
+    captureStatus,
     classifiedData,
     inspectionDefinitions,
     inspectionFindings,
@@ -844,6 +851,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     activity,
     sourceProject,
     auditEvents,
+    captureStatus,
     classifiedData,
     inspectionDefinitions,
     inspectionFindings,

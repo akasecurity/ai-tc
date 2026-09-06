@@ -405,13 +405,15 @@ const SESSION_ROOT = `event_type = 'session'`;
 
 // A session root "has activity" when any child event is more than bookkeeping —
 // hooks and config scans are recorded for every launch (including background
-// `claude` invocations that never see a prompt), so they alone don't make a
-// session worth listing. Correlates on the outer `audit_events` row; served by
-// idx_audit_session (root_session_id, started_at).
+// `claude` invocations that never see a prompt), and a browser tab reports its
+// own capture status on every load whether or not the user ever typed anything
+// — so none of the three alone makes a session worth listing. Correlates on
+// the outer `audit_events` row; served by idx_audit_session (root_session_id,
+// started_at).
 const HAS_ACTIVITY = `EXISTS (
   SELECT 1 FROM audit_events c
   WHERE c.root_session_id = audit_events.id
-    AND c.event_type NOT IN ('hook', 'config_scan'))`;
+    AND c.event_type NOT IN ('hook', 'config_scan', 'capture_status'))`;
 
 /**
  * Activity read views over the local `audit_events` store. Runs the

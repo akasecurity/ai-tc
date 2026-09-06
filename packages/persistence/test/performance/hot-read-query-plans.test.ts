@@ -113,6 +113,7 @@ interface Surfaces {
   readonly now: number;
   /** A cursor into the flat list, so the keyset page read is driven with a real one. */
   readonly secondPageCursor: string;
+  readonly secondLocationsCursor: string;
   /** A real finding id, so the deep-link seek is driven with one that resolves. */
   readonly findingId: string;
 }
@@ -152,6 +153,12 @@ const HOT_READS: readonly HotRead[] = [
     run: (c) => c.findings.listFindingInstances({ sessionId: c.sessionId }),
   },
   { name: '/findings listFindingLocations', run: (c) => c.findings.listFindingLocations({}) },
+  // Page 2 of the locations list is its own read, exactly as the flat list's
+  // is: it decodes a cursor and seeks past it, where page 1 starts at the top.
+  {
+    name: '/findings listFindingLocations (page 2)',
+    run: (c) => c.findings.listFindingLocations({ cursor: c.secondLocationsCursor }),
+  },
   {
     name: '/findings listFindingLocations (session)',
     run: (c) => c.findings.listFindingLocations({ sessionId: c.sessionId }),
@@ -272,6 +279,7 @@ const EXPECTED_FULL_INDEX_SCANS: Readonly<Record<string, readonly string[]>> = {
   // unscoped. Empty is the correct answer here, not an oversight.
   '/findings listFindingInstances (session)': [],
   '/findings listFindingLocations': ['audit_events'],
+  '/findings listFindingLocations (page 2)': ['audit_events'],
   '/findings listFindingLocations (session)': [],
   '/activity stats': [],
   '/activity listSessions': [],
@@ -327,6 +335,14 @@ describe('query plans of every hot dashboard read', () => {
       firstPage.nextCursor,
       'corpus produced fewer findings than one flat page, so the keyset read has no page to seek',
     ).toBeTypeOf('string');
+    // The same for the locations list, and for the same reason: a cursor that
+    // decoded to null would degrade to page 1 and the case would pin a plan the
+    // read it names never produces.
+    const firstLocationsPage = await new SqliteFindingsRepository(raw).listFindingLocations({});
+    expect(
+      firstLocationsPage.nextCursor,
+      'corpus produced fewer locations than one page, so the locations keyset read has no page to seek',
+    ).toBeTypeOf('string');
     // A real id, for the same reason the cursor is real: findingInstance on an
     // unknown id still runs its statement, but a plan taken from a seek that
     // matched nothing is a plan for a read the page never makes.
@@ -345,6 +361,7 @@ describe('query plans of every hot dashboard read', () => {
       sessionId: sessionRow?.id ?? '',
       now: corpus.endsAt,
       secondPageCursor: firstPage.nextCursor ?? '',
+      secondLocationsCursor: firstLocationsPage.nextCursor ?? '',
       findingId: firstPage.items[0]?.id ?? '',
     };
 

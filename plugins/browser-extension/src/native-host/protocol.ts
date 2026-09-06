@@ -1,6 +1,6 @@
 import type { BlockedDetectionRef } from '@akasecurity/plugin-sdk';
-import type { ActionTaken, WebCaptureStatus, WebExchange } from '@akasecurity/schema';
-import { EventKind, SOURCE_TOOL } from '@akasecurity/schema';
+import type { ActionTaken } from '@akasecurity/schema';
+import { EventKind, SOURCE_TOOL, WebCaptureStatus, WebExchange } from '@akasecurity/schema';
 
 // The web chat UIs this native host serves — the narrower SET of wire ids this
 // RPC contract accepts, taken FROM the registry rather than spelled again beside
@@ -41,7 +41,8 @@ export interface CaptureRequest {
 //
 // `exchange` is a `WebExchange` on the wire. This interface is what
 // background.ts relays and is not a substitute for parsing the payload where
-// it lands — see `isHostRequest` below for what this host does with one today.
+// it lands — `isHostRequest` below re-validates with `WebExchange.safeParse`
+// before this host ever acts on one.
 export interface ExchangeRequest {
   type: 'exchange';
   requestId: string;
@@ -101,6 +102,36 @@ export interface CaptureResponse {
   blockedReferences?: BlockedDetectionRef[];
 }
 
+export interface ExchangeResponse {
+  type: 'exchange';
+  requestId: string;
+  ok: true;
+  // Whether this host was permitted to record the exchange AND could key it.
+  // False means nothing was written and nothing will be; `skipped` says which.
+  accepted: boolean;
+  skipped?: 'no-consent' | 'unkeyable';
+  // How many leaves this host SUBMITTED for this exchange — not a row count.
+  // Both leaf ids are content-addressed, so a re-observed turn collapses onto
+  // the rows already there (INSERT OR IGNORE for a tool call, an
+  // UPSERT-take-MAX for an llm call); and every gateway write on this path is
+  // fail-open, so a dropped write is not reflected here either.
+  llmCalls: number;
+  toolCalls: number;
+  // The response capture's decision. Absent when no reply text was captured
+  // (no responseText, or the stored `responses` mode is 'never'). INFORMATIONAL:
+  // the reply has already been rendered, so nothing is enforced on it here.
+  responseAction?: ActionTaken;
+  ruleIds: string[];
+}
+
+export interface CaptureStatusResponse {
+  type: 'capture_status';
+  requestId: string;
+  ok: true;
+  accepted: boolean;
+  skipped?: 'no-consent';
+}
+
 export interface PingResponse {
   type: 'ping';
   requestId: string;
@@ -129,7 +160,13 @@ export interface ErrorResponse {
 }
 
 export type HostResponse =
-  SessionStartResponse | CaptureResponse | PingResponse | HealthResponse | ErrorResponse;
+  | SessionStartResponse
+  | CaptureResponse
+  | ExchangeResponse
+  | CaptureStatusResponse
+  | PingResponse
+  | HealthResponse
+  | ErrorResponse;
 
 function isWebSourceTool(value: unknown): value is WebSourceTool {
   return (WEB_SOURCE_TOOLS as readonly unknown[]).includes(value);
@@ -168,15 +205,30 @@ export function isHostRequest(value: unknown): value is HostRequest {
         isEventKind(v.kind) &&
         typeof v.text === 'string'
       );
+    // A successful safeParse proves the payload is ACCEPTABLE, not that the
+    // narrowed object carries the schema's defaults — `toolCalls` and
+    // `truncated` are `.default(...)`, and a guard does not rewrite its input.
+    // The handler re-parses and reads `parsed.data`; nothing may read
+    // `request.exchange` / `request.status` directly.
+    case 'exchange':
+      return (
+        typeof v.sessionId === 'string' &&
+        isWebSourceTool(v.tool) &&
+        WebExchange.safeParse(v.exchange).success
+      );
+    case 'capture_status':
+      return (
+        typeof v.sessionId === 'string' &&
+        isWebSourceTool(v.tool) &&
+        WebCaptureStatus.safeParse(v.status).success
+      );
     case 'ping':
     case 'health':
       return true;
     default:
-      // 'exchange' and 'capture_status' fall here on purpose: they are declared
-      // on the wire so the isolated-world bridge can relay them, and this host
-      // has no handler for either yet. Accepting a shape nothing implements
-      // would report success for a payload that was then discarded, which is
-      // worse than the 'unrecognized request' reply this produces.
+      // A request type this contract does not define at all (extension/host
+      // version skew, or a stray value). Refused here so runHost answers it
+      // with 'unrecognized request' rather than routing it to handleRequest.
       return false;
   }
 }

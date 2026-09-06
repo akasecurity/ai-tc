@@ -25,14 +25,21 @@ import type {
   ResolvedCodexProvider,
   ResolvedProvider,
 } from '@akasecurity/plugin-sdk';
-import { loadConfig } from '@akasecurity/plugin-sdk';
-import type { SourceTool } from '@akasecurity/schema';
-import { SOURCE_TOOL } from '@akasecurity/schema';
+import { loadConfig, scanText } from '@akasecurity/plugin-sdk';
+import type { ActionTaken, SourceTool } from '@akasecurity/schema';
+import {
+  isWebChatCaptureConsentValid,
+  SOURCE_TOOL,
+  WebCaptureStatus,
+  webChatCaptureOf,
+  WebExchange,
+} from '@akasecurity/schema';
 
 // Named imports, not a default import: esbuild tree-shakes named JSON exports
 // down to the two strings, while a default import inlines the whole manifest —
 // scripts and dependency lists included — into the shipped bundle.
 import { name as pkgName, version as pkgVersion } from '../../package.json';
+import { capResponseText, toLlmCallInput, toToolCallInputs } from './exchange.ts';
 import type { HostRequest, HostResponse, WebSourceTool } from './protocol.ts';
 import { isHostRequest } from './protocol.ts';
 import { readMessages, writeMessage } from './wire.ts';
@@ -47,6 +54,42 @@ const WEB_TOOL_TO_SOURCE: Record<WebSourceTool, SourceTool> = {
 // manifest at bundle time — the installed host ships as a single script with
 // no package.json beside it, so a runtime lookup has nothing to find.
 const PLUGIN_BUILD = { package: pkgName, version: pkgVersion };
+
+// The most sessions whose last reported capture status this process keeps.
+// Slack, not a budget: one host process serves one browser, and a tab that is
+// closed never reports again.
+const MAX_TRACKED_SESSIONS = 32;
+
+export interface TrackedCaptureStatus {
+  tool: WebSourceTool;
+  status: WebCaptureStatus;
+  // When the host received it, ISO-8601.
+  observedAt: string;
+}
+
+// In memory, per host process, and deliberately not persisted: the local
+// store has no AuditEventType for a capture status and inventing an on-disk
+// home would put a second unlocked read-modify-write under ~/.aka. A Chrome
+// restart forgets it, and a separate process (`aka extension status`) cannot
+// read it — the status-surface task decides where a durable home lives.
+const captureStatuses = new Map<string, TrackedCaptureStatus>();
+
+/** The last capture status this PROCESS was told about for a session. */
+export function readCaptureStatus(sessionId: string): TrackedCaptureStatus | undefined {
+  return captureStatuses.get(sessionId);
+}
+
+function recordCaptureStatus(sessionId: string, record: TrackedCaptureStatus): void {
+  // Move to the most-recently-used end on a repeat report, then evict the
+  // oldest entries once the bound is exceeded.
+  captureStatuses.delete(sessionId);
+  captureStatuses.set(sessionId, record);
+  while (captureStatuses.size > MAX_TRACKED_SESSIONS) {
+    const oldest = captureStatuses.keys().next().value;
+    if (oldest === undefined) break;
+    captureStatuses.delete(oldest);
+  }
+}
 
 // chatgpt.com / claude.ai are each single-backend web apps — there's no local
 // env signal to read (unlike the CLI resolvers, which sniff env vars a
@@ -155,18 +198,185 @@ export async function handleRequest(
         ...(result.blockedReferences ? { blockedReferences: result.blockedReferences } : {}),
       };
     }
+    case 'exchange': {
+      const config = configForTool(request.tool);
+      const webChat = webChatCaptureOf(config.settings);
+      // Read live, every call: settings.json can change under this long-lived
+      // process, and a revocation must apply to the very next exchange frame.
+      // No module-level snapshot, no memoisation, no hoisting this check out
+      // of the switch.
+      if (!isWebChatCaptureConsentValid(webChat.consent)) {
+        return {
+          type: 'exchange',
+          requestId: request.requestId,
+          ok: true,
+          accepted: false,
+          skipped: 'no-consent',
+          llmCalls: 0,
+          toolCalls: 0,
+          ruleIds: [],
+        };
+      }
+
+      const parsed = WebExchange.safeParse(request.exchange);
+      if (!parsed.success) {
+        return {
+          type: 'error',
+          requestId: request.requestId,
+          ok: false,
+          message: 'malformed exchange payload',
+        };
+      }
+      const exchange = capResponseText(parsed.data);
+
+      const llm = toLlmCallInput(exchange, request.sessionId, request.tool);
+      if (llm === null) {
+        return {
+          type: 'exchange',
+          requestId: request.requestId,
+          ok: true,
+          accepted: false,
+          skipped: 'unkeyable',
+          llmCalls: 0,
+          toolCalls: 0,
+          ruleIds: [],
+        };
+      }
+
+      let llmCalls = 0;
+      let toolCalls = 0;
+      const gateway = resolveDataGateway(config);
+      try {
+        // FK-safety: audit_events.parent_id/root_session_id are enforced FKs
+        // and INSERT OR IGNORE does not suppress a foreign-key violation, so a
+        // leaf written before the root raises and rolls its transaction back.
+        // An attribute-less stub: a real root arriving later heals it in
+        // place, and a stub never overwrites one that is already populated.
+        await gateway.recordAuditEvent({
+          id: request.sessionId,
+          eventType: 'session',
+          startedAt: exchange.startedAt,
+        });
+        await gateway.recordLlmCall(llm);
+        llmCalls = 1;
+        // Per-rule installed-pack versions, so a tool-call finding cites the
+        // pack version that actually fired instead of the rule file's format
+        // version. The definition row id hashes (ruleId, version), so without
+        // this the same rule firing on a CLI tool call and on a web one mints
+        // two rows. Best-effort: an unreadable bundle leaves the map undefined
+        // and scanText falls back to the less precise string — never a missed
+        // detection.
+        let ruleVersions: Record<string, string> | undefined;
+        try {
+          ruleVersions = (await gateway.getPolicyBundle()).ruleVersions;
+        } catch {
+          ruleVersions = undefined;
+        }
+        const tools = toToolCallInputs(exchange, request.sessionId, (text) =>
+          scanText(text, ruleVersions),
+        );
+        if (tools.length > 0) {
+          await gateway.recordToolCalls(tools);
+          toolCalls = tools.length;
+        }
+      } catch {
+        // Fail-open: a contended or refused write costs this exchange's
+        // leaves and nothing else. The counts above say how many leaves this
+        // host submitted, which a deterministic id may collapse onto a row
+        // that is already there.
+      } finally {
+        await gateway.close();
+      }
+
+      const text = exchange.responseText;
+      let responseAction: { responseAction?: ActionTaken } = {};
+      let ruleIds: string[] = [];
+      if (text !== undefined && text.length > 0 && webChat.responses !== 'never') {
+        const result = await handleCapture(
+          {
+            kind: 'response',
+            sourceTool: WEB_TOOL_TO_SOURCE[request.tool],
+            text,
+            occurredAt: exchange.startedAt,
+            metadata: {
+              sessionId: request.sessionId,
+              // Read off the leaf's OWN attributes, which are already
+              // trimmed — deriving them again here would let the capture and
+              // the leaf disagree about the trimmed form.
+              ...(llm.attributes.model !== undefined ? { model: llm.attributes.model } : {}),
+              messageId: llm.messageId,
+              ...(llm.attributes.site_conversation_id !== undefined
+                ? { conversationId: llm.attributes.site_conversation_id as string }
+                : {}),
+              ...(exchange.turnIndex !== undefined ? { turnIndex: exchange.turnIndex } : {}),
+            },
+          },
+          config,
+          // No rewritable: false. Nothing about a response is rewritable in
+          // the sense that field means (a host input it must not mutate) —
+          // saying so here would degrade a resolved redact to
+          // settings.redactFallback, trading a meaningless decision for a
+          // real leak at rest. No dedupe, no preAuthorizedGrantIds either.
+          { persist: webChat.responses === 'always' ? 'always' : 'with-findings' },
+        );
+        responseAction = { responseAction: result.action };
+        ruleIds = [...new Set(result.findings.map((f) => f.ruleId))];
+      }
+
+      return {
+        type: 'exchange',
+        requestId: request.requestId,
+        ok: true,
+        accepted: true,
+        llmCalls,
+        toolCalls,
+        ...responseAction,
+        ruleIds,
+      };
+    }
+    case 'capture_status': {
+      const config = configForTool(request.tool);
+      const webChat = webChatCaptureOf(config.settings);
+      if (!isWebChatCaptureConsentValid(webChat.consent)) {
+        return {
+          type: 'capture_status',
+          requestId: request.requestId,
+          ok: true,
+          accepted: false,
+          skipped: 'no-consent',
+        };
+      }
+      const parsed = WebCaptureStatus.safeParse(request.status);
+      if (!parsed.success) {
+        return {
+          type: 'error',
+          requestId: request.requestId,
+          ok: false,
+          message: 'malformed capture status payload',
+        };
+      }
+      recordCaptureStatus(request.sessionId, {
+        tool: request.tool,
+        status: parsed.data,
+        observedAt: new Date().toISOString(),
+      });
+      return { type: 'capture_status', requestId: request.requestId, ok: true, accepted: true };
+    }
     default: {
-      // A request type the wire contract defines but this host has no handler
-      // for yet. Answered rather than dropped: background.ts holds a pending
-      // entry per requestId, so a silent drop leaves its caller waiting for the
-      // relay deadline instead of learning at once. `isHostRequest` refuses
-      // these before runHost ever reaches here, so the reply a real extension
-      // sees is that validator's — this branch answers a direct caller.
+      // A request type this contract does not define at all — every type it
+      // DOES define now has a case above. Answered rather than dropped:
+      // background.ts holds a pending entry per requestId, so a silent drop
+      // leaves its caller waiting for the relay deadline instead of learning
+      // at once. `isHostRequest` refuses these before runHost ever reaches
+      // here, so the reply a real extension sees is that validator's — this
+      // branch answers a direct caller (or a future HostRequest member no
+      // case here has been extended to handle yet).
+      const unrecognized = request as { type: string; requestId: string };
       return {
         type: 'error',
-        requestId: request.requestId,
+        requestId: unrecognized.requestId,
         ok: false,
-        message: `unsupported request type: ${request.type}`,
+        message: `unsupported request type: ${unrecognized.type}`,
       };
     }
   }

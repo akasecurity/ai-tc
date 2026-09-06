@@ -573,6 +573,34 @@ describe('numberSurrogate', () => {
 });
 
 describe('findResidueRun (the backstop, driven directly)', () => {
+  it('does NOT catch a run that a content-derived surrogate carried into the output', () => {
+    // The limit, pinned as behaviour rather than prose. A surrogate built from
+    // the original's CONTENT leaks it, and this backstop cannot see the leak:
+    // the run sits inside a string the walker registered as deliberately
+    // emitted, so the positional accounting skips it. What actually prevents
+    // this is surrogateFor's own rule that a surrogate MUST NOT read the
+    // original's content. Break that rule and nothing here fires — which is
+    // why the rule is written as a prohibition and not as a guard.
+    const leaked = `TEXT_1_${RAW.slice(0, 12)}`;
+    expect(
+      findResidueRun(
+        [{ where: 'chunks[0]', text: `{"a":"${leaked}"}` }],
+        new Map([[RAW, 'text #1']]),
+        [leaked],
+      ),
+    ).toBeNull();
+    // The control: the same run, in the same place, with nothing accounting for
+    // it, IS caught — so the case above is a statement about the accounting and
+    // not about the search.
+    expect(
+      findResidueRun(
+        [{ where: 'chunks[0]', text: `{"a":"${leaked}"}` }],
+        new Map([[RAW, 'text #1']]),
+        [],
+      ),
+    ).not.toBeNull();
+  });
+
   // The walker replaces every original it reaches, so a genuine survival is
   // unreachable through sanitizeCapture — which is the whole point of a
   // backstop and also why it cannot be given an end-to-end positive control.

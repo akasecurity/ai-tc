@@ -211,6 +211,36 @@ describe('sanitize-capture CLI', () => {
     expect(fixture.chunks[0]).not.toContain(MAC_EXAMPLE);
   });
 
+  it('K7b: the summary reports an approval the detector overrode', () => {
+    // K7 proves such a value is REPLACED. This proves the operator is told. On
+    // the normal path only the survey printed the flag counts, so an approvals
+    // file carrying a live credential was silently ignored while the run
+    // reported a clean success — the one outcome that reads as "my approvals
+    // were applied".
+    const raw = JSON.stringify({ credential: MAC_EXAMPLE });
+    const inPath = join(dir, 'in.json');
+    writeFileSync(inPath, raw);
+    const approvedKeysPath = join(dir, 'approved-keys.txt');
+    writeFileSync(approvedKeysPath, 'credential\n');
+    const approvedValuesPath = join(dir, 'approved-values.txt');
+    writeFileSync(approvedValuesPath, `${MAC_EXAMPLE}\n`);
+    const outPath = join(dir, 'out.json');
+    const result = run([
+      ...baseArgs(),
+      '--in',
+      inPath,
+      '--out',
+      outPath,
+      '--approved-keys',
+      approvedKeysPath,
+      '--approved-values',
+      approvedValuesPath,
+    ]);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('1 approval(s) overridden by the detector');
+    expectNoEchoOf(result.stderr, MAC_EXAMPLE);
+  });
+
   it('K8: a detector-flagged survey candidate withholds the value', () => {
     const raw = JSON.stringify({ credential: MAC_EXAMPLE, harmless: 'gpt-4o' });
     const inPath = join(dir, 'in.json');

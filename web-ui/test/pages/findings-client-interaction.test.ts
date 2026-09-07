@@ -524,6 +524,41 @@ describe('findings client — the By-location view', () => {
   // The cursor was minted under the SERVER's term. Pairing it with a newer one
   // pages a differently filtered list, and because a filtered list is a
   // subsequence the slice starts past rows that should have been on page 1.
+  // Both re-fetches, in one case, under a NON-EMPTY tool scope.
+  //
+  // The scope is the whole point: every other case here renders with `tools: []`,
+  // and with an empty scope a call site that forwards the scope and one that
+  // drops it produce byte-identical payloads. That is exactly how both sites
+  // shipped without it — the server render was correctly scoped, the cursor was
+  // minted against the scoped list, and page 2 came back from the unscoped one.
+  //
+  // Driving both panels together rather than one each is deliberate: a third
+  // re-fetch added later is caught wherever it is added, not only if someone
+  // remembers to write it a case.
+  it('carries the tool scope into BOTH re-fetches, not just the server render', async () => {
+    loadMoreFindingLocations.mockResolvedValue(locationsPage([], null));
+    loadMoreFindingInstances.mockResolvedValue(pageOf([], null));
+    mountFiles({ tools: ['Bash'] });
+
+    const listNext = () => byText('button[data-slot="pagination-next"]', 'Next', typeList());
+    await act(async () => {
+      listNext()?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await clickPanelNext();
+
+    const listQuery = loadMoreFindingLocations.mock.calls[0]?.[0] as Record<string, unknown>;
+    const panelQuery = loadMoreFindingInstances.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(listQuery.tool).toEqual(['Bash']);
+    expect(panelQuery.tool).toEqual(['Bash']);
+    // The controls: each re-fetch still carries what it is FOR, so a payload
+    // that gained `tool` by losing its cursor or its pin would not pass.
+    expect(listQuery.cursor).toBe('loc-cursor-1');
+    expect(panelQuery.cursor).toBe('cursor-1');
+    expect(panelQuery.repo).toBe('acme/api');
+    expect(panelQuery.file).toBe('src/config.ts');
+  });
+
   it('pages the list under the server term, not the live one', async () => {
     loadMoreFindingLocations.mockResolvedValue(locationsPage([], null));
     mountFiles();

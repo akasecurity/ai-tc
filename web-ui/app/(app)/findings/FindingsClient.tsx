@@ -399,6 +399,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
             serverQuery={initialQuery}
             session={session}
             from={from}
+            tools={tools}
             sessionHref={sessionHref}
             emptyState={emptyState}
             renderedAt={renderedAt}
@@ -917,6 +918,7 @@ function LocationsMasterDetail({
   serverQuery,
   session,
   from,
+  tools,
   sessionHref,
   emptyState,
   renderedAt,
@@ -935,6 +937,13 @@ function LocationsMasterDetail({
   serverQuery: string;
   session: string;
   from: string | null;
+  /**
+   * The tool scope the SERVER rendered under, threaded in for the same reason
+   * `from` and `serverQuery` are: both reads below are re-fetches, and a
+   * re-fetch that drops a dimension the first read applied is answering a
+   * different question. `from` alone is not the whole scope.
+   */
+  tools: string[];
   sessionHref: string | null;
   emptyState: React.ReactNode;
   renderedAt: number;
@@ -949,7 +958,10 @@ function LocationsMasterDetail({
         // Built from the SERVER-RENDERED term, never the live debounced one: a
         // click during the debounce window would otherwise page a differently
         // filtered set into this one.
-        ...toLocationsQuery(filters, serverQuery, session, { ...(from ? { from } : {}) }),
+        ...toLocationsQuery(filters, serverQuery, session, {
+          ...(from ? { from } : {}),
+          ...(tools.length ? { tools } : {}),
+        }),
         cursor,
       }).then((next) => ({
         // The selected location is appended to page 0 out of sort order (see
@@ -1003,6 +1015,7 @@ function LocationsMasterDetail({
             loadMoreFindingInstances({
               ...toLocationInstancesQuery(filters, serverQuery, selectedLocation, session, {
                 ...(from ? { from } : {}),
+                ...(tools.length ? { tools } : {}),
               }),
               cursor,
             })

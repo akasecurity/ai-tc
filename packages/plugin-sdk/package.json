@@ -20,7 +20,7 @@
     "@akasecurity/detections": "workspace:*",
     "@akasecurity/persistence": "workspace:*",
     "@akasecurity/schema": "workspace:*",
-    "ignore": "^7.0.6",
+    "ignore": "^7.0.8",
     "zod": "^4.5.4"
   },
   "devDependencies": {

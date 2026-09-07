@@ -26,14 +26,17 @@ export {
   configPostureDefinitions,
   evaluateConfigPosture,
 } from './posture/config-posture.ts';
-export type { WebCaptureState, WebCaptureStateCopy } from './posture/web-capture-posture.ts';
+export type { WebCaptureSiteReport, WebCaptureState } from './posture/web-capture-posture.ts';
+// `webCaptureStateCopy` and its return type stay module-private: every surface
+// reads the copy through `webCaptureReport`, so exporting the raw lookup would
+// be a second way to spell a report row.
 export {
   deriveWebCaptureState,
   DRIFT_MIN_PARSE_FAILURES,
+  WEB_CAPTURE_DRIFT_RULE,
   WEB_CAPTURE_DRIFT_STATES,
-  WEB_CAPTURE_POSTURE_RULES,
   webCaptureDriftFires,
-  webCaptureStateCopy,
+  webCaptureReport,
 } from './posture/web-capture-posture.ts';
 export type { ProbeClock, RuleTiming, RuleTimingVerdict } from './security/redos-probe.ts';
 export { checkRuleTiming } from './security/redos-probe.ts';

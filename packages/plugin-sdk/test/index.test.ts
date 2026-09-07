@@ -85,8 +85,8 @@ const PUBLIC_VALUE_EXPORTS = [
   'PROJECT_WALK_BOUNDS',
   'RawEgressError',
   'THIRTY_DAYS_MS',
+  'WEB_CAPTURE_DRIFT_RULE',
   'WEB_CAPTURE_DRIFT_STATES',
-  'WEB_CAPTURE_POSTURE_RULES',
   'aggregateTokenUsage',
   'antigravityProviderFromModelId',
   'applyCategoryPosture',
@@ -198,6 +198,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'tokenizeText',
   'tokenizeValue',
   'uniqueRuleIds',
+  'webCaptureReport',
   'withLayer',
 ];
 

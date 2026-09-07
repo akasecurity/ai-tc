@@ -6,12 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-import {
-  deriveWebCaptureState,
-  WEB_CAPTURE_DRIFT_STATES,
-  WEB_CAPTURE_POSTURE_RULES,
-  webCaptureStateCopy,
-} from '@akasecurity/detections';
+import { WEB_CAPTURE_DRIFT_RULE, webCaptureReport } from '@akasecurity/detections';
 import { isSea } from '@akasecurity/local-ops';
 import {
   DATA_FILE_MODE,
@@ -19,12 +14,7 @@ import {
   openLocalDatabase,
   readEffectiveSettings,
 } from '@akasecurity/persistence';
-import type { WebSourceTool } from '@akasecurity/schema';
-import {
-  isWebChatCaptureConsentValid,
-  webChatCaptureOf,
-  WebSourceTool as WebSourceToolEnum,
-} from '@akasecurity/schema';
+import { isWebChatCaptureConsentValid, webChatCaptureOf } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 
@@ -362,23 +352,15 @@ function captureBlock(home: string): string {
     const db = openLocalDatabase(dataDir(home));
     let records;
     try {
-      records = db.captureStatus.latest();
+      records = db.captureStatus.latest(Date.now());
     } finally {
       db.close();
     }
 
-    const [rule] = WEB_CAPTURE_POSTURE_RULES;
-    const lines = WebSourceToolEnum.options.map((tool: WebSourceTool) => {
-      const record = records.find((r) => r.tool === tool);
-      const state = deriveWebCaptureState(record?.status);
-      const copy = webCaptureStateCopy(state);
-      let line = `  ${tool.padEnd(10)} ${state.padEnd(10)} ${copy.headline}\n`;
-      if (
-        rule !== undefined &&
-        WEB_CAPTURE_DRIFT_STATES.has(state) &&
-        copy.remediation !== undefined
-      ) {
-        line += `    ${rule.ruleId} (${rule.severity}) — ${copy.remediation}\n`;
+    const lines = webCaptureReport(records).map((site) => {
+      let line = `  ${site.tool.padEnd(10)} ${site.state.padEnd(10)} ${site.headline}\n`;
+      if (site.drift && site.remediation !== undefined) {
+        line += `    ${WEB_CAPTURE_DRIFT_RULE.ruleId} (${WEB_CAPTURE_DRIFT_RULE.severity}) — ${site.remediation}\n`;
       }
       return line;
     });

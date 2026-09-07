@@ -154,6 +154,30 @@ export function pickReportedCaptureStatus<T extends { status: WebCaptureStatus }
   return candidates.find((c) => webCaptureStatusObservedTurnPath(c.status)) ?? candidates[0];
 }
 
+/**
+ * How far back a read looks for a site's reported status.
+ *
+ * The other read-policy decision about these rows, and it sits beside the
+ * picker for that reason. A status is a report about what one tab saw at one
+ * instant, and nothing ever supersedes it except a later report from the same
+ * site — so a store keeps the last one for ever, and the browser extension is
+ * its only writer. Unbounded, an extension that was uninstalled a year ago
+ * goes on making a live-sounding claim ("reload the tab") about a tab nothing
+ * is watching, and no later report can arrive to clear it.
+ *
+ * Bounding the read is what makes the claim decay instead: past this window a
+ * site reads as `unreported` — nobody has confirmed anything recently — which
+ * is what the evidence actually supports. It also bounds the SQL, whose
+ * per-site seek otherwise walks every `capture_status` row ever written when
+ * the site it asks for has none (`audit_events` has no retention policy).
+ *
+ * Thirty days, matching the dashboard's own default range.
+ */
+export const CAPTURE_STATUS_RECENCY_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** `CAPTURE_STATUS_RECENCY_MS` in whole days, for copy that names the window. */
+export const CAPTURE_STATUS_RECENCY_DAYS = CAPTURE_STATUS_RECENCY_MS / (24 * 60 * 60 * 1000);
+
 /** One site's reported status, as the local store holds it. */
 export interface StoredCaptureStatus {
   tool: WebSourceTool;

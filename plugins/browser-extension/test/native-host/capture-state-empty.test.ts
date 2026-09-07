@@ -90,7 +90,11 @@ describe('capture_state on a host that has heard nothing yet', () => {
       db.auditEvents.insertAuditEvent({
         id: randomUUID(),
         eventType: 'capture_status',
-        startedAt: '2026-01-01T00:00:00.000Z',
+        // Stamped NOW rather than at a fixed date: the store read is bounded
+        // to the last CAPTURE_STATUS_RECENCY_MS, so a literal calendar date
+        // ages out of the window once the wall clock passes it and this case
+        // would then read `unreported` for the reason it is testing against.
+        startedAt: new Date().toISOString(),
         attributes: toCaptureStatusAttributes(
           {
             patched: true,

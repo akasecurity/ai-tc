@@ -12,7 +12,11 @@
 // doing so would ship a rule that fires on every machine that merely installs
 // the extension, for a reason that is not drift.
 import type { InspectionDefinitionInput } from '@akasecurity/schema';
-import type { WebCaptureStatus } from '@akasecurity/schema';
+import type { StoredCaptureStatus, WebCaptureStatus, WebSourceTool } from '@akasecurity/schema';
+import {
+  CAPTURE_STATUS_RECENCY_DAYS,
+  WebSourceTool as WebSourceToolEnum,
+} from '@akasecurity/schema';
 
 const RULE_VERSION = '1';
 
@@ -35,20 +39,27 @@ export const WEB_CAPTURE_DRIFT_STATES: ReadonlySet<WebCaptureState> = new Set([
   'degraded',
 ]);
 
-export const WEB_CAPTURE_POSTURE_RULES: readonly InspectionDefinitionInput[] = [
-  {
-    ruleId: 'web-capture-drift',
-    version: RULE_VERSION,
-    name: 'Web chat capture is not reading the site',
-    category: 'config',
-    severity: 'medium',
-    definition: JSON.stringify({
-      kind: 'web-capture-drift',
-      states: [...WEB_CAPTURE_DRIFT_STATES],
-      minParseFailures: DRIFT_MIN_PARSE_FAILURES,
-    }),
-  },
-];
+/**
+ * The one web-capture posture rule.
+ *
+ * Singular rather than the `readonly InspectionDefinitionInput[]` its
+ * config-posture sibling exports, because the array shape is what
+ * `recordConfigScan` takes and nothing persists this rule: every surface reads
+ * `.ruleId` and `.severity` off one rule, and an array of one only invited a
+ * `[0]` at each of them.
+ */
+export const WEB_CAPTURE_DRIFT_RULE: InspectionDefinitionInput = {
+  ruleId: 'web-capture-drift',
+  version: RULE_VERSION,
+  name: 'Web chat capture is not reading the site',
+  category: 'config',
+  severity: 'medium',
+  definition: JSON.stringify({
+    kind: 'web-capture-drift',
+    states: [...WEB_CAPTURE_DRIFT_STATES],
+    minParseFailures: DRIFT_MIN_PARSE_FAILURES,
+  }),
+};
 
 /**
  * Derive the one-word state a reported status is in.
@@ -92,7 +103,12 @@ export interface WebCaptureStateCopy {
 
 const STATIC_COPY: Record<Exclude<WebCaptureState, 'active'>, WebCaptureStateCopy> = {
   unreported: {
-    headline: 'no page has reported yet — open the site in Chrome with the extension loaded',
+    // Says "recently" rather than "yet": the store read is bounded to
+    // CAPTURE_STATUS_RECENCY_MS, so this state covers a site nothing has ever
+    // reported for AND one whose last report has aged out. The two are the
+    // same fact to a reader — nobody has confirmed anything lately — and the
+    // copy may not claim the stronger of them.
+    headline: `no report in the last ${String(CAPTURE_STATUS_RECENCY_DAYS)} days — open the site in Chrome with the extension loaded`,
   },
   standby: {
     headline: 'this build declares no endpoints for the site, so nothing is observed yet',
@@ -128,4 +144,45 @@ export function webCaptureStateCopy(
     return { headline: `${String(n)} turn${n === 1 ? '' : 's'} observed` };
   }
   return STATIC_COPY[state];
+}
+
+/** One site's capture posture, as a read surface renders it. */
+export interface WebCaptureSiteReport {
+  tool: WebSourceTool;
+  state: WebCaptureState;
+  /** The primary line for this state. */
+  headline: string;
+  /** The fix. Present for a drift state and absent for every other. */
+  remediation?: string;
+  /** Whether `web-capture-drift` fires for this site. */
+  drift: boolean;
+  /** When the reported status was received, ISO-8601. Absent for an unreported site. */
+  observedAt?: string;
+}
+
+/**
+ * One row per registered site, in registry order, from the statuses the local
+ * store holds.
+ *
+ * Every site is reported, including one nothing has reported for — an absent
+ * row is a fact the surface has to show, not a row to omit. Each site's state
+ * is derived from its OWN record, so a drifting site never colours another.
+ * Pure: the caller decides whether a report is worth rendering at all.
+ */
+export function webCaptureReport(
+  records: readonly StoredCaptureStatus[],
+): readonly WebCaptureSiteReport[] {
+  return WebSourceToolEnum.options.map((tool) => {
+    const record = records.find((r) => r.tool === tool);
+    const state = deriveWebCaptureState(record?.status);
+    const copy = webCaptureStateCopy(state, record?.status);
+    return {
+      tool,
+      state,
+      headline: copy.headline,
+      ...(copy.remediation !== undefined ? { remediation: copy.remediation } : {}),
+      drift: WEB_CAPTURE_DRIFT_STATES.has(state),
+      ...(record !== undefined ? { observedAt: record.observedAt } : {}),
+    };
+  });
 }

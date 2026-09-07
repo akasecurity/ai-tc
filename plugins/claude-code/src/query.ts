@@ -16,6 +16,7 @@
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import { loadConfig } from '@akasecurity/plugin-sdk';
+import { isWebChatCaptureConsentValid, webChatCaptureOf } from '@akasecurity/schema';
 
 import { fenced } from './present.ts';
 import {
@@ -76,7 +77,19 @@ try {
     try {
       const severity = parseSeverity(args);
       process.stdout.write(
-        `${fenced(await runQuery(sub, gateway, severity !== undefined ? { severity } : {}))}\n`,
+        `${fenced(
+          await runQuery(sub, gateway, {
+            ...(severity !== undefined ? { severity } : {}),
+            // Resolved here rather than inside render.ts, which reads no
+            // files: this is the settings-holding boundary, and it is the
+            // same predicate `aka extension status` and the native host
+            // apply, so the three surfaces cannot disagree about whether
+            // web-chat capture is on.
+            webCaptureConsent: isWebChatCaptureConsentValid(
+              webChatCaptureOf(config.settings).consent,
+            ),
+          }),
+        )}\n`,
       );
     } finally {
       await gateway.close();

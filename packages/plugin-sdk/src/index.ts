@@ -174,13 +174,14 @@ export {
 export { configPostureDefinitions, evaluateConfigPosture } from '@akasecurity/detections';
 // Web-capture posture re-exported for the SAME reason: the browser extension's
 // native-messaging host is a plugin-sdk consumer, not a detections one.
-export type { WebCaptureState } from '@akasecurity/detections';
+export type { WebCaptureSiteReport, WebCaptureState } from '@akasecurity/detections';
 export {
   deriveWebCaptureState,
   DRIFT_MIN_PARSE_FAILURES,
+  WEB_CAPTURE_DRIFT_RULE,
   WEB_CAPTURE_DRIFT_STATES,
-  WEB_CAPTURE_POSTURE_RULES,
   webCaptureDriftFires,
+  webCaptureReport,
 } from '@akasecurity/detections';
 // Egress extraction re-exported so the scanner can consume the pure
 // extraction API without importing @akasecurity/detections directly — the

@@ -246,6 +246,11 @@ export {
 export { ScanCoverageCardView, type ScanCoverageView } from './security/ScanCoverageCardView.tsx';
 export { SeverityCardView, type SeveritySummaryView } from './security/SeverityCardView.tsx';
 export { TopSourcesCardView, type TopSourcesView } from './security/TopSourcesCardView.tsx';
+export {
+  WebCaptureCardView,
+  type WebCaptureCardViewProps,
+  type WebCaptureSiteRow,
+} from './security/WebCaptureCardView.tsx';
 
 // Exceptions views — props-driven (no data fetching); the web twin of the
 // `aka exception` verbs. Fed by @akasecurity/persistence Server Components /

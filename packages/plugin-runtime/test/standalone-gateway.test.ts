@@ -762,7 +762,11 @@ describe('readCaptureStatuses', () => {
     await gateway.recordAuditEvent({
       id: randomUUID(),
       eventType: 'capture_status',
-      startedAt: '2026-01-01T00:00:00.000Z',
+      // Stamped NOW rather than at a fixed date: `readCaptureStatuses` bounds
+      // its read to the last CAPTURE_STATUS_RECENCY_MS against the wall clock,
+      // so a literal calendar date ages out of the window once the clock
+      // passes it and this case would then read an empty store.
+      startedAt: new Date().toISOString(),
       attributes: toCaptureStatusAttributes(status, 'claude-ai'),
     });
     const records = await gateway.readCaptureStatuses();

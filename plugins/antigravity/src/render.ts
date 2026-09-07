@@ -11,8 +11,16 @@ import type {
   FindingView,
   HealthSummary,
   SessionTokenReport,
+  WebCaptureSiteReport,
 } from '@akasecurity/plugin-sdk';
-import { aggregateTokenUsage, formatCostTotal, formatUsd } from '@akasecurity/plugin-sdk';
+import {
+  aggregateTokenUsage,
+  formatCostTotal,
+  formatUsd,
+  offersCaptureStatusReader,
+  WEB_CAPTURE_DRIFT_RULE,
+  webCaptureReport,
+} from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
   BuiltinPolicyId,
@@ -557,6 +565,35 @@ export function renderFindings(
   ].join('\n');
 }
 
+/**
+ * The web-chat capture block for the /findings screen: one line per DRIFTING
+ * site, with the rule it cites and the fix.
+ *
+ * Returns '' when no site is drifting — which is every machine whose sites are
+ * being read, or not read for a reason that is not drift. The caller appends
+ * nothing in that case, so the screen is unchanged.
+ */
+export function renderWebCaptureDrift(sites: readonly WebCaptureSiteReport[]): string {
+  const drifting = sites.filter((s) => s.drift);
+  if (drifting.length === 0) return '';
+  const rows = drifting.map((s) => [s.tool, s.state, s.headline]);
+  return [
+    `● Web chat capture (${String(drifting.length)})`,
+    '',
+    indent(table(['Site', 'State', 'What happened'], rows, { gap: 4 })),
+    '',
+    ...drifting.flatMap((s) =>
+      s.remediation === undefined
+        ? []
+        : [
+            indent(
+              `${s.tool} — ${WEB_CAPTURE_DRIFT_RULE.ruleId} (${WEB_CAPTURE_DRIFT_RULE.severity}) — ${s.remediation}`,
+            ),
+          ],
+    ),
+  ].join('\n');
+}
+
 // The /health screen (the marquee dashboard). A row of score gauges, a summary
 // line, the 7-day detections chart, and a status footer. Pure — the caller builds
 // the report (see buildHealthReport) so this stays I/O-free and testable.
@@ -1064,12 +1101,46 @@ export type Severity = (typeof SEVERITIES)[number];
 
 export interface QueryOptions {
   severity?: Severity;
+  /**
+   * Whether this machine's web-chat capture consent is valid RIGHT NOW — the
+   * same `isWebChatCaptureConsentValid` answer the CLI and the native host
+   * apply, resolved at the I/O boundary (query.ts holds the settings; this
+   * module reads no files).
+   *
+   * Optional, defaulting to OFF. Consent is version-pinned, so a grant made
+   * against an older version reads as revoked and the native host then records
+   * no further status — leaving the newest stored row unable to ever be
+   * superseded. A caller that omits this loses the web-capture block, which is
+   * a missing screen; a caller that defaulted it ON would print a live-sounding
+   * "reload the tab" for a capture that is switched off, which is a false
+   * claim. Only one of those is safe to get wrong by omission.
+   */
+  webCaptureConsent?: boolean;
 }
 
 // `exceptions` is listed for the user-facing usage line but dispatched
 // UPSTREAM in query.ts (it reads the local store directly, not the gateway) —
 // runQuery itself never receives it.
 const USAGE = 'Usage: query <findings|health|recommend|audit|tokens|exceptions|detections>';
+
+// The per-site web-capture posture for the /findings screen, read off the
+// gateway when it offers the capability. Fail-open: a gateway that does not
+// offer it, or a store read that throws, costs the block and nothing else.
+//
+// `consent` gates it ahead of the read, so a machine whose capture is switched
+// off says nothing rather than reciting the last status it happened to store.
+async function webCaptureSites(
+  gateway: DataGateway,
+  consent: boolean,
+): Promise<readonly WebCaptureSiteReport[]> {
+  if (!consent) return [];
+  if (!offersCaptureStatusReader(gateway)) return [];
+  try {
+    return webCaptureReport(await gateway.readCaptureStatuses());
+  } catch {
+    return [];
+  }
+}
 
 // Dispatch a read subcommand against a resolved data gateway and return the text
 // to print. Reads only — nothing is mutated here. Async because the DataGateway
@@ -1096,7 +1167,13 @@ export async function runQuery(
         opts.severity !== undefined
           ? findings.filter((f) => f.severity === opts.severity)
           : findings;
-      return renderFindings(rows, findingStatus(summary), opts.severity);
+      const body = renderFindings(rows, findingStatus(summary), opts.severity);
+      const showBlock =
+        opts.severity === undefined || opts.severity === WEB_CAPTURE_DRIFT_RULE.severity;
+      const block = showBlock
+        ? renderWebCaptureDrift(await webCaptureSites(gateway, opts.webCaptureConsent ?? false))
+        : '';
+      return block === '' ? body : `${body}\n\n${block}`;
     }
     case 'health': {
       const [summary, findings, activity] = await Promise.all([

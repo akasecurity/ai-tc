@@ -12,7 +12,12 @@ import {
   ScanCoverageCardView,
   SeverityCardView,
   TopSourcesCardView,
+  WebCaptureCardView,
+  type WebCaptureSiteRow,
 } from '@akasecurity/dashboard-ui';
+import { WEB_CAPTURE_DRIFT_RULE, webCaptureReport } from '@akasecurity/detections';
+import { readEffectiveSettings } from '@akasecurity/persistence';
+import { isWebChatCaptureConsentValid, webChatCaptureOf } from '@akasecurity/schema';
 
 import { RangeSelect } from '../../components/RangeSelect';
 import { db } from '../../lib/db';
@@ -33,6 +38,47 @@ const bucketLabel = new Intl.DateTimeFormat('en-US', {
   day: 'numeric',
   timeZone: 'UTC',
 });
+
+/**
+ * The DRIFTING web-chat capture sites, as the card renders them — empty
+ * whenever there is nothing to act on, which is when the card is not rendered
+ * at all.
+ *
+ * Two gates, and each answers a different way of being wrong:
+ *
+ *  - CONSENT, the same one `aka extension status` applies. A machine whose
+ *    web-chat capture consent has been revoked — or invalidated wholesale by a
+ *    consent-version bump, since a grant recorded against an older version
+ *    reads as revoked — records no further status, so the newest row it holds
+ *    can never be superseded by a later one. Rendering that row anyway tells
+ *    the user to reload a tab nothing is watching. Reading consent here rather
+ *    than inferring it from the rows keeps one definition of "capture is on"
+ *    across the CLI, the plugin screens and this page.
+ *
+ *  - DRIFT. This card is a finding surface, not an inventory. Every site is in
+ *    `webCaptureReport`'s output including one nothing has reported for, and on
+ *    a build that declares no endpoints they all derive to `standby` or
+ *    `unreported` — so an ungated card is a permanent fixture asking for an
+ *    action whose only available outcome is the other neutral word. A card
+ *    that is always present is one people stop reading before the day it says
+ *    something.
+ *
+ * `now` is the route's own render instant, so the read's recency window is
+ * measured against the same instant every other age on the page is.
+ */
+function webCaptureDriftRows(now: number): WebCaptureSiteRow[] {
+  const webChat = webChatCaptureOf(readEffectiveSettings().settings);
+  if (!isWebChatCaptureConsentValid(webChat.consent)) return [];
+  return webCaptureReport(db().captureStatus.latest(now))
+    .filter((s) => s.drift)
+    .map((s) => ({
+      tool: s.tool,
+      stateLabel: s.state,
+      headline: s.headline,
+      ...(s.remediation !== undefined ? { remediation: s.remediation } : {}),
+      drift: s.drift,
+    }));
+}
 
 export default async function SecurityPage({
   searchParams,
@@ -82,6 +128,9 @@ export default async function SecurityPage({
   // because the view has no clock of its own to fall back on, which is what keeps
   // it honest if it ever gains a `use client` directive.
   const renderedAt = renderInstant();
+
+  // Synchronous — not part of the Promise.all above.
+  const captureSites = webCaptureDriftRows(renderedAt);
   return (
     <div className="px-8 pb-10 pt-7">
       <PageHead
@@ -113,6 +162,18 @@ export default async function SecurityPage({
           renderedAt={renderedAt}
         />
       </div>
+
+      {captureSites.length > 0 && (
+        <div className="mt-4 xl:mt-5">
+          <WebCaptureCardView
+            sites={captureSites}
+            ruleId={WEB_CAPTURE_DRIFT_RULE.ruleId}
+            severity={WEB_CAPTURE_DRIFT_RULE.severity}
+            isLoading={false}
+            error={null}
+          />
+        </div>
+      )}
     </div>
   );
 }

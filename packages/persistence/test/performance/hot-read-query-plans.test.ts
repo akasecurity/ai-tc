@@ -55,6 +55,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { SqliteActivityRepository } from '../../src/repositories/activity.ts';
+import { SqliteCaptureStatusRepository } from '../../src/repositories/capture-status.ts';
 import { SqliteFindingsRepository } from '../../src/repositories/findings.ts';
 import { SqliteSecretVaultRepository } from '../../src/repositories/secret-vault.ts';
 import { SqliteSecurityRepository } from '../../src/repositories/security.ts';
@@ -105,6 +106,7 @@ interface HotRead {
 
 interface Surfaces {
   readonly security: SqliteSecurityRepository;
+  readonly captureStatus: SqliteCaptureStatusRepository;
   readonly findings: SqliteFindingsRepository;
   readonly activity: SqliteActivityRepository;
   readonly vault: SqliteSecretVaultRepository;
@@ -125,6 +127,17 @@ const HOT_READS: readonly HotRead[] = [
   { name: '/security topSources', run: (c) => c.security.topSources('30d', { limit: 5 }) },
   { name: '/security recentlyResolved', run: (c) => c.security.recentlyResolved() },
   { name: '/security recentFindings', run: (c) => c.findings.recentFindings({ limit: 500 }) },
+  // The ninth. It is not in the `Promise.all` — the page runs it synchronously
+  // — but it is a read `/security` issues on every request, which is what this
+  // list is of. One statement per registered web-chat site, so the recorded
+  // plan below is that statement's, captured twice.
+  //
+  // Its plan is a SEARCH and always has been, which is exactly why the entry
+  // is worth having AND why it cannot be the only guard: `source_tool` is not
+  // in `idx_audit_type_t`, so for a site with no rows the seek examines the
+  // whole `capture_status` range before concluding there is nothing to find.
+  // A plan cannot say that. `capture-status-scale.test.ts` is what does.
+  { name: '/security captureStatus', run: (c) => c.captureStatus.latest(c.now) },
   // --- /findings: three views over one filtered set ---------------------------
   // Each view is its own read, and the session-scoped grouped read is listed
   // separately because the scope changes which index drives the scan.
@@ -216,6 +229,10 @@ const EXPECTED_FULL_INDEX_SCANS: Readonly<Record<string, readonly string[]>> = {
   // across two store sizes, which a plan cannot express and
   // `security-page-scale.test.ts` asserts instead.
   '/security recentFindings': ['audit_events'],
+  // Empty: the seek is an indexed SEARCH on `idx_audit_type_t`, never a scan.
+  // Read that as the plan being right, not as the read being bounded — see the
+  // entry's own note in HOT_READS.
+  '/security captureStatus': [],
   // The findings page. Every unscoped read here walks `idx_audit_started_at`
   // in DESC order the way `recentFindings` does, and for the same reason: the
   // order the page wants falls out of the index, so nothing is sorted. Two of
@@ -307,6 +324,7 @@ describe('query plans of every hot dashboard read', () => {
     const spy = recordingConnection(raw, recorded);
     const surfaces: Surfaces = {
       security: new SqliteSecurityRepository(spy, () => corpus.endsAt),
+      captureStatus: new SqliteCaptureStatusRepository(spy),
       findings: new SqliteFindingsRepository(spy),
       activity: new SqliteActivityRepository(spy),
       vault: new SqliteSecretVaultRepository(spy),

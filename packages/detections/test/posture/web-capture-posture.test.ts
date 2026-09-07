@@ -9,8 +9,8 @@ import { describe, expect, it } from 'vitest';
 import {
   deriveWebCaptureState,
   DRIFT_MIN_PARSE_FAILURES,
+  WEB_CAPTURE_DRIFT_RULE,
   WEB_CAPTURE_DRIFT_STATES,
-  WEB_CAPTURE_POSTURE_RULES,
   webCaptureDriftFires,
   type WebCaptureState,
   webCaptureStateCopy,
@@ -35,7 +35,7 @@ function loadFixtures(): FixtureCase[] {
 }
 
 const cases = loadFixtures();
-const [rule] = WEB_CAPTURE_POSTURE_RULES;
+const rule = WEB_CAPTURE_DRIFT_RULE;
 
 describe('fixtures: web-capture-drift', () => {
   it(`has at least ${String(MIN_FIXTURES_PER_POLARITY)} positive and ${String(
@@ -162,8 +162,8 @@ describe('the parse-failure threshold', () => {
 
 describe('the rule definition', () => {
   it('is category config with a parseable definition naming the drift states', () => {
-    expect(rule?.category).toBe('config');
-    const definition = JSON.parse(rule?.definition ?? '{}') as { states: string[] };
+    expect(rule.category).toBe('config');
+    const definition = JSON.parse(rule.definition) as { states: string[] };
     expect(definition.states).toEqual([...WEB_CAPTURE_DRIFT_STATES]);
   });
 });

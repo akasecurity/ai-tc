@@ -1139,7 +1139,7 @@ describe('capture_status durable write', () => {
     // in-memory map.
     const second = openLocalDatabase(dataDir);
     try {
-      const records = second.captureStatus.latest();
+      const records = second.captureStatus.latest(Date.now());
       const record = records.find((r) => r.tool === 'claude-ai');
       expect(record?.status).toEqual(status);
     } finally {
@@ -1202,7 +1202,7 @@ describe('capture_status durable write', () => {
 
     const second = openLocalDatabase(dataDir);
     try {
-      expect(second.captureStatus.latest()).toEqual([]);
+      expect(second.captureStatus.latest(Date.now())).toEqual([]);
     } finally {
       second.close();
     }
@@ -1229,7 +1229,7 @@ describe('capture_status durable write', () => {
 
     const second = openLocalDatabase(dataDir);
     try {
-      expect(second.captureStatus.latest()).toEqual([]);
+      expect(second.captureStatus.latest(Date.now())).toEqual([]);
     } finally {
       second.close();
     }

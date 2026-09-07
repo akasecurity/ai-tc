@@ -308,7 +308,11 @@ describe('runStatus — the network-capture block', () => {
       db.auditEvents.insertAuditEvent({
         id: `${tool}-status-${String(Math.random())}`,
         eventType: 'capture_status',
-        startedAt: '2026-01-01T00:00:00.000Z',
+        // Stamped NOW rather than at a fixed date: `captureStatus.latest`
+        // bounds its read to the last CAPTURE_STATUS_RECENCY_MS, so a literal
+        // calendar date ages out of the window once the wall clock passes it
+        // and every case below would then assert against an empty read.
+        startedAt: new Date().toISOString(),
         attributes: toCaptureStatusAttributes(status, tool),
       });
     } finally {

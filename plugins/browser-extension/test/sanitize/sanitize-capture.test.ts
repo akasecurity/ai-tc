@@ -309,22 +309,41 @@ describe('leak surfaces', () => {
   });
 
   it('L10: a residue the detector flags in the OUTPUT refuses the run', () => {
-    // 'gpt-4o' is approved and kept verbatim; 'other-model' is not, so it
-    // becomes the FIRST vocabulary surrogate emitted (TOKEN_1) — and that
-    // literal surrogate text is what the fake detector below flags, proving
-    // the residue check runs the detector over the OUTPUT rather than
-    // trusting that every replaced value is automatically safe.
+    // Proves the residue check runs the detector over the assembled OUTPUT
+    // rather than trusting that every replaced value is automatically safe.
+    // Also the control for L10g below: the emitted-surrogate exclusion that
+    // fixes L10g must not disable this refusal, so this case is what would go
+    // green if the exclusion were widened to the whole output.
     const result = sanitizeCapture(
       baseInput({
         raw: JSON.stringify({ approved_field: 'gpt-4o', other_field: 'other-model' }),
         approvedKeys: new Set(['approved_field', 'other_field']),
         approvedValues: new Set(['gpt-4o']),
-        detect: (t) => (t.includes('TOKEN_1') ? ['fake-rule'] : []),
+        // Fires only on the ASSEMBLED fixture — this substring exists in no
+        // per-candidate call and is not a surrogate, so it survives the
+        // emitted-surrogate exclusion and still refuses.
+        detect: (t) => (t.includes('"format": "json"') ? ['fake-rule'] : []),
       }),
     );
     assertRefused(result);
     expect(result.refusal).toBe('residue-detected');
     expect(result.error).toContain('fake-rule');
+  });
+
+  it('L10g: a capture carrying an email sanitises rather than tripping on its own surrogate', () => {
+    // The email surrogate is `user-<n>@example.invalid` — itself a well-formed
+    // address. A detector-backed rescan over the raw output therefore flags the
+    // sanitiser's OWN replacement and refuses every capture containing an
+    // address, which is every real capture. The rescan must ignore what the
+    // walker emitted, and nothing else.
+    const result = sanitizeCapture(
+      baseInput({
+        raw: JSON.stringify({ author: 'someone@example.com' }),
+        detect: (t) => (t.includes('@') ? ['core-pii/email'] : []),
+      }),
+    );
+    assertOk(result);
+    expect(firstChunk(result)).not.toContain('someone@example.com');
   });
 
   it('L10b: an approved token that also appears inside a separately-replaced prose leaf does NOT refuse', () => {

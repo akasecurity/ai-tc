@@ -952,6 +952,20 @@ function occursUnaccounted(text: string, covered: Uint8Array, run: string): bool
  * backslash or control character appears there ESCAPED; each run is searched
  * in both forms.
  */
+/**
+ * `text` with every emitted surrogate replaced by a same-length run of NUL,
+ * which no rule matches. Longest first, so a surrogate containing another is
+ * blanked whole rather than being left half-formed by an inner replacement.
+ */
+function blankEmitted(text: string, emitted: ReadonlySet<string>): string {
+  let out = text;
+  for (const surrogate of [...emitted].sort((a, b) => b.length - a.length)) {
+    if (surrogate.length === 0) continue;
+    out = out.split(surrogate).join('\u0000'.repeat(surrogate.length));
+  }
+  return out;
+}
+
 export function findResidueRun(
   parts: readonly { readonly where: string; readonly text: string }[],
   originals: ReadonlyMap<string, string>,
@@ -1054,7 +1068,12 @@ export function sanitizeCapture(input: SanitizeInput): SanitizeResult {
 
   let residueFindings: readonly string[];
   try {
-    residueFindings = input.detect(text);
+    // Scanned with the walker's own surrogates blanked out. The email surrogate
+    // (`user-<n>@example.invalid`) is a well-formed address, so scanning the raw
+    // output flags the sanitiser's OWN replacement and refuses every capture
+    // carrying an address — which is every real one. Only what the walker
+    // emitted is blanked, so anything it did not write is still scanned.
+    residueFindings = input.detect(blankEmitted(text, ctx.emittedStrings));
   } catch {
     return refuse(
       'detector-unavailable',

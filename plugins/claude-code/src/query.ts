@@ -16,6 +16,7 @@
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import { hostCompatibilityLines, loadConfig, readHostVersionCache } from '@akasecurity/plugin-sdk';
+import { isWebChatCaptureConsentValid, webChatCaptureOf } from '@akasecurity/schema';
 
 import { fenced } from './present.ts';
 import {
@@ -79,6 +80,14 @@ try {
         `${fenced(
           await runQuery(sub, gateway, {
             ...(severity !== undefined ? { severity } : {}),
+            // Resolved here rather than inside render.ts, which reads no
+            // files: this is the settings-holding boundary, and it is the
+            // same predicate `aka extension status` and the native host
+            // apply, so the three surfaces cannot disagree about whether
+            // web-chat capture is on.
+            webCaptureConsent: isWebChatCaptureConsentValid(
+              webChatCaptureOf(config.settings).consent,
+            ),
             // Resolved here rather than inside runQuery, which holds a gateway
             // and not the data dir. Read from the cache a hook wrote: probing
             // `claude --version` would answer for the install on PATH, which

@@ -216,7 +216,11 @@ export class StandaloneDataGateway
   }
 
   readCaptureStatuses(): Promise<StoredCaptureStatus[]> {
-    return Promise.resolve(this.db.captureStatus.latest());
+    // The gateway is the I/O boundary, so it supplies the instant the read's
+    // recency window is measured against. The port takes none: a caller of
+    // `readCaptureStatuses` is asking what is reported NOW, and there is no
+    // second instant for it to mean.
+    return Promise.resolve(this.db.captureStatus.latest(Date.now()));
   }
 
   facets(): Promise<InventoryFacets> {

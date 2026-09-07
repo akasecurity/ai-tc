@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { WebCaptureStatus, WebSourceTool } from '@akasecurity/schema';
-import { toCaptureStatusAttributes } from '@akasecurity/schema';
+import { CAPTURE_STATUS_RECENCY_MS, toCaptureStatusAttributes } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { SqliteAuditEventsRepository } from '../../src/repositories/audit-events.ts';
@@ -9,6 +9,14 @@ import { SqliteCaptureStatusRepository } from '../../src/repositories/capture-st
 import { useTempStore } from '../helpers/temp-store.ts';
 
 const store = useTempStore('aka-capture-status-', { migrated: true });
+
+// The instant every read below is taken at. Fixed rather than `Date.now()`,
+// because `latest` bounds its scan to the last CAPTURE_STATUS_RECENCY_MS and a
+// wall-clock read would put the 2026-01-01 fixtures outside that window the
+// moment the calendar moved past them. Two hours after the newest fixture, so
+// every case here is comfortably inside it and the window is exercised only by
+// the cases below that mean to.
+const NOW = Date.parse('2026-01-01T02:00:00.000Z');
 
 const STATUS: WebCaptureStatus = {
   patched: true,
@@ -64,7 +72,7 @@ describe('SqliteCaptureStatusRepository.latest', () => {
     });
     writeStatus({ startedAt: '2026-01-01T00:00:00.000Z', tool: 'chatgpt', status: STATUS });
 
-    const records = repo.latest();
+    const records = repo.latest(NOW);
     expect(records).toHaveLength(2);
     const claudeAi = records.find((r) => r.tool === 'claude-ai');
     expect(claudeAi?.status.exchangesSeenNet).toBe(9);
@@ -87,7 +95,7 @@ describe('SqliteCaptureStatusRepository.latest', () => {
       status: { ...STATUS, exchangesSeenNet: 7 },
     });
 
-    const chatgpt = repo.latest().find((r) => r.tool === 'chatgpt');
+    const chatgpt = repo.latest(NOW).find((r) => r.tool === 'chatgpt');
     expect(chatgpt?.status.exchangesSeenNet).toBe(42);
   });
 
@@ -95,18 +103,18 @@ describe('SqliteCaptureStatusRepository.latest', () => {
     writeStatus({ startedAt: '2026-01-01T00:00:00.000Z', tool: 'chatgpt' }); // no status fields at all
     writeStatus({ startedAt: '2026-01-01T00:00:00.000Z', tool: 'claude-ai', status: STATUS });
 
-    const records = repo.latest();
+    const records = repo.latest(NOW);
     expect(records.map((r) => r.tool)).toEqual(['claude-ai']);
   });
 
   it('skips a row whose source_tool is not a web chat id', () => {
     writeStatus({ startedAt: '2026-01-01T00:00:00.000Z', tool: 'claude-code', status: STATUS });
 
-    expect(repo.latest()).toEqual([]);
+    expect(repo.latest(NOW)).toEqual([]);
   });
 
   it('answers an empty store with no records', () => {
-    expect(repo.latest()).toEqual([]);
+    expect(repo.latest(NOW)).toEqual([]);
   });
 });
 
@@ -133,7 +141,7 @@ describe('SqliteCaptureStatusRepository.latest — a watching-only report', () =
     writeStatus({ startedAt: '2026-01-01T00:00:00.000Z', tool: 'chatgpt', status: BLIND });
     writeStatus({ startedAt: '2026-01-01T00:05:00.000Z', tool: 'chatgpt', status: WATCHING });
 
-    const chatgpt = repo.latest().find((r) => r.tool === 'chatgpt');
+    const chatgpt = repo.latest(NOW).find((r) => r.tool === 'chatgpt');
     expect(chatgpt?.status.blind).toBe(true);
     expect(chatgpt?.observedAt).toBe('2026-01-01T00:00:00.000Z');
   });
@@ -143,7 +151,7 @@ describe('SqliteCaptureStatusRepository.latest — a watching-only report', () =
     writeStatus({ startedAt: '2026-01-01T00:05:00.000Z', tool: 'chatgpt', status: WATCHING });
     writeStatus({ startedAt: '2026-01-01T00:10:00.000Z', tool: 'chatgpt', status: STATUS });
 
-    const chatgpt = repo.latest().find((r) => r.tool === 'chatgpt');
+    const chatgpt = repo.latest(NOW).find((r) => r.tool === 'chatgpt');
     expect(chatgpt?.status.blind).toBe(false);
     expect(chatgpt?.observedAt).toBe('2026-01-01T00:10:00.000Z');
   });
@@ -156,7 +164,7 @@ describe('SqliteCaptureStatusRepository.latest — a watching-only report', () =
       status: { ...WATCHING, sendsSeenDom: 1 },
     });
 
-    const chatgpt = repo.latest().find((r) => r.tool === 'chatgpt');
+    const chatgpt = repo.latest(NOW).find((r) => r.tool === 'chatgpt');
     expect(chatgpt?.observedAt).toBe('2026-01-01T00:05:00.000Z');
     expect(chatgpt?.status.sendsSeenDom).toBe(1);
   });
@@ -173,7 +181,7 @@ describe('SqliteCaptureStatusRepository.latest — a watching-only report', () =
       });
     }
 
-    expect(repo.latest().find((r) => r.tool === 'chatgpt')?.status.blind).toBe(false);
+    expect(repo.latest(NOW).find((r) => r.tool === 'chatgpt')?.status.blind).toBe(false);
   });
 
   it('does not hide a build that stopped declaring endpoints', () => {
@@ -186,8 +194,50 @@ describe('SqliteCaptureStatusRepository.latest — a watching-only report', () =
       status: { ...WATCHING, conversationEndpoints: 0 },
     });
 
-    const chatgpt = repo.latest().find((r) => r.tool === 'chatgpt');
+    const chatgpt = repo.latest(NOW).find((r) => r.tool === 'chatgpt');
     expect(chatgpt?.status.conversationEndpoints).toBe(0);
     expect(chatgpt?.status.blind).toBe(false);
+  });
+});
+
+// A status is a report about one instant, and only the browser extension ever
+// writes one — so nothing supersedes an old verdict once the extension stops
+// reporting. The read is bounded so it decays instead of standing for ever.
+describe('SqliteCaptureStatusRepository.latest — the recency bound', () => {
+  it('omits a site whose newest report has aged out of the window', () => {
+    writeStatus({ startedAt: '2026-01-01T00:00:00.000Z', tool: 'chatgpt', status: STATUS });
+
+    // The positive control and the absence read the SAME row, at the two
+    // instants either side of the boundary: the window is `started_at >= now -
+    // CAPTURE_STATUS_RECENCY_MS`, so the last instant that reports it is
+    // exactly `row + the window` and the next millisecond is the first that
+    // does not. Without the control this passes on a read that returns nothing
+    // for any reason at all.
+    const row = Date.parse('2026-01-01T00:00:00.000Z');
+    expect(repo.latest(row + CAPTURE_STATUS_RECENCY_MS).map((r) => r.tool)).toEqual(['chatgpt']);
+    expect(repo.latest(row + CAPTURE_STATUS_RECENCY_MS + 1)).toEqual([]);
+  });
+
+  it('reports a site whose newest report is inside the window, however old the rest are', () => {
+    // Two years of history under one recent report: the old rows are outside
+    // the window and the recent one is not, so the site still reports — the
+    // bound retires stale VERDICTS, it does not retire a live site because its
+    // store is long.
+    writeStatus({ startedAt: '2024-01-01T00:00:00.000Z', tool: 'chatgpt', status: STATUS });
+    writeStatus({
+      startedAt: '2026-01-01T00:00:00.000Z',
+      tool: 'chatgpt',
+      status: { ...STATUS, exchangesSeenNet: 9 },
+    });
+
+    const chatgpt = repo.latest(NOW).find((r) => r.tool === 'chatgpt');
+    expect(chatgpt?.status.exchangesSeenNet).toBe(9);
+  });
+
+  it('does not let an aged-out row of one site suppress another site', () => {
+    writeStatus({ startedAt: '2020-01-01T00:00:00.000Z', tool: 'chatgpt', status: STATUS });
+    writeStatus({ startedAt: '2026-01-01T00:00:00.000Z', tool: 'claude-ai', status: STATUS });
+
+    expect(repo.latest(NOW).map((r) => r.tool)).toEqual(['claude-ai']);
   });
 });

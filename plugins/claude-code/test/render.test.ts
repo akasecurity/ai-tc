@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { openLocalDatabase } from '@akasecurity/persistence';
 import { handleCapture, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { FindingView, HealthSummary, PluginConfig } from '@akasecurity/plugin-sdk';
 import {
@@ -16,6 +17,8 @@ import type {
   DetectionCategory,
   DetectionException,
   DetectionListItem,
+  WebCaptureStatus,
+  WebSourceTool,
 } from '@akasecurity/schema';
 import {
   BUILTIN_POLICIES,
@@ -24,6 +27,7 @@ import {
   DEFAULT_PACK_POLICY_ID,
   KNOWN_BUILTIN_IDS,
   SetupHandoffOffer,
+  toCaptureStatusAttributes,
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -1466,6 +1470,216 @@ describe('runQuery — against a seeded standalone gateway', () => {
     } finally {
       await gateway.close();
     }
+  });
+
+  describe('runQuery findings — web-capture drift', () => {
+    // Every case here reads with consent in hand: it is resolved at the
+    // plugin's I/O boundary (query.ts) from the same predicate the CLI and
+    // the native host apply, and runQuery takes it as an option because this
+    // module reads no files. The gate itself is the case at the end.
+    const CONSENTED = { webCaptureConsent: true } as const;
+
+    const BASE_STATUS: WebCaptureStatus = {
+      patched: true,
+      live: false,
+      blind: false,
+      sendsSeenDom: 0,
+      exchangesSeenNet: 0,
+      parseFailures: 0,
+      unparsedBodies: 0,
+      shapeMisses: [],
+      conversationEndpoints: 0,
+    };
+
+    const DRIFTING: WebCaptureStatus = {
+      ...BASE_STATUS,
+      conversationEndpoints: 1,
+      blind: true,
+      sendsSeenDom: 3,
+    };
+
+    // Writes a capture_status row straight into the store on its own handle —
+    // the same shape cli/test/commands/extension.test.ts's seedStatus uses.
+    function seedCaptureStatus(tool: WebSourceTool, status: WebCaptureStatus): void {
+      const db = openLocalDatabase(dir);
+      try {
+        db.auditEvents.insertAuditEvent({
+          id: `${tool}-status-${randomUUID()}`,
+          eventType: 'capture_status',
+          // Stamped NOW, not at a fixed date: the store read is bounded to
+          // the last CAPTURE_STATUS_RECENCY_MS, so a literal calendar date
+          // ages out of the window as the wall clock passes it and every
+          // case below would then pass because nothing was read at all.
+          startedAt: new Date().toISOString(),
+          attributes: toCaptureStatusAttributes(status, tool),
+        });
+      } finally {
+        db.close();
+      }
+    }
+
+    // The real gateway's methods live on its class prototype, so a bare
+    // `{ ...gateway }` copies only its instance fields and drops every method —
+    // this keeps the prototype (so recentFindings/healthSummary keep working)
+    // and shadows just readCaptureStatuses with one that rejects.
+    function withFailingCaptureRead(
+      gateway: Awaited<ReturnType<typeof resolveDataGateway>>,
+    ): typeof gateway {
+      return Object.assign(Object.create(Object.getPrototypeOf(gateway) as object), gateway, {
+        readCaptureStatuses: () => Promise.reject(new Error('boom')),
+      }) as typeof gateway;
+    }
+
+    it('is quiet on an empty store — no capture_status row at all', async () => {
+      // A real finding too, so the case is not vacuous on an empty screen.
+      await handleCapture(
+        { kind: 'prompt', sourceTool: 'claude-code', text: `here is a key ${SECRET}` },
+        config(dir),
+      );
+
+      const gateway = resolveDataGateway(config(dir));
+      try {
+        const out = strip(await runQuery('findings', gateway, CONSENTED));
+        expect(out).toContain('Recent findings');
+        expect(out).not.toContain('web-capture-drift');
+        expect(out).not.toContain('Web chat capture');
+      } finally {
+        await gateway.close();
+      }
+    });
+
+    it("is quiet on today's state — a build declaring no endpoints", async () => {
+      seedCaptureStatus('chatgpt', {
+        ...BASE_STATUS,
+        conversationEndpoints: 0,
+        patched: true,
+        blind: true,
+        parseFailures: 7,
+        shapeMisses: ['a', 'b'],
+        sendsSeenDom: 9,
+      });
+
+      const gateway = resolveDataGateway(config(dir));
+      try {
+        const out = strip(await runQuery('findings', gateway, CONSENTED));
+        expect(out).not.toContain('web-capture-drift');
+        expect(out).not.toContain('Web chat capture');
+      } finally {
+        await gateway.close();
+      }
+    });
+
+    it('fires on drift, naming the site, state, rule, severity and remediation', async () => {
+      seedCaptureStatus('claude-ai', {
+        ...BASE_STATUS,
+        conversationEndpoints: 1,
+        blind: true,
+        sendsSeenDom: 3,
+      });
+
+      const gateway = resolveDataGateway(config(dir));
+      try {
+        const out = strip(await runQuery('findings', gateway, CONSENTED));
+        expect(out).toContain('Web chat capture');
+        expect(out).toContain('claude-ai');
+        expect(out).toContain('blind');
+        expect(out).toContain('web-capture-drift');
+        expect(out).toContain('medium');
+        expect(out).toContain('the network capture never saw');
+        expect(out).toContain('reload the tab');
+      } finally {
+        await gateway.close();
+      }
+    });
+
+    it('fires on drift even with an empty findings table', async () => {
+      seedCaptureStatus('claude-ai', {
+        ...BASE_STATUS,
+        conversationEndpoints: 1,
+        blind: true,
+        sendsSeenDom: 3,
+      });
+
+      const gateway = resolveDataGateway(config(dir));
+      try {
+        const out = strip(await runQuery('findings', gateway, CONSENTED));
+        expect(out).toContain('No findings recorded yet');
+        expect(out).toContain('Web chat capture');
+      } finally {
+        await gateway.close();
+      }
+    });
+
+    it('the severity filter gates the block', async () => {
+      seedCaptureStatus('claude-ai', {
+        ...BASE_STATUS,
+        conversationEndpoints: 1,
+        blind: true,
+        sendsSeenDom: 3,
+      });
+
+      const gateway = resolveDataGateway(config(dir));
+      try {
+        const low = strip(await runQuery('findings', gateway, { severity: 'low', ...CONSENTED }));
+        expect(low).not.toContain('Web chat capture');
+
+        const medium = strip(
+          await runQuery('findings', gateway, { severity: 'medium', ...CONSENTED }),
+        );
+        expect(medium).toContain('Web chat capture');
+      } finally {
+        await gateway.close();
+      }
+    });
+
+    it('a failing capture-status read costs the block and nothing else', async () => {
+      seedCaptureStatus('claude-ai', {
+        ...BASE_STATUS,
+        conversationEndpoints: 1,
+        blind: true,
+        sendsSeenDom: 3,
+      });
+      await handleCapture(
+        { kind: 'prompt', sourceTool: 'claude-code', text: `here is a key ${SECRET}` },
+        config(dir),
+      );
+
+      const gateway = resolveDataGateway(config(dir));
+      try {
+        const faulty = withFailingCaptureRead(gateway);
+        const out = strip(await runQuery('findings', faulty, CONSENTED));
+        expect(out).toContain('Recent findings');
+        expect(out).not.toContain('Web chat capture');
+      } finally {
+        await gateway.close();
+      }
+    });
+
+    it('says nothing when web-chat capture consent is not valid', async () => {
+      // The block is gated on consent ahead of the store read, so a machine
+      // whose capture has been switched off — or whose grant a consent-version
+      // bump retired — stops reciting the last verdict it happened to store.
+      // Nothing can supersede that verdict once the native host stops
+      // recording, so printing it would tell the user to reload a tab nothing
+      // is watching.
+      seedCaptureStatus('claude-ai', DRIFTING);
+
+      const gateway = resolveDataGateway(config(dir));
+      try {
+        // Omitted entirely, then said explicitly: an option a caller forgets
+        // must land on the same side as one it declines.
+        expect(strip(await runQuery('findings', gateway))).not.toContain('Web chat capture');
+        expect(
+          strip(await runQuery('findings', gateway, { webCaptureConsent: false })),
+        ).not.toContain('Web chat capture');
+
+        // The control: the identical store and gateway, read WITH consent,
+        // does print the block — so the two absences are the gate's doing.
+        expect(strip(await runQuery('findings', gateway, CONSENTED))).toContain('Web chat capture');
+      } finally {
+        await gateway.close();
+      }
+    });
   });
 });
 

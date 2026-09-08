@@ -46,11 +46,14 @@ export interface ScannedField {
   result: CaptureResult;
 }
 
-// Woven into the deny message when a redact decision was escalated off an
-// executable field, so the block explains why the policy's redact didn't
-// rewrite in place.
+// Woven into the deny message when a redact policy could not be carried out on
+// an executable field and the configured fallback resolved to a block, so the
+// block explains why the policy's redact didn't rewrite in place. It names the
+// fallback as the decision rather than saying redact always blocks, because
+// that is now a setting: under `monitor` or `warn` the call goes through and
+// no deny is emitted for this note to ride on.
 export const EXECUTABLE_REDACT_NOTE =
-  'Masking inside an executable command would silently change what runs, so a redact policy blocks it instead.';
+  'Masking inside an executable command would silently change what runs, so masking in place was not possible and this workspace’s fallback for that case is to block.';
 
 // Woven into the deny message when a redact decision carried no redacted text
 // to put in place, so the block explains why the policy's redact could not be
@@ -129,18 +132,24 @@ export function decidePreToolUse(
   let updatedInput: Record<string, unknown> | null = null;
 
   for (const { spec, result } of scanned) {
-    // A redact this hook cannot carry out denies rather than allowing and
-    // claiming success. Two ways it cannot: masking an executable field would
-    // silently change what runs, and a null `text` leaves no redacted form to
-    // substitute — emitting the untouched input under the "AKA redacted"
-    // systemMessage would send the raw value and report it as masked.
+    // Two things this hook cannot carry out, and they are no longer the same
+    // mechanism.
+    //
+    // Masking an executable field would silently change what runs, so the
+    // capture declared that field unrewritable and the RUNTIME already
+    // resolved its redact into the configured fallback; `redactDegraded` is
+    // how it says so. Reading that here, rather than re-deriving it, is what
+    // keeps the emitted decision and the recorded action equal — and it is the
+    // only way to see a fallback of `warn`, which this module cannot infer.
+    //
+    // A null `text` is different: it is a runtime failure on a field that CAN
+    // be rewritten, leaving no redacted form to substitute. Emitting the
+    // untouched input under the "AKA redacted" systemMessage would send the
+    // raw value and report it as masked, so that one still escalates here.
+    if (result.redactDegraded === true) escalatedExecutable = true;
     const unredactable = result.action === 'redact' && result.text === null;
-    const escalate = result.action === 'redact' && (spec.executable || unredactable);
-    if (escalate) {
-      if (spec.executable) escalatedExecutable = true;
-      else escalatedUnredactable = true;
-    }
-    const action = escalate ? 'block' : result.action;
+    if (unredactable) escalatedUnredactable = true;
+    const action = unredactable ? 'block' : result.action;
 
     if (action === 'block') {
       for (const finding of result.findings) blockedRules.add(finding.ruleId);

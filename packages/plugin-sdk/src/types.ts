@@ -76,6 +76,20 @@ export interface CaptureResult {
   // 'with-findings' early-return (findings.length === 0) — callers that need
   // "no findings produced" should treat an absent value as an empty list.
   findingKeys?: string[];
+  // True when a finding's policy resolved to `redact` and this capture could
+  // not carry one out, because the caller declared the field unrewritable
+  // (CaptureOptions.rewritable). `action` above is then the configured
+  // `redactFallback` rather than the policy's own answer.
+  //
+  // It exists because that difference is invisible downstream otherwise: a
+  // degraded redact and a policy that genuinely said `warn` produce the same
+  // `action`, and an adapter that wants to say "masking was not possible
+  // here" has nothing else to key on. Absent rather than false when nothing
+  // degraded, so a caller spreading the result carries no key for it.
+  //
+  // Per CAPTURE, not per finding: it answers "did anything in this field lose
+  // its masking", which is what an enforcement message says.
+  redactDegraded?: boolean;
 }
 
 // AkaPluginAdapter signature

@@ -380,6 +380,16 @@ export function createPluginRuntime(
     const actionFor = (finding: MatchResult): ActionTaken =>
       actionForFinding(finding, excepted, rewritable);
 
+    // Did anything here lose its masking to the fallback? Answered by asking
+    // what the SAME finding would have resolved to on a rewritable field: if
+    // that is `redact` and this field is not rewritable, the degrade fired.
+    // Derived rather than tracked, so it cannot disagree with the action the
+    // rest of this function returns — and false whenever the ceiling already
+    // ruled the redact out, since then no masking was ever on offer to lose.
+    const redactDegraded =
+      !rewritable && findings.some((f) => actionForFinding(f, excepted, true) === 'redact');
+    const degraded = redactDegraded ? { redactDegraded: true } : {};
+
     // `worst` already reflects the legacy global ceiling: actionForFinding caps
     // block/redact to warn when it is enabled, so the collapse inherits the cap
     // and never needs to re-apply it here.
@@ -388,7 +398,7 @@ export function createPluginRuntime(
       worst = strongerAction(worst, actionFor(finding));
     }
 
-    if (worst === 'block') return { action: 'block', text: null, findings };
+    if (worst === 'block') return { action: 'block', text: null, findings, ...degraded };
     if (worst === 'redact') {
       const redactFindings = findings.filter((f) => actionFor(f) === 'redact');
       // The subset whose own detection chose Redact & Vault. A per-finding
@@ -407,9 +417,13 @@ export function createPluginRuntime(
         findings,
         enforcedFindings: redactFindings,
         reversibleFindings,
+        // No `degraded` here, and it is not an omission: `rewritable` is per
+        // CAPTURE, so on an unrewritable field every redact has already become
+        // the fallback and this branch is unreachable. Spreading it would read
+        // as a case that can happen.
       };
     }
-    return { action: worst, text, findings };
+    return { action: worst, text, findings, ...degraded };
   }
 
   // Compute (and memoize per call) the keyed fingerprint of a finding's exact

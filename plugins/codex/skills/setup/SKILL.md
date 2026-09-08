@@ -818,6 +818,16 @@ neither redacted before it lands nor reported afterwards; only the path is
 recorded. If the user asks why a secret in a file edit wasn't caught, say so
 plainly rather than implying it is picked up somewhere else.
 
+A redact policy cannot mask a **shell command**, because rewriting one silently
+changes what runs. What happens in its place is the workspace's **redact
+fallback**, on the Settings page. It ships as **warn**, which means the command
+**runs with the value unmasked** and AKA says so in the session. Set it to
+**block** to get the older behaviour, where the call is denied and the message
+explains what to remove. The `apply_patch` field is different: it is stored
+text rather than a command, so it is masked in place and keeps true redaction at
+either setting. Whichever applies, the finding records the action that actually
+happened, never a "redact" that did not.
+
 The reversible secret vault is not yet wired for Codex sessions, so this wizard
 does not offer the vault-consent step: everything AKA redacts here is one-way
 (the safe direction), and nothing this plugin captures is ever vaulted — even

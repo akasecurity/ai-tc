@@ -892,3 +892,26 @@ declined, or a failed install you already reported — end with one warm close:
 
 Before you finish, confirm every AKA_SHOW region on the path you took was
 relayed to the user. If you summarized one instead of pasting it, paste it now.
+
+## Known limitations
+
+Reference, not a step. Be honest about these if the user asks why something was
+not caught; never imply coverage this plugin does not have.
+
+**A redact policy cannot mask text that EXECUTES, and what happens instead is a
+setting.** Rewriting a shell command would silently change what runs, and a
+masked URL requests a different resource — so on `Bash` and on `WebFetch`'s
+`url` there is no safe way to carry out a redact. What applies in its place is
+the workspace's **redact fallback**, on the Settings page.
+
+It ships as **warn**: the command runs, or the request goes out, with the value
+unmasked, and AKA says so in the session. Set it to **block** for the stricter
+behaviour, where the call is denied and the message explains what to remove.
+This matters most on `WebFetch`, because a request that has left cannot be
+recalled and no later hook can help.
+
+Data fields are unaffected either way — `Write`, `Edit`, an MCP payload leaf,
+`WebFetch`'s analysis prompt — and keep true redaction, including the reversible
+vault rewrite where vault consent is on file. Whichever path applies, the
+recorded finding carries the action that actually happened, never a "redact"
+that did not.

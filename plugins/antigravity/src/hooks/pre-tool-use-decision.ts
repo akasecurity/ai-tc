@@ -76,11 +76,16 @@ export interface ScannedField {
   result: CaptureResult;
 }
 
-// Woven into the deny message when a redact decision was escalated. Unlike the
-// Codex sibling this is not limited to executable fields: Antigravity's
-// PreToolUse cannot rewrite any argument, so a redact policy always lands here.
+// Woven into the deny message when a redact policy could not be carried out
+// and the configured fallback resolved to a block. Unlike the Codex sibling
+// this is not limited to executable fields: Antigravity's PreToolUse cannot
+// rewrite any argument, so a redact policy always reaches the fallback here.
+//
+// It says the fallback DECIDED rather than that redact always blocks, because
+// that is now a setting: under `monitor` or `warn` the same call goes through
+// and no deny is emitted for this note to ride on.
 export const NO_REWRITE_REDACT_NOTE =
-  'Antigravity gives a PreToolUse hook no way to rewrite a tool argument, so a redact policy blocks the call instead of masking in place.';
+  'Antigravity gives a PreToolUse hook no way to rewrite a tool argument, so masking in place was not possible and this workspace’s fallback for that case is to block.';
 
 // The deny reason when a vault pointer appears in a field that EXECUTES. This
 // plugin has no vault wiring, so it never substitutes a pointer back to its raw
@@ -133,9 +138,15 @@ export function decidePreToolUse(
   let escalated = false;
 
   for (const { result } of scanned) {
-    // Every redact escalates: there is no argument-rewrite channel on this
-    // host, so masking in place is not an option the payload can express.
-    if (result.action === 'redact') escalated = true;
+    // The runtime already resolved a redact this host cannot perform into the
+    // configured fallback, and says so on `redactDegraded`. This module reads
+    // that rather than re-deriving it: escalating here is what recorded a deny
+    // as `redact`, and it could not see a fallback of `warn` at all.
+    if (result.redactDegraded === true) escalated = true;
+    // `redact` can no longer arrive on this host — every capture declares the
+    // field unrewritable, so the fallback (monitor/warn/block) has replaced it.
+    // Kept in the guard so a future rewritable field still denies rather than
+    // silently passing a value the policy wanted masked.
     if (result.action !== 'block' && result.action !== 'redact') continue;
 
     for (const finding of result.findings) blockedRules.add(finding.ruleId);

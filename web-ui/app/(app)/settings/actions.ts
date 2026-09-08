@@ -1,9 +1,11 @@
 'use server';
 
+import { uninstallBackgroundSync } from '@akasecurity/local-ops';
 import {
   applyOnboarding,
   clearAttachmentDerivedState,
   dataDir,
+  defaultDataDir,
   isSafeEndpoint,
   ManagedFieldError,
   openLocalDatabase,
@@ -188,6 +190,13 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
  * public half alone (see ControlPlaneConnection). No refusal below interpolates
  * it: `malformedInput` names the offending FIELD and never its value, and the
  * suite pins that with a no-echo assertion rather than trusting it.
+ *
+ * DOES NOT INSTALL THE BACKGROUND-SYNC LAUNCHAGENT, unlike `aka attach`. A
+ * machine attached from here still forwards live activity fine — the drain
+ * this scheduler exists for only matters to a machine with no session ever
+ * reopening, which is a CLI-shaped machine to begin with. `detachFromControlPlane`
+ * below still uninstalls it, since a stray plist left by an unrelated `aka
+ * attach` on this same machine must not survive a detach initiated here.
  */
 export async function attachToControlPlane(input: unknown): Promise<SaveSettingsResult> {
   const parsed = parseActionInput(AttachInput, input);
@@ -394,6 +403,14 @@ export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
   // detached by the two writes above, and a leftover cache is not worth
   // reporting a completed detach as a failure.
   clearAttachmentDerivedState(dataDir());
+  // Best-effort, macOS only, same as `aka detach`: without this, a machine
+  // attached from the CLI and detached from here keeps a LaunchAgent that
+  // re-invokes `aka sync-history --run` every 30 minutes, across reboots,
+  // against a deployment this machine no longer talks to. This dashboard has
+  // no `--home` concept — it always operates on the real default AKA home —
+  // so that is the one base its own attach path could ever have installed
+  // the scheduler against.
+  uninstallBackgroundSync(defaultDataDir());
   revalidatePath('/settings');
   return { ok: true };
 }

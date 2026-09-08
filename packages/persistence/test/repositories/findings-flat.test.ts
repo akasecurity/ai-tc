@@ -6,6 +6,7 @@ import type {
   DetectionCategory,
   EventMetadata,
   IngestEvent,
+  ListFindingLocationsQuery,
   Severity,
 } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -332,28 +333,45 @@ describe('SqliteFindingsRepository.listFindingInstances', () => {
 });
 
 describe('SqliteFindingsRepository.listFindingLocations', () => {
-  it('folds findings by repo then file', async () => {
+  it('folds findings into one row per (repo, file), worst severity first', async () => {
     seed();
     const res = await db.findings.listFindingLocations({});
 
-    expect(res.totals).toEqual({ findings: 3, repos: 2, files: 3 });
-    // Worst severity first: acme/api holds the critical row.
-    expect(res.items.map((r) => r.repo)).toEqual(['acme/api', 'acme/web']);
-
-    const api = res.items[0];
-    expect(api?.instanceCount).toBe(2);
-    expect(api?.maxSeverity).toBe('critical');
-    expect(api?.files.map((f) => f.file)).toEqual(['a.ts', 'c.ts']);
-    expect(api?.files[0]?.ruleIds).toEqual(['aws-key']);
+    expect(res.totals).toEqual({ findings: 3, locations: 3 });
+    // Flat pairs, not repos nesting files: acme/api appears twice, once per file,
+    // and the two are ordered by severity rather than kept together by repo.
+    expect(res.items.map((l) => [l.repo, l.file])).toEqual([
+      ['acme/api', 'a.ts'],
+      ['acme/web', 'b.ts'],
+      ['acme/api', 'c.ts'],
+    ]);
+    expect(res.items[0]?.instanceCount).toBe(1);
+    expect(res.items[0]?.maxSeverity).toBe('critical');
+    expect(res.items[0]?.ruleIds).toEqual(['aws-key']);
+    expect(res.nextCursor).toBeNull();
   });
 
-  it('buckets a finding whose event recorded no repo or file under the empty key', async () => {
+  it('gives every row an id that is stable and distinct per pair', async () => {
+    seed();
+    const res = await db.findings.listFindingLocations({});
+    const ids = res.items.map((l) => l.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    // Stable across reads: it is what `?loc=` carries between one render and the
+    // next, so a re-render must resolve the same row.
+    const again = await db.findings.listFindingLocations({});
+    expect(again.items.map((l) => l.id)).toEqual(ids);
+  });
+
+  it('buckets a finding whose event recorded no repo or file, as a selectable location', async () => {
     record({ occurredAt: '2026-01-03T00:00:00.000Z', sourceTool: 'claude-code', ruleId: 'r' });
     const res = await db.findings.listFindingLocations({});
 
     expect(res.items).toHaveLength(1);
     expect(res.items[0]?.repo).toBe('');
-    expect(res.items[0]?.files[0]?.file).toBe('');
+    expect(res.items[0]?.file).toBe('');
+    // It is a location like any other, which is the point: it carries a token a
+    // URL can name, where the tree it replaced rendered it as a dead row.
+    expect(res.items[0]?.id).not.toBe('');
   });
 
   it('folds a location status from its instances', async () => {
@@ -361,41 +379,321 @@ describe('SqliteFindingsRepository.listFindingLocations', () => {
     const res = await db.findings.listFindingLocations({});
     // Every seeded row is in-flight, so each location folds to 'handled'.
     expect(res.items[0]?.status).toBe('handled');
-    expect(res.items[0]?.files[0]?.status).toBe('handled');
   });
 
   it('honors the same filters as the flat list', async () => {
     seed();
     const res = await db.findings.listFindingLocations({ severity: ['low'] });
-    expect(res.totals).toEqual({ findings: 1, repos: 1, files: 1 });
-    expect(res.items[0]?.files[0]?.file).toBe('c.ts');
+    expect(res.totals).toEqual({ findings: 1, locations: 1 });
+    expect(res.items[0]?.file).toBe('c.ts');
   });
 
-  it('reports hasMore when the limit truncates the repo list', async () => {
-    for (let i = 0; i < 5; i += 1) {
+  // The invariant the whole view rests on: one toolbar drives both panels, so a
+  // row's count has to be exactly what the panel beside it will show. Every item
+  // is checked rather than the first, because the discriminating case — the
+  // unnamed bucket — is never the one that sorts first.
+  it('reports a count per row that the instance read reproduces exactly', async () => {
+    seed();
+    // Four locations that make the two predicates INDEPENDENTLY load-bearing.
+    // The bucket where both halves are empty is the one being drilled into, but
+    // on its own it does not discriminate: with only it and the named seed rows,
+    // dropping the `repo` predicate still leaves the `file` one matching exactly
+    // that bucket, so the count stays 1 and the case passes while the guard is
+    // broken. That is measured, not theoretical — it is what this fixture
+    // originally did. The two HALF-empty locations are what close it: each is
+    // matched by exactly one of the predicates, so losing either one takes the
+    // count from 1 to 2.
+    record({ occurredAt: '2026-01-04T00:00:00.000Z', sourceTool: 'claude-code', ruleId: 'r' });
+    record({
+      occurredAt: '2026-01-05T00:00:00.000Z',
+      sourceTool: 'claude-code',
+      ruleId: 'r',
+      repo: 'acme/api',
+    });
+    record({
+      occurredAt: '2026-01-06T00:00:00.000Z',
+      sourceTool: 'claude-code',
+      ruleId: 'r',
+      filePath: 'x.ts',
+    });
+
+    const dimensions: ListFindingLocationsQuery[] = [
+      {},
+      { severity: ['critical'] },
+      { action: ['blocked'] },
+      { status: ['handled'] },
+      // `q` is a dimension like any other here: it matches the finding's own
+      // haystack, which carries the repo and the file, so it narrows the panel
+      // exactly as it narrows the list.
+      { q: 'aws-key' },
+    ];
+    for (const filters of dimensions) {
+      const locations = await db.findings.listFindingLocations(filters);
+      let summed = 0;
+      for (const loc of locations.items) {
+        const panel = await db.findings.listFindingInstances({
+          ...filters,
+          repo: loc.repo,
+          file: loc.file,
+        });
+        expect(panel.totals.findings).toBe(loc.instanceCount);
+        summed += loc.instanceCount;
+      }
+      expect(summed).toBe(locations.totals.findings);
+    }
+
+    // The positive control on the empty pair specifically. It holds ONE finding
+    // where the store holds six, and its two neighbours are arranged so that
+    // dropping EITHER predicate alone raises this to 2.
+    const unnamed = await db.findings.listFindingInstances({ repo: '', file: '' });
+    expect(unnamed.totals.findings).toBe(1);
+    expect((await db.findings.listFindingLocations({})).totals.findings).toBe(6);
+  });
+
+  it('names every distinct rule at a location, uncapped', async () => {
+    // More than the 20 the row used to slice to, so the count is a tally rather
+    // than a sample and the view can say how many it is not showing.
+    for (let i = 0; i < 25; i += 1) {
       record({
         occurredAt: new Date(Date.UTC(2026, 0, 1) + i * 1000).toISOString(),
         sourceTool: 'claude-code',
-        ruleId: 'r',
-        repo: `acme/repo-${String(i)}`,
+        ruleId: `rule-${String(i)}`,
+        repo: 'acme/api',
+        filePath: 'a.ts',
       });
     }
-    const res = await db.findings.listFindingLocations({ limit: 2 });
-    expect(res.items).toHaveLength(2);
-    expect(res.totals.repos).toBe(5);
-    expect(res.hasMore).toBe(true);
+    const res = await db.findings.listFindingLocations({});
+    expect(res.items[0]?.ruleIds).toHaveLength(25);
+    // Length alone tolerates duplicates; the set alone tolerates
+    // truncation-plus-duplication. Both together say what is meant.
+    expect(new Set(res.items[0]?.ruleIds)).toEqual(
+      new Set(Array.from({ length: 25 }, (_, i) => `rule-${String(i)}`)),
+    );
+  });
+
+  describe('pagination', () => {
+    // Every location shares a severity AND an instant, so the ONLY thing that
+    // can order them is the (repo, file) tie-break — and the group of three
+    // straddles the page boundary, which is the shape that exposes a
+    // non-total order. With distinct timestamps (which every other fixture in
+    // this file has, since the seed helper steps them) the recency key alone
+    // orders the list and a comparator with no tie-break passes.
+    function seedTied(): void {
+      for (const file of ['a.ts', 'b.ts', 'c.ts']) {
+        record({
+          occurredAt: '2026-01-01T00:00:00.000Z',
+          sourceTool: 'claude-code',
+          ruleId: 'aws-key',
+          severity: 'critical',
+          repo: 'acme/api',
+          filePath: file,
+        });
+      }
+    }
+
+    it('walks every location exactly once across pages, even when they all tie', async () => {
+      seedTied();
+      const first = await db.findings.listFindingLocations({ limit: 2 });
+      // Pin the tie itself: if the seed helper ever stops producing one, this
+      // case stops testing what it is named for rather than going red.
+      expect(first.items[0]?.latestDetectedAt).toBe(first.items[1]?.latestDetectedAt);
+      expect(first.items[0]?.maxSeverity).toBe(first.items[1]?.maxSeverity);
+
+      expect(first.items.map((l) => l.file)).toEqual(['a.ts', 'b.ts']);
+      expect(first.nextCursor).not.toBeNull();
+
+      const second = await db.findings.listFindingLocations({
+        limit: 2,
+        cursor: first.nextCursor ?? '',
+      });
+      expect(second.items.map((l) => l.file)).toEqual(['c.ts']);
+      expect(second.nextCursor).toBeNull();
+    });
+
+    it('mints no cursor when the last page exactly fills the limit', async () => {
+      seedTied();
+      const res = await db.findings.listFindingLocations({ limit: 3 });
+      expect(res.items).toHaveLength(3);
+      // `start + limit < sorted.length`, not `<=`: a cursor here would lead to
+      // an empty page behind a live Next button.
+      expect(res.nextCursor).toBeNull();
+    });
+
+    it('keeps totals and facets page-independent', async () => {
+      seedTied();
+      const first = await db.findings.listFindingLocations({ limit: 2 });
+      const second = await db.findings.listFindingLocations({
+        limit: 2,
+        cursor: first.nextCursor ?? '',
+      });
+      expect(second.totals).toEqual(first.totals);
+      expect(second.facets).toEqual(first.facets);
+    });
+
+    it('restarts from the top on a cursor it cannot read', async () => {
+      seedTied();
+      const all = await db.findings.listFindingLocations({});
+      for (const cursor of ['not-base64url!!', Buffer.from('{"nope":1}').toString('base64url')]) {
+        const res = await db.findings.listFindingLocations({ cursor });
+        expect(res.items.map((l) => l.file)).toEqual(all.items.map((l) => l.file));
+      }
+    });
+
+    it('restarts from the top on a cursor naming an unknown severity', async () => {
+      seedTied();
+      const cursor = Buffer.from(
+        JSON.stringify({ sev: 'not-a-severity', t: '2026-01-01T00:00:00.000Z', r: '', f: '' }),
+      ).toString('base64url');
+      const res = await db.findings.listFindingLocations({ cursor });
+      expect(res.items).toHaveLength(3);
+    });
+  });
+
+  describe('includeId', () => {
+    it('appends a selected location the cursor has already passed', async () => {
+      seed();
+      const all = await db.findings.listFindingLocations({});
+      const last = all.items[2];
+      expect(last).toBeDefined();
+
+      const page = await db.findings.listFindingLocations({ limit: 1, includeId: last?.id });
+      // One page row plus the pinned one, out of sort order.
+      expect(page.items).toHaveLength(2);
+      expect(page.items[1]?.id).toBe(last?.id);
+      // And it changes neither what the list reports nor where paging resumes.
+      expect(page.totals).toEqual(all.totals);
+      expect(page.nextCursor).toBe(
+        (await db.findings.listFindingLocations({ limit: 1 })).nextCursor,
+      );
+    });
+
+    it('does not duplicate one that is already on the page', async () => {
+      seed();
+      const all = await db.findings.listFindingLocations({});
+      const first = all.items[0];
+      const page = await db.findings.listFindingLocations({ limit: 2, includeId: first?.id });
+      expect(page.items).toHaveLength(2);
+      expect(page.items.filter((l) => l.id === first?.id)).toHaveLength(1);
+    });
+
+    it('ignores an unknown id rather than blanking the page', async () => {
+      seed();
+      const page = await db.findings.listFindingLocations({ includeId: 'no/such' });
+      expect(page.items).toHaveLength(3);
+    });
+  });
+
+  describe('facets', () => {
+    it('counts findings with each dimension excluding its own filter', async () => {
+      seed();
+      const res = await db.findings.listFindingLocations({ severity: ['critical'] });
+
+      // Severity is excluded from its OWN facet, so it still offers `low` — the
+      // control that answers "what happens if I pick this instead?". Computed
+      // below the filter gate, every facet collapses to the current selection.
+      const severity = Object.fromEntries(res.facets.severity.map((f) => [f.value, f.count]));
+      expect(severity).toEqual({ critical: 2, low: 1 });
+
+      // Every OTHER dimension is narrowed by the severity filter, which is what
+      // makes the case above a real exclusion rather than an unfiltered pass.
+      const provider = Object.fromEntries(res.facets.provider.map((f) => [f.value, f.count]));
+      expect(provider).toEqual({ claudecode: 1, cursor: 1 });
+    });
   });
 
   it('is empty on an empty store', async () => {
     const res = await db.findings.listFindingLocations({});
     expect(res.items).toEqual([]);
-    expect(res.totals).toEqual({ findings: 0, repos: 0, files: 0 });
-    expect(res.hasMore).toBe(false);
+    expect(res.totals).toEqual({ findings: 0, locations: 0 });
+    expect(res.nextCursor).toBeNull();
   });
 });
 
-describe('SqliteFindingsRepository.listGroupedFindings pagination', () => {
-  // Distinct rules so each becomes its own group; the grouped list pages GROUPS.
+// The read the `?finding=` deep link resolves through. It is a primary-key seek
+// rather than anything derived from a list page, which is the whole point: the
+// id a link carries can name a finding far older than any page a reader would
+// otherwise have to walk to.
+describe('SqliteFindingsRepository.findingInstance', () => {
+  it('resolves an id to a detail whose groupId is the rule id', async () => {
+    record({
+      occurredAt: '2026-01-03T00:00:00.000Z',
+      sourceTool: 'claude-code',
+      ruleId: 'aws-key',
+      repo: 'acme/api',
+      filePath: 'a.ts',
+      sessionId: 'sess-1',
+    });
+    const listed = (await db.findings.listFindingInstances({})).items[0];
+    expect(listed).toBeDefined();
+
+    const found = await db.findings.findingInstance(listed?.id ?? '');
+    expect(found?.groupId).toBe('aws-key');
+    expect(found?.subtype).toBe('aws-key');
+    expect(found?.file).toBe('a.ts');
+    expect(found?.sessionId).toBe('sess-1');
+  });
+
+  it('returns null for an unknown id', async () => {
+    expect(await db.findings.findingInstance('no-such-finding')).toBeNull();
+  });
+
+  // The non-vacuous one: the OLDEST finding of a large type, which the read this
+  // replaced could only see if it fell inside a fixed 200-row preview. Seek it
+  // directly and it resolves regardless of how many newer findings bury it.
+  it('resolves the oldest finding of a large type, which no page bound reaches', async () => {
+    const BURIED = 250;
+    await db.transaction(() => {
+      for (let i = 0; i < BURIED; i += 1) {
+        record({
+          occurredAt: new Date(Date.UTC(2026, 1, 1) + i * 1000).toISOString(),
+          sourceTool: 'claude-code',
+          ruleId: 'buried-rule',
+          repo: 'acme/api',
+          filePath: `deep/f${String(i)}.ts`,
+        });
+      }
+    });
+
+    // Walk to the end to learn the oldest one's id, then seek it cold.
+    let cursor: string | null = null;
+    let oldest: { id: string; file: string } | undefined;
+    do {
+      const page = await db.findings.listFindingInstances({
+        subtype: ['buried-rule'],
+        limit: 50,
+        ...(cursor === null ? {} : { cursor }),
+      });
+      oldest = page.items.at(-1) ?? oldest;
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    expect(oldest?.file).toBe('deep/f0.ts');
+
+    const found = await db.findings.findingInstance(oldest?.id ?? '');
+    expect(found?.file).toBe('deep/f0.ts');
+    expect(found?.groupId).toBe('buried-rule');
+  });
+
+  // It RESOLVES an id; whether the row would survive the list's filters is a
+  // different question, and hiding the target because a filter excludes it is
+  // worse than showing it.
+  it('ignores the filters a list would apply', async () => {
+    record({
+      occurredAt: '2026-01-03T00:00:00.000Z',
+      sourceTool: 'claude-code',
+      ruleId: 'aws-key',
+      severity: 'critical',
+      repo: 'acme/api',
+      filePath: 'a.ts',
+    });
+    const listed = (await db.findings.listFindingInstances({})).items[0];
+    // A filter that excludes it from every list still leaves it resolvable.
+    expect((await db.findings.listFindingInstances({ severity: ['low'] })).items).toHaveLength(0);
+    expect((await db.findings.findingInstance(listed?.id ?? ''))?.id).toBe(listed?.id);
+  });
+});
+
+describe('SqliteFindingsRepository.listFindingTypes pagination', () => {
+  // Distinct rules so each becomes its own type; this list pages TYPES.
   function seedGroups(n: number): void {
     for (let i = 0; i < n; i += 1) {
       record({
@@ -413,8 +711,8 @@ describe('SqliteFindingsRepository.listGroupedFindings pagination', () => {
     const seen: string[] = [];
     let cursor: string | undefined;
     for (let page = 0; page < 10; page += 1) {
-      const res: Awaited<ReturnType<typeof db.findings.listGroupedFindings>> =
-        await db.findings.listGroupedFindings({
+      const res: Awaited<ReturnType<typeof db.findings.listFindingTypes>> =
+        await db.findings.listFindingTypes({
           limit: 5,
           ...(cursor === undefined ? {} : { cursor }),
         });
@@ -429,15 +727,15 @@ describe('SqliteFindingsRepository.listGroupedFindings pagination', () => {
 
   it('reports a null cursor at exhaustion', async () => {
     seedGroups(3);
-    const res = await db.findings.listGroupedFindings({ limit: 5 });
+    const res = await db.findings.listFindingTypes({ limit: 5 });
     expect(res.items).toHaveLength(3);
     expect(res.nextCursor).toBeNull();
   });
 
   it('keeps totals and facets page-independent', async () => {
     seedGroups(12);
-    const first = await db.findings.listGroupedFindings({ limit: 5 });
-    const second = await db.findings.listGroupedFindings({
+    const first = await db.findings.listFindingTypes({ limit: 5 });
+    const second = await db.findings.listFindingTypes({
       limit: 5,
       cursor: first.nextCursor ?? '',
     });
@@ -447,8 +745,8 @@ describe('SqliteFindingsRepository.listGroupedFindings pagination', () => {
 
   it('restarts from the top on an undecodable cursor', async () => {
     seedGroups(6);
-    const fresh = await db.findings.listGroupedFindings({ limit: 3 });
-    const restarted = await db.findings.listGroupedFindings({ limit: 3, cursor: 'garbage' });
+    const fresh = await db.findings.listFindingTypes({ limit: 3 });
+    const restarted = await db.findings.listFindingTypes({ limit: 3, cursor: 'garbage' });
     expect(restarted.items.map((g) => g.id)).toEqual(fresh.items.map((g) => g.id));
   });
 
@@ -460,20 +758,20 @@ describe('SqliteFindingsRepository.listGroupedFindings pagination', () => {
     const bogus = Buffer.from(
       JSON.stringify({ sev: 'not-a-severity', t: '2026-01-01T00:00:00.000Z', id: 'x' }),
     ).toString('base64url');
-    const fresh = await db.findings.listGroupedFindings({ limit: 3 });
-    const restarted = await db.findings.listGroupedFindings({ limit: 3, cursor: bogus });
+    const fresh = await db.findings.listFindingTypes({ limit: 3 });
+    const restarted = await db.findings.listFindingTypes({ limit: 3, cursor: bogus });
     expect(restarted.items.map((g) => g.id)).toEqual(fresh.items.map((g) => g.id));
   });
 
   it('appends an includeId group that sorts past the page', async () => {
     seedGroups(12);
-    const first = await db.findings.listGroupedFindings({ limit: 3 });
+    const first = await db.findings.listFindingTypes({ limit: 3 });
     const onPage = new Set(first.items.map((g) => g.id));
-    const all = await db.findings.listGroupedFindings({ limit: 100 });
+    const all = await db.findings.listFindingTypes({ limit: 100 });
     const offPage = all.items.find((g) => !onPage.has(g.id));
     expect(offPage).toBeDefined();
 
-    const withDeepLink = await db.findings.listGroupedFindings({
+    const withDeepLink = await db.findings.listFindingTypes({
       limit: 3,
       includeId: offPage?.id ?? '',
     });
@@ -486,45 +784,50 @@ describe('SqliteFindingsRepository.listGroupedFindings pagination', () => {
 
   it('does not duplicate an includeId group already on the page', async () => {
     seedGroups(12);
-    const first = await db.findings.listGroupedFindings({ limit: 3 });
+    const first = await db.findings.listFindingTypes({ limit: 3 });
     const onPageId = first.items[0]?.id ?? '';
-    const res = await db.findings.listGroupedFindings({ limit: 3, includeId: onPageId });
+    const res = await db.findings.listFindingTypes({ limit: 3, includeId: onPageId });
     expect(res.items).toHaveLength(3);
     expect(res.items.filter((g) => g.id === onPageId)).toHaveLength(1);
   });
 
-  it('resolves an includeId naming an instance, not just a group', async () => {
+  // `includeId` names a RULE only. An instance id is resolved by
+  // findingInstance instead — a primary-key seek, so unlike the old preview
+  // scan it reaches a finding of any age (see its own cases below).
+  it('ignores an includeId naming an instance rather than a type', async () => {
     seedGroups(12);
-    const all = await db.findings.listGroupedFindings({ limit: 100 });
-    const offPage = all.items.at(-1);
-    const instanceId = offPage?.instances[0]?.id ?? '';
+    const all = await db.findings.listFindingTypes({ limit: 100 });
+    const offPage = all.items.at(-1)?.id ?? '';
+    const instanceId =
+      (await db.findings.listFindingInstances({ subtype: [offPage] })).items[0]?.id ?? '';
     expect(instanceId).not.toBe('');
 
-    const res = await db.findings.listGroupedFindings({ limit: 3, includeId: instanceId });
-    expect(res.items.at(-1)?.id).toBe(offPage?.id);
+    const plain = await db.findings.listFindingTypes({ limit: 3 });
+    const res = await db.findings.listFindingTypes({ limit: 3, includeId: instanceId });
+    expect(res.items.map((g) => g.id)).toEqual(plain.items.map((g) => g.id));
   });
 
   it('ignores an unknown includeId', async () => {
     seedGroups(6);
-    const plain = await db.findings.listGroupedFindings({ limit: 3 });
-    const res = await db.findings.listGroupedFindings({ limit: 3, includeId: 'no-such-id' });
+    const plain = await db.findings.listFindingTypes({ limit: 3 });
+    const res = await db.findings.listFindingTypes({ limit: 3, includeId: 'no-such-id' });
     expect(res.items.map((g) => g.id)).toEqual(plain.items.map((g) => g.id));
   });
 
-  it('scopes aggregates and previews to the from bound together', async () => {
+  it('scopes the type read and the findings read to the from bound alike', async () => {
     seed();
-    const res = await db.findings.listGroupedFindings({ from: '2026-01-02T00:00:00.000Z' });
+    const from = '2026-01-02T00:00:00.000Z';
+    const res = await db.findings.listFindingTypes({ from });
 
     // The 2026-01-01 'email' row falls outside the window entirely.
-    expect(res.totals).toEqual({ findings: 2, groups: 1 });
-    const awsKey = res.items[0];
-    // instanceCount comes from the aggregate query and instances from the
-    // preview query — the bound has to reach both or they disagree.
-    expect(awsKey?.instanceCount).toBe(2);
-    expect(awsKey?.instances).toHaveLength(2);
+    expect(res.totals).toEqual({ findings: 2, types: 1 });
+    expect(res.items[0]?.instanceCount).toBe(2);
+    // The two panels read the same window, or the count on the left disagrees
+    // with the rows on the right.
+    expect((await db.findings.listFindingInstances({ from })).totals.findings).toBe(2);
   });
 
-  it('carries event and session linkage on preview instances', async () => {
+  it('carries event and session linkage on each finding', async () => {
     const eventId = record({
       occurredAt: '2026-01-03T00:00:00.000Z',
       sourceTool: 'claude-code',
@@ -532,8 +835,8 @@ describe('SqliteFindingsRepository.listGroupedFindings pagination', () => {
       repo: 'acme/api',
       sessionId: 'sess-9',
     });
-    const res = await db.findings.listGroupedFindings({});
-    expect(res.items[0]?.instances[0]?.eventId).toBe(eventId);
-    expect(res.items[0]?.instances[0]?.sessionId).toBe('sess-9');
+    const found = await db.findings.listFindingInstances({ subtype: ['aws-key'] });
+    expect(found.items[0]?.eventId).toBe(eventId);
+    expect(found.items[0]?.sessionId).toBe('sess-9');
   });
 });

@@ -1,5 +1,13 @@
 export type { ApplyMode, ApplyResult } from './apply.ts';
 export { applyCliUpdate, applyPluginUpdate, installAgentPlugin } from './apply.ts';
+export type { BackgroundScheduleDeps } from './background-schedule.ts';
+export {
+  BACKGROUND_SYNC_INTERVAL_SECONDS,
+  backgroundSyncLabel,
+  installBackgroundSync,
+  renderPlist,
+  uninstallBackgroundSync,
+} from './background-schedule.ts';
 export { claudeAvailable, installClaudePlugin, updateClaudePlugin } from './claude-plugin.ts';
 export type { CliPluginBin, CliPluginManager } from './cli-plugin-manager.ts';
 export { createCliPluginManager } from './cli-plugin-manager.ts';

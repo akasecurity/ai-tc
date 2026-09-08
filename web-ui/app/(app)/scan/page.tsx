@@ -12,7 +12,7 @@ export default function ScanPage() {
   const ruleset = db().installedPacks.installedRuleset();
 
   return (
-    <div className="px-8 pb-10 pt-7">
+    <div className="p-6">
       <PageHead
         title="Scan"
         sub="Run the installed detection rules over a local file or directory — the web twin of `aka scan`"

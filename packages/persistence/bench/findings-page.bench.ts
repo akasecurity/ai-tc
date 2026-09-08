@@ -2,10 +2,13 @@
  * The findings page's read surface at a stated store size.
  *
  * `/findings` is three views over one filtered set, and each view is a
- * different read rather than one read shaped three ways: the grouped list
- * (`listGroupedFindings`, one row per rule), the flat list
+ * different read rather than one read shaped three ways: the by-type list
+ * (`listFindingTypes`, one row per rule, plus `listFindingInstances` scoped to
+ * the selected rule for the detail panel beside it), the flat list
  * (`listFindingInstances`, one row per finding, keyset-paged) and the locations
- * fold (`listFindingLocations`, repo then file). Every filter change re-runs
+ * list (`listFindingLocations`, one row per (repo, file) pair, keyset-paged,
+ * plus `listFindingInstances` scoped to the selected pair for its own detail
+ * panel). Every filter change re-runs
  * the view's read from the top of its scope, because totals and facets describe
  * the whole filtered set and must not move as the reader pages. So the cost of
  * the page IS the cost of one read, and that is what this measures — each view
@@ -100,6 +103,10 @@ interface Surfaces {
   readonly now: number;
   /** The cursor that fetches the second flat page — minted once, in setup. */
   readonly secondPageCursor: string | null;
+  /** The same for the locations list, whose page-2 cost is its own read. */
+  readonly secondLocationsCursor: string | null;
+  /** The heaviest rule in the corpus — the detail panel's worst realistic case. */
+  readonly ruleId: string;
 }
 
 const fixtures = new Map<number, Surfaces>();
@@ -131,12 +138,19 @@ async function fixtureFor(events: number): Promise<Surfaces> {
 
   const findings = new SqliteFindingsRepository(raw);
   const firstPage = await findings.listFindingInstances({});
+  const firstLocationsPage = await findings.listFindingLocations({});
+  // The type carrying the most findings: the detail panel's worst case, and the
+  // one the old bounded preview was hiding the cost of.
+  const types = (await findings.listFindingTypes({})).items;
+  const heaviest = [...types].sort((a, b) => b.instanceCount - a.instanceCount)[0]?.id ?? '';
   const surfaces: Surfaces = {
     store,
     findings,
     sessionId: sessionRow?.id ?? '',
     now: corpus.endsAt,
     secondPageCursor: firstPage.nextCursor,
+    secondLocationsCursor: firstLocationsPage.nextCursor,
+    ruleId: heaviest,
   };
   fixtures.set(events, surfaces);
   return surfaces;
@@ -156,15 +170,21 @@ const PART_OPTIONS = { time: 0, iterations: 5, warmupIterations: 1, warmupTime: 
 
 /** Every read the page can issue, in the order the toolbar exposes them. */
 const READS: readonly [string, (s: Surfaces) => Promise<unknown>][] = [
-  // --- grouped view (the default) --------------------------------------------
-  ['grouped: default', (s) => s.findings.listGroupedFindings({})],
-  ['grouped: q', (s) => s.findings.listGroupedFindings({ q: 'module-1' })],
-  ['grouped: severity', (s) => s.findings.listGroupedFindings({ severity: ['critical'] })],
-  ['grouped: status', (s) => s.findings.listGroupedFindings({ status: ['open'] })],
-  ['grouped: session', (s) => s.findings.listGroupedFindings({ sessionId: s.sessionId })],
+  // --- by-type view (the default): the type list, then the selected type's
+  // findings. Both are page loads, so both are measured — the second is what
+  // the old grouped read used to fold into the first as a bounded preview.
+  ['types: default', (s) => s.findings.listFindingTypes({})],
+  ['types: q', (s) => s.findings.listFindingTypes({ q: 'module-1' })],
+  ['types: severity', (s) => s.findings.listFindingTypes({ severity: ['critical'] })],
+  ['types: status', (s) => s.findings.listFindingTypes({ status: ['open'] })],
+  ['types: session', (s) => s.findings.listFindingTypes({ sessionId: s.sessionId })],
   [
-    'grouped: from 30d',
-    (s) => s.findings.listGroupedFindings({ from: new Date(s.now - 30 * DAY_MS).toISOString() }),
+    'types: from 30d',
+    (s) => s.findings.listFindingTypes({ from: new Date(s.now - 30 * DAY_MS).toISOString() }),
+  ],
+  [
+    'types: selected rule → findings',
+    (s) => s.findings.listFindingInstances({ subtype: [s.ruleId] }),
   ],
   // --- flat view -------------------------------------------------------------
   ['flat: first page', (s) => s.findings.listFindingInstances({})],
@@ -182,6 +202,10 @@ const READS: readonly [string, (s: Surfaces) => Promise<unknown>][] = [
   // --- locations view --------------------------------------------------------
   ['locations: default', (s) => s.findings.listFindingLocations({})],
   ['locations: severity', (s) => s.findings.listFindingLocations({ severity: ['critical'] })],
+  [
+    'locations: second page',
+    (s) => s.findings.listFindingLocations({ cursor: s.secondLocationsCursor ?? undefined }),
+  ],
 ];
 
 for (const events of SCALES) {

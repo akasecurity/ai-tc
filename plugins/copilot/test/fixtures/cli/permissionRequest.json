@@ -1,0 +1,11 @@
+{
+  "hookName": "permissionRequest",
+  "sessionId": "c1779e76-9889-419b-ab12-f7bb8a957e15",
+  "timestamp": 1788547866524,
+  "cwd": "/Users/dev/ai-tc",
+  "toolName": "bash",
+  "toolInput": {
+    "command": "false"
+  },
+  "permissionSuggestions": []
+}

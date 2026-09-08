@@ -119,10 +119,14 @@ export interface ManagedContext {
   present: boolean;
   organization?: string;
   lockedFields: readonly ManagedSettingKey[];
-  // Names the administrator locked that this build does not know, so a
-  // surface can say a lock exists that it is not applying. Absent when there
-  // are none.
-  unknownLockedFields?: readonly string[];
+  // HOW MANY locks this build does not know, so a surface can say a lock
+  // exists that it is not applying. A count rather than the names, because
+  // this context is handed to a client component and is therefore serialized
+  // to the browser on every settings render: `lockedFields` is bounded by the
+  // enum, while the names are whatever the administrator's file happens to
+  // contain. The names stay on the parsed `ManagedSettings` for a reader that
+  // wants them. Absent when there are none.
+  unknownLockedCount?: number;
 }
 
 export const NO_MANAGED_CONTEXT: ManagedContext = { present: false, lockedFields: [] };

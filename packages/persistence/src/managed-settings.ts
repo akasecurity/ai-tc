@@ -110,9 +110,11 @@ export function managedContextOf(managed: ManagedSettings | null): ManagedContex
     present: true,
     ...(managed.organization === undefined ? {} : { organization: managed.organization }),
     lockedFields: managed.lockedFields,
+    // The COUNT crosses to the dashboard, not the names — see ManagedContext.
+    // The names remain on `managed` for any caller that wants to list them.
     ...(managed.unknownLockedFields === undefined
       ? {}
-      : { unknownLockedFields: managed.unknownLockedFields }),
+      : { unknownLockedCount: managed.unknownLockedFields.length }),
   };
 }
 

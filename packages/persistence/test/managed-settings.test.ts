@@ -100,7 +100,7 @@ describe('readManagedSettings — fail-open on a damaged administrative file', (
     expect(managed?.organization).toBe('Acme');
     expect(managed?.lockedFields).toEqual(['runMode']);
     // Every lock was known, so the context carries no key saying otherwise.
-    expect(managedContextOf(managed)).not.toHaveProperty('unknownLockedFields');
+    expect(managedContextOf(managed)).not.toHaveProperty('unknownLockedCount');
   });
 
   it('keeps every lock it knows beside one it does not, and reports the stranger', () => {
@@ -115,7 +115,10 @@ describe('readManagedSettings — fail-open on a damaged administrative file', (
     const context = managedContextOf(managed);
     expect(context.present).toBe(true);
     expect(isFieldManaged(context, 'runMode')).toBe(true);
-    expect(context.unknownLockedFields).toEqual(['lockFromANewerBuild']);
+    // The COUNT crosses, not the names: the context is serialized to the
+    // browser, and the names are unbounded where the enum is not.
+    expect(context.unknownLockedCount).toBe(1);
+    expect(context).not.toHaveProperty('unknownLockedFields');
   });
 
   it('runs UNMANAGED rather than refusing when the file is malformed', () => {

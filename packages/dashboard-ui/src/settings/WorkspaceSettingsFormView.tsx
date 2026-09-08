@@ -440,10 +440,12 @@ function SettingGroup({ title, children }: { title: string; children: ReactNode 
  * not know. Such a lock is dropped from the locked set rather than failing the
  * whole file (which would run the machine unmanaged), and this is the one
  * place that says a lock exists which is not being applied. A count rather
- * than the names: the names are the administrator's to fix, in the file.
+ * than the names: the names are the administrator's to fix, in the file, and
+ * `ManagedContext` carries only the count so the names never cross to the
+ * browser.
  */
 export function managedUnknownLocksNotice(context: ManagedContext): string | undefined {
-  const count = context.unknownLockedFields?.length ?? 0;
+  const count = context.unknownLockedCount ?? 0;
   if (!context.present || count === 0) return undefined;
   const who = context.organization ?? 'Your organization';
   return count === 1

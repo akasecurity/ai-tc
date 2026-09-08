@@ -850,7 +850,7 @@ describe('administratively locked rows', () => {
           present: true,
           organization: 'Acme',
           lockedFields: ['historicalAccess'],
-          unknownLockedFields: ['lockFromANewerBuild'],
+          unknownLockedCount: 1,
         },
       }),
     );
@@ -867,7 +867,7 @@ describe('administratively locked rows', () => {
     const one = managedUnknownLocksNotice({
       present: true,
       lockedFields: [],
-      unknownLockedFields: ['a'],
+      unknownLockedCount: 1,
     });
     expect(one).toContain('Your organization locks 1 setting');
     expect(one).toContain('apply it.');
@@ -875,14 +875,14 @@ describe('administratively locked rows', () => {
       present: true,
       organization: 'Acme',
       lockedFields: [],
-      unknownLockedFields: ['a', 'b'],
+      unknownLockedCount: 2,
     });
     expect(several).toContain('Acme locks 2 settings');
     expect(several).toContain('apply them.');
     // Gated on `present` like isFieldManaged: a stale context must not
     // announce locks from an administrator who is not there.
     expect(
-      managedUnknownLocksNotice({ present: false, lockedFields: [], unknownLockedFields: ['a'] }),
+      managedUnknownLocksNotice({ present: false, lockedFields: [], unknownLockedCount: 1 }),
     ).toBeUndefined();
     expect(managedUnknownLocksNotice({ present: true, lockedFields: [] })).toBeUndefined();
   });

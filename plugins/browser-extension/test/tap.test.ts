@@ -327,6 +327,32 @@ describe('installTap: the fetch half', () => {
     expect(h.of('request')).toHaveLength(1);
   });
 
+  it('refuses a typed-array body rather than walking it by index', async () => {
+    // A typed array has forEach, and its callback is (value: number, index).
+    // The URLSearchParams/FormData branch therefore claims it and produces
+    // `0=&1=&2=…` — indices as keys, empty values, because the numbers are not
+    // strings. Observed on a real site, where a whole request body arrived at
+    // parseRequest as that. The line below the branch already intends a typed
+    // array to be unreadable; it was simply never reached.
+    const { fn } = fakeFetch('ok');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+
+    installTap(win, h.port, [CONVERSATION]);
+    await fetchOn(win)('https://site.test/api/conversation', {
+      method: 'POST',
+      body: new Uint8Array([123, 34, 97, 34, 58, 49, 125]),
+    });
+    await h.settle();
+
+    // Same verdict a raw ArrayBuffer already got: unreadable, so no exchange is
+    // opened and nothing further about the request is followed.
+    expect(h.of('error')[0]).toMatchObject({ reason: 'unparsed_body' });
+    expect(h.of('request')).toHaveLength(0);
+    expect(h.of('chunk')).toHaveLength(0);
+    expect(h.of('end')).toHaveLength(0);
+  });
+
   it('forwards a matched request and its response, and returns the page its own body', async () => {
     const { fn, calls } = fakeFetch('hello from the site');
     const win = { fetch: fn } as unknown as Window;

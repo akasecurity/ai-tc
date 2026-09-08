@@ -1,0 +1,12 @@
+{
+  "sessionId": "c1779e76-9889-419b-ab12-f7bb8a957e15",
+  "timestamp": 1788547866483,
+  "cwd": "/Users/dev/ai-tc",
+  "toolName": "bash",
+  "toolArgs": {
+    "command": "false",
+    "description": "Run the requested false command",
+    "mode": "sync",
+    "initial_wait": 30
+  }
+}

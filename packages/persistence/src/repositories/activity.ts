@@ -547,6 +547,15 @@ export class SqliteActivityRepository implements ActivityReadPort {
 
     if (query.q) {
       const pattern = containsPattern(query.q);
+      // The descendant arm searches the SAME expression the timeline renders as
+      // a row's detail — `TIMELINE_COLUMNS` above coalesces `$.detail` onto
+      // `$.target`, and so does this. Searching a narrower set than the view
+      // displays is how a session goes missing for a term the user can see on
+      // it: `$.detail` alone matches no `tool_call` at all (that bag carries
+      // `target`, the masked WebFetch url / Bash command, and no `content`), so
+      // a search for a command or a url found nothing while the timeline showed
+      // it. The two expressions have to move together — if one grows a field,
+      // so does the other.
       conditions.push(
         `(content LIKE ? ESCAPE '\\'
           OR json_extract(attributes, '$.project') LIKE ? ESCAPE '\\'
@@ -556,7 +565,8 @@ export class SqliteActivityRepository implements ActivityReadPort {
             SELECT 1 FROM audit_events d
             WHERE d.root_session_id = audit_events.id
               AND (d.content LIKE ? ESCAPE '\\'
-                   OR json_extract(d.attributes, '$.detail') LIKE ? ESCAPE '\\')))`,
+                   OR coalesce(json_extract(d.attributes, '$.detail'),
+                               json_extract(d.attributes, '$.target')) LIKE ? ESCAPE '\\')))`,
       );
       params.push(pattern, pattern, pattern, pattern, pattern, pattern);
     }

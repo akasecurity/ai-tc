@@ -205,7 +205,7 @@ describe('CI bounds the concurrency of every turbo test run', () => {
 
   it('never reaches the test task through a package script', () => {
     // The hole the assertions above cannot see. `pnpm test` runs the root
-    // script, which is `turbo run test` over all 20 packages — an unbounded
+    // script, which is `turbo run test` over every package — an unbounded
     // workspace test run that matches no `turbo` predicate, so every filter
     // above skips it and the suite goes green. It is also the spelling this
     // repo used until these bounds landed, which makes it the most likely way

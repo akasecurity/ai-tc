@@ -1,72 +1,45 @@
-# Copilot CLI — Phase A spike findings (partial)
+# Copilot CLI hook payloads — recorded shapes
 
-Captured from a live, authenticated session against GitHub Copilot CLI
-**1.0.83** (`npm view @github/copilot version` on 2026-09-05; the epic's
-Surfaces table was written against 1.0.82). Auth: `gh auth token | copilot
-login --with-token` — the CLI accepts an existing `gh` OAuth token directly,
-with no browser step. Run under an isolated `$COPILOT_HOME` so nothing here
-touched the machine's real Copilot config.
+Each `<event>.json` here is the JSON one hook received on stdin from GitHub
+Copilot CLI **1.0.83** (`npm view @github/copilot version` on 2026-09-05), in
+one authenticated session run under an isolated `$COPILOT_HOME`. Auth was
+`gh auth token | copilot login --with-token`, which the CLI accepts with no
+browser step. The session was one turn — `run the shell command: false`,
+executed through the `bash` tool under `--allow-all` — so the eight files
+describe one tool call from `sessionStart` to `sessionEnd`.
 
-Covers the core enforcement path only: `sessionStart`, `userPromptSubmitted`,
-`userPromptTransformed`, `preToolUse`, `permissionRequest`, `postToolUse`,
-`agentStop`, `sessionEnd`. **Not captured**: `postToolUseFailure` (a tool-level
-failure, not a nonzero exit — see below), `preMcpToolCall` (needs an MCP
-server configured), `subagentStart`/`subagentStop` (needs a task that spawns
-one), `preCompact` (needs a long enough session to compact), `notification`,
-`errorOccurred`. Each needs its own elaborated setup; left for a follow-up
-pass rather than forced here.
+`test/cli-fixture-shapes.test.ts` in this package pins the fields described
+below and the exact set of files. Add a recording and it fails until the
+recording is described there too.
 
-## Corrections to the epic's Surfaces table
+## What was rewritten before commit
 
-1. **The file-hook loader accepts 15 event names, not 17 and not the epic's 14.** The live schema (`copilot-sdk/schemas/api.schema.json`'s `HookType`
-   enum) lists 17, but wiring all 17 into `~/.copilot/hooks/*.json` and
-   running a session logs, verbatim:
+- **Every path under the capturing user's home** became the repository's
+  `/Users/dev` placeholder — the checkout (`cwd`) and the isolated
+  `$COPILOT_HOME` alike. `agentStop.transcriptPath` therefore reads as a
+  default-home layout (`/Users/dev/.copilot/session-state/…`) and is not the
+  directory the session ran under; only its shape is the CLI's.
+- **Nothing else.** The session id, the epoch timestamps, the tool arguments
+  and the tool result are as received. The `<current_datetime>` stamp inside
+  `transformedPrompt` keeps its `+05:30` offset — it agrees with the epoch
+  fields to the millisecond, and it records a timezone and nothing more.
 
-   ```
-   [DEBUG] [rust:hooks] Ignoring unknown hook event(s) in .../aka-spike.json: postResult, prePRDescription
-   ```
+So a test pins a **sanitized** shape: a path in these files is never the one
+the CLI sent, and everything else is.
 
-   Those two are schema-only (SDK-callback surface, not file-configurable) in
-   this build. The epic's list of 14 was itself short two of the 15 real
-   file-configurable ones — `preMcpToolCall` and `postToolUseFailure` weren't
-   named, though both are legitimate hook-file events.
+## Not recorded here
 
-2. **`preToolUse` denies via a JSON object on stdout with exit 0, not exit 2.** Confirmed by driving a real deny: the hook command printed
-   `{"permissionDecision":"deny","permissionDecisionReason":"..."}` to stdout
-   and exited 0. The CLI's own transcript read:
+Seven of the fifteen file-configurable events (below) have no recording,
+each because it needs a setup this one-turn session did not have:
+`postToolUseFailure` (a tool-level failure, not a non-zero exit — see
+`postToolUse`), `preMcpToolCall` (an MCP server), `subagentStart` and
+`subagentStop` (a task delegated through the `task` tool), `preCompact` (a
+session long enough to compact), `notification`, `errorOccurred`.
 
-   ```
-   ✗ Run the requested echo command (shell)
-     └ Denied by preToolUse hook: AKA spike test - verifying deny semantics
-   The command was blocked by the pre-tool-use hook.
-   ```
+## The hook file that produced these
 
-   This is the Claude-Code-style JSON-decision convention, not a raw
-   exit-code convention. Worth re-verifying `permissionDecision: "ask"` and
-   `modifiedArgs` the same way before Phase B relies on them; only `deny` was
-   driven live here.
-
-3. **`preToolUse` and `permissionRequest` both fire for the same tool call,
-   in that order, under `--allow-all`.** `permissionRequest` is not gated
-   behind "would otherwise prompt" — it fired even with every permission
-   pre-granted. The two carry the SAME tool-call payload under DIFFERENT key
-   names: `preToolUse.toolArgs` vs. `permissionRequest.toolInput`. A scanner
-   reading one cannot assume the other's shape.
-
-4. **`postToolUse.toolResult.resultType` reflects whether the _tool
-   invocation_ succeeded, not whether the underlying command exited zero.**
-   Ran `false` (exit 1) through the shell tool: `resultType` was still
-   `"success"`, and the exit code appeared only as free text inside
-   `textResultForLlm`: `"<shellId: 0 completed with exit code 1>"`. Detecting
-   a failed command means parsing that string, not reading a status field —
-   worth confirming whether `postToolUseFailure` is reserved for a
-   tool-level error (bad args, crash) rather than ever firing on a nonzero
-   shell exit; this spike didn't manage to trigger it.
-
-## Working hook-file shape
-
-`$COPILOT_HOME/hooks/<name>.json`, one combined file, keyed by event name —
-confirmed live (this is what produced every fixture here):
+`$COPILOT_HOME/hooks/<name>.json`, one file, keyed by event name. This is the
+shape that fired every event above:
 
 ```json
 {
@@ -77,83 +50,109 @@ confirmed live (this is what produced every fixture here):
 }
 ```
 
-## Other observations, not yet load-bearing for anything
+The capture script wrote its stdin to a file named by the event on its own
+argv. Nothing here shows whether a dispatcher keyed on the **payload** alone
+would work — see `hookName` under field notes.
 
-- `agentStop.transcriptPath` points at `$COPILOT_HOME/session-state/<sessionId>/events.jsonl`
-  — real on-disk transcript location, relevant to a future history-scan/backfill design.
-  `sessionStart` carries no `transcriptPath`; only `agentStop` does.
-- `agentStop` carries `stop_hook_active` in snake_case, the one field observed
-  that breaks the otherwise-consistent camelCase convention.
-- `userPromptTransformed.transformedPrompt` embeds internal scaffolding not
-  present in the raw prompt — a `<current_datetime>` stamp and a
-  `<system_reminder><sql_tables>...</sql_tables></system_reminder>` block
-  naming a `todos`/`todo_deps` schema. Neither was asked for; this is the
-  CLI's own prompt engineering, visible only post-transform. Worth knowing
-  before assuming `userPromptSubmitted.prompt` is the whole of what reaches
-  the model — it manifestly isn't.
-- Tool name observed: `bash` (lowercase). `toolArgs` for it carries
-  `command`, `description`, `mode: "sync"`, `initial_wait: 30` — the last two
-  not mentioned anywhere in the epic's table.
+## Accepted event names
 
-## Second pass: `modifiedArgs`, `ask`, and why it stopped there
+The loader accepted fifteen names from a hooks file: `sessionStart`,
+`sessionEnd`, `userPromptSubmitted`, `userPromptTransformed`, `preToolUse`,
+`postToolUse`, `postToolUseFailure`, `preMcpToolCall`, `agentStop`,
+`subagentStart`, `subagentStop`, `errorOccurred`, `preCompact`,
+`permissionRequest`, `notification`.
 
-Same CLI, same auth method, later the same day. Two more `preToolUse` fields
-confirmed live; three more events attempted and blocked by an environment
-condition, documented rather than silently dropped.
+The CLI's own schema (`copilot-sdk/schemas/api.schema.json`, `HookType`)
+lists seventeen. Wiring all seventeen into a hooks file and starting a
+session logs the other two as unknown, verbatim:
 
-- **`modifiedArgs` genuinely rewrites the call.** The hook returned
+```
+[DEBUG] [rust:hooks] Ignoring unknown hook event(s) in .../aka-spike.json: postResult, prePRDescription
+```
+
+Those two are reachable from the SDK's callback surface only, not from a file.
+
+## Observed behaviours
+
+Stated as recorded. The first three come from the CLI's transcript or debug
+log in runs other than the one the fixtures are from, so **no file here backs
+them**; the last two are in the fixtures.
+
+- **A `preToolUse` deny is a JSON object on stdout with exit 0.** The hook
+  printed `{"permissionDecision":"deny","permissionDecisionReason":"…"}` and
+  exited 0; the CLI's transcript read `Denied by preToolUse hook: …` and
+  `The command was blocked by the pre-tool-use hook.`, and the command did not
+  run. Whether exit 2 also denies was not tested.
+- **`modifiedArgs` rewrites the executed call.** A hook returning
   `{"modifiedArgs":{"command":"echo modified-by-hook"}}` for a call whose
-  original command was `echo MODIFYME-original`. The transcript ran the
-  _rewritten_ command — `modified-by-hook` appeared in the output, the
-  original string never did. Confirmed by effect, not by echoing the input
-  back.
-
-- **`permissionDecision: "ask"` resolves to a denial in non-interactive
-  mode — it does not hang.** First attempt looked like a hang (25s, no
-  stdout, process killed) and that reading would have been wrong. The debug
-  log for that run states the mechanism precisely, from the runtime's own
-  internals rather than from stdout text:
+  command was `echo MODIFYME-original` produced `modified-by-hook` in the
+  transcript; the original string never ran. Confirmed by effect, not by the
+  input being echoed back.
+- **`permissionDecision: "ask"` resolves to a denial when nobody can be
+  asked.** In non-interactive mode the call sat for ~25 s with no stdout and
+  the debug log then recorded the mechanism:
 
   ```
-  [DEBUG] [rust:copilot_runtime::session::session_helpers] respondToPermission:
-    requestId=70118366-..., kind=denied-no-approval-rule-and-could-not-request-from-user
+  [DEBUG] [rust:copilot_runtime::session::session_helpers] respondToPermission: requestId=…, kind=denied-no-approval-rule-and-could-not-request-from-user
   ```
 
-  So `ask` fails closed when there is nobody to ask, rather than blocking a
-  headless run forever. Worth relying on rather than assuming: a policy that
-  maps to `ask` on this surface is safe in CI/automation contexts by this
-  mechanism, not despite it.
+  A policy that maps to `ask` on this surface fails closed in automation by
+  that route.
 
-- **A real tool-name fingerprint, from the session's own tool-selection
-  log**, is worth recording since #411's table names none of these: `bash`,
+- **`preToolUse` and `permissionRequest` both fire for one tool call, in that
+  order, even under `--allow-all`** — 41 ms apart in the recordings
+  (`preToolUse.json` at `1788547866483`, `permissionRequest.json` at
+  `1788547866524`). `permissionRequest.toolInput` is a **strict subset** of
+  `preToolUse.toolArgs`: it carries `command` only, while `toolArgs` also
+  carries `description` (model-authored text), `mode` and `initial_wait`. A
+  hook that wants to scan `description` reaches it on `preToolUse` and
+  nowhere else.
+- **`postToolUse.toolResult.resultType` reports whether the tool invocation
+  succeeded, not whether the command exited zero.** The recorded command is
+  `false`; `resultType` is `"success"` and the exit code appears only as free
+  text in `textResultForLlm` (`<shellId: 0 completed with exit code 1>`).
+  Whether `postToolUseFailure` is reserved for a tool-level error, or ever
+  fires on a non-zero shell exit, was not observed.
+
+## Field notes
+
+- `hookName` is present on `permissionRequest` only (`"hookName":
+"permissionRequest"`). Whether the CLI sends it on other events was not
+  tested, so nothing here says a payload can be dispatched without the event
+  name on argv.
+- `agentStop.transcriptPath` names `$COPILOT_HOME/session-state/<sessionId>/events.jsonl`,
+  the on-disk session record. `sessionStart` carries no `transcriptPath`.
+- `agentStop.stop_hook_active` is the one snake_case key observed; every
+  other key is camelCase.
+- `userPromptTransformed.transformedPrompt` wraps the submitted prompt in
+  scaffolding the user did not write — a `<current_datetime>` stamp and a
+  `<system_reminder><sql_tables>…</sql_tables></system_reminder>` block naming
+  a `todos`/`todo_deps` schema. `userPromptSubmitted.prompt` is not the whole
+  of what reaches the model.
+- The shell tool is named `bash` (lowercase). Its `toolArgs` carry `command`,
+  `description`, `mode` (`"sync"`) and `initial_wait` (`30`).
+- Tool names seen in the session's own tool-selection log: `bash`,
   `read_bash`, `stop_bash`, `list_bash`, `apply_patch`, `view`, `web_fetch`,
   `fetch_copilot_cli_documentation`, `skill`, `sql`, `session_store_sql`,
-  `read_agent`, `list_agents`, `write_agent`, `rg`, `glob`, **`task`** (a
-  real subagent-delegation tool exists — worth using to drive
-  `subagentStart`/`subagentStop` in a follow-up), plus a `github-mcp-server`
-  MCP server wired in **by default**, contributing several
-  `github-mcp-server-*` tools without being asked for.
+  `read_agent`, `list_agents`, `write_agent`, `rg`, `glob`, `task`, plus a
+  `github-mcp-server` MCP server wired in by default and contributing several
+  `github-mcp-server-*` tools.
 
-- **A context-budget wall is what ended this pass, and it is NOT the
-  default MCP server** — that was the first suspect, and it was ruled out
-  live rather than assumed. Every invocation after this point — across a
-  fresh `$COPILOT_HOME`, a fresh login, and `--disable-builtin-mcps` —
-  failed identically and immediately (0 AI credits, ~3-7s) with:
+## Not measured
 
-  ```
-  Static system messages and tool definitions exceed the model's usable context budget.
-  ```
+Each of these decides something a hook written against this host depends on,
+and none was observed:
 
-  Ruled out before stopping: not this session's accumulated state (a
-  brand-new `$COPILOT_HOME` with a fresh login failed the same way on its
-  first prompt); not the built-in MCP tools specifically
-  (`--disable-builtin-mcps` made no difference); not a bad `--model` guess
-  mattering (the flag's own error for an invalid name gives no list of
-  valid ones to try). Reads as an account/entitlement condition — this
-  account's available model tier may not have room for the CLI's own
-  baseline system prompt plus its default tool set, independent of anything
-  a hook or this spike did. `postToolUseFailure`, `preMcpToolCall`,
-  `subagentStart`/`subagentStop`, `preCompact`, `notification`, and
-  `errorOccurred` remain undriven because of this, not from lack of a
-  plan — the `task` tool above and a deliberately-failing `view` call were
-  both queued and never got to run.
+- `preToolUse` with **exit 0 and empty stdout** — allow or deny.
+- `preToolUse` with a **non-zero exit** — allow or deny.
+- `preToolUse` past its timeout; `preToolUse` with exit 2.
+- `postToolUse.modifiedResult` replacing what the model sees.
+- `userPromptSubmitted.modifiedPrompt` from a command hook.
+- The seven unrecorded events above.
+
+The second recording pass ended before the first two could run: every
+invocation on the capturing account then failed, before any prompt was sent,
+with `Static system messages and tool definitions exceed the model's usable
+context budget.` A fresh `$COPILOT_HOME`, a fresh login and
+`--disable-builtin-mcps` did not change it, so it reads as a condition of the
+account or its model tier rather than of anything a hooks file did.

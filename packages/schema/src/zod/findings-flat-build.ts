@@ -97,10 +97,20 @@ function matchesDimension(
       return (
         !opts.tools?.length || (row.toolName !== undefined && opts.tools.includes(row.toolName))
       );
+    // An EMPTY value is a real filter here, not an absent one. The location
+    // list buckets a finding whose event recorded no repo — or no file — under
+    // the empty string, and selecting that bucket has to narrow the panel to
+    // exactly it. Only `undefined` means "no filter"; a caller that wants every
+    // row omits the key, which every call site already does.
+    //
+    // Reading '' as unset is what this replaced, and it failed in the one place
+    // it mattered: the no-repo/no-file bucket is often the largest in a real
+    // store, and its panel dropped both predicates and returned the WHOLE scope
+    // — a row reading 3 findings beside a panel listing every finding there is.
     case 'repo':
-      return opts.repo === undefined || opts.repo === '' || row.repo === opts.repo;
+      return opts.repo === undefined || row.repo === opts.repo;
     case 'file':
-      return opts.file === undefined || opts.file === '' || row.file === opts.file;
+      return opts.file === undefined || row.file === opts.file;
     case 'q':
       return !opts.q || rowHaystack(row).includes(opts.q.toLowerCase());
   }
@@ -266,4 +276,109 @@ export function addToLocation(acc: LocationAccumulator, row: FlatFindingRow): vo
   if (row.occurredAt > acc.latestDetectedAt) acc.latestDetectedAt = row.occurredAt;
   acc.statuses.push(row.status);
   acc.ruleIds.add(row.ruleId);
+}
+
+/**
+ * The key a location row is ordered by, and the shape its cursor carries.
+ *
+ * A key rather than a whole row, for the reason compareFindingGroupOrder takes a
+ * Pick: a keyset cursor has to be compared against the list without first being
+ * inflated into a row it never was.
+ */
+export interface LocationOrderKey {
+  maxSeverity: string;
+  latestDetectedAt: string;
+  repo: string;
+  file: string;
+}
+
+/**
+ * Location rows sort worst severity first, then most recent, then by (repo,
+ * file) — and that last key is what makes the order TOTAL.
+ *
+ * Total is load-bearing rather than tidy, because this list is keyset-paged. A
+ * cursor resumes at "the first row strictly after this one", so two rows the
+ * comparator calls equal are two rows it cannot get between. Three locations
+ * tied on both severity and instant, paged two at a time: the cursor minted from
+ * the second matches nothing greater, the next page comes back EMPTY, and the
+ * third location is unreachable behind a Next button that was enabled. The pair
+ * is unique per location, so ordering on it removes ties outright.
+ *
+ * The two string keys are compared with `<` rather than `localeCompare`, which
+ * is NOT interchangeable here: ICU collation reports canonically-equivalent
+ * strings as equal, so a precomposed and a decomposed 'café.ts' compare 0 — and
+ * macOS stores NFD where event metadata arrives NFC, which reintroduces exactly
+ * the tie this key exists to remove. `<` is UTF-16 code-unit order: total,
+ * locale-free, and the same in every runtime.
+ *
+ * They are also two SEPARATE keys rather than one joined string. Joining needs a
+ * separator provably absent from arbitrary repo names and file paths, and there
+ * is no such character.
+ */
+export function compareLocationOrder(a: LocationOrderKey, b: LocationOrderKey): number {
+  // `?? -1` ranks an unknown severity BEFORE every known one, which is what
+  // makes an undecodable or hand-edited cursor degrade to a restart from the top
+  // rather than to an empty page — the same property decodeGroupCursor documents
+  // for its own `sev`. It differs from newLocationAccumulator's miss value on
+  // purpose: that one is picking a maximum and must lose every comparison, this
+  // one is ordering and must not bucket an unknown value among the known ones.
+  const rankA = SEVERITY_ORDER[a.maxSeverity] ?? -1;
+  const rankB = SEVERITY_ORDER[b.maxSeverity] ?? -1;
+  if (rankA !== rankB) return rankA - rankB;
+  // latestDetectedAt descending — ISO-8601 strings sort lexically.
+  if (a.latestDetectedAt !== b.latestDetectedAt) {
+    return a.latestDetectedAt < b.latestDetectedAt ? 1 : -1;
+  }
+  if (a.repo !== b.repo) return a.repo < b.repo ? -1 : 1;
+  if (a.file !== b.file) return a.file < b.file ? -1 : 1;
+  return 0;
+}
+
+/**
+ * The opaque id a location row carries, minted from the pair that identifies it.
+ *
+ * A location's identity is (repo, file) and a URL param holds one value, so
+ * `?loc=` needs the two folded into a single token — the way `?rule=` names a
+ * type by its one id. Both halves are percent-encoded, so the separator cannot
+ * occur inside either and the single literal '/' left is unambiguous. The empty
+ * pair therefore mints '/' rather than '', which is what keeps
+ * present-and-empty distinguishable from absent and makes the no-repo/no-file
+ * bucket selectable at all.
+ *
+ * Deliberately not a base64 encode: this package takes no Node-API dependency
+ * (it is reachable from the browser-side bundle), so there is no Buffer to reach
+ * for, and btoa is latin1-only and would corrupt a non-ASCII path.
+ *
+ * Deliberately not a sort key either — see compareLocationOrder, which orders on
+ * the pair itself. This token is only ever compared for EQUALITY: the page's
+ * selection check, the read's includeId, and the client's page dedupe.
+ */
+export function encodeLocationId(repo: string, file: string): string {
+  return `${encodePart(repo)}/${encodePart(file)}`;
+}
+
+/**
+ * One half of a location id, percent-encoded — and never throwing.
+ *
+ * `encodeURIComponent` raises URIError on a LONE SURROGATE, and event metadata
+ * reaches the store as JSON, where a `\uD800` escape parses into exactly that.
+ * One such path would otherwise take out the whole locations read while it
+ * projected its rows: not that row, the entire page, under every filter. Nothing
+ * else on this path fails that way.
+ *
+ * A lone surrogate is replaced with U+FFFD before encoding. That is lossy, and
+ * safely so — the id is compared only for equality and is derived
+ * deterministically from the pair on both sides of every comparison, so two
+ * locations still collide only if their paths already differ nowhere but in an
+ * unpaired surrogate. The repo and file the row DISPLAYS are untouched.
+ */
+function encodePart(value: string): string {
+  // The `u` flag is what makes this narrow, and it is the whole trick: under
+  // Unicode mode the pattern matches code POINTS, and a valid surrogate pair is
+  // one code point outside this range — so only UNPAIRED surrogates match. Drop
+  // the flag and the same class matches both halves of every astral character,
+  // collapsing every emoji-bearing path onto one id. Hand-rolled lookarounds for
+  // "a high surrogate not followed by a low one" are the same thing spelled out,
+  // and buy nothing.
+  return encodeURIComponent(value.replace(/[\uD800-\uDFFF]/gu, '\uFFFD'));
 }

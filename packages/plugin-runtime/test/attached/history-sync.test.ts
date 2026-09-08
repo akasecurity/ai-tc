@@ -530,6 +530,86 @@ describe('runHistorySync — changing deployment', () => {
 
     expect(sent).toEqual(['s-0', 's-0-llm']);
   });
+
+  // The design collision this whole describe block exists to close: a human
+  // grants existing-history consent WHILE `aka attach` is pointing the
+  // machine at the new deployment, and `seedCaptureBacklogOwed` marks the
+  // pre-attach backlog owed at that instant — before the drain has run even
+  // once under the new deployment. The very first pass under it sees the
+  // fingerprint changed and, until this fix, wiped that grant's own markers
+  // before ever reading them: the CLI's printed "sent in the background"
+  // would have been false.
+  it('keeps a backlog grant made while attaching TO the new deployment', async () => {
+    attach({ grantFor: ENDPOINT });
+    await run({ sendBatch: sendBatchOk }); // one pass under A: records A's fingerprint
+
+    // A capture already on disk before either attach — genuinely pre-attach,
+    // and deliberately NOT marked owed by seeding it directly rather than
+    // through seedCaptures, which simulates a live forward instead.
+    const db1 = openLocalDatabase(dataDirOf(home));
+    try {
+      db1.auditEvents.ensureSessionRoot('cap-session', new Date(T0 - 172_800_000).toISOString());
+      db1.auditEvents.insertAuditEvent({
+        id: 'cap-pre',
+        eventType: 'prompt',
+        rootSessionId: 'cap-session',
+        parentId: 'cap-session',
+        startedAt: new Date(T0 - 86_400_000).toISOString(),
+        content: 'text of a pre-attach prompt',
+        contentHash: 'b'.repeat(64),
+        attributes: { source_tool: 'claude-code' },
+      });
+    } finally {
+      db1.close();
+    }
+
+    // `aka attach --url OTHER_ENDPOINT`: points the machine at B and grants
+    // existing-history consent for B, in that order — settings first, then
+    // the backfill, exactly as attach.ts orders the two calls.
+    const attachedToB = '2026-08-26T00:00:00.000Z';
+    applyOnboarding(
+      {
+        controlPlane: { endpoint: OTHER_ENDPOINT, attachedAt: attachedToB },
+        historySyncConsent: {
+          acknowledgedAt: attachedToB,
+          payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+          endpoint: OTHER_ENDPOINT,
+        },
+      },
+      home,
+    );
+    writeControlPlaneCredential(settingsDirOf(home), {
+      specVersion: 1,
+      endpoint: OTHER_ENDPOINT,
+      apiKey: FIXTURE,
+      mintedAt: attachedToB,
+    });
+    const db2 = openLocalDatabase(dataDirOf(home));
+    try {
+      db2.historySync.markCaptureBacklogOwed(Date.parse(attachedToB));
+    } finally {
+      db2.close();
+    }
+
+    // The drain's FIRST pass under B — the one that discovers the fingerprint
+    // changed and, before this fix, disowned the grant above before this
+    // point was ever reached. Both lanes need their own sink, or the capture
+    // lane falls through to the real transport and the pass reports
+    // 'unreachable' instead of exercising what this test is about.
+    const captured: IngestEvent[] = [];
+    await run({
+      sendBatch: sendBatchOk,
+      sendCaptures: (events: readonly IngestEvent[]) => {
+        captured.push(...events);
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+
+    // The wire id is a derived uuid, not the row's own — content is what
+    // proves it was THIS row, sent with the text a v3 grant promises.
+    expect(captured.map((c) => c.content)).toEqual(['text of a pre-attach prompt']);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
+  });
 });
 
 describe('runHistorySync — the backlog boundary', () => {

@@ -139,6 +139,109 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     expect(readWorkspaceSettings().vaultInlineReveal).toBe('full');
   });
 
+  // The mirror of the stale case above: a grant that is ALREADY valid for the
+  // current payload version and endpoint must survive a 'granted' re-save
+  // byte-for-byte — kept as-is rather than re-stamped, so its acknowledgedAt
+  // does not drift on every unrelated save. The backfill DOES still run,
+  // bounded to the EXISTING acknowledgedAt rather than "now" — see the sibling
+  // test below, which is what actually exercises it; this one is the record
+  // staying put, not the retry.
+  it("keeps an already-valid grant as-is when 'granted' is saved again", async () => {
+    const current = {
+      acknowledgedAt: '2020-01-01T00:00:00.000Z',
+      payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+      endpoint: ENDPOINT,
+    };
+    const { applyOnboarding } = await import('@akasecurity/persistence');
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: '2020-01-01T00:00:00.000Z' },
+        historySyncConsent: current,
+      },
+      join(home, '.aka'),
+    );
+
+    const res = await saveSettings({
+      historicalAccess: 'session-only',
+      modelJudgeConsent: 'revoked',
+      historySyncConsent: 'granted',
+      vaultConsent: 'off',
+      // A real unrelated edit, or the save proves nothing about a re-stamp it
+      // never had cause to make.
+      vaultInlineReveal: 'full',
+    });
+    expect(res.ok).toBe(true);
+    expect(readWorkspaceSettings().historySyncConsent).toEqual(current);
+    expect(readWorkspaceSettings().vaultInlineReveal).toBe('full');
+  });
+
+  // THE RETRY ITSELF. seedCaptureBacklogOwed is best-effort and silent — a
+  // locked or unwritable store at grant time must not turn a successful
+  // consent into a reported failure — and `aka attach` / `aka sync-history
+  // --on` get a retry for free because a human can just run either again.
+  // This is the dashboard's only equivalent: choosing 'granted' again over an
+  // already-valid grant, which the previous test shows leaves the RECORD
+  // untouched but must still give the backfill another attempt, bounded to
+  // that record's own acknowledgedAt so it recovers exactly what the original
+  // grant promised.
+  it("retries the capture backfill when 'granted' is saved over an already-valid grant", async () => {
+    const acknowledgedAt = '2020-06-01T00:00:00.000Z';
+    const current = {
+      acknowledgedAt,
+      payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+      endpoint: ENDPOINT,
+    };
+    const { applyOnboarding, dataDir, openLocalDatabase } =
+      await import('@akasecurity/persistence');
+    const base = join(home, '.aka');
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: acknowledgedAt },
+        historySyncConsent: current,
+      },
+      base,
+    );
+
+    // A pre-attach capture, never marked owed — standing in for the row a
+    // locked store dropped the first time this grant's backfill ran.
+    const db1 = openLocalDatabase(dataDir(base));
+    try {
+      db1.auditEvents.ensureSessionRoot('s-1', '2020-05-01T00:00:00.000Z');
+      db1.auditEvents.insertAuditEvent({
+        id: 's-1-prompt',
+        eventType: 'prompt',
+        rootSessionId: 's-1',
+        parentId: 's-1',
+        startedAt: '2020-05-01T00:01:00.000Z',
+        content: 'text of a prompt the first backfill missed',
+        contentHash: 'c'.repeat(64),
+        attributes: { source_tool: 'claude-code' },
+      });
+    } finally {
+      db1.close();
+    }
+
+    const res = await saveSettings({
+      historicalAccess: 'session-only',
+      modelJudgeConsent: 'revoked',
+      historySyncConsent: 'granted',
+      vaultConsent: 'off',
+      vaultInlineReveal: 'masked',
+    });
+    expect(res.ok).toBe(true);
+
+    const db2 = openLocalDatabase(dataDir(base));
+    try {
+      expect(
+        db2.historySync.pendingCaptureRows(10, Date.parse(acknowledgedAt) + 1).map((r) => r.id),
+      ).toEqual(['s-1-prompt']);
+    } finally {
+      db2.close();
+    }
+  });
+
   it('still revokes on an explicit revoked, stale grant or not', async () => {
     const { applyOnboarding } = await import('@akasecurity/persistence');
     applyOnboarding(

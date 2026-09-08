@@ -335,13 +335,27 @@ describe('isHistorySyncConsentValid', () => {
 //                                     historyLines — what `aka status` prints,
 //                                     including the paused-grant branch
 //   README.md                         the [^egress] footnote
+//   SECURITY.md                       the "Data in transit" section's
+//                                     sync-history paragraph — pinned by no
+//                                     other test; at-rest-docs.test.ts scopes
+//                                     to "## Data at rest" and
+//                                     privacy-claims.test.ts reads only the
+//                                     three READMEs
 //
 // v2 widened the subject from the pre-attach backlog to everything the machine
 // still owes its deployment, which brought CAPTURE rows — and their prompt,
 // reply and tool-result TEXT — inside the grant for the first time.
+//
+// v3 widens it again, inside that same scope: through v2 a pre-attach capture
+// could never be marked owed at all, because `outbox_owed` was set only by a
+// live forward that ran while attached. v3 adds the other writer of that
+// marker — a one-time backfill, run once from each grant site at the instant
+// consent is given, over what is already on disk — so the pre-attach backlog
+// is no longer structural-only: it now carries the same prompt/reply/tool-
+// result TEXT as an undelivered live send, masked by the same rule.
 describe('the payload version and its disclosure move together', () => {
   it('fails on a bump so the copy gets re-read', () => {
-    expect(HISTORY_SYNC_PAYLOAD_VERSION).toBe(2);
+    expect(HISTORY_SYNC_PAYLOAD_VERSION).toBe(3);
   });
 });
 

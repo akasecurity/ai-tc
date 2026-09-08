@@ -231,6 +231,13 @@ export const FindingInstance = z
   .meta({ id: 'FindingInstance' });
 export type FindingInstance = z.infer<typeof FindingInstance>;
 
+// A finding type together with a set of its instances.
+//
+// The TYPE-level list does not use this — see FindingTypeSummary, which omits
+// `instances` and `match` because that read materializes neither. What still
+// needs this shape is the detail drawer, whose selection is a group plus an
+// optional instance within it: the instance-level list inflates one row into a
+// single-instance group so the drawer renders identically from either list.
 export const FindingGroup = z
   .object({
     id: z.string(),
@@ -247,13 +254,11 @@ export const FindingGroup = z
     latestDetectedAt: z.iso.datetime(),
     instances: z.array(FindingInstance),
     // Derived from instances' statuses with open-dominates precedence (see
-    // buildFindingGroups). Undefined only when no instance carries a status.
+    // foldGroupStatus). Undefined only when no instance carries a status.
     status: FindingStatus.optional(),
-    // The distinct people across the WHOLE group, not just the `instances`
-    // preview — from the store's whole-group aggregate when it supplies one,
-    // else folded from the rows (see buildFindingGroups). Undefined when no
-    // instance carries a user, or when the store supplied whole-group folds
-    // without one.
+    // The distinct people across the WHOLE group, not just the instances
+    // carried here. Undefined when no instance carries a user, or when the
+    // store supplied whole-group folds without one.
     users: z.array(FindingUser).optional(),
   })
   .meta({ id: 'FindingGroup' });
@@ -294,7 +299,7 @@ export const FindingFacets = z
     // counted under no value.
     status: z.array(FindingFacetItem),
     // Host tool (attributes.tool_name). Present only on the instance-level
-    // reads, which can filter by it; the grouped read omits the dimension
+    // reads, which can filter by it; the type-level read omits the dimension
     // because a group spans tools.
     tool: z.array(FindingFacetItem).optional(),
   })
@@ -303,34 +308,73 @@ export type FindingFacets = z.infer<typeof FindingFacets>;
 
 // ─── Request / response schemas ───────────────────────────────────────────────
 
-// ListGroupedFindingsQuery / ListGroupedFindingsResponse: the grouped findings
-// read — the one that answers "which rules are firing". Distinct from the
-// instance-level flat read further down (ListFindingInstancesQuery), which
-// answers "what happened most recently" and pages by a keyset cursor where this
-// one pages a sorted array. Two live contracts, neither superseding the other;
-// the flat read's own header says why they are not two modes of one query.
+// ─── Finding types (the "By type" list) ──────────────────────────────────────
+
+// FindingTypeSummary: one finding TYPE — a rule — with its whole-group folds and
+// NO instances. It is the left-hand list of the Findings page's master/detail
+// view; the findings themselves come from the instance-level read below, scoped
+// to `subtype: [id]`.
+//
+// Derived from FindingGroup by omission rather than declared afresh, so the two
+// cannot drift in the fields they share. Two omissions, each load-bearing:
+//
+//   - `instances` — this read never materializes them. It answers "which rules
+//     are firing", and the answer is computed entirely by SQL aggregation; the
+//     findings of one type are a separate, keyset-paged read that is not bounded
+//     by any per-type cap.
+//   - `match` — a group's masked value was only ever ONE arbitrary instance's
+//     (whichever sorted newest), so it was never a property of the type. A type
+//     spans many distinct secrets; labelling the whole type with one of them is
+//     a claim the data does not support. Masked values live on the instances,
+//     where they are accurate, and `q` still matches them there.
+export const FindingTypeSummary = FindingGroup.omit({ instances: true, match: true }).meta({
+  id: 'FindingTypeSummary',
+});
+export type FindingTypeSummary = z.infer<typeof FindingTypeSummary>;
+
+// ListFindingTypesQuery / ListFindingTypesResponse: the type-level read — the
+// one that answers "which rules are firing". Distinct from the instance-level
+// flat read further down (ListFindingInstancesQuery), which answers "what
+// happened most recently" and pages by a keyset cursor where this one pages a
+// sorted array. Two live contracts, neither superseding the other; the flat
+// read's own header says why they are not two modes of one query.
 //
 // Query schema — intentionally NO `.meta({ id })`: a consumer expands query
 // params into individual parameters, and a parameter cannot reference a named
 // shape, so it must stay inline (see the SHAPE IDS note in zod/index.ts).
 // `limit` uses `z.coerce.number()` because query params arrive as strings
 // (`?limit=50`).
-// Default page size for grouped findings when the query omits `limit` (schema
-// caps `limit` at 100). Shared by every findings read path so all consumers
-// page identically — a single source of
-// truth rather than each consumer inventing its own default.
-export const DEFAULT_GROUPED_FINDINGS_LIMIT = 50;
 
-export const ListGroupedFindingsQuery = z.object({
+/**
+ * Default page size when the query omits `limit`. Shared by every consumer so
+ * all of them page identically — a single source of truth rather than each
+ * inventing its own default.
+ */
+export const DEFAULT_FINDING_TYPES_LIMIT = 50;
+/**
+ * The ceiling `limit` is rejected past. Named rather than left inline so the
+ * number has a referent to check against, as MAX_FLAT_FINDINGS_LIMIT does for
+ * the instance read. The two are set SEPARATELY on purpose: they are distinct
+ * contracts paging different units, so neither cap is derived from the other.
+ */
+export const MAX_FINDING_TYPES_LIMIT = 100;
+
+export const ListFindingTypesQuery = z.object({
   // NOTE: severity filters by Severity (critical/high/medium/low), not by
-  // FindingAction.
+  // FindingAction. It narrows TYPES: a type's severity is the one its newest
+  // firing version carries, and this list pages types.
+  //
+  // That is NOT a claim the findings of a type share it. A rule can hold several
+  // definition versions at different severities, so a type kept by this filter
+  // can hold findings that individually do not match — see totals.findings on
+  // ListFindingTypesResponse, which counts them all.
   severity: z.array(Severity).optional(),
   subtype: z.array(z.string()).optional(),
   provider: z.array(FindingProvider).optional(),
   action: z.array(FindingAction).optional(),
-  // Matches a group's DERIVED status (see FindingGroup.status), not its
-  // individual instances' — so a filtered group's Status column always reads
-  // one of the requested values.
+  // Matches a type's DERIVED status (see FindingGroup.status), not its
+  // individual findings' — so a filtered row's status always reads one of the
+  // requested values.
   status: z.array(FindingStatus).optional(),
   q: z.string().optional(),
   // Scope to findings whose event carries this session id (the Activity page's
@@ -340,26 +384,40 @@ export const ListGroupedFindingsQuery = z.object({
   // from a time-scoped page (Activity's range) can carry that scope. Absent
   // means all time — this list has no default window.
   from: z.iso.datetime().optional(),
-  // A group or instance id that must appear in the page even when the cursor
-  // has already advanced past its sort position. This is what keeps the
-  // Findings page's one-shot ?finding= deep link resolving once the list
-  // paginates: the target group is appended out of sort order rather than
-  // scanning forward for it. Never affects totals, facets or the cursor.
+  // A RULE id that must appear in the page even when the cursor has already
+  // advanced past its sort position. This is what keeps the selected type
+  // visible in the list once it paginates: the target is appended out of sort
+  // order rather than scanned forward for. Never affects totals, facets or the
+  // cursor. Unlike the grouped read this replaces, it names a rule only — an
+  // instance id is resolved by `findingInstance`, which is a primary-key seek
+  // and so is not bounded by what any page happens to hold.
   includeId: z.string().optional(),
-  groupBy: z.literal('type').optional(),
-  limit: z.coerce.number().int().min(1).max(100).optional(),
+  limit: z.coerce.number().int().min(1).max(MAX_FINDING_TYPES_LIMIT).optional(),
   cursor: z.string().optional(),
 });
-export type ListGroupedFindingsQuery = z.infer<typeof ListGroupedFindingsQuery>;
+export type ListFindingTypesQuery = z.infer<typeof ListFindingTypesQuery>;
 
-export const ListGroupedFindingsResponse = z
+export const ListFindingTypesResponse = z
   .object({
     totals: z.object({
+      // Findings belonging to the matching TYPES — not findings that each match
+      // the filters. The filters here select types, so a type that survives
+      // contributes its whole instanceCount.
+      //
+      // `status` is the one exception, narrowed per finding via
+      // countInstancesByStatus. `severity`, `provider` and `action` are not, so
+      // this can exceed what the instance read reports for the same filters: a
+      // rule whose severity moved between versions is kept on its newest and
+      // still counts its older findings. Narrowing the other three needs
+      // per-dimension counts the aggregate does not carry today.
       findings: z.number().int().nonnegative(),
-      groups: z.number().int().nonnegative(),
+      // Counts TYPES, which is the unit this read pages. The instance read's
+      // own totals count findings; the two deliberately answer different
+      // questions and are never summed.
+      types: z.number().int().nonnegative(),
     }),
     facets: FindingFacets,
-    items: z.array(FindingGroup),
+    items: z.array(FindingTypeSummary),
     nextCursor: z.string().nullable(),
     // Present only on session-scoped queries (`sessionId` set): per ruleId, how
     // many times that rule fired in the session's persisted transcript. Findings
@@ -368,8 +426,8 @@ export const ListGroupedFindingsResponse = z
     // session-scoped view show both.
     sessionFirings: z.record(z.string(), z.number().int().nonnegative()).optional(),
   })
-  .meta({ id: 'ListGroupedFindingsResponse' });
-export type ListGroupedFindingsResponse = z.infer<typeof ListGroupedFindingsResponse>;
+  .meta({ id: 'ListFindingTypesResponse' });
+export type ListFindingTypesResponse = z.infer<typeof ListFindingTypesResponse>;
 
 export const ApplyFindingActionRequest = z
   .object({
@@ -386,9 +444,9 @@ export type ApplyFindingActionRequest = z.infer<typeof ApplyFindingActionRequest
 export const ApplyFindingActionResponse = FindingGroup.meta({ id: 'ApplyFindingActionResponse' });
 export type ApplyFindingActionResponse = z.infer<typeof ApplyFindingActionResponse>;
 
-// ExportFindingsQuery: the same filter params as the grouped-findings read,
+// ExportFindingsQuery: the same filter params as the finding-types read,
 // minus pagination. Query schema — NO `.meta({ id })` (see
-// ListGroupedFindingsQuery and the SHAPE IDS note in zod/index.ts).
+// ListFindingTypesQuery and the SHAPE IDS note in zod/index.ts).
 export const ExportFindingsQuery = z.object({
   severity: z.array(Severity).optional(),
   subtype: z.array(z.string()).optional(),
@@ -414,30 +472,31 @@ export type FindingInstanceDetail = z.infer<typeof FindingInstanceDetail>;
 
 // ─── Instance-level (flat) findings list ─────────────────────────────────────
 
-// The grouped list answers "which rules are firing"; this one answers "what
+// The types list answers "which rules are firing"; this one answers "what
 // happened most recently", newest first, one row per finding. It is a separate
-// contract rather than a mode of the grouped query because the two differ in
+// contract rather than a mode of the types query because the two differ in
 // more than shape: `status` here matches each INSTANCE's derived status, while
-// the grouped query matches the group's folded status, and this response
-// paginates by a real keyset cursor where the grouped one pages a sorted array.
+// the types query matches the type's folded status, and this response
+// paginates by a real keyset cursor where the types one pages a sorted array.
 //
-// Query schema — NO `.meta({ id })` (see ListGroupedFindingsQuery and the
+// Query schema — NO `.meta({ id })` (see ListFindingTypesQuery and the
 // SHAPE IDS note in zod/index.ts).
 export const DEFAULT_FLAT_FINDINGS_LIMIT = 50;
 // The ceiling `limit` is rejected past. Named rather than left inline so the
 // number has a referent to check against, the way MAX_VAULT_PAGE_LIMIT does for
-// the vault reads. The grouped read caps at 100 and is set separately: the two
+// the vault reads. The types read caps at 100 and is set separately: the two
 // are distinct contracts, so neither cap is derived from the other.
 export const MAX_FLAT_FINDINGS_LIMIT = 200;
 
 export const ListFindingInstancesQuery = z.object({
   severity: z.array(Severity).optional(),
-  // Rule ids, the same vocabulary the grouped list's `subtype` carries.
+  // Rule ids, the same vocabulary the types list's `subtype` carries. Pinning
+  // ONE of them is how the master/detail view scopes its right-hand panel.
   subtype: z.array(z.string()).optional(),
   provider: z.array(FindingProvider).optional(),
   action: z.array(FindingAction).optional(),
   // Matches each instance's OWN derived status (deriveFindingStatus), unlike
-  // the grouped query's group-level fold.
+  // the types query's type-level fold.
   status: z.array(FindingStatus).optional(),
   // Exact host-tool names (attributes.tool_name, e.g. 'Bash'). A real filter,
   // where the free-text `q` can only match the rendered "via Bash" label.
@@ -457,9 +516,9 @@ export type ListFindingInstancesQuery = z.infer<typeof ListFindingInstancesQuery
 export const ListFindingInstancesResponse = z
   .object({
     // Instances matching the filters across the whole scope, not just this
-    // page — cursor-independent, like the grouped list's totals.
+    // page — cursor-independent, like the types list's totals.
     totals: z.object({ findings: z.number().int().nonnegative() }),
-    // Counts in INSTANCES here, where the grouped response counts groups. Each
+    // Counts in INSTANCES here, where the types response counts types. Each
     // dimension still excludes its own filter.
     facets: FindingFacets,
     items: z.array(FindingInstanceDetail),
@@ -468,46 +527,82 @@ export const ListFindingInstancesResponse = z
   .meta({ id: 'ListFindingInstancesResponse' });
 export type ListFindingInstancesResponse = z.infer<typeof ListFindingInstancesResponse>;
 
-// ─── Location-grouped findings list ──────────────────────────────────────────
+// ─── Location findings list (the "By location" master/detail pair) ──────────
 
-// Findings folded by where they live — repository, then file. The grouping keys
-// come from the capturing event's attributes (repo / file_path); there is no
-// finding↔inventory-asset relation in the local store to group by instead.
+// Findings folded by WHERE they live — one row per (repo, file) pair. The
+// grouping keys come from the capturing event's attributes (repo / file_path);
+// there is no finding↔inventory-asset relation in the local store to group by
+// instead.
+//
+// The exact sibling of FindingTypeSummary above, and it pages the same way: the
+// findings AT a location come from the instance-level read scoped to `repo` +
+// `file`, which carries a real keyset cursor, so neither list bounds the other
+// and nothing is capped.
+//
+// ONE FLAT SHAPE, not a repo row nesting file rows. A rollup can only be paged
+// by repo, which leaves the file list inside it unbounded — a repo with
+// thousands of findings-bearing files renders every one of them on a single
+// page, which is the shape the by-type list was rebuilt to remove. Sorting
+// worst-first across flat pairs puts the locations worth working at the top
+// whichever repo they fall in.
 
-export const FindingLocationFile = z
+export const FindingLocationSummary = z
   .object({
-    // Empty when the instances carried no file path (a prompt or a tool call
-    // with no file attribution).
-    file: z.string(),
-    instanceCount: z.number().int().nonnegative(),
-    maxSeverity: Severity,
-    latestDetectedAt: z.iso.datetime(),
-    // Folded from the instances' derived statuses with the same
-    // open-dominates precedence a group uses.
-    status: FindingStatus.optional(),
-    // Distinct rules seen at this location, capped — the row shows them as
-    // chips, and the count is what conveys scale.
-    ruleIds: z.array(z.string()),
-  })
-  .meta({ id: 'FindingLocationFile' });
-export type FindingLocationFile = z.infer<typeof FindingLocationFile>;
-
-export const FindingLocationRepo = z
-  .object({
+    // Opaque, stable, minted from the pair by encodeLocationId. It exists
+    // because a location's identity is two values and a URL param carries one:
+    // `?loc=` names a location the way `?rule=` names a type. Only ever compared
+    // for EQUALITY — the page's selection check, this read's `includeId`, the
+    // client's page dedupe — never decoded, and never a sort key.
+    id: z.string(),
     /** Empty when the instances carried no repo attribute. */
     repo: z.string(),
+    // Empty when the instances carried no file path (a prompt, or a tool call
+    // with no file attribution). Both halves empty is a real location — usually
+    // the largest one in a store — and is selectable like any other.
+    file: z.string(),
     instanceCount: z.number().int().nonnegative(),
+    // The WORST severity present, not the first row's. It is this list's primary
+    // sort key, so it is also what explains why a row is where it is, and it is
+    // how a reader decides what to open without opening everything.
     maxSeverity: Severity,
     latestDetectedAt: z.iso.datetime(),
+    // Folded from the instances' derived statuses with the same open-dominates
+    // precedence a group uses, so it answers "is anything left to do here" and
+    // not much more: a location holding 1 open among 40 resolved reads like one
+    // holding 40 open. That loss is accepted — the panel beside this list
+    // carries each finding's own status, and instanceCount sits next to the
+    // badge.
     status: FindingStatus.optional(),
-    files: z.array(FindingLocationFile),
+    // Every distinct rule seen at this location, UNCAPPED — so the length is a
+    // tally rather than a sample and a row can say how many there are. Bounded
+    // by the ruleset, not by the store. The view bounds what it DISPLAYS.
+    ruleIds: z.array(z.string()),
   })
-  .meta({ id: 'FindingLocationRepo' });
-export type FindingLocationRepo = z.infer<typeof FindingLocationRepo>;
+  .meta({ id: 'FindingLocationSummary' });
+export type FindingLocationSummary = z.infer<typeof FindingLocationSummary>;
 
-// Query schema — NO `.meta({ id })` (see ListGroupedFindingsQuery and the
-// SHAPE IDS note in zod/index.ts). `limit` caps the REPO rows returned; a repo's files are not
-// separately paged.
+/**
+ * Default page size when the query omits `limit`, matching the other two lists
+ * so every findings view pages identically.
+ */
+export const DEFAULT_FINDING_LOCATIONS_LIMIT = 50;
+/**
+ * The ceiling `limit` is rejected past. Named rather than left inline so the
+ * number has a referent to check against, as MAX_FINDING_TYPES_LIMIT and
+ * MAX_FLAT_FINDINGS_LIMIT do. Set SEPARATELY from both: three distinct contracts
+ * paging three different units, so no cap is derived from another.
+ */
+export const MAX_FINDING_LOCATIONS_LIMIT = 100;
+
+// Query schema — NO `.meta({ id })` (see ListFindingTypesQuery and the SHAPE IDS
+// note in zod/index.ts).
+//
+// Every dimension below narrows the FINDINGS first and the locations fall out of
+// what survives, so a row's `instanceCount` is always exactly what the
+// instance-level read reports for the same filters scoped to that pair. That is
+// why the view renders one toolbar over both panels rather than splitting the
+// filters between them: a location owns none of its fields, so every one of them
+// is a fold that any dimension can move.
 export const ListFindingLocationsQuery = z.object({
   severity: z.array(Severity).optional(),
   subtype: z.array(z.string()).optional(),
@@ -520,21 +615,45 @@ export const ListFindingLocationsQuery = z.object({
   q: z.string().optional(),
   sessionId: z.string().optional(),
   from: z.iso.datetime().optional(),
-  limit: z.coerce.number().int().min(1).max(500).optional(),
+  // A LOCATION id (see FindingLocationSummary.id) that must appear in the page
+  // even when the cursor has already advanced past its sort position — the
+  // counterpart of ListFindingTypesQuery.includeId, and needed far more often
+  // here. Selecting a row pushes the URL, which re-renders the server and resets
+  // the client's page cache to page 0; with distinct (repo, file) pairs running
+  // into the thousands, a selection sitting off page 0 is the ordinary case
+  // rather than a deep-link corner. Never affects totals, facets or the cursor.
+  includeId: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(MAX_FINDING_LOCATIONS_LIMIT).optional(),
+  cursor: z.string().optional(),
 });
 export type ListFindingLocationsQuery = z.infer<typeof ListFindingLocationsQuery>;
 
 export const ListFindingLocationsResponse = z
   .object({
     totals: z.object({
+      // Findings matching the filters across the whole scope. Unlike the types
+      // read's same-named field this needs no caveat: the filters here narrow
+      // per finding, so this is the sum of every row's instanceCount.
       findings: z.number().int().nonnegative(),
-      repos: z.number().int().nonnegative(),
-      files: z.number().int().nonnegative(),
+      // Counts LOCATIONS, the unit this read pages — the number the paginator
+      // states. The facets beside it count FINDINGS (see below); a surface
+      // showing both says which is which.
+      locations: z.number().int().nonnegative(),
     }),
-    /** Sorted by max severity, then most recent. */
-    items: z.array(FindingLocationRepo),
-    /** Whether `limit` truncated the repo list. */
-    hasMore: z.boolean(),
+    // Counts in FINDINGS, where the types response counts types, each dimension
+    // still excluding its own filter. Deliberately not locations: counting those
+    // needs a set of location keys per dimension per value — memory tracking the
+    // store times the vocabulary, in a read whose scan promises flat memory —
+    // and the cheap per-location version is not an approximation but WRONG. A
+    // location holding {claudecode, block} and {codex, warn} would survive
+    // provider=claudecode AND action=warn, under which no single finding
+    // matches, so the facet would contradict the instanceCount this whole view
+    // rests on. Findings also keep the toolbar in the same unit as the page
+    // tally and the panel it sits above.
+    facets: FindingFacets,
+    /** Sorted by max severity, then most recent, then (repo, file). */
+    items: z.array(FindingLocationSummary),
+    nextCursor: z.string().nullable(),
   })
   .meta({ id: 'ListFindingLocationsResponse' });
 export type ListFindingLocationsResponse = z.infer<typeof ListFindingLocationsResponse>;

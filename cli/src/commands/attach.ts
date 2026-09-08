@@ -1,4 +1,4 @@
-import { cliVersion } from '@akasecurity/local-ops';
+import { cliVersion, installBackgroundSync, uninstallBackgroundSync } from '@akasecurity/local-ops';
 import {
   applyOnboarding,
   clearAttachmentDerivedState,
@@ -12,6 +12,7 @@ import {
   readLocalHistoryPreview,
   readWorkspaceSettings,
   removeControlPlaneCredential,
+  seedCaptureBacklogOwed,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
@@ -68,6 +69,11 @@ export type DeviceAttachRunner = (input: {
 export interface AttachDeps {
   /** The browser-approval path. Replaced wholesale in tests. */
   deviceAttach?: DeviceAttachRunner;
+  /** The macOS background-sync scheduler install/uninstall, injectable so
+   * tests never touch a real LaunchAgent. See
+   * @akasecurity/local-ops/background-schedule for what each does. */
+  installBackgroundSync?: (base: string) => void;
+  uninstallBackgroundSync?: (base: string) => void;
   /** The administrative overlay, injectable so a suite is not at the mercy of
    * whatever the developer's own machine is enrolled in. `null` means
    * unmanaged; omitted means read the real system paths. */
@@ -305,6 +311,13 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   // browser, which is the boundary the narrow state exists to protect.
   const previous = readControlPlaneCredentialFile(settingsDirOf(base));
 
+  // ONE instant, used both as the descriptor's `attachedAt` and as the bound
+  // `seedCaptureBacklog` marks owed up to. The two have to agree: the
+  // structural drain already treats `attachedAt` as where the pre-attach
+  // backlog ends, and a capture backfill using a different instant would mark
+  // owed a set the consent prompt's own preview did not describe.
+  const attachedAt = new Date();
+
   try {
     // The credential FIRST, then the descriptor. In the other order a machine
     // that fails on the second write is left claiming an attachment it has no
@@ -330,7 +343,7 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
         runMode: 'attached',
         controlPlane: {
           endpoint,
-          attachedAt: new Date().toISOString(),
+          attachedAt: attachedAt.toISOString(),
           ...(args.label === undefined ? {} : { label: args.label }),
         },
         // SPELLED, never omitted. `undefined` on an optional key is how this
@@ -365,6 +378,28 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     exit(1);
     return;
   }
+
+  // The capture half of the grant. The structural half needs no equivalent
+  // call: it re-derives its own backlog from `backlogBefore` on the drain's
+  // next pass. A capture is reachable only through `outbox_owed`, and this is
+  // the one moment anything sets it for a row recorded before now.
+  if (historyConsent !== undefined) {
+    seedCaptureBacklogOwed(dataDirOf(base), attachedAt.getTime());
+  }
+
+  // Best-effort, macOS only today: closes the gap where this host never
+  // reopens a session to trigger SessionStart's own drain. Never blocks or
+  // fails the attach — see @akasecurity/local-ops/background-schedule.
+  //
+  // INSTALLED UNCONDITIONALLY, even when historyConsent is undefined (a
+  // decline, or --no-sync-history): `aka sync-history --on` is the only way
+  // to grant consent after the fact, and it installs nothing itself — so
+  // gating this on consent would leave a machine that grants later with no
+  // scheduler until its next `aka attach`. A declined machine's scheduled
+  // pass is a genuine no-op (`runHistorySyncPass` returns the 'no-consent'
+  // skip reason and forwards nothing) rather than a silent cost, which is
+  // what makes installing ahead of consent the cheaper failure mode.
+  (deps.installBackgroundSync ?? installBackgroundSync)(base);
 
   io.out(
     [
@@ -461,9 +496,10 @@ async function askAboutHistory(
         : [
             'What that history sends: which sessions ran, when, in which project,',
             '                  repo and git branch; token usage and model per call;',
-            '                  which tools were called, with their inputs truncated',
-            '                  and every detected secret already masked; and what',
-            '                  AKA detected in those tool inputs.',
+            '                  which tools were called, with their inputs truncated;',
+            '                  what AKA detected in those tool inputs; and the',
+            '                  prompts, assistant replies and tool results',
+            '                  themselves.',
             '',
           ]),
       // The masking half is CONDITIONAL and has to read that way. A drained
@@ -471,16 +507,27 @@ async function askAboutHistory(
       // where the policy assigned its detection is redact or block — so copy
       // promising that every detected secret is masked first would be false
       // under monitor and warn, which is every detection until the user
-      // promotes one. Saying so is the point of asking.
-      'And, for anything a live send could not deliver — the deployment was',
-      'unreachable, or refused the key — what was captured, which for a prompt,',
-      'an assistant reply or a tool result INCLUDES ITS TEXT. What is masked in',
-      'that text follows the policy assigned to the detection that flagged the',
-      'value: it is masked before it is stored or sent only where that policy',
-      'is redact or block. Under monitor or warn the value goes as it was seen,',
-      'and every detection ships on monitor, so on a default install nothing in',
-      'that text is masked. Everything outside a flagged span goes as written',
-      'either way.',
+      // promotes one. Saying so is the point of asking, and it now covers BOTH
+      // buckets alike: once granted, that history is sent through the same
+      // outbox mark and the same drain as an undelivered live send, so the
+      // same masking rule applies to both.
+      ...(backlog === undefined
+        ? [
+            'For anything a live send could not deliver — the deployment was',
+            'unreachable, or refused the key — what was captured, which for a',
+          ]
+        : [
+            'For that history, and for anything a later live send could not',
+            'deliver — the deployment was unreachable, or refused the key — what',
+            'was captured, which for a',
+          ]),
+      'prompt, an assistant reply or a tool result INCLUDES ITS TEXT. What is',
+      'masked in that text follows the policy assigned to the detection that',
+      'flagged the value: it is masked before it is stored or sent',
+      'only where that policy is redact or block. Under monitor or warn the',
+      'value goes as it was seen, and every detection ships on monitor, so on',
+      'a default install nothing in that text is masked. Everything outside a',
+      'flagged span goes as written either way.',
       '',
       'Saying no does not stop live sending — that is part of being attached.',
       'It means an undelivered item is dropped rather than kept and retried.',
@@ -564,6 +611,10 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
   }
   removeControlPlaneCredential(settingsDirOf(base));
   clearDerived(dataDirOf(base));
+  // Best-effort, alongside every other piece of attachment-derived state. The
+  // SAME base this command resolved above — the LaunchAgent's label is keyed
+  // on it, so passing anything else targets a different machine's job.
+  (deps.uninstallBackgroundSync ?? uninstallBackgroundSync)(base);
 
   io.out(
     had

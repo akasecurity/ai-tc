@@ -966,20 +966,25 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
   // attached gateway, so it is never marked, and the window it sits in stops
   // being something anyone has to reason about.
   //
-  // NO BACKFILL, and refusing one is the decision rather than an omission. A
-  // store upgrading from the window-based drain carries rows that design
-  // considered owed and this one cannot: nothing recorded whether a forward was
-  // ever attempted for them. The only column that could seed this is
-  // `backlog_before`, and seeding from it would re-import the DETACHED window —
-  // the precise leak the marker exists to close, reintroduced by the migration
-  // that closes it. So those rows stay unmarked and are never sent.
+  // NO BACKFILL HERE, and refusing one at THIS site is the decision rather than
+  // an omission. A store upgrading from the window-based drain carries rows
+  // that design considered owed and this migration cannot: nothing recorded
+  // whether a forward was ever attempted for them, and the only column that
+  // could seed one is `backlog_before` — seeding from it here would re-import
+  // the DETACHED window, the precise leak the marker exists to close,
+  // reintroduced by the migration that closes it.
   //
-  // The cost is real and worth naming: on a machine attached today, captures the
-  // live path already failed to deliver are dropped from the outbox by this
-  // upgrade, and `capturesPending` reads false, so status reports the machine as
-  // caught up while the deployment never receives them. That is the safe
-  // direction — it sends nothing the grant did not cover — but it is a loss, and
-  // silent.
+  // That is scoped to THIS SITE. `SqliteHistorySyncRepository.markCaptureBacklogOwed`
+  // is the deliberate backfill: it runs once, outside any migration, at the
+  // moment a human grants existing-history consent (`aka attach`'s
+  // `askAboutHistory`), bounded to what is on disk at that instant rather than
+  // to a boundary a later pass could widen. So a row left unmarked by this
+  // migration is not permanently unreachable — it is reachable the next time
+  // this machine attaches and its owner says yes, and the consent copy states
+  // that before it happens. What stays true here is narrower than it once
+  // was: a machine that upgrades this column WITHOUT ever attaching, or whose
+  // owner declines, sends none of it, and `capturesPending` reads false for
+  // exactly the rows nobody has yet been asked about.
   if (!columns.includes('outbox_owed')) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN outbox_owed integer`);
   }
@@ -1009,9 +1014,18 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
   // capture rows — that is exactly the set that grows without bound.
   //
   // PARTIAL for the reason the sweep's index below is: an owed row exists only
-  // between a failed forward and the drain that settles it, so the index stays a
-  // handful of entries wide however large the store gets, and the writes that
-  // never touch the column — nearly all of them — do not maintain it at all.
+  // between being marked and the drain that settles it, so the writes that never
+  // touch the column — nearly all of them — do not maintain it at all. WIDTH is a
+  // separate claim, and only the LIVE forward path's own marking keeps it to a
+  // handful: it marks one row at a time, transiently, between a failed forward
+  // and the drain that settles it. `markCaptureBacklogOwedStmt` is the other
+  // writer, and it marks in bulk — everything on disk as of one grant, at once —
+  // so the machine this design is aimed at, one that ran detached and
+  // accumulated capture rows, is exactly the one whose FIRST backfill can put its
+  // whole unsynced capture set into this index at once. It still narrows the
+  // set the drain has to consider from every unsettled capture to only the owed
+  // ones, and the drain settles it back down over the sessions that follow — the
+  // width just is not bounded to "a handful" the instant a grant lands.
   //
   // Its COLUMNS mirror idx_audit_events_sync deliberately, and that is what makes
   // the planner take it: with fewer, it prices the wider index higher and picks

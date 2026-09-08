@@ -95,6 +95,13 @@ const deps = (io: ReturnType<typeof scriptedPrompter>) => ({
   // every case here reads whatever the machine running it is enrolled in — and
   // a developer whose own laptop is managed sees six unrelated failures.
   managedSettings: null,
+  // Stubbed rather than left to the real default: the real one writes an
+  // actual LaunchAgent plist and shells out to launchctl on a real macOS
+  // runner, which is not a side effect any case in this file should have.
+  // Its own behaviour is covered by @akasecurity/local-ops's
+  // background-schedule suite.
+  installBackgroundSync: () => undefined,
+  uninstallBackgroundSync: () => undefined,
   exit: (code: number) => exits.push(code),
 });
 
@@ -270,7 +277,15 @@ describe('the --home flag every other command honours', () => {
     //   attached`, which makes the FIRST assertion below pass no matter what
     //   attach wrote — an assertion passing for the wrong reason, which is
     //   worse than one failing.
-    const stubbed = { deviceAttach: notOffered, managedSettings: null, exit: () => undefined };
+    const stubbed = {
+      deviceAttach: notOffered,
+      managedSettings: null,
+      // See the shared deps() helper above for why these are stubbed rather
+      // than left to the real default.
+      installBackgroundSync: () => undefined,
+      uninstallBackgroundSync: () => undefined,
+      exit: () => undefined,
+    };
 
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
     await runAttach(['--url', ENDPOINT, '--home', base, '--no-sync-history'], {
@@ -345,6 +360,46 @@ describe('detach', () => {
     expect(io.output()).toContain('was not attached');
     expect(exits).toEqual([]);
   });
+
+  it('passes the RESOLVED --home to uninstallBackgroundSync, never the real default', () => {
+    // Regression: `uninstallBackgroundSync` used to be called with no
+    // arguments at all, so it fell back to the real home unconditionally —
+    // `aka detach --home /tmp/scratch` on a machine already attached against
+    // the real ~/.aka would boot out and delete the LaunchAgent belonging to
+    // the user's ACTUAL machine while reporting it touched a throwaway.
+    // `deps.base` is deliberately omitted, as in the `--home` suite above —
+    // the FLAG has to be what resolves it.
+    const seen: string[] = [];
+    const io = scriptedPrompter({ interactive: true });
+    runDetach(['--home', base], {
+      deviceAttach: notOffered,
+      managedSettings: null,
+      installBackgroundSync: () => undefined,
+      uninstallBackgroundSync: (b: string) => {
+        seen.push(b);
+      },
+      prompter: io,
+      exit: (code: number) => exits.push(code),
+    });
+    expect(seen).toEqual([base]);
+  });
+
+  it('passes the RESOLVED --home to installBackgroundSync on attach, the same way', async () => {
+    const seen: string[] = [];
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', ENDPOINT, '--home', base, '--no-sync-history'], {
+      deviceAttach: notOffered,
+      managedSettings: null,
+      verify,
+      installBackgroundSync: (b: string) => {
+        seen.push(b);
+      },
+      uninstallBackgroundSync: () => undefined,
+      prompter: io,
+      exit: (code: number) => exits.push(code),
+    });
+    expect(seen).toEqual([base]);
+  });
 });
 
 describe('status', () => {
@@ -405,6 +460,62 @@ describe('existing-history consent', () => {
       db.close();
     }
   };
+
+  // A pre-attach CAPTURE — a prompt, unlike seedHistory's structural session.
+  // Nothing marks this owed on its own: it is exactly the row a live forward
+  // never touches, because it was recorded before the machine ever attached.
+  const seedCapture = (): void => {
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      db.auditEvents.ensureSessionRoot('s-1', '2026-08-01T00:00:00.000Z');
+      db.auditEvents.insertAuditEvent({
+        id: 's-1-prompt',
+        eventType: 'prompt',
+        rootSessionId: 's-1',
+        parentId: 's-1',
+        startedAt: '2026-08-01T00:01:00.000Z',
+        content: 'the text of a pre-attach prompt',
+      });
+    } finally {
+      db.close();
+    }
+  };
+
+  // v3: granting existing-history consent backfills the CAPTURE half too, not
+  // only the structural drain's own backlog boundary. Before this, a capture
+  // recorded while detached was structurally unreachable to any drain forever
+  // — see markCaptureBacklogOwed.
+  it('backfills a pre-existing capture as owed when the user grants consent', async () => {
+    seedCapture();
+    const io = scriptedPrompter({ interactive: true, answers: [KEY, 'y'] });
+    await runAttach(['--url', ENDPOINT], deps(io));
+    expect(consentOf()).toMatchObject({ endpoint: ENDPOINT });
+
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      expect(db.historySync.pendingCaptureRows(10, Date.now() + 1).map((r) => r.id)).toEqual([
+        's-1-prompt',
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  // Declining must never mark anything owed — the backfill is downstream of a
+  // real yes, not of the question having been asked.
+  it('does not backfill a pre-existing capture when the user declines', async () => {
+    seedCapture();
+    const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
+    await runAttach(['--url', ENDPOINT], deps(io));
+    expect(consentOf()).toBeUndefined();
+
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      expect(db.historySync.pendingCaptureRows(10, Date.now() + 1)).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
 
   // A machine that has never opened a store has recorded nothing. Asking there
   // offers to send a history that does not exist — and a yes records a grant

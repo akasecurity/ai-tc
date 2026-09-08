@@ -174,6 +174,19 @@ function writeSurveyFile(path, candidates, flagged) {
   writeFileSync(path, `${SURVEY_HEADER}\n${lines.length > 0 ? `${lines.join('\n')}\n` : ''}`);
 }
 
+// How many approvals and declarations the detector overrode on this run.
+// ONE definition, read by both the --survey line and the summary line: a
+// declaration the detector flagged is neither a candidate nor a preserved
+// value, so it appears in no survey list, and a survey that counted only
+// keys and values reported a clean `0 flagged` for the same run whose
+// summary reported the override. Two hand-written sums are what let those
+// two lines disagree about the same report.
+function overriddenCount(report) {
+  return (
+    report.flaggedKeys.length + report.flaggedValues.length + report.flaggedDeclaredTokens.length
+  );
+}
+
 // The committed fixtures directory. A survey written here lands in the very
 // directory the operator is about to `git add`, and .gitignore's allowlist
 // there covers only the artifacts the bar reads — so refuse rather than trust
@@ -250,6 +263,19 @@ async function main() {
   try {
     const mod = await import(moduleUrl);
     const allowedHosts = [...mod.hostnamesForSite(args.site), ...args.allowHosts];
+    // THROWS rather than filters on an unusable declaration — see
+    // assertDeclarableTokens in src/sanitize/classify.ts. Caught here so an
+    // invalid declaration reads as a refusal (exit 1) rather than a stack
+    // trace, and so its message (which names the site/index/clause, never the
+    // token) reaches stderr the same way every other refusal does.
+    let protocolTokens;
+    try {
+      protocolTokens = mod.protocolTokensForSite(args.site);
+    } catch (err) {
+      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+      process.exitCode = 1;
+      return;
+    }
     const detect = mod.createDetector();
 
     const result = mod.sanitizeCapture({
@@ -262,6 +288,7 @@ async function main() {
       allowedHosts,
       approvedKeys,
       approvedValues,
+      protocolTokens,
       detect,
     });
 
@@ -284,7 +311,8 @@ async function main() {
         `survey written (RAW capture content — prune before use): ` +
           `${String(result.report.candidateKeys.length)} candidate key(s), ` +
           `${String(result.report.candidateValues.length)} candidate value(s), ` +
-          `${String(result.report.flaggedKeys.length + result.report.flaggedValues.length)} flagged\n`,
+          `${String(overriddenCount(result.report))} approval(s)/declaration(s) ` +
+          `overridden by the detector\n`,
       );
     }
 
@@ -297,18 +325,20 @@ async function main() {
     if (args.survey) return;
 
     writeFileSync(args.out, result.text);
-    // An approval the detector overrode means the operator listed something
-    // credential-shaped. Nothing leaks — it was replaced — but saying so only on
-    // the --survey path left the normal run reporting a clean success, which is
-    // the outcome that reads as "my approvals were applied".
-    const overridden = result.report.flaggedKeys.length + result.report.flaggedValues.length;
+    // An approval or a declaration the detector overrode means the operator
+    // (or the adapter) named something credential-shaped. Nothing leaks — it
+    // was replaced — but saying so only on the --survey path left the normal
+    // run reporting a clean success, which is the outcome that reads as "my
+    // approvals/declarations were applied".
     process.stderr.write(
       `sanitized fixture written to ${args.out}: ${String(result.report.leaves)} leaves scanned, ` +
         `${String(result.report.preservedKeys.length)} key(s) and ` +
         `${String(result.report.preservedValues.length)} value(s) preserved verbatim, ` +
+        `${String(result.report.preservedDeclaredTokens.length)} declared protocol token(s) preserved, ` +
         `${String(result.report.smallIntegersKept)} small integer(s) and ` +
         `${String(result.report.booleansKept)} boolean(s) kept verbatim, ` +
-        `${String(overridden)} approval(s) overridden by the detector\n`,
+        `${String(overriddenCount(result.report))} approval(s)/declaration(s) ` +
+        `overridden by the detector\n`,
     );
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });

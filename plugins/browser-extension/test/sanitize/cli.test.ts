@@ -1,15 +1,25 @@
 // Drives the built CLI shim as a real child process. Each case gets its own
 // mkdtempSync directory so no test can see another's files.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { resolveProtocolTokens } from '../../src/sanitize/index.ts';
 import { sanitizeCapture } from '../../src/sanitize/sanitize-capture.ts';
-import { expectNoEchoOf } from '../helpers/no-echo.ts';
+import { errorFrom, expectNoEchoOf } from '../helpers/no-echo.ts';
 
 const PACKAGE_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const CLI_SCRIPT = join(PACKAGE_ROOT, 'scripts', 'sanitize-capture.mjs');
@@ -191,6 +201,7 @@ describe('sanitize-capture CLI', () => {
       allowedHosts: ['chatgpt.com', 'chat.openai.com'],
       approvedKeys: new Set(),
       approvedValues: new Set(),
+      protocolTokens: new Set(),
       detect: () => [],
     });
     if (!expected.ok) throw new Error(`expected ok:true, got ${expected.refusal}`);
@@ -308,7 +319,7 @@ describe('sanitize-capture CLI', () => {
       approvedValuesPath,
     ]);
     expect(result.status).toBe(0);
-    expect(result.stderr).toContain('1 approval(s) overridden by the detector');
+    expect(result.stderr).toContain('1 approval(s)/declaration(s) overridden by the detector');
     expectNoEchoOf(result.stderr, MAC_EXAMPLE);
   });
 
@@ -327,6 +338,114 @@ describe('sanitize-capture CLI', () => {
     expect(valuesFile).toContain('[detected:');
     expect(valuesFile).toContain('<withheld>');
     expectNoEchoOf(valuesFile, MAC_EXAMPLE);
+  });
+
+  it('K9: the CLI passes exactly what the resolver returns (byte-identity, the K2 shape)', () => {
+    // claude-ai declares no protocol tokens today, but the point of the
+    // resolver split (mirroring toTapEndpoints) is that this stays true once
+    // it declares some: the CLI is wired to WHATEVER protocolTokensForSite
+    // returns, not to a hardcoded empty set.
+    const raw = JSON.stringify({ a: RAW });
+    const inPath = join(dir, 'in.json');
+    writeFileSync(inPath, raw);
+    const outPath = join(dir, 'out.json');
+    const result = run([
+      ...baseArgs({ site: 'claude-ai', url: 'https://claude.ai/api/x' }),
+      '--in',
+      inPath,
+      '--out',
+      outPath,
+    ]);
+    expect(result.status).toBe(0);
+
+    const expected = sanitizeCapture({
+      raw,
+      url: 'https://claude.ai/api/x',
+      site: 'claude-ai',
+      kind: 'conversation',
+      direction: 'request',
+      format: 'json',
+      allowedHosts: ['claude.ai'],
+      approvedKeys: new Set(),
+      approvedValues: new Set(),
+      protocolTokens: resolveProtocolTokens(
+        // A single-adapter registry stand-in, mirroring what the shim
+        // resolves through the real one — this is the assertion that the
+        // wiring uses the SITE'S OWN declaration rather than a constant.
+        [{ id: 'claude-ai', hostnames: ['claude.ai'], protocolTokens: [] }] as never,
+        'claude-ai',
+      ),
+      detect: () => [],
+    });
+    if (!expected.ok) throw new Error(`expected ok:true, got ${expected.refusal}`);
+    expect(readFileSync(outPath, 'utf8')).toBe(expected.text);
+  });
+
+  it('K10: an invalid declaration refuses loudly, naming the site/index/clause and never the token', () => {
+    const badToken = 'a b'; // whitespace — index 1's offense
+    const syntheticAdapters = [
+      {
+        id: 'chatgpt',
+        hostnames: ['chatgpt.com'],
+        protocolTokens: ['content_block_delta', badToken],
+      },
+    ] as never;
+    const err = errorFrom(() => resolveProtocolTokens(syntheticAdapters, 'chatgpt'));
+    expect(err).toBeDefined();
+    expect(err?.message).toContain('chatgpt');
+    expect(err?.message).toContain('index 1');
+    expectNoEchoOf(err?.message, badToken);
+
+    // A 41-character run and the stripe rule's own example, each their own
+    // adapter so each is independently the FIRST (and only) offender.
+    const longRun = 'a'.repeat(41);
+    const longErr = errorFrom(() =>
+      resolveProtocolTokens(
+        [{ id: 'chatgpt', hostnames: ['chatgpt.com'], protocolTokens: [longRun] }] as never,
+        'chatgpt',
+      ),
+    );
+    expect(longErr?.message).toContain('index 0');
+    expectNoEchoOf(longErr?.message, longRun);
+
+    const uuid = '123e4567-e89b-12d3-a456-426614174000';
+    const uuidErr = errorFrom(() =>
+      resolveProtocolTokens(
+        [{ id: 'chatgpt', hostnames: ['chatgpt.com'], protocolTokens: [uuid] }] as never,
+        'chatgpt',
+      ),
+    );
+    expect(uuidErr?.message).toContain('index 0');
+    expectNoEchoOf(uuidErr?.message, uuid);
+  });
+
+  it('K11: the summary line reports declared preservations and detector overrides, and echoes no token', () => {
+    const raw = JSON.stringify({ credential: MAC_EXAMPLE, note: RAW });
+    const inPath = join(dir, 'in.json');
+    writeFileSync(inPath, raw);
+    const approvedKeysPath = join(dir, 'approved-keys.txt');
+    writeFileSync(approvedKeysPath, 'credential\n');
+    const approvedValuesPath = join(dir, 'approved-values.txt');
+    writeFileSync(approvedValuesPath, `${MAC_EXAMPLE}\n`);
+    const outPath = join(dir, 'out.json');
+    const result = run([
+      ...baseArgs(),
+      '--in',
+      inPath,
+      '--out',
+      outPath,
+      '--approved-keys',
+      approvedKeysPath,
+      '--approved-values',
+      approvedValuesPath,
+    ]);
+    expect(result.status).toBe(0);
+    // Positive control: the wording is present at all, so the absence checks
+    // below are not vacuous.
+    expect(result.stderr).toContain('declared protocol token(s) preserved');
+    expect(result.stderr).toContain('approval(s)/declaration(s) overridden by the detector');
+    expectNoEchoOf(result.stderr, MAC_EXAMPLE);
+    expectNoEchoOf(result.stderr, RAW);
   });
 
   it('never echoes the --in file path (leak surface 13: an operator filename can itself disclose something)', () => {
@@ -360,5 +479,190 @@ describe('sanitize-capture CLI', () => {
   it('an unknown flag is a usage error (exit 2)', () => {
     const result = run([...baseArgs(), '--bogus', 'x']);
     expect(result.status).toBe(2);
+  });
+});
+
+// The resolver's SITE keying, and the shim's wiring to it. Both are unreachable
+// from the real registry today — every adapter declares an empty array — so
+// each is driven against a declaration built for the case.
+describe('protocol-token resolution is keyed by site', () => {
+  it('K12: two adapters, each declaring its own token, resolve to their own sets', () => {
+    // Every other case in this file builds a ONE-adapter array, which cannot
+    // tell `find(a => a.id === site)` from `adapters[0]`, from a union of all
+    // adapters, or from a constant. Two adapters declaring DIFFERENT tokens
+    // separates all four.
+    const adapters = [
+      { id: 'chatgpt', hostnames: ['chatgpt.com'], protocolTokens: ['conversation_ready'] },
+      { id: 'claude-ai', hostnames: ['claude.ai'], protocolTokens: ['content_block_delta'] },
+    ] as never;
+
+    const chatgpt = resolveProtocolTokens(adapters, 'chatgpt');
+    const claude = resolveProtocolTokens(adapters, 'claude-ai');
+
+    expect([...chatgpt]).toEqual(['conversation_ready']);
+    expect([...claude]).toEqual(['content_block_delta']);
+    // Neither carries the other's — this is what a union would fail.
+    expect(chatgpt.has('content_block_delta')).toBe(false);
+    expect(claude.has('conversation_ready')).toBe(false);
+    // A site no adapter drives resolves to nothing, rather than to the first
+    // adapter's declaration.
+    expect([...resolveProtocolTokens(adapters, 'nosuchsite')]).toEqual([]);
+  });
+});
+
+// Drives the REAL shim against a DECLARING adapter. The registry declares
+// nothing today, so the shim's own wiring — protocolTokensForSite -> the
+// sanitiser's protocolTokens — is otherwise satisfied by a constant empty
+// set and by the wrong site alike. The package is copied to a temp directory
+// and its adapter patched there; `node_modules` is symlinked back so esbuild
+// resolves the bundle exactly as it does in place, and nothing under the
+// repository is written.
+describe('the CLI is wired to the declaring adapter (K13)', () => {
+  const DECLARED = 'content_block_delta';
+  const SEGMENT = 'organizations';
+  // Verbatim from rules/secrets/stripe-live-key.json's own `examples`.
+  const FLAGGED_DECLARATION = 'pk_live_wDlmi91dAAKCRu1JBy89Xaq3RZ';
+
+  let pkgDir: string | undefined;
+
+  function buildPackage(declaration: string): string {
+    const root = mkdtempSync(join(tmpdir(), 'aka-sanitize-pkg-'));
+    cpSync(join(PACKAGE_ROOT, 'src'), join(root, 'src'), { recursive: true });
+    cpSync(join(PACKAGE_ROOT, 'scripts'), join(root, 'scripts'), { recursive: true });
+    symlinkSync(join(PACKAGE_ROOT, 'node_modules'), join(root, 'node_modules'), 'dir');
+    const adapterPath = join(root, 'src', 'providers', 'claude.ts');
+    const source = readFileSync(adapterPath, 'utf8');
+    const marker = '  protocolTokens: [],';
+    // Fails loudly rather than silently patching nothing: a copy whose
+    // adapter was never patched declares nothing, and every assertion below
+    // would then be asserting the state this case exists to move away from.
+    if (!source.includes(marker)) throw new Error('claude.ts no longer carries the patch marker');
+    writeFileSync(adapterPath, source.replace(marker, `  protocolTokens: [${declaration}],`));
+    return root;
+  }
+
+  function runIn(root: string, args: readonly string[]): RunResult {
+    const proc = spawnSync(
+      process.execPath,
+      [join(root, 'scripts', 'sanitize-capture.mjs'), ...args],
+      {
+        encoding: 'utf8',
+      },
+    );
+    return { status: proc.status ?? 1, stdout: proc.stdout, stderr: proc.stderr };
+  }
+
+  afterEach(() => {
+    if (pkgDir !== undefined) rmSync(pkgDir, { recursive: true, force: true });
+    pkgDir = undefined;
+  });
+
+  it('K13: a declared token survives the real CLI, only for its own site and only whole', () => {
+    pkgDir = buildPackage(`'${DECLARED}', '${SEGMENT}'`);
+    // `${DECLARED}_extra` is the exact-match control: it CONTAINS a declared
+    // token and must not survive, so a prefix or substring match reds here.
+    const body = JSON.stringify({ type: DECLARED, longer: `${DECLARED}_extra` });
+    const inPath = join(dir, 'in.json');
+    writeFileSync(inPath, body);
+
+    const outPath = join(dir, 'out.json');
+    const declared = runIn(pkgDir, [
+      ...baseArgs({ site: 'claude-ai', url: `https://claude.ai/api/${SEGMENT}` }),
+      '--in',
+      inPath,
+      '--out',
+      outPath,
+    ]);
+    expect(declared.status).toBe(0);
+    const text = readFileSync(outPath, 'utf8');
+    expect(text).toContain(DECLARED);
+    expect(text).not.toContain(`${DECLARED}_extra`);
+    // The URL path segment took the same branch, which is what makes an
+    // endpoint declarable at all.
+    expect(text).toContain(`/${SEGMENT}"`);
+    // Two: the body value and the path segment. `${DECLARED}_extra` is the
+    // third leaf and is not among them.
+    expect(declared.stderr).toContain('2 declared protocol token(s) preserved');
+
+    // The SAME body under a site whose adapter declares nothing keeps none of
+    // it — this is what a site-blind resolver or a constant would fail.
+    const otherPath = join(dir, 'other.json');
+    const other = runIn(pkgDir, [
+      ...baseArgs({ site: 'chatgpt', url: `https://chatgpt.com/backend-api/${SEGMENT}` }),
+      '--in',
+      inPath,
+      '--out',
+      otherPath,
+    ]);
+    expect(other.status).toBe(0);
+    expect(other.stderr).toContain('0 declared protocol token(s) preserved');
+    expect(readFileSync(otherPath, 'utf8')).not.toContain(DECLARED);
+  });
+
+  it('K14: an unusable declaration refuses at exit 1, naming the index and never the token', () => {
+    const badToken = 'a b';
+    pkgDir = buildPackage(`'${DECLARED}', '${badToken}'`);
+    const inPath = join(dir, 'in.json');
+    writeFileSync(inPath, JSON.stringify({ type: DECLARED }));
+    const result = runIn(pkgDir, [
+      ...baseArgs({ site: 'claude-ai', url: 'https://claude.ai/api/x' }),
+      '--in',
+      inPath,
+      '--out',
+      join(dir, 'out.json'),
+    ]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('claude-ai');
+    expect(result.stderr).toContain('index 1');
+    expect(result.stderr).toContain('contains whitespace');
+    expectNoEchoOf(result.stderr, badToken);
+    // A REFUSAL, not an unhandled throw. Without the shim's own catch the
+    // outer handler prints the stack, which carries the same three strings
+    // above plus absolute paths from the operator's machine — the leak
+    // surface this file already guards for --in. A stack frame is the one
+    // thing that separates the two outcomes.
+    expect(result.stderr).not.toContain('    at ');
+    expect(result.stderr.trimEnd().split('\n')).toHaveLength(1);
+  });
+
+  it('K15: a declaration the detector overrode is reported on the --survey path too', () => {
+    // A declared token is neither a candidate nor a preserved value, so it
+    // appears in no survey list. Counting only keys and values reported a
+    // clean run for a body whose normal run reports the override.
+    pkgDir = buildPackage(`'${DECLARED}', '${FLAGGED_DECLARATION}'`);
+    const body = JSON.stringify({ type: DECLARED, cred: FLAGGED_DECLARATION, plain: 'gpt-4o' });
+    const inPath = join(dir, 'in.json');
+    writeFileSync(inPath, body);
+
+    const outBase = join(dir, 'survey');
+    const survey = runIn(pkgDir, [
+      ...baseArgs({ site: 'claude-ai', url: 'https://claude.ai/api/x' }),
+      '--in',
+      inPath,
+      '--out',
+      outBase,
+      '--survey',
+    ]);
+    expect(survey.status).toBe(0);
+    // Positive control: the run really did survey something, so the count
+    // below is not the empty-input reading.
+    expect(survey.stderr).toContain('candidate value(s)');
+    expect(survey.stderr).toContain('1 approval(s)/declaration(s) overridden by the detector');
+    expectNoEchoOf(survey.stderr, FLAGGED_DECLARATION);
+    expectNoEchoOf(readFileSync(`${outBase}.values.txt`, 'utf8'), FLAGGED_DECLARATION);
+
+    // The normal run for the same body agrees, which is the disagreement
+    // this case exists to prevent.
+    const normal = runIn(pkgDir, [
+      ...baseArgs({ site: 'claude-ai', url: 'https://claude.ai/api/x' }),
+      '--in',
+      inPath,
+      '--out',
+      join(dir, 'out.json'),
+    ]);
+    expect(normal.status).toBe(0);
+    expect(normal.stderr).toContain('1 approval(s)/declaration(s) overridden by the detector');
+    expect(normal.stderr).toContain('1 declared protocol token(s) preserved');
+    expectNoEchoOf(normal.stderr, FLAGGED_DECLARATION);
   });
 });

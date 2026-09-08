@@ -218,13 +218,15 @@ export const claudeAdapter: ProviderAdapter = {
   // message_start/content_block_* keys it carries) was fully observed and is
   // implemented above — but because a declaring adapter owes committed
   // fixtures under test/fixtures/claude-ai/, produced only by
-  // scripts/sanitize-capture.mjs from a real capture. No sanitised capture
-  // exists for this site, and the sanitiser's own value-preservation gate
-  // (isVocabularyCandidate) would refuse several of this stream's protocol
-  // tokens even if one did — its own fix is a separate, reviewed change to
-  // the sanitiser, not something an adapter change may smuggle in. The bar
-  // itself, and what declaring costs, is on EXPECTED_DECLARING_ADAPTERS in
-  // test/helpers/fixture-bar.ts.
+  // scripts/sanitize-capture.mjs from a real capture, and no sanitised
+  // capture exists for this site yet. The sanitiser's value-preservation gate
+  // no longer stands in the way of that: `protocolTokens` below is where this
+  // stream's protocol tokens (`content_block_delta`, `conversation_ready`,
+  // `message_start`, …) would be declared once a real capture exists, and
+  // `isDeclarableToken` (src/sanitize/classify.ts) is what the sanitiser
+  // checks them against. Declaring one without the fixtures it implies is
+  // still refused by the bar — what declaring costs, and the exact set owed,
+  // is on EXPECTED_DECLARING_ADAPTERS in test/helpers/fixture-bar.ts.
   //
   // When that list is filled, `requiredPaths.response` may name only fields a
   // capture has actually shown populated. A declared path the site never
@@ -236,6 +238,11 @@ export const claudeAdapter: ProviderAdapter = {
   // is read by nothing here.
   endpoints: [],
   requiredPaths: { request: [], response: [] },
+  // No endpoint is declared above, so nothing here is reachable in
+  // production yet either — see the NETWORK HALF note above on why this
+  // stays empty until a real capture exists, not because the tokens
+  // themselves are unknown.
+  protocolTokens: [],
   // The completion request's body keys were never observed: the tap only
   // learned to decode a typed-array body in a later commit than the capture
   // that would have shown them. This reads no key and never claims the

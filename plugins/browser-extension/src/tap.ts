@@ -300,6 +300,16 @@ export function installTap(win: Window, port: MessagePort, endpoints: readonly T
       // A ReadableStream body: reported, never read. It has one reader, and
       // taking it would empty the page's own request.
       if (typeof candidate.getReader === 'function') return { kind: 'unreadable' };
+      // An ArrayBuffer VIEW walks its entries this way too, yielding a NUMBER
+      // per index, so the branch below would render a whole body as
+      // `0=&1=&2=…` — meaningless data, forwarded as though it were the body,
+      // and an exchange opened on the strength of it. Observed on a real site.
+      // Refused here so a view behaves like the ArrayBuffer it is over: the
+      // closing `unreadable` already covers a raw buffer, and it is only the
+      // entries branch reaching a view first that made the two disagree.
+      if (typeof (candidate as { byteLength?: unknown }).byteLength === 'number') {
+        return { kind: 'unreadable' };
+      }
       // URLSearchParams and FormData both walk their entries this way. A file
       // part contributes its field name and an empty value, never its bytes.
       if (typeof candidate.forEach === 'function') {

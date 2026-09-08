@@ -116,6 +116,15 @@ export interface ProviderAdapter {
     readonly response: readonly string[];
   };
 
+  // The exact strings this adapter's parsers switch on — the `case` labels of
+  // parseStream's dispatch, the path segments its endpoints anchor on, the
+  // discriminator values parseRequest reads. The capture sanitiser preserves a
+  // captured value verbatim only when it matches one of these EXACTLY and the
+  // detector does not flag it; nothing here is a pattern, a prefix or a
+  // substring. Adding one means updating EXPECTED_PROTOCOL_TOKENS in
+  // test/helpers/fixture-bar.ts in the same diff.
+  readonly protocolTokens: readonly string[];
+
   // The outbound message. Never throws for a body it does not recognise —
   // it returns what it found, with requiredPathsSeen false.
   parseRequest(body: string): ParsedRequest;

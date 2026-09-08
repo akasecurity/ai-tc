@@ -21,7 +21,12 @@ import {
 const quiet: Detect = () => [];
 
 function options(overrides: Partial<FixtureBarOptions> = {}): FixtureBarOptions {
-  return { allowedHosts: ['chatgpt.com'], detect: quiet, ...overrides };
+  return {
+    allowedHosts: ['chatgpt.com'],
+    detect: quiet,
+    protocolTokens: new Set(),
+    ...overrides,
+  };
 }
 
 function approvals(keys: string[] = [], values: string[] = []): Approvals {
@@ -253,6 +258,21 @@ describe('assertApprovalsAreApprovable', () => {
       assertApprovalsAreApprovable('t', approvals([], ['gpt-4o']), () => ['fake-rule']);
     }).toThrow(/fake-rule/);
   });
+
+  it('PT-F2: an operator cannot widen their own approvals file into the protocol vocabulary', () => {
+    // content_block_delta classifies base64ish (not a vocabulary candidate at
+    // all) and organizations clears entropy 3.085 >= ENTROPY_THRESHOLD — both
+    // measured in src/sanitize/classify.ts's own doc comment. An adapter's
+    // `protocolTokens` declaration is judged by the wider isDeclarableToken;
+    // an operator's approvals file must stay judged by isVocabularyCandidate,
+    // or the operator's local file reaches exactly the vocabulary this whole
+    // mechanism exists to keep behind a source-code review.
+    for (const value of ['content_block_delta', 'organizations']) {
+      expect(() => {
+        assertApprovalsAreApprovable('t', approvals([], [value]), quiet);
+      }, value).toThrow(/would never preserve/);
+    }
+  });
 });
 
 describe('assertFixtureFullySanitised', () => {
@@ -473,6 +493,43 @@ describe('assertFixtureFullySanitised', () => {
     });
     expect(err).toBeDefined();
     expect(err?.message).toContain('fake-rule');
+  });
+
+  it('PT-F1: a declared protocol token is accepted as a VALUE and refused as a KEY', () => {
+    const token = 'content_block_delta';
+    const asValue = {
+      ...wellFormedFixture(),
+      chunks: [`{"TOKEN_1":"${token}"}`],
+      surrogates: { strings: ['TOKEN_1'], numbers: [] },
+      url: 'https://chatgpt.com/',
+    };
+    assertValidFixture('t', asValue);
+    expect(() => {
+      assertFixtureFullySanitised(
+        't',
+        asValue,
+        approvals(),
+        options({ protocolTokens: new Set([token]) }),
+      );
+    }).not.toThrow();
+
+    // Never widened into keys — the same string, as a KEY this time, is still
+    // refused even though it is declared.
+    const asKey = {
+      ...wellFormedFixture(),
+      chunks: [`{"${token}":"TOKEN_1"}`],
+      surrogates: { strings: ['TOKEN_1'], numbers: [] },
+      url: 'https://chatgpt.com/',
+    };
+    assertValidFixture('t', asKey);
+    expect(() => {
+      assertFixtureFullySanitised(
+        't',
+        asKey,
+        approvals(),
+        options({ protocolTokens: new Set([token]) }),
+      );
+    }).toThrow(/not a surrogate or an approved key/);
   });
 });
 

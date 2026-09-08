@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertDeclarableTokens,
   classifyString,
+  DECLARABLE_CLASSES,
+  isDeclarableToken,
   isPreservableKey,
   isVocabularyCandidate,
   shannonEntropy,
   VOCABULARY_MAX_LENGTH,
 } from '../../src/sanitize/classify.ts';
+import { errorFrom, expectNoEchoOf } from '../helpers/no-echo.ts';
 
 // Random-looking, high-entropy, and matches no bundled detection rule.
 const RAW = 'qZ7hLm2XvB9tRw4sKcN6pJ1dGf3yUa8e';
@@ -135,5 +139,79 @@ describe('shannonEntropy', () => {
 
   it('is zero for the empty string', () => {
     expect(shannonEntropy('')).toBe(0);
+  });
+});
+
+// The declaration bound: a blast-radius limit on what an adapter's parser may
+// name verbatim, not a recogniser of what is safe. See classify.ts's own doc
+// comment on isDeclarableToken for the full reasoning; these cases pin the
+// four clauses and the classes each one excludes.
+describe('isDeclarableToken', () => {
+  it('C1: the four blocking protocol tokens all clear the bound', () => {
+    // Mutation: drop 'base64ish' from DECLARABLE_CLASSES kills the first
+    // three (all base64ish-classed); re-apply an entropy gate kills
+    // 'organizations' (vocabulary-classed, entropy 3.085 at length 13 — above
+    // isVocabularyCandidate's own ENTROPY_THRESHOLD).
+    for (const token of [
+      'content_block_delta',
+      'conversation_ready',
+      'chat_conversations',
+      'organizations',
+    ]) {
+      expect(isDeclarableToken(token), token).toBe(true);
+    }
+  });
+
+  it('C2: whitespace is refused', () => {
+    expect(isDeclarableToken('content block delta')).toBe(false);
+  });
+
+  it('C3: the length ceiling is VOCABULARY_MAX_LENGTH exactly, shared with the approvals gate', () => {
+    // A dotted low-entropy run (see the shared `dotted` helper above) stays
+    // vocabulary-classed at both lengths, isolating the ceiling from the
+    // class check.
+    expect(isDeclarableToken(dotted(40))).toBe(true);
+    expect(isDeclarableToken(dotted(41))).toBe(false);
+  });
+
+  it('C4: every refused class is excluded, each asserted by class first', () => {
+    const cases: readonly [string, ReturnType<typeof classifyString>][] = [
+      ['123e4567-e89b-12d3-a456-426614174000', 'uuid'],
+      ['aaa.bbb.ccc', 'jwt'],
+      ['user@example.com', 'email'],
+      ['deadbeefdeadbeefdeadbeef', 'hex'],
+      ['12345678901234567890', 'numeric-string'],
+      ['2024-01-01T00:00:00Z', 'iso-datetime'],
+      // Charset-legal (VOCABULARY_PATTERN admits ':' and '/'), the sharp one:
+      // a URL survives the charset clause and is excluded only by class.
+      ['https://claude.ai/api', 'url'],
+    ];
+    for (const [value, expectedClass] of cases) {
+      expect(classifyString(value), value).toBe(expectedClass);
+      expect(isDeclarableToken(value), value).toBe(false);
+    }
+  });
+
+  it('DECLARABLE_CLASSES is exactly vocabulary and base64ish', () => {
+    expect([...DECLARABLE_CLASSES].sort()).toEqual(['base64ish', 'vocabulary']);
+  });
+});
+
+describe('assertDeclarableTokens', () => {
+  it('C5: throws naming the site and the offending index, never the token', () => {
+    const token = 'a b'; // whitespace-bearing — index 1 is the offender
+    const err = errorFrom(() => {
+      assertDeclarableTokens('claude-ai', ['content_block_delta', token]);
+    });
+    expect(err).toBeDefined();
+    expect(err?.message).toContain('claude-ai');
+    expect(err?.message).toContain('index 1');
+    expectNoEchoOf(err?.message, token);
+  });
+
+  it('C6 (anti-vacuity): a well-formed array validates without throwing', () => {
+    expect(() => {
+      assertDeclarableTokens('claude-ai', ['content_block_delta', 'organizations']);
+    }).not.toThrow();
   });
 });

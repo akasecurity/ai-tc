@@ -190,3 +190,116 @@ export function isPreservableKey(key: string): boolean {
   }
   return true;
 }
+
+/**
+ * The classes a DECLARED protocol token may belong to. Wider than
+ * `isVocabularyCandidate`'s own gate by exactly one class ('base64ish'),
+ * because the tokens an adapter's parser switches on
+ * (`content_block_delta`, `conversation_ready`, `chat_conversations`) are
+ * long enough and short-word-free enough to classify there rather than as
+ * 'vocabulary'. Nothing else widens: 'url', 'uuid', 'jwt', 'email', 'hex',
+ * 'numeric-string', 'iso-datetime' and 'text' all stay excluded — see
+ * `isDeclarableToken`'s own doc comment for why each one does.
+ */
+export const DECLARABLE_CLASSES: readonly ValueClass[] = ['vocabulary', 'base64ish'];
+
+/**
+ * True only for a string an adapter's `protocolTokens` MAY name.
+ *
+ * This is a BLAST-RADIUS BOUND, not a recogniser of "safe" strings — nothing
+ * that inspects a string alone can tell `content_block_delta` apart from
+ * `correct-horse-battery-staple`; both classify identically and both are
+ * detector-clean. What actually keeps a declaration honest is procedural (a
+ * reviewed source-code diff, the pin in `EXPECTED_PROTOCOL_TOKENS`, the
+ * detector gate at use, and that the value must appear verbatim in a real
+ * capture to survive at all) — see the design notes this predicate's
+ * consumers carry. This function only bounds how much damage a careless or
+ * malicious declaration can do.
+ *
+ * Four clauses, all required: no whitespace anywhere; length between 1 and
+ * `VOCABULARY_MAX_LENGTH` (40 — the SAME constant `isVocabularyCandidate`
+ * uses, never forked, because that ceiling is what keeps a message body, a
+ * system prompt or a person's full name structurally out of reach); the
+ * vocabulary charset; and `classifyString` in `DECLARABLE_CLASSES`.
+ *
+ * The whitespace clause is REDUNDANT with the charset clause below it and is
+ * kept deliberately: `VOCABULARY_PATTERN` admits no character in `\s`, so
+ * deleting the clause changes this function's answer for no input and no
+ * test can separate the two. It stays because the no-whitespace guarantee is
+ * what several callers rely on by name, and because the charset is the
+ * clause most likely to be widened later — a widening that admitted a space
+ * would silently take the guarantee with it. Read it as a backstop, not as
+ * the clause doing the work. `assertDeclarableTokens` below runs the two in
+ * the same order but reports them with DISTINCT messages, so there the
+ * whitespace branch is separately observable and is pinned as such.
+ *
+ * The ENTROPY GATE `isVocabularyCandidate` applies is deliberately absent
+ * here. It is what refuses `organizations` today — 13 characters, Shannon
+ * entropy 3.085 bits/char, above `ENTROPY_THRESHOLD` (3.0) — and dropping it
+ * is safe for the reason this mechanism exists in the first place: measured,
+ * per-character entropy does not separate a protocol token from an ordinary
+ * passphrase in either direction, so keeping the gate would cost the tokens
+ * this predicate exists to admit and buy no safety in return.
+ *
+ * Each excluded class costs something real if it were allowed instead: a
+ * `uuid` is a live conversation/message id from the operator's own account; a
+ * `jwt` is credential-shaped and no parser switches on a literal one; an
+ * `email` is PII the detector already flags for the addresses it knows; `hex`
+ * and `numeric-string` are api-key/account-id shapes no parser switches on;
+ * `iso-datetime` would commit a real capture timestamp; and `url` is the
+ * sharp one — `VOCABULARY_PATTERN` admits `:` and `/`, so a URL is
+ * charset-legal, and letting one through here would let it survive
+ * `sanitizeUrl` whole (host, path, query, fragment), bypassing the host
+ * allow-list and every per-component sanitising gate.
+ */
+export function isDeclarableToken(value: string): boolean {
+  if (/\s/.test(value)) return false;
+  if (value.length < 1 || value.length > VOCABULARY_MAX_LENGTH) return false;
+  if (!VOCABULARY_PATTERN.test(value)) return false;
+  return DECLARABLE_CLASSES.includes(classifyString(value));
+}
+
+/**
+ * Throws on the FIRST token in `tokens` that fails `isDeclarableToken`,
+ * naming the adapter's `site`, the offending array INDEX and which clause
+ * failed — never the token's own value.
+ *
+ * This is deliberately stricter than `assertApprovalsAreApprovable`, which
+ * DOES quote the entry it rejects: an approvals-file entry is a line in an
+ * operator's local file that they must find and delete, so naming it is what
+ * makes the refusal actionable. A declaration is source code the author is
+ * already looking at — the index locates it in the array they just wrote,
+ * and the value would add exposure without adding anything they need to find
+ * it.
+ *
+ * Throws rather than filtering: a silently dropped token produces a fixture
+ * that parses today and fails to replay later for what reads as an unrelated
+ * reason. Refusing the whole run is louder and cheaper to diagnose.
+ */
+export function assertDeclarableTokens(site: string, tokens: readonly string[]): void {
+  tokens.forEach((token, index) => {
+    if (/\s/.test(token)) {
+      throw new Error(
+        `adapter "${site}" declares an unusable protocol token at index ${String(index)}: contains whitespace`,
+      );
+    }
+    if (token.length < 1 || token.length > VOCABULARY_MAX_LENGTH) {
+      throw new Error(
+        `adapter "${site}" declares an unusable protocol token at index ${String(index)}: ` +
+          `length must be between 1 and ${String(VOCABULARY_MAX_LENGTH)}`,
+      );
+    }
+    if (!VOCABULARY_PATTERN.test(token)) {
+      throw new Error(
+        `adapter "${site}" declares an unusable protocol token at index ${String(index)}: ` +
+          `contains a character outside the declarable charset`,
+      );
+    }
+    if (!DECLARABLE_CLASSES.includes(classifyString(token))) {
+      throw new Error(
+        `adapter "${site}" declares an unusable protocol token at index ${String(index)}: ` +
+          `classifies as a class that may not be declared`,
+      );
+    }
+  });
+}

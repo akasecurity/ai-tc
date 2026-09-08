@@ -6,6 +6,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { SOURCE_TOOL } from '@akasecurity/schema';
+
 import type { WebSourceTool } from '../../src/native-host/protocol.ts';
 import { isPreservableKey, isVocabularyCandidate } from '../../src/sanitize/classify.ts';
 import type { Detect, FixtureEnvelope } from '../../src/sanitize/sanitize-capture.ts';
@@ -43,6 +45,44 @@ export const MIN_STREAM_CHUNKS = 2;
  */
 export const EXPECTED_DECLARING_ADAPTERS: readonly WebSourceTool[] = [];
 
+/**
+ * Every protocol token an adapter declares, pinned EXACTLY — empty arrays for
+ * both sites today.
+ *
+ * Same shape and same reason as `EXPECTED_DECLARING_ADAPTERS`: a ratchet in
+ * both directions. A token added to `ProviderAdapter.protocolTokens` reds
+ * this suite until the author lists it here too, and a token REMOVED from an
+ * adapter reds it just the same, so the pin cannot silently drift out of step
+ * with what the adapter really declares in either direction. Never widen this
+ * to quiet a red suite — update the adapter's own declaration and this pin
+ * together, in the same diff.
+ *
+ * Annotated `Record<WebSourceTool, …>` rather than a partial map so a third
+ * web tool added to the vocabulary fails to compile here until someone names
+ * it (CLAUDE.md §2). Keyed by computed member (`[SOURCE_TOOL.ClaudeAi]`)
+ * rather than a literal, per the same section.
+ *
+ * WHAT A DIFF HERE IS AGREEING TO, measured against the real engine so the
+ * reviewer does not have to derive it. `isDeclarableToken` admits any run of
+ * 1–40 characters from the vocabulary charset that classifies 'vocabulary'
+ * or 'base64ish' — which for a run of 16 or more is every base64URL string
+ * (`=` is outside the charset, so padded base64 is not reachable). The
+ * detector is the only automated gate on the class, and it catches a PREFIXED
+ * credential shape and not an unprefixed one: measured,
+ * `pk_live_wDlmi91dAAKCRu1JBy89Xaq3RZ` is flagged `secrets/stripe-live-key`,
+ * while a 32-character opaque run of the same charset returns no findings at
+ * all. So a declaration is bounded — never a message body, a prompt, a URL, a
+ * uuid or a full name — but a session-token-shaped string is inside the
+ * bound, and nothing that inspects a string alone can tell one from a
+ * `case` label. Two things are what actually keep a declaration honest: this
+ * pin's diff, and PT6's requirement that the token appear in the adapter's
+ * own parsing source, which a value pasted out of a capture cannot satisfy.
+ */
+export const EXPECTED_PROTOCOL_TOKENS: Readonly<Record<WebSourceTool, readonly string[]>> = {
+  [SOURCE_TOOL.ChatGpt]: [],
+  [SOURCE_TOOL.ClaudeAi]: [],
+};
+
 export interface Approvals {
   readonly keys: ReadonlySet<string>;
   readonly values: ReadonlySet<string>;
@@ -59,6 +99,14 @@ export interface FixtureBarOptions {
    * as they stood the day it was produced is re-judged as they stand today.
    */
   readonly detect: Detect;
+  /**
+   * The declaring adapter's own `protocolTokens` — REQUIRED, same reason as
+   * `detect`. Unioned into the bar's allowed VALUES only (never keys): a
+   * fixture the tool produced with this declaration must pass the bar judged
+   * against the SAME declaration, or the tool's own honest output fails its
+   * own bar.
+   */
+  readonly protocolTokens: ReadonlySet<string>;
 }
 
 const VALID_KINDS = new Set(['conversation', 'account']);
@@ -174,6 +222,113 @@ export function assertApprovalsAreApprovable(
     if (findings.length > 0) {
       throw new Error(
         `${where}: ${APPROVED_VALUES_FILE} lists a value the detector flags (${findings.join(', ')})`,
+      );
+    }
+  }
+}
+
+/**
+ * Every declared protocol token must be clean under the REAL detection
+ * engine, failing with the flagged rule ids — never the token itself.
+ *
+ * Without this, a declaration the engine flags is merely replaced at
+ * sanitise time (the detector still gates, per `sanitizeOrdinaryString`) and
+ * the author finds out only when a real capture's replay looks wrong. This
+ * catches it at review time instead, against the packs as they stand today —
+ * not as they stood when the token was declared.
+ */
+export function assertDeclarationsAreDetectorClean(
+  site: string,
+  tokens: readonly string[],
+  detect: Detect,
+): void {
+  for (const token of tokens) {
+    const findings = detect(token);
+    if (findings.length > 0) {
+      throw new Error(
+        `${site}: a declared protocol token is flagged by the detector (${findings.join(', ')})`,
+      );
+    }
+  }
+}
+
+/**
+ * Where each adapter's own implementation lives, relative to src/providers/.
+ *
+ * An adapter's id is not its filename (`claude-ai` -> claude.ts), so the pair
+ * is written down rather than derived. `Record<WebSourceTool, …>` for the
+ * same reason `EXPECTED_PROTOCOL_TOKENS` is: a third web tool fails to
+ * compile here until someone names its file, rather than silently reading
+ * nobody's source and passing.
+ */
+export const ADAPTER_SOURCE: Readonly<Record<WebSourceTool, string>> = {
+  [SOURCE_TOOL.ChatGpt]: 'chatgpt.ts',
+  [SOURCE_TOOL.ClaudeAi]: 'claude.ts',
+};
+
+/** The declaring adapter's own source text, read off disk. */
+export function adapterSource(site: WebSourceTool): string {
+  return readFileSync(
+    path.join(fileURLToPath(new URL('../../src/providers', import.meta.url)), ADAPTER_SOURCE[site]),
+    'utf8',
+  );
+}
+
+// A single- or double-quoted occurrence of `token` in TypeScript source.
+// Backticks are excluded on purpose: this package writes code spans in doc
+// comments as `` `content_block_delta` ``, so counting them would let a
+// mention in the prose above a declaration stand in for a use in the code
+// below it.
+function quotedOccurrences(source: string, token: string): number {
+  let count = 0;
+  for (const quote of ["'", '"']) {
+    const needle = `${quote}${token}${quote}`;
+    let from = 0;
+    for (;;) {
+      const at = source.indexOf(needle, from);
+      if (at === -1) break;
+      count += 1;
+      from = at + needle.length;
+    }
+  }
+  return count;
+}
+
+/**
+ * Every declared protocol token must appear as a quoted string literal in the
+ * declaring adapter's own source at least TWICE — once in `protocolTokens`
+ * itself, and once more somewhere the parsers can reach it.
+ *
+ * `ProviderAdapter.protocolTokens` describes itself as the strings the
+ * adapter's parsers switch on, and nothing but review was holding that: the
+ * array is a plain `readonly string[]`, so a value lifted straight out of a
+ * capture clears `isDeclarableToken`, is detector-clean, and survives
+ * verbatim. Requiring a SECOND occurrence in the same file is the structural
+ * half — a token that must also be written into the dispatch cannot be a
+ * pasted capture value, because pasting it twice is a deliberate act a
+ * reviewer reads as one.
+ *
+ * The count is 2 rather than 1 because the declaration itself is in that
+ * file, so a one-occurrence bar would be satisfied by the declaration alone
+ * and would assert nothing. PT1's distinctness assertion is what stops the
+ * second occurrence being a duplicate entry in the same array.
+ *
+ * What this does NOT reach: an occurrence inside a single-quoted comment,
+ * which is indistinguishable from code without parsing. It is a ratchet on
+ * the cheapest way to get this wrong, not a proof the parser reads the token.
+ */
+export function assertDeclarationsAppearInSource(
+  site: string,
+  tokens: readonly string[],
+  source: string,
+): void {
+  for (const token of tokens) {
+    const count = quotedOccurrences(source, token);
+    if (count < 2) {
+      throw new Error(
+        `${site}: a declared protocol token appears ${String(count)} time(s) as a quoted ` +
+          `literal in the adapter's own source; it must appear at least twice — once in ` +
+          `protocolTokens and once where a parser reads it`,
       );
     }
   }
@@ -377,7 +532,15 @@ export function assertFixtureFullySanitised(
 ): void {
   const surrogates = new Set<string>(fixture.surrogates.strings);
   const allowedKeys = new Set<string>([...surrogates, ...approvals.keys, '']);
-  const allowedValues = new Set<string>([...surrogates, ...approvals.values, '']);
+  // protocolTokens is unioned in HERE ONLY — never into allowedKeys. Keys have
+  // their own file and their own reviewer; widening that too is a widening
+  // neither agreed to.
+  const allowedValues = new Set<string>([
+    ...surrogates,
+    ...approvals.values,
+    ...options.protocolTokens,
+    '',
+  ]);
   const allowedNumbers = new Set<number>(fixture.surrogates.numbers);
   const allowedHosts = new Set<string>(options.allowedHosts.map((h) => h.toLowerCase()));
 

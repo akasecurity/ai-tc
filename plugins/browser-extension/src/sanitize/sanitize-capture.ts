@@ -6,7 +6,12 @@
 // deterministic function of (class, ordinal, length/shape), never of the
 // original value's content, and the whole run is a pure function of its input.
 import type { SimpleValueClass, ValueClass } from './classify.ts';
-import { classifyString, isPreservableKey, isVocabularyCandidate } from './classify.ts';
+import {
+  classifyString,
+  isDeclarableToken,
+  isPreservableKey,
+  isVocabularyCandidate,
+} from './classify.ts';
 
 export const FIXTURE_SCHEMA_ID = 'aka-web-capture-fixture/1';
 
@@ -63,6 +68,20 @@ export interface SanitizeInput {
   readonly approvedKeys: ReadonlySet<string>;
   readonly approvedValues: ReadonlySet<string>;
   /**
+   * The exact strings an adapter's parser switches on — see
+   * `ProviderAdapter.protocolTokens`. A value is preserved verbatim through
+   * this seam only when it matches one of these EXACTLY (never a substring, a
+   * prefix, or a pattern) and clears `isDeclarableToken`, and the detector
+   * still gates it exactly as an approved value is gated.
+   *
+   * REQUIRED, no default — there are exactly two call sites
+   * (`scripts/sanitize-capture.mjs` and this package's own tests), and a
+   * default would read as safe at whichever third one appears next. Omitting
+   * it costs FIDELITY, not safety: an empty set preserves nothing extra, it
+   * never preserves something it should not.
+   */
+  readonly protocolTokens: ReadonlySet<string>;
+  /**
    * REQUIRED — no default, deliberately. A default would read as safe at every
    * call site that omits it, which is every call site until somebody remembers.
    */
@@ -76,6 +95,14 @@ export interface SanitizeReport {
   readonly preservedValues: readonly string[];
   readonly candidateValues: readonly string[];
   readonly flaggedValues: readonly { readonly ruleIds: readonly string[] }[];
+  /**
+   * Values preserved because they matched a DECLARED protocol token exactly —
+   * a provenance distinct from `preservedValues` (an operator's approvals
+   * file). Kept separate so a report can say honestly which mechanism
+   * preserved what, rather than crediting either one with the other's work.
+   */
+  readonly preservedDeclaredTokens: readonly string[];
+  readonly flaggedDeclaredTokens: readonly { readonly ruleIds: readonly string[] }[];
   readonly replaced: Readonly<Record<ValueClass, number>>;
   /**
    * Leaves kept VERBATIM by the small-scalar carve-outs. An integer with
@@ -338,6 +365,7 @@ interface Bucket<K> {
 interface Context {
   approvedKeys: ReadonlySet<string>;
   approvedValues: ReadonlySet<string>;
+  protocolTokens: ReadonlySet<string>;
   allowedHosts: ReadonlySet<string>;
   detect: Detect;
   leaves: number;
@@ -365,6 +393,8 @@ interface Context {
     preservedValues: string[];
     candidateValues: string[];
     flaggedValues: { ruleIds: string[] }[];
+    preservedDeclaredTokens: string[];
+    flaggedDeclaredTokens: { ruleIds: string[] }[];
     replaced: Record<ValueClass, number>;
     smallIntegersKept: number;
     booleansKept: number;
@@ -407,6 +437,7 @@ function createContext(input: SanitizeInput): Context {
   return {
     approvedKeys: input.approvedKeys,
     approvedValues: input.approvedValues,
+    protocolTokens: input.protocolTokens,
     allowedHosts: new Set(input.allowedHosts),
     detect: input.detect,
     leaves: 0,
@@ -425,6 +456,8 @@ function createContext(input: SanitizeInput): Context {
       preservedValues: [],
       candidateValues: [],
       flaggedValues: [],
+      preservedDeclaredTokens: [],
+      flaggedDeclaredTokens: [],
       replaced,
       smallIntegersKept: 0,
       booleansKept: 0,
@@ -507,6 +540,20 @@ function sanitizeKeyText(key: string, ctx: Context): string {
 function sanitizeOrdinaryString(value: string, ctx: Context): string {
   const cls = classifyString(value);
   if (cls === 'empty') return '';
+  // Checked BEFORE the approvals-based vocabulary branch below: a value that
+  // is both declared and approved is reported as declared, the stronger
+  // provenance. `isDeclarableToken` guarantees `cls` is 'vocabulary' or
+  // 'base64ish' here, both SimpleValueClass — never a substring, prefix or
+  // pattern match, only exact membership in `ctx.protocolTokens`.
+  if (isDeclarableToken(value) && ctx.protocolTokens.has(value)) {
+    const findings = detect(ctx, value);
+    if (findings.length > 0) {
+      ctx.report.flaggedDeclaredTokens.push({ ruleIds: [...findings] });
+      return replaceAsClass(cls as SimpleValueClass, value, ctx);
+    }
+    ctx.report.preservedDeclaredTokens.push(value);
+    return value;
+  }
   if (cls === 'vocabulary' && isVocabularyCandidate(value)) {
     const findings = detect(ctx, value);
     if (findings.length > 0) {
@@ -825,6 +872,10 @@ function buildReport(ctx: Context): SanitizeReport {
     preservedValues: [...ctx.report.preservedValues],
     candidateValues: [...ctx.report.candidateValues],
     flaggedValues: ctx.report.flaggedValues.map((f) => ({ ruleIds: [...f.ruleIds] })),
+    preservedDeclaredTokens: [...ctx.report.preservedDeclaredTokens],
+    flaggedDeclaredTokens: ctx.report.flaggedDeclaredTokens.map((f) => ({
+      ruleIds: [...f.ruleIds],
+    })),
     replaced: { ...ctx.report.replaced },
     smallIntegersKept: ctx.report.smallIntegersKept,
     booleansKept: ctx.report.booleansKept,
@@ -1052,6 +1103,7 @@ export function sanitizeCapture(input: SanitizeInput): SanitizeResult {
       ...ctx.accountedVerbatim,
       ...ctx.report.preservedKeys,
       ...ctx.report.preservedValues,
+      ...ctx.report.preservedDeclaredTokens,
     ],
   );
   if (residue !== null) {

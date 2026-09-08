@@ -67,6 +67,7 @@ function fakeAdapter(options: FakeAdapterOptions = {}): ProviderAdapter {
       { host: 'site.test', path: /\/api\/account/, kind: 'account' },
     ],
     requiredPaths: options.requiredPaths ?? { request: [], response: [] },
+    protocolTokens: [],
     parseRequest: options.parseRequest ?? (() => ({ requiredPathsSeen: true })),
     parseStream: (): ExchangeAssembler => ({
       push: (chunk) => {

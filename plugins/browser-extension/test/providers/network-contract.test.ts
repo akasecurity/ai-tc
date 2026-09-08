@@ -8,6 +8,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { SOURCE_TOOL } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { CompiledEndpoint } from '../../src/bridge.ts';
@@ -20,18 +21,23 @@ import type {
   ProviderEndpoint,
   WebExchangeSummary,
 } from '../../src/providers/types.ts';
+import { assertDeclarableTokens } from '../../src/sanitize/classify.ts';
 import { createDetector } from '../../src/sanitize/detector.ts';
 import type { FixtureBarOptions } from '../helpers/fixture-bar.ts';
 import {
   ACCOUNT_FIXTURE,
+  adapterSource,
   APPROVED_KEYS_FILE,
   APPROVED_VALUES_FILE,
   assertApprovalsAreApprovable,
+  assertDeclarationsAppearInSource,
+  assertDeclarationsAreDetectorClean,
   assertFixtureFullySanitised,
   assertStreamFixtureIsMultiChunk,
   assertValidFixture,
   belowFixtureBar,
   EXPECTED_DECLARING_ADAPTERS,
+  EXPECTED_PROTOCOL_TOKENS,
   fixtureDir,
   loadApprovals,
   loadFixture,
@@ -39,6 +45,7 @@ import {
   REQUEST_FIXTURE,
   STREAM_FIXTURE,
 } from '../helpers/fixture-bar.ts';
+import { errorFrom, expectNoEchoOf } from '../helpers/no-echo.ts';
 
 // The REAL engine, not a stub: the bar's whole point is to re-judge a
 // committed fixture against the packs as they stand now, and a fake detector
@@ -126,7 +133,11 @@ for (const adapter of declaring) {
 
     const compiled = compileEndpoints(adapter);
     const approvals = loadApprovals(adapter.id);
-    const barOptions: FixtureBarOptions = { allowedHosts: adapter.hostnames, detect };
+    const barOptions: FixtureBarOptions = {
+      allowedHosts: adapter.hostnames,
+      detect,
+      protocolTokens: new Set(adapter.protocolTokens),
+    };
 
     it('every approvals entry is one the sanitiser would have preserved', () => {
       assertApprovalsAreApprovable(adapter.id, approvals, detect);
@@ -379,5 +390,159 @@ describe('the sanitiser stays a dev tool (B8)', () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+// The declared protocol token vocabulary: what an adapter's parser may name
+// verbatim to the sanitiser. See test/helpers/fixture-bar.ts's
+// EXPECTED_PROTOCOL_TOKENS doc comment for why it is a ratchet, and
+// src/sanitize/classify.ts's isDeclarableToken for the bound itself.
+describe('declared protocol tokens', () => {
+  it('PT1: EXPECTED_PROTOCOL_TOKENS matches the registry exactly, per site, in both directions', () => {
+    for (const adapter of ADAPTERS) {
+      expect([...adapter.protocolTokens].sort(), `adapter "${adapter.id}"`).toEqual(
+        [...EXPECTED_PROTOCOL_TOKENS[adapter.id]].sort(),
+      );
+      // Distinct, because PT6 requires a SECOND quoted occurrence of each
+      // token in the adapter's source and a duplicate entry in this very
+      // array would supply one without the parser ever naming it.
+      expect(new Set(adapter.protocolTokens).size, `adapter "${adapter.id}"`).toBe(
+        adapter.protocolTokens.length,
+      );
+    }
+    const registryIds = new Set(ADAPTERS.map((a) => a.id));
+    for (const site of Object.keys(EXPECTED_PROTOCOL_TOKENS)) {
+      expect(registryIds.has(site as WebSourceTool), `pinned site "${site}"`).toBe(true);
+    }
+  });
+
+  it('PT2: every adapter in the registry declares only tokens that clear assertDeclarableTokens', () => {
+    // Over ALL adapters, declaring or not — a token declared before its
+    // endpoints are is still bounded.
+    for (const adapter of ADAPTERS) {
+      expect(() => {
+        assertDeclarableTokens(adapter.id, adapter.protocolTokens);
+      }, adapter.id).not.toThrow();
+    }
+  });
+
+  it('PT3: every declared token in the registry is detector-clean under the real engine', () => {
+    for (const adapter of ADAPTERS) {
+      expect(() => {
+        assertDeclarationsAreDetectorClean(adapter.id, adapter.protocolTokens, detect);
+      }, adapter.id).not.toThrow();
+    }
+  });
+
+  it('PT4 (anti-vacuity): PT2 and PT3 both actually FIRE, driven against a synthetic adapter array', () => {
+    // With every real adapter declaring nothing, PT2/PT3 pass over an empty
+    // loop body for every adapter — which proves nothing about whether the
+    // checks work. This drives assertDeclarableTokens and
+    // assertDeclarationsAreDetectorClean directly against a hand-built
+    // hostile declaration, so a weakened check (a warning instead of a
+    // throw) is caught here even while the registry stays empty.
+    const longRun = 'a'.repeat(41);
+    expect(() => {
+      assertDeclarableTokens('chatgpt', [longRun]);
+    }).toThrow(/index 0/);
+    expectNoEchoOf(
+      errorFrom(() => {
+        assertDeclarableTokens('chatgpt', [longRun]);
+      })?.message,
+      longRun,
+    );
+
+    // The whitespace clause and the charset clause are asserted through
+    // their DISTINCT messages, not through the shared `index N` wording.
+    // VOCABULARY_PATTERN admits no character in `\s`, so a whitespace input
+    // reaches the charset clause too — checking only `index 1` passes with
+    // the whitespace branch deleted, and then the guarantee the branch names
+    // is pinned by nothing.
+    const whitespaceToken = 'a b';
+    const whitespaceErr = errorFrom(() => {
+      assertDeclarableTokens('chatgpt', ['organizations', whitespaceToken]);
+    });
+    expect(whitespaceErr?.message).toContain('index 1');
+    expect(whitespaceErr?.message).toContain('contains whitespace');
+
+    const charsetToken = 'a,b';
+    const charsetErr = errorFrom(() => {
+      assertDeclarableTokens('chatgpt', ['organizations', charsetToken]);
+    });
+    expect(charsetErr?.message).toContain('index 1');
+    expect(charsetErr?.message).toContain('outside the declarable charset');
+
+    // Verbatim from rules/secrets/stripe-live-key.json's own `examples`.
+    const flaggedToken = 'pk_live_wDlmi91dAAKCRu1JBy89Xaq3RZ';
+    expect(() => {
+      assertDeclarationsAreDetectorClean('chatgpt', [flaggedToken], detect);
+    }).toThrow(/secrets\/stripe-live-key/);
+    expectNoEchoOf(
+      errorFrom(() => {
+        assertDeclarationsAreDetectorClean('chatgpt', [flaggedToken], detect);
+      })?.message,
+      flaggedToken,
+    );
+  });
+
+  it('PT5: a declaring adapter is judged with its own declared tokens via FixtureBarOptions', () => {
+    // Generated over every adapter (not only declaring ones, since none are
+    // today) to prove the wiring — `barOptions.protocolTokens` inside the
+    // per-adapter loop above is built the same way — is non-vacuous now
+    // rather than only once the first adapter declares.
+    for (const adapter of ADAPTERS) {
+      const options: FixtureBarOptions = {
+        allowedHosts: adapter.hostnames,
+        detect,
+        protocolTokens: new Set(adapter.protocolTokens),
+      };
+      expect([...options.protocolTokens].sort(), adapter.id).toEqual(
+        [...adapter.protocolTokens].sort(),
+      );
+    }
+  });
+
+  it('PT6: every declared token appears in its OWN adapter source, twice', () => {
+    for (const adapter of ADAPTERS) {
+      const source = adapterSource(adapter.id);
+      expect(() => {
+        assertDeclarationsAppearInSource(adapter.id, adapter.protocolTokens, source);
+      }, adapter.id).not.toThrow();
+    }
+  });
+
+  it('PT6 (anti-vacuity): the source check FIRES, and reads each adapter its own file', () => {
+    // Both adapters declare nothing today, so PT6's loop body never runs for
+    // a real token. These drive the check directly.
+    const declaredOnly = "  protocolTokens: ['content_block_delta'],";
+    const err = errorFrom(() => {
+      assertDeclarationsAppearInSource('claude-ai', ['content_block_delta'], declaredOnly);
+    });
+    expect(err?.message).toContain('appears 1 time(s)');
+
+    const declaredAndUsed = `${declaredOnly}\n    case 'content_block_delta':`;
+    expect(() => {
+      assertDeclarationsAppearInSource('claude-ai', ['content_block_delta'], declaredAndUsed);
+    }).not.toThrow();
+
+    // A backtick code span in a doc comment is NOT a use — claude.ai's own
+    // NETWORK HALF note names these tokens that way, so counting backticks
+    // would let the prose above a declaration stand in for the dispatch
+    // below it.
+    const mentionedInProse = `${declaredOnly}\n// see \`content_block_delta\` above`;
+    expect(() => {
+      assertDeclarationsAppearInSource('claude-ai', ['content_block_delta'], mentionedInProse);
+    }).toThrow(/appears 1 time\(s\)/);
+
+    // Each adapter is read its OWN file: a token used only in the other
+    // adapter's source must not satisfy this one.
+    const chatgptSource = adapterSource(SOURCE_TOOL.ChatGpt);
+    expect(() => {
+      assertDeclarationsAppearInSource(
+        SOURCE_TOOL.ChatGpt,
+        ['createClaudeStreamAssembler'],
+        chatgptSource,
+      );
+    }).toThrow(/appears 0 time\(s\)/);
   });
 });

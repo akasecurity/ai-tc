@@ -487,6 +487,11 @@ properties are load-bearing:
   about, which is this section's whole failure mode. And a damaged managed file leaves the machine
   UNMANAGED rather than refusing to run, because a typo in an MDM payload must not break every
   hook on every managed machine at once; that direction is deliberate and stated in the module.
+  One shape is deliberately NOT damage: a lock naming a key this build does not know is dropped
+  from the locked set and reported (`unknownLockedFields`), never a reason to run unmanaged.
+  That is what an older build sees when an administrator locks a key a newer build added, and
+  refusing the whole file there cost it every pin and lock it understood, on exactly the fleets
+  most likely to carry a version skew. A name outside the enum is still never honoured.
 - **Anything derived from the current file is derived INSIDE it.** `applyOnboarding` takes an
   updater function for exactly this: a caller that reads first and passes a plain object has put
   its read outside the lock and kept the lost update, one frame further out. The dashboard's

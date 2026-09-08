@@ -36,6 +36,7 @@ import {
   HISTORY_SYNC_STALE_NOTICE,
   INLINE_REVEAL_CHOICES,
   INLINE_REVEAL_SECTION_DESCRIPTION,
+  managedUnknownLocksNotice,
   MODEL_JUDGE_CHOICES,
   MODEL_JUDGE_SECTION_DESCRIPTION,
   MODEL_JUDGE_SECTION_LABEL,
@@ -835,6 +836,55 @@ describe('administratively locked rows', () => {
     );
     expect(inputFor(html, 'historicalAccess')).not.toContain('disabled');
     expect(html).not.toContain('data-slot="managed-notice"');
+  });
+
+  it('says when the administrator locked a key this build does not know', () => {
+    // The lock is dropped rather than failing the file, so this line is the
+    // only thing that tells the user a lock exists which is not being applied.
+    // The known lock beside it must still hold.
+    const html = renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, {
+        settings,
+        onSave: () => undefined,
+        managed: {
+          present: true,
+          organization: 'Acme',
+          lockedFields: ['historicalAccess'],
+          unknownLockedFields: ['lockFromANewerBuild'],
+        },
+      }),
+    );
+    expect(html).toContain('data-slot="managed-unknown-locks"');
+    expect(html).toContain('Acme locks 1 setting');
+    expect(inputFor(html, 'historicalAccess')).toContain('disabled');
+  });
+
+  it('says nothing about unknown locks when every lock is known', () => {
+    expect(lockedHtml()).not.toContain('data-slot="managed-unknown-locks"');
+  });
+
+  it('words the unknown-lock notice for one and for several, and never on an unmanaged machine', () => {
+    const one = managedUnknownLocksNotice({
+      present: true,
+      lockedFields: [],
+      unknownLockedFields: ['a'],
+    });
+    expect(one).toContain('Your organization locks 1 setting');
+    expect(one).toContain('apply it.');
+    const several = managedUnknownLocksNotice({
+      present: true,
+      organization: 'Acme',
+      lockedFields: [],
+      unknownLockedFields: ['a', 'b'],
+    });
+    expect(several).toContain('Acme locks 2 settings');
+    expect(several).toContain('apply them.');
+    // Gated on `present` like isFieldManaged: a stale context must not
+    // announce locks from an administrator who is not there.
+    expect(
+      managedUnknownLocksNotice({ present: false, lockedFields: [], unknownLockedFields: ['a'] }),
+    ).toBeUndefined();
+    expect(managedUnknownLocksNotice({ present: true, lockedFields: [] })).toBeUndefined();
   });
 });
 

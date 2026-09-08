@@ -99,6 +99,23 @@ describe('readManagedSettings — fail-open on a damaged administrative file', (
     const managed = readManagedSettings([join(managedDir, MANAGED_SETTINGS_FILENAME)]);
     expect(managed?.organization).toBe('Acme');
     expect(managed?.lockedFields).toEqual(['runMode']);
+    // Every lock was known, so the context carries no key saying otherwise.
+    expect(managedContextOf(managed)).not.toHaveProperty('unknownLockedFields');
+  });
+
+  it('keeps every lock it knows beside one it does not, and reports the stranger', () => {
+    // An administrator locking a key a NEWER build added must not cost an
+    // older build the locks it understands. Refusing the file here ran the
+    // machine unmanaged — every pin and lock gone — on exactly the fleets most
+    // likely to carry a version skew.
+    writeManaged({ organization: 'Acme', lockedFields: ['runMode', 'lockFromANewerBuild'] });
+    const managed = readManagedSettings([managedFile()]);
+    expect(managed?.lockedFields).toEqual(['runMode']);
+    expect(managed?.unknownLockedFields).toEqual(['lockFromANewerBuild']);
+    const context = managedContextOf(managed);
+    expect(context.present).toBe(true);
+    expect(isFieldManaged(context, 'runMode')).toBe(true);
+    expect(context.unknownLockedFields).toEqual(['lockFromANewerBuild']);
   });
 
   it('runs UNMANAGED rather than refusing when the file is malformed', () => {
@@ -110,7 +127,9 @@ describe('readManagedSettings — fail-open on a damaged administrative file', (
   });
 
   it('skips a file whose shape fails the schema', () => {
-    writeManaged({ lockedFields: ['notASetting'] });
+    // A shape the reader cannot read, not a name it does not know: the
+    // unknown-name case is tolerated on purpose, above.
+    writeManaged({ lockedFields: 'runMode' });
     expect(readManagedSettings([join(managedDir, MANAGED_SETTINGS_FILENAME)])).toBeNull();
   });
 
@@ -132,7 +151,7 @@ describe('readManagedSettings — fail-open on a damaged administrative file', (
   it('falls through a malformed first location to a valid second', () => {
     const second = mkdtempSync(join(tmpdir(), 'aka-managed-2-'));
     try {
-      writeManaged({ lockedFields: ['bogus'] });
+      writeManaged({ lockedFields: 'bogus' });
       writeManaged({ organization: 'Second' }, second);
       const managed = readManagedSettings([
         join(managedDir, MANAGED_SETTINGS_FILENAME),

@@ -74,6 +74,13 @@ export function managedSettingsPaths(platform: NodeJS.Platform = process.platfor
  * damaged administrative file) turns a typo in an MDM payload into every hook
  * on every managed machine breaking at once, which is a far worse outcome than
  * a lock that has to be noticed and repaired.
+ *
+ * One shape is deliberately NOT read as damage: a `lockedFields` entry naming a
+ * key this build does not know. That is what an older build sees when an
+ * administrator locks a key a newer build added, and refusing the whole file
+ * there ran it unmanaged, every pin and lock gone. The schema drops such a name
+ * from the locked set and reports it as `unknownLockedFields`, so every lock
+ * this build understands still holds and the surface can say one does not.
  */
 export function readManagedSettings(
   paths: string[] = managedSettingsPaths(),
@@ -103,6 +110,9 @@ export function managedContextOf(managed: ManagedSettings | null): ManagedContex
     present: true,
     ...(managed.organization === undefined ? {} : { organization: managed.organization }),
     lockedFields: managed.lockedFields,
+    ...(managed.unknownLockedFields === undefined
+      ? {}
+      : { unknownLockedFields: managed.unknownLockedFields }),
   };
 }
 

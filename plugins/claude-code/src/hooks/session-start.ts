@@ -27,6 +27,27 @@ import { standingBrief } from '../protocol/notes.ts';
 import { emit, getString, parseJson, readStdin } from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 
+// Which SURFACE of Claude Code is running this session — the value the host
+// stamps on its own subprocess environment. `claude-vscode` for the VS Code
+// panel, `claude-desktop` for the desktop app, `cli` for a terminal, plus the
+// SDK's own spellings; treated as an opaque string either way, never mapped to
+// a harness id here.
+//
+// Read from the environment rather than peeked out of the transcript, and the
+// difference is not a preference. `entrypoint` appears on the first
+// user/assistant record — measured as record 3 or 4 across sixty transcripts —
+// so a session that has just STARTED has no record carrying it, which is every
+// `source: startup` session at the moment this hook runs. The transcript stays
+// the backfill's source (history/usage.ts reads it there, where the records
+// exist).
+//
+// Best-effort: an absent or empty value omits the fact, which is exactly the
+// behaviour before this existed. Nothing downstream requires it.
+function harnessInterface(): string | undefined {
+  const value = process.env.CLAUDE_CODE_ENTRYPOINT;
+  return value === undefined || value === '' ? undefined : value;
+}
+
 // The plugin's own version, read from the manifest the hook command passes as
 // argv[2] (same source as the intro card). Best-effort: an unreadable/old
 // manifest just omits the version — the harness dimension still resolves on tool.
@@ -68,10 +89,11 @@ async function main(): Promise<void> {
     tool: SOURCE_TOOL.ClaudeCode,
     harnessVersion: version,
     pluginBuild: version === undefined ? undefined : { package: PLUGIN_PACKAGE, version },
-    // harnessInterface is intentionally omitted: Claude Code's SessionStart hook
-    // exposes no meaningful interface discriminator (terminal vs IDE vs web) yet.
-    // The resolver already folds it into the harness bag, so pass it here once
-    // the harness surfaces one — no schema change needed.
+    // The surface this session is running on, when the host says. Folded into
+    // the harness bag by the resolver and snapshotted as `harness_interface`;
+    // absent when the host stamps nothing, which reads as unknown rather than
+    // as a terminal session.
+    harnessInterface: harnessInterface(),
   });
   // Stale-session notice (once per session — it rides the SessionStart claim):
   // a newer binary recorded the mirror, so this session's plugin generation is

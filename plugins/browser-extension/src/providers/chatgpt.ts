@@ -51,13 +51,33 @@ export const chatgptAdapter: ProviderAdapter = {
     return true;
   },
 
-  // The network half is UNIMPLEMENTED for this site: the endpoint paths and
-  // stream shapes chatgpt.com actually uses are not known to this repository
-  // and are not guessed here. An empty `endpoints` generates an empty entry in
-  // the tap's build-time table, so the tap forwards nothing from this site and
-  // the parsers below are never reached. An adapter that matches nothing is
-  // honest; one that matches a guessed URL reads as coverage while observing
-  // the wrong traffic, or none.
+  // NETWORK HALF — UNIMPLEMENTED, and not for a single, blanket reason.
+  // chatgpt.com serves this adapter's traffic over two routes with nothing
+  // in common but the host, and each is blocked on something different:
+  //
+  // - The ANONYMOUS turn route (`/unauth-mweb/conversation/updates`) IS
+  //   known: its path was read off a real capture, and its response is
+  //   streamed HTML template fragments carrying `data-*` attributes (not
+  //   SSE, not JSON). What blocks a parser for it is two unobserved
+  //   SEMANTICS, not the URL: whether the assistant's text is the
+  //   VALUE of `data-assistant-stream-block` or the element's CONTENT (the
+  //   two produce different strings, and picking either without evidence
+  //   would emit markup as if it were the reply), and which of possibly
+  //   several `data-message-id` values names the assistant's message rather
+  //   than the user's — the natural key a stored row would hash on. Both are
+  //   settled by one uncapped capture of a complete anonymous turn.
+  // - The AUTHENTICATED turn route's WIRE FORMAT is known (JSON request; SSE
+  //   with a `delta_encoding: v1` preamble and p/o/v/c delta objects), but
+  //   its PATH was never isolated — only that it sits somewhere under
+  //   `/backend-api/` and is not `sentinel`. "Under /backend-api/" is not a
+  //   path, so no entry is declared for it; a placeholder or a guessed route
+  //   would be exactly the invented-endpoint failure this project forbids.
+  //
+  // An empty `endpoints` generates an empty entry in the tap's build-time
+  // table, so the tap forwards nothing from this site and the parsers below
+  // are never reached. An adapter that matches nothing is honest; one that
+  // matches a guessed URL reads as coverage while observing the wrong
+  // traffic, or none.
   endpoints: [],
   requiredPaths: { request: [], response: [] },
   parseRequest: () => ({ requiredPathsSeen: false }),

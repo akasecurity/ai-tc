@@ -415,6 +415,32 @@ describe('listSessions', () => {
     expect(res.items.map((s) => s.id)).toEqual(['A']);
   });
 
+  // REGRESSION. The descendant arm searched `$.detail` alone, and a `tool_call`
+  // carries none — its searchable text is `$.target`, and it has no `content`
+  // either — so a search for a Bash command or a fetched url matched nothing,
+  // on rows the timeline was rendering that very text for (TIMELINE_COLUMNS
+  // coalesces the same two fields). The case above cannot see this: it searches
+  // a `detection` row, which DOES carry `$.detail`.
+  it('matches q against a tool_call target, which the timeline shows as its detail', async () => {
+    // A REALISTIC tool_call: no `content`, no `$.detail`, its searchable text in
+    // `$.target` — the masked Bash command / WebFetch url the reconciler writes.
+    insertEvent({
+      id: 'B9',
+      sessionId: 'B',
+      type: 'tool_call',
+      startedAt: NOW - HOUR_MS + 3000,
+      attributes: { tool_name: 'Bash', target: 'rg --files-with-matches needle-token' },
+    });
+
+    const res = await activity().listSessions({ limit: 50, q: 'needle-token' });
+    expect(res.items.map((s) => s.id)).toEqual(['B']);
+
+    // The same row through the read that RENDERS it, so the search and the view
+    // are pinned to each other rather than each to a literal of its own.
+    const session = await activity().getSession('B');
+    expect(session?.events.find((e) => e.id === 'B9')?.detail).toContain('needle-token');
+  });
+
   it('filters by from lower bound', async () => {
     const res = await activity().listSessions({
       limit: 50,

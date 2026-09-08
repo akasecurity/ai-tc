@@ -435,6 +435,22 @@ function SettingGroup({ title, children }: { title: string; children: ReactNode 
   );
 }
 
+/**
+ * The line rendered when an administrator's file locks keys this build does
+ * not know. Such a lock is dropped from the locked set rather than failing the
+ * whole file (which would run the machine unmanaged), and this is the one
+ * place that says a lock exists which is not being applied. A count rather
+ * than the names: the names are the administrator's to fix, in the file.
+ */
+export function managedUnknownLocksNotice(context: ManagedContext): string | undefined {
+  const count = context.unknownLockedFields?.length ?? 0;
+  if (!context.present || count === 0) return undefined;
+  const who = context.organization ?? 'Your organization';
+  return count === 1
+    ? `${who} locks 1 setting this version of AKA does not recognize. Update AKA to apply it.`
+    : `${who} locks ${String(count)} settings this version of AKA does not recognize. Update AKA to apply them.`;
+}
+
 export interface WorkspaceSettingsFormViewProps {
   settings: WorkspaceSettings;
   // What an administrator has pinned, and which of those the user may not
@@ -566,6 +582,7 @@ export function WorkspaceSettingsFormView({
   // ends up editable.
   const lockOn = (key: ManagedSettingKey): string | undefined =>
     isFieldManaged(managed, key) ? managedByLabel(managed) : undefined;
+  const unknownLocks = managedUnknownLocksNotice(managed);
 
   const dirty =
     historicalAccess !== settings.historicalAccess ||
@@ -589,6 +606,11 @@ export function WorkspaceSettingsFormView({
 
   return (
     <div className="flex max-w-4xl flex-col gap-7">
+      {unknownLocks !== undefined && (
+        <p className="text-xs text-text-3" data-slot="managed-unknown-locks">
+          {unknownLocks}
+        </p>
+      )}
       <SettingGroup title="Connection">
         <ConnectionRow
           settings={settings}

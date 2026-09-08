@@ -55,12 +55,33 @@ describe('ManagedSettings parsing', () => {
     expect(parsed.specVersion).toBeGreaterThan(0);
   });
 
-  it('refuses a lock on a key that is not lockable', () => {
+  it('keeps the locks it knows and reports the ones it does not', () => {
     // The lockable set is an explicit enum rather than keyof WorkspaceSettings,
-    // so a field added tomorrow is not remotely lockable until someone decides
-    // it should be.
-    expect(ManagedSettings.safeParse({ lockedFields: ['onboardedAt'] }).success).toBe(false);
-    expect(ManagedSettings.safeParse({ lockedFields: ['notASetting'] }).success).toBe(false);
+    // so a name outside it is never honoured — `onboardedAt` is bookkeeping and
+    // `notASetting` is a typo. But neither may cost the file its OTHER locks:
+    // this is the shape an older build sees when an administrator locks a key
+    // a newer build added, and refusing the file there ran that build
+    // unmanaged with every pin and lock gone.
+    const parsed = ManagedSettings.parse({
+      lockedFields: ['runMode', 'onboardedAt', 'notASetting'],
+    });
+    expect(parsed.lockedFields).toEqual(['runMode']);
+    expect(parsed.unknownLockedFields).toEqual(['onboardedAt', 'notASetting']);
+  });
+
+  it('reports no unknown locks at all when every lock is known', () => {
+    // Absent rather than empty: the ordinary file carries no key for it, so a
+    // consumer spreading the result carries none either.
+    const parsed = ManagedSettings.parse({ lockedFields: ['runMode'] });
+    expect(parsed.lockedFields).toEqual(['runMode']);
+    expect(parsed).not.toHaveProperty('unknownLockedFields');
+  });
+
+  it('still refuses a lockedFields that is not a list of names', () => {
+    // Tolerance is for a NAME this build does not know, not for a shape it
+    // cannot read. A string or a number here is a damaged file.
+    expect(ManagedSettings.safeParse({ lockedFields: 'runMode' }).success).toBe(false);
+    expect(ManagedSettings.safeParse({ lockedFields: [1] }).success).toBe(false);
   });
 
   it('refuses an empty endpoint on a pinned connection', () => {

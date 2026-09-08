@@ -96,7 +96,7 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/coverage-gate': 93, //              94.80
   '@akasecurity/plugin-sdk': 91, //                 92.62
   '@akasecurity/setup-wizard': 89, //               90.38
-  '@akasecurity/schema': 87, //                     88.96
+  '@akasecurity/schema': 88, //                     89.05
   '@akasecurity/portability-gate': 84, //           85.58
   // Both gates keep every DECISION in lib.ts behind an injected io seam — which
   // exit code, which message — so the suite drives all four exit paths without
@@ -115,8 +115,18 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/ai-tc-codex': 58, //                59.78
   '@akasecurity/plugin-browser-extension': 57, //   58.02
   '@akasecurity/cli': 51, //                        52.66
-  '@akasecurity/dashboard-ui': 23, //               24.56
-  '@akasecurity/web-ui': 23, //                     24.04
+  // These two floors sit ~30 points under what their suites report, and the
+  // numbers beside them are the MEASUREMENTS, re-taken: the 24.56 and 24.04
+  // recorded here before were wrong by that whole margin, so the file was
+  // asserting something checkably false. Correcting the number without moving
+  // the floor is deliberate rather than lazy. Both readings are macOS/Node 24
+  // only, and the rule this table states is that a floor belongs to the
+  // platform that reads LOWEST — the persistence entry above is the worked
+  // example of getting that wrong. Raising these to 54 on one platform's
+  // reading is a one-line change for whoever has a Windows or Linux number to
+  // set it from; guessing at it fails that leg with every test passing.
+  '@akasecurity/dashboard-ui': 23, //               55.55 (macOS)
+  '@akasecurity/web-ui': 23, //                     56.78 (macOS)
   '@akasecurity/ui-kit': 1, //                       2.13
   // No instrumentable source, which is why this reads 0 rather than a measured
   // percentage. What this package ships is install.sh and install.ps1, which v8

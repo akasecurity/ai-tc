@@ -5,7 +5,7 @@ import type {
   DayActivity,
   FindingGroupAggregate,
   FindingInstanceDetail,
-  FindingLocationFile,
+  FindingLocationSummary,
   FindingStatus,
   FindingTypeSummary,
   FindingView,
@@ -19,6 +19,7 @@ import type {
   ListFindingTypesQuery,
   ListFindingTypesResponse,
   LocationAccumulator,
+  LocationOrderKey,
 } from '@akasecurity/schema';
 import {
   ACTION_TAKEN_KEYS,
@@ -27,12 +28,15 @@ import {
   buildFindingTypes,
   CAPTURE_EVENT_TYPES_SQL,
   compareFindingGroupOrder,
+  compareLocationOrder,
   computeFindingFacets,
   countInstancesByStatus,
   createInstanceFacetAccumulator,
+  DEFAULT_FINDING_LOCATIONS_LIMIT,
   DEFAULT_FINDING_TYPES_LIMIT,
   DEFAULT_FLAT_FINDINGS_LIMIT,
   deriveFindingStatus,
+  encodeLocationId,
   ENFORCEABLE_CATEGORIES,
   epochMillisToIso,
   foldGroupStatus,
@@ -53,32 +57,6 @@ import type {
   FindingTypesView,
 } from '../ports.ts';
 import { LATEST_RESOLUTION_BY_KEY_SQL, latestResolutionStatusSql } from './resolution-sql.ts';
-
-// Repos returned by listFindingLocations when the query names no limit.
-const DEFAULT_LOCATIONS_LIMIT = 100;
-
-// Distinct rules named on one location row. The row renders them as chips and
-// the instance count is what conveys scale, so the list is a sample, not a tally.
-const LOCATION_RULE_IDS_CAP = 20;
-
-/** Location rows sort like groups: worst severity first, then most recent. */
-function compareLocationOrder(
-  a: { maxSeverity: string; latestDetectedAt: string },
-  b: { maxSeverity: string; latestDetectedAt: string },
-): number {
-  return compareFindingGroupOrder(
-    {
-      severity: a.maxSeverity as FindingTypeSummary['severity'],
-      latestDetectedAt: a.latestDetectedAt,
-      id: '',
-    },
-    {
-      severity: b.maxSeverity as FindingTypeSummary['severity'],
-      latestDetectedAt: b.latestDetectedAt,
-      id: '',
-    },
-  );
-}
 
 // group_concat's list separator. SQLite allows a custom separator only when the
 // aggregate has a single argument, and DISTINCT already claims that slot, so the
@@ -235,6 +213,73 @@ function findDeepLinked(
 ): FindingTypeSummary | undefined {
   if (page.some((t) => t.id === id)) return undefined;
   return sorted.find((t) => t.id === id);
+}
+
+// The locations list's cursor: the sort key of the last location on the page
+// just served. Its own codec for the same reason the grouped one has its own —
+// this list sorts by (maxSeverity, latestDetectedAt, repo, file), which is
+// neither a timestamp-and-id pair nor the grouped triple.
+//
+// It carries the PAIR rather than the row's opaque id, because the pair is what
+// the comparator orders on. The id is base64-ish and not order-preserving, so
+// resuming from it would compare the wrong thing entirely.
+type LocationCursorPayload = LocationOrderKey;
+
+function encodeLocationCursor(location: LocationOrderKey): string {
+  const payload = {
+    sev: location.maxSeverity,
+    t: location.latestDetectedAt,
+    r: location.repo,
+    f: location.file,
+  };
+  return Buffer.from(JSON.stringify(payload)).toString('base64url');
+}
+
+function decodeLocationCursor(cursor: string): LocationCursorPayload | null {
+  const parsed = parseJsonObject(Buffer.from(cursor, 'base64url').toString('utf8'));
+  if (
+    parsed !== undefined &&
+    typeof parsed.sev === 'string' &&
+    typeof parsed.t === 'string' &&
+    typeof parsed.r === 'string' &&
+    typeof parsed.f === 'string'
+  ) {
+    // `sev` is not checked against the Severity enum, exactly as the grouped
+    // codec does not: an out-of-enum value ranks before every known severity
+    // (see compareLocationOrder), so a garbage cursor sorts ahead of the whole
+    // list and degrades to a restart from the top rather than to an empty page.
+    return { maxSeverity: parsed.sev, latestDetectedAt: parsed.t, repo: parsed.r, file: parsed.f };
+  }
+  return null;
+}
+
+/** Index of the first location strictly after the cursor, or the length when none. */
+function firstLocationAfter(
+  sorted: FindingLocationSummary[],
+  cursor: LocationCursorPayload,
+): number {
+  const index = sorted.findIndex((l) => compareLocationOrder(l, cursor) > 0);
+  return index === -1 ? sorted.length : index;
+}
+
+/**
+ * The location a `?loc=` selection names, when it is not already on the page.
+ * Returns undefined when the id is unknown or already present.
+ *
+ * The counterpart of findDeepLinked above, and needed far more often than that
+ * one. Selecting a row pushes the URL, which re-renders the server and resets
+ * the client's page cache to page 0 — so with distinct (repo, file) pairs
+ * running into the thousands, a selection sitting off page 0 is the ordinary
+ * case rather than a deep-link corner. Without this the page's containment check
+ * falls back to the first row and a reader who clicked row 250 gets row 1.
+ */
+function findDeepLinkedLocation(
+  sorted: FindingLocationSummary[],
+  page: FindingLocationSummary[],
+  id: string,
+): FindingLocationSummary | undefined {
+  if (page.some((l) => l.id === id)) return undefined;
+  return sorted.find((l) => l.id === id);
 }
 
 /**
@@ -670,13 +715,25 @@ export class SqliteFindingsRepository
   }
 
   /**
-   * The same findings folded by location: repository, then file within it.
+   * The same findings folded by WHERE they live — one row per (repo, file) pair.
    *
    * The grouping keys come from the capturing event's attributes, which is what
-   * the local store relates a finding to — there is no finding↔asset row to
-   * group by instead. A repo or file the event did not record folds into the
-   * empty-string bucket, which the view renders but does not link, since no
-   * filter can name it.
+   * the local store relates a finding to; there is no finding↔asset row to group
+   * by instead. A repo or file the event did not record folds into the
+   * empty-string bucket, which is a real location like any other: it is listed,
+   * it is selectable, and its `?loc=` token is as good as any other row's.
+   *
+   * ONE flat list rather than repos nesting files. A rollup can only be paged by
+   * repo, which leaves the file list inside it unbounded — the shape the by-type
+   * list was rebuilt to remove — and two-level pagination inside an
+   * expand/collapse table is what pushed that view to master/detail in the first
+   * place.
+   *
+   * Every filter narrows the FINDINGS and the locations fall out of what
+   * survives, so each row's `instanceCount` is exactly what listFindingInstances
+   * reports for the same filters scoped to that pair. The view depends on it:
+   * one toolbar sits over both panels precisely because a location owns none of
+   * its fields.
    */
   listFindingLocations(query: ListFindingLocationsQuery): Promise<ListFindingLocationsResponse> {
     const opts: InstanceFilterOptions = {
@@ -688,18 +745,30 @@ export class SqliteFindingsRepository
       tools: query.tool,
       q: query.q,
     };
-    const limit = query.limit ?? DEFAULT_LOCATIONS_LIMIT;
+    const limit = query.limit ?? DEFAULT_FINDING_LOCATIONS_LIMIT;
+    const cursor = query.cursor === undefined ? null : decodeLocationCursor(query.cursor);
 
-    // Bounded by distinct (repo, file) pairs rather than by the store's size —
-    // the same cardinality the grouped path's search-text aggregate already
-    // carries, holding counts instead of paths.
+    // Nested rather than one map keyed on a joined pair: a joined key needs a
+    // separator provably absent from arbitrary repo names and file paths, and
+    // costs a string allocation per row on the hottest loop in this read. The
+    // flattening happens once, at projection.
+    //
+    // Memory is O(distinct (repo, file) pairs × distinct rules per pair) — the
+    // rule set per location is uncapped now, so it is no longer bounded by the
+    // pairs alone. Rules are bounded by the installed ruleset, not by the store.
     const byRepo = new Map<string, Map<string, LocationAccumulator>>();
+    const accumulator = createInstanceFacetAccumulator(opts);
     let total = 0;
 
     for (const row of this.scanFindingRows({
       sessionId: query.sessionId,
       from: query.from,
     })) {
+      // ABOVE the filter gate, not below it. A facet counts its dimension with
+      // that dimension's own filter excluded, so a row this query rejects still
+      // has to be offered to the accumulator — otherwise every facet collapses
+      // to the current selection and stops answering "what if I also pick this?".
+      accumulator.add(row);
       if (!matchesInstanceFilters(row, opts)) continue;
       total += 1;
       let files = byRepo.get(row.repo);
@@ -715,51 +784,43 @@ export class SqliteFindingsRepository
       addToLocation(acc, row);
     }
 
-    let fileCount = 0;
-    const repos = [...byRepo.entries()].map(([repo, files]) => {
-      fileCount += files.size;
-      const fileRows: FindingLocationFile[] = [...files.entries()]
-        .map(([file, acc]) => ({
+    const sorted: FindingLocationSummary[] = [];
+    for (const [repo, files] of byRepo) {
+      for (const [file, acc] of files) {
+        const status = foldGroupStatus(acc.statuses);
+        sorted.push({
+          id: encodeLocationId(repo, file),
+          repo,
           file,
           instanceCount: acc.instanceCount,
-          maxSeverity: acc.maxSeverity as FindingLocationFile['maxSeverity'],
+          maxSeverity: acc.maxSeverity as FindingLocationSummary['maxSeverity'],
           latestDetectedAt: acc.latestDetectedAt,
-          ...(foldGroupStatus(acc.statuses) === undefined
-            ? {}
-            : { status: foldGroupStatus(acc.statuses) }),
-          ruleIds: [...acc.ruleIds].slice(0, LOCATION_RULE_IDS_CAP),
-        }))
-        .sort(compareLocationOrder);
-      const rollup = fileRows.reduce(
-        (a, f) => ({
-          instanceCount: a.instanceCount + f.instanceCount,
-          maxSeverity: compareLocationOrder(f, a) < 0 ? f.maxSeverity : a.maxSeverity,
-          latestDetectedAt:
-            f.latestDetectedAt > a.latestDetectedAt ? f.latestDetectedAt : a.latestDetectedAt,
-        }),
-        {
-          instanceCount: 0,
-          maxSeverity: fileRows[0]?.maxSeverity ?? 'low',
-          latestDetectedAt: '',
-        },
-      );
-      const statuses = fileRows.map((f) => f.status);
-      const folded = foldGroupStatus(statuses);
-      return {
-        repo,
-        instanceCount: rollup.instanceCount,
-        maxSeverity: rollup.maxSeverity,
-        latestDetectedAt: rollup.latestDetectedAt,
-        ...(folded === undefined ? {} : { status: folded }),
-        files: fileRows,
-      };
-    });
-    repos.sort(compareLocationOrder);
+          ...(status === undefined ? {} : { status }),
+          ruleIds: [...acc.ruleIds],
+        });
+      }
+    }
+    sorted.sort(compareLocationOrder);
+
+    const start = cursor === null ? 0 : firstLocationAfter(sorted, cursor);
+    const page = sorted.slice(start, start + limit);
+    // Minted from the last row of the PAGE, before the selection below is
+    // appended — that one is out of sort order, so resuming from it would skip
+    // everything between it and the page's real end.
+    const lastOnPage = page.at(-1);
+    const nextCursor =
+      start + limit < sorted.length && lastOnPage ? encodeLocationCursor(lastOnPage) : null;
+
+    const deepLinked =
+      query.includeId === undefined || query.includeId === ''
+        ? undefined
+        : findDeepLinkedLocation(sorted, page, query.includeId);
 
     return Promise.resolve({
-      totals: { findings: total, repos: repos.length, files: fileCount },
-      items: repos.slice(0, limit),
-      hasMore: repos.length > limit,
+      totals: { findings: total, locations: sorted.length },
+      facets: accumulator.facets(),
+      items: [...page, ...(deepLinked ? [deepLinked] : [])],
+      nextCursor,
     });
   }
 

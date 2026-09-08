@@ -8,11 +8,13 @@ import {
   parseFindingsFilters,
   parseRange,
   parseRepo,
+  parseSelectedLocation,
   parseSelectedRule,
   parseTools,
   parseView,
   toFindingTypesQuery,
   toInstancesQuery,
+  toLocationInstancesQuery,
   toLocationsQuery,
   toTypeInstancesQuery,
 } from '../../app/(app)/findings/filters';
@@ -284,6 +286,79 @@ describe('buildFindingsParams — the selected type', () => {
     for (const view of ['flat', 'files'] as const) {
       expect(
         buildFindingsParams(EMPTY_FILTERS, '', '', { view, rule: 'aws-key' }).has('rule'),
+      ).toBe(false);
+    }
+  });
+});
+
+describe('parseSelectedLocation', () => {
+  it('reads and trims ?loc=, and is empty when absent', () => {
+    expect(parseSelectedLocation({ loc: '  acme%2Fapi/a.ts ' })).toBe('acme%2Fapi/a.ts');
+    expect(parseSelectedLocation({})).toBe('');
+    // Repeated keys arrive as an array; a selection names exactly one location.
+    expect(parseSelectedLocation({ loc: ['a', 'b'] })).toBe('');
+  });
+
+  // The reason this is its own param rather than the ?repo=/?file= pair: that
+  // pair is the FLAT view's scope FILTER, and a selection that narrowed the list
+  // it selects from would collapse that list to the single row just picked.
+  it('is a different param from the repo/file scope filter', () => {
+    expect(parseSelectedLocation({ repo: 'acme/api', file: 'a.ts' })).toBe('');
+    expect(parseRepo({ loc: 'acme%2Fapi/a.ts' })).toBe('');
+    expect(parseFile({ loc: 'acme%2Fapi/a.ts' })).toBe('');
+  });
+});
+
+describe('toLocationInstancesQuery', () => {
+  // The page's central invariant: a location row's count is what this read
+  // reports. It holds because this query IS the list query plus the pair, so a
+  // dimension cannot reach one and miss the other.
+  it('carries every dimension the list query carries', () => {
+    const filters = {
+      severity: ['critical'],
+      type: ['aws-key'],
+      provider: ['claudecode'],
+      action: ['blocked'],
+      status: ['open'],
+    };
+    const scope = { from: '2026-01-01T00:00:00.000Z', tools: ['Bash'] };
+    const list = toLocationsQuery(filters, 'leak', 'sess-1', scope);
+    const panel = toLocationInstancesQuery(
+      filters,
+      'leak',
+      { repo: 'acme/api', file: 'a.ts' },
+      'sess-1',
+      scope,
+    );
+    expect(panel).toEqual({ ...list, repo: 'acme/api', file: 'a.ts' });
+  });
+
+  // Every other builder here drops an empty value, correctly, because for a
+  // SCOPE param an empty string means "unset". The pinned location is not a
+  // filter that can be absent — it is what the panel IS — so its pair is sent
+  // whole. Omitted, the no-repo/no-file bucket's panel would ask for every
+  // finding in the store instead of that location's.
+  it('sends an EMPTY pair rather than omitting it', () => {
+    const panel = toLocationInstancesQuery(EMPTY_FILTERS, '', { repo: '', file: '' });
+    expect(panel).toEqual({ repo: '', file: '' });
+    expect('repo' in panel).toBe(true);
+    expect('file' in panel).toBe(true);
+  });
+});
+
+describe('buildFindingsParams — the selected location', () => {
+  it('writes ?loc= under the locations view so a filter click keeps the selection', () => {
+    const sp = buildFindingsParams(EMPTY_FILTERS, '', '', {
+      view: 'files',
+      loc: 'acme%2Fapi/a.ts',
+    });
+    expect(sp.get('loc')).toBe('acme%2Fapi/a.ts');
+  });
+
+  it('writes it under no other view, where the page would ignore it', () => {
+    for (const view of ['grouped', 'flat'] as const) {
+      expect(
+        buildFindingsParams(EMPTY_FILTERS, '', '', { view, loc: 'acme%2Fapi/a.ts' }).has('loc'),
       ).toBe(false);
     }
   });

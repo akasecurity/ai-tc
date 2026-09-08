@@ -146,7 +146,7 @@ describe('FINDING_STATUS_META / findingStatusMeta', () => {
   });
 
   // Regression: FindingTypesListView, FindingsFlatTableView and
-  // FindingsLocationsView all read FINDING_STATUS_META[status] directly once
+  // FindingLocationsListView all read FINDING_STATUS_META[status] directly once
   // status was known to be defined — but defined isn't the same as validated.
   // 'constructor' resolves the Object function (truthy), so `.badge` is
   // undefined and Badge receives an invalid variant.

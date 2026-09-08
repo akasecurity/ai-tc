@@ -6,7 +6,9 @@
  * (`listFindingTypes`, one row per rule, plus `listFindingInstances` scoped to
  * the selected rule for the detail panel beside it), the flat list
  * (`listFindingInstances`, one row per finding, keyset-paged) and the locations
- * fold (`listFindingLocations`, repo then file). Every filter change re-runs
+ * list (`listFindingLocations`, one row per (repo, file) pair, keyset-paged,
+ * plus `listFindingInstances` scoped to the selected pair for its own detail
+ * panel). Every filter change re-runs
  * the view's read from the top of its scope, because totals and facets describe
  * the whole filtered set and must not move as the reader pages. So the cost of
  * the page IS the cost of one read, and that is what this measures — each view
@@ -101,6 +103,8 @@ interface Surfaces {
   readonly now: number;
   /** The cursor that fetches the second flat page — minted once, in setup. */
   readonly secondPageCursor: string | null;
+  /** The same for the locations list, whose page-2 cost is its own read. */
+  readonly secondLocationsCursor: string | null;
   /** The heaviest rule in the corpus — the detail panel's worst realistic case. */
   readonly ruleId: string;
 }
@@ -134,6 +138,7 @@ async function fixtureFor(events: number): Promise<Surfaces> {
 
   const findings = new SqliteFindingsRepository(raw);
   const firstPage = await findings.listFindingInstances({});
+  const firstLocationsPage = await findings.listFindingLocations({});
   // The type carrying the most findings: the detail panel's worst case, and the
   // one the old bounded preview was hiding the cost of.
   const types = (await findings.listFindingTypes({})).items;
@@ -144,6 +149,7 @@ async function fixtureFor(events: number): Promise<Surfaces> {
     sessionId: sessionRow?.id ?? '',
     now: corpus.endsAt,
     secondPageCursor: firstPage.nextCursor,
+    secondLocationsCursor: firstLocationsPage.nextCursor,
     ruleId: heaviest,
   };
   fixtures.set(events, surfaces);
@@ -196,6 +202,10 @@ const READS: readonly [string, (s: Surfaces) => Promise<unknown>][] = [
   // --- locations view --------------------------------------------------------
   ['locations: default', (s) => s.findings.listFindingLocations({})],
   ['locations: severity', (s) => s.findings.listFindingLocations({ severity: ['critical'] })],
+  [
+    'locations: second page',
+    (s) => s.findings.listFindingLocations({ cursor: s.secondLocationsCursor ?? undefined }),
+  ],
 ];
 
 for (const events of SCALES) {

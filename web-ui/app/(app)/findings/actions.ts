@@ -3,14 +3,17 @@
 import {
   ListFindingInstancesQuery,
   type ListFindingInstancesResponse,
+  ListFindingLocationsQuery,
+  type ListFindingLocationsResponse,
   ListFindingTypesQuery,
   type ListFindingTypesResponse,
 } from '@akasecurity/schema';
 
 import { db } from '../../lib/db';
 
-// Data-returning Server Actions for the findings page's two paginated lists:
-// the type list on the left, and the selected type's findings on the right.
+// Data-returning Server Actions for the findings page's paginated lists: the
+// type list and the location list on the left of their respective views, and
+// the selected row's findings on the right of either.
 //
 // These are READS, so neither revalidates: appending a page must not re-render
 // the rest of the route, which would discard the pages already accumulated in
@@ -33,4 +36,11 @@ export async function loadMoreFindingInstances(
 ): Promise<ListFindingInstancesResponse> {
   const query = ListFindingInstancesQuery.parse(raw);
   return db().findings.listFindingInstances(query);
+}
+
+export async function loadMoreFindingLocations(
+  raw: unknown,
+): Promise<ListFindingLocationsResponse> {
+  const query = ListFindingLocationsQuery.parse(raw);
+  return db().findings.listFindingLocations(query);
 }

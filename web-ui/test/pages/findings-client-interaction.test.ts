@@ -19,8 +19,10 @@
 import type {
   FindingFacets,
   FindingInstanceDetail,
+  FindingLocationSummary,
   FindingTypeSummary,
   ListFindingInstancesResponse,
+  ListFindingLocationsResponse,
   ListFindingTypesResponse,
 } from '@akasecurity/schema';
 import type React from 'react';
@@ -39,9 +41,11 @@ vi.mock('next/navigation', () => ({
 // times it is called, and with which cursor.
 const loadMoreFindingInstances = vi.fn<(q: unknown) => Promise<ListFindingInstancesResponse>>();
 const loadMoreFindingTypes = vi.fn<(q: unknown) => Promise<ListFindingTypesResponse>>();
+const loadMoreFindingLocations = vi.fn<(q: unknown) => Promise<ListFindingLocationsResponse>>();
 vi.mock('../../app/(app)/findings/actions', () => ({
   loadMoreFindingInstances: (q: unknown) => loadMoreFindingInstances(q),
   loadMoreFindingTypes: (q: unknown) => loadMoreFindingTypes(q),
+  loadMoreFindingLocations: (q: unknown) => loadMoreFindingLocations(q),
 }));
 
 const { FindingsClient } = await import('../../app/(app)/findings/FindingsClient.tsx');
@@ -112,6 +116,49 @@ function pageOf(ids: string[], nextCursor: string | null): ListFindingInstancesR
   };
 }
 
+function location(over: Partial<FindingLocationSummary> = {}): FindingLocationSummary {
+  return {
+    id: 'acme%2Fapi/src%2Fconfig.ts',
+    repo: 'acme/api',
+    file: 'src/config.ts',
+    instanceCount: 12,
+    maxSeverity: 'critical',
+    latestDetectedAt: '2026-01-01T00:00:00.000Z',
+    status: 'open',
+    ruleIds: [AWS],
+    ...over,
+  };
+}
+
+const LOCATIONS: FindingLocationSummary[] = [
+  location(),
+  location({ id: 'acme%2Fapi/src%2Fdb.ts', file: 'src/db.ts' }),
+];
+
+// Facet counts DELIBERATELY different from FACETS above. The toolbar sits over
+// both panels here, so which read feeds it is a real question and one that no
+// static render can answer — a facet's options live inside a Radix popover,
+// which never reaches renderToStaticMarkup.
+const LOCATION_FACETS: FindingFacets = {
+  severity: [{ value: 'critical', count: 97 }],
+  subtype: [{ value: AWS, count: 97 }],
+  provider: [{ value: 'claudecode', count: 97 }],
+  action: [{ value: 'blocked', count: 97 }],
+  status: [{ value: 'open', count: 97 }],
+};
+
+function locationsPage(
+  items: FindingLocationSummary[],
+  nextCursor: string | null,
+): ListFindingLocationsResponse {
+  return {
+    totals: { findings: 24, locations: items.length },
+    facets: LOCATION_FACETS,
+    items,
+    nextCursor,
+  };
+}
+
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 
@@ -119,6 +166,7 @@ beforeEach(() => {
   push.mockReset();
   loadMoreFindingInstances.mockReset();
   loadMoreFindingTypes.mockReset();
+  loadMoreFindingLocations.mockReset();
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
@@ -355,5 +403,182 @@ describe('By-type view — the findings panel pages on its own', () => {
     await clickPanelNext();
 
     expect(openDrawers()).toBe(0);
+  });
+});
+
+// The By-location view's own wiring. Two of these have no counterpart in the
+// By-type suite because the shapes differ: selection is a token rather than an
+// id the reader could type, and the panel's query has to carry the whole filter
+// set rather than the complement of it.
+describe('findings client — the By-location view', () => {
+  function mountFiles(over: Record<string, unknown> = {}): void {
+    mount({
+      view: 'files',
+      types: undefined,
+      selectedRule: undefined,
+      locations: locationsPage(LOCATIONS, 'loc-cursor-1'),
+      instances: pageOf(['f1', 'f2'], 'cursor-1'),
+      selectedLocation: LOCATIONS[0],
+      deepLinkedInstance: null,
+      ...over,
+    });
+  }
+
+  it('pushes the location token as ?loc= rather than setting local state', () => {
+    mountFiles();
+    click(byText('button', 'src/db.ts', typeList()));
+
+    expect(push).toHaveBeenCalledTimes(1);
+    const url = new URL(String(push.mock.calls[0]?.[0]), 'https://x');
+    expect(url.searchParams.get('loc')).toBe('acme%2Fapi/src%2Fdb.ts');
+    expect(url.searchParams.get('view')).toBe('files');
+  });
+
+  // The selection has to survive a filter click, or changing a filter would
+  // silently drop the reader back to the first row.
+  it('carries the selected location through a filter change', () => {
+    mountFiles();
+    // The toolbar is above the pair here, so its controls sit outside both cards.
+    click(byText('button', 'Severity'));
+    // Scoped to the portalled popover, NOT to document.body: a location row is
+    // itself a <button> carrying a severity badge, so an unscoped lookup for
+    // 'critical' finds a ROW and clicking it pushes a selection — which passes
+    // `expect(push).toHaveBeenCalled()` while testing nothing about filters.
+    const popover = [...document.querySelectorAll('[role="dialog"]')].find(
+      (el) => !container.contains(el),
+    );
+    expect(popover, 'the severity popover did not open').toBeTruthy();
+    // 'Critical', capitalized: the toolbar labels a closed enum through
+    // capitalize(), where a location row prints the raw badge value.
+    click(byText('button', 'Critical', popover));
+
+    expect(push).toHaveBeenCalled();
+    const url = new URL(String(push.mock.calls.at(-1)?.[0]), 'https://x');
+    expect(url.searchParams.get('loc')).toBe('acme%2Fapi/src%2Fconfig.ts');
+    expect(url.searchParams.getAll('severity')).toEqual(['critical']);
+  });
+
+  // The panel's query is the list's plus the pair, so the two reads cannot
+  // disagree about what they are counting.
+  // Which read feeds the toolbar. Reading a count is the only way to tell: the
+  // controls render identically whichever facets they are handed, so a toolbar
+  // wired to the panel's read looks correct and answers "how many if I also pick
+  // this?" about the wrong rows.
+  it('counts the toolbar facets from the LOCATIONS read, not the panel one', () => {
+    mountFiles();
+    click(byText('button', 'Provider'));
+    const popover = [...document.querySelectorAll('[role="dialog"]')].find(
+      (el) => !container.contains(el),
+    );
+    expect(popover, 'the provider popover did not open').toBeTruthy();
+    // 97 is the locations read's count; the panel's own facets say 4.
+    expect(popover?.textContent).toContain('97');
+    expect(popover?.textContent).not.toContain('4');
+  });
+
+  it('pages the panel with the pinned pair and the whole filter set', async () => {
+    loadMoreFindingInstances.mockResolvedValue(pageOf(['f3'], null));
+    mountFiles({ filters: { ...EMPTY_FILTERS, provider: ['claudecode'] } });
+    await clickPanelNext();
+
+    expect(loadMoreFindingInstances).toHaveBeenCalledTimes(1);
+    const query = loadMoreFindingInstances.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(query.repo).toBe('acme/api');
+    expect(query.file).toBe('src/config.ts');
+    expect(query.provider).toEqual(['claudecode']);
+    expect(query.cursor).toBe('cursor-1');
+  });
+
+  // A location has no per-location transcript tally the way a type has a
+  // per-rule one, so the drawer's footer passes null and must render the link
+  // ALONE. Passing 0 instead would print "Caught by live enforcement only",
+  // which is a claim about the transcript that nothing here measured.
+  it('offers the session link in the drawer without inventing a firing tally', () => {
+    mountFiles({ session: 'sess-1', deepLinkedInstance: instance('f1') });
+    const drawer = [...document.querySelectorAll('[role="dialog"]')].find(
+      (el) => !container.contains(el),
+    );
+    expect(drawer, 'the deep-linked drawer did not open').toBeTruthy();
+    expect(drawer?.textContent).toContain('View session in Activity');
+    expect(drawer?.textContent).not.toContain('this session');
+  });
+
+  it('pages the location list from its own cursor', async () => {
+    loadMoreFindingLocations.mockResolvedValue(
+      locationsPage([location({ id: 'other', file: 'src/x.ts' })], null),
+    );
+    const listNext = () => byText('button[data-slot="pagination-next"]', 'Next', typeList());
+    mountFiles();
+    await act(async () => {
+      listNext()?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(loadMoreFindingLocations).toHaveBeenCalledTimes(1);
+    const query = loadMoreFindingLocations.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(query.cursor).toBe('loc-cursor-1');
+    // Paging the list is not a navigation — it must not create a history entry.
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  // The cursor was minted under the SERVER's term. Pairing it with a newer one
+  // pages a differently filtered list, and because a filtered list is a
+  // subsequence the slice starts past rows that should have been on page 1.
+  // Both re-fetches, in one case, under a NON-EMPTY tool scope.
+  //
+  // The scope is the whole point: every other case here renders with `tools: []`,
+  // and with an empty scope a call site that forwards the scope and one that
+  // drops it produce byte-identical payloads. That is exactly how both sites
+  // shipped without it — the server render was correctly scoped, the cursor was
+  // minted against the scoped list, and page 2 came back from the unscoped one.
+  //
+  // Driving both panels together rather than one each is deliberate: a third
+  // re-fetch added later is caught wherever it is added, not only if someone
+  // remembers to write it a case.
+  it('carries the tool scope into BOTH re-fetches, not just the server render', async () => {
+    loadMoreFindingLocations.mockResolvedValue(locationsPage([], null));
+    loadMoreFindingInstances.mockResolvedValue(pageOf([], null));
+    mountFiles({ tools: ['Bash'] });
+
+    const listNext = () => byText('button[data-slot="pagination-next"]', 'Next', typeList());
+    await act(async () => {
+      listNext()?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await clickPanelNext();
+
+    const listQuery = loadMoreFindingLocations.mock.calls[0]?.[0] as Record<string, unknown>;
+    const panelQuery = loadMoreFindingInstances.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(listQuery.tool).toEqual(['Bash']);
+    expect(panelQuery.tool).toEqual(['Bash']);
+    // The controls: each re-fetch still carries what it is FOR, so a payload
+    // that gained `tool` by losing its cursor or its pin would not pass.
+    expect(listQuery.cursor).toBe('loc-cursor-1');
+    expect(panelQuery.cursor).toBe('cursor-1');
+    expect(panelQuery.repo).toBe('acme/api');
+    expect(panelQuery.file).toBe('src/config.ts');
+  });
+
+  it('pages the list under the server term, not the live one', async () => {
+    loadMoreFindingLocations.mockResolvedValue(locationsPage([], null));
+    mountFiles();
+
+    const box = container.querySelector('input[aria-label="Search findings"]');
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(
+        box,
+        'typed-since-render',
+      );
+      box?.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    const listNext = () => byText('button[data-slot="pagination-next"]', 'Next', typeList());
+    await act(async () => {
+      listNext()?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const query = loadMoreFindingLocations.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(query.q).toBeUndefined();
   });
 });

@@ -94,12 +94,20 @@ export interface FindingTypesView {
 
 /**
  * Instance-level findings reads: the flat newest-first list, and the same
- * findings folded by location (repo → file).
+ * findings folded by location — one row per (repo, file) pair.
  *
- * Separate from FindingTypesView because the unit differs — these page and
- * count FINDINGS where that view pages and counts RULES — and because their
+ * Separate from FindingTypesView because the unit differs — these filter and
+ * count FINDINGS where that view folds and counts RULES — and because their
  * status filter matches each instance's own derived status rather than its
  * type's fold. Both are served by the same store.
+ *
+ * The locations read pages LOCATIONS while counting findings, which is not a
+ * contradiction: every filter narrows the findings first and the locations fall
+ * out of what survives, so a location row's `instanceCount` is exactly what
+ * listFindingInstances reports for those same filters scoped to its pair. The
+ * Findings page relies on that — it renders one filter toolbar over both panels
+ * rather than splitting the dimensions between them, because a location owns
+ * none of its own fields.
  */
 export interface FindingInstancesView {
   listFindingInstances(query: ListFindingInstancesQuery): Promise<ListFindingInstancesResponse>;

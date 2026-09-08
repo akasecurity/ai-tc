@@ -3,11 +3,11 @@
 import {
   FindingDetailView,
   FindingLevelFilters,
+  FindingLocationsListView,
   FINDINGS_VIEW_LABEL,
   FINDINGS_VIEWS,
   type FindingsFilters,
   FindingsFlatTableView,
-  FindingsLocationsView,
   FindingsToolbarView,
   type FindingsView,
   FindingTypesListView,
@@ -19,6 +19,7 @@ import {
 import type {
   FindingGroup,
   FindingInstanceDetail,
+  FindingLocationSummary,
   ListFindingInstancesResponse,
   ListFindingLocationsResponse,
   ListFindingTypesResponse,
@@ -43,11 +44,17 @@ import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 import { TerminalIcon, XIcon } from '../../components/icons';
 import { useNavigationTransition } from '../../components/NavigationTransition';
 import { useDebouncedUrlQuery } from '../../lib/useDebouncedUrlQuery';
-import { loadMoreFindingInstances, loadMoreFindingTypes } from './actions';
+import {
+  loadMoreFindingInstances,
+  loadMoreFindingLocations,
+  loadMoreFindingTypes,
+} from './actions';
 import {
   buildFindingsParams,
   toFindingTypesQuery,
   toInstancesQuery,
+  toLocationInstancesQuery,
+  toLocationsQuery,
   toTypeInstancesQuery,
 } from './filters';
 
@@ -96,7 +103,20 @@ type ViewProps =
       deepLinkedInstance: FindingInstanceDetail | null;
     }
   | { view: 'flat'; flat: ListFindingInstancesResponse }
-  | { view: 'files'; locations: ListFindingLocationsResponse };
+  | {
+      view: 'files';
+      /** The left panel: one page of locations, each a (repo, file) pair. */
+      locations: ListFindingLocationsResponse;
+      /**
+       * The right panel: one page of the selected location's findings. Null only
+       * when no location is selected, which means the list itself is empty.
+       */
+      instances: ListFindingInstancesResponse | null;
+      /** The selected location, resolved server-side; null when the list is empty. */
+      selectedLocation: FindingLocationSummary | null;
+      /** As above — a `?finding=` deep link, resolved by a primary-key seek. */
+      deepLinkedInstance: FindingInstanceDetail | null;
+    };
 
 /**
  * Client shell for the OSS findings page. The data + facets + current filters
@@ -131,6 +151,10 @@ export function FindingsClient(props: CommonProps & ViewProps) {
   // reader was looking at. It is view-scoped: buildFindingsParams writes it only
   // under `grouped`.
   const rule = props.view === 'grouped' ? props.selectedRule : '';
+  // The selected location rides every push for the same reason `rule` does, so
+  // changing a filter keeps the location the reader was looking at. Also
+  // view-scoped: buildFindingsParams writes it only under `files`.
+  const loc = props.view === 'files' ? (props.selectedLocation?.id ?? '') : '';
 
   const buildUrl = useCallback(
     (
@@ -144,6 +168,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
         repo?: string;
         file?: string;
         rule?: string;
+        loc?: string;
       } = {},
     ) => {
       const qs = buildFindingsParams(nextFilters, nextQuery, nextSession, {
@@ -153,10 +178,11 @@ export function FindingsClient(props: CommonProps & ViewProps) {
         repo: overrides.repo ?? repo,
         file: overrides.file ?? file,
         rule: overrides.rule ?? rule,
+        loc: overrides.loc ?? loc,
       }).toString();
       return qs ? `${pathname}?${qs}` : pathname;
     },
-    [pathname, view, range, tools, repo, file, rule],
+    [pathname, view, range, tools, repo, file, rule, loc],
   );
 
   // Search box + debounce/resync/cancel invariants live in the shared hook; a
@@ -177,6 +203,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
         repo?: string;
         file?: string;
         rule?: string;
+        loc?: string;
       },
     ) => {
       onNavigate(nextQuery);
@@ -208,15 +235,24 @@ export function FindingsClient(props: CommonProps & ViewProps) {
 
   const sessionHref = session ? `/activity?id=${encodeURIComponent(session)}` : null;
 
-  // The page tally. Both views count the same two things — findings in scope and
-  // the types they fall under — from whichever read owns that scope. The
-  // locations view counts repos and files instead, so it shows none.
+  // The page tally: findings in scope, and however many of whatever unit the
+  // view's own list pages. Each comes from the read that owns that scope, and
+  // the unit is named rather than assumed — the locations view pages locations,
+  // which are not types and must not be labelled as them.
   const tally =
     props.view === 'grouped'
-      ? { findings: props.types.totals.findings, types: props.types.totals.types }
+      ? { findings: props.types.totals.findings, count: props.types.totals.types, unit: 'type' }
       : props.view === 'flat'
-        ? { findings: props.flat.totals.findings, types: flatTypeCount(props.flat, filters) }
-        : null;
+        ? {
+            findings: props.flat.totals.findings,
+            count: flatTypeCount(props.flat, filters),
+            unit: 'type',
+          }
+        : {
+            findings: props.locations.totals.findings,
+            count: props.locations.totals.locations,
+            unit: 'location',
+          };
 
   return (
     <div className="flex h-full min-h-0 flex-col p-6">
@@ -226,7 +262,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
         // these describe the TYPE list, which the detail panel's own filters do
         // not narrow — sat next to them, a number that never moved read as a
         // filter that had stopped working.
-        sub={tally ? <Tally findings={tally.findings} types={tally.types} /> : PAGE_SUB}
+        sub={<Tally findings={tally.findings} count={tally.count} unit={tally.unit} />}
         actions={
           <div className="flex items-center gap-2">
             <RangeFilter
@@ -245,7 +281,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
                 pushState(filters, query, session, {
                   view: next,
                   ...(next === 'grouped' ? { tools: [], repo: '', file: '' } : { rule: '' }),
-                  ...(next === 'files' ? { repo: '', file: '' } : {}),
+                  ...(next === 'files' ? { repo: '', file: '' } : { loc: '' }),
                 });
               }}
             />
@@ -253,17 +289,25 @@ export function FindingsClient(props: CommonProps & ViewProps) {
         }
       />
 
-      {/* Only the flat view has a toolbar. The locations view has no facets of
-          its own (it counts repos and files), and the By-type view splits its
-          filters between the two panels — each beside the rows it narrows. */}
-      {props.view === 'flat' && (
+      {/* The flat and locations views share a toolbar; the By-type view has none,
+          because it splits its filters between the two panels, each beside the
+          rows it narrows.
+          
+          The locations view cannot split them the same way, and that is the
+          design rather than a shortcut: a location owns none of its fields, so
+          severity, status, rules and count on a row are all folds that ANY
+          dimension moves. Split, provider and action would narrow only the panel
+          and leave a row reading 12 findings beside a panel showing 3. One
+          toolbar over both panels says what is true — every dimension narrows
+          both. */}
+      {(props.view === 'flat' || props.view === 'files') && (
         // The gap below sits HERE rather than on the panels container, because
         // the By-type view renders neither this nor, usually, the scope chips —
         // and a top margin on the container would then push its panels down
         // from nothing at all. Spacing belongs to whatever creates the need.
         <div className="mb-4">
           <FindingsToolbarView
-            facets={props.flat.facets}
+            facets={props.view === 'flat' ? props.flat.facets : props.locations.facets}
             filters={filters}
             onFiltersChange={(next) => {
               pushState(next, query, session);
@@ -346,18 +390,21 @@ export function FindingsClient(props: CommonProps & ViewProps) {
           />
         )}
         {props.view === 'files' && (
-          <LocationsView
-            data={props.locations}
+          <LocationsMasterDetail
+            locations={props.locations}
+            instances={props.instances}
+            selectedLocation={props.selectedLocation}
+            deepLinkedInstance={props.deepLinkedInstance}
+            filters={filters}
+            serverQuery={initialQuery}
+            session={session}
+            from={from}
+            tools={tools}
+            sessionHref={sessionHref}
             emptyState={emptyState}
             renderedAt={renderedAt}
-            onSelectFile={(nextRepo, nextFile) => {
-              // Drill into one file's findings: the flat view is the one that
-              // can filter down to a single location.
-              pushState(filters, query, session, {
-                view: 'flat',
-                repo: nextRepo,
-                file: nextFile,
-              });
+            onSelectLocation={(nextLoc) => {
+              pushState(filters, query, session, { loc: nextLoc });
             }}
           />
         )}
@@ -405,13 +452,13 @@ const PAGE_SUB = 'Every sensitive-data finding across providers';
  * subtree and the browser's own separator wins, which is the right outcome —
  * nothing structural depends on the string.
  */
-function Tally({ findings, types }: { findings: number; types: number }) {
+function Tally({ findings, count, unit }: { findings: number; count: number; unit: string }) {
   return (
     <>
       {PAGE_SUB} · <span className="font-semibold text-text">{findings.toLocaleString()}</span>
       {findings === 1 ? ' finding' : ' findings'},{' '}
-      <span className="font-semibold text-text">{types.toLocaleString()}</span>
-      {types === 1 ? ' type' : ' types'}
+      <span className="font-semibold text-text">{count.toLocaleString()}</span>
+      {count === 1 ? ` ${unit}` : ` ${unit}s`}
     </>
   );
 }
@@ -851,40 +898,150 @@ function FlatView({
   );
 }
 
-function LocationsView({
-  data,
+/**
+ * The By-location view: a paginated list of LOCATIONS on the left — one row per
+ * (repo, file) pair — and the selected location's findings, themselves
+ * paginated, on the right.
+ *
+ * The By-type view's structure, with one deliberate difference: no filters live
+ * in this panel's header. Every dimension is already narrowing both reads from
+ * the toolbar above, because a location owns none of the fields its row shows.
+ * The header carries the path and the count instead, which is what the reader
+ * needs to know they are looking at the right place.
+ */
+function LocationsMasterDetail({
+  locations,
+  instances,
+  selectedLocation,
+  deepLinkedInstance,
+  filters,
+  serverQuery,
+  session,
+  from,
+  tools,
+  sessionHref,
   emptyState,
-  onSelectFile,
   renderedAt,
+  onSelectLocation,
 }: {
-  data: ListFindingLocationsResponse;
+  locations: ListFindingLocationsResponse;
+  instances: ListFindingInstancesResponse | null;
+  selectedLocation: FindingLocationSummary | null;
+  deepLinkedInstance: FindingInstanceDetail | null;
+  filters: FindingsFilters;
+  /**
+   * The term the SERVER rendered against. The location list's cursor was minted
+   * under it, so the load-more below must pair the two; the live debounced term
+   * would page a differently filtered list from a cursor that never described it.
+   */
+  serverQuery: string;
+  session: string;
+  from: string | null;
+  /**
+   * The tool scope the SERVER rendered under, threaded in for the same reason
+   * `from` and `serverQuery` are: both reads below are re-fetches, and a
+   * re-fetch that drops a dimension the first read applied is answering a
+   * different question. `from` alone is not the whole scope.
+   */
+  tools: string[];
+  sessionHref: string | null;
   emptyState: React.ReactNode;
-  onSelectFile: (repo: string, file: string) => void;
   renderedAt: number;
+  onSelectLocation: (loc: string) => void;
 }) {
-  const [expandedRepos, setExpandedRepos] = useState<ReadonlySet<string>>(
-    // Open the worst-severity repo by default so the view is never a list of
-    // collapsed rows with nothing to read.
-    () => new Set(data.items[0] ? [data.items[0].repo] : []),
+  const locationPages = usePagedList(
+    locations,
+    locations.items,
+    locations.nextCursor,
+    (cursor, pages) =>
+      loadMoreFindingLocations({
+        // Built from the SERVER-RENDERED term, never the live debounced one: a
+        // click during the debounce window would otherwise page a differently
+        // filtered set into this one.
+        ...toLocationsQuery(filters, serverQuery, session, {
+          ...(from ? { from } : {}),
+          ...(tools.length ? { tools } : {}),
+        }),
+        cursor,
+      }).then((next) => ({
+        // The selected location is appended to page 0 out of sort order (see
+        // ListFindingLocationsQuery.includeId) and resurfaces here at its natural
+        // cursor position once paging reaches it — drop the repeat so a page
+        // never shows the same location twice.
+        items: dedupeAgainstPages(pages, next.items),
+        next,
+      })),
   );
 
   return (
-    <FindingsLocationsView
-      renderedAt={renderedAt}
-      items={data.items}
-      expandedRepos={expandedRepos}
-      onToggleRepo={(repo) => {
-        setExpandedRepos((prev) => {
-          const next = new Set(prev);
-          if (next.has(repo)) next.delete(repo);
-          else next.add(repo);
-          return next;
-        });
-      }}
-      onSelectFile={onSelectFile}
-      hasMore={data.hasMore}
-      {...(emptyState === undefined ? {} : { emptyState })}
-    />
+    <div className="grid h-full min-h-0 grid-cols-1 gap-4 lg:grid-cols-[352px_1fr]">
+      <FindingLocationsListView
+        locations={locationPages.items}
+        activeId={selectedLocation?.id ?? ''}
+        onSelect={(l) => {
+          onSelectLocation(l.id);
+        }}
+        renderedAt={renderedAt}
+        onNextPage={locationPages.onNextPage}
+        onPreviousPage={locationPages.onPreviousPage}
+        hasNextPage={locationPages.hasNextPage}
+        hasPreviousPage={locationPages.hasPreviousPage}
+        loadingNextPage={locationPages.loading}
+        pageStart={locationPages.pageStart}
+        total={locations.totals.locations}
+        {...(emptyState === undefined ? {} : { emptyState })}
+      />
+
+      {instances && selectedLocation ? (
+        <InstancesPanel
+          key={selectedLocation.id}
+          data={instances}
+          header={
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-b border-border px-4 py-3">
+              {/* Wrapped, not truncated, and in the normal font — the same
+                  treatment the row carries, and for the same reason: a trailing
+                  ellipsis elides the filename, which is the part a reader has
+                  come here to confirm. Truncating it here was worse than in the
+                  row, because there is no `title` to recover it from. */}
+              <h2 className="min-w-0 text-sm font-semibold break-words [word-break:break-word] text-text">
+                {selectedLocation.file || 'No file recorded'}
+              </h2>
+              <span className="text-xs break-words [word-break:break-word] text-text-3">
+                {selectedLocation.repo || 'No repository recorded'}
+              </span>
+            </div>
+          }
+          loadMore={(cursor) =>
+            loadMoreFindingInstances({
+              ...toLocationInstancesQuery(filters, serverQuery, selectedLocation, session, {
+                ...(from ? { from } : {}),
+                ...(tools.length ? { tools } : {}),
+              }),
+              cursor,
+            })
+          }
+          initialSelected={deepLinkedInstance}
+          emptyState={
+            <p className="py-8 text-center text-sm text-text-3">
+              No findings at this location match these filters.
+            </p>
+          }
+          renderDrawerFooter={() =>
+            sessionHref ? <SessionFooter firings={null} sessionHref={sessionHref} /> : undefined
+          }
+          renderedAt={renderedAt}
+        />
+      ) : (
+        <Card className="grid h-full min-h-0 place-items-center p-8 text-center text-sm text-text-3">
+          {locations.items.length === 0
+            ? // `emptyState` is set only for an EMPTY STORE; with filters active
+              // it is undefined, and rendering it alone left a blank card beside
+              // a list that was explaining itself. Mirror the list's fallback.
+              (emptyState ?? 'No locations match these filters.')
+            : 'Select a location to see its findings.'}
+        </Card>
+      )}
+    </div>
   );
 }
 

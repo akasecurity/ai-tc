@@ -23,6 +23,9 @@ pnpm-lock.yaml
 # byte layout is what the extraction assertions read (line numbers, snippets,
 # manifest scoping), so reformatting one silently changes the test's subject.
 packages/local-ops/test/fixtures
+# Recorded Copilot CLI hook payloads: each file is the bytes a hook received on
+# stdin, and a reformatted recording is no longer a recording.
+plugins/copilot/test/fixtures
 
 .wolf/
 .gitattributes

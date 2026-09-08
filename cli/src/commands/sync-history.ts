@@ -1,6 +1,11 @@
 import { parseArgs } from 'node:util';
 
-import { applyOnboarding, readWorkspaceSettings } from '@akasecurity/persistence';
+import {
+  applyOnboarding,
+  dataDir as dataDirOf,
+  readWorkspaceSettings,
+  seedCaptureBacklogOwed,
+} from '@akasecurity/persistence';
 import type { HistorySyncPassReport } from '@akasecurity/plugin-runtime';
 import { runHistorySyncPass } from '@akasecurity/plugin-runtime';
 import type { HistorySyncConsent, WorkspaceSettings } from '@akasecurity/schema';
@@ -164,8 +169,9 @@ function grant(
     exit(1);
     return false;
   }
+  const grantedAt = Date.now();
   const consent: HistorySyncConsent = {
-    acknowledgedAt: new Date().toISOString(),
+    acknowledgedAt: new Date(grantedAt).toISOString(),
     payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
     endpoint: settings.controlPlane.endpoint,
   };
@@ -176,14 +182,18 @@ function grant(
     exit(1);
     return false;
   }
+  // The capture half of the grant — see seedCaptureBacklogOwed. `aka attach`
+  // does the same thing at its own grant site; this is the other place a
+  // fresh grant is recorded.
+  seedCaptureBacklogOwed(dataDirOf(base), grantedAt);
   io.out(
     `Sending this machine's unsent activity to ${controlPlaneName(settings.controlPlane)}.\n` +
-      'That is the activity recorded before it attached, and anything a live send could not\n' +
-      'deliver — which for a captured prompt, reply or tool result includes its text. A value\n' +
-      'in that text is masked only where the policy assigned to the detection that flagged it\n' +
-      'is redact or block; under monitor or warn it goes as it was seen, and every detection\n' +
-      'ships on monitor. It goes in the background, a little at a time, starting with your\n' +
-      'next session. Anything already sent cannot be recalled.\n',
+      'That is the activity recorded before it attached and anything a live send could not\n' +
+      'deliver, alike: for a captured prompt, reply or tool result, either one includes its\n' +
+      'text. A value in that text is masked only where the policy assigned to the detection\n' +
+      'that flagged it is redact or block; under monitor or warn it goes as it was seen, and\n' +
+      'every detection ships on monitor. It goes in the background, a little at a time,\n' +
+      'starting with your next session. Anything already sent cannot be recalled.\n',
   );
   return true;
 }
@@ -228,9 +238,10 @@ function describe(settings: WorkspaceSettings): string {
   }
   return isHistorySyncConsentStale(settings.historySyncConsent, settings.controlPlane.endpoint)
     ? `Not sending this machine's unsent activity to ${where}: your grant predates a change.\n` +
-        'It now also covers the text of captured prompts, replies and tool results that no\n' +
-        'live send delivered, in which a value is masked only where the detection that\n' +
-        'flagged it is set to redact or block — and every detection ships on monitor.\n' +
+        'It now also covers the text of the activity recorded before this machine attached —\n' +
+        'not just what a live send failed to deliver afterward — in which a value is masked\n' +
+        'only where the detection that flagged it is set to redact or block, and every\n' +
+        'detection ships on monitor.\n' +
         'Run `aka sync-history --on` to grant it again.'
     : `Not sending this machine's unsent activity to ${where}: the earlier grant no longer\n` +
         'applies. Run `aka sync-history --on` to grant it again.';

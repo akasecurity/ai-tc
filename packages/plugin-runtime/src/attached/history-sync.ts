@@ -241,9 +241,12 @@ export async function runHistorySync(
     if (!isAttached(settings)) return didNotRun('not-attached');
     const connection = settings.controlPlane;
     if (connection === undefined) return didNotRun('not-attached');
-    if (!isHistorySyncConsentValid(settings.historySyncConsent, connection.endpoint)) {
+    const consent = settings.historySyncConsent;
+    if (!isHistorySyncConsentValid(consent, connection.endpoint) || consent === undefined) {
       return didNotRun('no-consent');
     }
+    const consentAcknowledgedAtMs = Date.parse(consent.acknowledgedAt);
+    if (!Number.isFinite(consentAcknowledgedAtMs)) return didNotRun('attachment-unreadable');
 
     // The WIDE read: the client below needs the key itself, and this runs in
     // the plugin's own process rather than anywhere a browser can see.
@@ -290,8 +293,25 @@ export async function runHistorySync(
     let backlogBefore: number;
     if (recorded.fingerprint !== fingerprint) {
       // A different deployment. Nothing sent to the last one counts here, so
-      // the stamps go and a fresh boundary is frozen.
-      ledger.rearmFor(fingerprint, attachedAtMs);
+      // the stamps go and a fresh boundary is frozen. The consent check above
+      // has already confirmed `consent` is valid for THIS endpoint, so it is
+      // safe to re-apply its own backfill in the same transaction as the wipe
+      // — the grant this consent describes is for the deployment being armed,
+      // not the one being left, and the CLI's own earlier call to
+      // `seedCaptureBacklogOwed` (at attach time) is exactly what this
+      // repeats: this method's disown above cannot tell that grant's markers
+      // apart from the previous deployment's leftover ones, so both go, and
+      // this puts B's own back.
+      //
+      // The re-mark boundary is `consentAcknowledgedAtMs`, the GRANT instant,
+      // not `attachedAtMs`, the ATTACH instant — the two can be far apart,
+      // because a `no-consent` return above means a machine can attach to a
+      // deployment on one pass and only reach this method (and thus record
+      // consent's own effect) on a later one, once a human has granted it.
+      // Bounding the re-mark at the attach instant instead would silently
+      // drop every live-path marker the machine wrote for B in that gap,
+      // despite an explicit fresh grant covering it.
+      ledger.rearmFor(fingerprint, attachedAtMs, consentAcknowledgedAtMs);
       backlogBefore = attachedAtMs;
     } else if (recorded.backlogBefore === undefined) {
       // The same deployment, with the boundary RELEASED — a detach happened and
@@ -652,12 +672,16 @@ async function drainCaptures(
     // iteration stamped or skipped everything it took, so the unstamped set has
     // shrunk and the next page is simply the new head of it. An offset over a
     // set being mutated underneath would step past rows.
-    // `backlogBefore` is the attachment boundary, and this lane reads the side of
-    // it the structural lane does not: captures recorded FROM the attachment
-    // onwards, which the live path owed and did not deliver. Older captures are
-    // pre-attach history and belong to the structural lane, which sends them
-    // without their text — draining them here would put a machine's whole local
-    // history of prompts on the wire under copy that promises the opposite.
+    // This lane has no boundary of its own: `pendingCaptureRows` reads
+    // whatever carries `outbox_owed = 1`, whichever of the two writers set it.
+    // The live forward path sets it only for a capture recorded FROM the
+    // attachment onwards, which it owed and did not deliver — that half is
+    // bounded by `backlogBefore` implicitly, because nothing before it was
+    // ever live-forwarded. The other writer, `markCaptureBacklogOwed`, sets it
+    // for whatever pre-attach backlog was on disk at the instant a human
+    // granted existing-history consent, WITH its text — that is the grant's
+    // own design, not a leak this lane needs to guard against. A row reaching
+    // here is owed for one of those two reasons; this loop enforces neither.
     const rows = d.ledger.pendingCaptureRows(CAPTURE_BATCH_SIZE, d.now() - CAPTURE_GRACE_MS);
     if (rows.length === 0) return { sent, skipped };
 

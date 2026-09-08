@@ -327,13 +327,12 @@ describe('installTap: the fetch half', () => {
     expect(h.of('request')).toHaveLength(1);
   });
 
-  it('refuses a typed-array body rather than walking it by index', async () => {
-    // A typed array has forEach, and its callback is (value: number, index).
-    // The URLSearchParams/FormData branch therefore claims it and produces
-    // `0=&1=&2=…` — indices as keys, empty values, because the numbers are not
-    // strings. Observed on a real site, where a whole request body arrived at
-    // parseRequest as that. The line below the branch already intends a typed
-    // array to be unreadable; it was simply never reached.
+  it('decodes a typed-array body carrying UTF-8 text', async () => {
+    // A typed array also has forEach, whose callback receives a NUMBER per
+    // index, so the URLSearchParams/FormData branch used to render a whole body
+    // as `0=&1=&2=…`. It is decoded rather than walked — and rather than
+    // refused, because reading a typed array consumes nothing, so unlike a
+    // stream it costs the page's own request nothing.
     const { fn } = fakeFetch('ok');
     const win = { fetch: fn } as unknown as Window;
     const h = harness();
@@ -341,16 +340,47 @@ describe('installTap: the fetch half', () => {
     installTap(win, h.port, [CONVERSATION]);
     await fetchOn(win)('https://site.test/api/conversation', {
       method: 'POST',
-      body: new Uint8Array([123, 34, 97, 34, 58, 49, 125]),
+      body: new TextEncoder().encode('{"prompt":"hi"}'),
     });
     await h.settle();
 
-    // Same verdict a raw ArrayBuffer already got: unreadable, so no exchange is
-    // opened and nothing further about the request is followed.
+    expect(h.of('request')[0]).toMatchObject({ method: 'POST', body: '{"prompt":"hi"}' });
+  });
+
+  it('refuses a binary body that is not valid UTF-8', async () => {
+    // The control for the case above: decoding is gated on the bytes actually
+    // being text, so an image or an archive is still nothing the tap reads.
+    const { fn } = fakeFetch('ok');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+
+    installTap(win, h.port, [CONVERSATION]);
+    await fetchOn(win)('https://site.test/api/conversation', {
+      method: 'POST',
+      body: new Uint8Array([0xff, 0xfe, 0xfd, 0xfc]),
+    });
+    await h.settle();
+
     expect(h.of('error')[0]).toMatchObject({ reason: 'unparsed_body' });
     expect(h.of('request')).toHaveLength(0);
-    expect(h.of('chunk')).toHaveLength(0);
-    expect(h.of('end')).toHaveLength(0);
+  });
+
+  it('refuses binary that decodes cleanly but carries control characters', async () => {
+    // Valid UTF-8 is not the same as text. A run of NULs decodes without
+    // throwing, and bytes like that are data rather than a body worth parsing.
+    const { fn } = fakeFetch('ok');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+
+    installTap(win, h.port, [CONVERSATION]);
+    await fetchOn(win)('https://site.test/api/conversation', {
+      method: 'POST',
+      body: new Uint8Array([0x7b, 0x00, 0x00, 0x7d]),
+    });
+    await h.settle();
+
+    expect(h.of('error')[0]).toMatchObject({ reason: 'unparsed_body' });
+    expect(h.of('request')).toHaveLength(0);
   });
 
   it('forwards a matched request and its response, and returns the page its own body', async () => {

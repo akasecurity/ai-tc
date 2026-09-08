@@ -627,7 +627,11 @@ describe('the plugin-install offer', () => {
     await runInit(['--home', dir]);
 
     expect(prompt.asked).toHaveLength(1);
-    expect(runPlugins).toHaveBeenCalledWith(['install', 'claude-code']);
+    // `assumeYes` is false here: the user answered the TTY question, so the
+    // host-floor gate may still ask if this host is below a floor.
+    expect(runPlugins).toHaveBeenCalledWith(['install', 'claude-code'], {
+      assumeYes: false,
+    });
   });
 
   it.each([['--yes'], ['-y']])('%s installs without asking, even on a TTY', async (flag) => {
@@ -644,7 +648,11 @@ describe('the plugin-install offer', () => {
     await runInit(['--home', dir, flag]);
 
     expect(prompt.asked).toEqual([]);
-    expect(runPlugins).toHaveBeenCalledWith(['install', 'claude-code']);
+    // The consent MUST be threaded: without it the host-floor gate re-asks a
+    // user who passed --yes, and a scripted Enter answers no and installs nothing.
+    expect(runPlugins).toHaveBeenCalledWith(['install', 'claude-code'], {
+      assumeYes: true,
+    });
   });
 });
 

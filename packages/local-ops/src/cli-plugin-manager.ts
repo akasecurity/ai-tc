@@ -1,4 +1,4 @@
-import { binExists, runInherit } from './exec.ts';
+import { binExists, runCapture, runInherit } from './exec.ts';
 
 // Generic delegator onto a host CLI's own plugin manager — the supported way
 // to install and update its plugins. The AKA CLI is a hub over these, never a
@@ -30,6 +30,51 @@ import { binExists, runInherit } from './exec.ts';
 //     from a source that cannot be upgraded) must not abort an operation that
 //     would have succeeded against the cached snapshot.
 export type CliPluginBin = 'claude' | 'codex';
+
+/**
+ * The version a host CLI reports for itself, or undefined when it cannot be
+ * read (not on PATH, a non-zero exit, no version-shaped token in the output).
+ *
+ * SOUND AT INSTALL TIME, AND ONLY THERE. `aka plugins install` delegates to the
+ * host binary resolved from PATH, so the version that binary reports is the one
+ * being installed into. Inside a session it would NOT be sound: the host running
+ * the session can be a different install from the one on PATH — measured, 2.1.258
+ * on PATH against 2.1.260 actually running — so the hook path reads the version
+ * off the transcript instead of asking here.
+ *
+ * Fail-silent by construction: every caller treats undefined as "do not warn".
+ */
+// TWIN of `isParseableBinaryVersion`'s grammar in @akasecurity/persistence,
+// duplicated rather than imported for the same boundary reason that package's
+// own semver.ts documents: this module is reached by a child Node loads under
+// type STRIPPING, and persistence carries TypeScript parameter properties,
+// which strip-only mode refuses at load (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX).
+// `packages/local-ops/test/spawn.test.ts` is what catches a regression here.
+// Mirror any change to the accepted shape in both places.
+const VERSION_TOKEN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-.]+)?$/;
+
+export function hostCliVersion(bin: CliPluginBin): string | undefined {
+  const { ok, stdout } = runCapture(bin, ['--version'], 5_000);
+  if (!ok) return undefined;
+  // `claude --version` prints "2.1.258 (Claude Code)", so the first token of the
+  // first line is the answer; the whole-output scan is the fallback for a host
+  // that words it differently.
+  //
+  // The token is matched against the SAME grammar `compareBinaryVersions`
+  // parses, so a prerelease survives intact and reaches the comparator that
+  // knows how to order it. The regex this replaced was wrong in three ways: it
+  // dropped a prerelease suffix (`2.1.251-rc.1` became `2.1.251`, which compares
+  // EQUAL to the floor, so a build that genuinely predates an event cleared it),
+  // it could not match a `v` prefix at all (no word boundary between `v` and a
+  // digit), and it took the first version-shaped token anywhere in the output,
+  // so a leading update notice won over the real version.
+  const [firstLine = ''] = stdout.split('\n');
+  for (const token of [...firstLine.trim().split(/\s+/), ...stdout.split(/\s+/)]) {
+    const candidate = token.replace(/^[vV]/, '').replace(/[),;]+$/, '');
+    if (VERSION_TOKEN.test(candidate)) return candidate;
+  }
+  return undefined;
+}
 
 // One command's argv, minus the binary. A step list rather than a single argv
 // because Codex's marketplace prep is two commands.

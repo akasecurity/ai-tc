@@ -5,23 +5,41 @@ import {
   AGENT_PLUGINS,
   createCliPluginManager,
   findAgent,
+  hostCliVersion,
   installAgentPlugin,
   installedAgentPluginVersions,
   pluginRef,
 } from '@akasecurity/local-ops';
 import { openLocalDatabase } from '@akasecurity/persistence';
-import { dataDir, dbPath } from '@akasecurity/plugin-sdk';
+import { dataDir, dbPath, hostFloorGaps, requiredHostVersion } from '@akasecurity/plugin-sdk';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
+import type { Prompter } from '../lib/prompter.ts';
+import { terminalPrompter } from '../lib/prompter.ts';
+
+/**
+ * Seams for the install gate: the host version to judge, and the IO to ask on.
+ * Injected so a test never shells out to a real `claude` — the PATH shims in
+ * this repo fail OPEN, so an unstubbed probe would reach the developer's own
+ * installed CLI rather than erroring.
+ */
+export interface InstallDeps {
+  hostVersion?: (bin: 'claude' | 'codex') => string | undefined;
+  prompter?: Prompter;
+  /**
+   * The caller already has the user's consent, so the floor warning is printed
+   * but not turned into a question. `aka init --yes` sets it: without this the
+   * gate re-asks a user who passed `--yes` precisely to avoid being asked, and
+   * a scripted Enter answers "no" and installs nothing.
+   */
+  assumeYes?: boolean;
+}
 
 // `aka plugins [list|install <agent>]` — the optional plugin hub.
-export function runPlugins(argv: string[]): void | Promise<void> {
+export function runPlugins(argv: string[], deps: InstallDeps = {}): void | Promise<void> {
   const [sub, ...rest] = argv;
   if (!sub || sub === 'list') return listPlugins(rest);
-  if (sub === 'install') {
-    installPlugin(rest);
-    return;
-  }
+  if (sub === 'install') return installPlugin(rest, deps);
   process.stderr.write(`aka plugins: unknown subcommand '${sub}' (try: list, install <agent>)\n`);
   process.exitCode = 1;
 }
@@ -69,7 +87,7 @@ async function listPlugins(argv: string[]): Promise<void> {
   out.write('Update:   aka update            (or: aka check-updates)\n');
 }
 
-function installPlugin(argv: string[]): void {
+async function installPlugin(argv: string[], deps: InstallDeps): Promise<void> {
   const { positionals } = parseArgs({ args: argv, options: HOME_OPTION, allowPositionals: true });
   const id = positionals[0];
   if (!id) {
@@ -112,6 +130,42 @@ function installPlugin(argv: string[]): void {
         `\nThen run \`aka init\` to set up the local store.\n`,
     );
     return;
+  }
+
+  // A host too old for some of the events AKA's manifest registers will DROP
+  // those entries and load the rest, so the plugin installs clean and a
+  // protection is silently missing. Say so before installing, and let the user
+  // decide — install is still the better default, because everything else AKA
+  // does works on an old host and refusing would trade all of it for one gap.
+  //
+  // Asking the binary is sound HERE and nowhere else: this install delegates to
+  // the `claude` resolved from PATH, so that is the install being changed.
+  if (cliBin === 'claude') {
+    const version = (deps.hostVersion ?? hostCliVersion)(cliBin);
+    const gaps = hostFloorGaps(version);
+    const required = requiredHostVersion(gaps);
+    if (version !== undefined && required !== undefined) {
+      const io = deps.prompter ?? terminalPrompter();
+      io.out(
+        `This ${cliBin} is ${version}, which is older than AKA needs for ` +
+          `${gaps.map((g) => g.label).join(', ')}.\n` +
+          `Those protections will be inactive until you update Claude Code to ` +
+          `${required} or newer. Everything else AKA does works normally.\n`,
+      );
+      // Ask only when there is somebody to answer AND they have not already
+      // said yes. Non-interactive (CI, a script) proceeds rather than hanging on
+      // a question nobody can answer — the warning above is still on the record.
+      if (io.isInteractive && deps.assumeYes !== true) {
+        const answer = (await io.ask('Install anyway? [y/N] ')).trim().toLowerCase();
+        if (answer !== 'y' && answer !== 'yes') {
+          io.out('Not installed. Update Claude Code, then run this again.\n');
+          // Non-zero, like every other abort here: `aka plugins install … && aka
+          // init` must not treat a decline as a successful install.
+          process.exitCode = 1;
+          return;
+        }
+      }
+    }
   }
 
   // Announce every command that is about to run, not just the host binary's

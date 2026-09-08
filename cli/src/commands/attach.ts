@@ -21,6 +21,7 @@ import {
   renderAttachedStatus,
   renderPolicyLine,
 } from '@akasecurity/plugin-runtime';
+import { hostCompatibilityLines, readHostVersionCache } from '@akasecurity/plugin-sdk';
 import { createAttachClient, createRemoteClient } from '@akasecurity/remote';
 import type { HistorySyncConsent, ManagedSettings } from '@akasecurity/schema';
 import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
@@ -701,6 +702,13 @@ export async function runStatus(argv: string[], deps: AttachDeps = {}): Promise<
   // Only for an attached machine: a standalone one has no policy to be current.
   const attached = !block.startsWith('AKA: standalone');
   io.out(attached ? `${block}\n${await renderPolicyLine(dataDir)}\n` : `${block}\n`);
+  // The host's own version, and which of AKA's protections it is too old for.
+  // This is one of the two surfaces carrying that detail: someone reading it has
+  // come looking, which is why it names protections where the in-session notice
+  // deliberately does not. Read from the cache a hook wrote, so it reports "last
+  // seen" rather than probing — `claude --version` would answer for the install
+  // on PATH, which need not be the one running any session.
+  io.out(`${hostCompatibilityLines(readHostVersionCache(dataDir)).join('\n')}\n`);
 }
 
 /**

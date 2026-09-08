@@ -360,7 +360,9 @@ async function offerPluginInstall(autoYes: boolean): Promise<void> {
       return;
     }
   }
-  await runPlugins(['install', 'claude-code']);
+  // `autoYes` carries through: the host-floor gate warns either way, but a user
+  // who passed `--yes` has already consented and must not be re-asked.
+  await runPlugins(['install', 'claude-code'], { assumeYes: autoYes });
 }
 
 async function confirm(question: string): Promise<boolean> {

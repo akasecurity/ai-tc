@@ -96,6 +96,26 @@ const ENDPOINTS: readonly TapTarget[] =
 // of the port, where a partial body can be rejected rather than half-parsed.
 const RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
 
+// What the tap will decode from a binary request body. A ceiling here rather
+// than at the reader, because the decode is synchronous and on the page's own
+// call path.
+const REQUEST_BODY_DECODE_MAX_BYTES = 1024 * 1024;
+
+// Whether `text` carries a C0 control character no text body would. Tab,
+// newline and carriage return are excluded because a text body does carry them.
+// Written as a scan rather than a regular expression: a literal spelling these
+// codepoints trips no-control-regex, and an inline disable for it would be one
+// more directive to inventory for no gain.
+function hasControlBytes(text: string): boolean {
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code > 0x1f) continue;
+    if (code === 0x09 || code === 0x0a || code === 0x0d) continue;
+    return true;
+  }
+  return false;
+}
+
 // How long the tap waits for a deferred request body before giving up on it.
 //
 // A deferred body is a promise over a clone of the page's own request stream,
@@ -289,6 +309,24 @@ export function installTap(win: Window, port: MessagePort, endpoints: readonly T
     return false;
   }
 
+  // Bytes as text, or null when they are not text. Valid UTF-8 is necessary and
+  // not sufficient: a run of NULs decodes without throwing, so a C0 control
+  // character other than tab, newline or carriage return is what separates a
+  // body worth parsing from an image or an archive. `fatal` is what makes the
+  // decode itself discriminate rather than substituting replacement characters.
+  function decodeTextBody(bytes: unknown): string | null {
+    if (decodeText === undefined) return null;
+    const size = (bytes as { byteLength: number }).byteLength;
+    if (size > REQUEST_BODY_DECODE_MAX_BYTES) return null;
+    let text: string;
+    try {
+      text = String(decodeText.call(new Decoder('utf-8', { fatal: true }), bytes));
+    } catch {
+      return null;
+    }
+    return hasControlBytes(text) ? null : text;
+  }
+
   function planBody(body: unknown): BodyPlan {
     if (body === undefined || body === null) return { kind: 'sync', body: null };
     if (typeof body === 'string') return { kind: 'sync', body };
@@ -300,15 +338,16 @@ export function installTap(win: Window, port: MessagePort, endpoints: readonly T
       // A ReadableStream body: reported, never read. It has one reader, and
       // taking it would empty the page's own request.
       if (typeof candidate.getReader === 'function') return { kind: 'unreadable' };
-      // An ArrayBuffer VIEW walks its entries this way too, yielding a NUMBER
-      // per index, so the branch below would render a whole body as
-      // `0=&1=&2=…` — meaningless data, forwarded as though it were the body,
-      // and an exchange opened on the strength of it. Observed on a real site.
-      // Refused here so a view behaves like the ArrayBuffer it is over: the
-      // closing `unreadable` already covers a raw buffer, and it is only the
-      // entries branch reaching a view first that made the two disagree.
+      // An ArrayBuffer, or a view over one, walks its entries yielding a NUMBER
+      // per index — so the branch below would render a whole body as
+      // `0=&1=&2=…`, forwarded as though it were the body. Decoded instead when
+      // the bytes are text: reading a buffer consumes nothing, so unlike a
+      // stream it costs the page's own request nothing, and a site that sends
+      // its turn as encoded JSON would otherwise have the whole exchange
+      // refused rather than observed.
       if (typeof (candidate as { byteLength?: unknown }).byteLength === 'number') {
-        return { kind: 'unreadable' };
+        const text = decodeTextBody(body);
+        return text === null ? { kind: 'unreadable' } : { kind: 'sync', body: text };
       }
       // URLSearchParams and FormData both walk their entries this way. A file
       // part contributes its field name and an empty value, never its bytes.

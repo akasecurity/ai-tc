@@ -458,9 +458,9 @@ jobs:
             turbo-${{ runner.os }}-
 
       - name: Test
-        # --concurrency: see the Test step in the lint job. This leg runs all 20
-        # packages on a hosted macOS runner and was one of the two that failed
-        # on rotating unrelated files.
+        # --concurrency: see the Test step in the lint job. This leg runs the
+        # whole workspace fan-out on a hosted macOS runner and was one of the two
+        # that failed on rotating unrelated files.
         run: pnpm turbo run test --continue --concurrency=2
 
       - name: Save Turbo cache
@@ -477,8 +477,10 @@ jobs:
   # THE FOUR PUBLISHED ARTIFACTS ARE THE FIRST FOUR FILTERS, and that is the one
   # part of this list with a rule behind it rather than a judgement. `cli`,
   # `ai-tc-claude-code`, `ai-tc-codex` and `ai-tc-antigravity` are every package
-  # in the workspace npm actually publishes — everything else here is
-  # `private: true` and reaches a user only inlined into one of those four. They
+  # in the workspace npm actually publishes — everything else here is either
+  # `private: true` and reaches a user only inlined into one of those four
+  # (`plugin-browser-extension`), or `private: true` and reaches no user at all
+  # yet (`ai-tc-copilot`, a scaffold with nothing built or published). They
   # are also the packages carrying the most platform-specific code (`open-url.ts`'s
   # `cmd /c start`, `prompter.ts`'s setRawMode, `dashboard.ts`'s spawn +
   # require.resolve, `external-dispatch.ts`'s POSIX-only guard, the plugins'
@@ -490,11 +492,14 @@ jobs:
   # matching no package, so a typo here fails the job rather than quietly
   # narrowing it.
   #
-  # `plugin-browser-extension` is the one filter entry that is `private: true`
-  # AND here on purpose, so the derived rule above cannot require it and a bare
-  # entry would be removable with nothing going red. It is pinned by name in
-  # required-checks.test.js the way `@akasecurity/eslint-config` below is, and
-  # for a reason of the same shape: its `test/native-host/scan-worker-bundle
+  # `plugin-browser-extension` and `ai-tc-copilot` are `private: true` AND here
+  # on purpose, so the derived rule above cannot require either and a bare
+  # entry would be removable with nothing going red. Both are pinned by name in
+  # required-checks.test.js the way `@akasecurity/eslint-config` below is, but
+  # for different reasons and on different timelines: `plugin-browser-extension`
+  # stays private permanently (it ships through the CLI, never npm) and its pin
+  # is a reason of the same shape as `@akasecurity/eslint-config`'s below —
+  # its `test/native-host/scan-worker-bundle
   # .e2e.test.ts` is the ONLY place `resolveWorkerUrl()` is exercised from the
   # built NATIVE HOST, and that resolver is `fileURLToPath` over a bundled
   # script's own URL — drive letters, UNC paths, the `file:///C:/…` round trip,
@@ -508,6 +513,11 @@ jobs:
   # `cli`'s extension suite covers the Windows INSTALL path already, and that is
   # a different property: installing the native host is not the same as the host
   # resolving its worker at runtime.
+  #
+  # `ai-tc-copilot`'s pin is TEMPORARY rather than permanent — see
+  # required-checks.test.js's own comment on that entry for why, so the
+  # rationale is not kept in two places. It drops out of this paragraph and
+  # into the derived set the moment Phase B unsets `private`.
   #
   # Whose `test` is deliberately NOT here: `ui-kit` (presentational, no I/O, and
   # no `test` script at all) and `audit-gate` (repo tooling, never shipped).
@@ -765,6 +775,7 @@ jobs:
           --filter=@akasecurity/ai-tc-claude-code
           --filter=@akasecurity/ai-tc-codex
           --filter=@akasecurity/ai-tc-antigravity
+          --filter=@akasecurity/ai-tc-copilot
           --filter=@akasecurity/schema
           --filter=@akasecurity/extract
           --filter=@akasecurity/detections
@@ -778,8 +789,8 @@ jobs:
           --filter=@akasecurity/eslint-config
           --filter=@akasecurity/plugin-browser-extension
 
-      # web-ui's suite runs in its OWN turbo invocation, AFTER the fourteen
-      # above rather than beside them, and the reason is a measured pairing
+      # web-ui's suite runs in its OWN turbo invocation, AFTER the shipped-surface
+      # filters above rather than beside them, and the reason is a measured pairing
       # rather than a hunch about load: `@akasecurity/persistence#test` and
       # `@akasecurity/web-ui#test` are the two heaviest fsync-bound suites in
       # the workspace, and under `--concurrency=2` they overlapped in nearly
@@ -865,7 +876,7 @@ jobs:
         run: pnpm turbo run test --concurrency=1 --filter=@akasecurity/web-ui --filter=@akasecurity/dashboard-ui
 
       # The installer suite runs in its OWN turbo invocation too, AFTER the
-      # fourteen above and the dashboard step, rather than beside any of them.
+      # filters above and the dashboard step, rather than beside any of them.
       # It is by far the most disk-expensive suite in the workspace on this
       # platform — it copies, zips and expands a real ~115 MB PE — and under
       # `--concurrency=2` it was therefore always running alongside one of the
@@ -892,7 +903,7 @@ jobs:
       # told about, so undeclared it would hash-match a cached run without it
       # and replay a green in which the case skipped. It sits on this step
       # alone rather than the whole job because this is the only package that
-      # reads it — the other fifteen were being hashed against a variable none
+      # reads it — the others were being hashed against a variable none
       # of them consults. That is also why web-ui is not folded into this
       # invocation, though both are single-package serial steps: it would put
       # this variable into web-ui#test's hash for no reason.
@@ -909,10 +920,9 @@ jobs:
           path: .turbo/cache
           key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
 
-  # Windows lint leg: every `lint` script in this workspace carries a GLOB — all
-  # twenty-two packages target `*.config.*`, and so does the repo-root
-  # `lint:root`, which is the twenty-third invocation rather than a
-  # twenty-third package —
+  # Windows lint leg: every `lint` script in this workspace carries a GLOB —
+  # they all target `*.config.*`, and so does the repo-root `lint:root`, which
+  # is one more invocation rather than one more package —
   # and WHO EXPANDS IT is decided by the platform, not by the script. On POSIX
   # the shell expands the pattern and hands eslint concrete filenames; `cmd.exe`
   # does not glob at all, so eslint receives the literal pattern and runs its
@@ -959,8 +969,8 @@ jobs:
   # affordable where a cold `test` would not be. Measured on THIS runner rather
   # than extrapolated (`gh run view 31536100993 --repo akasecurity/ai-tc`): the
   # Lint step 1m49s, the whole job 2m41s. The same `pnpm lint` at `Cached: 0` on
-  # an M-series Mac is 72s for all twenty packages plus 6.5s for lint:root and
-  # 0.6s for check:portability.
+  # an M-series Mac is 72s for the workspace fan-out (measured when it was twenty
+  # packages) plus 6.5s for lint:root and 0.6s for check:portability.
   #
   # So the ~10x factor the test leg above documents does NOT transfer to lint —
   # here it is about 1.5x. Size a lint budget off a lint measurement; the factor

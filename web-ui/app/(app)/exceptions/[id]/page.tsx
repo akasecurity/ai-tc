@@ -26,7 +26,7 @@ export default async function ExceptionDetailPage({ params }: { params: Promise<
   } catch (err) {
     if (err instanceof AmbiguousExceptionIdError) {
       return (
-        <div className="px-8 pb-10 pt-7 text-sm text-text-2">
+        <div className="p-6 text-sm text-text-2">
           The id prefix “{id}” matches more than one exception — use a longer prefix from the{' '}
           <Link href="/exceptions" className="text-primary underline">
             list
@@ -40,7 +40,7 @@ export default async function ExceptionDetailPage({ params }: { params: Promise<
   if (!exception) notFound();
 
   return (
-    <div className="px-8 pb-10 pt-7">
+    <div className="p-6">
       <div className="pb-4 text-xs">
         <Link href="/exceptions" className="text-text-3 hover:text-text-2">
           ← All exceptions

@@ -79,7 +79,13 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/detections': 98, //                 99.14
   '@akasecurity/scanner': 95, //                    96.80
   '@akasecurity/extract': 95, //                    96.61
-  '@akasecurity/persistence': 94, //                95.97
+  // 94, NOT 95: macOS reports 96.13 but WINDOWS reports 94.89, and the floor
+  // belongs to the platform that reads lowest. This package skips cases on
+  // Windows on cost (the WAL bound needs 20k separate commits), so its coverage
+  // there is structurally lower and always will be. Raising this to match a
+  // macOS reading fails the Windows leg with every test passing — the job dies
+  // on the threshold, which reads nothing like a coverage problem in the log.
+  '@akasecurity/persistence': 94, //                94.89 (win) / 96.13 (macOS)
   // The transport is small and driven end to end against a real loopback
   // server, so there is no seam left uncovered — the floor is high because the
   // package is one module of sending and one of routes, not because the bar was
@@ -90,7 +96,7 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/coverage-gate': 93, //              94.80
   '@akasecurity/plugin-sdk': 91, //                 92.62
   '@akasecurity/setup-wizard': 89, //               90.38
-  '@akasecurity/schema': 84, //                     85.59
+  '@akasecurity/schema': 88, //                     89.05
   '@akasecurity/portability-gate': 84, //           85.58
   // Both gates keep every DECISION in lib.ts behind an injected io seam — which
   // exit code, which message — so the suite drives all four exit paths without
@@ -105,11 +111,22 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/local-ops': 65, //                  66.75
   '@akasecurity/audit-gate': 61, //                 62.88
   '@akasecurity/ai-tc-antigravity': 59, //          60.96
+  '@akasecurity/ai-tc-copilot': 99, //              100 (placeholder only — RE-MEASURE when real source lands)
   '@akasecurity/ai-tc-codex': 58, //                59.78
   '@akasecurity/plugin-browser-extension': 57, //   58.02
   '@akasecurity/cli': 51, //                        52.66
-  '@akasecurity/dashboard-ui': 23, //               24.56
-  '@akasecurity/web-ui': 23, //                     24.04
+  // These two floors sit ~30 points under what their suites report, and the
+  // numbers beside them are the MEASUREMENTS, re-taken: the 24.56 and 24.04
+  // recorded here before were wrong by that whole margin, so the file was
+  // asserting something checkably false. Correcting the number without moving
+  // the floor is deliberate rather than lazy. Both readings are macOS/Node 24
+  // only, and the rule this table states is that a floor belongs to the
+  // platform that reads LOWEST — the persistence entry above is the worked
+  // example of getting that wrong. Raising these to 54 on one platform's
+  // reading is a one-line change for whoever has a Windows or Linux number to
+  // set it from; guessing at it fails that leg with every test passing.
+  '@akasecurity/dashboard-ui': 23, //               55.55 (macOS)
+  '@akasecurity/web-ui': 23, //                     56.78 (macOS)
   '@akasecurity/ui-kit': 1, //                       2.13
   // No instrumentable source, which is why this reads 0 rather than a measured
   // percentage. What this package ships is install.sh and install.ps1, which v8

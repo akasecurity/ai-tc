@@ -128,7 +128,7 @@ function matrixValues(source, key) {
 // boundary is `(?![\w:])` rather than `\b` because `:` is a NON-word character,
 // so `pnpm lint\b` also matches `pnpm lint:root` — and that is not a hypothetical
 // spelling, it is a script this repo really has. Swapping the step to it drops
-// `turbo run lint` (all twenty packages) and `check:portability`, leaving only
+// `turbo run lint` (every workspace package) and `check:portability`, leaving only
 // the repo-root pass, while every assertion below goes on passing. The negative
 // class deliberately excludes a SPACE, so an argument appended after the script
 // name still matches: that is what lets this double as the positive control for
@@ -792,6 +792,28 @@ describe('the Windows legs', () => {
     expect(suite).toMatch(/spawnSync\(process\.execPath, \[join\(HOST_DIR, HOST_SCRIPT\)\]/);
   });
 
+  // The third entry the derived check cannot reach, and the one whose exclusion
+  // is TEMPORARY. `plugins/copilot` is `private: true` only while it is a
+  // scaffold with no build and nothing to publish, so `private !== true` drops
+  // it from the derived set exactly as it drops the two above — and the filter
+  // line is then removable with nothing going red. Phase B unsets `private` and
+  // the derived check resumes covering this entry; until then this pin is the
+  // only thing carrying the Windows leg across that gap.
+  //
+  // Losing it silently is what makes it worth pinning rather than re-adding
+  // later: the plugin hosts differ most on Windows — PATHEXT resolution, the
+  // working directory searched ahead of PATH, and the shell re-parse the
+  // bare-command planner exists for — so a copilot hook landing without a
+  // Windows run is a gap nothing else here reports.
+  it('tests the copilot plugin, which is private only while it is a scaffold', () => {
+    const block = jobBlock(ci, 'windows');
+    expect(block).toMatch(/turbo run test/);
+    // `(?![\w-])` for the same reason as the two pins above: `\b` would also
+    // accept a rename to `--filter=@akasecurity/ai-tc-copilot-ide`, taking this
+    // package's Windows coverage away while this test stayed green.
+    expect(block).toMatch(/--filter=@akasecurity\/ai-tc-copilot(?![\w-])/);
+  });
+
   // A filter is only a filter while there is something to filter. `turbo run
   // test` with no --filter at all would satisfy the containment check above by
   // running everything, which is a different job with a different cost — and it
@@ -941,25 +963,27 @@ describe('the Windows legs', () => {
   // about the tree, so derive it rather than asserting it in a comment: a package
   // whose lint script drops `*.config.*` takes its root config files out of every
   // lint pass on every platform, and this job would stay green throughout —
-  // twenty-one other scripts still expand, so nothing here reddens.
+  // every other script still expands, so nothing here reddens.
   //
   // The count is pinned first for the usual reason: an empty list satisfies a
   // `for` loop over it without checking anything. It is a floor AND a ceiling, so
   // a package added without a lint script is caught by the same assertion.
   //
   // It is also the one number here that two branches can both raise to the SAME
-  // value for different reasons and merge clean: one adding a package and one
-  // adding another both write 21, git sees identical text, and the merged truth
-  // is 22. Re-derive it after a merge rather than trusting that it merged.
+  // value for different reasons and merge clean: from a base of N, one adding a
+  // package and one adding another both write N+1, git sees identical text, and
+  // the merged truth is N+2. Re-derive it after a merge rather than trusting
+  // that it merged. The shape is spelled here rather than the number, because a
+  // second copy of the count is the thing that goes stale.
   it('every lint script carries the glob this job exists to observe', () => {
     const scripts = workspaceLintScripts();
-    expect(scripts).toHaveLength(25);
+    expect(scripts).toHaveLength(26);
     for (const { dir, lintScript } of scripts) {
       expect(lintScript, `${dir} declares no lint script`).not.toBe('');
       expect(lintScript, `${dir}'s lint script targets no *.config.* glob`).toContain('*.config.*');
     }
-    // And the repo-root pass, which is the twenty-third invocation rather than a
-    // twenty-third package — it is the only one covering files no package owns.
+    // And the repo-root pass, which is one more invocation rather than one more
+    // package — it is the only one covering files no package owns.
     expect(rootScripts()['lint:root']).toContain('*.config.*');
   });
 });

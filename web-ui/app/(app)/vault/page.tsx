@@ -34,7 +34,7 @@ export default function VaultPage() {
   const renderedAt = renderInstant();
 
   return (
-    <div className="px-8 pb-10 pt-7">
+    <div className="p-6">
       <PageHead
         title="Vault"
         sub="Every value this machine holds, where its pointers have been written, and every de-reference. Reveals are audited."

@@ -110,7 +110,7 @@ export function ExceptionsClient({
   };
 
   return (
-    <div className="px-8 pb-10 pt-7">
+    <div className="p-6">
       <PageHead
         title="Exceptions"
         sub="Explicit, audited bypasses — one exact value each, never a rule-wide suppression"

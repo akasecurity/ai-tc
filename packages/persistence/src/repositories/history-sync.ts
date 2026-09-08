@@ -736,21 +736,29 @@ export class SqliteHistorySyncRepository {
    *
    * `backfillCapturesBefore` is the caller's OWN "now" at the instant a human
    * granted existing-history consent for the deployment this call is arming —
-   * the same instant `backlogBefore` freezes — passed only when that grant is
-   * valid, since this method has no way to check consent itself and must not
-   * mark a row owed for a machine that never agreed to it. Applied AFTER the
-   * disown above, in the SAME transaction: what the disown clears is a marker
-   * a DIFFERENT deployment's forward left, never this one's own grant, so the
-   * two cannot race and a crash between them cannot strand the ledger disowned
-   * with nothing re-marked — the transaction either lands whole or not at all,
-   * and a fingerprint mismatch that has not yet committed re-enters this
-   * method on the very next pass. Omit it (the structural-only tests do) to
-   * exercise the disown in isolation.
+   * a DIFFERENT instant from `backlogBefore`: the re-mark boundary is the GRANT
+   * instant, `backlogBefore` is the ATTACH instant, and the two can be far
+   * apart. Passed only when that grant is valid, since this method has no way
+   * to check consent itself and must not mark a row owed for a machine that
+   * never agreed to it. Applied AFTER the disown above, in the SAME
+   * transaction: what the disown clears is every marker below `backlogBefore`,
+   * which includes this deployment's OWN pre-attach rows — `aka attach` calls
+   * `seedCaptureBacklogOwed` at the attach instant, so every row it marks sits
+   * on the cleared side of that bound — and the re-mark in the same
+   * transaction is what puts those rows back. A crash between the two cannot
+   * strand the ledger disowned with nothing re-marked — the transaction either
+   * lands whole or not at all, and a fingerprint mismatch that has not yet
+   * committed re-enters this method on the very next pass. Omit it (the
+   * structural-only tests do) to exercise the disown in isolation.
    *
-   * The disown is bounded by `backlogBefore` too, which is what keeps it from
-   * eating this same call's own re-mark: a marker the NEW deployment's live
-   * path has already set, on a row recorded after the switch, sits on the
-   * surviving side of that bound rather than the cleared one.
+   * The disown is bounded by `backlogBefore`, which is what keeps it from
+   * touching a marker the NEW deployment's OWN live path has already set: B's
+   * live path can mark a capture owed from the moment `aka attach` writes the
+   * descriptor, before the drain's first pass ever reaches this method, and
+   * such a row sits at or after the bound rather than below it. What keeps the
+   * disown from eating THIS SAME CALL's own re-mark is the order, not the
+   * bound — disown runs first, re-mark second, both inside the one
+   * transaction above.
    */
   rearmFor(fingerprint: string, backlogBefore: number, backfillCapturesBefore?: number): void {
     this.ensureRowStmt.run();

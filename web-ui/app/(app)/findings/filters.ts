@@ -6,11 +6,12 @@ import {
 } from '@akasecurity/dashboard-ui';
 import {
   FindingAction,
+  type FindingLocationSummary,
   FindingProvider,
   FindingStatus,
   type ListFindingInstancesQuery,
   type ListFindingLocationsQuery,
-  type ListGroupedFindingsQuery,
+  type ListFindingTypesQuery,
   Severity,
   TimeRange,
 } from '@akasecurity/schema';
@@ -109,34 +110,108 @@ export function parseRange(sp: FindingsSearchParams): TimeRange | null {
   return parsed.success ? parsed.data : null;
 }
 
-/** The finding (group or instance) id the detail sheet opens on (?finding=…). */
+/** The finding (type or instance) id the detail sheet opens on (?finding=…). */
 export function parseSelectedFinding(sp: FindingsSearchParams): string {
   return typeof sp.finding === 'string' ? sp.finding.trim() : '';
 }
 
 /**
- * Filters + search → the persistence grouped-findings query. The filter arrays
- * carry validated enum values (the toolbar only emits facet/severity values, and
- * parseFindingsFilters drops unknown URL values), so the casts to the schema
- * enums are safe.
+ * The selected finding type (?rule=…), or '' when none is pinned.
+ *
+ * A SELECTION, not a filter: it decides which findings the detail panel reads
+ * and touches neither the type list's totals nor its facets. It is also
+ * DURABLE where `?finding=` is one-shot — buildFindingsParams rewrites it on
+ * every push, because a reader clicking a filter must not lose the type they
+ * were reading.
+ *
+ * Deliberately not `?type=`, which is already the subtype FILTER above and
+ * carries repeated values.
  */
-export function toGroupedQuery(
+export function parseSelectedRule(sp: FindingsSearchParams): string {
+  return typeof sp.rule === 'string' ? sp.rule.trim() : '';
+}
+
+/**
+ * The selected location (?loc=…), or '' when none is pinned.
+ *
+ * A SELECTION, not a filter — the same distinction parseSelectedRule draws, and
+ * for the same reason: it decides which findings the detail panel reads and
+ * touches neither the location list's totals nor its facets. It is DURABLE too,
+ * rewritten on every push, so a reader clicking a filter keeps the location they
+ * were reading.
+ *
+ * Deliberately its own param rather than the `?repo=`/`?file=` pair, which is
+ * the FLAT view's scope filter. One name doing both jobs would mean a selection
+ * that narrows the very list it is selecting from — the list would collapse to
+ * the single row just picked, which is why toLocationsQuery omits the pair
+ * outright. Exactly the `?rule=` versus `?type=` split, one view over.
+ *
+ * The value is opaque and stays that way here: the page resolves it by matching
+ * it against the ids the store minted, so nothing in the browser decodes it.
+ */
+export function parseSelectedLocation(sp: FindingsSearchParams): string {
+  return typeof sp.loc === 'string' ? sp.loc.trim() : '';
+}
+
+/**
+ * Filters + search → the persistence finding-TYPES query.
+ *
+ * Only the two TYPE-level dimensions reach it, and that split is the design
+ * rather than an omission:
+ *
+ *   - **severity** is a property of the RULE (every finding of one type shares
+ *     it), so it selects types.
+ *   - **q** searches the type list — its name, category and the store's
+ *     whole-type repo/file text.
+ *
+ * `provider`, `action` and `status` vary BETWEEN the findings of one type, so
+ * they narrow the findings panel instead (see toTypeInstancesQuery). Passing
+ * them here as well would drop a type out of the list the moment a reader
+ * toggled one, taking their selection with it.
+ *
+ * `tool`, `repo` and `file` are not carried either: they are per-instance and
+ * this view does not surface them, which the view toggle states rather than
+ * hides.
+ *
+ * The filter arrays carry validated enum values (parseFindingsFilters drops
+ * unknown URL values), so the cast to the schema enum is safe.
+ */
+export function toFindingTypesQuery(
   filters: FindingsFilters,
   q: string,
   session = '',
   scope: FindingsScope = {},
-): ListGroupedFindingsQuery {
+): ListFindingTypesQuery {
   const trimmed = q.trim();
-  // `tool`, `repo` and `file` are deliberately NOT carried: they are
-  // per-instance filters, and a group spans instances. Switching to the
-  // grouped view drops them, which the view toggle states rather than hides.
   return {
     ...(filters.severity.length ? { severity: filters.severity as Severity[] } : {}),
-    ...(filters.type.length ? { subtype: filters.type } : {}),
+    ...(trimmed ? { q: trimmed } : {}),
+    ...(session ? { sessionId: session } : {}),
+    ...(scope.from ? { from: scope.from } : {}),
+  };
+}
+
+/**
+ * The findings panel's query: every finding of ONE type, narrowed by the
+ * FINDING-level filter dimensions.
+ *
+ * The complement of toFindingTypesQuery — `severity` is deliberately absent
+ * (constant within a type, so it would filter every row or none) and so is `q`
+ * (it selects types; see that function). What remains is the pinned type plus
+ * the three dimensions that genuinely vary between one type's findings, so this
+ * panel can legitimately come back empty, which the view says rather than hides.
+ */
+export function toTypeInstancesQuery(
+  filters: FindingsFilters,
+  rule: string,
+  session = '',
+  scope: FindingsScope = {},
+): ListFindingInstancesQuery {
+  return {
+    subtype: [rule],
     ...(filters.provider.length ? { provider: filters.provider as FindingProvider[] } : {}),
     ...(filters.action.length ? { action: filters.action as FindingAction[] } : {}),
     ...(filters.status.length ? { status: filters.status as FindingStatus[] } : {}),
-    ...(trimmed ? { q: trimmed } : {}),
     ...(session ? { sessionId: session } : {}),
     ...(scope.from ? { from: scope.from } : {}),
   };
@@ -177,9 +252,17 @@ export function toInstancesQuery(
 }
 
 /**
- * Filters + search → the locations query. `repo`/`file` are absent by design:
- * this view IS the repo/file breakdown, so narrowing it to one would leave a
- * tree of exactly one node.
+ * Filters + search → the locations query.
+ *
+ * EVERY toolbar dimension reaches it, unlike toFindingTypesQuery, which takes
+ * only the two that select types. Nothing here is a property of a location: its
+ * severity, status, rules, count and age are each a fold over the findings that
+ * landed in it, so a dimension held back from this read would leave the row
+ * describing findings the panel beside it does not list.
+ *
+ * `repo`/`file` are absent by design, and that is not the same omission: this
+ * view IS the repo/file breakdown, so narrowing it to one would leave a list of
+ * exactly one row. They reach the PANEL instead — see toLocationInstancesQuery.
  */
 export function toLocationsQuery(
   filters: FindingsFilters,
@@ -202,6 +285,39 @@ export function toLocationsQuery(
 }
 
 /**
+ * The locations panel's query: every finding AT one location, under the same
+ * filters the list itself ran.
+ *
+ * Built by SPREADING the list query rather than restating its fields, which is
+ * what makes the page's central invariant structural: a location row's
+ * `instanceCount` is what this read reports, so the two cannot drift by someone
+ * adding a dimension to one and not the other. The complement of
+ * toTypeInstancesQuery, which narrows a type's findings — but where that one
+ * drops the dimensions the type list already applied, this one keeps every
+ * single one. A location owns none of its fields, so every filter moves the fold
+ * on the row, and a dimension applied to only one side would put a row reading
+ * 12 findings beside a panel showing 3.
+ *
+ * `repo` and `file` are set UNGUARDED, empty string included. That is the whole
+ * mechanism behind selecting the no-repo/no-file bucket: omitting an empty value
+ * — which every other builder here does, correctly, for scope params — would ask
+ * for every finding in the store instead of the one location's.
+ */
+export function toLocationInstancesQuery(
+  filters: FindingsFilters,
+  q: string,
+  location: Pick<FindingLocationSummary, 'repo' | 'file'>,
+  session = '',
+  scope: FindingsScope = {},
+): ListFindingInstancesQuery {
+  return {
+    ...toLocationsQuery(filters, q, session, scope),
+    repo: location.repo,
+    file: location.file,
+  };
+}
+
+/**
  * The toolbar's filters + search → a URLSearchParams (repeated keys per value).
  * The session scope rides along so filter/search changes keep the deep-link
  * context; the `finding` selection param is deliberately NOT rebuilt here — it
@@ -214,8 +330,17 @@ export function buildFindingsParams(
   url: FindingsUrlState = {},
 ): URLSearchParams {
   const sp = new URLSearchParams();
+  // `view` is undefined for the default (grouped) view.
+  const view = url.view ?? DEFAULT_FINDINGS_VIEW;
   for (const s of filters.severity) sp.append('severity', s);
-  for (const t of filters.type) sp.append('type', t);
+  // The subtype filter exists only where a view offers it. Under `grouped` the
+  // left panel IS the type selector, so neither read carries `subtype` — writing
+  // it there would leave a param the page silently ignores, which survives into
+  // a shared link and reads as a filter that stopped working. Same reasoning as
+  // `rule` and the tool/repo/file trio below.
+  if (view !== 'grouped') {
+    for (const t of filters.type) sp.append('type', t);
+  }
   for (const p of filters.provider) sp.append('provider', p);
   for (const a of filters.action) sp.append('action', a);
   for (const s of filters.status) sp.append('status', s);
@@ -225,6 +350,15 @@ export function buildFindingsParams(
 
   // The default view writes no param, so the plain findings URL stays clean.
   if (url.view && url.view !== DEFAULT_FINDINGS_VIEW) sp.set('view', url.view);
+  // The selected type belongs to the master/detail view and nowhere else:
+  // written under any other view it would be a param the page silently ignores,
+  // which survives into a shared link and reads as a selection that stopped
+  // working. `view` is undefined for the default (grouped) view.
+  if (view === 'grouped' && url.rule) sp.set('rule', url.rule);
+  // The selected LOCATION, and only where a panel reads it — same reasoning as
+  // `rule` above. Written under `files` alone, so it cannot survive into a
+  // shared link for a view that would ignore it.
+  if (view === 'files' && url.loc) sp.set('loc', url.loc);
   if (url.range) sp.set('range', url.range);
   // The instance-level filters exist only where a view can honor them. Writing
   // them under `grouped` would leave a param the page silently ignores, which
@@ -242,6 +376,10 @@ export function buildFindingsParams(
 /** The URL state beyond the toolbar filters, search and session scope. */
 export interface FindingsUrlState {
   view?: FindingsView | undefined;
+  /** The selected finding type — see parseSelectedRule. Grouped view only. */
+  rule?: string | undefined;
+  /** The selected location — see parseSelectedLocation. Locations view only. */
+  loc?: string | undefined;
   range?: TimeRange | null | undefined;
   tools?: string[] | undefined;
   repo?: string | undefined;

@@ -1,0 +1,30 @@
+{
+  "name": "@akasecurity/ai-tc-copilot",
+  "version": "0.9.9",
+  "description": "AI Traffic Control — inspect and govern AI prompts in GitHub Copilot",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akasecurity/ai-tc.git",
+    "directory": "plugins/copilot"
+  },
+  "homepage": "https://github.com/akasecurity/ai-tc/tree/main/plugins/copilot",
+  "scripts": {
+    "lint": "eslint src test *.config.*",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@akasecurity/eslint-config": "workspace:*",
+    "@akasecurity/plugin-runtime": "workspace:*",
+    "@akasecurity/plugin-sdk": "workspace:*",
+    "@akasecurity/schema": "workspace:*",
+    "@types/node": "^24.13.3",
+    "@vitest/coverage-v8": "^4.1.11",
+    "eslint": "^9.39.5",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.11"
+  }
+}

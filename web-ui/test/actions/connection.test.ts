@@ -52,6 +52,18 @@ vi.mock('node:os', async (importActual) => {
 });
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 
+// Stubbed rather than left to the real default: on a real macOS runner the
+// unmocked function shells out to launchctl and touches ~/Library/LaunchAgents,
+// which is not a side effect any case in this file should have. Its own
+// behaviour is covered by @akasecurity/local-ops's background-schedule suite.
+const backgroundSync = vi.hoisted(() => ({ uninstallCalls: [] as string[] }));
+vi.mock('@akasecurity/local-ops', async (importActual) => ({
+  ...(await importActual()),
+  uninstallBackgroundSync: (base: string) => {
+    backgroundSync.uninstallCalls.push(base);
+  },
+}));
+
 // The transport, stubbed. Attach now VERIFIES the key before it writes anything,
 // and the no-network guard would refuse the real socket — so every case below
 // decides here whether the deployment accepted the credential. `calls` records
@@ -124,6 +136,7 @@ beforeEach(() => {
   whoami.calls = [];
   writeFailure.error = null;
   writeFailure.onCall = null;
+  backgroundSync.uninstallCalls = [];
 });
 
 afterEach(() => {
@@ -429,6 +442,17 @@ describe('detachFromControlPlane', () => {
     const res = await detachFromControlPlane();
     expect(res).toEqual({ ok: true });
     expect(isAttached(readWorkspaceSettings())).toBe(false);
+  });
+
+  it('uninstalls the background-sync LaunchAgent too, not just the CLI half', async () => {
+    // Regression: a machine attached from the CLI and detached from HERE used
+    // to leave the LaunchAgent behind — this surface knew nothing about it —
+    // so it went on re-invoking `aka sync-history --run` every 30 minutes,
+    // across reboots, against a deployment this machine no longer talks to.
+    await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY });
+    await detachFromControlPlane();
+
+    expect(backgroundSync.uninstallCalls).toEqual([join(home, '.aka')]);
   });
 
   it('leaves unrelated settings alone', async () => {

@@ -55,6 +55,7 @@ function harness(
     // notices.
     endpoints: [],
     requiredPaths: { request: [], response: [] },
+    protocolTokens: [],
     parseRequest: () => ({ requiredPathsSeen: false }),
     parseStream: () => ({ push: () => undefined, end: () => null }),
     watchSubmit: () => () => undefined,

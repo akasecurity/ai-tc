@@ -80,6 +80,9 @@ export const chatgptAdapter: ProviderAdapter = {
   // traffic, or none.
   endpoints: [],
   requiredPaths: { request: [], response: [] },
+  // No endpoint is declared above, so there is nothing for a parser to switch
+  // on yet — an empty array is the honest state until one is.
+  protocolTokens: [],
   parseRequest: () => ({ requiredPathsSeen: false }),
   parseStream: () => ({ push: () => undefined, end: () => null }),
 };

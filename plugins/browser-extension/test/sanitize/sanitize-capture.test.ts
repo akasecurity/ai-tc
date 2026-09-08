@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { SimpleValueClass } from '../../src/sanitize/classify.ts';
 import { classifyString } from '../../src/sanitize/classify.ts';
+import { createDetector } from '../../src/sanitize/detector.ts';
 import type { SanitizeInput, SanitizeResult } from '../../src/sanitize/sanitize-capture.ts';
 import {
   findResidueRun,
@@ -37,6 +38,7 @@ function baseInput(overrides: Partial<SanitizeInput> = {}): SanitizeInput {
     allowedHosts: ['chatgpt.com'],
     approvedKeys: new Set(),
     approvedValues: new Set(),
+    protocolTokens: new Set(),
     detect: () => [],
     ...overrides,
   };
@@ -596,7 +598,7 @@ describe('contract', () => {
         't',
         result.fixture,
         { keys: new Set(), values: new Set(['backend-api', 'conversation']) },
-        { allowedHosts: ['chatgpt.com'], detect: () => [] },
+        { allowedHosts: ['chatgpt.com'], detect: () => [], protocolTokens: new Set() },
       );
     }).not.toThrow();
   });
@@ -625,7 +627,7 @@ describe('contract', () => {
         't',
         result.fixture,
         { keys: new Set(['v']), values: new Set() },
-        { allowedHosts: ['chatgpt.com'], detect: () => [] },
+        { allowedHosts: ['chatgpt.com'], detect: () => [], protocolTokens: new Set() },
       );
     }).not.toThrow();
     expectNoEchoOf(result.text, RAW);
@@ -660,6 +662,24 @@ describe('contract', () => {
       allowedHosts: [],
       approvedKeys: new Set(),
       approvedValues: new Set(),
+      protocolTokens: new Set(),
+    };
+    expect(input).toBeDefined();
+  });
+
+  it('P10: protocolTokens has no default — omitting it is a compile-time error', () => {
+    // @ts-expect-error protocolTokens has no default; omitting it must fail to typecheck
+    const input: SanitizeInput = {
+      raw: '{}',
+      url: 'https://chatgpt.com/x',
+      site: 'chatgpt',
+      kind: 'conversation',
+      direction: 'request',
+      format: 'json',
+      allowedHosts: [],
+      approvedKeys: new Set(),
+      approvedValues: new Set(),
+      detect: () => [],
     };
     expect(input).toBeDefined();
   });
@@ -929,5 +949,411 @@ describe('the small-scalar carve-outs are reported', () => {
     expect(result.report.smallIntegersKept).toBe(4);
     expect(result.report.booleansKept).toBe(3);
     expect(result.report.replaced['numeric-string']).toBe(0);
+  });
+});
+
+// A declared protocol token is a value an ADAPTER — not an operator's
+// approvals file — names as one its parser switches on. See
+// src/sanitize/classify.ts's isDeclarableToken for the bound and
+// src/providers/types.ts's ProviderAdapter.protocolTokens for where it is
+// declared. These cases drive the mechanism directly, bypassing the adapter
+// registry entirely.
+describe('declared protocol tokens', () => {
+  it('P1: a declared protocol token survives verbatim and is reported as declared', () => {
+    const token = 'content_block_delta'; // base64ish-classed, 19 chars
+    const raw = JSON.stringify({ type: token });
+    const result = sanitizeCapture(
+      baseInput({
+        raw,
+        approvedKeys: new Set(['type']),
+        protocolTokens: new Set([token]),
+      }),
+    );
+    assertOk(result);
+    const out = JSON.parse(firstChunk(result)) as { type: string };
+    expect(out.type).toBe(token);
+    expect(result.report.preservedDeclaredTokens).toEqual([token]);
+  });
+
+  it('P2 (positive control for P1): the identical input with no declaration is replaced', () => {
+    const token = 'content_block_delta';
+    const raw = JSON.stringify({ type: token });
+    const result = sanitizeCapture(
+      baseInput({ raw, approvedKeys: new Set(['type']), protocolTokens: new Set() }),
+    );
+    assertOk(result);
+    const out = JSON.parse(firstChunk(result)) as { type: string };
+    expect(out.type).not.toBe(token);
+    // base64ish surrogate: same length, no trailing '=' to preserve.
+    expect(out.type.length).toBe(token.length);
+    expect(/^[A-Za-z0-9]+$/.test(out.type)).toBe(true);
+    expect(result.report.preservedDeclaredTokens).toEqual([]);
+  });
+
+  it('P3: the failed entropy-heuristic values are still refused when NOT declared', () => {
+    // Every one of these clears the abandoned per-word-entropy fix that was
+    // tried and reverted — see this repo's own design notes on why entropy
+    // cannot separate a protocol token from a passphrase. None is declared
+    // here, so this pins that the ordinary (unmodified) preservation path
+    // still refuses all four.
+    const values = [
+      // rules/secrets/stripe-live-key.json's own example, lowercased and with
+      // its run broken by an underscore so the rule's live pattern (an
+      // unbroken 24-40 char alnum run) does not fire — the exact shape the
+      // abandoned fix would have let through.
+      'sk_live_abcdefghijkl_mnopqrstuvwx',
+      'correct-horse-battery-staple',
+      'christopher.wetherington',
+      'my-secret-passphrase',
+    ];
+    for (const value of values) {
+      const raw = JSON.stringify({ a: value });
+      const result = sanitizeCapture(baseInput({ raw, approvedKeys: new Set(['a']) }));
+      assertOk(result);
+      const out = JSON.parse(firstChunk(result)) as { a: string };
+      expect(out.a, value).not.toBe(value);
+      expectNoEchoOf(result.text, value);
+    }
+  });
+
+  it('P4: the detector still gates a declaration', () => {
+    // Verbatim from rules/secrets/stripe-live-key.json's own `examples` —
+    // never hand-write a credential-shaped literal in this repo.
+    const token = 'pk_live_wDlmi91dAAKCRu1JBy89Xaq3RZ';
+    const raw = JSON.stringify({ credential: token });
+    const result = sanitizeCapture(
+      baseInput({
+        raw,
+        approvedKeys: new Set(['credential']),
+        protocolTokens: new Set([token]),
+        detect: createDetector(),
+      }),
+    );
+    assertOk(result);
+    const out = JSON.parse(firstChunk(result)) as { credential: string };
+    expect(out.credential).not.toBe(token);
+    expect(result.report.preservedDeclaredTokens).toEqual([]);
+    expect(result.report.flaggedDeclaredTokens.length).toBe(1);
+    expect(result.report.flaggedDeclaredTokens[0]?.ruleIds).toContain('secrets/stripe-live-key');
+    expectNoEchoOf(result.text, token);
+  });
+
+  it('P5: a longer string containing a declared token is replaced, on every surface, with an exact-match control beside it', () => {
+    const token = 'completion'; // vocabulary-classed, 10 chars
+    const longer = `${token}XY`;
+    const protocolTokens = new Set([token]);
+
+    // body value
+    {
+      const exact = sanitizeCapture(
+        baseInput({
+          raw: JSON.stringify({ a: token }),
+          approvedKeys: new Set(['a']),
+          protocolTokens,
+        }),
+      );
+      assertOk(exact);
+      expect((JSON.parse(firstChunk(exact)) as { a: string }).a).toBe(token);
+
+      const wider = sanitizeCapture(
+        baseInput({
+          raw: JSON.stringify({ a: longer }),
+          approvedKeys: new Set(['a']),
+          protocolTokens,
+        }),
+      );
+      assertOk(wider);
+      expect((JSON.parse(firstChunk(wider)) as { a: string }).a).not.toBe(longer);
+    }
+
+    // body value, prefixed
+    {
+      const prefixed = `x${token}`;
+      const result = sanitizeCapture(
+        baseInput({
+          raw: JSON.stringify({ a: prefixed }),
+          approvedKeys: new Set(['a']),
+          protocolTokens,
+        }),
+      );
+      assertOk(result);
+      expect((JSON.parse(firstChunk(result)) as { a: string }).a).not.toBe(prefixed);
+    }
+
+    // prose leaf
+    {
+      const prose =
+        `some long prose text mentioning the word ${token} in the middle of a sentence ` +
+        `that is far too long to be a vocabulary candidate on its own`;
+      const result = sanitizeCapture(
+        baseInput({
+          raw: JSON.stringify({ a: prose }),
+          approvedKeys: new Set(['a']),
+          protocolTokens,
+        }),
+      );
+      assertOk(result);
+      const out = (JSON.parse(firstChunk(result)) as { a: string }).a;
+      expect(out).not.toBe(prose);
+      expect(out).toMatch(/^TEXT_\d+$/);
+    }
+
+    // nested-JSON string leaf
+    {
+      const exactNested = sanitizeCapture(
+        baseInput({
+          raw: JSON.stringify({ payload: JSON.stringify({ t: token }) }),
+          approvedKeys: new Set(['payload', 't']),
+          protocolTokens,
+        }),
+      );
+      assertOk(exactNested);
+      const outer = JSON.parse(firstChunk(exactNested)) as { payload: string };
+      expect((JSON.parse(outer.payload) as { t: string }).t).toBe(token);
+
+      const widerNested = sanitizeCapture(
+        baseInput({
+          raw: JSON.stringify({ payload: JSON.stringify({ t: `u: ${longer}` }) }),
+          approvedKeys: new Set(['payload', 't']),
+          protocolTokens,
+        }),
+      );
+      assertOk(widerNested);
+      const widerOuter = JSON.parse(firstChunk(widerNested)) as { payload: string };
+      expect((JSON.parse(widerOuter.payload) as { t: string }).t).not.toBe(`u: ${longer}`);
+    }
+
+    // URL path segment
+    {
+      const exact = sanitizeCapture(
+        baseInput({ url: `https://chatgpt.com/api/${token}/z`, protocolTokens }),
+      );
+      assertOk(exact);
+      const segs = new URL(exact.fixture.url).pathname.split('/');
+      expect(segs).toContain(token);
+
+      const wider = sanitizeCapture(
+        baseInput({ url: `https://chatgpt.com/api/${longer}/z`, protocolTokens }),
+      );
+      assertOk(wider);
+      const widerSegs = new URL(wider.fixture.url).pathname.split('/');
+      expect(widerSegs).not.toContain(longer);
+    }
+
+    // URL query value (the query KEY is approved so this isolates the VALUE)
+    {
+      const exact = sanitizeCapture(
+        baseInput({
+          url: `https://chatgpt.com/x?a=${token}`,
+          approvedKeys: new Set(['a']),
+          protocolTokens,
+        }),
+      );
+      assertOk(exact);
+      expect(new URL(exact.fixture.url).searchParams.get('a')).toBe(token);
+
+      const wider = sanitizeCapture(
+        baseInput({
+          url: `https://chatgpt.com/x?a=${longer}`,
+          approvedKeys: new Set(['a']),
+          protocolTokens,
+        }),
+      );
+      assertOk(wider);
+      expect(new URL(wider.fixture.url).searchParams.get('a')).not.toBe(longer);
+    }
+
+    // URL fragment
+    {
+      const exact = sanitizeCapture(
+        baseInput({ url: `https://chatgpt.com/x#${token}`, protocolTokens }),
+      );
+      assertOk(exact);
+      expect(new URL(exact.fixture.url).hash).toBe(`#${token}`);
+    }
+
+    // SSE `event:` line
+    {
+      const exact = sanitizeCapture(
+        baseInput({
+          raw: `event: ${token}\ndata: {"a":1}\n\n`,
+          format: 'sse',
+          direction: 'response',
+          approvedKeys: new Set(['a']),
+          protocolTokens,
+        }),
+      );
+      assertOk(exact);
+      expect(exact.fixture.chunks[0]).toContain(`event: ${token}`);
+
+      const wider = sanitizeCapture(
+        baseInput({
+          raw: `event: ${longer}\ndata: {"a":1}\n\n`,
+          format: 'sse',
+          direction: 'response',
+          approvedKeys: new Set(['a']),
+          protocolTokens,
+        }),
+      );
+      assertOk(wider);
+      expect(wider.fixture.chunks[0]).not.toContain(`event: ${longer}`);
+    }
+  });
+
+  describe('the use-site re-check does not trust a hostile protocolTokens set', () => {
+    function alnumRun(length: number): string {
+      const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+      return Array.from({ length }, (_, i) => alphabet[i % alphabet.length]).join('');
+    }
+
+    it('P6a: a 41-character run bypassing assertDeclarableTokens is still replaced', () => {
+      const run = alnumRun(41);
+      const result = sanitizeCapture(
+        baseInput({
+          raw: JSON.stringify({ a: run }),
+          approvedKeys: new Set(['a']),
+          protocolTokens: new Set([run]),
+        }),
+      );
+      assertOk(result);
+      expect((JSON.parse(firstChunk(result)) as { a: string }).a).not.toBe(run);
+    });
+
+    it('P6b: a whitespace-bearing string bypassing assertDeclarableTokens is still replaced', () => {
+      const token = 'protocol token';
+      const result = sanitizeCapture(
+        baseInput({
+          raw: JSON.stringify({ a: token }),
+          approvedKeys: new Set(['a']),
+          protocolTokens: new Set([token]),
+        }),
+      );
+      assertOk(result);
+      expect((JSON.parse(firstChunk(result)) as { a: string }).a).not.toBe(token);
+    });
+
+    it('P6c: a uuid bypassing assertDeclarableTokens is still replaced', () => {
+      const uuid = '123e4567-e89b-12d3-a456-426614174000';
+      const result = sanitizeCapture(
+        baseInput({
+          raw: JSON.stringify({ a: uuid }),
+          approvedKeys: new Set(['a']),
+          protocolTokens: new Set([uuid]),
+        }),
+      );
+      assertOk(result);
+      const out = (JSON.parse(firstChunk(result)) as { a: string }).a;
+      expect(out).not.toBe(uuid);
+      expect(out).toMatch(/^00000000-0000-4000-8000-\d{12}$/);
+    });
+
+    it('P6d: a url bypassing assertDeclarableTokens is still decomposed by sanitizeUrl', () => {
+      const evilUrl = 'https://evil.example/secret-path';
+      const result = sanitizeCapture(
+        baseInput({
+          raw: JSON.stringify({ a: evilUrl }),
+          approvedKeys: new Set(['a']),
+          allowedHosts: ['chatgpt.com'],
+          protocolTokens: new Set([evilUrl]),
+        }),
+      );
+      assertOk(result);
+      const out = (JSON.parse(firstChunk(result)) as { a: string }).a;
+      expect(out).not.toBe(evilUrl);
+      expect(out.startsWith('https://host-')).toBe(true);
+    });
+  });
+
+  it('P7a: a declared token preserved as a VALUE and replaced as an unapproved KEY does not over-refuse', () => {
+    const token = 'content_block_delta';
+    const raw = JSON.stringify({ [token]: 'irrelevant', kind_field: token });
+    const result = sanitizeCapture(
+      baseInput({
+        raw,
+        approvedKeys: new Set(['kind_field']),
+        protocolTokens: new Set([token]),
+      }),
+    );
+    assertOk(result);
+  });
+
+  it('P7b: a declared token preserved as a value, and occurring inside a separately-replaced prose leaf, does not over-refuse', () => {
+    const token = 'content_block_delta';
+    const prose =
+      `the stream carries a ${token} event somewhere in the middle of this ` +
+      `sentence, which runs on long enough not to be a vocabulary candidate itself`;
+    const raw = JSON.stringify({ kind_field: token, note: prose });
+    const result = sanitizeCapture(
+      baseInput({
+        raw,
+        approvedKeys: new Set(['kind_field', 'note']),
+        protocolTokens: new Set([token]),
+      }),
+    );
+    assertOk(result);
+  });
+
+  it('P8: a declared token is not blanked from the final whole-document scan', () => {
+    const token = 'content_block_delta';
+    let sawFinalScan = false;
+    const raw = JSON.stringify({ kind_field: token });
+    const result = sanitizeCapture(
+      baseInput({
+        raw,
+        approvedKeys: new Set(['kind_field']),
+        protocolTokens: new Set([token]),
+        detect: (text) => {
+          // The per-value scan for the declared token itself calls detect
+          // with EXACTLY the token; only the final whole-document backstop
+          // calls it with the much longer assembled fixture text.
+          if (text.length > token.length && text.includes(token)) {
+            sawFinalScan = true;
+            return ['fake-rule'];
+          }
+          return [];
+        },
+      }),
+    );
+    assertRefused(result);
+    expect(result.refusal).toBe('residue-detected');
+    expect(sawFinalScan).toBe(true);
+  });
+
+  it('P9: the report keeps a declared preservation and an approved one in separate lists', () => {
+    const declaredToken = 'content_block_delta';
+    const approvedValue = 'gpt-4o';
+    const raw = JSON.stringify({ a: declaredToken, b: approvedValue });
+    const result = sanitizeCapture(
+      baseInput({
+        raw,
+        approvedKeys: new Set(['a', 'b']),
+        approvedValues: new Set([approvedValue]),
+        protocolTokens: new Set([declaredToken]),
+      }),
+    );
+    assertOk(result);
+    expect(result.report.preservedDeclaredTokens).toEqual([declaredToken]);
+    expect(result.report.preservedValues).toEqual([approvedValue]);
+  });
+
+  it('P11: the produced fixture passes assertFixtureFullySanitised when the bar is given the same declaration (coupling test)', () => {
+    const token = 'content_block_delta';
+    const raw = JSON.stringify({ type: token });
+    const result = sanitizeCapture(
+      baseInput({
+        raw,
+        approvedKeys: new Set(['type']),
+        protocolTokens: new Set([token]),
+      }),
+    );
+    assertOk(result);
+    expect(() => {
+      assertFixtureFullySanitised(
+        't',
+        result.fixture,
+        { keys: new Set(['type']), values: new Set() },
+        { allowedHosts: ['chatgpt.com'], detect: () => [], protocolTokens: new Set([token]) },
+      );
+    }).not.toThrow();
   });
 });

@@ -27,6 +27,7 @@ function adapterWith(
     submit: () => false,
     endpoints,
     requiredPaths: { request: [], response: [] },
+    protocolTokens: [],
     parseRequest: () => ({ requiredPathsSeen: false }),
     parseStream: () => ({ push: () => undefined, end: () => null }),
   };

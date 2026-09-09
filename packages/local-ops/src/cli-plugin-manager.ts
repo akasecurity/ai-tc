@@ -45,6 +45,12 @@ export type CliPluginBin = 'claude' | 'codex';
  *
  * Fail-silent by construction: every caller treats undefined as "do not warn".
  */
+// Wrapping punctuation a version is commonly printed inside, and nothing more.
+// Both are bounded so neither can backtrack; see `versionTokenFrom` for why an
+// unbounded or open-ended strip was wrong in two different directions.
+const LEADING_WRAP = /^[([{"'`]{0,2}[vV]?/;
+const TRAILING_WRAP = /[)\]}"'`,;]{0,4}$/;
+
 /**
  * The first token in a `--version` output that parses as a version.
  *
@@ -60,10 +66,21 @@ export type CliPluginBin = 'claude' | 'codex';
  * this behind — the gate would then reject versions the comparator accepts and
  * go silent.
  *
- * Leading and trailing punctuation is stripped, so `v2.1.258`, `(2.1.258)` and
- * `2.1.258,` all resolve. The PRERELEASE is deliberately kept: `2.1.251-rc.1`
- * must not collapse to `2.1.251`, which compares EQUAL to a floor that build
- * predates, letting it clear a gate it should trip.
+ * The two strips are an ENUMERATED, BOUNDED set of wrapping punctuation, not
+ * "everything up to the first digit". Both properties are load-bearing:
+ *
+ * - Bounded, because an unbounded trailing `[^\w.-]+$` is polynomial on a token
+ *   the host CLI controls — measured 281/1089/4276 ms at 25k/50k/100k commas,
+ *   clean n². (Reproducing it needs a LEADING DIGIT: without one the leading
+ *   strip eats the commas first and it measures 0 ms.)
+ * - Enumerated, because `^[^\d]*` accepts any prefix, so
+ *   `@anthropic-ai/claude-code@3.0.0` resolved to `3.0.0` — an npm notice on the
+ *   first line then outranked the real version, which is a MISSED warning on a
+ *   security gate. `foo-2.1.258` and a URL path went the same way.
+ *
+ * The PRERELEASE is deliberately kept: `2.1.251-rc.1` must not collapse to
+ * `2.1.251`, which compares EQUAL to a floor that build predates, letting it
+ * clear a gate it should trip.
  *
  * The first line wins over the rest, because that is where a `--version` prints.
  * That narrows, but does not eliminate, a version-shaped token appearing before
@@ -74,7 +91,7 @@ export type CliPluginBin = 'claude' | 'codex';
 export function versionTokenFrom(stdout: string): string | undefined {
   const [firstLine = ''] = stdout.split('\n');
   for (const token of [...firstLine.trim().split(/\s+/), ...stdout.split(/\s+/)]) {
-    const candidate = token.replace(/^[^\d]*/, '').replace(/[^\w.-]+$/, '');
+    const candidate = token.replace(LEADING_WRAP, '').replace(TRAILING_WRAP, '');
     if (isSemver(candidate)) return candidate;
   }
   return undefined;

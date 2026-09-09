@@ -119,6 +119,15 @@ const AKAIGNORE_FILENAME = '.akaignore';
 // directory covers what is under it. Deliberately NOT overridable by an
 // `.akaignore` negation — see the precedence note at the directory branch.
 function protectedPaths(home: string, akaHome: string): readonly string[] {
+  // `.aka`, taken from the layout helper that owns that literal rather than
+  // spelled again. Read HERE rather than once at module scope: this module is
+  // bundled into the CLI and into the dashboard's Server Action route, and
+  // `homedir()` throws on a Windows host carrying neither USERPROFILE nor
+  // HOMEDRIVE/HOMEPATH — at module scope that failure takes the whole import
+  // down instead of the one scan, and neither entry point read the host
+  // environment at import time before. The call is already made below, so this
+  // costs a `basename` per scan and nothing else.
+  const akaHomeDirname = basename(defaultDataDir());
   // Deduplicated because the three AKA entries collapse to one for every caller
   // on the default home, and `isProtected` would otherwise test the same root
   // three times per dirent.
@@ -134,15 +143,11 @@ function protectedPaths(home: string, akaHome: string): readonly string[] {
         // with it. All three are the same path for a caller on the real home.
         resolve(akaHome),
         defaultDataDir(),
-        resolve(home, AKA_HOME_DIRNAME),
+        resolve(home, akaHomeDirname),
       ].map(canonicalize),
     ),
   ];
 }
-
-// `.aka`, taken from the layout helper that owns that literal rather than
-// spelled again here.
-const AKA_HOME_DIRNAME = basename(defaultDataDir());
 
 // A path's ON-DISK identity, which `resolve` alone cannot give: `resolve` is
 // purely lexical, while `statSync` and every read below FOLLOW symlinks and a

@@ -7,6 +7,7 @@ import type {
   ScanPathResult,
 } from '@akasecurity/local-ops';
 import {
+  isProtectedTarget,
   recordProjectEgress,
   recordProjectInventory,
   scanPathIntoStore,
@@ -35,10 +36,11 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 //   --fail-on <severity>  exit 1 when any finding is at or above the given
 //                         severity (critical|high|medium|low)
 //
-// Exit codes: 0 or 1, and 1 is OVERLOADED — by FOUR paths, not three.
-// `--fail-on` raises it for findings at or above the threshold; three error
+// Exit codes: 0 or 1, and 1 is OVERLOADED — by FIVE paths, not four.
+// `--fail-on` raises it for findings at or above the threshold; four error
 // paths below raise the same 1 by returning early (an unknown --format, an
-// unknown --fail-on, and a target that does not exist); and a fourth never
+// unknown --fail-on, a target that does not exist, and a target the walker
+// refuses to read because it holds live credentials); and a fifth never
 // reaches this function's own error handling at all — `parseArgs` THROWS on an
 // unknown option name (`--frmat`) or an option given no value (`--format` at
 // the end of argv), and that propagates out of runScan to cli.ts's
@@ -47,7 +49,7 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 // A CI gate reading only the exit status therefore cannot tell a real detection
 // from a mistyped flag or a wrong path; a scanner that reserved a distinct code
 // (2 is the usual choice) for usage errors could. Nor is the stream a complete
-// discriminator, though it separates the first four cases: an early-return
+// discriminator, though it separates the first five cases: an early-return
 // error writes a message to stderr and nothing to stdout, and a --fail-on trip
 // writes its report to stdout and nothing to stderr — but the parseArgs throw
 // writes to NEITHER from here, surfacing as whatever cli.ts prints for an
@@ -155,6 +157,11 @@ export async function runScan(argv: string[]): Promise<void> {
       ruleActions,
       sourceTool: SOURCE_TOOL.Cli,
       dataDir: storeDir,
+      // The AKA home this invocation is actually using, so the scanner's
+      // protected-path exclusion covers a `--home` store rather than the
+      // literal `~/.aka` the default would name. `home` is the same base
+      // `recordProjectEgress` takes below, for the same reason.
+      akaHome: home,
     });
     // Keep the Inventory page's project + file tree fresh for the repo just
     // scanned (fail-open, no-op outside a git repo).
@@ -163,6 +170,14 @@ export async function runScan(argv: string[]): Promise<void> {
     // (fail-open; `home` is the settings base so a --home scan reads that
     // home's own kill-switch, never the caller's real ~/.aka).
     egress = recordProjectEgress(db, target, result.egress, home);
+  } catch (err) {
+    if (!isProtectedTarget(err)) throw err;
+    // Named the same way a mistyped path is, and for the same reason: a target
+    // this scanner will not open must not be reported as a scan of it. Without
+    // this the walk's refusal would surface as an unhandled stack trace.
+    process.stderr.write(`aka scan: ${err.message}\n`);
+    process.exitCode = 1;
+    return;
   } finally {
     db.close();
   }

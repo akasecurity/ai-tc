@@ -64,6 +64,50 @@ export function managedSettingsPaths(platform: NodeJS.Platform = process.platfor
 }
 
 /**
+ * The managed locations this PROCESS reads when a caller names none.
+ *
+ * Null — the shipped value, never assigned outside a test — means "ask the
+ * platform", which is what every product path does.
+ */
+let testOnlyManagedPaths: readonly string[] | null = null;
+
+/**
+ * TEST-ONLY: point the default managed read at other locations, or at NONE.
+ *
+ * The managed file sits at absolute system paths on purpose (see
+ * managedSettingsPaths), so a suite that builds a whole fake machine in a temp
+ * dir still reads the REAL one. That is not a stale-fixture nuisance, it is a
+ * suite whose result depends on who ran it: on a developer laptop enrolled with
+ * `runMode: attached` pinned, twenty-eight cases across three packages assert
+ * `standalone` and get `attached`, while CI — where no administrator has placed
+ * a file — stays green. The machine is the input nobody declared.
+ *
+ * A per-call `managedOverride` parameter, which readEffectiveSettings and
+ * applyOnboarding both take, cannot close that. The reads at issue are several
+ * frames below the test: `db.installedPacks.setPolicy()` reaches
+ * readWorkspaceSettings through openControlPlaneFloors, and `aka sync-history`
+ * reaches it again inside the attached-mode pass. Threading a parameter to
+ * those means putting a test-only argument on openLocalDatabase and on the
+ * history-sync deps, and the NEXT deep caller reopens the hole. The property is
+ * process-scoped because the thing being described — which administrator owns
+ * this machine — is process-scoped.
+ *
+ * So this is deliberately a process-wide declaration, installed once per test
+ * file by `test/setup/no-managed-settings.ts` exactly as the no-network guard
+ * is installed, and reaching every frame for the same reason. Passing `[]`
+ * states "no administrator"; passing paths states which file to read instead,
+ * so a suite can simulate a managed machine end to end rather than only through
+ * the two override parameters.
+ *
+ * It changes the DEFAULT only. Every explicit caller — readManagedSettings's
+ * own suite passes paths on every call — is untouched, which is what keeps the
+ * managed layer's own tests testing the managed layer.
+ */
+export function UNSAFE_TEST_ONLY_setManagedSettingsPaths(paths: readonly string[] | null): void {
+  testOnlyManagedPaths = paths;
+}
+
+/**
  * Read the managed file, or null when no administrator has placed one.
  *
  * Fully fail-open, like readWorkspaceSettings: a missing, unreadable or
@@ -83,7 +127,7 @@ export function managedSettingsPaths(platform: NodeJS.Platform = process.platfor
  * this build understands still holds and the surface can say one does not.
  */
 export function readManagedSettings(
-  paths: string[] = managedSettingsPaths(),
+  paths: readonly string[] = testOnlyManagedPaths ?? managedSettingsPaths(),
 ): ManagedSettings | null {
   for (const path of paths) {
     let text: string;

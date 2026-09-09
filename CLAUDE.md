@@ -1139,6 +1139,16 @@ tools/                repo tooling, never shipped: the installer one-liners and
    test: { setupFiles: [noNetworkGuard], … }
    ```
 
+   A package whose dependency closure can load `@akasecurity/persistence` wires a
+   SECOND setup file beside it, `test/setup/no-managed-settings.ts` — the
+   administrative overlay is read from absolute system paths a temp home cannot
+   redirect, so without it the package's suite reads whichever administrator the
+   developer's own machine is enrolled with. That set is DERIVED rather than
+   listed, by `packages/eslint-config/test/no-managed-settings-guard.test.js`, so a
+   new package that takes such a dependency is told to wire it rather than
+   discovering it as twenty-eight unrelated-looking failures later. See "The
+   no-managed-settings guard" under Testing.
+
    A package that also declares `testTimeout`/`hookTimeout` in that config must add
    itself to `TIMEOUTS` in `packages/eslint-config/test/hook-timeout-ratchet.test.js`,
    which pins every package's ceilings as an EXACT map. The ratchet holds in BOTH
@@ -1800,6 +1810,72 @@ front door only, which is why phase 3 asserts the drop-back landed as well — a
 evaluate false without checking. The full reasoning is in the script's own header and
 phase-3 comment; it is not restated here, because a rationale kept in two places is one
 that goes out of step.
+
+### The no-managed-settings guard
+
+`test/setup/no-managed-settings.ts` is the second shared setup file, wired beside
+the no-network guard by every package whose dependency closure can load
+`@akasecurity/persistence`. It declares, once per test file, that the machine has
+**no administrator**.
+
+The administrative overlay (§6) is read from absolute system paths — outside
+`~/.aka` on purpose, so a lock is not removable by the party being locked — and
+`base` redirects only the home. So a suite that builds a whole fake machine in a
+temp dir still reads the REAL managed file, and its result depends on who ran it:
+a laptop enrolled for dogfooding pins `runMode: attached`, which failed
+twenty-eight cases across `persistence`, `plugin-sdk` and the CLI on a clean
+checkout of main. CI has no such file, so CI stayed green and the failure landed
+only on the machines with no gate on them.
+
+Five things about it are load-bearing:
+
+- **A per-call override cannot replace it.** `readEffectiveSettings` and
+  `applyOnboarding` both take a `managedOverride`, and neither reaches the reads
+  that actually fail: `db.installedPacks.setPolicy()` reaches
+  `readWorkspaceSettings` through `openControlPlaneFloors`, and `aka sync-history`
+  reaches it again inside the attached-mode pass. Threading a parameter there
+  means a test-only argument on `openLocalDatabase` and on the history-sync deps,
+  and the next deep caller reopens the hole. The property is process-scoped
+  because the thing it describes — which administrator owns this machine — is.
+- **It moves the DEFAULT only.** `readManagedSettings` still honours paths it is
+  given, which is what keeps the managed layer's own suite testing the managed
+  layer rather than asserting an unmanaged machine. Verified by mutation: making
+  `overlayManagedSettings` a no-op still reds 39 of that file's 75 cases.
+- **The seam it installs is test-only, and audited.**
+  `UNSAFE_TEST_ONLY_setManagedSettingsPaths` is named by exactly one shipped file
+  and is NOT re-exported from the package entry point — the same two properties
+  the raw handle carries, held by
+  `packages/eslint-config/test/test-only-seam.test.js`. The setup file reaches it
+  by relative path, which is why no `exports` entry is needed.
+- **It imports ONE MODULE, never the package barrel.** A setup file loads before
+  every test file in every package that wires it, so whatever it imports is cached
+  before any of them registers a mock. Importing the barrel pre-cached `paths.ts`,
+  `fingerprint.ts` and the vault against the real `node:fs`, and the three suites
+  that `vi.mock('node:fs')` and then `await import('../src/paths.ts')` got the
+  unmocked instance back — nineteen cases failing on a branch they could no longer
+  enter. Their own "the interception fired" guards are what caught it. That import
+  is pinned by its own case in the guard suite.
+- **A CHILD PROCESS is invisible to it**, exactly as one is to the no-network
+  guard, and for the same reason: the pin lives in ONE process's instance of
+  `managed-settings.ts`, and a spawned child loads its own copy with the shipped
+  `null`. A redirected `HOME` does not move an absolute system path — which is
+  the premise this whole section rests on — so the child reads the real
+  administrator's file. Measured rather than reasoned: with the pin installed,
+  the parent reads `null` while a child spawned with `HOME` redirected reads the
+  machine's own managed values. Every suite that drives a BUILT script is on the
+  far side of that boundary. `plugins/*/test/e2e/fail-open.e2e.test.ts` runs the
+  built hooks under a redirected home and `loadConfig` applies the overlay inside
+  the child, so an administrator pinning `redactFallback` — a key that is both
+  pinnable and lockable — flips rows asserting an exact wire shape. Read that as
+  REACHABLE rather than currently failing: those suites pass on the enrolled
+  machine that motivated this section, whose file pins `runMode` and not
+  `redactFallback`. A worker thread sits on the same boundary and is out of reach
+  today only because `scan-worker.ts` takes no persistence dependency. It is
+  documented rather than closed, because the no-network guard's own mechanism
+  does not transfer: it reaches a worker by appending `--import <itself>` to its
+  `execArgv`, and a child spawned with a deliberately minimal env cannot be
+  reached that way. Nothing covers this the way the `No-network` CI job covers
+  shell-outs.
 
 ### The PATH shim, and why it fails OPEN
 

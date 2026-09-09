@@ -6,12 +6,16 @@ import { basename, dirname, join, sep } from 'node:path';
 
 import {
   createGuardedFileScanner,
+  forwardProjectEgress,
   recordProjectEgress,
   recordProjectInventory,
   scanPathIntoStore,
   type ScanPathResult,
+  type SharesForwardOutcome,
+  type SharesForwardSender,
 } from '@akasecurity/local-ops';
-import { dataDir } from '@akasecurity/persistence';
+import { dataDir, defaultDataDir } from '@akasecurity/persistence';
+import { classifyRemoteFailure, createRemoteClient } from '@akasecurity/remote';
 import { type EgressWriteSummary, SOURCE_TOOL } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
@@ -33,6 +37,14 @@ import { scanWorkerUrl } from '../../lib/scan-worker';
 // killed and then runs the scan itself under a wall-clock bound on a worker
 // thread. A machine with no pulled or custom regex rule — the overwhelming
 // majority — starts no thread and pays nothing.
+//
+// On an attached machine the register this scan writes is also forwarded to the
+// deployment this home's settings name, after the local write. What crosses is
+// the same projection the plugin's own scanner sends — destination hosts,
+// endpoints and file/line call sites, with no source text and the project key
+// replaced by a digest. It can fail every way a network call can, and none of
+// them change the scan's result: the walk is already on disk by then, and the
+// outcome is reported to the person who clicked Scan rather than swallowed.
 
 export interface ScanResult {
   ok: boolean;
@@ -45,6 +57,47 @@ export interface ScanResult {
   // replacing them — but it means the ruleset that ran was smaller than the one
   // the Detections page lists, which the user has to be told.
   droppedRules?: string;
+  // Where the register went, on a machine that is attached. Absent on one that
+  // is not, and on a scan that recorded no register to forward — the page then
+  // renders exactly what it always did.
+  forward?: SharesForwardOutcome;
+}
+
+/**
+ * The deadline on the one forward a scan makes.
+ *
+ * One request, one deadline, no retry: a full 5,000-call-site body is around
+ * 2 MB, which 15 seconds covers on a slow link, and the next scan of the same
+ * project replaces its register outright — so the retry already exists and
+ * costs the person waiting on this action nothing.
+ */
+const SCAN_FORWARD_TIMEOUT_MS = 15_000;
+
+/**
+ * The transport for the forward.
+ *
+ * The decision sequence in front of it — attached? credential for this
+ * deployment? did it land? — is shared with the CLI and lives in
+ * @akasecurity/local-ops, which opens no socket. What is duplicated here is only
+ * this adapter, because each surface owns its own deadline and the shared
+ * package must not import a client to hold one for it.
+ *
+ * The classification is the transport's own, not a status code read a second
+ * time here — a surface that re-derived one would be free to disagree with
+ * every other surface about what a 403 means.
+ */
+function remoteSharesSender(): SharesForwardSender {
+  return async (connection, request) => {
+    try {
+      await createRemoteClient({
+        ...connection,
+        timeoutMs: SCAN_FORWARD_TIMEOUT_MS,
+      }).recordProjectEgress(request);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, kind: classifyRemoteFailure(err) };
+    }
+  };
 }
 
 // A Server Action's result is serialised to the browser, and the recorder hands
@@ -127,6 +180,27 @@ export async function runScan(path: string): Promise<ScanResult> {
   // Data Shares store (fail-open; null when the toggle is off, the target has
   // no resolvable project, or the write failed).
   const egress = recordProjectEgress(db(), target, result.egress);
+
+  // After the local write, and in its own catch: the value of a scan is what is
+  // already on disk, and nothing here may cost the caller its counts. The state
+  // machine is documented never to throw — this guards the action's result
+  // against the day that stops being true, not the outcome.
+  let forward: SharesForwardOutcome | undefined;
+  if (egress) {
+    try {
+      const outcome = await forwardProjectEgress(defaultDataDir(), egress.input, {
+        send: remoteSharesSender(),
+      });
+      // A machine attached to nothing has nothing to report about, and the field
+      // stays absent rather than carrying a status: that keeps what a standalone
+      // install's page receives exactly what it received before this action
+      // could forward anything at all.
+      if (outcome.status !== 'not-attached') forward = outcome;
+    } catch {
+      forward = undefined;
+    }
+  }
+
   revalidatePath('/findings');
   revalidatePath('/security');
   revalidatePath('/inventory');
@@ -141,6 +215,7 @@ export async function runScan(path: string): Promise<ScanResult> {
       error: noPacksError,
       egress: egress ? summaryOf(egress) : undefined,
       droppedRules,
+      forward,
     };
 
   return {
@@ -149,6 +224,7 @@ export async function runScan(path: string): Promise<ScanResult> {
     findings: result.findings,
     egress: egress ? summaryOf(egress) : undefined,
     droppedRules,
+    forward,
   };
 }
 

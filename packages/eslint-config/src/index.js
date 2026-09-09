@@ -434,6 +434,13 @@ function ambientClockSelectors(opts = {}) {
  * The other three groups come along by construction, so an opt-out for one ban
  * cannot become an opt-out for four by omission.
  *
+ * `allowNetwork` is the same idea for the network group, and takes module names
+ * rather than a boolean: a file that legitimately binds a loopback socket needs
+ * `node:http` and must keep every other transport banned. Pair it with the
+ * matching `no-restricted-imports` value (`drizzleWallRules({ allow })`) so the
+ * static and dynamic halves of the ban drop together, the way §4 of the
+ * conventions requires.
+ *
  * `ambientClockEveryModule` is the other direction — WIDENING rather than
  * lifting the clock ban, to every module in the package regardless of
  * directive. See `ambientClockSelectors`'s own doc for why that is sound only
@@ -441,14 +448,15 @@ function ambientClockSelectors(opts = {}) {
  * `allowAmbientClock` wins if both are set, since a file that opted all the
  * way out has nothing left to widen.
  *
- * @param {{ allowAmbientClock?: boolean, ambientClockEveryModule?: boolean }} [opts]
+ * @param {{ allowAmbientClock?: boolean, allowNetwork?: readonly string[],
+ *   ambientClockEveryModule?: boolean }} [opts]
  * @returns {import('eslint').Linter.RuleEntry}
  */
 export function reactSyntaxBans(opts = {}) {
-  const { allowAmbientClock = false, ambientClockEveryModule = false } = opts;
+  const { allowAmbientClock = false, allowNetwork = [], ambientClockEveryModule = false } = opts;
   return /** @type {import('eslint').Linter.RuleEntry} */ ([
     'error',
-    ...networkSyntaxSelectors(),
+    ...networkSyntaxSelectors({ allow: allowNetwork }),
     ...drizzleSyntaxSelectors(),
     ...tonalInkSelectors(),
     ...(allowAmbientClock ? [] : ambientClockSelectors({ everyModule: ambientClockEveryModule })),

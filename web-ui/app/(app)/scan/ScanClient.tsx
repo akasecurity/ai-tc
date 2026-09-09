@@ -7,11 +7,17 @@ import { useState, useTransition } from 'react';
 import type { ScanResult } from './actions';
 import { runScan } from './actions';
 import { DirectoryBrowser } from './DirectoryBrowser';
+import { describeForward } from './forward-copy';
 
 export function ScanClient({ enabledRuleCount }: { enabledRuleCount: number }) {
   const [path, setPath] = useState('');
   const [result, setResult] = useState<ScanResult | null>(null);
   const [busy, startTransition] = useTransition();
+
+  // What became of the register on an attached machine, or null on one that is
+  // attached to nothing — which renders no line at all, so a standalone
+  // install's page is what it always was.
+  const forwarded = result?.forward ? describeForward(result.forward) : null;
 
   const submit = () => {
     startTransition(async () => {
@@ -87,6 +93,19 @@ export function ScanClient({ enabledRuleCount }: { enabledRuleCount: number }) {
             <Link href="/data-shares" className="font-semibold text-primary underline">
               View data shares
             </Link>
+          </p>
+        )}
+        {/* Under the recorded counts, because it is about the same register: a
+            machine attached to a deployment sends it there too, and a refusal is
+            the only place the user would learn that the fleet's view of this
+            project is now behind their own. */}
+        {forwarded && (
+          <p
+            className={`mt-1 text-xs ${
+              result?.forward?.status === 'forwarded' ? 'text-text-2' : 'text-sev-medium-ink'
+            }`}
+          >
+            {forwarded}
           </p>
         )}
       </div>

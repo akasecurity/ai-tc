@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { COMMAND_SPECS } from '../../src/command-manifest.ts';
+import { COMMAND_SPECS, commandsHelp, GLOBAL_FLAGS } from '../../src/command-manifest.ts';
 import { completionHint, completionScript } from '../../src/commands/completion.ts';
 
 const commandNames = COMMAND_SPECS.map((s) => s.name);
@@ -49,6 +49,41 @@ describe('completionScript', () => {
       const script = completionScript(shell) ?? '';
       for (const flag of ['--home', '--version', '--help']) expect(script).toContain(flag);
     }
+  });
+
+  /**
+   * A flag one command owns is offered after THAT command and nowhere else.
+   * Derived from the manifest, so a second such flag joins these assertions by
+   * being declared rather than by somebody remembering this file.
+   *
+   * The negative half is the point: `GLOBAL_FLAGS` is what every command
+   * honours, and a command-only flag that leaked into that list would be
+   * suggested after `aka stats`, where `parseArgs` rejects it outright.
+   */
+  const COMMAND_FLAGS = COMMAND_SPECS.flatMap((s) => (s.flags ?? []).map((f) => [s.name, f.name]));
+
+  it('has at least one command-owned flag to check', () => {
+    expect(COMMAND_FLAGS.length).toBeGreaterThan(0);
+  });
+
+  it.each(COMMAND_FLAGS)('offers %s its own %s, scoped to that command', (command, flag) => {
+    expect(GLOBAL_FLAGS).not.toContain(flag);
+    for (const shell of ['zsh', 'bash'] as const) {
+      const script = completionScript(shell) ?? '';
+      // The arm carries the command name and the flag together, so a flag added
+      // to the unconditional list would not satisfy this.
+      const arm = script.split('\n').find((line) => line.includes(flag));
+      expect(arm).toBeDefined();
+      expect(arm).toContain(`${command})`);
+    }
+  });
+
+  it.each(COMMAND_FLAGS)("documents %s's %s under that command in the help", (command, flag) => {
+    const lines = commandsHelp().split('\n');
+    const at = lines.findIndex((line) => line.trimStart().startsWith(`${command} `));
+    expect(at).toBeGreaterThanOrEqual(0);
+    // Directly under its command, not filed anywhere else in the block.
+    expect(lines[at + 1]).toContain(flag);
   });
 
   it('completes the exception verbs in both shells', () => {

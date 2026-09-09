@@ -4,6 +4,17 @@
 // completion — no more hand-synced copies drifting apart (which is how the
 // `completion` command itself first shipped missing from its own completion).
 
+// A flag only one command takes. GLOBAL_FLAGS is for the ones every command
+// honours; anything listed here is offered — in USAGE and in completion — only
+// after the command that owns it, so a flag `main()` would reject is never
+// suggested.
+export interface CommandFlagSpec {
+  // Spelled as it is typed, e.g. '--no-forward'.
+  name: string;
+  // One line, shown indented under the command in USAGE.
+  summary: string;
+}
+
 export interface CommandSpec {
   name: string;
   // Shown in the USAGE help and as the zsh `_describe` description.
@@ -14,6 +25,8 @@ export interface CommandSpec {
   args?: readonly string[];
   // Completes a filesystem path at the first argument (only `scan` today).
   completesFiles?: boolean;
+  // Flags this command alone accepts.
+  flags?: readonly CommandFlagSpec[];
 }
 
 export const COMMAND_SPECS: readonly CommandSpec[] = [
@@ -23,6 +36,13 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
     argHint: '[path]',
     summary: 'Scan a file or directory and record findings (default: .)',
     completesFiles: true,
+    flags: [
+      {
+        name: '--no-forward',
+        summary:
+          'Record locally only; skip forwarding the Data Shares register to an attached deployment.',
+      },
+    ],
   },
   { name: 'stats', summary: 'Print findings / enforcement / detections from the local store' },
   {
@@ -102,5 +122,11 @@ export const GLOBAL_FLAGS = ['--home', '--no-update-check', '--version', '--help
 export function commandsHelp(): string {
   const label = (s: CommandSpec): string => (s.argHint ? `${s.name} ${s.argHint}` : s.name);
   const width = Math.max(...COMMAND_SPECS.map((s) => label(s).length)) + 1;
-  return COMMAND_SPECS.map((s) => `  ${label(s).padEnd(width)}${s.summary}`).join('\n');
+  return COMMAND_SPECS.flatMap((s) => [
+    `  ${label(s).padEnd(width)}${s.summary}`,
+    // Under its own command, indented past the summary column, because a
+    // command-only flag listed in the shared Options block would read as one
+    // every command takes.
+    ...(s.flags ?? []).map((f) => `  ${''.padEnd(width)}${f.name}  ${f.summary}`),
+  ]).join('\n');
 }

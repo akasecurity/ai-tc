@@ -5,14 +5,19 @@ import type {
   EgressRecordResult,
   ProjectInventoryResult,
   ScanPathResult,
+  SharesForwardOutcome,
+  SharesForwardSender,
 } from '@akasecurity/local-ops';
 import {
+  forwardProjectEgress,
   recordProjectEgress,
   recordProjectInventory,
   scanPathIntoStore,
 } from '@akasecurity/local-ops';
 import { MAX_EGRESS_CALL_SITES_PER_PROJECT, openLocalDatabase } from '@akasecurity/persistence';
 import { dataDir, registerBundledPacks } from '@akasecurity/plugin-sdk';
+import { classifyRemoteFailure, createRemoteClient } from '@akasecurity/remote';
+import type { RemoteFailureKind } from '@akasecurity/schema';
 import { Severity, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
@@ -31,9 +36,24 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 //                         reports the project row + file tree recorded for the
 //                         repo containing the target, null outside a git repo;
 //                         `egress` reports the destinations/endpoints/call sites
-//                         written for the project, null when nothing was recorded)
+//                         written for the project, null when nothing was recorded;
+//                         `forward` reports whether that register reached the
+//                         deployment this machine is attached to, null when it is
+//                         attached to none)
 //   --fail-on <severity>  exit 1 when any finding is at or above the given
 //                         severity (critical|high|medium|low)
+//   --no-forward          record locally only; skip the forward above
+//
+// On an attached machine the register this scan just wrote is also forwarded to
+// that deployment, after the store handle is closed and before anything is
+// printed. It is the same projection the plugin's own scanner sends —
+// destination hosts, endpoints and file/line call sites, with no source text and
+// the project key replaced by a digest — and it can only ever reach the
+// deployment this home's own settings name. `--no-forward` skips it for one
+// invocation; an unattached machine sends nothing and prints no line. The
+// forward can fail every way a network call can and none of them change the
+// exit code, the findings, or the egress counts: it runs after the work that
+// matters is already on disk.
 //
 // Exit codes: 0 or 1, and 1 is OVERLOADED — by FOUR paths, not three.
 // `--fail-on` raises it for findings at or above the threshold; three error
@@ -83,13 +103,100 @@ export function renderEgressLine(egress: EgressRecordResult): string {
   );
 }
 
-export async function runScan(argv: string[]): Promise<void> {
+/**
+ * The deadline on the one forward a scan makes.
+ *
+ * One request, one deadline, no retry: a full 5,000-call-site body is around
+ * 2 MB, which 15 seconds covers on a slow link, and the next scan of the same
+ * project replaces its register outright — so the retry already exists and
+ * costs the person at the prompt nothing to wait for.
+ */
+export const SCAN_FORWARD_TIMEOUT_MS = 15_000;
+
+/**
+ * The transport for the forward, isolated so a test can drive every outcome
+ * without a socket. `attach.ts` injects its `verify` the same way.
+ */
+export interface ScanDeps {
+  send?: SharesForwardSender;
+}
+
+/**
+ * Build the real sender: one client, one deadline, and a named verdict instead
+ * of a thrown error.
+ *
+ * The classification is the transport's own (`classifyRemoteFailure`), not a
+ * status code read a second time here — a surface that re-derived one would be
+ * free to disagree with every other surface about what a 403 means.
+ */
+export function remoteSharesSender(timeoutMs = SCAN_FORWARD_TIMEOUT_MS): SharesForwardSender {
+  return async (connection, request) => {
+    try {
+      await createRemoteClient({ ...connection, timeoutMs }).recordProjectEgress(request);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, kind: classifyRemoteFailure(err) };
+    }
+  };
+}
+
+/**
+ * What to do about each way the forward can fail, in the words of the person
+ * who has to do it.
+ *
+ * A `Record` over the whole enum rather than a switch with a fallback, so a
+ * seventh kind fails to compile here instead of rendering as a shrug.
+ */
+export const FORWARD_FAILURE_LINES: Record<RemoteFailureKind, string> = {
+  unauthorized: 'key rejected; re-attach with a valid plugin key',
+  forbidden:
+    'key is valid but not permitted for Data Shares ingest; a key minted before Data Shares ' +
+    'ingest existed needs a re-attach, otherwise ask your org admin',
+  'route-absent': 'the deployment predates Data Shares ingest; upgrade it, then re-run the scan',
+  'invalid-request': 'this build assembled a request the contract refuses; please report it',
+  rejected:
+    'the deployment refused the request body; this build and the deployment are out of step — ' +
+    'upgrade one of them',
+  unreachable: 'control plane unreachable (timeout or server error); the next scan retries',
+};
+
+/**
+ * The text-mode line for what the forward did, or null when there is nothing to
+ * say.
+ *
+ * A machine attached to nothing renders NOTHING, which is what keeps a
+ * standalone install's output exactly as it was before this command could
+ * forward at all.
+ */
+export function renderForwardLine(outcome: SharesForwardOutcome): string | null {
+  switch (outcome.status) {
+    case 'not-attached':
+      return null;
+    case 'disabled':
+      return 'Data shares: not forwarded (--no-forward)';
+    case 'no-credential':
+      return (
+        `Data shares: not forwarded to ${outcome.endpoint} — ` +
+        'no usable credential; re-attach with `aka attach`'
+      );
+    case 'forwarded':
+      return (
+        `Data shares: forwarded to ${outcome.endpoint} · ` +
+        `${String(outcome.callSites)} call site(s)`
+      );
+    case 'failed':
+      return `Data shares: not forwarded to ${outcome.endpoint} — ${FORWARD_FAILURE_LINES[outcome.kind]}`;
+  }
+}
+
+export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void> {
   const { values, positionals } = parseArgs({
     args: argv,
     options: {
       ...HOME_OPTION,
       format: { type: 'string' },
       'fail-on': { type: 'string' },
+      'no-forward': { type: 'boolean' },
     },
     allowPositionals: true,
   });
@@ -167,7 +274,29 @@ export async function runScan(argv: string[]): Promise<void> {
     db.close();
   }
 
+  // AFTER the handle is closed, so no SQLite transaction is held open across a
+  // network wait, and outside the block above so a forward can never take the
+  // store down with it. Deferred into a function rather than awaited here:
+  // text mode prints the scan result BEFORE attempting the forward, so a slow
+  // or unreachable deployment delays the forward line and never the summary
+  // the command was run for. JSON mode is one object and must wait for both.
+  const recorded = egress;
+  const runForward = async (): Promise<SharesForwardOutcome | null> => {
+    if (recorded === null) return null;
+    try {
+      return await forwardProjectEgress(home, recorded.input, {
+        send: deps.send ?? remoteSharesSender(),
+        enabled: values['no-forward'] !== true,
+      });
+    } catch {
+      // The state machine is documented never to throw. This guards the exit
+      // code against the day that stops being true, not the outcome.
+      return null;
+    }
+  };
+
   if (format === 'json') {
+    const forward = await runForward();
     const findings = result.files.flatMap((f) =>
       f.findings.map((d) => ({
         file: f.path,
@@ -197,9 +326,20 @@ export async function runScan(argv: string[]): Promise<void> {
           truncated: egress.truncated,
         }
       : null;
+    // `not-attached` is the machine having no deployment to report about, so it
+    // renders as the same null a machine that recorded nothing gets — a consumer
+    // branches on presence, never on a status meaning "no answer".
+    const forwardJson = forward === null || forward.status === 'not-attached' ? null : forward;
     process.stdout.write(
       `${JSON.stringify(
-        { target, scanned: result.scanned, findings, inventory: inventoryJson, egress: egressJson },
+        {
+          target,
+          scanned: result.scanned,
+          findings,
+          inventory: inventoryJson,
+          egress: egressJson,
+          forward: forwardJson,
+        },
         null,
         2,
       )}\n`,
@@ -210,6 +350,9 @@ export async function runScan(argv: string[]): Promise<void> {
     );
     if (inventory) process.stdout.write(`${renderInventoryLine(inventory)}\n`);
     if (egress) process.stdout.write(`${renderEgressLine(egress)}\n`);
+    const forward = await runForward();
+    const forwardLine = forward === null ? null : renderForwardLine(forward);
+    if (forwardLine !== null) process.stdout.write(`${forwardLine}\n`);
   }
 
   if (failOn !== undefined) {

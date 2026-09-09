@@ -569,6 +569,11 @@ describe('existing-history consent', () => {
     const shown = io.output();
     // Asked about the half that has a subject...
     expect(shown).toContain('Saying no does not stop live sending');
+    // The register a scan records crosses under this attachment whether or not
+    // there is a backlog, so it is named on the machine with no store too.
+    expect(shown).toContain(
+      'So is the Data Shares register a scan records — destinations and call sites, never source text.',
+    );
     // ...and not about a backlog it does not have.
     expect(shown).not.toContain('What that history sends:');
     expect(shown).not.toContain('days of activity already recorded');
@@ -649,6 +654,12 @@ describe('existing-history consent', () => {
     expect(shown).toContain('What that history sends:');
     // The v2 widening, stated where the user is deciding.
     expect(shown).toContain('INCLUDES ITS TEXT');
+    // And the register `aka scan` forwards, which is the half a reader would
+    // otherwise file under "local": named here with what it carries and what it
+    // does not, because this block is where consent to send it is given.
+    expect(shown).toContain(
+      'So is the Data Shares register a scan records — destinations and call sites, never source text.',
+    );
     // The masking is conditional, and the prompt has to say so: a span is
     // masked only where the policy assigned its detection is redact or block,
     // and every detection ships on monitor. A bare match on `masked` passed

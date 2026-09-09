@@ -8,8 +8,16 @@ import { COMMAND_SPECS, GLOBAL_FLAGS } from '../command-manifest.ts';
 
 const topNames = COMMAND_SPECS.map((s) => s.name);
 
+// The commands that take a flag of their own, as a shell `case` arm each. Both
+// scripts add these to the global flags rather than replacing them, so a
+// command-only flag is offered exactly where it works and nowhere else.
+const flagSpecs = COMMAND_SPECS.filter((s) => (s.flags ?? []).length > 0);
+
 function zshScript(): string {
   const describe = COMMAND_SPECS.map((s) => `    '${s.name}:${s.summary}'`).join('\n');
+  const flagArms = flagSpecs
+    .map((s) => `      ${s.name}) _aka_flags+=(${(s.flags ?? []).map((f) => f.name).join(' ')}) ;;`)
+    .join('\n');
   const argArms = COMMAND_SPECS.flatMap((s) =>
     s.args ? [`      ${s.name}) _values '${s.name}' ${s.args.join(' ')} ;;`] : [],
   );
@@ -36,9 +44,15 @@ ${describe}
 
   # Flags may follow any command; complete them whenever the current word starts
   # with '-'. Checked BEFORE the positional switch so a command with no arg case
-  # (e.g. \`aka stats --\`) still offers them — matching the bash script.
+  # (e.g. \`aka stats --\`) still offers them — matching the bash script. A
+  # command that owns flags of its own adds them here and nowhere else.
   if [[ $words[CURRENT] == -* ]]; then
-    compadd -- ${GLOBAL_FLAGS.join(' ')}
+    local -a _aka_flags
+    _aka_flags=(${GLOBAL_FLAGS.join(' ')})
+    case $words[2] in
+${flagArms}
+    esac
+    compadd -- $_aka_flags
     return
   fi
 
@@ -65,6 +79,11 @@ compdef _aka aka
 }
 
 function bashScript(): string {
+  const flagArms = flagSpecs
+    .map(
+      (s) => `      ${s.name}) flags="$flags ${(s.flags ?? []).map((f) => f.name).join(' ')}" ;;`,
+    )
+    .join('\n');
   const argArms = COMMAND_SPECS.flatMap((s) =>
     s.args
       ? [`      ${s.name}) COMPREPLY=( $(compgen -W "${s.args.join(' ')}" -- "$cur") ); return ;;`]
@@ -85,9 +104,14 @@ _aka() {
   fi
 
   # Flags may follow any command — checked before the positional switch so every
-  # command offers them (matches the zsh script).
+  # command offers them (matches the zsh script). A command that owns flags of
+  # its own adds them here and nowhere else.
   if [[ "$cur" == -* ]]; then
-    COMPREPLY=( $(compgen -W "${GLOBAL_FLAGS.join(' ')}" -- "$cur") )
+    local flags="${GLOBAL_FLAGS.join(' ')}"
+    case "$cmd" in
+${flagArms}
+    esac
+    COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
     return
   fi
 

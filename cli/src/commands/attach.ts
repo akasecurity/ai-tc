@@ -488,6 +488,10 @@ async function askAboutHistory(
       `Verified against ${identity.tenantName}.`,
       '',
       'Activity from here on is sent to that deployment automatically.',
+      // The register a scan records crosses under this same attachment, and
+      // `aka scan` is a verb people reasonably think of as local — so consent
+      // is where it gets named, and named with what it does and does not carry.
+      'So is the Data Shares register a scan records — destinations and call sites, never source text.',
       ...(backlog === undefined ? [] : [backlog]),
       'AKA can also keep anything a live send fails to deliver, instead of',
       'dropping it.',

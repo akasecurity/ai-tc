@@ -362,7 +362,13 @@ async function offerPluginInstall(autoYes: boolean): Promise<void> {
   }
   // `autoYes` carries through: the host-floor gate warns either way, but a user
   // who passed `--yes` has already consented and must not be re-asked.
-  await runPlugins(['install', 'claude-code'], { assumeYes: autoYes });
+  // The plugin is an OPTIONAL extra here: the store is already created and init
+  // has succeeded, so declining the floor prompt is a skip like the one above,
+  // not a failure of `aka init`. A genuine install failure still reports.
+  await runPlugins(['install', 'claude-code'], {
+    assumeYes: autoYes,
+    declineIsFailure: false,
+  });
 }
 
 async function confirm(question: string): Promise<boolean> {

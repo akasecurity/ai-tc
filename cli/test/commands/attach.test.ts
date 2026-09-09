@@ -422,6 +422,22 @@ describe('status', () => {
     expect(out.output()).toContain('none cached');
   });
 
+  it('ends without a trailing blank line when there is no host reading yet', async () => {
+    // `hostCompatibilityLines` returns [] on a machine no Claude Code hook has
+    // ever written a version for — a CLI-only install, a Codex-only install, or
+    // any Claude Code install before its first completed turn. Joining [] gives
+    // '', so an unguarded template emits a bare newline on all three.
+    //
+    // Asserted on the BYTES rather than with `not.toContain`: a blank line is
+    // the absence of content, so there is no substring to look for, and every
+    // other assertion in this block stays green while it is there.
+    const io = scriptedPrompter({ interactive: true });
+    await runStatus([], deps(io));
+    const out = io.output();
+    expect(out.endsWith('\n')).toBe(true);
+    expect(out.endsWith('\n\n')).toBe(false);
+  });
+
   it('says nothing about policy on a machine with no attachment', async () => {
     // A standalone machine has no policy to be current, so the line would be
     // answering a question nobody asked.

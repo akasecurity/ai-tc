@@ -465,7 +465,12 @@ properties are load-bearing:
   Settings action both go through) and `aka init`'s create-if-absent. A third that writes
   `settings.json` directly reopens the hole for both. **Other `~/.aka` files are NOT covered** —
   `fingerprint.ts`'s key ROTATION and `local-ops`' `update-cache.ts` are unlocked
-  read-modify-writes with the same shape, and each is its own outstanding fix. The first MINT
+  read-modify-writes with the same shape, and each is its own outstanding fix.
+  `plugin-sdk`'s `host-floor.ts` (`data/host-version.json`) is a third, and is the one
+  that is NOT owed a fix: it keeps a MAX, so the loser of a race is displaced by the
+  winner's next write rather than persisting, which bounds the damage to one stale
+  `aka status` reading between two tool calls. That reasoning is what earns the
+  exemption — a fourth writer does not inherit it by being on this list. The first MINT
   is no longer one of them, and it was not fixed with a lock: `createKeyFile` publishes through
   `createOwnerOnlyFileSync`, which links an already-complete tmp into place, so exactly one
   caller wins and every loser reads the file back and ADOPTS the winner's key. That works only

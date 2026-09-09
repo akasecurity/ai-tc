@@ -33,6 +33,18 @@ export interface InstallDeps {
    * a scripted Enter answers "no" and installs nothing.
    */
   assumeYes?: boolean;
+  /**
+   * Whether declining the floor prompt is a FAILURE of the command.
+   *
+   * True for `aka plugins install`, where the decline is the whole operation:
+   * `aka plugins install … && aka init` must not read it as a success. False for
+   * `aka init`, where the plugin is an optional extra offered after the store is
+   * already created — init succeeded, and the user simply passed on the offer,
+   * exactly like `offerPluginInstall`'s own decline path. Scoped to the DECLINE
+   * rather than cleared by the caller, so a genuine install failure below still
+   * reports non-zero to init.
+   */
+  declineIsFailure?: boolean;
 }
 
 // `aka plugins [list|install <agent>]` — the optional plugin hub.
@@ -159,9 +171,10 @@ async function installPlugin(argv: string[], deps: InstallDeps): Promise<void> {
         const answer = (await io.ask('Install anyway? [y/N] ')).trim().toLowerCase();
         if (answer !== 'y' && answer !== 'yes') {
           io.out('Not installed. Update Claude Code, then run this again.\n');
-          // Non-zero, like every other abort here: `aka plugins install … && aka
-          // init` must not treat a decline as a successful install.
-          process.exitCode = 1;
+          // Non-zero for a direct `aka plugins install`, where the decline IS the
+          // operation failing. Not for `aka init`, which offers the plugin as an
+          // optional extra once the store is already built — see declineIsFailure.
+          if (deps.declineIsFailure !== false) process.exitCode = 1;
           return;
         }
       }

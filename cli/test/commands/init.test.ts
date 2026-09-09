@@ -631,6 +631,9 @@ describe('the plugin-install offer', () => {
     // host-floor gate may still ask if this host is below a floor.
     expect(runPlugins).toHaveBeenCalledWith(['install', 'claude-code'], {
       assumeYes: false,
+      // The plugin is optional here: declining the floor prompt must not make
+      // `aka init` exit 1 after the store was already created.
+      declineIsFailure: false,
     });
   });
 
@@ -652,6 +655,7 @@ describe('the plugin-install offer', () => {
     // user who passed --yes, and a scripted Enter answers no and installs nothing.
     expect(runPlugins).toHaveBeenCalledWith(['install', 'claude-code'], {
       assumeYes: true,
+      declineIsFailure: false,
     });
   });
 });

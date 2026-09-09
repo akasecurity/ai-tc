@@ -192,6 +192,32 @@ describe('aka plugins install warns when Claude Code is too old for part of AKA'
   });
 });
 
+describe('who owns the exit code when the floor prompt is declined', () => {
+  it('reports failure for a direct `aka plugins install`', async () => {
+    // The decline IS the operation here, so `aka plugins install … && aka init`
+    // must not carry on. This is the default, with no flag passed.
+    const io = fakePrompter(['n']);
+    await runPlugins(['install', 'claude-code'], { hostVersion: () => '2.0.0', prompter: io });
+    expect(spawned.calls).toEqual([]);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('does NOT fail the command when the caller says a decline is skippable', async () => {
+    // `aka init` offers the plugin as an optional extra AFTER the store is built.
+    // Declining is a skip, exactly like init's own decline path, so init must
+    // still exit 0 — it succeeded.
+    const io = fakePrompter(['n']);
+    await runPlugins(['install', 'claude-code'], {
+      hostVersion: () => '2.0.0',
+      prompter: io,
+      declineIsFailure: false,
+    });
+    expect(io.out_.join('')).toContain('Not installed');
+    expect(spawned.calls).toEqual([]);
+    expect(process.exitCode).toBeUndefined();
+  });
+});
+
 describe('the install gate respects consent already given', () => {
   it('warns but does not ask when the caller passed --yes', async () => {
     // `aka init --yes` threads assumeYes. Without it the gate re-asks a user who

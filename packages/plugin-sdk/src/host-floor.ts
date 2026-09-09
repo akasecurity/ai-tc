@@ -245,11 +245,20 @@ const HOST_VERSION_MARKER = 'host-version.json';
 export function recordHostVersion(dataDir: string, version: string | undefined): void {
   if (version === undefined || !isParseableBinaryVersion(version)) return;
   try {
-    // NEVER REGRESS. Two installs can share one machine, and this file is what
+    // Keep the max. Two installs can share one machine, and this file is what
     // the on-demand surfaces read: letting an older one win would tell a user
-    // whose host is current to update it — the one outcome this module forbids.
-    // Keeping the max also makes the repeat write a no-op, so the hot path stops
-    // rewriting a byte-identical payload on every tool call.
+    // whose host is current to update it. Keeping the max also makes the repeat
+    // write a no-op, so the hot path stops rewriting a byte-identical payload on
+    // every tool call.
+    //
+    // EVENTUAL, NOT ABSOLUTE — read it as a property of the steady state, not of
+    // any single call. This is a read-modify-write, and only the WRITE is
+    // indivisible (§6's distinction): two sessions can both read null, the newer
+    // publish, and the older publish over it. It self-heals, because the newer
+    // session's next call reads the older value and republishes over it, so the
+    // damage is bounded to one wrong `aka status` reading in the window between
+    // two tool calls. That is why this carries no lock — see §6, which now names
+    // this file among the unlocked read-modify-writes for the same reason.
     const current = readHostVersionCache(dataDir);
     if (current !== null && compareBinaryVersions(version, current.version) <= 0) return;
     const cache: HostVersionCache = { version, observedAt: Date.now() };

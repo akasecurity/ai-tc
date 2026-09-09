@@ -708,7 +708,12 @@ export async function runStatus(argv: string[], deps: AttachDeps = {}): Promise<
   // deliberately does not. Read from the cache a hook wrote, so it reports "last
   // seen" rather than probing — `claude --version` would answer for the install
   // on PATH, which need not be the one running any session.
-  io.out(`${hostCompatibilityLines(readHostVersionCache(dataDir)).join('\n')}\n`);
+  // Guarded, because `[]` means "nothing to say" and `[].join('\n')` is `''` —
+  // which this template would turn into a bare newline. That is the COMMON case,
+  // not an edge one: a CLI-only install, a Codex-only install, and any Claude
+  // Code install before its first completed turn all have no cache to read.
+  const hostLines = hostCompatibilityLines(readHostVersionCache(dataDir));
+  if (hostLines.length > 0) io.out(`${hostLines.join('\n')}\n`);
 }
 
 /**

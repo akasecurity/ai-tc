@@ -164,7 +164,7 @@ export {
   withoutDroppedFiles,
 } from './repositories/shares.ts';
 export { SqliteSourceProjectRepository } from './repositories/source-project.ts';
-export { compareBinaryVersions } from './semver.ts';
+export { compareBinaryVersions, isParseableBinaryVersion } from './semver.ts';
 export type { OnboardingAnswers } from './settings.ts';
 export type { EffectiveSettings } from './settings.ts';
 export {

@@ -88,6 +88,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'inspectionFindingId',
   'inventoryId',
   'isCurrentKeyVersion',
+  'isParseableBinaryVersion',
   'isSafeEndpoint',
   'keyStateOf',
   'keysDir',

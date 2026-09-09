@@ -468,10 +468,15 @@ properties are load-bearing:
   `fingerprint.ts`'s key ROTATION and `local-ops`' `update-cache.ts` are unlocked
   read-modify-writes with the same shape, and each is its own outstanding fix.
   `plugin-sdk`'s `host-floor.ts` (`data/host-version.json`) is a third, and is the one
-  that is NOT owed a fix: it keeps a MAX, so the loser of a race is displaced by the
-  winner's next write rather than persisting, which bounds the damage to one stale
-  `aka status` reading between two tool calls. That reasoning is what earns the
-  exemption — a fourth writer does not inherit it by being on this list. The first MINT
+  that is NOT owed a fix — though not because it self-heals, which it does NOT. Its
+  max-keeping loses the race that matters: two sessions reading `null` both pass the
+  comparison, and the loser PERSISTS, because the only caller sits behind a
+  once-per-session claim it keeps, so the winner never writes again. What earns the
+  exemption is the BLAST RADIUS rather than the duration — nothing on the hook path
+  reads that file, so a stale value costs a wrong line on `aka status` and
+  /aka:health, pull surfaces somebody is reading because they are already debugging.
+  A fourth writer does not inherit that by being on this list, and a file any
+  enforcement path READS would not qualify for it at all. The first MINT
   is no longer one of them, and it was not fixed with a lock: `createKeyFile` publishes through
   `createOwnerOnlyFileSync`, which links an already-complete tmp into place, so exactly one
   caller wins and every loser reads the file back and ADOPTS the winner's key. That works only

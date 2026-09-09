@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { compareBinaryVersions } from '@akasecurity/persistence';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -295,6 +296,16 @@ describe('hostCompatibilityLines', () => {
     expect(lines).toContain(MAX_TESTED_HOST);
     expect(lines).not.toContain('update Claude Code');
     expect(lines).not.toContain('newer than AKA');
+  });
+
+  it('keeps every floor at or below the tested ceiling', () => {
+    // The assertion that BINDS. The sampled loop below is the behavioural half,
+    // but it samples fixed versions and the drift it describes opens a BAND: a
+    // floor at 2.2.0 with the ceiling still at 2.1.260 makes a host at 2.1.261
+    // print both blocks, while every sampled version sits outside that band and
+    // passes. `MAX_TESTED_HOST` is bumped at release time and floors are read
+    // from the host changelog, so the two genuinely move on different schedules.
+    expect(compareBinaryVersions(HIGHEST_FLOOR ?? '0.0.0', MAX_TESTED_HOST)).toBeLessThanOrEqual(0);
   });
 
   it('never claims a host is both too old and newer than tested', () => {

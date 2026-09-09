@@ -251,14 +251,24 @@ export function recordHostVersion(dataDir: string, version: string | undefined):
     // write a no-op, so the hot path stops rewriting a byte-identical payload on
     // every tool call.
     //
-    // EVENTUAL, NOT ABSOLUTE — read it as a property of the steady state, not of
-    // any single call. This is a read-modify-write, and only the WRITE is
-    // indivisible (§6's distinction): two sessions can both read null, the newer
-    // publish, and the older publish over it. It self-heals, because the newer
-    // session's next call reads the older value and republishes over it, so the
-    // damage is bounded to one wrong `aka status` reading in the window between
-    // two tool calls. That is why this carries no lock — see §6, which now names
-    // this file among the unlocked read-modify-writes for the same reason.
+    // EVENTUAL, AND IT DOES NOT SELF-HEAL WITHIN A SESSION. This is a
+    // read-modify-write, and only the WRITE is indivisible (§6's distinction):
+    // two sessions can both read null, the newer publish, and the older publish
+    // over it — the max-keeping above never runs, because both compared against
+    // null rather than against each other.
+    //
+    // The loser then PERSISTS. The one caller sits behind a once-per-session
+    // claim it KEEPS on a successful observation, so the newer session never
+    // writes again: the stale value survives until some new session on that host
+    // observes it — bounded by the claim TTL for a resumed session, and unbounded
+    // if the newer host is simply not started again.
+    //
+    // What earns that is the blast radius rather than the duration: nothing on
+    // the hook path reads this file, so a stale value costs a wrong line on
+    // `aka status` and /aka:health and nothing else. Making it absolute means
+    // moving this call outside the claim, which is a transcript read per tool
+    // call — the cost the ordering above exists to avoid. See §6, which names
+    // this file among the unlocked read-modify-writes on exactly this reasoning.
     const current = readHostVersionCache(dataDir);
     if (current !== null && compareBinaryVersions(version, current.version) <= 0) return;
     const cache: HostVersionCache = { version, observedAt: Date.now() };

@@ -422,6 +422,25 @@ describe('status', () => {
     expect(out.output()).toContain('none cached');
   });
 
+  it('reports the host version and the protections it is too old for', async () => {
+    // The POSITIVE half of the pair below, and the one that guards the FEATURE.
+    // The empty-cache case proves the guard is present; it passes identically
+    // when the whole block is deleted, so on its own it cannot tell "guarded"
+    // from "gone". This one seeds the cache a hook would have written and
+    // asserts the block actually renders.
+    mkdirSync(dataDirOf(base), { recursive: true });
+    writeFileSync(
+      join(dataDirOf(base), 'host-version.json'),
+      JSON.stringify({ version: '2.0.0', observedAt: Date.now() }),
+      'utf8',
+    );
+
+    const io = scriptedPrompter({ interactive: true });
+    await runStatus([], deps(io));
+    expect(io.output()).toContain('2.0.0');
+    expect(io.output()).toContain('model-switch protection');
+  });
+
   it('ends without a trailing blank line when there is no host reading yet', async () => {
     // `hostCompatibilityLines` returns [] on a machine no Claude Code hook has
     // ever written a version for — a CLI-only install, a Codex-only install, or

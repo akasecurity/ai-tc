@@ -10,7 +10,7 @@ export {
 } from './background-schedule.ts';
 export { claudeAvailable, installClaudePlugin, updateClaudePlugin } from './claude-plugin.ts';
 export type { CliPluginBin, CliPluginManager } from './cli-plugin-manager.ts';
-export { createCliPluginManager, hostCliVersion } from './cli-plugin-manager.ts';
+export { createCliPluginManager, hostCliVersion, versionTokenFrom } from './cli-plugin-manager.ts';
 export { codexAvailable, installCodexPlugin, updateCodexPlugin } from './codex-plugin.ts';
 export type { EgressRecordResult } from './egress-record.ts';
 export { recordProjectEgress } from './egress-record.ts';

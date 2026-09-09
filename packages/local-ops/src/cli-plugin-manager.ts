@@ -1,4 +1,5 @@
 import { binExists, runCapture, runInherit } from './exec.ts';
+import { isSemver } from './semver.ts';
 
 // Generic delegator onto a host CLI's own plugin manager — the supported way
 // to install and update its plugins. The AKA CLI is a hub over these, never a
@@ -44,36 +45,44 @@ export type CliPluginBin = 'claude' | 'codex';
  *
  * Fail-silent by construction: every caller treats undefined as "do not warn".
  */
-// TWIN of `isParseableBinaryVersion`'s grammar in @akasecurity/persistence,
-// duplicated rather than imported for the same boundary reason that package's
-// own semver.ts documents: this module is reached by a child Node loads under
-// type STRIPPING, and persistence carries TypeScript parameter properties,
-// which strip-only mode refuses at load (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX).
-// `packages/local-ops/test/spawn.test.ts` is what catches a regression here.
-// Mirror any change to the accepted shape in both places.
-const VERSION_TOKEN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-.]+)?$/;
+/**
+ * The first token in a `--version` output that parses as a version.
+ *
+ * Separated from the spawn so it can be tested directly: the shape of this scan
+ * is the whole of what the install gate depends on, and driving it through a
+ * child process would test the child instead. `hostCliVersion` is then only the
+ * spawn.
+ *
+ * Validated with `isSemver` from this package rather than a private regex, so
+ * one grammar serves the parse and the comparison. A local copy would sit
+ * outside the mirroring convention both `semver.ts` headers already name, and a
+ * grammar widened under that convention (accepting `+build`, say) would leave
+ * this behind — the gate would then reject versions the comparator accepts and
+ * go silent.
+ *
+ * Leading and trailing punctuation is stripped, so `v2.1.258`, `(2.1.258)` and
+ * `2.1.258,` all resolve. The PRERELEASE is deliberately kept: `2.1.251-rc.1`
+ * must not collapse to `2.1.251`, which compares EQUAL to a floor that build
+ * predates, letting it clear a gate it should trip.
+ *
+ * The first line wins over the rest, because that is where a `--version` prints.
+ * That narrows, but does not eliminate, a version-shaped token appearing before
+ * the real one: a notice on a LATER line now loses, while one on the first line
+ * still wins. It fails toward silence — a spurious higher version clears every
+ * floor — so it costs a missed warning, never a wrong one.
+ */
+export function versionTokenFrom(stdout: string): string | undefined {
+  const [firstLine = ''] = stdout.split('\n');
+  for (const token of [...firstLine.trim().split(/\s+/), ...stdout.split(/\s+/)]) {
+    const candidate = token.replace(/^[^\d]*/, '').replace(/[^\w.-]+$/, '');
+    if (isSemver(candidate)) return candidate;
+  }
+  return undefined;
+}
 
 export function hostCliVersion(bin: CliPluginBin): string | undefined {
   const { ok, stdout } = runCapture(bin, ['--version'], 5_000);
-  if (!ok) return undefined;
-  // `claude --version` prints "2.1.258 (Claude Code)", so the first token of the
-  // first line is the answer; the whole-output scan is the fallback for a host
-  // that words it differently.
-  //
-  // The token is matched against the SAME grammar `compareBinaryVersions`
-  // parses, so a prerelease survives intact and reaches the comparator that
-  // knows how to order it. The regex this replaced was wrong in three ways: it
-  // dropped a prerelease suffix (`2.1.251-rc.1` became `2.1.251`, which compares
-  // EQUAL to the floor, so a build that genuinely predates an event cleared it),
-  // it could not match a `v` prefix at all (no word boundary between `v` and a
-  // digit), and it took the first version-shaped token anywhere in the output,
-  // so a leading update notice won over the real version.
-  const [firstLine = ''] = stdout.split('\n');
-  for (const token of [...firstLine.trim().split(/\s+/), ...stdout.split(/\s+/)]) {
-    const candidate = token.replace(/^[vV]/, '').replace(/[),;]+$/, '');
-    if (VERSION_TOKEN.test(candidate)) return candidate;
-  }
-  return undefined;
+  return ok ? versionTokenFrom(stdout) : undefined;
 }
 
 // One command's argv, minus the binary. A step list rather than a single argv

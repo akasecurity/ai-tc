@@ -64,7 +64,23 @@ const VAR_TOKEN = '${var}';
 // unchanged, so it can be swapped back verbatim afterwards.
 const VAR_SENTINEL = 'akaegressvar0';
 
-const TRAILING_PUNCTUATION = /[.,;:'"]+$/;
+// Sentence punctuation a URL literal may pick up from the prose around it,
+// stripped by scanning from the END rather than with a `+$` pattern. That
+// pattern is quadratic on a candidate whose punctuation run does not reach the
+// end: every start position consumes the run and then fails the anchor. A URL
+// candidate is file content, bounded only by the walker's 1 MB cap, so a repo
+// carrying one long run is enough. Measured on a URL followed by 64K dots and
+// one letter: 1,471 ms before, 0 ms after. The result is identical for every
+// input — the scan simply cannot backtrack.
+const TRAILING_PUNCTUATION = '.,;:\'"';
+
+function stripTrailingPunctuation(value: string): string {
+  let end = value.length;
+  // `charAt` rather than an index read: it returns '' past the end rather
+  // than `undefined`, so the loop needs no non-null assertion.
+  while (end > 0 && TRAILING_PUNCTUATION.includes(value.charAt(end - 1))) end -= 1;
+  return end === value.length ? value : value.slice(0, end);
+}
 
 // Scheme to transport. 'grpcs' collapses onto 'grpc'; the stored URL is
 // rebuilt from the transport so the two can never disagree.
@@ -196,26 +212,44 @@ function redactLine(line: string): string {
 }
 
 /**
- * Strip credentials and secret values out of one source line and cap it at
- * SNIPPET_MAX characters. `Authorization: <scheme> <credential>` keeps the
- * scheme keyword and masks the credential; a webhook URL keeps its routing
- * prefix and loses the path segments that authorize posting to it.
+ * One source line with its credentials and secret values already stripped, plus
+ * what placing a window into it needs.
  *
- * `anchor` is the hit's offset within `line`; the cap window is centered on it
- * so a hit far along a very long line — a minified bundle puts a whole file on
- * one line — still lands inside the stored evidence. Redaction always runs over
- * the whole line first, so masking never depends on where the window falls.
+ * Split out from `redactSnippet` because this half depends on the LINE ALONE
+ * and is the whole cost — `redactLine` walks the line, and so does each trim.
+ * A hit's snippet is taken per HIT, and a minified bundle puts every hit in a
+ * file on ONE line, so recomputing this per hit is quadratic in the number of
+ * hits. Measured on an ordinary 128 KB single-line file carrying 3,283 URLs:
+ * 1,955 ms before, against 5 ms for the same bytes and the same hits split over
+ * short lines. That is benign input, not a crafted one.
  */
-export function redactSnippet(line: string, anchor = 0): string {
-  const redacted = redactLine(line);
-  if (redacted.length <= SNIPPET_MAX) return redacted;
+interface RedactedLine {
+  redacted: string;
+  /**
+   * Only populated once `redacted` is long enough to need a window. Each field
+   * costs another pass over the line, and a line that fits under SNIPPET_MAX
+   * returns whole and never reads them.
+   */
+  window?: { trimmed: string; lead: number };
+}
 
-  const lead = line.length - line.trimStart().length;
-  const trimmed = line.trim();
+function redactedLineOf(line: string): RedactedLine {
+  const redacted = redactLine(line);
+  if (redacted.length <= SNIPPET_MAX) return { redacted };
+  return {
+    redacted,
+    window: { trimmed: line.trim(), lead: line.length - line.trimStart().length },
+  };
+}
+
+function snippetWindow({ redacted, window }: RedactedLine, anchor: number): string {
+  if (window === undefined) return redacted;
+  const { trimmed, lead } = window;
   // Masking only ever shortens, so an unchanged length means nothing matched
   // and offsets carry over untouched. Otherwise re-redact the prefix to find
   // where the anchor landed; that pass is only reached on a line long enough
-  // to need windowing that also carried a secret.
+  // to need windowing that also carried a secret, and it is the one cost here
+  // that is still per hit rather than per line.
   const mapped =
     redacted.length === trimmed.length
       ? anchor - lead
@@ -225,6 +259,24 @@ export function redactSnippet(line: string, anchor = 0): string {
     redacted.length - SNIPPET_MAX,
   );
   return redacted.slice(start, start + SNIPPET_MAX);
+}
+
+/**
+ * Strip credentials and secret values out of one source line and cap it at
+ * SNIPPET_MAX characters. `Authorization: <scheme> <credential>` keeps the
+ * scheme keyword and masks the credential; a webhook URL keeps its routing
+ * prefix and loses the path segments that authorize posting to it.
+ *
+ * `anchor` is the hit's offset within `line`; the cap window is centered on it
+ * so a hit far along a very long line — a minified bundle puts a whole file on
+ * one line — still lands inside the stored evidence. Redaction always runs over
+ * the whole line first, so masking never depends on where the window falls.
+ *
+ * A caller taking many snippets from ONE line must memoize `redactedLineOf` and
+ * call `snippetWindow` instead — see extractEgress.
+ */
+export function redactSnippet(line: string, anchor = 0): string {
+  return snippetWindow(redactedLineOf(line), anchor);
 }
 
 /**
@@ -239,8 +291,12 @@ export function extractEgress(text: string): RawEndpointHit[] {
   // every hit in a file on a single very long line.
   const lineTextOf = memoizeByLine((index) => lineTextAt(text, lineStarts, index));
   const ipContextOf = memoizeByLine((index) => ipLineContext(lineTextOf(index)));
+  // Per LINE, like the two above and for the same reason: the redaction pass is
+  // the cost of a snippet, and every hit on a minified bundle's single line
+  // would otherwise pay it again.
+  const redactedOf = memoizeByLine((index) => redactedLineOf(lineTextOf(index)));
   const snippetAt = (index: number, offset: number): string =>
-    redactSnippet(lineTextOf(index), offset - (lineStarts[index] ?? 0));
+    snippetWindow(redactedOf(index), offset - (lineStarts[index] ?? 0));
 
   for (const match of text.matchAll(URL_CANDIDATE)) {
     const start = match.index;
@@ -249,7 +305,7 @@ export function extractEgress(text: string): RawEndpointHit[] {
 
     const scheme = match[1];
     if (scheme === undefined) continue;
-    const candidate = matched.replace(TRAILING_PUNCTUATION, '');
+    const candidate = stripTrailingPunctuation(matched);
     if (candidate === '') continue;
 
     const parsed = parseCandidate(candidate, scheme);

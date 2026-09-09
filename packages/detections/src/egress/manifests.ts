@@ -272,7 +272,16 @@ const POM_CONTEXT_TAGS = new Set([
   'exclusions',
   'exclusion',
 ]);
-const XML_TAG = /<(\/?)([A-Za-z][\w.-]*)([^<>]*)>/g;
+// The name run is MAXIMAL, so whatever follows it is either `>` or a character
+// the name class cannot hold. Spelling that out — rather than letting the
+// attribute group start with characters the name group could also have taken —
+// is what keeps this linear. The two groups otherwise share an alphabet, so a
+// `<` that never closes makes the engine retry every split point of the name
+// run against the rest of the line. That is reachable from any repository being
+// scanned: a manifest line is file content, bounded only by the walker's 1 MB
+// cap. Measured on one line of `<a` followed by 64K word characters: 2,613 ms
+// before, 0.1 ms after, and ~4x per doubling before against flat after.
+const XML_TAG = /<(\/?)([A-Za-z][\w.-]*)((?:[^<>\w.-][^<>]*)?)>/g;
 const LEADING_TEXT = /^([^<]*)/;
 
 function extractPomXml(text: string): ManifestSdkHit[] {

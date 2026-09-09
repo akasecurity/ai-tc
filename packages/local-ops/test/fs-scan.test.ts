@@ -124,6 +124,76 @@ describe('collectFiles', () => {
     expect([...collectFiles(join(root, 'nope'))]).toEqual([]);
   });
 
+  describe('protected credential paths', () => {
+    // `root` doubles as the fake home: the walk resolves the protected set from
+    // the home it is GIVEN, so a test never has to touch the real one.
+    const lockDir = () => join(root, '.claude', 'ide');
+    const seedHome = (): { lock: string; transcript: string } => {
+      mkdirSync(lockDir(), { recursive: true });
+      const lock = join(lockDir(), '54321.lock');
+      // Shaped like the real thing — the host writes a live auth token here.
+      writeFileSync(lock, JSON.stringify({ pid: 1, ideName: 'VS Code', authToken: SECRET }));
+      chmodSync(lock, 0o600);
+      mkdirSync(join(root, '.claude', 'projects'), { recursive: true });
+      const transcript = join(root, '.claude', 'projects', 'session.jsonl');
+      writeFileSync(transcript, '{"type":"user"}\n');
+      return { lock, transcript };
+    };
+
+    it('never yields the ide lock file when the home directory is walked', () => {
+      const { transcript } = seedHome();
+      const files = [...collectFiles(join(root, '.claude'), root)].map((f) => f.path);
+      // The positive control sits in the same directory tree: the walk really
+      // did descend, so the lock's absence is an exclusion rather than an
+      // empty scan.
+      expect(files).toEqual([transcript]);
+    });
+
+    it('refuses the lock file even when it is named directly', () => {
+      // The direct-file branch treats a named file as explicit user intent and
+      // scans it without consulting any ignore file. This is the one thing that
+      // outranks that intent.
+      const { lock } = seedHome();
+      expect([...collectFiles(lock, root)]).toEqual([]);
+      expect([...collectFiles(lockDir(), root)]).toEqual([]);
+    });
+
+    it('cannot be re-included by an .akaignore negation', () => {
+      // The precedence that makes this worth a separate case: a bare `!` beats
+      // the SKIP_DIRS/dot-directory floor, and `.akaignore` is written by
+      // whoever wrote the repo being scanned. It must not reach a directory of
+      // live auth tokens.
+      //
+      // The pattern pair is what makes this NON-VACUOUS, and the first version
+      // of this case was vacuous without it: `ide` is not a dot-directory and
+      // no default rule ignores it, so a lone `!ide/` re-includes nothing and
+      // the case passed with the guard folded into the ignore condition — the
+      // exact mistake it exists to catch. Ignoring it first and negating after
+      // is what drives `evaluateIgnore` to `unignored`, which is the state that
+      // short-circuits the floor.
+      seedHome();
+      writeFileSync(join(root, '.claude', '.akaignore'), 'ide/\n!ide/\n');
+      const files = [...collectFiles(join(root, '.claude'), root)].map((f) => f.path);
+      expect(files.some((f) => f.includes('.lock'))).toBe(false);
+    });
+
+    it('excludes AKA-s own home, which holds the vault key and the store', () => {
+      mkdirSync(join(root, '.aka', 'settings'), { recursive: true });
+      writeFileSync(join(root, '.aka', 'settings', 'control-plane-credential.json'), SECRET);
+      writeFileSync(join(root, 'app.ts'), 'const x = 1;\n');
+      expect([...collectFiles(root, root)].map((f) => f.path)).toEqual([join(root, 'app.ts')]);
+    });
+
+    it('stays narrow: an ordinary dotfile is still scanned when named', () => {
+      // Without this the exclusion could widen to every dotfile and every case
+      // above would still pass — and finding secrets in a stray dotfile is the
+      // whole job.
+      const env = join(root, '.env');
+      writeFileSync(env, ['TOKEN', SECRET].join('=') + '\n');
+      expect([...collectFiles(env, root)]).toEqual([{ path: env, gitignored: false }]);
+    });
+  });
+
   it('hard-skips .akaignore matches (files and directories)', () => {
     // The ignore file lists itself too — dotFILES are otherwise scanned
     // (that's where secrets live), unlike dot-directories.

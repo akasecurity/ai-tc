@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { type Dirent, readdirSync, readFileSync, statSync } from 'node:fs';
-import { basename, extname, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { basename, extname, join, resolve, sep } from 'node:path';
 
 import type { FileEgressHits, MatchResult } from '@akasecurity/detections';
 import {
@@ -58,9 +59,43 @@ import { DEFAULT_ACTIONS, isActionAtLeast, SOURCE_TOOL } from '@akasecurity/sche
 //   .akaignore  → SKIP: explicit user intent aimed at this scanner. Same
 //                 gitignore syntax, hard skip — no read, no stored event, no
 //                 finding. A negation (`!vendor/`) also re-includes a directory
-//                 from the default SKIP_DIRS/dot-directory floor.
+//                 from the default SKIP_DIRS/dot-directory floor — but NOT from
+//                 the protected-path list below, which no ignore file can
+//                 override.
 
 const AKAIGNORE_FILENAME = '.akaignore';
+
+// Paths this scanner must never read, whatever it is pointed at.
+//
+// These are not "files that contain secrets" — finding those is the whole job.
+// They are LIVE CREDENTIALS that AKA or its host wrote for itself, which the
+// user did not author and which a finding cannot help them fix. Reading one
+// copies it into `audit_events.content`, and at the default policy that copy
+// is BYTE-FOR-BYTE: `scanPathIntoStore` only masks spans whose action reaches
+// `redact`, and a pack ships on `monitor`. So scanning them is not a detection,
+// it is an exfiltration into AKA's own store.
+//
+//   ~/.claude/ide/<port>.lock  the host writes one per attached IDE, mode 0600,
+//                              carrying a live auth token
+//   ~/.claude/.credentials.json  the host's own stored credential
+//   ~/.aka                     AKA's home: the vault key, the control-plane
+//                              credential, and the store this scan writes into
+//
+// Absolute, resolved paths, and a PREFIX match so a directory covers what is
+// under it. Deliberately NOT overridable by an `.akaignore` negation — see the
+// precedence note at the directory branch.
+function protectedPaths(home: string): readonly string[] {
+  return [
+    resolve(home, '.claude', 'ide'),
+    resolve(home, '.claude', '.credentials.json'),
+    resolve(home, '.aka'),
+  ];
+}
+
+function isProtected(absolute: string, roots: readonly string[]): boolean {
+  const path = resolve(absolute);
+  return roots.some((root) => path === root || path.startsWith(root + sep));
+}
 
 // Directories never worth scanning (vendored / build output / VCS). Not an
 // absolute invariant: an `!` negation in .akaignore re-includes one.
@@ -96,21 +131,34 @@ export interface CollectedFile {
   gitignored: boolean;
 }
 
-export function* collectFiles(target: string): Generator<CollectedFile> {
+export function* collectFiles(
+  target: string,
+  // The home whose credential paths are off limits. A parameter with a default
+  // rather than a `homedir()` call per entry: the roots are resolved ONCE here
+  // and threaded down, because this walk runs over the adversarial corpus and
+  // a per-entry syscall would be charged to every file. Optional so the bench
+  // and the existing callers keep their one-argument form.
+  home: string = homedir(),
+): Generator<CollectedFile> {
+  const protectedRoots = protectedPaths(home);
   let st;
   try {
     st = statSync(target);
   } catch {
     return;
   }
+  // Before the isFile/isDirectory split, so naming one of these paths directly
+  // is refused as firmly as walking into it.
+  if (isProtected(target, protectedRoots)) return;
   if (st.isFile()) {
     // A directly-named file is explicit user intent: scan it unconditionally,
-    // no ignore-file consultation.
+    // no ignore-file consultation — the protected list above being the one
+    // thing that outranks that intent.
     if (st.size <= MAX_BYTES) yield { path: target, gitignored: false };
     return;
   }
   if (!st.isDirectory()) return;
-  yield* visit(target, '', [], [], false);
+  yield* visit(target, '', [], [], false, protectedRoots);
 }
 
 // inIgnoredDir: git semantics — once a directory is gitignored, nothing
@@ -126,6 +174,7 @@ function* visit(
   markLayers: readonly IgnoreLayer[],
   skipLayers: readonly IgnoreLayer[],
   inIgnoredDir: boolean,
+  protectedRoots: readonly string[],
 ): Generator<CollectedFile> {
   // The listing comes FIRST, before either ignore file is read. Two reasons,
   // and the second is why this is not merely tidier: `@akasecurity/scanner`'s
@@ -173,6 +222,18 @@ function* visit(
   for (const entry of dirents) {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) {
+      // Defence in depth, not the guarantee: the FILE branch below is a prefix
+      // match, so every file under a protected directory is refused whether or
+      // not this line exists. What this buys is that a directory of live auth
+      // tokens is never even listed.
+      //
+      // Placed before the ignore evaluation rather than folded into it, because
+      // that condition short-circuits on an `.akaignore` negation — and that
+      // file is written by whoever wrote the tree being scanned. Verified by
+      // mutation: folding it in leaves the suite green (the file branch still
+      // covers it), so the placement is a reasoned choice rather than something
+      // a test pins.
+      if (isProtected(path, protectedRoots)) continue;
       const skipState = evaluateIgnore(dirSkipLayers, dirRel, entry.name, true);
       // Precedence: an explicit .akaignore re-include beats the default floor
       // (SKIP_DIRS + dot-directories); otherwise the floor and .akaignore
@@ -185,8 +246,20 @@ function* visit(
       }
       const dirIgnored =
         inIgnoredDir || evaluateIgnore(dirMarkLayers, dirRel, entry.name, true) === 'ignored';
-      yield* visit(path, childRel(dirRel, entry.name), dirMarkLayers, dirSkipLayers, dirIgnored);
+      yield* visit(
+        path,
+        childRel(dirRel, entry.name),
+        dirMarkLayers,
+        dirSkipLayers,
+        dirIgnored,
+        protectedRoots,
+      );
     } else if (entry.isFile()) {
+      // THE guarantee for a walked tree: a prefix match, so it covers a
+      // protected file named directly and everything under a protected
+      // directory, whatever the ignore files say. Before the stat, so an
+      // excluded file costs nothing.
+      if (isProtected(path, protectedRoots)) continue;
       // .akaignore skip — before stat/read, so an excluded file costs nothing.
       if (evaluateIgnore(dirSkipLayers, dirRel, entry.name, false) === 'ignored') continue;
       // Apply the MAX_BYTES cap here too: without it, directory traversal reads

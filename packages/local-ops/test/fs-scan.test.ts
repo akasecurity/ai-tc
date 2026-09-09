@@ -264,6 +264,32 @@ describe('collectFiles', () => {
       ]);
     });
 
+    it('keeps protecting the DEFAULT AKA home once --home has moved the one in use', () => {
+      // The mirror of the case above, and the failure that fixing that one
+      // invited: `--home` relocates the store an invocation writes to, it does
+      // not move the home already on the machine. That one goes on holding the
+      // vault key, and none of `settings`/`data`/`keys` carries a leading dot,
+      // so the dot-directory floor does not cover it either.
+      //
+      // `aka scan --home <elsewhere> ~/.aka` is the invocation: an AKA home is
+      // named as the target while `akaHome` points somewhere else entirely.
+      const defaultHome = join(root, '.aka');
+      const key = join(defaultHome, 'keys', 'vault.key');
+      mkdirSync(dirname(key), { recursive: true });
+      writeFileSync(key, SECRET);
+      const inUse = join(root, 'work-aka');
+      mkdirSync(inUse, { recursive: true });
+      const opts = { home: root, akaHome: inUse };
+
+      const err = errorFrom(() => [...collectFiles(defaultHome, opts)]);
+      expect(isProtectedTarget(err)).toBe(true);
+
+      // And on a walk, not only when named: the floor never reaches `keys/`.
+      writeFileSync(join(root, 'app.ts'), 'const x = 1;\n');
+      writeFileSync(join(root, '.akaignore'), '.akaignore\n.aka/\n!.aka/\n');
+      expect([...collectFiles(root, opts)].map((f) => f.path)).toEqual([join(root, 'app.ts')]);
+    });
+
     it('excludes a host home reached through a symlink', (ctx) => {
       // A dotfiles manager pointing `~/.claude` at `~/dotfiles/claude` is the
       // ordinary shape. `resolve` is lexical while `statSync` follows the link

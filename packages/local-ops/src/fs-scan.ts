@@ -87,8 +87,15 @@ const AKAIGNORE_FILENAME = '.akaignore';
 //                                    0600, carrying a live auth token
 //   <home>/.claude/.credentials.json the host's own stored credential
 //   <home>/.codex/auth.json          the Codex CLI's stored credential, mode 0600
-//   <akaHome>                        AKA's home: the vault key, the control-plane
+//   <home>/.aka, <akaHome>           AKA's own homes: the vault key, the control-plane
 //                                    credential, and the store this scan writes into
+//
+// BOTH AKA homes, never one instead of the other. `--home` relocates the store
+// an invocation USES; it does not move the one already on the machine, which
+// goes on holding `keys/vault.key` and `settings/control-plane-credential.json`
+// — and none of `settings`, `data` or `keys` carries a leading dot, so the
+// dot-directory floor does not reach them either. Protecting only the home in
+// use would trade this list's original gap for its mirror image.
 //
 // Both host homes are read from `homedir()` and neither honours the host's own
 // relocation variable (`CODEX_HOME`, `GEMINI_HOME`). That matches the readers
@@ -112,13 +119,30 @@ const AKAIGNORE_FILENAME = '.akaignore';
 // directory covers what is under it. Deliberately NOT overridable by an
 // `.akaignore` negation — see the precedence note at the directory branch.
 function protectedPaths(home: string, akaHome: string): readonly string[] {
+  // Deduplicated because the three AKA entries collapse to one for every caller
+  // on the default home, and `isProtected` would otherwise test the same root
+  // three times per dirent.
   return [
-    resolve(home, '.claude', 'ide'),
-    resolve(home, '.claude', '.credentials.json'),
-    resolve(home, '.codex', 'auth.json'),
-    resolve(akaHome),
-  ].map(canonicalize);
+    ...new Set(
+      [
+        resolve(home, '.claude', 'ide'),
+        resolve(home, '.claude', '.credentials.json'),
+        resolve(home, '.codex', 'auth.json'),
+        // The home this invocation was pointed at, the machine's own default,
+        // and the default under whichever OS home this call was given — a
+        // caller that redirects `home` gets that home's AKA directory covered
+        // with it. All three are the same path for a caller on the real home.
+        resolve(akaHome),
+        defaultDataDir(),
+        resolve(home, AKA_HOME_DIRNAME),
+      ].map(canonicalize),
+    ),
+  ];
 }
+
+// `.aka`, taken from the layout helper that owns that literal rather than
+// spelled again here.
+const AKA_HOME_DIRNAME = basename(defaultDataDir());
 
 // A path's ON-DISK identity, which `resolve` alone cannot give: `resolve` is
 // purely lexical, while `statSync` and every read below FOLLOW symlinks and a

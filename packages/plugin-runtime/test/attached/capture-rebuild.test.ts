@@ -154,6 +154,23 @@ describe('rebuildCapture', () => {
       expect(event?.metadata?.exceptionIds).toEqual([good]);
     });
 
+    it('carries the degrade reason the live forward carries', () => {
+      // Same argument as the exception ids above: it says WHY an enforced
+      // detection let a value through, so a capture that means one thing live
+      // and another when drained is worse than one carrying neither.
+      expect(withBag({ redact_degraded_to: 'warn' })?.metadata?.redactDegradedTo).toBe('warn');
+    });
+
+    it('drops a degrade reason outside the action vocabulary, and keeps the capture', () => {
+      // The bag is free-form JSON, so an older build or a hand edit can leave
+      // any string here. Assembling it would produce an event the deployment
+      // refuses with a 400 — and on a drain reading the head of the unstamped
+      // set with no cursor, that is the per-row door that retires the lane.
+      const event = withBag({ redact_degraded_to: 'sideways' });
+      expect(event?.content).toBe('the text of a prompt');
+      expect(event?.metadata?.redactDegradedTo).toBeUndefined();
+    });
+
     it('drops the field entirely when no exception id survives', () => {
       const event = withBag({ exception_ids: ['legacy-grant-7'] });
       expect(event?.content).toBe('the text of a prompt');

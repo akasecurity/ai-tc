@@ -1,6 +1,12 @@
 import { captureWireId } from '@akasecurity/persistence';
 import type { AuditEventRow } from '@akasecurity/schema';
-import { EventKind, EventMetadata, IngestEvent, SourceTool } from '@akasecurity/schema';
+import {
+  ActionTaken,
+  EventKind,
+  EventMetadata,
+  IngestEvent,
+  SourceTool,
+} from '@akasecurity/schema';
 
 /**
  * One stored capture row → the wire event the outbox owes the deployment.
@@ -133,6 +139,18 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
     // capture becomes a permanent skip. That is the per-row door the rest of this
     // function exists to avoid, and this field was the last one still using it.
     ...withList('exceptionIds', keepAll(attributes.exception_ids, EXCEPTION_ID)),
+    // Carried, for the same reason exceptionIds is: it says WHY an enforced
+    // detection let a value through, and a capture that means one thing live
+    // and another when drained is worse than one that carries neither.
+    //
+    // Parsed rather than type-checked. The bag is free-form JSON, so a hand
+    // edit or an older build can leave any string here; an unparseable one is
+    // dropped rather than assembled into an event the deployment would refuse
+    // with a 400 — which, on a drain that reads the head of the unstamped set
+    // with no cursor, is the per-row door that retires the whole lane.
+    ...(ActionTaken.safeParse(attributes.redact_degraded_to).success
+      ? { redactDegradedTo: ActionTaken.parse(attributes.redact_degraded_to) }
+      : {}),
     // inspectionMs is DELIBERATELY not carried. It measures latency a live host
     // session actually waited on, and a row being drained hours later is not
     // that; the field's own contract says a replay leaves it absent rather than

@@ -726,12 +726,19 @@ export function createPluginRuntime(
       // costs end to end, and `EventMetadata.inspectionMs` says so; an absent
       // reading is left absent rather than defaulted.
       const inspectionMs = elapsedMs(timingStartedAt);
+      // The degrade, recorded on the row it happened to. Without it the stored
+      // finding says `warn` and nothing distinguishes a detection the user
+      // ASSIGNED Warn from one assigned Redact on a field that could not take
+      // one — the second is a masking the host could not perform, which is what
+      // a reader asking "why did this go through" needs to see.
+      const redactDegradedTo = decision.redactDegradedTo;
       const metadata =
-        exceptionIds.length > 0 || inspectionMs !== undefined
+        exceptionIds.length > 0 || inspectionMs !== undefined || redactDegradedTo !== undefined
           ? {
               ...input.metadata,
               ...(exceptionIds.length > 0 ? { exceptionIds } : {}),
               ...(inspectionMs !== undefined ? { inspectionMs } : {}),
+              ...(redactDegradedTo !== undefined ? { redactDegradedTo } : {}),
             }
           : input.metadata;
       const event = buildIngestEvent({

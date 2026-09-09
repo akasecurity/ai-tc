@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { ActionTaken } from './finding.ts';
 import { SourceTool } from './harness-map.ts';
 
 // 'tool_use' is the enforcement record for a tool call whose arguments were
@@ -76,6 +77,18 @@ export const EventMetadata = z
     // clock failure degrades to — a reader must treat absence as "not measured"
     // and never as a zero, which would read as "inspection is free".
     inspectionMs: z.number().int().nonnegative().optional(),
+    // What a `redact` this capture COULD NOT CARRY OUT became instead — the
+    // workspace's `redactFallback`, applied because the field could not be
+    // masked in place (a shell command, a URL, or any argument on a host whose
+    // hook contract offers no rewrite channel).
+    //
+    // It exists because the action alone cannot say why. A finding recorded as
+    // `warn` reads identically whether its detection was ASSIGNED Warn or was
+    // assigned Redact on a field that could not take one — and those are
+    // different facts about the same row: the first is a policy the user chose,
+    // the second is a masking the host could not perform. Absent means no
+    // degrade happened, which is every ordinary capture.
+    redactDegradedTo: ActionTaken.optional(),
   })
   .meta({ id: 'EventMetadata' });
 export type EventMetadata = z.infer<typeof EventMetadata>;

@@ -1066,6 +1066,43 @@ describe('a redact the caller cannot carry out', () => {
     await runtime.close();
   });
 
+  it('records WHY the value went through, on the row it happened to', async () => {
+    // The action alone cannot say. A finding recorded as `warn` reads
+    // identically whether its detection was assigned Warn or was assigned
+    // Redact on a field that could not take one, and those are different facts:
+    // the first is a policy the user chose, the second a masking the host could
+    // not perform.
+    const gateway = fakeGateway(redactBundle());
+    const runtime = createPluginRuntime(gateway, settingsWith('warn'));
+    await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+    await runtime.close();
+
+    expect(gateway.records).toHaveLength(1);
+    expect(gateway.records[0]?.event.metadata?.redactDegradedTo).toBe('warn');
+  });
+
+  it('leaves the reason absent when nothing degraded — the control', async () => {
+    // Without this the case above would pass on a runtime that stamped the
+    // field unconditionally, which would make every ordinary capture claim a
+    // degrade that never happened.
+    const gateway = fakeGateway(redactBundle());
+    const runtime = createPluginRuntime(gateway, settingsWith('warn'));
+    await runtime.capture({
+      kind: 'tool_use',
+      sourceTool: 'claude-code',
+      text: 'here is SECRET_MARKER',
+    });
+    await runtime.close();
+
+    expect(gateway.records).toHaveLength(1);
+    // The capture DID redact — so this is a row where enforcement happened and
+    // the reason is still absent, not a row where nothing was found.
+    expect(gateway.records[0]?.event.metadata?.redactDegradedTo).toBeUndefined();
+  });
+
   it('records the action that ACTUALLY applied, not the policy it came from', async () => {
     // The load-bearing one. Recording 'redact' here would describe a masking
     // that did not happen while the raw value went through — the same class of

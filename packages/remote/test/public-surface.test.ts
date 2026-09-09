@@ -47,10 +47,17 @@ const EXPECTED = [
   // would have been the cheaper change and the worse one, turning a forgotten
   // credential into a silent unauthenticated call on every route in the client.
   'createAttachClient',
+  // Reading a failure this package threw, for a caller that must explain one.
+  // Neither widens what this package can DO — they open no socket and take no
+  // URL — and both belong here because the error classes above are this
+  // package's own: a caller re-deriving a verdict from a status code would be
+  // guessing at a vocabulary it does not own.
+  'classifyRemoteFailure',
+  'statusOf',
 ] as const;
 
 describe('the package export surface', () => {
-  it('is exactly the client, its error vocabulary and its two bounds', () => {
+  it('is exactly the client, its error vocabulary, its reading and its two bounds', () => {
     expect(Object.keys(remote).sort()).toEqual([...EXPECTED].sort());
   });
 

@@ -272,7 +272,7 @@ describe('egress acceptance corpus — destination ledger', () => {
   it('records exactly the expected destinations across eight ecosystems', async () => {
     const recorded = await scanAndRecord(db, root, base);
 
-    expect(recorded).toEqual({
+    expect(recorded).toMatchObject({
       project: 'settlement',
       destinations: EXPECTED_LEDGER.length,
       endpoints: 14,
@@ -280,6 +280,9 @@ describe('egress acceptance corpus — destination ledger', () => {
       truncated: false,
       droppedFiles: [],
     });
+    // The resolved input rides back alongside the totals, so the totals are
+    // matched rather than compared whole; its own shape is pinned in
+    // egress-record.test.ts.
     expect(await readLedger(db)).toEqual(EXPECTED_LEDGER);
   });
 

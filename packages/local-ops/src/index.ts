@@ -49,6 +49,14 @@ export { AGENT_PLUGINS, findAgent, pluginRef } from './registry.ts';
 export type { Reinvocation } from './self-exec.ts';
 export { isSea, reinvokeArgv } from './self-exec.ts';
 export { compareSemver, isNewer } from './semver.ts';
+export type {
+  SharesForwardConnection,
+  SharesForwardDeps,
+  SharesForwardOutcome,
+  SharesForwardSender,
+  SharesForwardSendResult,
+} from './shares-forward.ts';
+export { forwardProjectEgress } from './shares-forward.ts';
 export {
   cachePath,
   CHECK_TTL_MS,

@@ -17,6 +17,7 @@ import {
   IngestAck,
   PluginWhoami,
   RecordAuditEventRequest,
+  RemoteFailureKind,
   StorePosturePack,
   StorePosturePlugin,
   StorePostureSnapshot,
@@ -276,6 +277,30 @@ describe('response parsers', () => {
     expect(z.globalRegistry.get(IngestAck)).toBeUndefined();
     expect(z.globalRegistry.get(PluginWhoami)).toBeUndefined();
     expect(z.globalRegistry.get(ControlPlaneErrorBody)).toBeUndefined();
+  });
+});
+
+// ─── RemoteFailureKind ───────────────────────────────────────────────────────
+
+describe('RemoteFailureKind', () => {
+  it('pins the six members', () => {
+    // The member list is the contract: the transport classifies onto it and
+    // every surface renders one remediation per member, so adding or dropping
+    // one leaves a surface with nothing to say.
+    expect(RemoteFailureKind.options).toEqual([
+      'unauthorized',
+      'forbidden',
+      'route-absent',
+      'invalid-request',
+      'rejected',
+      'unreachable',
+    ]);
+  });
+
+  it('registers under its component id', () => {
+    // Neither end sends it, but more than one package names it, so a generated
+    // document points at the list rather than inlining it at each use.
+    expect(z.globalRegistry.get(RemoteFailureKind)?.id).toBe('RemoteFailureKind');
   });
 });
 

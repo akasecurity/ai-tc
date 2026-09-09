@@ -17,8 +17,8 @@ import {
 // deployment named by `WorkspaceSettings.controlPlane` (see ./local.ts), and
 // the on-disk credential that authenticates it.
 //
-// Two kinds of shape live here, and the `.meta({ id })` line between them is
-// the contract:
+// Three kinds of shape live here, and the `.meta({ id })` line is the contract
+// that separates them:
 //
 //   REQUEST bodies (`StorePostureSnapshot` and its components,
 //   `RecordAuditEventRequest`) carry an id. They are the single source of
@@ -33,6 +33,11 @@ import {
 //   it; the client parses leniently — unknown keys are stripped, widened
 //   members tolerated — so an older client keeps working against a newer
 //   control plane. The policy-bundle response is `PolicyBundle` (./policy.ts).
+//
+//   A shared VOCABULARY neither end sends (`RemoteFailureKind`) carries an id
+//   as well, for the other reason an id is worth having: it is a closed member
+//   list that more than one package names, so a generated document should be
+//   able to point at it rather than inline the members at each use.
 //
 // `AttachedCredential` is neither: a local 0600 file, never on any wire.
 
@@ -366,8 +371,8 @@ export type RecordAuditEventBatch = z.infer<typeof RecordAuditEventBatch>;
 // cross-device convergence the digest exists to provide. Wanting that later
 // means changing the contract, not tightening this function.
 //
-// See `toEgressIngestRequest` in `@akasecurity/plugin-runtime`'s
-// `src/attached/egress-wire.ts`, which is the only place that builds this shape.
+// See `toEgressIngestRequest` in `@akasecurity/persistence`'s
+// `src/egress-wire.ts`, which is the only place that builds this shape.
 export const EgressIngestHit = z
   .object({
     host: z.string(),
@@ -483,6 +488,41 @@ export const ControlPlaneErrorBody = z.object({
     .optional(),
 });
 export type ControlPlaneErrorBody = z.infer<typeof ControlPlaneErrorBody>;
+
+// ─── How a call failed, for the surfaces that have to explain it ─────────────
+
+/**
+ * How a control-plane call failed, coarse enough to carry one remediation each.
+ *
+ * A device-side vocabulary rather than a wire shape — nothing sends or receives
+ * it — and it is the third category this file's header names: it carries an id
+ * so a generated document can point at the member list, which more than one
+ * package refers to by name. It lives here so the transport that classifies a
+ * failure and the surfaces that render one agree on that list without
+ * depending on each other.
+ *
+ * The six are chosen so that each maps to ONE thing a person can do:
+ *
+ *   `unauthorized`    the credential is no longer accepted; re-attaching mints
+ *                     a working one.
+ *   `forbidden`       the credential is accepted and not permitted for this
+ *                     route; re-attaching helps only when the key predates the
+ *                     route's scope, otherwise it is an administrator's call.
+ *   `route-absent`    the deployment never served this route; it is older than
+ *                     the build calling it.
+ *   `invalid-request` this build assembled a body its own contract refuses —
+ *                     a local defect, never the deployment's.
+ *   `rejected`        the deployment considered the body and refused it; the
+ *                     two ends are out of step.
+ *   `unreachable`     no verdict worth naming: a timeout, a transport failure,
+ *                     a rate limit, a server error. The bucket that means
+ *                     "try again", which is why everything unrecognised lands
+ *                     here rather than in one of the five above.
+ */
+export const RemoteFailureKind = z
+  .enum(['unauthorized', 'forbidden', 'route-absent', 'invalid-request', 'rejected', 'unreachable'])
+  .meta({ id: 'RemoteFailureKind' });
+export type RemoteFailureKind = z.infer<typeof RemoteFailureKind>;
 
 // ─── Attaching a machine without ferrying a key by hand ──────────────────────
 //

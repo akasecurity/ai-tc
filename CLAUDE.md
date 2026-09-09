@@ -671,7 +671,10 @@ Keep these package boundaries intact — a forbidden import across a package wal
 @akasecurity/schema        → zod (core Zod contracts + the SQLite local-store & rule-registry schemas, defined with Drizzle)
 @akasecurity/persistence   → node:sqlite, @akasecurity/schema
                      (SQLite adapter + read/view ports, plus the shared ~/.aka
-                     layout/settings/fingerprint file I/O — NO fetch client, NO Drizzle)
+                     layout/settings/fingerprint file I/O, plus the egress wire
+                     projection — toEgressIngestRequest / hashProjectKey, the one
+                     place an EgressIngestRequest is built, pure and beside the cap
+                     helpers it applies — NO fetch client, NO Drizzle)
 @akasecurity/local-ops     → @akasecurity/schema, @akasecurity/persistence, @akasecurity/detections,
                      @akasecurity/plugin-sdk (repo-identity, project-file walkers, posix
                      path normalization, and the ReDoS gates the dashboard's folder
@@ -679,8 +682,10 @@ Keep these package boundaries intact — a forbidden import across a package wal
                      src/guarded-scan.ts and Architecture principles §5)
                      (shared CLI/web-ui operations: update report + apply via npm/claude
                      child processes, the agent-plugin registry, the fs scan pipeline,
-                     the project-inventory pass; network ONLY via package-manager
-                     shell-outs — no fetch)
+                     the project-inventory pass, and the shares-forward outcome state
+                     machine — forwardProjectEgress decides attached/credential/opted-out
+                     and reports what happened, with the transport injected by the
+                     caller; network ONLY via package-manager shell-outs — no fetch)
 @akasecurity/detections    → @akasecurity/schema (pure rule engine; no I/O, no Node-API deps)
 @akasecurity/extract       → (no dependencies; pure CSV/tabular parsing — `extractCsv`.
                      Consumed by @akasecurity/detections' tabular suite as a
@@ -714,7 +719,10 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      machine that has not attached, which is why `remote` is a
                      runtime edge here and still costs a standalone machine
                      nothing: the client is constructed only once both halves of
-                     an attachment are present and agree)
+                     an attachment are present and agree.
+                     src/attached/egress-wire.ts is a re-export: the projection
+                     itself lives in persistence, so the gateway and the local-only
+                     surfaces forward bytes built by one function)
 @akasecurity/remote         → @akasecurity/schema, zod
                      (the control-plane transport, and the ONLY package in this
                      workspace permitted to open a socket — see §4. `src/http.ts`
@@ -726,7 +734,10 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      speaks the two anonymous routes a machine uses to OBTAIN one
                      and holds none — a separate factory rather than an optional
                      key, so a caller cannot reach any other route without a
-                     credential, since that client cannot express one. The exact
+                     credential, since that client cannot express one.
+                     It also owns the READING of its own failures: classifyRemoteFailure
+                     maps one of its error classes onto a RemoteFailureKind, so no
+                     caller re-derives a verdict from a status code. The exact
                      export set is pinned by test/public-surface.test.ts)
 @akasecurity/plugin-sdk     → @akasecurity/detections, persistence, schema
                      (provider resolution for the session-root snapshot reads the host env

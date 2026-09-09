@@ -21,6 +21,10 @@ export type {
   RemoteClientOptions,
 } from './client.ts';
 export { createAttachClient, createRemoteClient } from './client.ts';
+// Reading a failure this package threw. Exported because the surfaces that
+// render one must not each re-derive a verdict from a status code: the error
+// classes are this package's, so the reading of them is too.
+export { classifyRemoteFailure, statusOf } from './failure-kind.ts';
 // `send` and its option/response types are deliberately NOT re-exported.
 //
 // Every guarantee `http.ts` makes is held by construction inside that module —

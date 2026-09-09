@@ -281,6 +281,15 @@ const POM_CONTEXT_TAGS = new Set([
 // scanned: a manifest line is file content, bounded only by the walker's 1 MB
 // cap. Measured on one line of `<a` followed by 64K word characters: 2,613 ms
 // before, 0.1 ms after, and ~4x per doubling before against flat after.
+//
+// The two classes are spelled separately and must stay exact complements. Widen
+// the name's tail without widening what the attribute blob may open with — to
+// allow `:` for a namespaced tag, say — and the pattern stops matching tags it
+// used to, silently and with no output to inspect; widen the opener instead and
+// the split point is ambiguous again and the quadratic is back. Neither failure
+// shows up in a fixture that does not happen to use the character, so the
+// relationship is read out of this line and asserted in
+// test/egress/xml-tag-classes.test.ts rather than left to review.
 const XML_TAG = /<(\/?)([A-Za-z][\w.-]*)((?:[^<>\w.-][^<>]*)?)>/g;
 const LEADING_TEXT = /^([^<]*)/;
 

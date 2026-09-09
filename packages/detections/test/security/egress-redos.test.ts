@@ -25,8 +25,14 @@ import { extractManifestSdks } from '../../src/egress/manifests.ts';
 // while wall time measures ELAPSED. A thread the scheduler took the core away
 // from accumulates wall time having executed nothing, so a wall-clock verdict
 // here is satisfiable by a stall this code had no part in.
+//
+// `threadCpuUsage` rather than `cpuUsage`: the latter sums the whole PROCESS,
+// V8's background GC and compiler threads included, which charges this pass
+// with work it did not do and errs toward eating the budget's margin. Measured
+// on the same calls, process-CPU reads ~2.3x thread-CPU here. It is the clock
+// CLAUDE.md prescribes for the runtime work clock, for this reason.
 const cpuMs = (): number => {
-  const { user, system } = process.cpuUsage();
+  const { user, system } = process.threadCpuUsage();
   return (user + system) / 1000;
 };
 
@@ -37,12 +43,14 @@ function burned(work: () => unknown): number {
 }
 
 // Measured on an arm64 Mac, at the 1 MB cap: 2.5ms for the manifest shape,
-// 3.3ms for the URL shape and 38.3ms for the minified bundle. The quadratic
-// behaviour each case replaced costs, at the same size, minutes — roughly 11 for
-// the manifest shape and 2 for the bundle. So this budget sits ~50x above the
-// worst passing measurement and ~3,000x below the cheapest failure, which is
-// what makes it a correctness assertion rather than a benchmark: no runner is
-// slow enough to cross it and no quadratic pass is fast enough to stay under it.
+// 3.3ms for the URL shape and 38.3ms for the minified bundle. What each case
+// replaced costs MINUTES at that size — ~130s for the bundle, measured, and
+// longer again for the manifest shape, which nobody has sat through. So the
+// budget sits ~50x above the worst passing measurement and ~60x below the
+// cheapest failure, which is what makes it a correctness assertion rather than
+// a benchmark: no runner is slow enough to cross it, and no quadratic pass is
+// fast enough to stay under it. Both margins are stated because only the
+// smaller one bounds how far this can be tightened.
 const EXTRACTION_BUDGET_MS = 2_000;
 
 const MB = 1_000_000;

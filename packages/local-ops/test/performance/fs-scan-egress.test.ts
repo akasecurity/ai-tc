@@ -25,8 +25,11 @@ import { migratedStore } from '../helpers/store-templates.ts';
 // URLs — which is the shape that matters most, because nothing about it is
 // crafted. A repository containing one is not an attack.
 
+// Thread CPU, not process CPU: the latter sums V8's background GC and compiler
+// threads too, charging this pass with work it did not do. See the sibling
+// suite in @akasecurity/detections.
 const cpuMs = (): number => {
-  const { user, system } = process.cpuUsage();
+  const { user, system } = process.threadCpuUsage();
   return (user + system) / 1000;
 };
 

@@ -45,8 +45,9 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 //   --no-forward          record locally only; skip the forward above
 //
 // On an attached machine the register this scan just wrote is also forwarded to
-// that deployment, after the store handle is closed and before anything is
-// printed. It is the same projection the plugin's own scanner sends —
+// that deployment, after the store handle is closed — before the JSON object is
+// written, and after the text summary, so a slow deployment delays only its own
+// line. It is the same projection the plugin's own scanner sends —
 // destination hosts, endpoints and file/line call sites, with no source text and
 // the project key replaced by a digest — and it can only ever reach the
 // deployment this home's own settings name. `--no-forward` skips it for one
@@ -161,6 +162,20 @@ export const FORWARD_FAILURE_LINES: Record<RemoteFailureKind, string> = {
 };
 
 /**
+ * The outcomes a scan reports, and the ONE predicate both output modes share.
+ *
+ * `not-attached` is a machine with no deployment to report about, so it renders
+ * exactly as a machine that recorded nothing: no text line, and `forward: null`
+ * in JSON — a consumer branches on presence, never on a status meaning "no
+ * answer". Deriving both modes from this one function is what keeps a status
+ * that should stay silent from diverging between them.
+ */
+export type ReportedForward = Exclude<SharesForwardOutcome, { status: 'not-attached' }>;
+export function reportedForward(outcome: SharesForwardOutcome | null): ReportedForward | null {
+  return outcome === null || outcome.status === 'not-attached' ? null : outcome;
+}
+
+/**
  * The text-mode line for what the forward did, or null when there is nothing to
  * say.
  *
@@ -168,10 +183,8 @@ export const FORWARD_FAILURE_LINES: Record<RemoteFailureKind, string> = {
  * standalone install's output exactly as it was before this command could
  * forward at all.
  */
-export function renderForwardLine(outcome: SharesForwardOutcome): string | null {
+export function renderForwardLine(outcome: ReportedForward): string {
   switch (outcome.status) {
-    case 'not-attached':
-      return null;
     case 'disabled':
       return 'Data shares: not forwarded (--no-forward)';
     case 'no-credential':
@@ -290,7 +303,10 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
       });
     } catch {
       // The state machine is documented never to throw. This guards the exit
-      // code against the day that stops being true, not the outcome.
+      // code against the day that stops being true — and says so on stderr,
+      // because a silent null here would render an attached machine exactly
+      // like an unattached one and erase the only sign of the regression.
+      process.stderr.write('aka scan: forward failed unexpectedly\n');
       return null;
     }
   };
@@ -326,10 +342,7 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
           truncated: egress.truncated,
         }
       : null;
-    // `not-attached` is the machine having no deployment to report about, so it
-    // renders as the same null a machine that recorded nothing gets — a consumer
-    // branches on presence, never on a status meaning "no answer".
-    const forwardJson = forward === null || forward.status === 'not-attached' ? null : forward;
+    const forwardJson = reportedForward(forward);
     process.stdout.write(
       `${JSON.stringify(
         {
@@ -350,9 +363,8 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
     );
     if (inventory) process.stdout.write(`${renderInventoryLine(inventory)}\n`);
     if (egress) process.stdout.write(`${renderEgressLine(egress)}\n`);
-    const forward = await runForward();
-    const forwardLine = forward === null ? null : renderForwardLine(forward);
-    if (forwardLine !== null) process.stdout.write(`${forwardLine}\n`);
+    const reported = reportedForward(await runForward());
+    if (reported !== null) process.stdout.write(`${renderForwardLine(reported)}\n`);
   }
 
   if (failOn !== undefined) {

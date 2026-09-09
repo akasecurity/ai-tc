@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { COMMAND_SPECS, commandsHelp, GLOBAL_FLAGS } from '../../src/command-manifest.ts';
 import { completionHint, completionScript } from '../../src/commands/completion.ts';
 
@@ -102,5 +108,26 @@ describe('completionHint', () => {
     expect(completionHint('zsh')).toContain('source <(aka completion zsh)');
     expect(completionHint('bash')).toContain('~/.bashrc');
     expect(completionHint('bash')).toContain('source <(aka completion bash)');
+  });
+});
+
+describe('the emitted scripts parse in their shells', () => {
+  // A substring assertion cannot see a quoting bug; only the shell can. The
+  // scripts are written out and handed to the shell's own parser. Skipped,
+  // never failed, where the shell is absent (Windows CI has neither).
+  const dirs: string[] = [];
+  afterEach(() => {
+    removeTrees(dirs.splice(0));
+  });
+
+  it.each(['zsh', 'bash'] as const)('%s -n accepts the emitted script', (shell) => {
+    const probe = spawnSync(shell, ['-c', 'true'], { stdio: 'ignore' });
+    if (probe.error !== undefined || probe.status !== 0) return;
+    const dir = mkdtempSync(join(tmpdir(), 'aka-completion-'));
+    dirs.push(dir);
+    const file = join(dir, `aka.${shell}`);
+    writeFileSync(file, completionScript(shell) ?? '');
+    const check = spawnSync(shell, ['-n', file], { encoding: 'utf8' });
+    expect(check.status, check.stderr).toBe(0);
   });
 });

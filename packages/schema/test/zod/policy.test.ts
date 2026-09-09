@@ -10,6 +10,8 @@ import {
   POLICY_BUNDLE_SHAPE_ID,
   PolicyBundle,
   PolicyTarget,
+  RedactFallback,
+  strongerRedactFallback,
 } from '../../src/zod/policy.ts';
 
 describe('DEFAULT_ACTIONS — severity-floor cold-start values', () => {
@@ -93,6 +95,69 @@ describe('PolicyBundle.ruleVersions', () => {
 // one this build wrote. It is only worth anything if it actually tracks the
 // schema — a constant that drifted free of `PolicyBundle` would go on matching
 // every record forever, which is indistinguishable from not having it.
+describe('PolicyBundle.redactFallback', () => {
+  const baseBundle = {
+    version: '1',
+    policies: [],
+    customKeywords: [],
+    fetchedAt: '2025-12-31T00:00:00.000Z',
+  };
+
+  it('parses without it — an older backend or on-disk cache omits it', () => {
+    const result = PolicyBundle.safeParse(baseBundle);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.redactFallback).toBeUndefined();
+  });
+
+  it('accepts the three fallback values and refuses the two it excludes', () => {
+    for (const value of RedactFallback.options) {
+      expect(PolicyBundle.safeParse({ ...baseBundle, redactFallback: value }).success).toBe(true);
+    }
+    // `redact` and `vault` are the thing that could not be carried out, so
+    // neither is an answer to what happens instead.
+    for (const value of ['redact', 'vault']) {
+      expect(PolicyBundle.safeParse({ ...baseBundle, redactFallback: value }).success).toBe(false);
+    }
+  });
+});
+
+describe('strongerRedactFallback — an organization tightens, never loosens', () => {
+  it('takes the remote value only when it is stronger', () => {
+    expect(strongerRedactFallback('warn', 'block')).toBe('block');
+    expect(strongerRedactFallback('monitor', 'warn')).toBe('warn');
+    expect(strongerRedactFallback('monitor', 'block')).toBe('block');
+  });
+
+  it('keeps the local value when the remote one is weaker', () => {
+    // The direction that matters: a control plane must not be able to turn a
+    // device's Block into a Warn, which would let a value through on a field
+    // that cannot be masked.
+    expect(strongerRedactFallback('block', 'warn')).toBe('block');
+    expect(strongerRedactFallback('block', 'monitor')).toBe('block');
+    expect(strongerRedactFallback('warn', 'monitor')).toBe('warn');
+  });
+
+  it('keeps the local value when there is no remote one at all', () => {
+    for (const local of RedactFallback.options) {
+      expect(strongerRedactFallback(local, undefined)).toBe(local);
+    }
+  });
+
+  it('is total over the vocabulary, and never returns a value outside it', () => {
+    // Derived rather than enumerated: a value added to RedactFallback fails
+    // here if the merge cannot rank it, instead of silently comparing as equal.
+    for (const local of RedactFallback.options) {
+      for (const remote of RedactFallback.options) {
+        const merged = strongerRedactFallback(local, remote);
+        expect(RedactFallback.options).toContain(merged);
+        // Never weaker than the local value — the whole property, stated over
+        // the ladder rather than over the three pairs above.
+        expect(strongerRedactFallback(merged, local)).toBe(merged);
+      }
+    }
+  });
+});
+
 describe('POLICY_BUNDLE_SHAPE_ID tracks the schema it describes', () => {
   it('names every top-level bundle field', () => {
     const named = new Set(POLICY_BUNDLE_SHAPE_ID.split(','));

@@ -1066,6 +1066,49 @@ describe('a redact the caller cannot carry out', () => {
     await runtime.close();
   });
 
+  it('takes the ORGANIZATION’s fallback when it is stronger than the device’s', async () => {
+    // An attached machine's bundle can carry the organization's answer. It
+    // merges raise-only against the device's own setting, so this warn becomes
+    // a block.
+    const b = redactBundle();
+    b.redactFallback = 'block';
+    const runtime = createPluginRuntime(fakeGateway(b), settingsWith('warn'));
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+    expect(out.action).toBe('block');
+    await runtime.close();
+  });
+
+  it('IGNORES a weaker organizational fallback — raise-only, never a relaxation', async () => {
+    // The direction that matters, and the reason this is a merge rather than an
+    // override: anything able to write the policy cache could otherwise turn a
+    // device's Block into a Monitor and let the value through on a field that
+    // cannot be masked.
+    const b = redactBundle();
+    b.redactFallback = 'monitor';
+    const runtime = createPluginRuntime(fakeGateway(b), settingsWith('block'));
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+    expect(out.action).toBe('block');
+    await runtime.close();
+  });
+
+  it('leaves the device’s setting in force when the bundle carries none', async () => {
+    // The control for both cases above: absent must change nothing, or a
+    // standalone machine would be quietly re-decided by a field nobody set.
+    const runtime = createPluginRuntime(fakeGateway(redactBundle()), settingsWith('block'));
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+    expect(out.action).toBe('block');
+    await runtime.close();
+  });
+
   it('records the action that ACTUALLY applied, not the policy it came from', async () => {
     // The load-bearing one. Recording 'redact' here would describe a masking
     // that did not happen while the raw value went through — the same class of

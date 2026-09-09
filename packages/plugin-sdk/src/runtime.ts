@@ -11,7 +11,12 @@ import type {
   SourceTool,
   WorkspaceSettings,
 } from '@akasecurity/schema';
-import { builtinPolicyToAction, isActionAtLeast, strongerAction } from '@akasecurity/schema';
+import {
+  builtinPolicyToAction,
+  isActionAtLeast,
+  strongerAction,
+  strongerRedactFallback,
+} from '@akasecurity/schema';
 
 import type { DataGateway } from './data-gateway.ts';
 import { buildIngestEvent, contentHashOf } from './events.ts';
@@ -197,7 +202,13 @@ export function createPluginRuntime(
   }
   const policyMode = settings.policy;
   // What a resolved `redact` degrades to on a field the host cannot rewrite.
-  const redactFallback = settings.redactFallback;
+  //
+  // A `let`, and rebuilt in ensureInitialized beside the resolver and the
+  // bundle exceptions: an attached machine's organization can carry its own
+  // value on the policy bundle, merged RAISE-ONLY against this one. Seeded from
+  // the device's setting so a runtime that somehow enforces before initialising
+  // uses the local answer rather than none.
+  let redactFallback = settings.redactFallback;
   const dataDir = opts?.dataDir;
   let rules: Rule[] = [];
   // Runs the scan under a hard wall-clock bound when the ruleset carries any
@@ -285,6 +296,10 @@ export function createPluginRuntime(
     rules = [...verified, ...unverified];
     scanner = createGuardedScanner({ verified, unverified }, gateway, opts?.scanIsolation);
     bundleExceptions = bundle.exceptions ?? [];
+    // Raise-only, over the one enforcement ladder: an organization can tighten
+    // what happens where masking is impossible and can never loosen it. Absent
+    // on the bundle leaves the device's own setting in force.
+    redactFallback = strongerRedactFallback(settings.redactFallback, bundle.redactFallback);
     initialized = true;
   }
 

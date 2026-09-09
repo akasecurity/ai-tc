@@ -78,6 +78,11 @@ export const SaveSettingsInput = z.object({
   historySyncConsent: HistorySyncConsentChoice,
   vaultConsent: z.string(),
   vaultInlineReveal: z.string(),
+  // Widened to `string` like its neighbours rather than typed as
+  // `RedactFallback`: this contract arrives over an HTTP POST, so the action
+  // parses the shape and then validates the VALUE, and a value the enum
+  // rejects has to reach a `{ ok: false }` rather than a rejected promise.
+  redactFallback: z.string(),
 });
 export type SaveSettingsInput = z.infer<typeof SaveSettingsInput>;
 

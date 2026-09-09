@@ -49,6 +49,69 @@ afterEach(() => {
 
 const ENDPOINT = 'https://plane.example.com';
 
+describe('saveSettings — the redact fallback', () => {
+  // The setting that decides what happens on a field a detection's Redact
+  // cannot be applied to. It is a plain preference, not a consent grant: no
+  // acknowledgement is stamped and nothing about it is versioned.
+  it('persists each of the three values', async () => {
+    for (const value of ['monitor', 'warn', 'block'] as const) {
+      const res = await saveSettings({
+        historicalAccess: 'session-only',
+        modelJudgeConsent: 'unchanged',
+        historySyncConsent: 'unchanged',
+        vaultConsent: 'off',
+        vaultInlineReveal: 'masked',
+        redactFallback: value,
+      });
+      expect(res).toEqual({ ok: true });
+      expect(readWorkspaceSettings().redactFallback).toBe(value);
+    }
+  });
+
+  it('refuses a value outside the vocabulary without throwing, and writes nothing', async () => {
+    // A Server Action's parameter types are a claim its runtime never checks:
+    // this arrives as JSON over a POST. A rejected promise here would be a
+    // framework error page instead of a recoverable result — and the refusal
+    // must not half-apply the rest of the payload either.
+    await saveSettings({
+      historicalAccess: 'session-only',
+      modelJudgeConsent: 'unchanged',
+      historySyncConsent: 'unchanged',
+      vaultConsent: 'off',
+      vaultInlineReveal: 'masked',
+      redactFallback: 'block',
+    });
+
+    const res = await saveSettings({
+      historicalAccess: 'full',
+      modelJudgeConsent: 'unchanged',
+      historySyncConsent: 'unchanged',
+      vaultConsent: 'off',
+      vaultInlineReveal: 'full',
+      redactFallback: 'redact',
+    });
+
+    expect(res.ok).toBe(false);
+    const after = readWorkspaceSettings();
+    expect(after.redactFallback).toBe('block');
+    // The neighbouring edits in the same refused payload were not applied.
+    expect(after.historicalAccess).toBe('session-only');
+    expect(after.vaultInlineReveal).toBe('masked');
+  });
+
+  it('refuses a non-string, the shape the signature cannot enforce', async () => {
+    const res = await saveSettings({
+      historicalAccess: 'session-only',
+      modelJudgeConsent: 'unchanged',
+      historySyncConsent: 'unchanged',
+      vaultConsent: 'off',
+      vaultInlineReveal: 'masked',
+      redactFallback: 7,
+    });
+    expect(res.ok).toBe(false);
+  });
+});
+
 describe('saveSettings — vault-consent grant and revocation', () => {
   it("records a server-stamped grant at the current consent version on 'on'", async () => {
     const before = Date.now();
@@ -58,6 +121,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
+      redactFallback: 'warn',
     });
     expect(res).toEqual({ ok: true });
 
@@ -87,6 +151,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'off',
       // A real unrelated edit, so this is a save that had to do something.
       vaultInlineReveal: 'full',
+      redactFallback: 'warn',
     });
 
     // THE POSITIVE CONTROL. Without it every assertion below is satisfied by a
@@ -129,6 +194,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'off',
       // A real unrelated edit, or the save proves nothing.
       vaultInlineReveal: 'full',
+      redactFallback: 'warn',
     });
     expect(res.ok).toBe(true);
 
@@ -170,6 +236,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       // A real unrelated edit, or the save proves nothing about a re-stamp it
       // never had cause to make.
       vaultInlineReveal: 'full',
+      redactFallback: 'warn',
     });
     expect(res.ok).toBe(true);
     expect(readWorkspaceSettings().historySyncConsent).toEqual(current);
@@ -229,6 +296,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'granted',
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
+      redactFallback: 'warn',
     });
     expect(res.ok).toBe(true);
 
@@ -263,6 +331,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
+      redactFallback: 'warn',
     });
 
     expect(readWorkspaceSettings().historySyncConsent).toBeUndefined();
@@ -275,6 +344,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
+      redactFallback: 'warn',
     });
     const first = readWorkspaceSettings().vaultConsent;
     expect(first).toBeDefined();
@@ -292,6 +362,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       // The unrelated edit. It has to be a field that really changes, or the
       // second save proves nothing about a re-stamp it never had cause to make.
       vaultInlineReveal: 'off',
+      redactFallback: 'warn',
     });
     expect(res).toEqual({ ok: true });
 
@@ -307,6 +378,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
+      redactFallback: 'warn',
     });
     expect(rawSettings()).toContain('vaultConsent');
 
@@ -316,6 +388,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
+      redactFallback: 'warn',
     });
     expect(res).toEqual({ ok: true });
 
@@ -334,6 +407,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
+      redactFallback: 'warn',
     });
     const before = rawSettings();
 
@@ -343,6 +417,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'granted',
       vaultInlineReveal: 'masked',
+      redactFallback: 'warn',
     });
     expect(res.ok).toBe(false);
     expect(rawSettings()).toBe(before);
@@ -359,6 +434,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       historySyncConsent: 'revoked',
       vaultConsent: forged as unknown as string,
       vaultInlineReveal: 'masked',
+      redactFallback: 'warn',
     });
     expect(res.ok).toBe(false);
     expect(() => rawSettings()).toThrow(); // nothing was ever written
@@ -396,6 +472,7 @@ describe('stale-grant re-consent and inline reveal', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
+      redactFallback: 'warn',
     });
     expect(result.ok).toBe(true);
     const persisted = readWorkspaceSettings(join(home, '.aka'));
@@ -410,6 +487,7 @@ describe('stale-grant re-consent and inline reveal', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'full',
+      redactFallback: 'warn',
     });
     expect(ok.ok).toBe(true);
     expect(readWorkspaceSettings(join(home, '.aka')).vaultInlineReveal).toBe('full');
@@ -420,6 +498,7 @@ describe('stale-grant re-consent and inline reveal', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'loud',
+      redactFallback: 'warn',
     });
     expect(bad.ok).toBe(false);
   });

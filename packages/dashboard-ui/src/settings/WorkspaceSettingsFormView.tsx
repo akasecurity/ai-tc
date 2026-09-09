@@ -45,6 +45,46 @@ export const HANDLING_SECTION_DESCRIPTION =
 
 export const HANDLING_SECTION_LINK_LABEL = 'Configure detections';
 
+// What happens when the handling a detection was assigned CANNOT be carried
+// out. This is not the global handling setting the section above says does not
+// exist, and the copy has to keep that distinction visible: it never chooses
+// what a detection does, only what happens on a field where the chosen answer
+// is unavailable.
+//
+// The case is narrow and concrete: masking text that EXECUTES would change what
+// runs, and masking a URL would fetch something else — so on those fields a
+// `redact` cannot be performed at all. Antigravity is the extreme, since its
+// hook contract offers no way to rewrite any argument.
+export const REDACT_FALLBACK_SECTION_LABEL = 'When masking is not possible';
+
+export const REDACT_FALLBACK_SECTION_DESCRIPTION =
+  'Some fields cannot be masked in place: rewriting a shell command would change what runs, and ' +
+  'rewriting a URL would fetch something else. A detection set to Redact cannot be carried out ' +
+  'there, and this chooses what happens instead. It does not change what any detection is set ' +
+  'to — only what happens where that answer cannot be applied.';
+
+export const REDACT_FALLBACK_CHOICES: Choice<WorkspaceSettings['redactFallback']>[] = [
+  {
+    value: 'monitor',
+    label: 'Let it through',
+    description: 'The call runs with the value unmasked and the finding is recorded.',
+  },
+  {
+    value: 'warn',
+    label: 'Let it through, with a warning',
+    description:
+      'The call runs with the value unmasked, and the session is told what was found (default). ' +
+      'Antigravity has no channel to print on, so there it is recorded and nothing is shown.',
+  },
+  {
+    value: 'block',
+    label: 'Block the call',
+    description:
+      'The call is refused and the message says what to remove. The stricter answer, and the one ' +
+      'to pick if a request that has already left cannot be recalled.',
+  },
+];
+
 // This is the same grant the /aka:setup wizard collects, and it is what gates the
 // wizard's history sweep — READING local surfaces, nothing more. Sending what that
 // sweep finds to the model API is gated by the separate Model-judge consent below,
@@ -464,7 +504,10 @@ export interface WorkspaceSettingsFormViewProps {
   // `policy` is deliberately absent. Enforcement is per detection now; see
   // HANDLING_SECTION_DESCRIPTION.
   onSave: (
-    changes: Pick<WorkspaceSettings, 'historicalAccess' | 'vaultInlineReveal'> & {
+    changes: Pick<
+      WorkspaceSettings,
+      'historicalAccess' | 'vaultInlineReveal' | 'redactFallback'
+    > & {
       modelJudgeConsent: ModelJudgeConsentChoice;
       // THREE answers, not two — see HistorySyncConsentChoice. 'unchanged' is
       // what an unrelated save sends, so it asserts nothing about this grant.
@@ -576,6 +619,7 @@ export function WorkspaceSettingsFormView({
   );
   const [vaultConsent, setVaultConsent] = useState(vaultChoiceOf(settings.vaultConsent));
   const [inlineReveal, setInlineReveal] = useState(settings.vaultInlineReveal);
+  const [redactFallback, setRedactFallback] = useState(settings.redactFallback);
 
   // One helper rather than a check per row: a locked field must render the same
   // way everywhere, and an inline conditional per section is how one of them
@@ -590,6 +634,7 @@ export function WorkspaceSettingsFormView({
     historySync !== initialHistorySync ||
     vaultConsent !== vaultChoiceOf(settings.vaultConsent) ||
     inlineReveal !== settings.vaultInlineReveal ||
+    redactFallback !== settings.redactFallback ||
     // A stale grant renders as 'on' but authorizes nothing; keeping 'on'
     // selected and saving is the documented one-save re-consent, so staleness
     // itself must enable Save.
@@ -632,6 +677,15 @@ export function WorkspaceSettingsFormView({
             {HANDLING_SECTION_LINK_LABEL}
           </a>
         </div>
+        <SettingRow
+          label={REDACT_FALLBACK_SECTION_LABEL}
+          description={REDACT_FALLBACK_SECTION_DESCRIPTION}
+          name="redactFallback"
+          choices={REDACT_FALLBACK_CHOICES}
+          value={redactFallback}
+          onChange={setRedactFallback}
+          managed={lockOn('redactFallback')}
+        />
       </SettingGroup>
 
       <SettingGroup title="Data access">
@@ -730,6 +784,7 @@ export function WorkspaceSettingsFormView({
           onClick={() => {
             onSave({
               historicalAccess,
+              redactFallback,
               // Just the answers — the server stamps the acknowledgement times
               // and the versions the grants are recorded against.
               // Same three answers as the history-sync row, and for the same

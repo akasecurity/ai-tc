@@ -1816,7 +1816,7 @@ twenty-eight cases across `persistence`, `plugin-sdk` and the CLI on a clean
 checkout of main. CI has no such file, so CI stayed green and the failure landed
 only on the machines with no gate on them.
 
-Four things about it are load-bearing:
+Five things about it are load-bearing:
 
 - **A per-call override cannot replace it.** `readEffectiveSettings` and
   `applyOnboarding` both take a `managedOverride`, and neither reaches the reads
@@ -1844,6 +1844,27 @@ Four things about it are load-bearing:
   unmocked instance back — nineteen cases failing on a branch they could no longer
   enter. Their own "the interception fired" guards are what caught it. That import
   is pinned by its own case in the guard suite.
+- **A CHILD PROCESS is invisible to it**, exactly as one is to the no-network
+  guard, and for the same reason: the pin lives in ONE process's instance of
+  `managed-settings.ts`, and a spawned child loads its own copy with the shipped
+  `null`. A redirected `HOME` does not move an absolute system path — which is
+  the premise this whole section rests on — so the child reads the real
+  administrator's file. Measured rather than reasoned: with the pin installed,
+  the parent reads `null` while a child spawned with `HOME` redirected reads the
+  machine's own managed values. Every suite that drives a BUILT script is on the
+  far side of that boundary. `plugins/*/test/e2e/fail-open.e2e.test.ts` runs the
+  built hooks under a redirected home and `loadConfig` applies the overlay inside
+  the child, so an administrator pinning `redactFallback` — a key that is both
+  pinnable and lockable — flips rows asserting an exact wire shape. Read that as
+  REACHABLE rather than currently failing: those suites pass on the enrolled
+  machine that motivated this section, whose file pins `runMode` and not
+  `redactFallback`. A worker thread sits on the same boundary and is out of reach
+  today only because `scan-worker.ts` takes no persistence dependency. It is
+  documented rather than closed, because the no-network guard's own mechanism
+  does not transfer: it reaches a worker by appending `--import <itself>` to its
+  `execArgv`, and a child spawned with a deliberately minimal env cannot be
+  reached that way. Nothing covers this the way the `No-network` CI job covers
+  shell-outs.
 
 ### The PATH shim, and why it fails OPEN
 

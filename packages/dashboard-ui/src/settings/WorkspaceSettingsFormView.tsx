@@ -798,14 +798,21 @@ export const CONNECTION_ATTACHED_DESCRIPTION =
 // transport landed. It renders on `attached &&` with no capability check, so
 // nothing about the build could ever have corrected it.
 //
-// What it must NOT do is describe a live exchange it cannot observe. Forwarding
-// is the plugin's, not this dashboard's: the page reads the local store, so it
-// knows a registration is recorded and knows nothing about whether the other end
-// answered. The copy is scoped to exactly that.
+// What it must NOT do is describe a live exchange it cannot observe. THIS page
+// reads the local store, so it knows a registration is recorded and knows
+// nothing about whether the other end answered. The copy is scoped to exactly
+// that.
+//
+// It names two senders because an attached machine has two. The plugin sends
+// what a session produces, and a scan started from the dashboard's own Scan page
+// sends the Data Shares register that scan records. Naming only the first would
+// leave a user reading this surface believing a scan they run here stays on the
+// machine.
 export const CONNECTION_FORWARDING_NOTICE =
   'While this machine is attached, the plugin forwards the activity that deployment is entitled ' +
-  'to see and pulls the policy it sets. This page reads only your local store, so it cannot ' +
-  'report what the deployment received. Detach to stop sending.';
+  'to see and pulls the policy it sets. A scan you run from the Scan page also sends the Data ' +
+  'Shares register it records — destinations and call sites, never source text. This page reads ' +
+  'only your local store, so it cannot report what the deployment received. Detach to stop sending.';
 
 // Shown where attaching is offered but the surface supplies no attach handler.
 //

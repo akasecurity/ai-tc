@@ -449,6 +449,43 @@ describe('runScan — forwarding the register it just recorded', () => {
   );
 
   it(
+    'forwards and withholds the same way on a scan that found no usable packs',
+    async () => {
+      const server = await startLoopbackServer();
+      try {
+        writeCallSite();
+        // No installPulled(): a home with no detection packs is the branch the
+        // action answers with `ok: false`, and it returns the register and the
+        // forward alongside that error because the walk already extracted them.
+        // Every case above takes the other branch, so the withholding the ok
+        // branch is pinned for would be unpinned here — and this is a whole
+        // second place the resolved input could be spread into a result the
+        // browser receives.
+        attachHome(server.origin, { label: LABEL });
+        server.reply((_req, res) => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"ok":true}');
+        });
+
+        const result = await runScan(target);
+
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain('No detection packs installed');
+        expect(result.forward?.status).toBe('forwarded');
+        expect(result.egress?.callSites).toBeGreaterThan(0);
+
+        const wire = JSON.stringify(result);
+        expect(wire).not.toContain('"input"');
+        expect(wire).not.toContain('snippet');
+        expect(wire).not.toContain('projectKey');
+      } finally {
+        await server.close();
+      }
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  it(
     'returns the totals to the browser and never the resolved input',
     async () => {
       const server = await startLoopbackServer();

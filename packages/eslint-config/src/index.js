@@ -438,8 +438,8 @@ function ambientClockSelectors(opts = {}) {
  * rather than a boolean: a file that legitimately binds a loopback socket needs
  * `node:http` and must keep every other transport banned. Pair it with the
  * matching `no-restricted-imports` value (`drizzleWallRules({ allow })`) so the
- * static and dynamic halves of the ban drop together, the way §4 of the
- * conventions requires.
+ * static and dynamic halves of the ban drop together, the way CLAUDE.md
+ * "No network calls" requires.
  *
  * `ambientClockEveryModule` is the other direction — WIDENING rather than
  * lifting the clock ban, to every module in the package regardless of

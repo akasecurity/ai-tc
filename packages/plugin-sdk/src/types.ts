@@ -76,20 +76,27 @@ export interface CaptureResult {
   // 'with-findings' early-return (findings.length === 0) — callers that need
   // "no findings produced" should treat an absent value as an empty list.
   findingKeys?: string[];
-  // True when a finding's policy resolved to `redact` and this capture could
-  // not carry one out, because the caller declared the field unrewritable
-  // (CaptureOptions.rewritable). `action` above is then the configured
-  // `redactFallback` rather than the policy's own answer.
+  // What a redact this capture could NOT carry out resolved to instead: the
+  // configured `redactFallback`, because the caller declared the field
+  // unrewritable (CaptureOptions.rewritable). Absent when nothing degraded.
   //
   // It exists because that difference is invisible downstream otherwise: a
   // degraded redact and a policy that genuinely said `warn` produce the same
-  // `action`, and an adapter that wants to say "masking was not possible
-  // here" has nothing else to key on. Absent rather than false when nothing
-  // degraded, so a caller spreading the result carries no key for it.
+  // `action`, and an adapter that wants to say "masking was not possible here"
+  // has nothing else to key on.
   //
-  // Per CAPTURE, not per finding: it answers "did anything in this field lose
-  // its masking", which is what an enforcement message says.
-  redactDegraded?: boolean;
+  // The ACTION rather than a boolean, and that is the whole of its usefulness.
+  // `action` above is the worst action across every finding, so on a capture
+  // that also carries a `block` policy it is `block` while the degrade resolved
+  // to something weaker — and a consumer told only THAT something degraded then
+  // attaches "the fallback for that case is to block" to a deny the fallback did
+  // not cause, naming a setting the workspace does not have. Gate on this value
+  // (`=== 'block'`), never on its presence.
+  //
+  // Per CAPTURE, not per finding: `rewritable` is a property of the capture, so
+  // every degraded finding in it took the same fallback. Where the ceiling caps
+  // them differently, this is the strongest of what they resolved to.
+  redactDegradedTo?: ActionTaken;
 }
 
 // AkaPluginAdapter signature

@@ -79,7 +79,7 @@ function redactResult(
 // What the runtime hands this module for an EXECUTABLE field, which the hook
 // captures with `rewritable: false`: the policy resolved to `redact`, no
 // masking was possible, and the action is the workspace's `redactFallback`.
-// `redactDegraded` is what says so — without it this is indistinguishable from
+// `redactDegradedTo` says what it became — without it this is indistinguishable from
 // a policy that genuinely said `warn`.
 //
 // `redactResult` above stays the shape for a DATA field, which is rewritable
@@ -99,7 +99,7 @@ function degradedRedact(
     action,
     text: action === 'block' ? null : text,
     findings: [finding(ruleId, rawMatch, text)],
-    redactDegraded: true,
+    redactDegradedTo: action,
     ...(reference ? { blockedReferences: [{ reference, ruleId, maskedValue: '4******6' }] } : {}),
   };
 }
@@ -173,6 +173,33 @@ describe('decidePreToolUse — redact on executable text escalates to deny', () 
     expect(reason).toContain(EXECUTABLE_REDACT_NOTE);
     expect(reason).toContain('aka exception approve aa11bb');
     expect(JSON.stringify(output)).not.toContain('updatedInput');
+  });
+
+  it('does NOT explain a deny that a SEPARATE field produced', () => {
+    // One payload, two fields: a `Bash.command` degrading to `warn` and another
+    // field whose own policy blocks — the MCP-leaf shape, where a single call
+    // really does carry several scanned leaves. `escalated` is read once at the
+    // deny and is scoped to neither field, so a presence check would explain
+    // that deny with the executable-redact note and name a `block` fallback
+    // this workspace never set.
+    return decide('Bash', { command: COMMAND }, [
+      {
+        spec: BASH_COMMAND,
+        result: degradedRedact('warn', COMMAND, 'core-pii/ip-address', IP),
+      },
+      {
+        spec: { path: ['other'], executable: true },
+        result: {
+          action: 'block',
+          text: null,
+          findings: [finding('secrets-infra/db-connection-string', 'SECRET', COMMAND)],
+        },
+      },
+    ]).then((output) => {
+      const reason = denyReason(output);
+      expect(reason).toContain('secrets-infra/db-connection-string');
+      expect(reason).not.toContain(EXECUTABLE_REDACT_NOTE);
+    });
   });
 
   it('a plain block (no escalation) carries no escalation note', async () => {
@@ -322,7 +349,7 @@ describe('decidePreToolUse — WebFetch, the pre-execution exfil channel', () =>
     // The runtime refused: the real bundled rule matches inside the URL, the
     // default pii action asks for a redact, and a url cannot carry one.
     expect(result.action).toBe('block');
-    expect(result.redactDegraded).toBe(true);
+    expect(result.redactDegradedTo).toBe(result.action);
     expect(result.findings.map((f) => f.ruleId)).toContain('core-pii/ip-address');
 
     const output = await decide('WebFetch', { url, prompt: 'summarize' }, [
@@ -349,7 +376,7 @@ describe('decidePreToolUse — WebFetch, the pre-execution exfil channel', () =>
     await rt.close();
 
     expect(result.action).toBe('warn');
-    expect(result.redactDegraded).toBe(true);
+    expect(result.redactDegradedTo).toBe(result.action);
 
     const output = await decide('WebFetch', { url, prompt: 'summarize' }, [
       { spec: WEBFETCH_URL, result },
@@ -476,7 +503,7 @@ describe('incident regression — the seed-cleanup DELETE, end to end', () => {
     // decision and the recorded action, where the hook used to deny while the
     // row said `redact`.
     expect(result.action).toBe('block');
-    expect(result.redactDegraded).toBe(true);
+    expect(result.redactDegradedTo).toBe(result.action);
     expect(result.findings.map((f) => f.ruleId)).toContain('core-pii/ip-address');
 
     const output = await decide('Bash', { command: INCIDENT_COMMAND }, [
@@ -499,7 +526,7 @@ describe('incident regression — the seed-cleanup DELETE, end to end', () => {
     await rt.close();
 
     expect(result.action).toBe('warn');
-    expect(result.redactDegraded).toBe(true);
+    expect(result.redactDegradedTo).toBe(result.action);
     expect(result.text).toContain(IP);
 
     const emitted = JSON.stringify(

@@ -12,7 +12,7 @@
 //
 // What a redact policy then DOES is a workspace setting (`redactFallback`), not
 // a rule of this module: the runtime resolves it before the decision module
-// sees anything, and says it did on `redactDegraded`. Both settings are driven
+// sees anything, and says what it became on `redactDegradedTo`. Both settings are driven
 // below, because the shipped default (`warn`) lets a call through that the
 // strict setting (`block`) denies, and neither is inferable from the other.
 import { randomUUID } from 'node:crypto';
@@ -77,7 +77,7 @@ function degradedRedact(
     action,
     text: action === 'block' ? null : text,
     findings: [finding(ruleId, rawMatch, text)],
-    redactDegraded: true,
+    redactDegradedTo: action,
     ...(reference ? { blockedReferences: [{ reference, ruleId, maskedValue: '4******6' }] } : {}),
   };
 }
@@ -143,6 +143,35 @@ describe('decidePreToolUse — a redact this host cannot perform follows the fal
     // `monitor` member on ActionTaken.
     const result = degradedRedact('log', COMMAND, 'core-pii/ip-address', IP);
     expect(decidePreToolUse('run_command', [{ spec: RUN_COMMAND, result }]).decision).toBe('allow');
+  });
+
+  it('does NOT explain a deny that some OTHER finding produced', () => {
+    // The mixed shape: one capture carrying a degraded redact AND a finding
+    // whose own policy is `block`. `action` is `block` because that is the
+    // worst of the two, but the fallback resolved to `warn` — so the deny is
+    // the credential's doing and a note naming a `block` fallback would state
+    // a setting this workspace does not have.
+    //
+    // Sharper on this host than the others: `blockedRules` below is built only
+    // from results at `block` or `redact`, so under a `warn` fallback the
+    // degraded finding contributes no rule id to the deny at all.
+    const mixed: CaptureResult = {
+      action: 'block',
+      text: null,
+      findings: [
+        finding('secrets-infra/db-connection-string', 'SECRET', COMMAND),
+        finding('core-pii/ip-address', IP, COMMAND),
+      ],
+      redactDegradedTo: 'warn',
+      blockedReferences: [
+        { reference: 'aa11bb', ruleId: 'secrets-infra/db-connection-string', maskedValue: 'S***T' },
+      ],
+    };
+    const reason = denyReason(
+      decidePreToolUse('run_command', [{ spec: RUN_COMMAND, result: mixed }]),
+    );
+    expect(reason).toContain('secrets-infra/db-connection-string');
+    expect(reason).not.toContain(NO_REWRITE_REDACT_NOTE);
   });
 
   it('a plain block (no escalation) carries no escalation note', () => {
@@ -330,7 +359,7 @@ describe('incident regression — the seed-cleanup DELETE, end to end', () => {
     // The runtime, not the hook, is what refused: the emitted decision and the
     // recorded action are one value, which is what the old escalation broke.
     expect(result.action).toBe('block');
-    expect(result.redactDegraded).toBe(true);
+    expect(result.redactDegradedTo).toBe(result.action);
     expect(result.findings.map((f) => f.ruleId)).toContain('core-pii/ip-address');
 
     const output = decidePreToolUse('run_command', [{ spec: RUN_COMMAND, result }]);
@@ -350,7 +379,7 @@ describe('incident regression — the seed-cleanup DELETE, end to end', () => {
     // fallback lets the command through. The row says `warn` — never `redact`,
     // which would claim a masking that did not happen.
     expect(result.action).toBe('warn');
-    expect(result.redactDegraded).toBe(true);
+    expect(result.redactDegradedTo).toBe(result.action);
     expect(result.text).toContain(IP);
 
     expect(decidePreToolUse('run_command', [{ spec: RUN_COMMAND, result }]).decision).toBe('allow');

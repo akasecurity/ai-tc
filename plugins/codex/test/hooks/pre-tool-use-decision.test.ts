@@ -64,7 +64,7 @@ function redactResult(
 // What the runtime hands this module for a field the hook declared
 // unrewritable — an executable one. The policy resolved to `redact`, the
 // capture said it could not be carried out, and the action is the workspace's
-// `redactFallback`; `redactDegraded` is what says so. The text is the
+// `redactFallback`; `redactDegradedTo` says what it became. The text is the
 // ORIGINAL, unmasked, because nothing was rewritten.
 //
 // `redactResult` above stays the shape for apply_patch, which IS rewritable and
@@ -84,7 +84,7 @@ function degradedRedact(
     action,
     text: action === 'block' ? null : text,
     findings: [finding(ruleId, rawMatch, text)],
-    redactDegraded: true,
+    redactDegradedTo: action,
     ...(reference ? { blockedReferences: [{ reference, ruleId, maskedValue: '4******6' }] } : {}),
   };
 }
@@ -190,6 +190,25 @@ describe('decidePreToolUse — a redact carrying no text denies instead of allow
     // questions and cannot both apply: this one is a runtime failure, the
     // executable one is a host limitation.
     const output = decidePreToolUse('apply_patch', { input: PATCH }, [
+      { spec: APPLY_PATCH_INPUT, result: unredactable() },
+    ]);
+    const reason = denyReason(output);
+    expect(reason).toContain(UNREDACTABLE_NOTE);
+    expect(reason).not.toContain(EXECUTABLE_REDACT_NOTE);
+  });
+
+  it('is not displaced by a field that merely WARNED under the fallback', () => {
+    // The note-precedence edge this host has and the other two do not:
+    // `escalatedExecutable` wins below, so a Bash field that only warned must
+    // not claim a deny the apply_patch field alone caused. Both halves of that
+    // message would be wrong — masking WAS possible here (the tokenizer simply
+    // produced nothing), and the fallback is `warn`, not `block`.
+    //
+    // Driving both fields in one call is what makes this reachable: every
+    // other degraded-redact case in this file is single-finding, and the
+    // module's job is precisely not to cross-attribute between them.
+    const output = decidePreToolUse('apply_patch', { input: PATCH }, [
+      { spec: BASH_COMMAND, result: degradedRedact('warn', PATCH, 'core-pii/ip-address', IP) },
       { spec: APPLY_PATCH_INPUT, result: unredactable() },
     ]);
     const reason = denyReason(output);
@@ -377,7 +396,7 @@ describe('incident regression — the seed-cleanup DELETE, end to end', () => {
     // The runtime refused, so the emitted decision and the recorded action are
     // one value — which is what the old escalation in this module broke.
     expect(result.action).toBe('block');
-    expect(result.redactDegraded).toBe(true);
+    expect(result.redactDegradedTo).toBe(result.action);
     expect(result.findings.map((f) => f.ruleId)).toContain('core-pii/ip-address');
 
     const output = decidePreToolUse('Bash', { command: INCIDENT_COMMAND }, [
@@ -400,7 +419,7 @@ describe('incident regression — the seed-cleanup DELETE, end to end', () => {
     // fallback lets the command through. The row says `warn` — never `redact`,
     // which would claim a masking that did not happen.
     expect(result.action).toBe('warn');
-    expect(result.redactDegraded).toBe(true);
+    expect(result.redactDegradedTo).toBe(result.action);
     expect(result.text).toContain(IP);
 
     const emitted = JSON.stringify(
@@ -423,7 +442,7 @@ describe('incident regression — the seed-cleanup DELETE, end to end', () => {
     await rt.close();
 
     expect(result.action).toBe('redact');
-    expect(result.redactDegraded).toBeUndefined();
+    expect(result.redactDegradedTo).toBeUndefined();
     expect(result.text).not.toContain(IP);
   });
 

@@ -380,15 +380,28 @@ export function createPluginRuntime(
     const actionFor = (finding: MatchResult): ActionTaken =>
       actionForFinding(finding, excepted, rewritable);
 
-    // Did anything here lose its masking to the fallback? Answered by asking
-    // what the SAME finding would have resolved to on a rewritable field: if
-    // that is `redact` and this field is not rewritable, the degrade fired.
-    // Derived rather than tracked, so it cannot disagree with the action the
-    // rest of this function returns — and false whenever the ceiling already
-    // ruled the redact out, since then no masking was ever on offer to lose.
-    const redactDegraded =
-      !rewritable && findings.some((f) => actionForFinding(f, excepted, true) === 'redact');
-    const degraded = redactDegraded ? { redactDegraded: true } : {};
+    // What did a redact this capture cannot carry out resolve to? Found by
+    // asking what the SAME finding would have resolved to on a rewritable
+    // field: where that is `redact` and this field is not rewritable, the
+    // degrade fired, and `actionFor` gives what it became.
+    //
+    // The ACTION, not the fact. `worst` below is the strongest action across
+    // every finding, so a capture mixing a degraded redact with a `block`
+    // policy returns `block` for a reason that has nothing to do with the
+    // fallback — and a consumer handed only "something degraded" cannot tell
+    // those apart. It then explains a deny by naming a fallback the workspace
+    // never set.
+    //
+    // Derived rather than tracked, so it cannot disagree with the action
+    // returned beside it — and absent whenever the ceiling already ruled the
+    // redact out, since then no masking was ever on offer to lose.
+    const degradedActions = rewritable
+      ? []
+      : findings.filter((f) => actionForFinding(f, excepted, true) === 'redact').map(actionFor);
+    const degraded =
+      degradedActions.length === 0
+        ? {}
+        : { redactDegradedTo: degradedActions.reduce((a, b) => strongerAction(a, b)) };
 
     // `worst` already reflects the legacy global ceiling: actionForFinding caps
     // block/redact to warn when it is enabled, so the collapse inherits the cap

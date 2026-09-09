@@ -137,16 +137,23 @@ export function decidePreToolUse(
     //
     // Masking an executable field would silently change what runs, so the
     // capture declared that field unrewritable and the RUNTIME already
-    // resolved its redact into the configured fallback; `redactDegraded` is
-    // how it says so. Reading that here, rather than re-deriving it, is what
-    // keeps the emitted decision and the recorded action equal — and it is the
-    // only way to see a fallback of `warn`, which this module cannot infer.
+    // resolved its redact into the configured fallback; `redactDegradedTo`
+    // says what it became. Reading that here, rather than re-deriving it, is
+    // what keeps the emitted decision and the recorded action equal — and it
+    // is the only way to see a fallback of `warn`, which this module cannot
+    // infer.
+    //
+    // Gated on the VALUE, not its presence, and this host has an edge the
+    // other two do not: `escalatedExecutable` wins the note precedence below,
+    // so a presence check lets a Bash field that merely WARNED displace the
+    // unredactable note on a deny that the apply_patch field alone caused —
+    // wrong on both halves of what it then says.
     //
     // A null `text` is different: it is a runtime failure on a field that CAN
     // be rewritten, leaving no redacted form to substitute. Emitting the
     // untouched input under the "AKA redacted" systemMessage would send the
     // raw value and report it as masked, so that one still escalates here.
-    if (result.redactDegraded === true) escalatedExecutable = true;
+    if (result.redactDegradedTo === 'block') escalatedExecutable = true;
     const unredactable = result.action === 'redact' && result.text === null;
     if (unredactable) escalatedUnredactable = true;
     const action = unredactable ? 'block' : result.action;

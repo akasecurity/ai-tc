@@ -107,14 +107,21 @@ export async function decidePreToolUse(
     // NEVER rewrite text that executes: rewriting silently changes semantics,
     // which is the incident this module exists for. The capture therefore
     // declares an executable field unrewritable and the RUNTIME resolves its
-    // redact into the configured `redactFallback`, saying so on
-    // `redactDegraded`. Reading that here rather than escalating again is what
-    // keeps the emitted decision equal to the recorded action — this module
-    // used to deny while the row said `redact` — and it is the only way to see
-    // a fallback of `warn`, which cannot be inferred from the action alone.
-    // The runtime still ledgers the values either way (recordBlockedDetections
-    // runs for a degraded redact too), so the approve escape hatch stays.
-    if (result.redactDegraded === true) escalated = true;
+    // redact into the configured `redactFallback`, saying what it became on
+    // `redactDegradedTo`. Reading that here rather than escalating again is
+    // what keeps the emitted decision equal to the recorded action — this
+    // module used to deny while the row said `redact` — and it is the only way
+    // to see a fallback of `warn`, which cannot be inferred from the action
+    // alone. The runtime still ledgers the values either way
+    // (recordBlockedDetections runs for a degraded redact too), so the approve
+    // escape hatch stays.
+    //
+    // Gated on the VALUE, not its presence: `escalated` is read once, at the
+    // deny below, and is scoped to neither the field nor the finding that
+    // produced it. A `Bash.command` degrading to `warn` beside an MCP leaf
+    // whose own policy blocks would otherwise explain that deny with the
+    // executable-redact note, naming a fallback this workspace never set.
+    if (result.redactDegradedTo === 'block') escalated = true;
     const action = result.action;
 
     if (action === 'block') {

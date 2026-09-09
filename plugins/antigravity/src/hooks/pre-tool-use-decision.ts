@@ -139,10 +139,17 @@ export function decidePreToolUse(
 
   for (const { result } of scanned) {
     // The runtime already resolved a redact this host cannot perform into the
-    // configured fallback, and says so on `redactDegraded`. This module reads
-    // that rather than re-deriving it: escalating here is what recorded a deny
-    // as `redact`, and it could not see a fallback of `warn` at all.
-    if (result.redactDegraded === true) escalated = true;
+    // configured fallback, and `redactDegradedTo` says what it became. This
+    // module reads that rather than re-deriving it: escalating here is what
+    // recorded a deny as `redact`, and it could not see a fallback of `warn`.
+    //
+    // Gated on the VALUE, not its presence. A capture carrying a degraded
+    // redact alongside a finding whose own policy is `block` returns `block`,
+    // and `blockedRules` here is built only from results at `block` or
+    // `redact` — so under a `warn` fallback the degraded finding contributes no
+    // rule id at all, yet a presence check would still hang the note on a deny
+    // the other finding produced, naming a fallback this workspace never set.
+    if (result.redactDegradedTo === 'block') escalated = true;
     // `redact` can no longer arrive on this host — every capture declares the
     // field unrewritable, so the fallback (monitor/warn/block) has replaced it.
     // Kept in the guard so a future rewritable field still denies rather than

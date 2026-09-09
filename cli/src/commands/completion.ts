@@ -14,7 +14,11 @@ const topNames = COMMAND_SPECS.map((s) => s.name);
 const flagSpecs = COMMAND_SPECS.filter((s) => (s.flags ?? []).length > 0);
 
 function zshScript(): string {
-  const describe = COMMAND_SPECS.map((s) => `    '${s.name}:${s.summary}'`).join('\n');
+  // Each entry is one single-quoted zsh word. A summary can carry an apostrophe
+  // ("your organization's …"), which would close the quote and desynchronise the
+  // whole array, so quotes are escaped the one way zsh allows inside them.
+  const zq = (text: string): string => text.replace(/'/g, "'\\''");
+  const describe = COMMAND_SPECS.map((s) => `    '${zq(s.name)}:${zq(s.summary)}'`).join('\n');
   const flagArms = flagSpecs
     .map((s) => `      ${s.name}) _aka_flags+=(${(s.flags ?? []).map((f) => f.name).join(' ')}) ;;`)
     .join('\n');

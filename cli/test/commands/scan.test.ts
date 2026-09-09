@@ -820,7 +820,9 @@ describe('runScan', () => {
   describe('forwarding', () => {
     const ENDPOINT = 'https://aka.acme.test';
     const LABEL = 'Acme Prod';
-    const TEST_KEY = 'not-a-real-key';
+    // High-entropy and not credential-shaped, so expectNoEchoOf's window cannot
+    // collide with ordinary output text (see the Testing conventions).
+    const TEST_KEY = 'm4rk8wq2zv7nt3hc6yb9pl5sd1xg0fj';
 
     interface Sent {
       connection: SharesForwardConnection;

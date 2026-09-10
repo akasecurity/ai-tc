@@ -9,6 +9,7 @@ import type {
   SharesForwardSender,
 } from '@akasecurity/local-ops';
 import {
+  FORWARD_FAILURE_LINES,
   forwardProjectEgress,
   recordProjectEgress,
   recordProjectInventory,
@@ -16,8 +17,7 @@ import {
 } from '@akasecurity/local-ops';
 import { MAX_EGRESS_CALL_SITES_PER_PROJECT, openLocalDatabase } from '@akasecurity/persistence';
 import { dataDir, registerBundledPacks } from '@akasecurity/plugin-sdk';
-import { classifyRemoteFailure, createRemoteClient } from '@akasecurity/remote';
-import type { RemoteFailureKind } from '@akasecurity/schema';
+import { createSharesSender } from '@akasecurity/remote';
 import { Severity, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
@@ -105,61 +105,12 @@ export function renderEgressLine(egress: EgressRecordResult): string {
 }
 
 /**
- * The deadline on the one forward a scan makes.
- *
- * One request, one deadline, no retry: a full 5,000-call-site body is around
- * 2 MB, which 15 seconds covers on a slow link, and the next scan of the same
- * project replaces its register outright — so the retry already exists and
- * costs the person at the prompt nothing to wait for.
- */
-export const SCAN_FORWARD_TIMEOUT_MS = 15_000;
-
-/**
  * The transport for the forward, isolated so a test can drive every outcome
  * without a socket. `attach.ts` injects its `verify` the same way.
  */
 export interface ScanDeps {
   send?: SharesForwardSender;
 }
-
-/**
- * Build the real sender: one client, one deadline, and a named verdict instead
- * of a thrown error.
- *
- * The classification is the transport's own (`classifyRemoteFailure`), not a
- * status code read a second time here — a surface that re-derived one would be
- * free to disagree with every other surface about what a 403 means.
- */
-export function remoteSharesSender(timeoutMs = SCAN_FORWARD_TIMEOUT_MS): SharesForwardSender {
-  return async (connection, request) => {
-    try {
-      await createRemoteClient({ ...connection, timeoutMs }).recordProjectEgress(request);
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, kind: classifyRemoteFailure(err) };
-    }
-  };
-}
-
-/**
- * What to do about each way the forward can fail, in the words of the person
- * who has to do it.
- *
- * A `Record` over the whole enum rather than a switch with a fallback, so a
- * seventh kind fails to compile here instead of rendering as a shrug.
- */
-export const FORWARD_FAILURE_LINES: Record<RemoteFailureKind, string> = {
-  unauthorized: 'key rejected; re-attach with a valid plugin key',
-  forbidden:
-    'key is valid but not permitted for Data Shares ingest; a key minted before Data Shares ' +
-    'ingest existed needs a re-attach, otherwise ask your org admin',
-  'route-absent': 'the deployment predates Data Shares ingest; upgrade it, then re-run the scan',
-  'invalid-request': 'this build assembled a request the contract refuses; please report it',
-  rejected:
-    'the deployment refused the request body; this build and the deployment are out of step — ' +
-    'upgrade one of them',
-  unreachable: 'control plane unreachable (timeout or server error); the next scan retries',
-};
 
 /**
  * The outcomes a scan reports, and the ONE predicate both output modes share.
@@ -186,7 +137,9 @@ export function reportedForward(outcome: SharesForwardOutcome | null): ReportedF
 export function renderForwardLine(outcome: ReportedForward): string {
   switch (outcome.status) {
     case 'disabled':
-      return 'Data shares: not forwarded (--no-forward)';
+      return outcome.reason === 'opt-out'
+        ? 'Data shares: not forwarded (--no-forward)'
+        : 'Data shares: not forwarded (Data Shares is off in Settings)';
     case 'no-credential':
       return (
         `Data shares: not forwarded to ${outcome.endpoint} — ` +
@@ -298,7 +251,7 @@ export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void
     if (recorded === null) return null;
     try {
       return await forwardProjectEgress(home, recorded.input, {
-        send: deps.send ?? remoteSharesSender(),
+        send: deps.send ?? createSharesSender(),
         enabled: values['no-forward'] !== true,
       });
     } catch {

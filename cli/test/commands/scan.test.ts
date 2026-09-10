@@ -12,6 +12,7 @@ import type {
   SharesForwardOutcome,
   SharesForwardSendResult,
 } from '@akasecurity/local-ops';
+import { FORWARD_FAILURE_LINES } from '@akasecurity/local-ops';
 import {
   applyOnboarding,
   ATTACHED_FORWARD_DROPS_FILENAME,
@@ -34,8 +35,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import type { ScanDeps } from '../../src/commands/scan.ts';
 import {
-  FORWARD_FAILURE_LINES,
   renderEgressLine,
+  renderForwardLine,
   renderInventoryLine,
   runScan,
 } from '../../src/commands/scan.ts';
@@ -1008,6 +1009,39 @@ describe('runScan', () => {
       expect(exitCode()).toBe(0);
     });
 
+    it('never carries the resolved input, a snippet or the plaintext key into JSON', async () => {
+      // The recorder hands back the input it wrote beside the totals — every
+      // call site's source line and the project key in plaintext — and the JSON
+      // builder picks the totals by name. This pins that a future spread of
+      // the whole record would be caught, because --format json is the stream
+      // a CI pipeline captures.
+      writeCallSite();
+      attachHome({ label: LABEL });
+      const transport = recorder({ ok: true });
+
+      const payload = await scanJson(root, [], { send: transport.send });
+
+      const raw = JSON.stringify(payload);
+      expect(raw).not.toContain('"input"');
+      expect(raw).not.toContain('"projectKey"');
+      expect(raw).not.toContain('snippet');
+      expectNoEchoOf(raw, "export const CHARGES = 'https://api.stripe.com/v1/charges';");
+      // The positive control: the register itself was recorded and forwarded.
+      expect(payload.egress).not.toBeNull();
+      expect(payload.forward).toMatchObject({ status: 'forwarded' });
+    });
+
+    it('names the reason a run stayed local', () => {
+      // Two reasons, two lines: an opt-out names the flag the person passed,
+      // the switch names the page where it lives.
+      expect(renderForwardLine({ status: 'disabled', endpoint: LABEL, reason: 'opt-out' })).toBe(
+        'Data shares: not forwarded (--no-forward)',
+      );
+      expect(
+        renderForwardLine({ status: 'disabled', endpoint: LABEL, reason: 'data-shares-off' }),
+      ).toBe('Data shares: not forwarded (Data Shares is off in Settings)');
+    });
+
     it('records locally and sends nothing under --no-forward', async () => {
       writeCallSite();
       attachHome();
@@ -1028,7 +1062,11 @@ describe('runScan', () => {
 
       const payload = await scanJson(root, ['--no-forward'], { send: transport.send });
 
-      expect(payload.forward).toEqual({ status: 'disabled', endpoint: ENDPOINT });
+      expect(payload.forward).toEqual({
+        status: 'disabled',
+        reason: 'opt-out',
+        endpoint: ENDPOINT,
+      });
       expect(transport.sent).toEqual([]);
     });
 

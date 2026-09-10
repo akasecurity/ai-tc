@@ -58,7 +58,7 @@ describe('classifyRemoteFailure', () => {
     // The classes this package throws.
     ['a 401 request error', new RemoteRequestError(401), 'unauthorized'],
     ['a 403 request error', new RemoteRequestError(403), 'forbidden'],
-    ['a 404 request error', new RemoteRequestError(404), 'route-absent'],
+    ['a 404 request error', new RemoteRequestError(404), 'unreachable'],
     ['a 400 request error', new RemoteRequestError(400), 'rejected'],
     ['a 413 request error', new RemoteRequestError(413), 'rejected'],
     ['a 422 request error', new RemoteRequestError(422), 'rejected'],
@@ -74,16 +74,17 @@ describe('classifyRemoteFailure', () => {
     [
       'an answer this build cannot read',
       new RemoteResponseInvalid('/v1/shares', 'no body'),
-      'unreachable',
+      'rejected',
     ],
     ['a transport failure', new RemoteTransportError('socket hang up'), 'unreachable'],
     ['a timeout', new RemoteTransportError('timed out after 15000ms'), 'unreachable'],
     // The same verdicts read off shapes alone.
     ['a bare route-absent shape', { name: 'RemoteRouteAbsent' }, 'route-absent'],
     ['a bare invalid-request shape', { name: 'RemoteRequestInvalid' }, 'invalid-request'],
+    ['a bare response-invalid shape', { name: 'RemoteResponseInvalid' }, 'rejected'],
     ['a bare 401 shape', { status: 401 }, 'unauthorized'],
     ['a bare 403 shape', { status: 403 }, 'forbidden'],
-    ['a bare 404 shape', { status: 404 }, 'route-absent'],
+    ['a bare 404 shape', { status: 404 }, 'unreachable'],
     ['a bare 413 shape', { status: 413 }, 'rejected'],
     ['a bare 429 shape', { status: 429 }, 'unreachable'],
     ['a bare 502 shape', { status: 502 }, 'unreachable'],
@@ -102,6 +103,15 @@ describe('classifyRemoteFailure', () => {
       expect(classifyRemoteFailure(err)).toBe(expected);
     });
   }
+
+  it('does not read a bare 404 as an absent route', () => {
+    // Only a route that knows what its 404 means may say so, and it does that
+    // by throwing RemoteRouteAbsent itself. Anything else answering 404 — a
+    // wrong URL, a proxy, a captive portal — is not evidence the deployment is
+    // old, and "upgrade it" would be the wrong remedy.
+    expect(classifyRemoteFailure(new RemoteRequestError(404))).toBe('unreachable');
+    expect(classifyRemoteFailure(new RemoteRouteAbsent('/v1/shares'))).toBe('route-absent');
+  });
 
   it('prefers the class over a status the same error also carries', () => {
     // A route this deployment never had is a version fact, not a refusal, and

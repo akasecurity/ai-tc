@@ -56,7 +56,7 @@ export type {
   SharesForwardSender,
   SharesForwardSendResult,
 } from './shares-forward.ts';
-export { forwardProjectEgress } from './shares-forward.ts';
+export { FORWARD_FAILURE_LINES, forwardProjectEgress } from './shares-forward.ts';
 export {
   cachePath,
   CHECK_TTL_MS,

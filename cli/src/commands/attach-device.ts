@@ -1,5 +1,6 @@
 import { hostname as osHostname, platform, release } from 'node:os';
 
+import { statusOf } from '@akasecurity/remote';
 import type { AttachDeviceGrant, AttachTokenResponse } from '@akasecurity/schema';
 
 import type { Prompter } from '../lib/prompter.ts';
@@ -323,12 +324,6 @@ async function confirmAndReturn(
   return { kind: 'attached', apiKey, identity };
 }
 
-/** The HTTP status behind a transport error, when it carried one. */
-function statusOf(err: unknown): number | undefined {
-  const status: unknown = (err as { status?: unknown } | null)?.status;
-  return typeof status === 'number' ? status : undefined;
-}
-
 /**
  * A printable one-liner for a failure.
  *
@@ -339,7 +334,7 @@ function statusOf(err: unknown): number | undefined {
  */
 function describe(err: unknown): string {
   const status = statusOf(err);
-  if (status !== undefined) return `the deployment answered ${String(status)}.`;
+  if (status !== null) return `the deployment answered ${String(status)}.`;
   return 'the deployment could not be reached.';
 }
 

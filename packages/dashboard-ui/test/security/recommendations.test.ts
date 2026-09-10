@@ -64,8 +64,58 @@ describe('buildRecommendations', () => {
     expect(recs).toHaveLength(2);
     expect(recs[0]?.severity).toBe('critical');
     expect(recs[0]?.title).toBe('Exposed secret detected');
-    expect(recs[0]?.context).toBe('secrets/private-key · 2 findings');
+    // ONE finding, because the count is the named RULE's, not its category's. The
+    // label pairs the two, so a category-wide count here would read
+    // "secrets/private-key · 2 findings" over a rule that fired once.
+    expect(recs[0]?.context).toBe('secrets/private-key · 1 finding');
     expect(recs[1]?.severity).toBe('low');
+  });
+
+  it('ranks on the CATEGORY volume, not the named rule tally', () => {
+    // The label reports one rule so it can agree with the link, but ordering is
+    // about which kind of exposure matters most. Ranking on the rule would put a
+    // category holding 4 critical findings below one holding 2, because the rule
+    // that names the busy category fired once.
+    const recs = buildRecommendations([
+      finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/private-key' }),
+      finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/aws-access-key' }),
+      finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/aws-access-key' }),
+      finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/aws-access-key' }),
+      finding({ category: 'pii', severity: 'critical', ruleId: 'core-pii/ssn' }),
+      finding({ category: 'pii', severity: 'critical', ruleId: 'core-pii/ssn' }),
+    ]);
+    expect(recs.map((r) => r.title)).toEqual([
+      'Exposed secret detected',
+      'Personal data in a prompt',
+    ]);
+    // …and the busy category still reports its NAMED rule's count, which is 1.
+    expect(recs[0]?.context).toBe('secrets/private-key · 1 finding');
+  });
+
+  it('tallies a rule within its own category, not across every category it appears in', () => {
+    // One rule id can hold definition rows in more than one category — a pack
+    // version may move it — and a rule-only tally would charge the combined total
+    // to whichever bucket named it.
+    const recs = buildRecommendations([
+      finding({ category: 'secret', severity: 'critical', ruleId: 'shared/rule' }),
+      finding({ category: 'custom', severity: 'critical', ruleId: 'shared/rule' }),
+      finding({ category: 'custom', severity: 'critical', ruleId: 'shared/rule' }),
+    ]);
+    const secret = recs.find((r) => r.title === 'Exposed secret detected');
+    expect(secret?.context).toBe('shared/rule · 1 finding');
+  });
+
+  it('counts the rule it names, not the category it buckets by', () => {
+    // Two rules in one category, the most-severe firing once and its neighbour
+    // three times: a category count would report 4 against the rule that fired once.
+    const recs = buildRecommendations([
+      finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/private-key' }),
+      finding({ category: 'secret', severity: 'high', ruleId: 'secrets/aws-access-key' }),
+      finding({ category: 'secret', severity: 'high', ruleId: 'secrets/aws-access-key' }),
+      finding({ category: 'secret', severity: 'high', ruleId: 'secrets/aws-access-key' }),
+    ]);
+    expect(recs).toHaveLength(1);
+    expect(recs[0]?.context).toBe('secrets/private-key · 1 finding');
   });
 
   it('returns nothing for no findings', () => {
@@ -82,8 +132,10 @@ describe('buildRecommendedActions', () => {
     expect(actions).toHaveLength(1);
     const action = actions[0];
     expect(action?.severity).toBe('critical');
+    // The count is the named rule's own, so the card's label and the findings URL
+    // the host builds from that rule describe the same set.
     expect(action?.subjects).toEqual([
-      { type: 'rule', id: 'secrets/private-key', label: 'secrets/private-key · 2 findings' },
+      { type: 'rule', id: 'secrets/private-key', label: 'secrets/private-key · 1 finding' },
     ]);
     expect(action?.action.mode).toBe('navigate');
     expect(action?.action.href).toBe('/findings');

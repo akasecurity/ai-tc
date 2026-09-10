@@ -10,16 +10,16 @@
  * reads as ideal can still be linear in the store: `mttrTrend` used to drive
  * from `audit_events` on an index, joining every capture event before its window
  * predicate could reject a row, and every step of that plan was a SEARCH. And a
- * plan that reads as a full scan can be bounded: `recentFindings` deliberately
- * scans `idx_audit_started_at` so its LIMIT can stop early, and EXPLAIN QUERY
- * PLAN has no text for "terminates after 500 rows".
+ * plan that reads as ideal can still be unbounded in the store: a range SEEK on
+ * `idx_audit_started_at` prints the same word whether the window holds ten rows or
+ * ten million, and EXPLAIN QUERY PLAN has no text for "how many".
  *
  * So the plans pin the mechanism and this pins the consequence. Neither implies
  * the other.
  *
  * ## The experiment: hold the ANSWER fixed, grow the store
  *
- * All three reads return a bounded answer — the newest 500 findings, the newest
+ * All three reads return a bounded answer — one window's findings, the newest
  * 20 resolutions, a 30-day MTTR trend over a fixed resolution set. So the
  * property is stated as: with the same number of rows to RETURN, a ten-fold
  * larger store must not cost meaningfully more.
@@ -61,7 +61,6 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { SqliteFindingsRepository } from '../../src/repositories/findings.ts';
 import { SqliteSecurityRepository } from '../../src/repositories/security.ts';
 import type { GeneratedCaptureCorpus } from '../helpers/corpus.ts';
 import { corpusConnection, seedCaptureCorpus } from '../helpers/corpus.ts';
@@ -163,12 +162,9 @@ const SAMPLES = 25;
  * has already overrun this same ceiling once, at 135,237 ms.
  *
  * **Cutting the corpus is the usual remedy and is not available here**, so the
- * ceiling moves instead. `findingRate` cannot come down: at 0.1 the small corpus
- * holds 191 findings and `recentFindings` returns 191 rows against the large
- * corpus's 500, so the two sides would measure different amounts of work and the
- * ratio would stop meaning anything. And 2k -> 20k is already the cheapest pair
- * giving a 10x separation. Raising a ceiling that asserts nothing is not the same
- * act as relaxing a budget that does.
+ * ceiling moves instead. 2k -> 20k is already the cheapest pair giving a 10x
+ * separation, and raising a ceiling that asserts nothing is not the same act as
+ * relaxing a budget that does.
  */
 const SEED_TIMEOUT_MS = 240_000;
 
@@ -222,7 +218,7 @@ interface Scale {
   readonly samples: Record<string, number[]>;
 }
 
-const READS = ['recentFindings', 'recentlyResolved', 'mttrTrend', 'severitySummary'] as const;
+const READS = ['recommendationInputs', 'recentlyResolved', 'mttrTrend', 'severitySummary'] as const;
 type ReadName = (typeof READS)[number];
 
 async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Scale> {
@@ -243,7 +239,6 @@ async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Sc
   // exactly that, at a ratio of 3.619 on a commit that touched no product code;
   // the reasoning is written out there and not repeated.
   raw.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-  const findings = new SqliteFindingsRepository(raw);
   // The corpus's own clock, never `Date.now()`: the corpus is stamped from a
   // fixed 2024 epoch, so on the wall clock every windowed read is years past its
   // data and matches nothing — while still running, and still returning a
@@ -275,7 +270,7 @@ async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Sc
   // returns 30 points and 0 non-null buckets. Counting non-null buckets is what
   // makes the guard mean "this read found something".
   const run: Record<ReadName, () => Promise<number>> = {
-    recentFindings: async () => (await findings.recentFindings({ limit: 500 })).length,
+    recommendationInputs: async () => (await security.recommendationInputs('30d')).length,
     recentlyResolved: async () => (await security.recentlyResolved(20)).items.length,
     mttrTrend: async () =>
       (await security.mttrTrend('30d')).points.filter((point) =>
@@ -365,7 +360,7 @@ describe(`/security read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
     }
   });
 
-  for (const name of ['recentFindings', 'recentlyResolved', 'mttrTrend'] as const) {
+  for (const name of ['recentlyResolved', 'mttrTrend'] as const) {
     it(`${name} stays flat as the store grows`, () => {
       const smallest = fastest(small.samples[name] ?? []);
       const largest = fastest(large.samples[name] ?? []);
@@ -380,6 +375,34 @@ describe(`/security read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
       expect(largest, `${name} gross-regression backstop`).toBeLessThan(GROSS_REGRESSION_MS);
     });
   }
+
+  // `recommendationInputs` is NOT in the flat set above, and that is a measurement
+  // rather than an omission: it returns every finding in the selected window, so its
+  // cost tracks what the window holds. Measured here at a ratio of 17.59 (0.947 ms
+  // at 2,000 events against 16.664 ms at 20,000) because this corpus spaces events
+  // ~20.7 minutes apart, which puts a store-proportional number of rows inside a
+  // 30-day window at both sizes.
+  //
+  // So it is asserted as a SECOND control rather than as a flat read. Pinning it
+  // says two things a flat assertion could not: the harness is still measuring
+  // growth, and this page read is genuinely store-proportional in a corpus whose
+  // window spans it — which is the term to watch if `/security` is re-budgeted.
+  it('recommendationInputs grows: it returns every finding in the window', () => {
+    const smallest = fastest(small.samples.recommendationInputs ?? []);
+    const largest = fastest(large.samples.recommendationInputs ?? []);
+    const ratio = largest / smallest;
+    expect(
+      ratio,
+      `recommendationInputs was ${smallest.toFixed(3)} ms at ` +
+        `${SMALL_EVENTS.toLocaleString('en-US')} events and ${largest.toFixed(3)} ms at ` +
+        `${LARGE_EVENTS.toLocaleString('en-US')} — ratio ${ratio.toFixed(2)}, which must exceed ` +
+        `${String(CONTROL_FLOOR)}. A FLAT result here means the window stopped covering the ` +
+        'corpus, so this read is no longer measuring what the page pays for it.',
+    ).toBeGreaterThan(CONTROL_FLOOR);
+    expect(largest, 'recommendationInputs gross-regression backstop').toBeLessThan(
+      GROSS_REGRESSION_MS,
+    );
+  });
 
   it('the control grows: severitySummary is linear in findings by design', () => {
     const smallest = fastest(small.samples.severitySummary ?? []);

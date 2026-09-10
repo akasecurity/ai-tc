@@ -53,6 +53,12 @@ export interface RecommendedActionsView {
   items: RecommendedAction[];
   isLoading: boolean;
   error: string | null;
+  /**
+   * Destination for the header's "View all" control. Host-supplied so this package
+   * stays router-agnostic. Omitted, the control is not rendered at all — a button
+   * that looks live and does nothing reads as a broken feature.
+   */
+  viewAllHref?: string | undefined;
   applyAction: (id: string) => void;
   dismissAction: (id: string) => void;
   isMutating: boolean;
@@ -67,6 +73,7 @@ export function RecommendedActionsCardView({
   dismissAction,
   isMutating,
   mutationError,
+  viewAllHref,
 }: RecommendedActionsView) {
   return (
     <Card className="flex flex-col shadow-sm">
@@ -80,11 +87,13 @@ export function RecommendedActionsCardView({
             {isLoading ? 'Loading…' : `${String(items.length)} prioritized for your environment`}
           </CardDescription>
         </CardHeading>
-        <CardAction>
-          <Button variant="ghost" tone="primary" size="sm">
-            View all
-          </Button>
-        </CardAction>
+        {viewAllHref ? (
+          <CardAction>
+            <Button asChild variant="ghost" tone="primary" size="sm">
+              <a href={viewAllHref}>View all</a>
+            </Button>
+          </CardAction>
+        ) : null}
       </CardHeader>
       <CardContent aria-busy={isLoading}>
         {error ? (

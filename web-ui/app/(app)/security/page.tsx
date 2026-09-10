@@ -13,11 +13,26 @@ import {
   SeverityCardView,
   TopSourcesCardView,
 } from '@akasecurity/dashboard-ui';
+import type {
+  EnforcementActionKind,
+  RecommendedAction,
+  Severity,
+  TimeRange,
+} from '@akasecurity/schema';
 
 import { RangeSelect } from '../../components/RangeSelect';
 import { db } from '../../lib/db';
 import { renderInstant } from '../../lib/rendered-at';
+import {
+  allFindingsHref,
+  enforcementHref,
+  recommendationHref,
+  resolvedFindingHref,
+  severityHref,
+  topSourceHref,
+} from './links';
 import { RecommendedActionsCard } from './RecommendedActionsCard';
+import { WidgetNavigation } from './WidgetNavigation';
 
 // node:sqlite (via @akasecurity/persistence) runs only on the Node.js runtime.
 export const runtime = 'nodejs';
@@ -33,6 +48,16 @@ const bucketLabel = new Intl.DateTimeFormat('en-US', {
   day: 'numeric',
   timeZone: 'UTC',
 });
+
+/**
+ * The `href` patch for one recommendation: the findings of the rule it names, or no
+ * href at all when it names none. The rule is what its count is measured over, so
+ * these are the only two destinations that agree with the row's own label.
+ */
+function hrefFor(action: RecommendedAction, range: TimeRange): { href?: string } {
+  const ruleId = action.subjects[0]?.id ?? '';
+  return ruleId ? { href: recommendationHref(ruleId, range) } : {};
+}
 
 export default async function SecurityPage({
   searchParams,
@@ -51,7 +76,7 @@ export default async function SecurityPage({
     coverage,
     sources,
     recentlyResolved,
-    recentFindings,
+    recommendationInputs,
   ] = await Promise.all([
     security.severitySummary(),
     security.enforcementActions(range),
@@ -60,15 +85,31 @@ export default async function SecurityPage({
     security.scanCoverage(range),
     security.topSources(range, { limit: 5 }),
     security.recentlyResolved(),
-    db().findings.recentFindings({ limit: 500 }),
+    security.recommendationInputs(range),
   ]);
 
   // Same prioritization as the CLI TUI's Recommend screen — pure, computed
-  // server-side over the recent findings.
-  const recommendations = buildRecommendedActions(recentFindings);
+  // server-side. Read over the SELECTED RANGE rather than a "newest N findings"
+  // cap: the cap made "recent" mean a different span on every machine, and no URL
+  // can express one, so the card's counts could never agree with the findings page
+  // each row now links to.
+  const recommendations = buildRecommendedActions(recommendationInputs).map((a) => ({
+    ...a,
+    // The card ranks by category but counts (and therefore links) by the rule it
+    // names, so the destination holds exactly the number the row shows.
+    // A rule-less recommendation carries NO href: the row still reads
+    // "<rule> · N findings", so sending it to the unfiltered list would contradict
+    // the number beside it, and `?type=` (an exact match on '') would select
+    // nothing. The card renders such an action disabled rather than as a dead link.
+    action: { ...a.action, ...hrefFor(a, range) },
+  }));
 
   const points: FindingsChartPoint[] = timeseries.points.map((p) => ({
     ...p,
+    // `low` is optional on the wire (additive) and required by the chart, which
+    // plots it as a series — resolve the absent case here rather than leaving the
+    // chart to read a hole as a gap in the data.
+    low: p.low ?? 0,
     label: bucketLabel.format(new Date(p.timestamp)),
   }));
 
@@ -82,6 +123,38 @@ export default async function SecurityPage({
   // because the view has no clock of its own to fall back on, which is what keeps
   // it honest if it ever gains a `use client` directive.
   const renderedAt = renderInstant();
+
+  // Deep links, built here rather than in the views so `@akasecurity/dashboard-ui`
+  // takes no router dependency. A key is emitted only where a link can honour the
+  // number beside it, so "don't link this" is spelled as an ABSENT key rather than
+  // as a branch inside the view.
+  //
+  // Built with keyed loops rather than `Object.fromEntries`, which widens to
+  // `{ [k: string]: string }` and therefore type-checks against these enum-keyed
+  // props whatever the key is — the one boundary the enum spelling exists to guard.
+  const actionHrefs: Partial<Record<EnforcementActionKind, string>> = {};
+  for (const a of enforcement.actions) actionHrefs[a.kind] = enforcementHref(a.kind, range);
+
+  // A severity with no findings gets no link: `severitySummary` zero-fills all four,
+  // so linking unconditionally would send "Medium 0" to a list holding nothing.
+  const severityHrefs: Partial<Record<Severity, string>> = {};
+  for (const s of severity.bySeverity) {
+    if (s.count > 0) severityHrefs[s.severity] = severityHref(s.severity);
+  }
+  // Repos only: the findings page has no author dimension, so a `user` source has
+  // no destination that could match its count. The local store derives no user
+  // sources today, which is why the unlinked case is covered in the view's own suite.
+  const sourceHrefs: Record<string, string> = {};
+  for (const s of sources.items) {
+    // A named repo is the only source a findings filter can express; an empty name
+    // would drop the `repo` param and open the whole window unfiltered.
+    if (s.kind === 'repo' && s.name) sourceHrefs[s.id] = topSourceHref(s.name, range);
+  }
+  const itemHrefs: Record<string, string> = {};
+  for (const i of recentlyResolved.items) {
+    itemHrefs[i.findingKey] = resolvedFindingHref(i.ruleId, i.repo ?? '', i.path);
+  }
+
   return (
     <div className="p-6">
       <PageHead
@@ -90,29 +163,52 @@ export default async function SecurityPage({
         actions={<RangeSelect value={range} />}
       />
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.15fr_1fr_1.25fr] xl:gap-5">
-        <EnforcementCardView {...enforcement} isLoading={false} error={null} rangeLabel={label} />
-        <SeverityCardView {...severity} isLoading={false} error={null} />
-        <ScanCoverageCardView {...coverage} isLoading={false} error={null} rangeLabel={label} />
-      </div>
+      <WidgetNavigation>
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.15fr_1fr_1.25fr] xl:gap-5">
+          <EnforcementCardView
+            {...enforcement}
+            isLoading={false}
+            error={null}
+            rangeLabel={label}
+            actionHrefs={actionHrefs}
+          />
+          <SeverityCardView
+            {...severity}
+            isLoading={false}
+            error={null}
+            severityHrefs={severityHrefs}
+          />
+          {/* Scan coverage is deliberately unlinked: its number is a curated
+              capability constant, not a measurement of anything in the store, so no
+              destination could corroborate it — and a supported provider with no
+              findings would land on an empty list. */}
+          <ScanCoverageCardView {...coverage} isLoading={false} error={null} rangeLabel={label} />
+        </div>
 
-      <FindingsOverTimeCardView points={points} isLoading={false} error={null} />
+        <FindingsOverTimeCardView points={points} isLoading={false} error={null} />
 
-      <MttrTrendCardView points={mttrPoints} isLoading={false} error={null} />
+        <MttrTrendCardView points={mttrPoints} isLoading={false} error={null} />
 
-      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[1.55fr_1fr] xl:mt-5 xl:gap-5">
-        <RecommendedActionsCard items={recommendations} />
-        <TopSourcesCardView {...sources} isLoading={false} error={null} />
-      </div>
+        <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[1.55fr_1fr] xl:mt-5 xl:gap-5">
+          <RecommendedActionsCard items={recommendations} viewAllHref={allFindingsHref(range)} />
+          <TopSourcesCardView
+            {...sources}
+            isLoading={false}
+            error={null}
+            sourceHrefs={sourceHrefs}
+          />
+        </div>
 
-      <div className="mt-4 xl:mt-5">
-        <RecentlyResolvedCardView
-          items={recentlyResolved.items}
-          isLoading={false}
-          error={null}
-          renderedAt={renderedAt}
-        />
-      </div>
+        <div className="mt-4 xl:mt-5">
+          <RecentlyResolvedCardView
+            items={recentlyResolved.items}
+            isLoading={false}
+            error={null}
+            renderedAt={renderedAt}
+            itemHrefs={itemHrefs}
+          />
+        </div>
+      </WidgetNavigation>
     </div>
   );
 }

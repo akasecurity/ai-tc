@@ -193,6 +193,21 @@ export interface SecurityViews {
   ): Promise<TopSourcesResponse>;
   scanCoverage(range: TimeRange): Promise<ScanCoverageResponse>;
   recentlyResolved(limit?: number): Promise<RecentlyResolvedResponse>;
+  /**
+   * The findings in `range`, carrying only the three fields the recommended-actions
+   * prioritization reads. Range-scoped like every other read here except
+   * `severitySummary`, so the card it feeds agrees with a findings URL carrying the
+   * same `?range=` — which a "newest N findings" cap could never do, since no URL
+   * can express one.
+   */
+  recommendationInputs(range: TimeRange): Promise<RecommendationInputRow[]>;
+}
+
+/** One row of {@link SecurityViews.recommendationInputs}. */
+export interface RecommendationInputRow {
+  ruleId: string;
+  category: string;
+  severity: string;
 }
 
 /**

@@ -87,4 +87,40 @@ describe('runtime source imports stay behind the wall', () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  // `@akasecurity/dashboard-ui` is consumed by more than this app, so it must not
+  // reach for a router. The package declares no `next` dependency, but nothing
+  // stopped an import: it resolves here through the workspace, typechecks, and
+  // ships a view that only works under Next.
+  //
+  // The href props on the security widgets rest on exactly this — the views take
+  // link targets as strings and the host builds them — so the guarantee is worth a
+  // failing test rather than a convention.
+  it('no dashboard-ui source file imports next', () => {
+    const root = fileURLToPath(new URL('../../packages/dashboard-ui/src', import.meta.url));
+    const files = walk(root);
+    // The vacuity control: a wrong root would walk nothing and read as a clean pass.
+    expect(files.length).toBeGreaterThan(20);
+
+    // Matched over the WHOLE file, not line by line. Every multi-name import in the
+    // guarded directory is prettier-wrapped across several lines, and a per-line
+    // test cannot see one: the `import {` line carries no `from`, and the
+    // `} from 'next/navigation';` line does not start with `import`.
+    //
+    // Three forms, all of which reach the module: a static or re-exported
+    // specifier, a bare side-effect import, and a dynamic `import()` — which §4's
+    // own module bans treat as equivalent to a static one.
+    const NEXT = String.raw`['"]next(?:\/[^'"]*)?['"]`;
+    const patterns = [
+      new RegExp(String.raw`\b(?:import|export)\b[\s\S]*?\bfrom\s*${NEXT}`),
+      new RegExp(String.raw`\bimport\s*${NEXT}`),
+      new RegExp(String.raw`\bimport\s*\(\s*${NEXT}`),
+      new RegExp(String.raw`\brequire\s*\(\s*${NEXT}`),
+    ];
+    const offenders = files.filter((file) => {
+      const source = readFileSync(file, 'utf8');
+      return patterns.some((re) => re.test(source));
+    });
+    expect(offenders).toEqual([]);
+  });
 });

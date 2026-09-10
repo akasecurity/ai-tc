@@ -105,6 +105,7 @@ export type {
   InventoryReadPort,
   PoliciesReadPort,
   PolicyCatalogReadPort,
+  RecommendationInputRow,
   SecurityViews,
   SharesReadPort,
 } from './ports.ts';

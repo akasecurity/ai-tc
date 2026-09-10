@@ -828,21 +828,32 @@ const MAX_RECOMMENDATIONS = 10;
 export function buildRecommendations(findings: FindingView[]): Recommendation[] {
   interface Bucket {
     category: string;
+    /** The named rule's tally — what the label reports. */
     count: number;
+    /** The whole category's tally, which ranks one bucket against another. */
+    categoryCount: number;
     severity: string;
     weight: number;
     ruleId: string;
   }
+  // Keyed by category AND rule: one rule id can hold definition rows in more than
+  // one category, and a rule-only key would charge the combined total to whichever
+  // bucket named it.
+  const byRule = new Map<string, number>();
+  const ruleKey = (category: string, ruleId: string) => `${category}\u0000${ruleId}`;
   const buckets = new Map<string, Bucket>();
   for (const f of findings) {
+    const key = ruleKey(f.category, f.ruleId);
+    byRule.set(key, (byRule.get(key) ?? 0) + 1);
     const b = buckets.get(f.category) ?? {
       category: f.category,
       count: 0,
+      categoryCount: 0,
       severity: f.severity,
       weight: 0,
       ruleId: f.ruleId,
     };
-    b.count++;
+    b.categoryCount++;
     const w = SEVERITY_WEIGHT[f.severity] ?? 0;
     if (w > b.weight) {
       b.weight = w;
@@ -851,9 +862,14 @@ export function buildRecommendations(findings: FindingView[]): Recommendation[] 
     }
     buckets.set(f.category, b);
   }
+  // The label below names ONE rule, so it reports that rule's tally rather than the
+  // category's — pairing a rule name with a category count reads as the rule having
+  // fired far more often than it did. Ranking still uses the category's volume:
+  // which KIND of exposure matters most is not a property of one rule.
+  for (const b of buckets.values()) b.count = byRule.get(ruleKey(b.category, b.ruleId)) ?? 0;
 
   return [...buckets.values()]
-    .sort((a, b) => b.weight - a.weight || b.count - a.count)
+    .sort((a, b) => b.weight - a.weight || b.categoryCount - a.categoryCount)
     .slice(0, MAX_RECOMMENDATIONS)
     .map((b) => {
       const t = REC_TEMPLATE[b.category] ?? { title: `${b.category} finding`, action: 'Review' };

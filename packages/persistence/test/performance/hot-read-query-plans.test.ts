@@ -127,7 +127,7 @@ const HOT_READS: readonly HotRead[] = [
   { name: '/security scanCoverage', run: (c) => c.security.scanCoverage('30d') },
   { name: '/security topSources', run: (c) => c.security.topSources('30d', { limit: 5 }) },
   { name: '/security recentlyResolved', run: (c) => c.security.recentlyResolved() },
-  { name: '/security recentFindings', run: (c) => c.findings.recentFindings({ limit: 500 }) },
+  { name: '/security recommendationInputs', run: (c) => c.security.recommendationInputs('30d') },
   // --- /findings: three views over one filtered set ---------------------------
   // Each view is its own read, and the session-scoped types read is listed
   // separately because the scope changes which index drives the scan.
@@ -219,19 +219,11 @@ const EXPECTED_FULL_INDEX_SCANS: Readonly<Record<string, readonly string[]>> = {
   '/security scanCoverage': [],
   '/security topSources': [],
   '/security recentlyResolved': ['finding_resolution'],
-  // The ONE entry in this set that does not grow with the store, and the reason
-  // the paragraph above says "usually" rather than "always". `recentFindings`
-  // scans `idx_audit_started_at` in DESC order precisely so its `LIMIT` can stop
-  // the scan after `limit` findings — EXPLAIN QUERY PLAN has no way to say
-  // "terminates early", so a bounded scan and an unbounded one print the same
-  // word. Measured at 0.9 ms against 35.0 ms for the temp-B-tree form it
-  // replaced, on the same 40,000-event store.
-  //
-  // So this row must not be read as a cost to remove: removing it means going
-  // back to sorting every finding in the store. What DOES bound it is a ratio
-  // across two store sizes, which a plan cannot express and
-  // `security-page-scale.test.ts` asserts instead.
-  '/security recentFindings': ['audit_events'],
+  // No full scan at all, unlike the capped read it replaced: the window predicate
+  // is a range SEEK, so what it touches is the range rather than the store. What a
+  // plan still cannot express is how many rows the window holds, so the bound is
+  // asserted as a ratio across two store sizes in `security-page-scale.test.ts`.
+  '/security recommendationInputs': [],
   // The findings page. Every unscoped read here walks `idx_audit_started_at`
   // in DESC order the way `recentFindings` does, and for the same reason: the
   // order the page wants falls out of the index, so nothing is sorted. All of

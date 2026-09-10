@@ -210,25 +210,82 @@ describe('enforcementActions', () => {
 });
 
 describe('findingsTimeseries', () => {
-  it('buckets by day for 7d, split by severity, zero-filled, low omitted', async () => {
+  it('buckets by day for 7d, split by severity, zero-filled, low included', async () => {
     record({ daysAgo: 0.1, severity: 'critical' }); // today bucket (strictly before NOW)
     record({ daysAgo: 0.1, severity: 'high', ruleId: 'r-high' });
     record({ daysAgo: 2, severity: 'medium', ruleId: 'r-medium' });
-    record({ daysAgo: 2, severity: 'low', ruleId: 'r-low' }); // omitted from the series
+    record({ daysAgo: 2, severity: 'low', ruleId: 'r-low' });
 
     const res = await security().findingsTimeseries('7d');
     expect(res.granularity).toBe('day');
     expect(res.points).toHaveLength(7);
     // Window is the 7 UTC days ending 2026-06-29.
     expect(res.points[0]?.timestamp).toBe('2026-06-23');
-    expect(res.points.at(-1)).toEqual({ timestamp: '2026-06-29', critical: 1, high: 1, medium: 0 });
-    expect(res.points[4]).toEqual({ timestamp: '2026-06-27', critical: 0, high: 0, medium: 1 });
+    expect(res.points.at(-1)).toEqual({
+      timestamp: '2026-06-29',
+      critical: 1,
+      high: 1,
+      medium: 0,
+      low: 0,
+    });
+    // `low` is carried like any other series rather than dropped — the chart plots
+    // all four, matching the MTTR trend rendered beside it. Asserted with toEqual so
+    // a low-severity finding counted into the WRONG bucket key fails here too.
+    expect(res.points[4]).toEqual({
+      timestamp: '2026-06-27',
+      critical: 0,
+      high: 0,
+      medium: 1,
+      low: 1,
+    });
+  });
+
+  it('zero-fills low on every bucket, so the key is never absent', async () => {
+    // The field is optional on the wire, and the chart requires a number: a bucket
+    // that simply omitted it would typecheck and render a gap rather than a zero.
+    const res = await security().findingsTimeseries('7d');
+    expect(res.points.every((p) => p.low === 0)).toBe(true);
   });
 
   it('buckets by week for 3m', async () => {
     const res = await security().findingsTimeseries('3m');
     expect(res.granularity).toBe('week');
     expect(res.points).toHaveLength(Math.ceil(90 / 7));
+  });
+});
+
+describe('recommendationInputs', () => {
+  it('returns the findings in the window, carrying rule, category and severity', async () => {
+    record({ daysAgo: 1, severity: 'critical' });
+    record({ daysAgo: 2, severity: 'high', ruleId: 'r-high' });
+
+    const rows = await security().recommendationInputs('7d');
+    expect(rows).toHaveLength(2);
+    // Asserted as exact values, not `!== ''`: null and undefined both satisfy that,
+    // so it waves through the only faults the read can produce — a dropped column or
+    // an aliased wrong one.
+    //
+    // Projected to the three fields the port declares. The row handed back is the
+    // shared in-range row, which carries more; narrowing here asserts the contract
+    // rather than whatever else that row happens to hold.
+    const projected = rows
+      .map((r) => ({ ruleId: r.ruleId, category: r.category, severity: r.severity }))
+      .sort((a, b) => a.ruleId.localeCompare(b.ruleId));
+    expect(projected).toEqual([
+      { ruleId: 'r', category: 'secret', severity: 'critical' },
+      { ruleId: 'r-high', category: 'secret', severity: 'high' },
+    ]);
+  });
+
+  it('is RANGE-scoped, not a newest-N cap', async () => {
+    // This is the whole reason the read exists. The card it feeds used to take the
+    // newest 500 findings, which no URL can express — so its counts could never be
+    // reconciled with the findings page each row links to. A window can.
+    record({ daysAgo: 1, severity: 'critical' });
+    record({ daysAgo: 40, severity: 'high', ruleId: 'r-high' });
+
+    expect(await security().recommendationInputs('7d')).toHaveLength(1);
+    expect(await security().recommendationInputs('3m')).toHaveLength(2);
   });
 });
 
@@ -479,6 +536,7 @@ describe('recentlyResolved', () => {
       severity: 'high',
       kind: 'code_change',
       findingKey: 'key-a',
+      repo: 'acme/api',
       filePath: 'src/config.ts',
       ruleId: 'aws-secret-key',
     });
@@ -497,10 +555,34 @@ describe('recentlyResolved', () => {
       findingKey: 'key-a',
       ruleId: 'aws-secret-key',
       severity: 'high',
+      // The repo is carried beside the path because the path is stored RELATIVE to
+      // it: `src/config.ts` alone names that file in every repo on the machine.
+      repo: 'acme/api',
       path: 'src/config.ts',
       resolvedAt: new Date(NOW - DAY_MS).toISOString(),
       detectedAt: new Date(NOW - 5 * DAY_MS).toISOString(),
     });
+  });
+
+  it('reports an empty repo rather than null when the event carried none', async () => {
+    record({
+      daysAgo: 5,
+      severity: 'high',
+      kind: 'code_change',
+      findingKey: 'key-norepo',
+      filePath: 'src/config.ts',
+      ruleId: 'aws-secret-key',
+    });
+    db.resolutions.insertResolution({
+      findingKey: 'key-norepo',
+      status: 'resolved',
+      method: 'fixed-at-source',
+      resolvedAt: NOW - DAY_MS,
+      evidence: '',
+    });
+
+    // A null would reach the link builder and be written as `repo=null`.
+    expect((await security().recentlyResolved()).items[0]?.repo).toBe('');
   });
 
   it('excludes a finding resolved then superseded by a later redetected/open row (latest-wins)', async () => {

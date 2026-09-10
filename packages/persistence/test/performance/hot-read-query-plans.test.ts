@@ -127,7 +127,7 @@ const HOT_READS: readonly HotRead[] = [
   { name: '/security scanCoverage', run: (c) => c.security.scanCoverage('30d') },
   { name: '/security topSources', run: (c) => c.security.topSources('30d', { limit: 5 }) },
   { name: '/security recentlyResolved', run: (c) => c.security.recentlyResolved() },
-  { name: '/security recommendationInputs', run: (c) => c.security.recommendationInputs('30d') },
+  { name: '/security recommendationInputs', run: (c) => c.security.recommendationInputs() },
   // NOT a `/security` read any more — the recommendations card reads the windowed
   // rollup above instead. It stays here because it is still the hot read behind
   // `aka tui`, `aka stats`, `aka plugins` and all three plugins' recommend and
@@ -225,11 +225,13 @@ const EXPECTED_FULL_INDEX_SCANS: Readonly<Record<string, readonly string[]>> = {
   '/security scanCoverage': [],
   '/security topSources': [],
   '/security recentlyResolved': ['finding_resolution'],
-  // No full scan at all, unlike the capped read beneath it: the window predicate is
-  // a range SEEK, so what it touches is the range rather than the store. What a plan
-  // still cannot express is how many rows the window holds, so the size is asserted
-  // as a ratio across two store sizes in `security-page-scale.test.ts`.
-  '/security recommendationInputs': [],
+  // The same allowance its resolution-aware siblings carry, and for the same reason:
+  // deciding whether a finding is still OPEN means reaching the latest resolution
+  // per key, and that derived table is scanned once rather than probed per finding.
+  // The findings side is a grouped aggregate, so what this returns is O(distinct
+  // rule × category × severity) however large the store — which is why it is not on
+  // the flat-ratio list in `security-page-scale.test.ts` either.
+  '/security recommendationInputs': ['finding_resolution'],
   // The ONE entry in this set that does not grow with the store, and the reason the
   // paragraph above says "usually" rather than "always". `recentFindings` scans
   // `idx_audit_started_at` in DESC order precisely so its `LIMIT` can stop the scan

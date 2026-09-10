@@ -182,26 +182,21 @@ describe('RecommendedActionsCardView', () => {
     expect(html).toContain('View all');
   });
 
-  it('names the window it was computed over, in the header and when empty', () => {
-    // This card is range-scoped while the severity card beside it is whole-store, so
-    // a store whose newest finding predates the window shows a full severity ring
-    // next to an empty recommendations card. Naming the window is what stops that
-    // reading as a contradiction.
-    expect(render({ items: [], rangeLabel: 'Last 7 days' })).toContain(
-      'No findings in last 7 days.',
-    );
-    expect(render({ items: [], rangeLabel: 'Last 7 days' })).toContain(
-      '0 prioritized for your environment · last 7 days',
-    );
-    // Without a label the copy stays generic rather than inventing a window.
-    expect(render({ items: [] })).toContain('No recommendations right now.');
+  it('names the scope it reports, in the header and when empty', () => {
+    // The card counts OPEN findings and ignores the page's range selector, so a
+    // reader whose selector says "last 7 days" is not looking at a seven-day number.
+    // Saying "open" is what stops an empty card reading as "nothing happened
+    // recently" when it means "nothing is outstanding".
+    expect(render({ items: [] })).toContain('No open findings.');
+    expect(render({ items: [] })).toContain('0 open, prioritized for you');
+    expect(render({ items: [] })).not.toContain('right now');
   });
 
   it('renders an action with no href as disabled, not as a link', () => {
-    // The host clears the builder's baked `/findings` when a recommendation names
-    // no rule. That only helps if an absent href renders inert here — a link to the
-    // unfiltered list under a "<rule> · N findings" label is the mismatch the host
-    // is avoiding.
+    // The builder emits no href when its host supplies no `hrefForRule`, or when
+    // that builder declines a rule. That only helps if an absent href renders inert
+    // here — a link to the unfiltered list under a "<rule> · N findings" label is
+    // the mismatch the arrangement avoids.
     const action = (href: string | undefined) => ({
       id: 'a1',
       category: 'secret',

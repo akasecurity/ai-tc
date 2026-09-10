@@ -200,7 +200,7 @@ export interface SecurityViews {
    * same `?range=` — which a "newest N findings" cap could never do, since no URL
    * can express one.
    */
-  recommendationInputs(range: TimeRange): Promise<RecommendationInputRow[]>;
+  recommendationInputs(): Promise<RecommendationInputRow[]>;
 }
 
 /**
@@ -211,7 +211,10 @@ export interface SecurityViews {
  * one of those fields upstream narrows this too instead of leaving a duplicate
  * behind that still says `string`.
  */
-export type RecommendationInputRow = Pick<FindingView, 'ruleId' | 'category' | 'severity'>;
+export type RecommendationInputRow = Pick<FindingView, 'ruleId' | 'category' | 'severity'> & {
+  /** How many OPEN findings carry that rule under that category and severity. */
+  count: number;
+};
 
 /**
  * Data Shares read views over the local store (share_destination

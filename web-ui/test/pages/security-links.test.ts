@@ -10,8 +10,8 @@ import {
   parseView,
 } from '../../app/(app)/findings/filters';
 import {
-  allFindingsHref,
   enforcementHref,
+  openFindingsHref,
   recommendationHref,
   resolvedFindingHref,
   severityHref,
@@ -143,28 +143,33 @@ describe('resolvedFindingHref', () => {
 });
 
 describe('recommendationHref', () => {
-  it('filters by the rule the card names, with the widget window', () => {
-    expect(recommendationHref('aws-key', '7d')).toBe('/findings?type=aws-key&view=flat&range=7d');
+  it('filters by the rule the card names, scoped to open findings', () => {
+    expect(recommendationHref('aws-key')).toBe('/findings?type=aws-key&status=open&view=flat');
   });
 
   it('round-trips: `type` survives only because the view is not grouped', () => {
-    const sp = paramsOf(recommendationHref('aws-key', '7d'));
+    const sp = paramsOf(recommendationHref('aws-key'));
     expect(parseFindingsFilters(sp).type).toEqual(['aws-key']);
+    expect(parseFindingsFilters(sp).status).toEqual(['open']);
     expect(parseView(sp)).toBe('flat');
-    expect(parseRange(sp)).toBe('7d');
+  });
+
+  it('carries NO range — the card is a to-do list, not a window', () => {
+    // A window would hide a secret committed weeks ago and never fixed, which is
+    // exactly the row that should rank highest.
+    expect(parseRange(paramsOf(recommendationHref('aws-key')))).toBeNull();
   });
 
   it('carries no severity — it is constant within a rule', () => {
-    expect(parseFindingsFilters(paramsOf(recommendationHref('aws-key', '7d'))).severity).toEqual(
-      [],
-    );
+    expect(parseFindingsFilters(paramsOf(recommendationHref('aws-key'))).severity).toEqual([]);
   });
 });
 
-describe('allFindingsHref', () => {
-  it('carries the window and no filter', () => {
-    const href = allFindingsHref('7d');
-    expect(href).toBe('/findings?view=flat&range=7d');
-    expect(parseFindingsFilters(paramsOf(href))).toEqual(EMPTY_FILTERS);
+describe('openFindingsHref', () => {
+  it('scopes to open findings and nothing else', () => {
+    const href = openFindingsHref();
+    expect(href).toBe('/findings?status=open&view=flat');
+    expect(parseFindingsFilters(paramsOf(href))).toEqual({ ...EMPTY_FILTERS, status: ['open'] });
+    expect(parseRange(paramsOf(href))).toBeNull();
   });
 });

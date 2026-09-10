@@ -627,19 +627,58 @@ export class SqliteSecurityRepository implements SecurityViews {
   }
 
   /**
-   * The findings in `range`, projected to what the recommended-actions rollup reads.
+   * Per-rule tallies of the findings that are still OPEN, whole-store.
    *
-   * Range-scoped deliberately: the card this feeds used to read a "newest N findings"
-   * cap, which made "recent" mean a different span on every machine and — because no
-   * URL can express such a cap — left its counts impossible to reconcile with the
-   * findings page it links to. A window reconciles by construction.
+   * Scoped by status rather than by time, because the card this feeds is a to-do
+   * list: a secret committed three weeks ago and never rotated is still the most
+   * important thing to fix, and any window hides it. It carried a "newest N
+   * findings" cap and then a range; the first meant a different span on every
+   * machine, and the second reported "no recommendations" over live exposure.
+   *
+   * `open` mirrors `deriveFindingStatus` — at-rest, minus resolved and dismissed —
+   * so a row's count is exactly what `?status=open&type=<rule>` returns. Note that
+   * is NOT `severitySummary`'s `openAtRest`, which keeps dismissed findings (a
+   * dismissal is a judgement, not a remediation) and drops untracked legacy rows.
+   * The two answer different questions and only this one has to match a link.
+   *
+   * Aggregated in SQL: the result is O(distinct rule × category × severity), so a
+   * whole-store scope costs a grouped scan rather than a row per finding.
    */
-  recommendationInputs(range: TimeRange): Promise<RecommendationInputRow[]> {
-    const now = this.now();
-    const from = now - RANGE_DAYS[range] * DAY_MS;
-    // Returned as-is: `FindingTimeRow` already carries these three fields, so
-    // projecting them would allocate a second array the length of the window.
-    return Promise.resolve(this.findingsInRange(from, now));
+  recommendationInputs(): Promise<RecommendationInputRow[]> {
+    const rows = allRows<{
+      rule_id: string;
+      category: string;
+      severity: string;
+      count: number;
+    }>(
+      this.db.prepare(
+        `SELECT d.rule_id AS rule_id,
+                d.category AS category,
+                d.severity AS severity,
+                COUNT(*) AS count
+         FROM inspection_findings f
+         JOIN audit_events e ON e.id = f.audit_event_id
+         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+         LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
+           ON latest.finding_key = f.finding_key
+         WHERE e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
+           AND e.event_type = 'code_change'
+           AND (
+             f.finding_key IS NULL
+             OR latest.status IS NULL
+             OR latest.status NOT IN ('resolved', 'dismissed')
+           )
+         GROUP BY d.rule_id, d.category, d.severity`,
+      ),
+    );
+    return Promise.resolve(
+      rows.map((r) => ({
+        ruleId: r.rule_id,
+        category: r.category,
+        severity: r.severity,
+        count: r.count,
+      })),
+    );
   }
 
   // Findings whose parent event occurred in [fromMs, toMs), with the parent's

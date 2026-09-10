@@ -94,20 +94,29 @@ export function resolvedFindingHref(ruleId: string, repo: string, path: string):
 }
 
 /**
- * The findings of one detection rule, in the widget's window.
+ * The OPEN findings of one detection rule, whole-store.
+ *
+ * Carries no range, because the card does not: it is a to-do list, and a window
+ * would hide a secret committed weeks ago and never fixed. `status=open` is what
+ * makes the row's count and this destination the same set — the store read behind
+ * the card mirrors `deriveFindingStatus` for exactly that reason.
  *
  * Filters by RULE rather than by the recommendation's category because the card
- * counts per rule (see `bucketize`) — the label and the destination therefore
- * describe the same set. `severity` is never added alongside: it is constant
- * within a rule, so it would filter every row or none.
+ * counts per rule (see `bucketize`), and `/findings` has no category dimension.
+ * `severity` is never added alongside: it is constant within a rule, so it would
+ * filter every row or none.
  */
-export function recommendationHref(ruleId: string, range: TimeRange): string {
+export function recommendationHref(ruleId: string): string {
   return findingsHref(
-    buildFindingsParams({ ...EMPTY_FILTERS, type: [ruleId] }, '', '', { view: 'flat', range }),
+    buildFindingsParams({ ...EMPTY_FILTERS, type: [ruleId], status: ['open'] }, '', '', {
+      view: 'flat',
+    }),
   );
 }
 
-/** The unfiltered findings list for the card's own window. */
-export function allFindingsHref(range: TimeRange): string {
-  return findingsHref(buildFindingsParams(EMPTY_FILTERS, '', '', { view: 'flat', range }));
+/** Every open finding — the card's own population, unfiltered by rule. */
+export function openFindingsHref(): string {
+  return findingsHref(
+    buildFindingsParams({ ...EMPTY_FILTERS, status: ['open'] }, '', '', { view: 'flat' }),
+  );
 }

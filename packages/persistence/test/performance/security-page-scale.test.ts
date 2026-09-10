@@ -278,7 +278,7 @@ async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Sc
   // returns 30 points and 0 non-null buckets. Counting non-null buckets is what
   // makes the guard mean "this read found something".
   const run: Record<ReadName, () => Promise<number>> = {
-    recommendationInputs: async () => (await security.recommendationInputs('30d')).length,
+    recommendationInputs: async () => (await security.recommendationInputs()).length,
     recentFindings: async () => (await findings.recentFindings({ limit: 500 })).length,
     recentlyResolved: async () => (await security.recentlyResolved(20)).items.length,
     mttrTrend: async () =>
@@ -390,17 +390,14 @@ describe(`/security read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
   }
 
   // `recommendationInputs` is NOT in the flat set above, and that is a measurement
-  // rather than an omission: it returns every finding in the selected window, so its
-  // cost tracks what the window holds. Measured here at a ratio of 17.59 (0.947 ms
-  // at 2,000 events against 16.664 ms at 20,000) because this corpus spaces events
-  // ~20.7 minutes apart, which puts a store-proportional number of rows inside a
-  // 30-day window at both sizes.
+  // rather than an omission. It RETURNS little — a grouped aggregate, so
+  // O(distinct rule × category × severity) rows however large the store — but it
+  // READS every finding to group them, so the work still tracks store size.
   //
-  // So it is asserted as a SECOND control rather than as a flat read. Pinning it
-  // says two things a flat assertion could not: the harness is still measuring
-  // growth, and this page read is genuinely store-proportional in a corpus whose
-  // window spans it — which is the term to watch if `/security` is re-budgeted.
-  it('recommendationInputs grows: it returns every finding in the window', () => {
+  // That distinction is the whole reason it is pinned rather than assumed: a plan
+  // shows the grouping, and the returned length shows nothing, so only a ratio can
+  // say which of the two the cost follows.
+  it('recommendationInputs grows: it groups over every finding to build its rollup', () => {
     const smallest = fastest(small.samples.recommendationInputs ?? []);
     const largest = fastest(large.samples.recommendationInputs ?? []);
     const ratio = largest / smallest;
@@ -409,8 +406,8 @@ describe(`/security read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
       `recommendationInputs was ${smallest.toFixed(3)} ms at ` +
         `${SMALL_EVENTS.toLocaleString('en-US')} events and ${largest.toFixed(3)} ms at ` +
         `${LARGE_EVENTS.toLocaleString('en-US')} — ratio ${ratio.toFixed(2)}, which must exceed ` +
-        `${String(CONTROL_FLOOR)}. A FLAT result here means the window stopped covering the ` +
-        'corpus, so this read is no longer measuring what the page pays for it.',
+        `${String(CONTROL_FLOOR)}. A FLAT result here means the grouping stopped ` +
+        'reading the whole store, so this is no longer measuring what the page pays.',
     ).toBeGreaterThan(CONTROL_FLOOR);
     expect(largest, 'recommendationInputs gross-regression backstop').toBeLessThan(
       GROSS_REGRESSION_MS,

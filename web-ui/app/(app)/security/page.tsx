@@ -19,8 +19,8 @@ import { RangeSelect } from '../../components/RangeSelect';
 import { db } from '../../lib/db';
 import { renderInstant } from '../../lib/rendered-at';
 import {
-  allFindingsHref,
   enforcementHref,
+  openFindingsHref,
   recommendationHref,
   resolvedFindingHref,
   severityHref,
@@ -70,20 +70,21 @@ export default async function SecurityPage({
     security.scanCoverage(range),
     security.topSources(range, { limit: 5 }),
     security.recentlyResolved(),
-    security.recommendationInputs(range),
+    security.recommendationInputs(),
   ]);
 
   // Same prioritization as the CLI TUI's Recommend screen — pure, computed
-  // server-side. Read over the SELECTED RANGE rather than a "newest N findings"
-  // cap: the cap made "recent" mean a different span on every machine, and no URL
-  // can express one, so the card's counts could never agree with the findings page
-  // each row now links to.
+  // server-side. Scoped by STATUS, not by the range selector: this card is a to-do
+  // list, so a window would hide a secret committed weeks ago and never fixed,
+  // reporting "no recommendations" over live exposure. It is deliberately one of
+  // the two cards on this page that ignore the range, alongside By severity.
+  //
   // The destination is built INSIDE the builder rather than patched over it
   // afterwards: the card ranks by category but counts by the rule it names, so the
   // link has to be that rule's, and a host that forgot to patch would ship a row
   // reading "<rule> · N findings" over the whole unfiltered list.
   const recommendations = buildRecommendedActions(recommendationInputs, {
-    hrefForRule: (ruleId) => recommendationHref(ruleId, range),
+    hrefForRule: recommendationHref,
   });
 
   const points: FindingsChartPoint[] = timeseries.points.map((p) => ({
@@ -178,11 +179,7 @@ export default async function SecurityPage({
         <MttrTrendCardView points={mttrPoints} isLoading={false} error={null} />
 
         <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[1.55fr_1fr] xl:mt-5 xl:gap-5">
-          <RecommendedActionsCard
-            items={recommendations}
-            viewAllHref={allFindingsHref(range)}
-            rangeLabel={label}
-          />
+          <RecommendedActionsCard items={recommendations} viewAllHref={openFindingsHref()} />
           <TopSourcesCardView
             {...sources}
             isLoading={false}

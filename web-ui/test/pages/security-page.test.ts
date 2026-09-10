@@ -69,6 +69,9 @@ function seed(
     daysAgo: number;
     repo: string;
     category: DetectionCategory;
+    /** `code_change` makes the finding at-rest, which is what `open` means. */
+    kind?: IngestEvent['kind'];
+    findingKey?: string;
   }[],
 ): void {
   const db = openLocalDatabase(dir);
@@ -77,7 +80,7 @@ function seed(
     const event: IngestEvent = {
       id,
       sourceTool: 'claude-code',
-      kind: 'prompt',
+      kind: row.kind ?? 'prompt',
       occurredAt: new Date(Date.now() - row.daysAgo * DAY_MS + i * 1000).toISOString(),
       contentHash: randomUUID(),
       content: 'x',
@@ -93,6 +96,7 @@ function seed(
       maskedMatch: `masked-${String(i)}`,
       actionTaken: 'block',
       confidence: 0.9,
+      ...(row.findingKey ? { findingKey: row.findingKey } : {}),
     };
     db.recordCapture(event, [finding]);
   });
@@ -110,6 +114,37 @@ function seed(
 // window was read — leaving the card's own window unfalsifiable, which is exactly
 // how an earlier version of this fixture passed while the page read a window it did
 // not link to.
+/**
+ * Two OPEN at-rest findings, in different categories.
+ *
+ * The recommendations card is scoped by status, not by the range selector, so its
+ * fixture has to be `code_change` — a prompt finding derives as `handled` and would
+ * make every assertion below read zero.
+ */
+function seedOpenFixture(): void {
+  seed([
+    {
+      ruleId: INSIDE_RULE,
+      severity: 'critical',
+      daysAgo: 1,
+      repo: 'acme/api',
+      category: 'secret',
+      kind: 'code_change',
+      findingKey: 'open-1',
+    },
+    {
+      // 400 days old and still open — the row a window would have hidden.
+      ruleId: OUTSIDE_RULE,
+      severity: 'high',
+      daysAgo: 400,
+      repo: 'acme/legacy',
+      category: 'pii',
+      kind: 'code_change',
+      findingKey: 'open-2',
+    },
+  ]);
+}
+
 function seedStraddlingFixture(): void {
   seed([
     { ruleId: INSIDE_RULE, severity: 'critical', daysAgo: 1, repo: 'acme/api', category: 'secret' },
@@ -153,26 +188,50 @@ async function propsOf(
 
 describe('the security route carries each widget its own window', () => {
   it('is a fixture the two windows disagree on', async () => {
-    // The control for everything below. If both findings ever fall inside the
-    // default window, a range-carrying link and an all-time one open the same
-    // list and the assertions stop discriminating.
+    // The control for the range assertions below. If both findings ever fall inside
+    // the default window, a range-carrying link and an all-time one open the same
+    // list and those assertions stop discriminating.
     seedStraddlingFixture();
     const db = openLocalDatabase(dir);
     try {
-      expect((await db.security.recommendationInputs('7d')).length).toBe(1);
-      expect((await db.security.recommendationInputs('3m')).length).toBe(2);
-      // Distinct categories, so the wider window yields a SECOND recommendation
-      // rather than a fatter one — which is what makes the card's window visible.
-      expect(
-        new Set((await db.security.recommendationInputs('3m')).map((r) => r.category)),
-      ).toEqual(new Set(['secret', 'pii']));
+      expect((await db.security.topSources('7d')).items.length).toBe(1);
+      expect((await db.security.topSources('3m')).items.length).toBe(2);
       // The severity summary is whole-store, so it sees both.
-      const summary = await db.security.severitySummary();
-      expect(summary.total).toBe(2);
+      expect((await db.security.severitySummary()).total).toBe(2);
     } finally {
       db.close();
       dropMemoisedDb();
     }
+  });
+
+  it('recommends an old unfixed finding that every window would have hidden', async () => {
+    // The control for the status scope. `seedOpenFixture` holds one finding 400
+    // days old; if the card were windowed at all, this row would vanish — which is
+    // the failure the scope change exists to prevent.
+    seedOpenFixture();
+    const items = (await propsOf('RecommendedActionsCard')).items as {
+      subjects: { id: string }[];
+    }[];
+    expect(items.map((i) => i.subjects[0]?.id).sort()).toEqual([INSIDE_RULE, OUTSIDE_RULE].sort());
+  });
+
+  it('recommends nothing once every finding is resolved', async () => {
+    // The other half of the control: the card is empty because nothing is
+    // outstanding, not because nothing is recent.
+    seedOpenFixture();
+    const db = openLocalDatabase(dir);
+    for (const key of ['open-1', 'open-2']) {
+      db.resolutions.insertResolution({
+        findingKey: key,
+        status: 'resolved',
+        method: 'fixed-at-source',
+        resolvedAt: Date.now(),
+        evidence: '',
+      });
+    }
+    db.close();
+    dropMemoisedDb();
+    expect((await propsOf('RecommendedActionsCard')).items).toEqual([]);
   });
 
   it('gives the severity card links that carry NO range', async () => {
@@ -205,21 +264,21 @@ describe('the security route carries each widget its own window', () => {
     expect(Object.values(hrefs)).toEqual(['/findings?view=flat&range=7d&repo=acme%2Fapi']);
   });
 
-  it('links each recommendation to the rule it names, in the window', async () => {
-    seedStraddlingFixture();
+  it('links each recommendation to its own rule, scoped to open', async () => {
+    seedOpenFixture();
     const items = (await propsOf('RecommendedActionsCard')).items as {
       action: { href: string };
       subjects: { id: string }[];
     }[];
-    expect(items).toHaveLength(1);
-    expect(items[0]?.subjects[0]?.id).toBe(INSIDE_RULE);
-    expect(items[0]?.action.href).toBe(`/findings?type=${INSIDE_RULE}&view=flat&range=7d`);
+    const byRule = new Map(items.map((i) => [i.subjects[0]?.id, i.action.href]));
+    expect(byRule.get(INSIDE_RULE)).toBe(`/findings?type=${INSIDE_RULE}&status=open&view=flat`);
+    expect(byRule.get(OUTSIDE_RULE)).toBe(`/findings?type=${OUTSIDE_RULE}&status=open&view=flat`);
   });
 
   it('gives the recommendations card a working "View all"', async () => {
     seedStraddlingFixture();
     expect((await propsOf('RecommendedActionsCard')).viewAllHref).toBe(
-      '/findings?view=flat&range=7d',
+      '/findings?status=open&view=flat',
     );
   });
 
@@ -267,15 +326,15 @@ describe('the security route carries each widget its own window', () => {
     expect(Object.keys(hrefs)).toEqual(['blocked']);
   });
 
-  it("replaces the builder's baked href on every recommendation", async () => {
-    // `buildRecommendedActions` bakes `href: '/findings'` onto every action. The
-    // page must overwrite it, or a row reading "<rule> · N findings" opens the
-    // whole unfiltered list.
+  it('hands the builder a per-rule destination, scoped to open findings', async () => {
+    // The page supplies `hrefForRule`, so every row resolves to that rule's own
+    // `?type=` link rather than a generic list — and to `status=open`, because the
+    // card counts open findings and the two have to describe one set.
     //
-    // Only the OVERWRITE is reachable from here: every recommendation the store can
-    // produce names a rule. The rule-less branch is covered where it renders, in
+    // The declining branch is not reachable from here: every recommendation the
+    // store can produce names a rule. It is covered where it renders, in
     // dashboard-ui's `RecommendedActionsCardView` suite.
-    seedStraddlingFixture();
+    seedOpenFixture();
     const items = (await propsOf('RecommendedActionsCard')).items as {
       action: { href?: string };
       subjects: { id: string }[];
@@ -284,7 +343,9 @@ describe('the security route carries each widget its own window', () => {
     for (const item of items) {
       expect(item.subjects[0]?.id).toBeTruthy();
       expect(item.action.href).toContain('type=');
-      expect(item.action.href).not.toBe('/findings');
+      expect(item.action.href).toContain('status=open');
+      // No range: the card is a to-do list, so an old unfixed finding must survive.
+      expect(item.action.href).not.toContain('range=');
     }
   });
 

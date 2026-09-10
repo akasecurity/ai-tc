@@ -255,11 +255,17 @@ describe('findingsTimeseries', () => {
 });
 
 describe('recommendationInputs', () => {
-  it('returns the findings in the window, carrying rule, category and severity', async () => {
-    record({ daysAgo: 1, severity: 'critical' });
-    record({ daysAgo: 2, severity: 'high', ruleId: 'r-high' });
+  it('tallies OPEN at-rest findings per rule, carrying category and severity', async () => {
+    record({ daysAgo: 1, severity: 'critical', kind: 'code_change', findingKey: 'k-1' });
+    record({
+      daysAgo: 2,
+      severity: 'high',
+      ruleId: 'r-high',
+      kind: 'code_change',
+      findingKey: 'k-2',
+    });
 
-    const rows = await security().recommendationInputs('7d');
+    const rows = await security().recommendationInputs();
     expect(rows).toHaveLength(2);
     // Asserted as exact values, not `!== ''`: null and undefined both satisfy that,
     // so it waves through the only faults the read can produce — a dropped column or
@@ -268,24 +274,65 @@ describe('recommendationInputs', () => {
     // Projected to the three fields the port declares. The row handed back is the
     // shared in-range row, which carries more; narrowing here asserts the contract
     // rather than whatever else that row happens to hold.
-    const projected = rows
-      .map((r) => ({ ruleId: r.ruleId, category: r.category, severity: r.severity }))
-      .sort((a, b) => a.ruleId.localeCompare(b.ruleId));
+    const projected = rows.sort((a, b) => a.ruleId.localeCompare(b.ruleId));
     expect(projected).toEqual([
-      { ruleId: 'r', category: 'secret', severity: 'critical' },
-      { ruleId: 'r-high', category: 'secret', severity: 'high' },
+      { ruleId: 'r', category: 'secret', severity: 'critical', count: 1 },
+      { ruleId: 'r-high', category: 'secret', severity: 'high', count: 1 },
     ]);
   });
 
-  it('is RANGE-scoped, not a newest-N cap', async () => {
-    // This is the whole reason the read exists. The card it feeds used to take the
-    // newest 500 findings, which no URL can express — so its counts could never be
-    // reconciled with the findings page each row links to. A window can.
-    record({ daysAgo: 1, severity: 'critical' });
-    record({ daysAgo: 40, severity: 'high', ruleId: 'r-high' });
+  it('is scoped by STATUS, not by time — an old unfixed finding still counts', async () => {
+    // The whole reason the read is shaped this way. A secret committed months ago
+    // and never rotated is the row that should rank highest; any window hides it.
+    record({ daysAgo: 400, severity: 'critical', kind: 'code_change', findingKey: 'k-old' });
 
-    expect(await security().recommendationInputs('7d')).toHaveLength(1);
-    expect(await security().recommendationInputs('3m')).toHaveLength(2);
+    const rows = await security().recommendationInputs();
+    expect(rows).toEqual([{ ruleId: 'r', category: 'secret', severity: 'critical', count: 1 }]);
+  });
+
+  it('drops a resolved finding, and a dismissed one', async () => {
+    // `open` mirrors deriveFindingStatus so the count equals what `?status=open`
+    // returns — which excludes dismissed, unlike severitySummary's openAtRest.
+    record({ daysAgo: 1, severity: 'critical', kind: 'code_change', findingKey: 'k-res' });
+    record({
+      daysAgo: 1,
+      severity: 'high',
+      ruleId: 'r-dis',
+      kind: 'code_change',
+      findingKey: 'k-dis',
+    });
+    db.resolutions.insertResolution({
+      findingKey: 'k-res',
+      status: 'resolved',
+      method: 'fixed-at-source',
+      resolvedAt: NOW,
+      evidence: '',
+    });
+    db.resolutions.insertResolution({
+      findingKey: 'k-dis',
+      status: 'dismissed',
+      method: 'false-positive',
+      resolvedAt: NOW,
+      evidence: '',
+    });
+
+    expect(await security().recommendationInputs()).toEqual([]);
+  });
+
+  it('ignores in-flight findings — nothing is left on disk to fix', async () => {
+    // A prompt secret was intercepted, so it derives as `handled`, not `open`.
+    record({ daysAgo: 1, severity: 'critical', kind: 'prompt' });
+
+    expect(await security().recommendationInputs()).toEqual([]);
+  });
+
+  it('sums repeats of one rule into a single row', async () => {
+    record({ daysAgo: 1, severity: 'critical', kind: 'code_change', findingKey: 'k-a' });
+    record({ daysAgo: 2, severity: 'critical', kind: 'code_change', findingKey: 'k-b' });
+
+    expect(await security().recommendationInputs()).toEqual([
+      { ruleId: 'r', category: 'secret', severity: 'critical', count: 2 },
+    ]);
   });
 });
 

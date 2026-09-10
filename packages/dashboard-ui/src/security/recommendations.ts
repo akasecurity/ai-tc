@@ -74,7 +74,14 @@ interface Bucket {
  * caller holding only a rollup row can pass it — a full `FindingView[]` still
  * satisfies it.
  */
-export type RecommendationInput = Pick<FindingView, 'category' | 'severity' | 'ruleId'>;
+export type RecommendationInput = Pick<FindingView, 'category' | 'severity' | 'ruleId'> & {
+  /**
+   * How many findings this row stands for. Absent means one, so a caller holding
+   * raw findings passes them unchanged; a caller holding a SQL rollup passes one
+   * row per group and the tallies below still come out right.
+   */
+  count?: number;
+};
 
 /**
  * One bucket per detection category, keyed to its most-severe rule.
@@ -100,7 +107,8 @@ function bucketize(findings: RecommendationInput[]): Bucket[] {
   const byRule = new Map<string, number>();
   const buckets = new Map<string, Bucket>();
   for (const f of findings) {
-    byRule.set(f.ruleId, (byRule.get(f.ruleId) ?? 0) + 1);
+    const n = f.count ?? 1;
+    byRule.set(f.ruleId, (byRule.get(f.ruleId) ?? 0) + n);
     const b = buckets.get(f.category) ?? {
       category: f.category,
       count: 0,
@@ -109,7 +117,7 @@ function bucketize(findings: RecommendationInput[]): Bucket[] {
       weight: 0,
       ruleId: f.ruleId,
     };
-    b.categoryCount++;
+    b.categoryCount += n;
     const w = SEVERITY_WEIGHT[f.severity] ?? 0;
     if (w > b.weight) {
       b.weight = w;

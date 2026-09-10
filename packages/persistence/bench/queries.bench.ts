@@ -195,7 +195,7 @@ async function securityPage(s: Surfaces): Promise<void> {
     s.security.scanCoverage('30d'),
     s.security.topSources('30d', { limit: 5 }),
     s.security.recentlyResolved(),
-    s.security.recommendationInputs('30d'),
+    s.security.recommendationInputs(),
   ]);
 }
 
@@ -225,7 +225,7 @@ describe(`/security — each aggregation on its own, at ${BREAKDOWN_SCALE.toLoca
   // one of them is under 5 ms and the sampling noise exceeds the signal.
   const PARTS: readonly [string, (s: Surfaces) => Promise<unknown>][] = [
     ['severitySummary', (s) => s.security.severitySummary()],
-    ['recommendationInputs', (s) => s.security.recommendationInputs('30d')],
+    ['recommendationInputs', (s) => s.security.recommendationInputs()],
     ['enforcementActions', (s) => s.security.enforcementActions('30d')],
     ['findingsTimeseries', (s) => s.security.findingsTimeseries('30d')],
     ['mttrTrend', (s) => s.security.mttrTrend('30d')],

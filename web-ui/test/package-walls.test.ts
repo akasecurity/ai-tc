@@ -123,7 +123,11 @@ describe('runtime source imports stay behind the wall', () => {
     // own module bans treat as equivalent to a static one.
     const NEXT = String.raw`['"]next(?:\/[^'"]*)?['"]`;
     const patterns = [
-      new RegExp(String.raw`^\s*(?:import|export)[^;]*?\bfrom\s*${NEXT}`, 'm'),
+      // `[^;'"]` excludes QUOTES from the span before `from`, not just semicolons.
+      // A real import clause holds none — identifiers, braces, commas, newlines —
+      // whereas a string literal on an `export` statement opens one, which is how
+      // `export const HINT = "…never import from 'next/link'"` used to trip this.
+      new RegExp(String.raw`^\s*(?:import|export)[^;'"]*?\bfrom\s*${NEXT}`, 'm'),
       new RegExp(String.raw`^\s*import\s*${NEXT}`, 'm'),
       new RegExp(String.raw`\bimport\s*\(\s*${NEXT}`),
       new RegExp(String.raw`\brequire\s*\(\s*${NEXT}`),

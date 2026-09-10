@@ -1,58 +1,59 @@
-import type { SharesForwardOutcome } from '@akasecurity/local-ops';
-import type { RemoteFailureKind } from '@akasecurity/schema';
+import { FORWARD_FAILURE_LINES, type SharesForwardOutcome } from '@akasecurity/local-ops';
 
-// What the Scan page says about the register it just forwarded, or did not.
+// What the Scan page says about the register it just forwarded, or did not,
+// and in what tone.
 //
 // It lives beside the action rather than inside it because a `'use server'`
 // module may only export async functions — a helper declared there could be
 // reached by neither the client component that renders it nor a test.
 //
-// The rule it keeps is the CLI's, and the sentences are deliberately the same
-// ones: the two surfaces forward the same register through the same state
-// machine, so a person who ran into a refusal in one and then tries the other
-// must not be told two different things about it. Only the credential line
-// differs, because the remedy differs — this surface has attach one click away
-// and no terminal.
+// The failure sentences are the shared ones every surface renders from, so a
+// person who ran into a refusal in the CLI and then tries this page is told the
+// same thing. What this module owns is the rest: the credential line, whose
+// remedy differs here (attach is one click away, and there is no terminal),
+// and the TONE of every line — decided in the same switch as the wording, so a
+// status added to the union cannot get a sentence in one place and a colour
+// from a second read of it somewhere else.
+
+/** A note reads like the counts it follows; a warning is a refusal the user must act on. */
+export type ForwardTone = 'note' | 'warning';
+
+export interface ForwardLine {
+  text: string;
+  tone: ForwardTone;
+}
 
 /**
- * What to do about each way the send can fail, in the words of the person who
- * has to do it.
- *
- * A `Record` over the whole enum rather than a switch with a fallback, so a
- * seventh kind fails to compile here instead of rendering as a shrug.
- */
-export const FORWARD_FAILURE_COPY: Record<RemoteFailureKind, string> = {
-  unauthorized: 'key rejected; re-attach with a valid plugin key',
-  forbidden:
-    'key is valid but not permitted for Data Shares ingest; a key minted before Data Shares ' +
-    'ingest existed needs a re-attach, otherwise ask your org admin',
-  'route-absent': 'the deployment predates Data Shares ingest; upgrade it, then re-run the scan',
-  'invalid-request': 'this build assembled a request the contract refuses; please report it',
-  rejected:
-    'the deployment refused the request body; this build and the deployment are out of step — ' +
-    'upgrade one of them',
-  unreachable: 'control plane unreachable (timeout or server error); the next scan retries',
-};
-
-/**
- * One sentence for what the forward did, or null when there is nothing to say.
+ * One line for what the forward did, or null when there is nothing to say.
  *
  * A machine attached to nothing renders NOTHING, which is what keeps a
  * standalone install's Scan page exactly as it was before this page could
- * forward at all. `disabled` is null for a different reason: this page never
- * turns the forward off, so the outcome is unreachable from here and a sentence
- * for it would describe a control the user cannot see.
+ * forward at all. The Data Shares switch being off is silent for the same
+ * reason: nothing was recorded either, so there is no register to talk about.
+ * A scan the user ran with forwarding unticked says so, as a note.
  */
-export function describeForward(outcome: SharesForwardOutcome): string | null {
+export function describeForward(outcome: SharesForwardOutcome): ForwardLine | null {
   switch (outcome.status) {
     case 'not-attached':
-    case 'disabled':
       return null;
+    case 'disabled':
+      return outcome.reason === 'opt-out'
+        ? { text: 'Not forwarded: this scan was run without forwarding.', tone: 'note' }
+        : null;
     case 'no-credential':
-      return `Not forwarded to ${outcome.endpoint}: no usable credential — re-attach from Settings.`;
+      return {
+        text: `Not forwarded to ${outcome.endpoint}: no usable credential — re-attach from Settings.`,
+        tone: 'warning',
+      };
     case 'forwarded':
-      return `Forwarded to ${outcome.endpoint} · ${String(outcome.callSites)} call site(s).`;
+      return {
+        text: `Forwarded to ${outcome.endpoint} · ${String(outcome.callSites)} call site(s).`,
+        tone: 'note',
+      };
     case 'failed':
-      return `Not forwarded to ${outcome.endpoint}: ${FORWARD_FAILURE_COPY[outcome.kind]}.`;
+      return {
+        text: `Not forwarded to ${outcome.endpoint}: ${FORWARD_FAILURE_LINES[outcome.kind]}.`,
+        tone: 'warning',
+      };
   }
 }

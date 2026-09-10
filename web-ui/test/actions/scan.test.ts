@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import {
   applyOnboarding,
@@ -268,7 +268,9 @@ describe('runScan — an ordinary installed snapshot', () => {
  */
 describe('runScan — forwarding the register it just recorded', () => {
   const LABEL = 'Acme Prod';
-  const TEST_KEY = 'not-a-real-key';
+  // High-entropy and not credential-shaped, so expectNoEchoOf's window cannot
+  // collide with ordinary output text (see the Testing conventions).
+  const TEST_KEY = 'w8qz3kmv7rtn5hpd2ycb9xls4fgj6nca';
 
   // Both halves of an attachment, through the real writers: the settings
   // descriptor that names a deployment, and a credential minted for that same
@@ -340,7 +342,12 @@ describe('runScan — forwarding the register it just recorded', () => {
         // tree's own path is the plaintext half of the project key, and it does
         // not travel either.
         expect(req?.body).not.toContain('snippet');
-        expect(req?.body).not.toContain(target);
+        // The scanned tree's own path is the plaintext half of the project key.
+        // Its basename is the project's display name and crosses by design;
+        // everything above it — the part that carries an OS username — must
+        // not, and nor may the key's prefix.
+        expectNoEchoOf(req?.body ?? '', dirname(target));
+        expect(req?.body).not.toContain('path:');
 
         // The LABEL, not the URL: what the page shows is the deployment's
         // display name when an administrator gave it one.
@@ -440,6 +447,49 @@ describe('runScan — forwarding the register it just recorded', () => {
         expect(JSON.stringify(result)).not.toContain('forward');
         // And the local write still happened, so the silence is about the
         // forward rather than about the pass having been skipped.
+        expect(result.egress?.callSites).toBeGreaterThan(0);
+      } finally {
+        await server.close();
+      }
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'reports unreachable when nothing answers on the attached endpoint',
+    async () => {
+      // The one failure a stub cannot stand in for: a socket that refuses. The
+      // server is closed BEFORE the scan, so its port is the attached endpoint
+      // and nothing is listening on it.
+      const server = await startLoopbackServer();
+      writeCallSite();
+      installPulled([]);
+      attachHome(server.origin, { label: LABEL });
+      await server.close();
+
+      const result = await runScan(target);
+
+      expect(result.forward).toEqual({ status: 'failed', endpoint: LABEL, kind: 'unreachable' });
+      // The scan's own answer is untouched by the failed send.
+      expect(result.ok).toBe(true);
+      expect(result.egress?.callSites).toBeGreaterThan(0);
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'records locally and sends nothing when the scan opts out of forwarding',
+    async () => {
+      const server = await startLoopbackServer();
+      try {
+        writeCallSite();
+        installPulled([]);
+        attachHome(server.origin, { label: LABEL });
+
+        const result = await runScan(target, { forward: false });
+
+        expect(server.received).toHaveLength(0);
+        expect(result.forward).toEqual({ status: 'disabled', endpoint: LABEL, reason: 'opt-out' });
         expect(result.egress?.callSites).toBeGreaterThan(0);
       } finally {
         await server.close();

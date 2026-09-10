@@ -9,19 +9,31 @@ import { runScan } from './actions';
 import { DirectoryBrowser } from './DirectoryBrowser';
 import { describeForward } from './forward-copy';
 
-export function ScanClient({ enabledRuleCount }: { enabledRuleCount: number }) {
+export function ScanClient({
+  enabledRuleCount,
+  attachedTo,
+}: {
+  enabledRuleCount: number;
+  /** The attached deployment's display name, or null on a standalone install. */
+  attachedTo: string | null;
+}) {
   const [path, setPath] = useState('');
+  // Whether THIS scan sends the register it records. Default on: an attached
+  // machine forwards, and the box is how one scan of a tree that should stay
+  // local opts out without detaching the whole machine.
+  const [forward, setForward] = useState(true);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [busy, startTransition] = useTransition();
 
   // What became of the register on an attached machine, or null on one that is
   // attached to nothing — which renders no line at all, so a standalone
-  // install's page is what it always was.
+  // install's page is what it always was. Wording and tone both come from the
+  // copy module; nothing here re-reads the status.
   const forwarded = result?.forward ? describeForward(result.forward) : null;
 
   const submit = () => {
     startTransition(async () => {
-      setResult(await runScan(path));
+      setResult(await runScan(path, { forward }));
     });
   };
 
@@ -37,6 +49,27 @@ export function ScanClient({ enabledRuleCount }: { enabledRuleCount: number }) {
           keeps a redacted copy. {String(enabledRuleCount)} rule
           {enabledRuleCount === 1 ? '' : 's'} enabled.
         </p>
+        {/* Said BEFORE the click, on the surface that starts the send: an attached
+            machine forwards what this scan records, and the box is the per-scan
+            way to keep one tree local without detaching. */}
+        {attachedTo !== null && (
+          <div className="mb-3 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-text-2">
+            <p>
+              This machine is attached to {attachedTo}. The Data Shares register this scan records —
+              destinations and call sites, never source text — is sent there.
+            </p>
+            <label className="mt-1.5 flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={forward}
+                onChange={(e) => {
+                  setForward(e.target.checked);
+                }}
+              />
+              <span>Send the Data Shares register to {attachedTo}</span>
+            </label>
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <Input
             value={path}
@@ -102,10 +135,10 @@ export function ScanClient({ enabledRuleCount }: { enabledRuleCount: number }) {
         {forwarded && (
           <p
             className={`mt-1 text-xs ${
-              result?.forward?.status === 'forwarded' ? 'text-text-2' : 'text-sev-medium-ink'
+              forwarded.tone === 'warning' ? 'text-sev-medium-ink' : 'text-text-2'
             }`}
           >
-            {forwarded}
+            {forwarded.text}
           </p>
         )}
       </div>

@@ -25,9 +25,9 @@ import type { ScanResult } from '../../app/(app)/scan/actions.ts';
 // The page's own Server Actions cannot run here, and stubbing `runScan` is what
 // lets a case choose the outcome. `listDirectory` is the Browse panel's, unused
 // by anything below but part of the module this replaces.
-const runScan = vi.fn<(path: string) => Promise<ScanResult>>();
+const runScan = vi.fn<(path: string, options?: { forward?: boolean }) => Promise<ScanResult>>();
 vi.mock('../../app/(app)/scan/actions', () => ({
-  runScan: (path: string) => runScan(path),
+  runScan: (path: string, options?: { forward?: boolean }) => runScan(path, options),
   listDirectory: vi.fn(),
 }));
 
@@ -71,18 +71,33 @@ afterEach(() => {
   container.remove();
 });
 
-/** Mount the page and click Scan, which is the only way a result reaches it. */
-async function scan(result: ScanResult): Promise<void> {
-  runScan.mockResolvedValue(result);
+/** Mount the page as a standalone install or as one attached to `attachedTo`. */
+function mount(attachedTo: string | null): void {
   act(() => {
-    root.render(createElement(ScanClient, { enabledRuleCount: 12 }));
+    root.render(createElement(ScanClient, { enabledRuleCount: 12, attachedTo }));
   });
+}
+
+/** Click Scan, which is the only way a result reaches the page. */
+async function clickScan(): Promise<void> {
   const button = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Scan');
   if (button === undefined) throw new Error('no Scan button to click');
   await act(async () => {
     button.click();
     await Promise.resolve();
   });
+}
+
+/** Mount and scan, on a page attached to `attachedTo` (a standalone install by default). */
+async function scan(result: ScanResult, attachedTo: string | null = null): Promise<void> {
+  runScan.mockResolvedValue(result);
+  mount(attachedTo);
+  await clickScan();
+}
+
+/** The per-scan forwarding box, which only an attached page renders. */
+function forwardBox(): HTMLInputElement | null {
+  return container.querySelector('input[type="checkbox"]');
 }
 
 /** Every paragraph on the page, in document order. */
@@ -114,8 +129,8 @@ describe('the Scan page forward line', () => {
     // Taken from the copy module rather than restated: this suite asserts the
     // page renders the sentence, and which sentence it is belongs to the suite
     // that owns the wording.
-    const sentence = describeForward(forward);
-    expect(sentence).not.toBeNull();
+    const sentence = describeForward(forward)?.text;
+    expect(sentence).toBeDefined();
     const line = paragraph(sentence ?? '');
 
     // Under the register it describes, not above it or somewhere else.
@@ -137,9 +152,56 @@ describe('the Scan page forward line', () => {
     };
     await scan(scanned(forward));
 
-    const line = paragraph(describeForward(forward) ?? '');
+    const line = paragraph(describeForward(forward)?.text ?? '');
     expect(line.className).toContain('text-sev-medium-ink');
     expect(line.className).not.toContain('text-text-2');
+  });
+
+  it('tones a missing credential as a refusal too', async () => {
+    // A configuration state, not a deployment's answer — but it still means the
+    // fleet's view of this project is behind the user's own, and the copy
+    // module's tone is what the page renders, not a second read of the status.
+    const forward: SharesForwardOutcome = { status: 'no-credential', endpoint: LABEL };
+    await scan(scanned(forward));
+
+    const line = paragraph(describeForward(forward)?.text ?? '');
+    expect(line.className).toContain('text-sev-medium-ink');
+  });
+
+  it('offers no forwarding box and says nothing about a deployment on a standalone install', () => {
+    mount(null);
+
+    expect(forwardBox()).toBeNull();
+    expect(container.textContent).not.toContain('attached to');
+  });
+
+  it('says before the click that an attached machine forwards, with the box ticked', () => {
+    mount(LABEL);
+
+    expect(container.textContent).toContain(`This machine is attached to ${LABEL}`);
+    const box = forwardBox();
+    expect(box).not.toBeNull();
+    expect(box?.checked).toBe(true);
+  });
+
+  it('runs the scan without forwarding when the box is unticked', async () => {
+    runScan.mockResolvedValue(scanned());
+    mount(LABEL);
+    const box = forwardBox();
+    if (box === null) throw new Error('no forwarding box on an attached page');
+    act(() => {
+      box.click();
+    });
+    await clickScan();
+
+    expect(runScan).toHaveBeenCalledTimes(1);
+    expect(runScan.mock.calls[0]?.[1]).toEqual({ forward: false });
+  });
+
+  it('forwards by default when the box is left alone', async () => {
+    await scan(scanned(), LABEL);
+
+    expect(runScan.mock.calls[0]?.[1]).toEqual({ forward: true });
   });
 
   it('renders nothing extra for a scan that forwarded nowhere', async () => {

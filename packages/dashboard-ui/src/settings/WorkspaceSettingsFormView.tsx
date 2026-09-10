@@ -803,11 +803,11 @@ export const CONNECTION_ATTACHED_DESCRIPTION =
 // nothing about whether the other end answered. The copy is scoped to exactly
 // that.
 //
-// It names two senders because an attached machine has two. The plugin sends
-// what a session produces, and a scan started from the dashboard's own Scan page
-// sends the Data Shares register that scan records. Naming only the first would
-// leave a user reading this surface believing a scan they run here stays on the
-// machine.
+// An attached machine has three senders — the plugin, `aka scan`, and a scan
+// started from this dashboard's own Scan page — and this notice names the two
+// this surface can speak for: what the plugin sends, and what a scan run here
+// sends. Naming only the plugin would leave a user reading this surface
+// believing a scan they run here stays on the machine.
 export const CONNECTION_FORWARDING_NOTICE =
   'While this machine is attached, the plugin forwards the activity that deployment is entitled ' +
   'to see and pulls the policy it sets. A scan you run from the Scan page also sends the Data ' +

@@ -12,10 +12,9 @@ import {
   scanPathIntoStore,
   type ScanPathResult,
   type SharesForwardOutcome,
-  type SharesForwardSender,
 } from '@akasecurity/local-ops';
 import { dataDir, defaultDataDir } from '@akasecurity/persistence';
-import { classifyRemoteFailure, createRemoteClient } from '@akasecurity/remote';
+import { createSharesSender } from '@akasecurity/remote';
 import { type EgressWriteSummary, SOURCE_TOOL } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
@@ -63,43 +62,6 @@ export interface ScanResult {
   forward?: SharesForwardOutcome;
 }
 
-/**
- * The deadline on the one forward a scan makes.
- *
- * One request, one deadline, no retry: a full 5,000-call-site body is around
- * 2 MB, which 15 seconds covers on a slow link, and the next scan of the same
- * project replaces its register outright — so the retry already exists and
- * costs the person waiting on this action nothing.
- */
-const SCAN_FORWARD_TIMEOUT_MS = 15_000;
-
-/**
- * The transport for the forward.
- *
- * The decision sequence in front of it — attached? credential for this
- * deployment? did it land? — is shared with the CLI and lives in
- * @akasecurity/local-ops, which opens no socket. What is duplicated here is only
- * this adapter, because each surface owns its own deadline and the shared
- * package must not import a client to hold one for it.
- *
- * The classification is the transport's own, not a status code read a second
- * time here — a surface that re-derived one would be free to disagree with
- * every other surface about what a 403 means.
- */
-function remoteSharesSender(): SharesForwardSender {
-  return async (connection, request) => {
-    try {
-      await createRemoteClient({
-        ...connection,
-        timeoutMs: SCAN_FORWARD_TIMEOUT_MS,
-      }).recordProjectEgress(request);
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, kind: classifyRemoteFailure(err) };
-    }
-  };
-}
-
 // A Server Action's result is serialised to the browser, and the recorder hands
 // back the resolved input it wrote beside the totals: every call site's source
 // line, and the project key in plaintext. Declaring the field as the summary
@@ -115,7 +77,15 @@ function summaryOf(recorded: EgressWriteSummary): EgressWriteSummary {
   };
 }
 
-export async function runScan(path: string): Promise<ScanResult> {
+/**
+ * Walk `path`, record what it found, and — on an attached machine — forward the
+ * register it just recorded unless `options.forward` is false, which is the
+ * Scan page's own checkbox saying "keep this one local".
+ */
+export async function runScan(
+  path: string,
+  options: { forward?: boolean } = {},
+): Promise<ScanResult> {
   const target = path.trim();
   if (target === '') return { ok: false, error: 'Enter a file or directory path.' };
   try {
@@ -188,8 +158,14 @@ export async function runScan(path: string): Promise<ScanResult> {
   let forward: SharesForwardOutcome | undefined;
   if (egress) {
     try {
+      // Awaited inside this one action, so on an attached machine whose
+      // deployment is down the click waits up to the send's deadline before the
+      // counts appear. A second, client-started action would remove that wait
+      // at the cost of a two-call shape and a page rendering counts it has not
+      // finished reporting on; the one-call shape is kept deliberately.
       const outcome = await forwardProjectEgress(defaultDataDir(), egress.input, {
-        send: remoteSharesSender(),
+        send: createSharesSender(),
+        enabled: options.forward !== false,
       });
       // A machine attached to nothing has nothing to report about, and the field
       // stays absent rather than carrying a status: that keeps what a standalone

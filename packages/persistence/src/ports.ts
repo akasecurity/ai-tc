@@ -194,22 +194,27 @@ export interface SecurityViews {
   scanCoverage(range: TimeRange): Promise<ScanCoverageResponse>;
   recentlyResolved(limit?: number): Promise<RecentlyResolvedResponse>;
   /**
-   * The findings in `range`, carrying only the three fields the recommended-actions
-   * prioritization reads. Range-scoped like every other read here except
-   * `severitySummary`, so the card it feeds agrees with a findings URL carrying the
-   * same `?range=` — which a "newest N findings" cap could never do, since no URL
-   * can express one.
+   * Per-rule tallies of the findings that are still OPEN, whole-store.
+   *
+   * Scoped by status rather than by time — one of the two reads here that ignore the
+   * range, alongside `severitySummary`. The card it feeds is a to-do list, so a
+   * window would hide a secret committed weeks ago and never fixed.
+   *
+   * `open` mirrors `deriveFindingStatus`, so a row's count is exactly what
+   * `?status=open&type=<rule>` opens.
    */
   recommendationInputs(): Promise<RecommendationInputRow[]>;
 }
 
 /**
  * One row of {@link SecurityViews.recommendationInputs}: the three `FindingView`
- * fields the recommendations rollup reads.
+ * fields the recommendations rollup reads, plus the tally.
  *
- * A `Pick` of the schema type rather than a hand-written interface, so tightening
- * one of those fields upstream narrows this too instead of leaving a duplicate
- * behind that still says `string`.
+ * The three are a `Pick` of the schema type rather than a hand-written interface,
+ * so tightening one of them upstream narrows this too instead of leaving a
+ * duplicate behind that still says `string`. `count` is intersected rather than
+ * picked because it belongs to the rollup, not to a finding — no `FindingView`
+ * carries it.
  */
 export type RecommendationInputRow = Pick<FindingView, 'ruleId' | 'category' | 'severity'> & {
   /** How many OPEN findings carry that rule under that category and severity. */

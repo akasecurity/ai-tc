@@ -128,8 +128,8 @@ const HOT_READS: readonly HotRead[] = [
   { name: '/security topSources', run: (c) => c.security.topSources('30d', { limit: 5 }) },
   { name: '/security recentlyResolved', run: (c) => c.security.recentlyResolved() },
   { name: '/security recommendationInputs', run: (c) => c.security.recommendationInputs() },
-  // NOT a `/security` read any more — the recommendations card reads the windowed
-  // rollup above instead. It stays here because it is still the hot read behind
+  // NOT a `/security` read any more — the recommendations card reads the
+  // status-scoped rollup above instead. It stays here because it is still the hot read behind
   // `aka tui`, `aka stats`, `aka plugins` and all three plugins' recommend and
   // first-run screens, and `findings.ts` names this file as what stops its
   // early-terminating scan regressing to a temp B-tree.

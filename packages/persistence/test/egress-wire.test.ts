@@ -1,31 +1,11 @@
-import type { RecordProjectEgressInput, ResolvedEgressHit } from '@akasecurity/schema';
+import type { RecordProjectEgressInput } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { hashProjectKey, toEgressIngestRequest } from '../src/egress-wire.ts';
+import { resolvedHit as hit } from './helpers/egress-hits.ts';
+import { expectNoEchoOf } from './helpers/no-echo.ts';
 
 const HEX_64 = /^[0-9a-f]{64}$/;
-
-const hit = (over: Partial<ResolvedEgressHit> = {}): ResolvedEgressHit => ({
-  host: 'api.stripe.com',
-  kind: 'provider',
-  name: 'Stripe',
-  category: 'payments',
-  trust: 'recognized',
-  network: null,
-  method: 'POST',
-  transport: 'https',
-  url: 'https://api.stripe.com/v1/charges',
-  template: false,
-  dataClass: 'customer',
-  site: {
-    file: 'src/billing/charge.ts',
-    line: 42,
-    snippet: 'const client = new Stripe(process.env.STRIPE_SECRET_KEY);',
-    dynamic: false,
-    vendored: false,
-  },
-  ...over,
-});
 
 const input = (over: Partial<RecordProjectEgressInput> = {}): RecordProjectEgressInput => ({
   projectKey: 'git:github.com/acme/widgets',
@@ -192,22 +172,22 @@ describe('egress-wire-privacy: serialized payload', () => {
     const payload = toEgressIngestRequest(
       input({ hits: [hit({ site: { ...hit().site, snippet: secretSnippet } })] }),
     );
-    expect(JSON.stringify(payload)).not.toContain(secretSnippet);
-    expect(JSON.stringify(payload)).not.toContain('STRIPE_SECRET_KEY');
+    expectNoEchoOf(JSON.stringify(payload), secretSnippet);
+    expectNoEchoOf(JSON.stringify(payload), 'STRIPE_SECRET_KEY');
   });
 
   it('projectKey matches the digest shape, never a path:/git: plaintext prefix', () => {
     const payload = toEgressIngestRequest(input({ projectKey: 'git:github.com/acme/widgets' }));
     expect(payload.projectKey).toMatch(HEX_64);
     const serialized = JSON.stringify(payload);
-    expect(serialized).not.toContain('git:');
-    expect(serialized).not.toContain('path:');
+    expectNoEchoOf(serialized, 'git:');
+    expectNoEchoOf(serialized, 'path:');
   });
 
   it('contains no OS username substring for a path: projectKey', () => {
     const payload = toEgressIngestRequest(input({ projectKey: 'path:/Users/alice/code/widgets' }));
     const serialized = JSON.stringify(payload);
-    expect(serialized).not.toContain('alice');
-    expect(serialized).not.toContain('/Users/alice');
+    expectNoEchoOf(serialized, 'alice');
+    expectNoEchoOf(serialized, '/Users/alice');
   });
 });

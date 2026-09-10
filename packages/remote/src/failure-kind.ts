@@ -42,11 +42,19 @@ function nameOf(err: unknown): string | null {
  * TOTAL: every input maps to a member, because the callers are fail-open paths
  * that must never re-throw while deciding what to print.
  *
- * The two name-carrying classes are checked before any status, because they say
+ * The name-carrying classes are checked before any status, because they say
  * something a status cannot. `RemoteRouteAbsent` means the deployment never had
- * the route rather than refusing the request, and `RemoteRequestInvalid` was
- * never sent at all — it is a defect on this machine, and pointing its user at
- * the deployment would send them to look in the wrong place.
+ * the route rather than refusing the request; `RemoteRequestInvalid` was never
+ * sent at all — a defect on this machine, and pointing its user at the
+ * deployment would send them to look in the wrong place; `RemoteResponseInvalid`
+ * is a 2xx whose body this build cannot read, which is the two ends being out of
+ * step, not a deployment to try again.
+ *
+ * A bare 404 is NOT a verdict here. Only a route that knows what a 404 means for
+ * it — the deployment predates the route — may say so, and it does that by
+ * throwing `RemoteRouteAbsent` itself. Any other 404 is a wrong URL, a proxy or
+ * a captive portal answering for a path it never had, and telling that person
+ * to upgrade their deployment would send them to fix the wrong thing.
  *
  * `unreachable` is the default, and that direction is the safe one: it is the
  * outcome that says "try again". Mistaking a refusal for it costs a little
@@ -60,6 +68,8 @@ export function classifyRemoteFailure(err: unknown): RemoteFailureKind {
       return 'route-absent';
     case 'RemoteRequestInvalid':
       return 'invalid-request';
+    case 'RemoteResponseInvalid':
+      return 'rejected';
     default:
       break;
   }
@@ -70,9 +80,9 @@ export function classifyRemoteFailure(err: unknown): RemoteFailureKind {
       return 'unauthorized';
     case 403:
       return 'forbidden';
-    case 404:
-      return 'route-absent';
     case 429:
+      return 'unreachable';
+    case 404:
       return 'unreachable';
     default:
       return status >= 400 && status <= 499 ? 'rejected' : 'unreachable';

@@ -25,6 +25,12 @@ export { createAttachClient, createRemoteClient } from './client.ts';
 // render one must not each re-derive a verdict from a status code: the error
 // classes are this package's, so the reading of them is too.
 export { classifyRemoteFailure, statusOf } from './failure-kind.ts';
+// The shared forwarding adapter for a scan's Data Shares register. It widens no
+// capability: it reaches one named route through createRemoteClient and takes no
+// URL, and it exists so the surfaces that forward render one verdict per failure
+// instead of each keeping a copy of the same six lines.
+export type { SharesSender, SharesSenderConnection, SharesSendResult } from './shares-sender.ts';
+export { createSharesSender, SHARES_FORWARD_TIMEOUT_MS } from './shares-sender.ts';
 // `send` and its option/response types are deliberately NOT re-exported.
 //
 // Every guarantee `http.ts` makes is held by construction inside that module —

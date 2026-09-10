@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -11,14 +11,14 @@ import {
 import type {
   EgressIngestRequest,
   RecordProjectEgressInput,
-  RemoteFailureKind,
   ResolvedEgressHit,
 } from '@akasecurity/schema';
+import { RemoteFailureKind } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import type { SharesForwardConnection, SharesForwardSendResult } from '../src/shares-forward.ts';
-import { forwardProjectEgress } from '../src/shares-forward.ts';
+import { FORWARD_FAILURE_LINES, forwardProjectEgress } from '../src/shares-forward.ts';
 
 const ENDPOINT = 'https://aka.acme.test';
 const OTHER_ENDPOINT = 'https://aka.other.test';
@@ -141,7 +141,7 @@ describe('forwardProjectEgress — attached, but not sending', () => {
       enabled: false,
     });
 
-    expect(outcome).toEqual({ status: 'disabled', endpoint: ENDPOINT });
+    expect(outcome).toEqual({ status: 'disabled', endpoint: ENDPOINT, reason: 'opt-out' });
     expect(transport.sent).toHaveLength(0);
   });
 
@@ -158,7 +158,24 @@ describe('forwardProjectEgress — attached, but not sending', () => {
       enabled: false,
     });
 
-    expect(outcome).toEqual({ status: 'disabled', endpoint: ENDPOINT });
+    expect(outcome).toEqual({ status: 'disabled', endpoint: ENDPOINT, reason: 'opt-out' });
+    expect(transport.sent).toHaveLength(0);
+  });
+
+  it('reports disabled when the Data Shares switch is off, read live', async () => {
+    // The record this input came from and this send are two steps. A switch
+    // flipped off in between — by a person, or by a managed overlay — must stop
+    // the send, so the state machine reads it again rather than trusting the
+    // caller's earlier read.
+    attach();
+    const file = join(settingsDir(home), 'settings.json');
+    const settings = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+    writeFileSync(file, JSON.stringify({ ...settings, dataSharesInPlace: false }));
+    const transport = recorder({ ok: true });
+
+    const outcome = await forwardProjectEgress(home, input(), { send: transport.send });
+
+    expect(outcome).toEqual({ status: 'disabled', endpoint: ENDPOINT, reason: 'data-shares-off' });
     expect(transport.sent).toHaveLength(0);
   });
 
@@ -262,15 +279,21 @@ describe('forwardProjectEgress — the send', () => {
   });
 });
 
+describe('FORWARD_FAILURE_LINES', () => {
+  it('gives every kind the vocabulary declares its own sentence', () => {
+    // Total over the enum rather than a hand-copied list, so a seventh kind
+    // fails here instead of rendering as undefined on a surface.
+    const lines = RemoteFailureKind.options.map((kind) => FORWARD_FAILURE_LINES[kind]);
+    for (const line of lines) expect(line).toMatch(/\S/);
+    expect(new Set(lines).size).toBe(lines.length);
+    expect(Object.keys(FORWARD_FAILURE_LINES).sort()).toEqual(
+      [...RemoteFailureKind.options].sort(),
+    );
+  });
+});
+
 describe('forwardProjectEgress — a send that did not land', () => {
-  const kinds: RemoteFailureKind[] = [
-    'unauthorized',
-    'forbidden',
-    'route-absent',
-    'invalid-request',
-    'rejected',
-    'unreachable',
-  ];
+  const kinds: RemoteFailureKind[] = [...RemoteFailureKind.options];
 
   for (const kind of kinds) {
     it(`reports the sender's ${kind} verdict unchanged`, async () => {

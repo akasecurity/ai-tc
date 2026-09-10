@@ -5,8 +5,10 @@
 // decorator only when both halves of an attachment are present and agree, so a
 // machine that has never attached — the overwhelming majority — constructs none
 // of it and behaves exactly as it did before this existed.
-export { hashProjectKey, toEgressIngestRequest } from './egress-wire.ts';
+// The wire projection lives in persistence, where the gateway imports it from;
+// it stays on this barrel for consumers that import it from here.
 export type { GatewayMeta } from './factory.ts';
+export { hashProjectKey, toEgressIngestRequest } from '@akasecurity/persistence';
 // The device identity, and ONLY that: `aka attach` has to tell a deployment
 // which machine is asking, and reading it through the same store the posture
 // reporter uses is what keeps one laptop from presenting two identities.

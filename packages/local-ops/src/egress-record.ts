@@ -136,7 +136,7 @@ export function recordProjectEgress(
       hits: resolveEgress(files),
     };
     const summary = db.shares.recordProjectEgress(input);
-    return { ...summary, project, input };
+    return { ...summary, project: input.project, input };
   } catch {
     return null;
   }

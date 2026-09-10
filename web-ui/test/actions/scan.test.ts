@@ -1,15 +1,26 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
-import { dataDir, type LocalDatabase, openLocalDatabase } from '@akasecurity/persistence';
+import {
+  applyOnboarding,
+  ATTACHED_FORWARD_DROPS_FILENAME,
+  ATTACHED_FORWARD_STATE_FILENAME,
+  dataDir,
+  type LocalDatabase,
+  openLocalDatabase,
+  settingsDir,
+  writeControlPlaneCredential,
+} from '@akasecurity/persistence';
 import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
-import type { Rule } from '@akasecurity/schema';
+import { EgressIngestRequest, type Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { runScan } from '../../app/(app)/scan/actions.ts';
+import { startLoopbackServer } from '../helpers/loopback.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 /**
  * The dashboard's folder scan against a hostile installed pack.
@@ -237,6 +248,320 @@ describe('runScan — an ordinary installed snapshot', () => {
       const wire = JSON.stringify(result);
       expect(wire).not.toContain('"input"');
       expect(wire).not.toContain('projectKey');
+    },
+    CASE_TIMEOUT_MS,
+  );
+});
+
+/**
+ * The forward the Scan page makes on an attached machine.
+ *
+ * Driven against a REAL server on loopback rather than a stubbed transport,
+ * because the claims this path makes are claims about the request as it left the
+ * process: no source text in the body, the project key replaced by a digest, the
+ * credential in a header and nowhere else. A stub would show what the action
+ * decided and nothing about what it sent.
+ *
+ * The setup ritual the suite above uses applies here too — the mocked `node:os`
+ * puts the AKA home inside the temp dir, so the attachment these cases write is
+ * the one the action reads and no case can reach the real one.
+ */
+describe('runScan — forwarding the register it just recorded', () => {
+  const LABEL = 'Acme Prod';
+  // High-entropy and not credential-shaped, so expectNoEchoOf's window cannot
+  // collide with ordinary output text (see the Testing conventions).
+  const TEST_KEY = 'w8qz3kmv7rtn5hpd2ycb9xls4fgj6nca';
+
+  // Both halves of an attachment, through the real writers: the settings
+  // descriptor that names a deployment, and a credential minted for that same
+  // deployment. `apiKey: null` writes only the first half, which is the shape a
+  // machine is in after a credential someone deleted.
+  function attachHome(endpoint: string, options: { label?: string; apiKey?: string | null } = {}) {
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: {
+          endpoint,
+          attachedAt: '2026-09-01T10:00:00.000Z',
+          ...(options.label === undefined ? {} : { label: options.label }),
+        },
+      },
+      join(home, '.aka'),
+      // No managed overlay: an administrator's file on the machine running this
+      // suite must not decide what these cases see.
+      null,
+    );
+    const apiKey = options.apiKey === undefined ? TEST_KEY : options.apiKey;
+    if (apiKey !== null) {
+      writeControlPlaneCredential(settingsDir(), { specVersion: 1, endpoint, apiKey });
+    }
+  }
+
+  // One outbound call site, so the register has something in it. A bare URL
+  // constant is the smallest thing the extractor records.
+  function writeCallSite(): void {
+    writeFileSync(
+      join(target, 'client.ts'),
+      "export const CHARGES = 'https://api.stripe.com/v1/charges';\n",
+    );
+  }
+
+  it(
+    'puts a valid request on the wire and reports where it went',
+    async () => {
+      const server = await startLoopbackServer();
+      try {
+        writeCallSite();
+        installPulled([]);
+        attachHome(server.origin, { label: LABEL });
+        server.reply((_req, res) => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"ok":true}');
+        });
+
+        const result = await runScan(target);
+
+        expect(server.received).toHaveLength(1);
+        const req = server.received[0];
+        expect(req?.method).toBe('POST');
+        expect(req?.url).toBe('/v1/shares');
+        expect(req?.headers['x-api-key']).toBe(TEST_KEY);
+
+        // Validated against the contract rather than eyeballed: a body this
+        // build assembles wrongly must fail here, on the machine that still has
+        // the plaintext, rather than as somebody's remote 400.
+        const parsed = EgressIngestRequest.safeParse(JSON.parse(req?.body ?? '{}'));
+        expect(parsed.error?.message ?? 'valid').toBe('valid');
+        // A register with nothing in it would satisfy the projection assertions
+        // below vacuously.
+        expect(parsed.data?.hits.length).toBeGreaterThan(0);
+        expect(parsed.data?.projectKey).toMatch(/^[0-9a-f]{64}$/);
+        expect(parsed.data?.reconcile.mode).toBe('walk');
+        // Read off the serialised body, so a snippet at ANY depth is caught —
+        // including one on a field this case does not know about. The scanned
+        // tree's own path is the plaintext half of the project key, and it does
+        // not travel either.
+        expect(req?.body).not.toContain('snippet');
+        // The scanned tree's own path is the plaintext half of the project key.
+        // Its basename is the project's display name and crosses by design;
+        // everything above it — the part that carries an OS username — must
+        // not, and nor may the key's prefix.
+        expectNoEchoOf(req?.body ?? '', dirname(target));
+        expect(req?.body).not.toContain('path:');
+
+        // The LABEL, not the URL: what the page shows is the deployment's
+        // display name when an administrator gave it one.
+        expect(result.forward).toEqual({
+          status: 'forwarded',
+          endpoint: LABEL,
+          callSites: parsed.data?.hits.length,
+        });
+        // The forward is a side benefit; the scan's own answer is unchanged.
+        expect(result.ok).toBe(true);
+        expect(result.egress?.callSites).toBeGreaterThan(0);
+
+        // The credential rides in a header and appears in nothing the browser
+        // receives.
+        expectNoEchoOf(JSON.stringify(result), TEST_KEY);
+
+        // A manual scan is not the hook path and must not borrow its breaker: a
+        // scan on a machine with no signal would otherwise silence the session
+        // forwarding that machine does afterwards.
+        for (const name of [ATTACHED_FORWARD_STATE_FILENAME, ATTACHED_FORWARD_DROPS_FILENAME]) {
+          expect(existsSync(join(dataDir(), name)), `${name} was created`).toBe(false);
+        }
+      } finally {
+        await server.close();
+      }
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'reports a refusal without touching the scan it already recorded',
+    async () => {
+      const server = await startLoopbackServer();
+      try {
+        writeCallSite();
+        installPulled([]);
+        attachHome(server.origin);
+        server.reply((_req, res) => {
+          res.writeHead(403, { 'content-type': 'application/json' });
+          res.end('{"error":{"code":"FORBIDDEN"}}');
+        });
+
+        const result = await runScan(target);
+
+        expect(result.forward).toEqual({
+          status: 'failed',
+          endpoint: server.origin,
+          kind: 'forbidden',
+        });
+        // Everything the scan itself produced is what it would have been with no
+        // deployment in the picture at all.
+        expect(result.ok).toBe(true);
+        expect(result.scanned).toBe(1);
+        expect(result.egress?.callSites).toBeGreaterThan(0);
+      } finally {
+        await server.close();
+      }
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'names the deployment it holds no usable credential for, and sends nothing',
+    async () => {
+      const server = await startLoopbackServer();
+      try {
+        writeCallSite();
+        installPulled([]);
+        attachHome(server.origin, { apiKey: null });
+
+        const result = await runScan(target);
+
+        expect(server.received).toEqual([]);
+        expect(result.forward).toEqual({ status: 'no-credential', endpoint: server.origin });
+      } finally {
+        await server.close();
+      }
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'sends nothing and reports nothing on a machine attached to no deployment',
+    async () => {
+      const server = await startLoopbackServer();
+      try {
+        writeCallSite();
+        installPulled([]);
+
+        const result = await runScan(target);
+
+        expect(server.received).toEqual([]);
+        // Absent, not a `not-attached` outcome: the result a standalone install
+        // receives has to be the one it received before this action could
+        // forward anything, field for field.
+        expect(result.forward).toBeUndefined();
+        expect(JSON.stringify(result)).not.toContain('forward');
+        // And the local write still happened, so the silence is about the
+        // forward rather than about the pass having been skipped.
+        expect(result.egress?.callSites).toBeGreaterThan(0);
+      } finally {
+        await server.close();
+      }
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'reports unreachable when nothing answers on the attached endpoint',
+    async () => {
+      // The one failure a stub cannot stand in for: a socket that refuses. The
+      // server is closed BEFORE the scan, so its port is the attached endpoint
+      // and nothing is listening on it.
+      const server = await startLoopbackServer();
+      writeCallSite();
+      installPulled([]);
+      attachHome(server.origin, { label: LABEL });
+      await server.close();
+
+      const result = await runScan(target);
+
+      expect(result.forward).toEqual({ status: 'failed', endpoint: LABEL, kind: 'unreachable' });
+      // The scan's own answer is untouched by the failed send.
+      expect(result.ok).toBe(true);
+      expect(result.egress?.callSites).toBeGreaterThan(0);
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'records locally and sends nothing when the scan opts out of forwarding',
+    async () => {
+      const server = await startLoopbackServer();
+      try {
+        writeCallSite();
+        installPulled([]);
+        attachHome(server.origin, { label: LABEL });
+
+        const result = await runScan(target, { forward: false });
+
+        expect(server.received).toHaveLength(0);
+        expect(result.forward).toEqual({ status: 'disabled', endpoint: LABEL, reason: 'opt-out' });
+        expect(result.egress?.callSites).toBeGreaterThan(0);
+      } finally {
+        await server.close();
+      }
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'forwards and withholds the same way on a scan that found no usable packs',
+    async () => {
+      const server = await startLoopbackServer();
+      try {
+        writeCallSite();
+        // No installPulled(): a home with no detection packs is the branch the
+        // action answers with `ok: false`, and it returns the register and the
+        // forward alongside that error because the walk already extracted them.
+        // Every case above takes the other branch, so the withholding the ok
+        // branch is pinned for would be unpinned here — and this is a whole
+        // second place the resolved input could be spread into a result the
+        // browser receives.
+        attachHome(server.origin, { label: LABEL });
+        server.reply((_req, res) => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"ok":true}');
+        });
+
+        const result = await runScan(target);
+
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain('No detection packs installed');
+        expect(result.forward?.status).toBe('forwarded');
+        expect(result.egress?.callSites).toBeGreaterThan(0);
+
+        const wire = JSON.stringify(result);
+        expect(wire).not.toContain('"input"');
+        expect(wire).not.toContain('snippet');
+        expect(wire).not.toContain('projectKey');
+      } finally {
+        await server.close();
+      }
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  it(
+    'returns the totals to the browser and never the resolved input',
+    async () => {
+      const server = await startLoopbackServer();
+      try {
+        writeCallSite();
+        installPulled([]);
+        attachHome(server.origin, { label: LABEL });
+        server.reply((_req, res) => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"ok":true}');
+        });
+
+        const result = await runScan(target);
+
+        // The forward is handed the recorder's resolved input — source lines and
+        // the project key in plaintext — and this result is serialised to the
+        // browser. Adding a field to the result is exactly the edit that would
+        // carry it along, so the whole payload is read rather than one field.
+        const wire = JSON.stringify(result);
+        expect(wire).not.toContain('"input"');
+        expect(wire).not.toContain('snippet');
+        expect(wire).not.toContain('projectKey');
+        expect(wire).toContain('forwarded');
+      } finally {
+        await server.close();
+      }
     },
     CASE_TIMEOUT_MS,
   );

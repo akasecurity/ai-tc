@@ -314,12 +314,23 @@ describe('the inputs above are adversarial for what they replaced', () => {
     // per dependency. `lineNumberAt` is gone from the source, so this copy is a
     // historical artifact whose only job is to show the input still makes it
     // quadratic.
-    const text = packageJson(SMALL, false);
-    const keys = Object.keys(
-      (JSON.parse(text) as { dependencies: Record<string, string> }).dependencies,
-    );
-    const { old, now } = ratio(
-      () => {
+    //
+    // Measured as GROWTH — the same shape at two sizes — rather than against
+    // the current extraction, which is what the other three controls compare
+    // to. Those replaced a catastrophic regex and run 100-1,000x the code that
+    // replaced them, so any denominator works. This one replaced a merely
+    // POLYNOMIAL scan with a small constant, and the whole modern extraction
+    // does real work of its own (a JSON parse, a tokenize) on the same bytes,
+    // so the two are close enough that the ratio depends on the machine: it
+    // measured 12.7x on a Windows runner against the 20x demanded, while
+    // passing locally. Doubling the input answers the actual question —
+    // quadratic doubles to ~4x, linear to ~2x — and cancels the runner without
+    // depending on anything else's cost.
+    const walkFrom = (text: string): (() => number) => {
+      const keys = Object.keys(
+        (JSON.parse(text) as { dependencies: Record<string, string> }).dependencies,
+      );
+      return () => {
         let total = 0;
         for (const key of keys) {
           const index = text.indexOf(`"${key}"`);
@@ -328,15 +339,18 @@ describe('the inputs above are adversarial for what they replaced', () => {
           total += line;
         }
         return total;
-      },
-      () => extractManifestSdks(text, 'package.json'),
-    );
+      };
+    };
+    const small = burned(walkFrom(packageJson(SMALL, false)));
+    const large = burned(walkFrom(packageJson(SMALL * 2, false)));
+    // 3 sits between linear's 2 and quadratic's 4, and the floor keeps a
+    // sub-tick small side from making the quotient meaningless.
     expect(
-      old,
-      `counting each hit's line from zero cost ${old.toFixed(1)}ms against ${now.toFixed(1)}ms ` +
-        'for the whole extraction, so this manifest no longer makes that shape quadratic and ' +
-        'the budget cases above prove nothing.',
-    ).toBeGreaterThan(Math.max(now, FLOOR_MS) * FACTOR);
+      large / Math.max(small, FLOOR_MS),
+      `counting each hit's line from zero cost ${small.toFixed(1)}ms and ${large.toFixed(1)}ms ` +
+        'at one and two units of input — a ratio of ~2, i.e. LINEAR. This manifest no longer ' +
+        'makes that shape quadratic, so the budget cases above prove nothing.',
+    ).toBeGreaterThan(3);
   });
 
   it('the bundle is quadratic when its snippet is taken per hit', () => {

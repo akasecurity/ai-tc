@@ -47,6 +47,8 @@ export const EGRESS_CODE_EXTENSIONS: ReadonlySet<string> = new Set([
 ]);
 
 const SNIPPET_MAX = 200;
+// Matches what the chained `.replace` wrote before the passes became a list.
+const WHITESPACE = /\s/;
 const MASK = '••••';
 
 // URL literals in raw source text. Template spans are admitted as explicit
@@ -201,14 +203,85 @@ export function isVendoredPath(file: string): boolean {
   return VENDORED_PATH.test(file);
 }
 
-function redactLine(line: string): string {
-  return line
-    .trim()
-    .replace(USERINFO, '://')
-    .replace(WEBHOOK_URL, `$1${MASK}`)
-    .replace(SECRET_VALUE, `$1${MASK}`)
-    .replace(AUTH_SCHEME_VALUE, `$1$2 ${MASK}`)
-    .replace(BEARER_TOKEN, `Bearer ${MASK}`);
+// The redaction chain, as a list so each pass can record WHERE it edited rather
+// than only what it produced. The replacement strings the chained `.replace`
+// calls used are spelled as functions: `$1` is the first group, `$2` the second.
+// All five patterns are global, which is what makes one pass one left-to-right
+// sweep with non-overlapping edits.
+const REDACTION_PASSES: readonly {
+  readonly pattern: RegExp;
+  readonly replace: (match: RegExpMatchArray) => string;
+}[] = [
+  { pattern: USERINFO, replace: () => '://' },
+  { pattern: WEBHOOK_URL, replace: (m) => `${m[1] ?? ''}${MASK}` },
+  { pattern: SECRET_VALUE, replace: (m) => `${m[1] ?? ''}${MASK}` },
+  { pattern: AUTH_SCHEME_VALUE, replace: (m) => `${m[1] ?? ''}${m[2] ?? ''} ${MASK}` },
+  { pattern: BEARER_TOKEN, replace: () => `Bearer ${MASK}` },
+];
+
+/**
+ * What one pass did to its input, as parallel arrays sorted by `at` and
+ * non-overlapping — a global replace consumes left to right, so it cannot
+ * produce anything else.
+ *
+ * `before[i]` is the output-minus-input length of every edit BEFORE i, and
+ * `after[i]` includes i. Those two are what turn "an offset in this pass's
+ * input" into "the same place in its output" without rescanning anything.
+ */
+interface PassEdits {
+  readonly at: number[];
+  readonly end: number[];
+  readonly before: number[];
+  readonly after: number[];
+}
+
+function runPass(
+  input: string,
+  pass: (typeof REDACTION_PASSES)[number],
+): { output: string; edits: PassEdits } {
+  const at: number[] = [];
+  const end: number[] = [];
+  const before: number[] = [];
+  const after: number[] = [];
+  let output = '';
+  let copied = 0;
+  let shift = 0;
+  for (const match of input.matchAll(pass.pattern)) {
+    const start = match.index;
+    const matched = match[0];
+    const replacement = pass.replace(match);
+    output += input.slice(copied, start) + replacement;
+    at.push(start);
+    end.push(start + matched.length);
+    before.push(shift);
+    shift += replacement.length - matched.length;
+    after.push(shift);
+    copied = start + matched.length;
+  }
+  // Nothing matched: hand back the input itself rather than a rebuilt copy.
+  if (at.length === 0) return { output: input, edits: { at, end, before, after } };
+  return { output: output + input.slice(copied), edits: { at, end, before, after } };
+}
+
+// Where `offset` — a position in this pass's INPUT — ends up in its output. An
+// offset inside an edit collapses to the start of what replaced it, because a
+// masked span has no interior left to point at.
+function throughPass(edits: PassEdits, offset: number): number {
+  let low = 0;
+  let high = edits.at.length - 1;
+  let found = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if ((edits.at[mid] ?? 0) <= offset) {
+      found = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  if (found === -1) return offset;
+  if (offset < (edits.end[found] ?? 0)) return (edits.at[found] ?? 0) + (edits.before[found] ?? 0);
+  return offset + (edits.after[found] ?? 0);
 }
 
 /**
@@ -216,44 +289,59 @@ function redactLine(line: string): string {
  * what placing a window into it needs.
  *
  * Split out from `redactSnippet` because this half depends on the LINE ALONE
- * and is the whole cost — `redactLine` walks the line, and so does each trim.
+ * and is the whole cost — each pass walks the line, and so does each trim.
  * A hit's snippet is taken per HIT, and a minified bundle puts every hit in a
  * file on ONE line, so recomputing this per hit is quadratic in the number of
  * hits. Measured on an ordinary 128 KB single-line file carrying 3,283 URLs:
  * 1,955 ms before, against 5 ms for the same bytes and the same hits split over
  * short lines. That is benign input, not a crafted one.
+ *
+ * `edits` is the other half of that, and it is what makes the SECRET-bearing
+ * bundle linear too. Mapping a hit's offset into the redacted line used to mean
+ * redacting the whole prefix again, per hit — so a masked value anywhere on a
+ * long line put the quadratic straight back, on exactly the file this product
+ * is pointed at on purpose. Measured on a 500 KB bundle carrying one token:
+ * 15,333 ms before, against 13 ms for the same bundle with no token.
  */
 interface RedactedLine {
   redacted: string;
   /**
-   * Only populated once `redacted` is long enough to need a window. Each field
-   * costs another pass over the line, and a line that fits under SNIPPET_MAX
-   * returns whole and never reads them.
+   * Only populated once `redacted` is long enough to need a window. A line that
+   * fits under SNIPPET_MAX is returned whole and never reads them.
    */
-  window?: { trimmed: string; lead: number };
+  window?: { trimmed: string; edits: readonly PassEdits[]; lead: number };
 }
 
 function redactedLineOf(line: string): RedactedLine {
-  const redacted = redactLine(line);
-  if (redacted.length <= SNIPPET_MAX) return { redacted };
+  const trimmed = line.trim();
+  const edits: PassEdits[] = [];
+  let text = trimmed;
+  for (const pass of REDACTION_PASSES) {
+    const result = runPass(text, pass);
+    text = result.output;
+    edits.push(result.edits);
+  }
+  if (text.length <= SNIPPET_MAX) return { redacted: text };
   return {
-    redacted,
-    window: { trimmed: line.trim(), lead: line.length - line.trimStart().length },
+    redacted: text,
+    window: { trimmed, edits, lead: line.length - line.trimStart().length },
   };
 }
 
 function snippetWindow({ redacted, window }: RedactedLine, anchor: number): string {
   if (window === undefined) return redacted;
-  const { trimmed, lead } = window;
+  const { trimmed, edits, lead } = window;
   // Masking only ever shortens, so an unchanged length means nothing matched
-  // and offsets carry over untouched. Otherwise re-redact the prefix to find
-  // where the anchor landed; that pass is only reached on a line long enough
-  // to need windowing that also carried a secret, and it is the one cost here
-  // that is still per hit rather than per line.
-  const mapped =
-    redacted.length === trimmed.length
-      ? anchor - lead
-      : redactLine(trimmed.slice(0, Math.max(0, anchor - lead))).length;
+  // and offsets carry over untouched.
+  let mapped = Math.max(0, anchor - lead);
+  if (redacted.length !== trimmed.length) {
+    // The chain begins with a `.trim()`, so a prefix ending in whitespace lost
+    // it. Back the offset off that run rather than mapping into it — the runs
+    // before two different hits cannot overlap, so this stays linear over a
+    // line however many hits it carries.
+    while (mapped > 0 && WHITESPACE.test(trimmed.charAt(mapped - 1))) mapped -= 1;
+    for (const pass of edits) mapped = throughPass(pass, mapped);
+  }
   const start = Math.min(
     Math.max(0, mapped - Math.floor(SNIPPET_MAX / 2)),
     redacted.length - SNIPPET_MAX,
@@ -530,7 +618,7 @@ function memoizeByLine<T>(compute: (index: number) => T): (index: number) => T {
   };
 }
 
-function lineStartOffsets(text: string): number[] {
+export function lineStartOffsets(text: string): number[] {
   const starts = [0];
   for (let i = 0; i < text.length; i += 1) {
     if (text[i] === '\n') starts.push(i + 1);
@@ -539,7 +627,7 @@ function lineStartOffsets(text: string): number[] {
 }
 
 // Index of the line containing `offset`, by binary search over line starts.
-function lineIndexAt(starts: number[], offset: number): number {
+export function lineIndexAt(starts: number[], offset: number): number {
   let low = 0;
   let high = starts.length - 1;
   while (low < high) {
@@ -552,7 +640,7 @@ function lineIndexAt(starts: number[], offset: number): number {
 
 // Text of line `index`, without its terminator. A trailing '\r' is left for
 // redactSnippet's trim to drop.
-function lineTextAt(text: string, starts: number[], index: number): string {
+export function lineTextAt(text: string, starts: number[], index: number): string {
   const start = starts[index] ?? 0;
   const next = starts[index + 1];
   return next === undefined ? text.slice(start) : text.slice(start, next - 1);

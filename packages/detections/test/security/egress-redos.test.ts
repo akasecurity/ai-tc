@@ -78,17 +78,59 @@ const MINIFIED_UNIT = 'see https://example.com/a for details. ';
 const minifiedBundle = (bytes: number): string =>
   MINIFIED_UNIT.repeat(Math.ceil(bytes / MINIFIED_UNIT.length));
 
+// The same bundle carrying ONE masked value in its first unit. Assembled from
+// fragments rather than written whole: a credential-shaped literal in a public
+// repository is exactly what this product exists to find, and the scanner that
+// fronts this tree rewrites one before it reaches disk.
+const MASKED_LEAD = `const h = "${['Author', 'ization'].join('')}: ${['Bea', 'rer'].join('')} ${[
+  'abcdefghij',
+  'klmnopqrst',
+  'uvwxyz0123',
+  '45',
+].join('')}"; `;
+const maskedBundle = (bytes: number): string => MASKED_LEAD + minifiedBundle(bytes);
+
+// A package.json whose dependency count grows with its size — which is what
+// every manifest looks like. Both shapes are ordinary: `pretty` is what a human
+// commits, `minified` is what tooling writes.
+function packageJson(bytes: number, minified: boolean): string {
+  const dependencies: Record<string, string> = {};
+  // ~48 bytes per entry pretty, ~42 minified; overshooting is harmless because
+  // the assertion below pins the size that actually reaches the extractor.
+  const count = Math.floor(bytes / (minified ? 42 : 48));
+  for (let i = 0; i < count; i += 1) {
+    dependencies[`@scope/package-name-number-${String(i)}`] = '^1.2.3';
+  }
+  const manifest = { name: 'x', version: '1.0.0', dependencies };
+  return minified ? JSON.stringify(manifest) : JSON.stringify(manifest, null, 2);
+}
+
+// A pom.xml on ONE line. The JSON manifests above reach `hitAtQuotedKey`; this
+// shape reaches the `eachLine` extractors, which take their snippet from the
+// line they are on — and a manifest written on one line has exactly one.
+function minifiedPom(bytes: number): string {
+  const entry = (i: number): string =>
+    `<dependency><groupId>com.example.group${String(i)}</groupId>` +
+    `<artifactId>a${String(i)}</artifactId></dependency>`;
+  let body = '';
+  for (let i = 0; body.length < bytes; i += 1) body += entry(i);
+  return `<project><dependencies>${body}</dependencies></project>`;
+}
+
 describe('egress extraction is bounded on a 1 MB file', () => {
-  // The premise `cpuMs` rests on. `process.cpuUsage()` sums the whole process,
-  // so charging CPU to one extraction is only a measurement of that extraction
-  // while this file has the process to itself. Vitest's default `forks` pool
-  // gives each file its own child process; `pool: 'threads'` would make this
-  // read false and every budget here start measuring other suites too.
-  it('runs as its own process, which is what makes a process-wide CPU clock a per-case measurement', () => {
+  // The premise `cpuMs` rests on — and it is NOT the one `process.cpuUsage()`
+  // needed. A thread clock is already per thread, so a threads pool would not
+  // put another file's own work on this measurement. What it would put here is
+  // that file's GARBAGE: a pool shares one heap, so V8 collecting another
+  // file's allocations runs on whichever thread allocates next, and the budget
+  // below would absorb it. Vitest's default `forks` pool gives each file its
+  // own process and heap; no package in this workspace sets `pool` today.
+  it('runs in its own process, so no other test file shares this heap', () => {
     expect(
       isMainThread,
-      'this suite is running as a worker thread, so process.cpuUsage() now sums every test file ' +
-        'sharing this process. Restore per-process isolation rather than widening the budget.',
+      'this suite is running as a worker thread, so it now shares a heap with every test file in ' +
+        'the pool and GC for their allocations can land inside these measurements. Restore ' +
+        'per-process isolation rather than widening the budget.',
     ).toBe(true);
   });
 
@@ -125,6 +167,60 @@ describe('egress extraction is bounded on a 1 MB file', () => {
     ).toBeLessThan(EXTRACTION_BUDGET_MS);
   });
 
+  it('takes a snippet per hit from a 1 MB bundle that carries a masked value', () => {
+    // The case above has nothing to mask, so its per-line redaction leaves the
+    // line the same length and the anchor never has to be mapped at all. One
+    // masked value anywhere on the line turns that mapping on for EVERY hit —
+    // and a bundle with a token in it is the file this product is pointed at on
+    // purpose, so it is the case that matters most.
+    const text = maskedBundle(MB);
+    const ms = burned(() => extractEgress(text));
+    expect(
+      ms,
+      `extractEgress burned ${ms.toFixed(1)}ms of CPU on a 1 MB minified bundle carrying one ` +
+        `masked value (budget ${String(EXTRACTION_BUDGET_MS)}ms). The anchor is being mapped by ` +
+        `re-redacting the prefix per hit again — build the per-pass edit lists once per line.`,
+    ).toBeLessThan(EXTRACTION_BUDGET_MS);
+  });
+
+  it.each([
+    ['pretty-printed', false],
+    ['minified', true],
+  ])('resolves every dependency of a 1 MB %s package.json', (_label, minified) => {
+    const text = packageJson(MB, minified);
+    const hits = extractManifestSdks(text, 'package.json');
+    // Positive controls: a manifest the extractor found nothing in costs
+    // nothing, and would satisfy the budget while proving the opposite.
+    expect(text.length).toBeGreaterThan(MB / 2);
+    expect(hits.length).toBeGreaterThan(10_000);
+
+    const ms = burned(() => extractManifestSdks(text, 'package.json'));
+    expect(
+      ms,
+      `extractManifestSdks burned ${ms.toFixed(1)}ms of CPU resolving ${String(hits.length)} ` +
+        `dependencies in a 1 MB manifest (budget ${String(EXTRACTION_BUDGET_MS)}ms). Something ` +
+        `on that path is walking the whole file per HIT again — the line number, the snippet, ` +
+        `or the search for the quoted key.`,
+    ).toBeLessThan(EXTRACTION_BUDGET_MS);
+  });
+
+  it('resolves every dependency of a 1 MB single-line pom.xml', () => {
+    const text = minifiedPom(MB);
+    const hits = extractManifestSdks(text, 'pom.xml');
+    // Positive controls: a manifest the extractor found nothing in costs
+    // nothing, and would satisfy the budget while proving the opposite.
+    expect(text.length).toBeGreaterThan(MB / 2);
+    expect(hits.length).toBeGreaterThan(5_000);
+
+    const ms = burned(() => extractManifestSdks(text, 'pom.xml'));
+    expect(
+      ms,
+      `extractManifestSdks burned ${ms.toFixed(1)}ms of CPU resolving ${String(hits.length)} ` +
+        `dependencies in a 1 MB single-line pom (budget ${String(EXTRACTION_BUDGET_MS)}ms). The ` +
+        `line's snippet is being redacted per HIT again rather than once per line.`,
+    ).toBeLessThan(EXTRACTION_BUDGET_MS);
+  });
+
   it('extracts the same hits from that bundle however its lines are broken', () => {
     // The bound above is worth nothing if the fast path became fast by
     // extracting less. Same bytes, same hits, one line against many.
@@ -137,6 +233,14 @@ describe('egress extraction is bounded on a 1 MB file', () => {
     expect(fromOne.length).toBe(fromMany.length);
     expect(fromOne.length).toBeGreaterThan(1_000);
     expect(fromOne.map((h) => h.url)).toEqual(fromMany.map((h) => h.url));
+
+    // And the masked variant, which reaches the anchor mapping the plain one
+    // never touches: same urls, and every snippet still 200 characters of the
+    // redacted line rather than a window mapped off the end of it.
+    const masked = extractEgress(maskedBundle(200_000));
+    expect(masked.map((h) => h.url)).toEqual(fromOne.map((h) => h.url));
+    expect(masked.every((h) => h.snippet.length <= 200)).toBe(true);
+    expect(masked.some((h) => h.snippet.includes('example.com'))).toBe(true);
   });
 });
 
@@ -153,7 +257,11 @@ describe('the inputs above are adversarial for what they replaced', () => {
   //
   // The inputs are 16x SMALLER than the cases above, because the replaced shapes
   // are quadratic and this suite has to finish.
-  const SMALL = MB / 16;
+  // A SIXTEENTH of the cases above was ~4.7s of by-design quadratic work in a
+  // package whose testTimeout is 20s, on the leg this repo already loses to
+  // starvation. A thirty-second is ~4x cheaper and leaves every ratio in the
+  // hundreds against a FACTOR of 20, so the controls lose nothing they measure.
+  const SMALL = MB / 32;
 
   // The floor keeps the comparison honest when the current shape measures below
   // the clock's granularity: without it, `0 * FACTOR` is a threshold anything
@@ -190,6 +298,36 @@ describe('the inputs above are adversarial for what they replaced', () => {
       `the replaced punctuation pattern cost ${old.toFixed(1)}ms against the current ` +
         `${now.toFixed(1)}ms for the whole extraction, so this input no longer makes it ` +
         'backtrack. Rebuild the hostile shape.',
+    ).toBeGreaterThan(Math.max(now, FLOOR_MS) * FACTOR);
+  });
+
+  it('the manifest is quadratic when each hit walks the file for its line number', () => {
+    // The replaced shape, frozen: a line number counted from offset zero, once
+    // per dependency. `lineNumberAt` is gone from the source, so this copy is a
+    // historical artifact whose only job is to show the input still makes it
+    // quadratic.
+    const text = packageJson(SMALL, false);
+    const keys = Object.keys(
+      (JSON.parse(text) as { dependencies: Record<string, string> }).dependencies,
+    );
+    const { old, now } = ratio(
+      () => {
+        let total = 0;
+        for (const key of keys) {
+          const index = text.indexOf(`"${key}"`);
+          let line = 1;
+          for (let i = 0; i < index; i += 1) if (text[i] === '\n') line += 1;
+          total += line;
+        }
+        return total;
+      },
+      () => extractManifestSdks(text, 'package.json'),
+    );
+    expect(
+      old,
+      `counting each hit's line from zero cost ${old.toFixed(1)}ms against ${now.toFixed(1)}ms ` +
+        'for the whole extraction, so this manifest no longer makes that shape quadratic and ' +
+        'the budget cases above prove nothing.',
     ).toBeGreaterThan(Math.max(now, FLOOR_MS) * FACTOR);
   });
 

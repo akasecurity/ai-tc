@@ -590,18 +590,39 @@ function sectionOffset(text: string, sectionKey: string): number {
   return at === -1 ? 0 : at;
 }
 
+const QUOTE = 0x22;
+const BACKSLASH = 0x5c;
+
 // Every quoted token in the manifest, at its FIRST offset, collected in one
 // pass. The alternative is an `indexOf` per dependency, which scans the file
 // again for each one — the third way this extractor was quadratic in a
 // manifest's own dependency count, and the one left after the line number and
-// the snippet. Escapes are consumed by the pattern, so a quoted value carrying
-// `\"` cannot split a token.
-const QUOTED_TOKEN = /"(?:[^"\\]|\\.)*"/g;
-
+// the snippet.
+//
+// Scanned by hand rather than with a pattern, and that is not a preference.
+// The obvious spelling — a global match of a quoted run with escapes — is
+// POLYNOMIAL on a token that never terminates: the match fails, the scan
+// retries at the next position, and every `"` inside a run of `\"` is another
+// start that walks to the end. Both callers happen to gate that shape out by
+// returning on unparseable JSON before they build this index, but the property
+// should not rest on a check two functions away. This walk visits each
+// character once and resumes past each closing quote, so a token can never be
+// re-entered and the question does not arise.
 function quotedTokenOffsets(text: string): ReadonlyMap<string, number> {
   const at = new Map<string, number>();
-  for (const match of text.matchAll(QUOTED_TOKEN)) {
-    if (!at.has(match[0])) at.set(match[0], match.index);
+  for (let i = 0; i < text.length; i += 1) {
+    if (text.charCodeAt(i) !== QUOTE) continue;
+    let end = i + 1;
+    while (end < text.length && text.charCodeAt(end) !== QUOTE) {
+      // A backslash consumes whatever follows it, so an escaped quote cannot
+      // close the token.
+      end += text.charCodeAt(end) === BACKSLASH ? 2 : 1;
+    }
+    // Unterminated: nothing after this can be a whole token either.
+    if (end >= text.length) break;
+    const quoted = text.slice(i, end + 1);
+    if (!at.has(quoted)) at.set(quoted, i);
+    i = end;
   }
   return at;
 }

@@ -16,8 +16,12 @@ import { extractManifestSdks } from '../../src/egress/manifests.ts';
 // The walker caps a file at 1 MB (MAX_BYTES in @akasecurity/local-ops), so 1 MB
 // is the real ceiling on what reaches here, and it is what these cases feed.
 //
-// Three shapes, and the third is the one worth reading twice: the first two are
-// crafted, and the third is an ordinary minified bundle.
+// Two of the shapes below are crafted — a tag that never closes, a punctuation
+// run that never ends. The rest are the ones worth reading twice: a minified
+// bundle, the same bundle carrying one token, and manifests whose dependency
+// count grows with their size. Nothing about those is an attack, and none of
+// them looks like a ReDoS; each was work proportional to the FILE done once per
+// HIT, which is the shape to recognise here.
 
 // CPU time, in ms — the same instrument, and for the same reason, as the
 // per-rule budget in redos.test.ts. The question is "does this pass do work
@@ -240,7 +244,11 @@ describe('egress extraction is bounded on a 1 MB file', () => {
     const masked = extractEgress(maskedBundle(200_000));
     expect(masked.map((h) => h.url)).toEqual(fromOne.map((h) => h.url));
     expect(masked.every((h) => h.snippet.length <= 200)).toBe(true);
-    expect(masked.some((h) => h.snippet.includes('example.com'))).toBe(true);
+    // The window still lands on the surrounding evidence rather than off the
+    // end of it. Asserted on the unit's PROSE, not on its host: a substring
+    // test against a hostname is what an incomplete-URL-sanitization check
+    // looks like, and this file should not be teaching that shape.
+    expect(masked.some((h) => h.snippet.includes('for details'))).toBe(true);
   });
 });
 

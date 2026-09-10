@@ -113,21 +113,31 @@ describe('completionHint', () => {
 
 describe('the emitted scripts parse in their shells', () => {
   // A substring assertion cannot see a quoting bug; only the shell can. The
-  // scripts are written out and handed to the shell's own parser. Skipped,
-  // never failed, where the shell is absent (Windows CI has neither).
+  // scripts are written out and handed to the shell's own parser.
+  //
+  // Where the shell is absent — Windows CI has neither — the case SKIPS with a
+  // reason rather than returning early. An early return ends the body before
+  // any assertion runs and reports the leg as passed, which is the one shape
+  // that would hide this check going missing on a whole platform.
   const dirs: string[] = [];
   afterEach(() => {
     removeTrees(dirs.splice(0));
   });
 
-  it.each(['zsh', 'bash'] as const)('%s -n accepts the emitted script', (shell) => {
-    const probe = spawnSync(shell, ['-c', 'true'], { stdio: 'ignore' });
-    if (probe.error !== undefined || probe.status !== 0) return;
-    const dir = mkdtempSync(join(tmpdir(), 'aka-completion-'));
-    dirs.push(dir);
-    const file = join(dir, `aka.${shell}`);
-    writeFileSync(file, completionScript(shell) ?? '');
-    const check = spawnSync(shell, ['-n', file], { encoding: 'utf8' });
-    expect(check.status, check.stderr).toBe(0);
-  });
+  // A loop rather than `it.each`, because the guard needs the test context and
+  // `each` types its callback's later parameters as further case values.
+  for (const shell of ['zsh', 'bash'] as const) {
+    it(`${shell} -n accepts the emitted script`, (ctx) => {
+      const probe = spawnSync(shell, ['-c', 'true'], { stdio: 'ignore' });
+      if (probe.error !== undefined || probe.status !== 0) {
+        ctx.skip(`${shell} is not installed on this machine`);
+      }
+      const dir = mkdtempSync(join(tmpdir(), 'aka-completion-'));
+      dirs.push(dir);
+      const file = join(dir, `aka.${shell}`);
+      writeFileSync(file, completionScript(shell) ?? '');
+      const check = spawnSync(shell, ['-n', file], { encoding: 'utf8' });
+      expect(check.status, check.stderr).toBe(0);
+    });
+  }
 });

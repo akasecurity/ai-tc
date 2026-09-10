@@ -59,6 +59,15 @@ export interface RecommendedActionsView {
    * that looks live and does nothing reads as a broken feature.
    */
   viewAllHref?: string | undefined;
+  /**
+   * The window the items were computed over, e.g. "Last 7 days".
+   *
+   * Required reading for the empty state: this card is range-scoped while the
+   * severity card beside it is whole-store, so a store whose newest finding predates
+   * the window shows a full severity ring next to "no recommendations". Without the
+   * window named, that reads as a contradiction rather than as a filter.
+   */
+  rangeLabel?: string | undefined;
   applyAction: (id: string) => void;
   dismissAction: (id: string) => void;
   isMutating: boolean;
@@ -74,6 +83,7 @@ export function RecommendedActionsCardView({
   isMutating,
   mutationError,
   viewAllHref,
+  rangeLabel,
 }: RecommendedActionsView) {
   return (
     <Card className="flex flex-col shadow-sm">
@@ -84,7 +94,10 @@ export function RecommendedActionsCardView({
         <CardHeading>
           <CardTitle>Recommended actions</CardTitle>
           <CardDescription>
-            {isLoading ? 'Loading…' : `${String(items.length)} prioritized for your environment`}
+            {isLoading
+              ? 'Loading…'
+              : `${String(items.length)} prioritized for your environment` +
+                (rangeLabel ? ` · ${rangeLabel.toLowerCase()}` : '')}
           </CardDescription>
         </CardHeading>
         {viewAllHref ? (
@@ -105,7 +118,11 @@ export function RecommendedActionsCardView({
             ))}
           </div>
         ) : items.length === 0 ? (
-          <div className="py-6 text-center text-xs text-text-3">No recommendations right now.</div>
+          <div className="py-6 text-center text-xs text-text-3">
+            {rangeLabel
+              ? `No findings in ${rangeLabel.toLowerCase()}.`
+              : 'No recommendations right now.'}
+          </div>
         ) : (
           <>
             {mutationError && <WidgetError message={mutationError} />}

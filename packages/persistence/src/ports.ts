@@ -203,12 +203,15 @@ export interface SecurityViews {
   recommendationInputs(range: TimeRange): Promise<RecommendationInputRow[]>;
 }
 
-/** One row of {@link SecurityViews.recommendationInputs}. */
-export interface RecommendationInputRow {
-  ruleId: string;
-  category: string;
-  severity: string;
-}
+/**
+ * One row of {@link SecurityViews.recommendationInputs}: the three `FindingView`
+ * fields the recommendations rollup reads.
+ *
+ * A `Pick` of the schema type rather than a hand-written interface, so tightening
+ * one of those fields upstream narrows this too instead of leaving a duplicate
+ * behind that still says `string`.
+ */
+export type RecommendationInputRow = Pick<FindingView, 'ruleId' | 'category' | 'severity'>;
 
 /**
  * Data Shares read views over the local store (share_destination

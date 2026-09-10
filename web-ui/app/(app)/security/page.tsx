@@ -13,12 +13,7 @@ import {
   SeverityCardView,
   TopSourcesCardView,
 } from '@akasecurity/dashboard-ui';
-import type {
-  EnforcementActionKind,
-  RecommendedAction,
-  Severity,
-  TimeRange,
-} from '@akasecurity/schema';
+import type { EnforcementActionKind, Severity } from '@akasecurity/schema';
 
 import { RangeSelect } from '../../components/RangeSelect';
 import { db } from '../../lib/db';
@@ -48,16 +43,6 @@ const bucketLabel = new Intl.DateTimeFormat('en-US', {
   day: 'numeric',
   timeZone: 'UTC',
 });
-
-/**
- * The `href` patch for one recommendation: the findings of the rule it names, or no
- * href at all when it names none. The rule is what its count is measured over, so
- * these are the only two destinations that agree with the row's own label.
- */
-function hrefFor(action: RecommendedAction, range: TimeRange): { href?: string } {
-  const ruleId = action.subjects[0]?.id ?? '';
-  return ruleId ? { href: recommendationHref(ruleId, range) } : {};
-}
 
 export default async function SecurityPage({
   searchParams,
@@ -93,16 +78,13 @@ export default async function SecurityPage({
   // cap: the cap made "recent" mean a different span on every machine, and no URL
   // can express one, so the card's counts could never agree with the findings page
   // each row now links to.
-  const recommendations = buildRecommendedActions(recommendationInputs).map((a) => ({
-    ...a,
-    // The card ranks by category but counts (and therefore links) by the rule it
-    // names, so the destination holds exactly the number the row shows.
-    // A rule-less recommendation carries NO href: the row still reads
-    // "<rule> · N findings", so sending it to the unfiltered list would contradict
-    // the number beside it, and `?type=` (an exact match on '') would select
-    // nothing. The card renders such an action disabled rather than as a dead link.
-    action: { ...a.action, ...hrefFor(a, range) },
-  }));
+  // The destination is built INSIDE the builder rather than patched over it
+  // afterwards: the card ranks by category but counts by the rule it names, so the
+  // link has to be that rule's, and a host that forgot to patch would ship a row
+  // reading "<rule> · N findings" over the whole unfiltered list.
+  const recommendations = buildRecommendedActions(recommendationInputs, {
+    hrefForRule: (ruleId) => recommendationHref(ruleId, range),
+  });
 
   const points: FindingsChartPoint[] = timeseries.points.map((p) => ({
     ...p,
@@ -133,7 +115,13 @@ export default async function SecurityPage({
   // `{ [k: string]: string }` and therefore type-checks against these enum-keyed
   // props whatever the key is — the one boundary the enum spelling exists to guard.
   const actionHrefs: Partial<Record<EnforcementActionKind, string>> = {};
-  for (const a of enforcement.actions) actionHrefs[a.kind] = enforcementHref(a.kind, range);
+  // Gated on `count > 0` for the same reason as the severity loop below:
+  // `enforcementActions` zero-fills all three kinds and the card renders every tile
+  // whenever the total is non-zero, so an ungated map sends "Redacted 0" to an
+  // empty list.
+  for (const a of enforcement.actions) {
+    if (a.count > 0) actionHrefs[a.kind] = enforcementHref(a.kind, range);
+  }
 
   // A severity with no findings gets no link: `severitySummary` zero-fills all four,
   // so linking unconditionally would send "Medium 0" to a list holding nothing.
@@ -190,7 +178,11 @@ export default async function SecurityPage({
         <MttrTrendCardView points={mttrPoints} isLoading={false} error={null} />
 
         <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[1.55fr_1fr] xl:mt-5 xl:gap-5">
-          <RecommendedActionsCard items={recommendations} viewAllHref={allFindingsHref(range)} />
+          <RecommendedActionsCard
+            items={recommendations}
+            viewAllHref={allFindingsHref(range)}
+            rangeLabel={label}
+          />
           <TopSourcesCardView
             {...sources}
             isLoading={false}

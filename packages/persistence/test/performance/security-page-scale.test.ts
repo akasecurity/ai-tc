@@ -61,6 +61,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { SqliteFindingsRepository } from '../../src/repositories/findings.ts';
 import { SqliteSecurityRepository } from '../../src/repositories/security.ts';
 import type { GeneratedCaptureCorpus } from '../helpers/corpus.ts';
 import { corpusConnection, seedCaptureCorpus } from '../helpers/corpus.ts';
@@ -218,7 +219,13 @@ interface Scale {
   readonly samples: Record<string, number[]>;
 }
 
-const READS = ['recommendationInputs', 'recentlyResolved', 'mttrTrend', 'severitySummary'] as const;
+const READS = [
+  'recommendationInputs',
+  'recentFindings',
+  'recentlyResolved',
+  'mttrTrend',
+  'severitySummary',
+] as const;
 type ReadName = (typeof READS)[number];
 
 async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Scale> {
@@ -239,6 +246,7 @@ async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Sc
   // exactly that, at a ratio of 3.619 on a commit that touched no product code;
   // the reasoning is written out there and not repeated.
   raw.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  const findings = new SqliteFindingsRepository(raw);
   // The corpus's own clock, never `Date.now()`: the corpus is stamped from a
   // fixed 2024 epoch, so on the wall clock every windowed read is years past its
   // data and matches nothing — while still running, and still returning a
@@ -271,6 +279,7 @@ async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Sc
   // makes the guard mean "this read found something".
   const run: Record<ReadName, () => Promise<number>> = {
     recommendationInputs: async () => (await security.recommendationInputs('30d')).length,
+    recentFindings: async () => (await findings.recentFindings({ limit: 500 })).length,
     recentlyResolved: async () => (await security.recentlyResolved(20)).items.length,
     mttrTrend: async () =>
       (await security.mttrTrend('30d')).points.filter((point) =>
@@ -360,7 +369,11 @@ describe(`/security read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
     }
   });
 
-  for (const name of ['recentlyResolved', 'mttrTrend'] as const) {
+  // `recentFindings` is measured here though the security page no longer issues it:
+  // its LIMIT-bounded scan is what `aka tui`, `aka stats` and the three plugins pay,
+  // and this ratio is the only thing that would notice it regressing to a sort over
+  // every finding in the store.
+  for (const name of ['recentFindings', 'recentlyResolved', 'mttrTrend'] as const) {
     it(`${name} stays flat as the store grows`, () => {
       const smallest = fastest(small.samples[name] ?? []);
       const largest = fastest(large.samples[name] ?? []);

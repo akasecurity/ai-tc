@@ -182,6 +182,46 @@ describe('RecommendedActionsCardView', () => {
     expect(html).toContain('View all');
   });
 
+  it('names the window it was computed over, in the header and when empty', () => {
+    // This card is range-scoped while the severity card beside it is whole-store, so
+    // a store whose newest finding predates the window shows a full severity ring
+    // next to an empty recommendations card. Naming the window is what stops that
+    // reading as a contradiction.
+    expect(render({ items: [], rangeLabel: 'Last 7 days' })).toContain(
+      'No findings in last 7 days.',
+    );
+    expect(render({ items: [], rangeLabel: 'Last 7 days' })).toContain(
+      '0 prioritized for your environment · last 7 days',
+    );
+    // Without a label the copy stays generic rather than inventing a window.
+    expect(render({ items: [] })).toContain('No recommendations right now.');
+  });
+
+  it('renders an action with no href as disabled, not as a link', () => {
+    // The host clears the builder's baked `/findings` when a recommendation names
+    // no rule. That only helps if an absent href renders inert here — a link to the
+    // unfiltered list under a "<rule> · N findings" label is the mismatch the host
+    // is avoiding.
+    const action = (href: string | undefined) => ({
+      id: 'a1',
+      category: 'secret',
+      severity: 'critical' as const,
+      title: 'Exposed secret detected',
+      description: 'Rotate it.',
+      subjects: [],
+      action: { mode: 'navigate' as const, type: 'review_findings', label: 'Rotate', href },
+    });
+    const withHref = render({ items: [action('/findings?type=aws-key&view=flat')] });
+    expect(withHref).toContain('href="/findings?type=aws-key&amp;view=flat"');
+
+    const without = render({ items: [action(undefined)] });
+    expect(anchors(without)).toBe(0);
+    expect(without).toContain('disabled');
+    // The control: the row still renders, so the absence above is the LINK going
+    // away rather than the whole item.
+    expect(without).toContain('Rotate');
+  });
+
   it('does not render "View all" at all without an href', () => {
     // It used to render as an enabled button with no handler — a control that looks
     // live and does nothing is worse than one that is absent.

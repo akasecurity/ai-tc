@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildHandoffOffer,
+  buildRecommendations,
   RE_TUNE_HINT,
   renderAdjustConfirm,
   renderApplied,
@@ -45,6 +46,32 @@ function finding(overrides: Partial<FindingView> = {}): FindingView {
     ...overrides,
   };
 }
+
+describe('buildRecommendations', () => {
+  it('counts the named rule, and ranks on the category volume', () => {
+    // The one case that separates the two numbers. `secret` holds a critical rule
+    // that fired ONCE beside a high rule that fired three times; `pii` holds a
+    // critical rule that fired twice.
+    //
+    // Rank is by category volume, so `secret` (4) leads `pii` (2). The label reports
+    // the NAMED rule's tally, so it reads 1. A count-vs-categoryCount swap flips
+    // both assertions.
+    const recs = buildRecommendations([
+      finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/private-key' }),
+      finding({ category: 'secret', severity: 'high', ruleId: 'secrets/aws-access-key' }),
+      finding({ category: 'secret', severity: 'high', ruleId: 'secrets/aws-access-key' }),
+      finding({ category: 'secret', severity: 'high', ruleId: 'secrets/aws-access-key' }),
+      finding({ category: 'pii', severity: 'critical', ruleId: 'pii/ssn' }),
+      finding({ category: 'pii', severity: 'critical', ruleId: 'pii/ssn' }),
+    ]);
+    expect(recs.map((r) => r.title)).toEqual([
+      'Exposed secret detected',
+      'Personal data in a prompt',
+    ]);
+    expect(recs[0]?.context).toBe('secrets/private-key · 1 finding');
+    expect(recs[1]?.context).toBe('pii/ssn · 2 findings');
+  });
+});
 
 describe('renderPosture', () => {
   it('lists each category with its action, aligned', () => {

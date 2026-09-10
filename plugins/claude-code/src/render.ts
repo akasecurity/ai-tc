@@ -836,15 +836,13 @@ export function buildRecommendations(findings: FindingView[]): Recommendation[] 
     weight: number;
     ruleId: string;
   }
-  // Keyed by category AND rule: one rule id can hold definition rows in more than
-  // one category, and a rule-only key would charge the combined total to whichever
-  // bucket named it.
+  // Keyed by RULE alone: the label names one rule, so the number beside it is that
+  // rule's whole tally. A per-category count would report a different number for the
+  // same rule in each category it appears in.
   const byRule = new Map<string, number>();
-  const ruleKey = (category: string, ruleId: string) => `${category}\u0000${ruleId}`;
   const buckets = new Map<string, Bucket>();
   for (const f of findings) {
-    const key = ruleKey(f.category, f.ruleId);
-    byRule.set(key, (byRule.get(key) ?? 0) + 1);
+    byRule.set(f.ruleId, (byRule.get(f.ruleId) ?? 0) + 1);
     const b = buckets.get(f.category) ?? {
       category: f.category,
       count: 0,
@@ -866,7 +864,7 @@ export function buildRecommendations(findings: FindingView[]): Recommendation[] 
   // category's — pairing a rule name with a category count reads as the rule having
   // fired far more often than it did. Ranking still uses the category's volume:
   // which KIND of exposure matters most is not a property of one rule.
-  for (const b of buckets.values()) b.count = byRule.get(ruleKey(b.category, b.ruleId)) ?? 0;
+  for (const b of buckets.values()) b.count = byRule.get(b.ruleId) ?? 0;
 
   return [...buckets.values()]
     .sort((a, b) => b.weight - a.weight || b.categoryCount - a.categoryCount)

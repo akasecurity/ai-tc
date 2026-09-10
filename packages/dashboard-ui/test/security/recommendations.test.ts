@@ -92,17 +92,22 @@ describe('buildRecommendations', () => {
     expect(recs[0]?.context).toBe('secrets/private-key · 1 finding');
   });
 
-  it('tallies a rule within its own category, not across every category it appears in', () => {
+  it('tallies a rule across every category it appears in, matching what a link can filter', () => {
     // One rule id can hold definition rows in more than one category — a pack
-    // version may move it — and a rule-only tally would charge the combined total
-    // to whichever bucket named it.
+    // version may move it — and the findings page has no category dimension: it
+    // filters on `ruleId`. So both rows must report the rule's WHOLE tally, or a row
+    // showing 1 would open a list of 3.
     const recs = buildRecommendations([
       finding({ category: 'secret', severity: 'critical', ruleId: 'shared/rule' }),
       finding({ category: 'custom', severity: 'critical', ruleId: 'shared/rule' }),
       finding({ category: 'custom', severity: 'critical', ruleId: 'shared/rule' }),
     ]);
-    const secret = recs.find((r) => r.title === 'Exposed secret detected');
-    expect(secret?.context).toBe('shared/rule · 1 finding');
+    // Two rows, one per category, both naming the same rule and the same number —
+    // which is the number `?type=shared/rule` returns.
+    expect(recs.map((r) => r.context)).toEqual([
+      'shared/rule · 3 findings',
+      'shared/rule · 3 findings',
+    ]);
   });
 
   it('counts the rule it names, not the category it buckets by', () => {
@@ -138,7 +143,26 @@ describe('buildRecommendedActions', () => {
       { type: 'rule', id: 'secrets/private-key', label: 'secrets/private-key · 1 finding' },
     ]);
     expect(action?.action.mode).toBe('navigate');
-    expect(action?.action.href).toBe('/findings');
+    // No host builder supplied, so no destination is invented. A generic
+    // `/findings` here would name the whole unfiltered list under a row reading
+    // "<rule> · N findings"; the card renders a hrefless action disabled instead.
+    expect(action?.action.href).toBeUndefined();
+  });
+
+  it('builds the destination the host supplies, for the rule the row names', () => {
+    const actions = buildRecommendedActions(
+      [finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/private-key' })],
+      { hrefForRule: (ruleId) => `/findings?type=${encodeURIComponent(ruleId)}&view=flat` },
+    );
+    expect(actions[0]?.action.href).toBe('/findings?type=secrets%2Fprivate-key&view=flat');
+  });
+
+  it('omits the href when the host builder declines a rule', () => {
+    const actions = buildRecommendedActions(
+      [finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/private-key' })],
+      { hrefForRule: () => undefined },
+    );
+    expect(actions[0]?.action.href).toBeUndefined();
   });
 
   it('coerces an unknown severity string to low (closed enum)', () => {

@@ -14,9 +14,11 @@ const noop = (): void => undefined;
 export function RecommendedActionsCard({
   items,
   viewAllHref,
+  rangeLabel,
 }: {
   items: RecommendedAction[];
   viewAllHref: string;
+  rangeLabel: string;
 }) {
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
 
@@ -26,6 +28,7 @@ export function RecommendedActionsCard({
       isLoading={false}
       error={null}
       viewAllHref={viewAllHref}
+      rangeLabel={rangeLabel}
       applyAction={noop}
       dismissAction={(id) => {
         setDismissed((prev) => new Set([...prev, id]));

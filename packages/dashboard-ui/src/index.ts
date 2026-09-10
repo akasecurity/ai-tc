@@ -236,6 +236,7 @@ export {
   healthScore,
   type Recommendation,
   type RecommendationInput,
+  type RecommendedActionOptions,
 } from './security/recommendations.ts';
 export {
   RecommendedActionsCardView,

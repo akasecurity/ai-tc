@@ -257,6 +257,37 @@ describe('the security route carries each widget its own window', () => {
     expect(names).toContain('EnforcementCardView');
   });
 
+  it('links only the enforcement kinds that have findings', async () => {
+    // `enforcementActions` zero-fills all three kinds and the card renders every
+    // tile whenever the total is non-zero, so an ungated map sends "Redacted 0" to
+    // an empty list.
+    seedStraddlingFixture();
+    const hrefs = (await propsOf('EnforcementCardView')).actionHrefs as Record<string, string>;
+    // The fixture's two findings are both `actionTaken: 'block'`.
+    expect(Object.keys(hrefs)).toEqual(['blocked']);
+  });
+
+  it("replaces the builder's baked href on every recommendation", async () => {
+    // `buildRecommendedActions` bakes `href: '/findings'` onto every action. The
+    // page must overwrite it, or a row reading "<rule> · N findings" opens the
+    // whole unfiltered list.
+    //
+    // Only the OVERWRITE is reachable from here: every recommendation the store can
+    // produce names a rule. The rule-less branch is covered where it renders, in
+    // dashboard-ui's `RecommendedActionsCardView` suite.
+    seedStraddlingFixture();
+    const items = (await propsOf('RecommendedActionsCard')).items as {
+      action: { href?: string };
+      subjects: { id: string }[];
+    }[];
+    expect(items.length).toBeGreaterThan(0);
+    for (const item of items) {
+      expect(item.subjects[0]?.id).toBeTruthy();
+      expect(item.action.href).toContain('type=');
+      expect(item.action.href).not.toBe('/findings');
+    }
+  });
+
   it('links only the severities that have findings', async () => {
     // `severitySummary` zero-fills all four, so an unconditional map would send
     // "Medium 0" to a list holding nothing.

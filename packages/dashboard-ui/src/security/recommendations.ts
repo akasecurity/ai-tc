@@ -55,7 +55,12 @@ export function findingStatus(summary: HealthSummary): FindingStatus {
 
 interface Bucket {
   category: string;
-  /** The named rule's tally — what the label reports and the link lands on. */
+  /**
+   * The named rule's tally ACROSS the input, which is what the label reports and
+   * what the link lands on. Not the rule's tally within this bucket's category: the
+   * findings page cannot filter by category, so a per-category count would name a
+   * number the destination never shows.
+   */
   count: number;
   /** The whole category's tally, which is what ranks one bucket against another. */
   categoryCount: number;
@@ -84,16 +89,18 @@ function bucketize(findings: RecommendationInput[]): Bucket[] {
   // Per-rule tallies first: a bucket's count is only known once its most-severe
   // rule is, which is not decided until the whole pass is done.
   //
-  // Keyed by category AND rule, not by rule alone. One rule id can hold definition
-  // rows in more than one category (a pack version may move it), and a rule-only
-  // key would charge the combined total to whichever bucket named it — inflating a
-  // category by findings that landed outside it.
+  // Keyed by RULE alone, deliberately, because the label and the link must describe
+  // the same set and the findings page has no category dimension — it filters on
+  // `ruleId`. Counting per (category, rule) instead would render two rows for a rule
+  // whose category moved between pack versions, showing 5 and 3, both linking to a
+  // list of 8.
+  //
+  // So the number is the rule's, and the category is only how the row was chosen and
+  // titled. The comment on `count` below says which of the two it reports.
   const byRule = new Map<string, number>();
-  const ruleKey = (category: string, ruleId: string) => `${category}\u0000${ruleId}`;
   const buckets = new Map<string, Bucket>();
   for (const f of findings) {
-    const key = ruleKey(f.category, f.ruleId);
-    byRule.set(key, (byRule.get(key) ?? 0) + 1);
+    byRule.set(f.ruleId, (byRule.get(f.ruleId) ?? 0) + 1);
     const b = buckets.get(f.category) ?? {
       category: f.category,
       count: 0,
@@ -111,7 +118,7 @@ function bucketize(findings: RecommendationInput[]): Bucket[] {
     }
     buckets.set(f.category, b);
   }
-  for (const b of buckets.values()) b.count = byRule.get(ruleKey(b.category, b.ruleId)) ?? 0;
+  for (const b of buckets.values()) b.count = byRule.get(b.ruleId) ?? 0;
   // Ranked on the CATEGORY's volume, not the named rule's. The label reports one
   // rule so it can agree with the link, but ordering is about which kind of
   // exposure matters most — ranking on the rule would sort a category holding
@@ -149,14 +156,33 @@ function toSeverity(severity: string): Severity {
   return severity === 'critical' || severity === 'high' || severity === 'medium' ? severity : 'low';
 }
 
+/** How a host turns the rule a recommendation names into a destination. */
+export interface RecommendedActionOptions {
+  /**
+   * The findings URL for `ruleId`. Host-supplied so this package mints no routes
+   * and stays router-agnostic.
+   *
+   * Omitted, or returning undefined, leaves the action with NO href, and the card
+   * renders it disabled. That is deliberate: a row reads "<rule> · N findings", so
+   * a generic fallback to the unfiltered list would name a number the destination
+   * does not show — the same label/destination mismatch the per-rule count exists
+   * to prevent.
+   */
+  hrefForRule?: (ruleId: string) => string | undefined;
+}
+
 /**
  * The same prioritization as {@link buildRecommendations}, shaped for the
  * security page's Recommended Actions card (the schema RecommendedAction
  * contract). Actions navigate to the findings page — the local store has no
  * server-side apply endpoint.
  */
-export function buildRecommendedActions(findings: RecommendationInput[]): RecommendedAction[] {
+export function buildRecommendedActions(
+  findings: RecommendationInput[],
+  options: RecommendedActionOptions = {},
+): RecommendedAction[] {
   return bucketize(findings).map((b) => {
+    const href = options.hrefForRule?.(b.ruleId);
     const t = REC_TEMPLATE[b.category] ?? { title: `${b.category} finding`, action: 'Review' };
     return {
       id: `local-${b.category}`,
@@ -175,7 +201,7 @@ export function buildRecommendedActions(findings: RecommendationInput[]): Recomm
         mode: 'navigate' as const,
         type: 'review_findings',
         label: t.action,
-        href: '/findings',
+        ...(href === undefined ? {} : { href }),
       },
     };
   });

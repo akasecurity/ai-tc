@@ -608,8 +608,8 @@ const BACKSLASH = 0x5c;
 // should not rest on a check two functions away. This walk visits each
 // character once and resumes past each closing quote, so a token can never be
 // re-entered and the question does not arise.
-function quotedTokenOffsets(text: string): ReadonlyMap<string, number> {
-  const at = new Map<string, number>();
+function quotedTokenOffsets(text: string): ReadonlyMap<string, number[]> {
+  const at = new Map<string, number[]>();
   for (let i = 0; i < text.length; i += 1) {
     if (text.charCodeAt(i) !== QUOTE) continue;
     let end = i + 1;
@@ -621,10 +621,37 @@ function quotedTokenOffsets(text: string): ReadonlyMap<string, number> {
     // Unterminated: nothing after this can be a whole token either.
     if (end >= text.length) break;
     const quoted = text.slice(i, end + 1);
-    if (!at.has(quoted)) at.set(quoted, i);
+    // EVERY offset, not just the first. A name that also appears earlier in the
+    // file — `peerDependencies` written above `dependencies`, `require-dev`
+    // above `require` — has a first offset before the section being read, and
+    // an index that only knew that one sent each of those keys back to the
+    // per-hit scan this exists to replace. The walk is left to right, so each
+    // list is already ascending and needs no sort.
+    const seen = at.get(quoted);
+    if (seen === undefined) at.set(quoted, [i]);
+    else seen.push(i);
     i = end;
   }
   return at;
+}
+
+// The first offset at or after `from` in an ascending list, or undefined when
+// every occurrence is behind it.
+function firstAtOrAfter(offsets: readonly number[], from: number): number | undefined {
+  let low = 0;
+  let high = offsets.length - 1;
+  let found: number | undefined;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const at = offsets[mid] ?? 0;
+    if (at >= from) {
+      found = at;
+      high = mid - 1;
+    } else {
+      low = mid + 1;
+    }
+  }
+  return found;
 }
 
 function hitAtQuotedKey(
@@ -633,16 +660,17 @@ function hitAtQuotedKey(
   text: string,
   searchFrom: number,
   lines: ManifestLines,
-  tokens: ReadonlyMap<string, number>,
+  tokens: ReadonlyMap<string, number[]>,
 ): ManifestSdkHit {
   // The token index answers this for a name that appears as a whole quoted
   // token, which every dependency key in a well-formed manifest is. Anything
   // else — a name spelled across an escape, a key the tokenizer did not pair —
   // falls back to the scan this replaced, so behaviour is unchanged and only
-  // the cost moves.
-  const known = tokens.get(`"${pkg}"`);
-  const index =
-    known !== undefined && known >= searchFrom ? known : text.indexOf(`"${pkg}"`, searchFrom);
+  // the cost moves. That fallback is O(file) and this runs once per dependency,
+  // so anything that widens what reaches it puts the quadratic straight back.
+  const offsets = tokens.get(`"${pkg}"`);
+  const known = offsets === undefined ? undefined : firstAtOrAfter(offsets, searchFrom);
+  const index = known ?? text.indexOf(`"${pkg}"`, searchFrom);
   if (index === -1) return makeHit(ecosystem, pkg, 1, redactSnippet(pkg));
   return { ecosystem, pkg, line: lines.numberAt(index), snippet: lines.snippetAt(index) };
 }

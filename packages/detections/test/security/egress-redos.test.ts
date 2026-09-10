@@ -46,6 +46,19 @@ function burned(work: () => unknown): number {
   return cpuMs() - before;
 }
 
+// The FASTEST of a few passes on each side, which is the estimator this repo
+// uses wherever a ratio has to survive a shared runner: noise only ever adds
+// time, so the minimum is the one reading a loaded machine cannot inflate.
+// Both sides use the same estimator over the same count — a stall-immune
+// denominator against a noisy numerator is its own failure mode.
+const PASSES = 3;
+
+function fastest(work: () => unknown): number {
+  let best = Infinity;
+  for (let i = 0; i < PASSES; i += 1) best = Math.min(best, burned(work));
+  return best;
+}
+
 // Measured on an arm64 Mac, at the 1 MB cap: 2.5ms for the manifest shape,
 // 3.3ms for the URL shape and 38.3ms for the minified bundle. What each case
 // replaced costs MINUTES at that size — ~130s for the bundle, measured, and
@@ -107,6 +120,23 @@ function packageJson(bytes: number, minified: boolean): string {
   }
   const manifest = { name: 'x', version: '1.0.0', dependencies };
   return minified ? JSON.stringify(manifest) : JSON.stringify(manifest, null, 2);
+}
+
+// The same names in two sections, so the ORDER decides whether each key's first
+// occurrence sits before or after the section being read. Both orderings are
+// ordinary: `peerDependencies` above `dependencies` is what a hand-edited
+// manifest looks like, and `require-dev` above `require` is the composer.json
+// equivalent.
+function packageJsonSections(bytes: number, peerFirst: boolean): string {
+  const dependencies: Record<string, string> = {};
+  const count = Math.floor(bytes / 96);
+  for (let i = 0; i < count; i += 1) {
+    dependencies[`@scope/package-name-number-${String(i)}`] = '^1.2.3';
+  }
+  const manifest = peerFirst
+    ? { name: 'x', peerDependencies: dependencies, dependencies }
+    : { name: 'x', dependencies, peerDependencies: dependencies };
+  return JSON.stringify(manifest, null, 2);
 }
 
 // A pom.xml on ONE line. The JSON manifests above reach `hitAtQuotedKey`; this
@@ -208,6 +238,34 @@ describe('egress extraction is bounded on a 1 MB file', () => {
     ).toBeLessThan(EXTRACTION_BUDGET_MS);
   });
 
+  it('costs the same however a manifest orders its sections', () => {
+    // A BUDGET would not catch this. The quoted-key index answered only each
+    // token's FIRST offset, so every name whose first occurrence sat before the
+    // section being read fell back to the per-hit `indexOf` — measured at 350ms
+    // for a 1 MB manifest, comfortably inside the 2,000ms budget while being
+    // quadratic (7.5 / 27.4 / 99.6 / 350.0 ms across 128KB to 1MB). What
+    // separates the two is that reordering the sections must not change the
+    // cost at all, so the ratio is the assertion.
+    const depsFirst = packageJsonSections(MB, false);
+    const peerFirst = packageJsonSections(MB, true);
+    // Positive controls: the same hits either way, and enough of them that the
+    // per-hit path is what is being measured.
+    expect(extractManifestSdks(peerFirst, 'package.json').length).toBe(
+      extractManifestSdks(depsFirst, 'package.json').length,
+    );
+    expect(extractManifestSdks(depsFirst, 'package.json').length).toBeGreaterThan(5_000);
+
+    const ordered = fastest(() => extractManifestSdks(depsFirst, 'package.json'));
+    const reversed = fastest(() => extractManifestSdks(peerFirst, 'package.json'));
+    expect(
+      reversed / Math.max(ordered, 1),
+      `the same 1 MB manifest cost ${ordered.toFixed(1)}ms with dependencies first and ` +
+        `${reversed.toFixed(1)}ms with peerDependencies first. Section order is deciding the ` +
+        `cost, which means a key whose first occurrence precedes its section is back on the ` +
+        `per-hit scan — index every offset per token, not just the first.`,
+    ).toBeLessThan(3);
+  });
+
   it('resolves every dependency of a 1 MB single-line pom.xml', () => {
     const text = minifiedPom(MB);
     const hits = extractManifestSdks(text, 'pom.xml');
@@ -280,19 +338,6 @@ describe('the inputs above are adversarial for what they replaced', () => {
   // measures 0 at SMALL turns any large reading into a pass.
   const SUPERLINEAR = 3;
   const FLOOR_MS = 1;
-
-  // The FASTEST of a few passes on each side, which is the estimator this repo
-  // uses wherever a ratio has to survive a shared runner: noise only ever adds
-  // time, so the minimum is the one reading a loaded machine cannot inflate.
-  // Both sides use the same estimator over the same count — a stall-immune
-  // denominator against a noisy numerator is its own failure mode.
-  const PASSES = 3;
-
-  function fastest(work: () => unknown): number {
-    let best = Infinity;
-    for (let i = 0; i < PASSES; i += 1) best = Math.min(best, burned(work));
-    return best;
-  }
 
   function growth(shape: (bytes: number) => () => unknown): {
     small: number;

@@ -7,7 +7,6 @@ import { useState, useTransition } from 'react';
 import type { ScanResult } from './actions';
 import { runScan } from './actions';
 import { DirectoryBrowser } from './DirectoryBrowser';
-import { describeForward } from './forward-copy';
 
 export function ScanClient({
   enabledRuleCount,
@@ -27,9 +26,9 @@ export function ScanClient({
 
   // What became of the register on an attached machine, or null on one that is
   // attached to nothing — which renders no line at all, so a standalone
-  // install's page is what it always was. Wording and tone both come from the
-  // copy module; nothing here re-reads the status.
-  const forwarded = result?.forward ? describeForward(result.forward) : null;
+  // install's page is what it always was. Wording and tone were both decided
+  // on the server by the copy module; nothing here re-reads the status.
+  const forwarded = result?.forwardLine ?? null;
 
   const submit = () => {
     startTransition(async () => {

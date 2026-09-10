@@ -5,7 +5,9 @@ import { FORWARD_FAILURE_LINES, type SharesForwardOutcome } from '@akasecurity/l
 //
 // It lives beside the action rather than inside it because a `'use server'`
 // module may only export async functions — a helper declared there could be
-// reached by neither the client component that renders it nor a test.
+// reached by no test. It is SERVER-SIDE ONLY: the failure sentences come from a
+// Node-only package, so the action renders the line and hands the page text and
+// tone; the client component never imports this module.
 //
 // The failure sentences are the shared ones every surface renders from, so a
 // person who ran into a refusal in the CLI and then tries this page is told the

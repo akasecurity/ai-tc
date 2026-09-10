@@ -50,7 +50,9 @@ function scanned(forward?: SharesForwardOutcome): ScanResult {
       truncated: false,
       droppedFiles: [],
     },
-    ...(forward === undefined ? {} : { forward }),
+    ...(forward === undefined
+      ? {}
+      : { forward, forwardLine: describeForward(forward) ?? undefined }),
   };
 }
 

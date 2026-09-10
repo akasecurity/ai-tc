@@ -21,6 +21,7 @@ import { revalidatePath } from 'next/cache';
 import { db } from '../../lib/db';
 import { describeDropped } from '../../lib/dropped-rules';
 import { scanWorkerUrl } from '../../lib/scan-worker';
+import { describeForward, type ForwardLine } from './forward-copy';
 
 // The web twin of `aka scan [path]` — the shared pipeline walks the path and
 // records redacted events + masked findings into the local store. No shell is
@@ -60,6 +61,11 @@ export interface ScanResult {
   // is not, and on a scan that recorded no register to forward — the page then
   // renders exactly what it always did.
   forward?: SharesForwardOutcome;
+  // The line the page shows for `forward`, rendered HERE rather than in the
+  // browser: the wording and tone come from the copy module, which reads the
+  // shared failure sentences out of a Node-only package, and a client component
+  // importing that would pull the whole package into the browser bundle.
+  forwardLine?: ForwardLine;
 }
 
 // A Server Action's result is serialised to the browser, and the recorder hands
@@ -177,6 +183,8 @@ export async function runScan(
     }
   }
 
+  const forwardLine = forward === undefined ? undefined : (describeForward(forward) ?? undefined);
+
   revalidatePath('/findings');
   revalidatePath('/security');
   revalidatePath('/inventory');
@@ -192,6 +200,7 @@ export async function runScan(
       egress: egress ? summaryOf(egress) : undefined,
       droppedRules,
       forward,
+      forwardLine,
     };
 
   return {
@@ -201,6 +210,7 @@ export async function runScan(
     egress: egress ? summaryOf(egress) : undefined,
     droppedRules,
     forward,
+    forwardLine,
   };
 }
 

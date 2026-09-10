@@ -11,7 +11,13 @@ import { useState } from 'react';
 // state — the local store has no server-side apply/dismiss.
 const noop = (): void => undefined;
 
-export function RecommendedActionsCard({ items }: { items: RecommendedAction[] }) {
+export function RecommendedActionsCard({
+  items,
+  viewAllHref,
+}: {
+  items: RecommendedAction[];
+  viewAllHref: string;
+}) {
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
 
   return (
@@ -19,6 +25,7 @@ export function RecommendedActionsCard({ items }: { items: RecommendedAction[] }
       items={items.filter((a) => !dismissed.has(a.id))}
       isLoading={false}
       error={null}
+      viewAllHref={viewAllHref}
       applyAction={noop}
       dismissAction={(id) => {
         setDismissed((prev) => new Set([...prev, id]));

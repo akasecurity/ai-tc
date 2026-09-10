@@ -7,6 +7,7 @@ export * from './model/index.ts';
 export * from './time.ts';
 // Pure read-time token cost/rollup/format logic (no Node-API deps) — shared by
 // the plugin, the web-ui Activity surfaces, and the CLI/TUI.
+export * from './security/recommendations.ts';
 export * from './token/cost-model.ts';
 export * from './token/format.ts';
 export * from './token/token-report.ts';

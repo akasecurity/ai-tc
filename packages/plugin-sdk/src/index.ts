@@ -173,12 +173,17 @@ export { maskMatch } from '@akasecurity/detections';
 // (standalone-gateway, render.ts) keep their `@akasecurity/plugin-sdk` import.
 export type { CostModel, CostUsage, ModelPrice } from '@akasecurity/schema';
 export type { LlmCallLeaf } from '@akasecurity/schema';
+export type { Recommendation, RecommendationInput } from '@akasecurity/schema';
 export { defaultCostModel } from '@akasecurity/schema';
 export {
   aggregateTokenUsage,
+  bucketizeRecommendations,
+  buildRecommendations,
   buildTokenReports,
   formatCostTotal,
   formatUsd,
+  recommendationCopy,
+  SEVERITY_WEIGHT,
 } from '@akasecurity/schema';
 // Posture evaluation re-exported for @akasecurity/plugin-runtime, which may not
 // depend on @akasecurity/detections directly (the SDK is its one detections door).

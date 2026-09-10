@@ -10,9 +10,22 @@ import type {
   DayActivity,
   FindingView,
   HealthSummary,
+  Recommendation,
   SessionTokenReport,
 } from '@akasecurity/plugin-sdk';
-import { aggregateTokenUsage, formatCostTotal, formatUsd } from '@akasecurity/plugin-sdk';
+import {
+  aggregateTokenUsage,
+  buildRecommendations,
+  formatCostTotal,
+  formatUsd,
+  SEVERITY_WEIGHT,
+} from '@akasecurity/plugin-sdk';
+
+// Re-exported so callers keep importing the recommendation surface from this
+// module, exactly as they did when it was declared here. The logic itself now
+// lives in schema, shared with the dashboard and the other two plugins.
+export type { Recommendation } from '@akasecurity/plugin-sdk';
+export { buildRecommendations } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
   BuiltinPolicyId,
@@ -52,8 +65,6 @@ import {
 export const STORE_UNAVAILABLE_NOTE =
   "I couldn't check my records just now — we can check again soon. Your Claude session keeps going, and I'll fill in as you work.";
 
-const SEVERITY_WEIGHT: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
-
 // Severity → shade glyph: heavier fill = more severe (critical solid, low light),
 // so the severity column reads as texture with no color. The same four glyphs
 // carry intensity on the /health chart and the unreviewed tallies.
@@ -67,21 +78,6 @@ const SEVERITY_GLYPH: Record<string, string> = {
 function severityGlyph(severity: string): string {
   return SEVERITY_GLYPH[severity] ?? SHADE.light;
 }
-
-// Plain-language next step per detection category, shown by `/recommend`.
-const ADVICE: Record<string, string> = {
-  secret:
-    'Rotate the exposed credentials and move them out of prompts (secrets manager / env vars).',
-  pii: 'Remove or mask personal data before it reaches the model.',
-  financial: 'Strip card and account numbers; share only non-sensitive references.',
-  phi: 'Remove protected health information — it should never reach an external model.',
-  code_context: 'Confirm this proprietary code context is safe to share.',
-  code_flaw:
-    'Review the flagged pattern and apply the secure alternative (parameterized queries, safe deserializers, etc.).',
-  config:
-    'Review the setting — a hook conflict or an egress change applies to every session that follows.',
-  custom: 'Review against your organization’s custom policy.',
-};
 
 // "2026-06-19T11:14:53.000Z" → "06-19 11:14" (compact, table-friendly). A
 // finding missing its timestamp renders a placeholder rather than a blank cell
@@ -794,95 +790,6 @@ export function buildHealthReport(
     score: status.score,
     host: [...hostLines],
   };
-}
-
-// One row of the /recommend list. Severity drives ordering + the shade label;
-// `context` is the meta left of the arrow, `action` the verb after.
-export interface Recommendation {
-  severity: string;
-  title: string;
-  description: string;
-  context: string;
-  action: string;
-}
-
-// Per-category copy for findings-derived recommendations (the live source until
-// the setup-health recommender lands). Title + the verb after the → arrow.
-const REC_TEMPLATE: Record<string, { title: string; action: string }> = {
-  secret: { title: 'Exposed secret detected', action: 'Rotate' },
-  pii: { title: 'Personal data in a prompt', action: 'Remove' },
-  financial: { title: 'Financial data detected', action: 'Strip' },
-  phi: { title: 'Health information detected', action: 'Remove' },
-  code_context: { title: 'Proprietary code shared', action: 'Review' },
-  code_flaw: { title: 'Insecure code pattern', action: 'Fix' },
-  config: { title: 'Weakened configuration', action: 'Review' },
-  custom: { title: 'Custom policy match', action: 'Review' },
-};
-
-// Cap on the recommendation list. One entry per category, so today it's bounded
-// by the handful of REC_TEMPLATE categories — but custom rules can mint new
-// categories, so cap it explicitly. Entries are severity-ranked, so the cap keeps
-// the most important; the slice only ever drops low-priority overflow.
-const MAX_RECOMMENDATIONS = 10;
-
-// Derive recommendations from real findings: one per category, ranked by
-// severity then frequency, described with the category's advice. (Setup-health
-// items — MCP/hooks/permissions — need detectors we don't have, so
-// the live list speaks to the sensitive-data findings we actually capture.)
-export function buildRecommendations(findings: FindingView[]): Recommendation[] {
-  interface Bucket {
-    category: string;
-    /** The named rule's tally — what the label reports. */
-    count: number;
-    /** The whole category's tally, which ranks one bucket against another. */
-    categoryCount: number;
-    severity: string;
-    weight: number;
-    ruleId: string;
-  }
-  // Keyed by RULE alone: the label names one rule, so the number beside it is that
-  // rule's whole tally. A per-category count would report a different number for the
-  // same rule in each category it appears in.
-  const byRule = new Map<string, number>();
-  const buckets = new Map<string, Bucket>();
-  for (const f of findings) {
-    byRule.set(f.ruleId, (byRule.get(f.ruleId) ?? 0) + 1);
-    const b = buckets.get(f.category) ?? {
-      category: f.category,
-      count: 0,
-      categoryCount: 0,
-      severity: f.severity,
-      weight: 0,
-      ruleId: f.ruleId,
-    };
-    b.categoryCount++;
-    const w = SEVERITY_WEIGHT[f.severity] ?? 0;
-    if (w > b.weight) {
-      b.weight = w;
-      b.severity = f.severity;
-      b.ruleId = f.ruleId;
-    }
-    buckets.set(f.category, b);
-  }
-  // The label below names ONE rule, so it reports that rule's tally rather than the
-  // category's — pairing a rule name with a category count reads as the rule having
-  // fired far more often than it did. Ranking still uses the category's volume:
-  // which KIND of exposure matters most is not a property of one rule.
-  for (const b of buckets.values()) b.count = byRule.get(b.ruleId) ?? 0;
-
-  return [...buckets.values()]
-    .sort((a, b) => b.weight - a.weight || b.categoryCount - a.categoryCount)
-    .slice(0, MAX_RECOMMENDATIONS)
-    .map((b) => {
-      const t = REC_TEMPLATE[b.category] ?? { title: `${b.category} finding`, action: 'Review' };
-      return {
-        severity: b.severity,
-        title: t.title,
-        description: ADVICE[b.category] ?? 'Review this finding against your policy.',
-        context: `${b.ruleId} · ${String(b.count)} finding${b.count === 1 ? '' : 's'}`,
-        action: t.action,
-      };
-    });
 }
 
 // Description wrap width for a recommendation. The body sits indented under the

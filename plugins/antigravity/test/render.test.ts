@@ -2,12 +2,13 @@ import { randomUUID } from 'node:crypto';
 
 import type { FindingView } from '@akasecurity/plugin-sdk';
 import { severityFloorPosture } from '@akasecurity/plugin-sdk';
-import type { BuiltinPolicyId, DetectionCategory, DetectionListItem } from '@akasecurity/schema';
+import type { BuiltinPolicyId, DetectionListItem } from '@akasecurity/schema';
 import {
   BUILTIN_POLICIES,
   CATEGORY_EXPRESSIBLE_IDS,
   CATEGORY_INEXPRESSIBLE_IDS,
   DEFAULT_PACK_POLICY_ID,
+  DetectionCategory,
   KNOWN_BUILTIN_IDS,
   SetupHandoffOffer,
 } from '@akasecurity/schema';
@@ -48,6 +49,22 @@ function finding(overrides: Partial<FindingView> = {}): FindingView {
 }
 
 describe('buildRecommendations', () => {
+  it('gives every detection category a written title and advice', () => {
+    // The guard that would have caught `code_flaw` and `config` falling through.
+    // Both tables are keyed by plain string, so an unlisted category compiles and
+    // renders a raw fallback — "code_flaw finding" with a generic "Review" — and on
+    // a store where that category ranks first it is the most prominent row.
+    for (const category of DetectionCategory.options) {
+      const recs = buildRecommendations([finding({ category, severity: 'critical' })]);
+      expect(recs, `no recommendation built for ${category}`).toHaveLength(1);
+      const rec = recs[0];
+      expect(rec?.title, `${category} falls back to a raw title`).not.toBe(`${category} finding`);
+      expect(rec?.description, `${category} falls back to generic advice`).not.toBe(
+        'Review this finding against your policy.',
+      );
+    }
+  });
+
   it('counts the named rule, and ranks on the category volume', () => {
     // The one case that separates the two numbers. `secret` holds a critical rule
     // that fired ONCE beside a high rule that fired three times; `pii` holds a

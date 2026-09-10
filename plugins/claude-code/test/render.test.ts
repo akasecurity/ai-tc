@@ -7,17 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { handleCapture, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { FindingView, HealthSummary, PluginConfig } from '@akasecurity/plugin-sdk';
 import { createPluginRuntime, severityFloorPosture } from '@akasecurity/plugin-sdk';
-import type {
-  BuiltinPolicyId,
-  DetectionCategory,
-  DetectionException,
-  DetectionListItem,
-} from '@akasecurity/schema';
+import type { BuiltinPolicyId, DetectionException, DetectionListItem } from '@akasecurity/schema';
 import {
   BUILTIN_POLICIES,
   CATEGORY_EXPRESSIBLE_IDS,
   CATEGORY_INEXPRESSIBLE_IDS,
   DEFAULT_PACK_POLICY_ID,
+  DetectionCategory,
   KNOWN_BUILTIN_IDS,
   SetupHandoffOffer,
 } from '@akasecurity/schema';
@@ -195,6 +191,22 @@ describe('pure renderers', () => {
     );
     expect(out).toContain('Claude Code: 2.0.0 (last seen)');
     expect(out).toContain('model-switch protection');
+  });
+
+  it('gives every detection category a written title and advice', () => {
+    // The guard that would have caught `code_flaw` and `config` falling through.
+    // Both tables are keyed by plain string, so an unlisted category compiles and
+    // renders a raw fallback — "code_flaw finding" with a generic "Review" — and on
+    // a store where that category ranks first it is the most prominent row.
+    for (const category of DetectionCategory.options) {
+      const recs = buildRecommendations([finding({ category, severity: 'critical' })]);
+      expect(recs, `no recommendation built for ${category}`).toHaveLength(1);
+      const rec = recs[0];
+      expect(rec?.title, `${category} falls back to a raw title`).not.toBe(`${category} finding`);
+      expect(rec?.description, `${category} falls back to generic advice`).not.toBe(
+        'Review this finding against your policy.',
+      );
+    }
   });
 
   it('recommend: counts the named rule, and ranks on the category volume', () => {

@@ -1,4 +1,5 @@
 import type { FindingView, HealthSummary } from '@akasecurity/schema';
+import { DetectionCategory } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -55,6 +56,22 @@ describe('findingStatus', () => {
 });
 
 describe('buildRecommendations', () => {
+  it('gives every detection category a written title and advice', () => {
+    // The guard that would have caught `code_flaw` and `config` falling through.
+    // Both tables are keyed by plain string, so an unlisted category compiles and
+    // renders a raw fallback — "code_flaw finding" with a generic "Review" — and on
+    // a store where that category ranks first it is the most prominent row.
+    for (const category of DetectionCategory.options) {
+      const recs = buildRecommendations([finding({ category, severity: 'critical' })]);
+      expect(recs, `no recommendation built for ${category}`).toHaveLength(1);
+      const rec = recs[0];
+      expect(rec?.title, `${category} falls back to a raw title`).not.toBe(`${category} finding`);
+      expect(rec?.description, `${category} falls back to generic advice`).not.toBe(
+        'Review this finding against your policy.',
+      );
+    }
+  });
+
   it('buckets by category, keyed to the most severe rule, sorted by weight', () => {
     const recs = buildRecommendations([
       finding({ category: 'pii', severity: 'low', ruleId: 'core-pii/email' }),

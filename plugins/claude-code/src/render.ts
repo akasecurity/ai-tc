@@ -78,6 +78,8 @@ const ADVICE: Record<string, string> = {
   code_context: 'Confirm this proprietary code context is safe to share.',
   code_flaw:
     'Review the flagged pattern and apply the secure alternative (parameterized queries, safe deserializers, etc.).',
+  config:
+    'Review the setting — a hook conflict or an egress change applies to every session that follows.',
   custom: 'Review against your organization’s custom policy.',
 };
 
@@ -812,6 +814,8 @@ const REC_TEMPLATE: Record<string, { title: string; action: string }> = {
   financial: { title: 'Financial data detected', action: 'Strip' },
   phi: { title: 'Health information detected', action: 'Remove' },
   code_context: { title: 'Proprietary code shared', action: 'Review' },
+  code_flaw: { title: 'Insecure code pattern', action: 'Fix' },
+  config: { title: 'Weakened configuration', action: 'Review' },
   custom: { title: 'Custom policy match', action: 'Review' },
 };
 

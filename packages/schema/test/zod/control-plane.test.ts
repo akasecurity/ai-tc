@@ -297,10 +297,11 @@ describe('RemoteFailureKind', () => {
     ]);
   });
 
-  it('registers under its component id', () => {
-    // Neither end sends it, but more than one package names it, so a generated
-    // document points at the list rather than inlining it at each use.
-    expect(z.globalRegistry.get(RemoteFailureKind)?.id).toBe('RemoteFailureKind');
+  it('carries no component id', () => {
+    // Nothing sends it. An id would register it in the global registry, and a
+    // consumer walking that registry would publish it into a generated document
+    // as a component no route uses.
+    expect(z.globalRegistry.get(RemoteFailureKind)?.id).toBeUndefined();
   });
 });
 

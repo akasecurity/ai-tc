@@ -1,5 +1,5 @@
 import type { BlockedDetectionInput, ResolutionInput } from '@akasecurity/persistence';
-import { llmCallId, toolCallId } from '@akasecurity/persistence';
+import { llmCallId, toEgressIngestRequest, toolCallId } from '@akasecurity/persistence';
 import type {
   CaptureRecord,
   DataGateway,
@@ -47,7 +47,6 @@ import {
   strongerAction,
 } from '@akasecurity/schema';
 
-import { toEgressIngestRequest } from './egress-wire.ts';
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
 import { REQUEST_TIMEOUT_MS, withTimeout } from './with-timeout.ts';

@@ -17,7 +17,7 @@ import {
 // deployment named by `WorkspaceSettings.controlPlane` (see ./local.ts), and
 // the on-disk credential that authenticates it.
 //
-// Three kinds of shape live here, and the `.meta({ id })` line is the contract
+// Two kinds of shape live here, and the `.meta({ id })` line is the contract
 // that separates them:
 //
 //   REQUEST bodies (`StorePostureSnapshot` and its components,
@@ -34,12 +34,11 @@ import {
 //   members tolerated — so an older client keeps working against a newer
 //   control plane. The policy-bundle response is `PolicyBundle` (./policy.ts).
 //
-//   A shared VOCABULARY neither end sends (`RemoteFailureKind`) carries an id
-//   as well, for the other reason an id is worth having: it is a closed member
-//   list that more than one package names, so a generated document should be
-//   able to point at it rather than inline the members at each use.
-//
-// `AttachedCredential` is neither: a local 0600 file, never on any wire.
+// `AttachedCredential` is neither: a local 0600 file, never on any wire. Nor is
+// `RemoteFailureKind`: a device-side vocabulary nothing sends, so it carries NO
+// id — an id registers the shape in Zod's global registry, and a consumer
+// walking that registry would publish it into a generated document as a
+// component no route uses.
 
 // ─── The credential file ─────────────────────────────────────────────────────
 
@@ -495,11 +494,9 @@ export type ControlPlaneErrorBody = z.infer<typeof ControlPlaneErrorBody>;
  * How a control-plane call failed, coarse enough to carry one remediation each.
  *
  * A device-side vocabulary rather than a wire shape — nothing sends or receives
- * it — and it is the third category this file's header names: it carries an id
- * so a generated document can point at the member list, which more than one
- * package refers to by name. It lives here so the transport that classifies a
- * failure and the surfaces that render one agree on that list without
- * depending on each other.
+ * it, so it carries no id (see the header). It lives here so the transport that
+ * classifies a failure and the surfaces that render one agree on the member
+ * list without depending on each other.
  *
  * The six are chosen so that each maps to ONE thing a person can do:
  *
@@ -519,9 +516,14 @@ export type ControlPlaneErrorBody = z.infer<typeof ControlPlaneErrorBody>;
  *                     "try again", which is why everything unrecognised lands
  *                     here rather than in one of the five above.
  */
-export const RemoteFailureKind = z
-  .enum(['unauthorized', 'forbidden', 'route-absent', 'invalid-request', 'rejected', 'unreachable'])
-  .meta({ id: 'RemoteFailureKind' });
+export const RemoteFailureKind = z.enum([
+  'unauthorized',
+  'forbidden',
+  'route-absent',
+  'invalid-request',
+  'rejected',
+  'unreachable',
+]);
 export type RemoteFailureKind = z.infer<typeof RemoteFailureKind>;
 
 // ─── Attaching a machine without ferrying a key by hand ──────────────────────

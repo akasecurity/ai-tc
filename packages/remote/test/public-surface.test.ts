@@ -54,6 +54,11 @@ const EXPECTED = [
   // guessing at a vocabulary it does not own.
   'classifyRemoteFailure',
   'statusOf',
+  // The forwarding adapter for a scan's Data Shares register and its deadline.
+  // Admissible for the same reason the readers above are: it reaches one named
+  // route through createRemoteClient and cannot be handed a URL.
+  'createSharesSender',
+  'SHARES_FORWARD_TIMEOUT_MS',
 ] as const;
 
 describe('the package export surface', () => {

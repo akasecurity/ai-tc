@@ -55,13 +55,39 @@ export type SharesForwardSender = (
  * `not-attached` carries no endpoint because there is none to name, and it is
  * the outcome a standalone machine reaches — the surfaces render nothing for
  * it, which is what keeps an unattached machine's output exactly as it was.
+ *
+ * `disabled` says WHY nothing was sent: the caller opted this run out, or the
+ * Data Shares switch is off — read live, because the record this input came
+ * from and this send are two steps, and the switch can move between them.
  */
 export type SharesForwardOutcome =
   | { status: 'not-attached' }
-  | { status: 'disabled'; endpoint: string }
+  | { status: 'disabled'; endpoint: string; reason: 'opt-out' | 'data-shares-off' }
   | { status: 'no-credential'; endpoint: string }
   | { status: 'forwarded'; endpoint: string; callSites: number }
   | { status: 'failed'; endpoint: string; kind: RemoteFailureKind };
+
+/**
+ * One sentence per failure kind, for whoever ran the scan.
+ *
+ * The one copy both surfaces render from, kept beside the outcome union it
+ * describes so a kind added to the vocabulary is missing a sentence in exactly
+ * one place. Each names the thing a person can do; `forbidden` names the one
+ * case with a self-service fix (a key minted before this route's capability
+ * existed is refused until re-minted, and re-attaching mints one).
+ */
+export const FORWARD_FAILURE_LINES: Record<RemoteFailureKind, string> = {
+  unauthorized: 'key rejected; re-attach with a valid plugin key',
+  forbidden:
+    'key is valid but not permitted for Data Shares ingest; a key minted before Data Shares ' +
+    'ingest existed needs a re-attach, otherwise ask your org admin',
+  'route-absent': 'the deployment predates Data Shares ingest; upgrade it, then re-run the scan',
+  'invalid-request': 'this build assembled a request the contract refuses; please report it',
+  rejected:
+    'the deployment refused the request body; this build and the deployment are out of step — ' +
+    'upgrade one of them',
+  unreachable: 'control plane unreachable (timeout or server error); the next scan retries',
+};
 
 export interface SharesForwardDeps {
   send: SharesForwardSender;
@@ -99,7 +125,14 @@ export async function forwardProjectEgress(
     const endpoint = controlPlaneName(connection);
     endpointName = endpoint;
 
-    if (deps.enabled === false) return { status: 'disabled', endpoint };
+    if (deps.enabled === false) return { status: 'disabled', endpoint, reason: 'opt-out' };
+
+    // The kill-switch, re-read here rather than trusted from the record that
+    // produced `input`: a person or a managed overlay flipping it off between
+    // the local write and this send still stops the send.
+    if (!settings.dataSharesInPlace) {
+      return { status: 'disabled', endpoint, reason: 'data-shares-off' };
+    }
 
     // The credential is checked against the descriptor, so a file minted for
     // another deployment is not usable here — presenting it would be handing a

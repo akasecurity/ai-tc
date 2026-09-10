@@ -1,3 +1,5 @@
+import { classifyRemoteFailure, statusOf } from '@akasecurity/remote';
+
 /**
  * One classifier for "the control plane said no", shared by both halves of
  * attached mode.
@@ -30,33 +32,11 @@
 export type ControlPlaneFailure = 'unauthorized' | 'forbidden' | 'unreachable';
 
 /**
- * The HTTP status a client error carries, or `null` when it carries none.
- *
- * Read STRUCTURALLY — the same contract, and for the same reason, as
- * a status is read off the error rather than matched on its type. Never
- * `instanceof`: this code is bundled into every hook script while the transport
- * is a separate package, and a prototype identity that survives one bundler
- * configuration is not a thing to hang a security-visible verdict on. Never message-parsing
- * either — which is what this replaced. The sync path used to recover the status
- * with `/\b(401|403)\b/` over the error's text, joined to the client by nothing
- * but wording, and a reword there would have degraded the one outcome a human
- * must act on into the one they are meant to ignore, silently.
- *
- * Range-checked rather than merely typed as a number: the value can come from a
- * thrown response BODY the control plane did not author (a proxy, a captive portal),
- * and a `status` field that is not an HTTP status is not evidence of anything.
- *
- * EXPORTED, unlike `classifyFailure` here it feeds: `forward-policy.ts`'s
- * `isServerRejection` reads the same status for a DIFFERENT question — not
- * "what should a human do", but "did the deployment answer at all" — and must
- * agree with this module on what counts as a status rather than re-deriving it.
+ * The status reader is the transport's own, re-exported: `forward-policy.ts`
+ * reads a status for a different question than this module does, and both must
+ * agree with the package that threw the error on what counts as one.
  */
-export function statusOf(err: unknown): number | null {
-  if (typeof err !== 'object' || err === null || !('status' in err)) return null;
-  const { status } = err;
-  if (typeof status !== 'number' || !Number.isInteger(status)) return null;
-  return status >= 100 && status <= 599 ? status : null;
-}
+export { statusOf };
 
 /**
  * Classify a failed control-plane call. TOTAL — every input maps to a member, because
@@ -68,10 +48,13 @@ export function statusOf(err: unknown): number | null {
  * ask their administrator about a control plane that was merely rebooting.
  */
 export function classifyFailure(err: unknown): ControlPlaneFailure {
-  switch (statusOf(err)) {
-    case 401:
+  // The transport's own reading, collapsed onto the three remediations this
+  // surface renders: every kind that is not a credential verdict is "try again"
+  // here, whatever finer name the transport gave it.
+  switch (classifyRemoteFailure(err)) {
+    case 'unauthorized':
       return 'unauthorized';
-    case 403:
+    case 'forbidden':
       return 'forbidden';
     default:
       return 'unreachable';

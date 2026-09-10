@@ -256,57 +256,85 @@ describe('the inputs above are adversarial for what they replaced', () => {
   // Positive controls, without which a case fed a harmless string would satisfy
   // its budget for ever and report the bound as held.
   //
-  // Each is a RATIO of two measurements taken on the same machine, over the same
-  // input, in the same run — the replaced shape against the current one — rather
-  // than an elapsed lower bound. A lower bound is a statement about the runner:
-  // it has to be small enough for the slowest leg, and every machine that gets
-  // faster walks the real margin down toward it silently. A ratio cancels the
-  // machine, which is what lets the margin below be enormous and stay meaningful.
+  // Each measures the SAME replaced shape at two input sizes and asserts it
+  // GROWS super-linearly: doubling the input doubles a linear pass and
+  // quadruples a quadratic one. That is the property a control here is actually
+  // claiming — "this input still makes the old shape blow up" — and it cancels
+  // the machine outright, because both readings come from one run on one
+  // runner.
   //
-  // The inputs are 16x SMALLER than the cases above, because the replaced shapes
-  // are quadratic and this suite has to finish.
-  // A SIXTEENTH of the cases above was ~4.7s of by-design quadratic work in a
-  // package whose testTimeout is 20s, on the leg this repo already loses to
-  // starvation. A thirty-second is ~4x cheaper and leaves every ratio in the
-  // hundreds against a FACTOR of 20, so the controls lose nothing they measure.
-  const SMALL = MB / 32;
+  // These compared the replaced shape against the CURRENT extraction before,
+  // and that shape was wrong twice on the same leg: the quotient depends on how
+  // expensive the modern code happens to be on that machine, which has nothing
+  // to do with the claim. It read 12.7x and 15.7x on a Windows runner against
+  // the 20x demanded, while passing locally. Shrinking the inputs to a
+  // thirty-second (worth doing on its own terms — 4.7s of by-design quadratic
+  // work in a package whose testTimeout is 20s) narrowed the same margin
+  // further, because a quadratic side shrinks 4x where a linear one shrinks 2x.
+  // Do not put an absolute or cross-implementation comparison back.
+  const SMALL = MB / 128;
+  const LARGE = SMALL * 2;
 
-  // The floor keeps the comparison honest when the current shape measures below
-  // the clock's granularity: without it, `0 * FACTOR` is a threshold anything
-  // clears, and the control would pass on a machine where nothing was measured.
-  const FACTOR = 20;
+  // Between linear's 2 and quadratic's 4. The floor keeps a sub-tick small side
+  // from making the quotient meaningless — without it a fast machine that
+  // measures 0 at SMALL turns any large reading into a pass.
+  const SUPERLINEAR = 3;
   const FLOOR_MS = 1;
 
-  function ratio(replaced: () => unknown, current: () => unknown): { old: number; now: number } {
-    return { old: burned(replaced), now: burned(current) };
+  // The FASTEST of a few passes on each side, which is the estimator this repo
+  // uses wherever a ratio has to survive a shared runner: noise only ever adds
+  // time, so the minimum is the one reading a loaded machine cannot inflate.
+  // Both sides use the same estimator over the same count — a stall-immune
+  // denominator against a noisy numerator is its own failure mode.
+  const PASSES = 3;
+
+  function fastest(work: () => unknown): number {
+    let best = Infinity;
+    for (let i = 0; i < PASSES; i += 1) best = Math.min(best, burned(work));
+    return best;
+  }
+
+  function growth(shape: (bytes: number) => () => unknown): {
+    small: number;
+    large: number;
+    ratio: number;
+  } {
+    const small = fastest(shape(SMALL));
+    const large = fastest(shape(LARGE));
+    return { small, large, ratio: large / Math.max(small, FLOOR_MS) };
+  }
+
+  function expectSuperlinear(
+    label: string,
+    measured: { small: number; large: number; ratio: number },
+  ): void {
+    expect(
+      measured.ratio,
+      `${label} cost ${measured.small.toFixed(1)}ms and ${measured.large.toFixed(1)}ms at one ` +
+        `and two units of input — a ratio of ${measured.ratio.toFixed(2)}, i.e. LINEAR. This ` +
+        `input no longer makes that shape blow up, so the budget case it backs proves nothing. ` +
+        `Rebuild the hostile shape.`,
+    ).toBeGreaterThan(SUPERLINEAR);
   }
 
   it('the manifest line is quadratic under the pattern it replaced', () => {
-    const text = hostileManifest(SMALL);
-    const { old, now } = ratio(
-      () => [...text.matchAll(REPLACED_XML_TAG)],
-      () => extractManifestSdks(text, 'pom.xml'),
+    expectSuperlinear(
+      'the replaced tag pattern',
+      growth((bytes) => {
+        const text = hostileManifest(bytes);
+        return () => [...text.matchAll(REPLACED_XML_TAG)];
+      }),
     );
-    expect(
-      old,
-      `the replaced tag pattern cost ${old.toFixed(1)}ms against the current ${now.toFixed(1)}ms ` +
-        'on the same input, so this input no longer makes it backtrack and the budget case ' +
-        'above proves nothing. Rebuild the hostile shape.',
-    ).toBeGreaterThan(Math.max(now, FLOOR_MS) * FACTOR);
   });
 
   it('the URL candidate is quadratic under the pattern it replaced', () => {
-    const text = hostileUrl(SMALL);
-    const { old, now } = ratio(
-      () => text.replace(REPLACED_TRAILING_PUNCTUATION, ''),
-      () => extractEgress(text),
+    expectSuperlinear(
+      'the replaced punctuation pattern',
+      growth((bytes) => {
+        const text = hostileUrl(bytes);
+        return () => text.replace(REPLACED_TRAILING_PUNCTUATION, '');
+      }),
     );
-    expect(
-      old,
-      `the replaced punctuation pattern cost ${old.toFixed(1)}ms against the current ` +
-        `${now.toFixed(1)}ms for the whole extraction, so this input no longer makes it ` +
-        'backtrack. Rebuild the hostile shape.',
-    ).toBeGreaterThan(Math.max(now, FLOOR_MS) * FACTOR);
   });
 
   it('the manifest is quadratic when each hit walks the file for its line number', () => {
@@ -314,43 +342,25 @@ describe('the inputs above are adversarial for what they replaced', () => {
     // per dependency. `lineNumberAt` is gone from the source, so this copy is a
     // historical artifact whose only job is to show the input still makes it
     // quadratic.
-    //
-    // Measured as GROWTH — the same shape at two sizes — rather than against
-    // the current extraction, which is what the other three controls compare
-    // to. Those replaced a catastrophic regex and run 100-1,000x the code that
-    // replaced them, so any denominator works. This one replaced a merely
-    // POLYNOMIAL scan with a small constant, and the whole modern extraction
-    // does real work of its own (a JSON parse, a tokenize) on the same bytes,
-    // so the two are close enough that the ratio depends on the machine: it
-    // measured 12.7x on a Windows runner against the 20x demanded, while
-    // passing locally. Doubling the input answers the actual question —
-    // quadratic doubles to ~4x, linear to ~2x — and cancels the runner without
-    // depending on anything else's cost.
-    const walkFrom = (text: string): (() => number) => {
-      const keys = Object.keys(
-        (JSON.parse(text) as { dependencies: Record<string, string> }).dependencies,
-      );
-      return () => {
-        let total = 0;
-        for (const key of keys) {
-          const index = text.indexOf(`"${key}"`);
-          let line = 1;
-          for (let i = 0; i < index; i += 1) if (text[i] === '\n') line += 1;
-          total += line;
-        }
-        return total;
-      };
-    };
-    const small = burned(walkFrom(packageJson(SMALL, false)));
-    const large = burned(walkFrom(packageJson(SMALL * 2, false)));
-    // 3 sits between linear's 2 and quadratic's 4, and the floor keeps a
-    // sub-tick small side from making the quotient meaningless.
-    expect(
-      large / Math.max(small, FLOOR_MS),
-      `counting each hit's line from zero cost ${small.toFixed(1)}ms and ${large.toFixed(1)}ms ` +
-        'at one and two units of input — a ratio of ~2, i.e. LINEAR. This manifest no longer ' +
-        'makes that shape quadratic, so the budget cases above prove nothing.',
-    ).toBeGreaterThan(3);
+    expectSuperlinear(
+      "counting each hit's line from zero",
+      growth((bytes) => {
+        const text = packageJson(bytes, false);
+        const keys = Object.keys(
+          (JSON.parse(text) as { dependencies: Record<string, string> }).dependencies,
+        );
+        return () => {
+          let total = 0;
+          for (const key of keys) {
+            const index = text.indexOf(`"${key}"`);
+            let line = 1;
+            for (let i = 0; i < index; i += 1) if (text[i] === '\n') line += 1;
+            total += line;
+          }
+          return total;
+        };
+      }),
+    );
   });
 
   it('the bundle is quadratic when its snippet is taken per hit', () => {
@@ -359,23 +369,19 @@ describe('the inputs above are adversarial for what they replaced', () => {
     // correct for one call, and exactly what extractEgress must not do per hit.
     // So it measures the live shape the memoization avoids rather than a copy
     // of it, and it goes stale only if that entry point itself changes.
-    const line = minifiedBundle(SMALL);
-    const hits = Math.floor(line.length / MINIFIED_UNIT.length);
-    const { old, now } = ratio(
-      () => {
-        let total = 0;
-        for (let i = 0; i < hits; i += 1) {
-          total += redactSnippet(line, i * MINIFIED_UNIT.length).length;
-        }
-        return total;
-      },
-      () => extractEgress(line),
+    expectSuperlinear(
+      'taking a snippet per hit',
+      growth((bytes) => {
+        const line = minifiedBundle(bytes);
+        const hits = Math.floor(line.length / MINIFIED_UNIT.length);
+        return () => {
+          let total = 0;
+          for (let i = 0; i < hits; i += 1) {
+            total += redactSnippet(line, i * MINIFIED_UNIT.length).length;
+          }
+          return total;
+        };
+      }),
     );
-    expect(
-      old,
-      `taking a snippet per hit cost ${old.toFixed(1)}ms against ${now.toFixed(1)}ms for the ` +
-        'whole extraction of the same line, so the bundle case above proves nothing about the ' +
-        'memoization.',
-    ).toBeGreaterThan(Math.max(now, FLOOR_MS) * FACTOR);
   });
 });

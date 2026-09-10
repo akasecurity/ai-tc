@@ -113,7 +113,7 @@ describe('recordProjectEgress — git project', () => {
 
     // Display name is the remote slug; the reconcile key is the prefixed
     // identity, never the bare one.
-    expect(recorded).toEqual({
+    expect(recorded).toMatchObject({
       project: 'payments-api',
       destinations: 1,
       endpoints: 2,
@@ -121,6 +121,18 @@ describe('recordProjectEgress — git project', () => {
       truncated: false,
       droppedFiles: [],
     });
+    // Still exhaustive, one level up: the resolved input rides back with the
+    // totals and is what a forwarding caller sends, so a field appearing or
+    // disappearing here changes what a deployment would receive.
+    expect(Object.keys(recorded ?? {}).sort()).toEqual([
+      'callSites',
+      'destinations',
+      'droppedFiles',
+      'endpoints',
+      'input',
+      'project',
+      'truncated',
+    ]);
 
     const sites = storedSites(store);
     expect(sites.map((s) => s.file)).toEqual(['package.json', 'src/pay.ts']);
@@ -242,6 +254,54 @@ describe('recordProjectEgress — walk-mode reconciliation', () => {
     const sites = storedSites(store);
     expect(sites[0]?.file).toBe('vendor/lib/client.ts');
     expect(sites[0]?.vendored).toBe(1);
+  });
+});
+
+// The resolved input the store consumed comes back with the totals, because
+// resolving it is the expensive half of the pass and a caller that forwards
+// must send the SAME unit that was written rather than re-deriving one. It is
+// local data throughout — the snippets are still on it, and the key is still
+// plaintext — and turning it into something sendable is the projection's job,
+// not this function's.
+describe('recordProjectEgress — the resolved input it hands back', () => {
+  it('carries the plaintext prefixed key and the root scan prefix', async () => {
+    initRepo(root, REMOTE_URL);
+    writeCall(join(root, 'src', 'pay.ts'), 'api.alpha-corp.com');
+
+    const recorded = await scanAndRecord(db, root, base);
+
+    // Plaintext, prefixed, and identical to what the store rows key on — the
+    // digest happens at the wire boundary, never here.
+    expect(recorded?.input.projectKey).toBe(`git:${REMOTE_URL}`);
+    expect(recorded?.input.projectKey).toBe(storedSites(store)[0]?.projectKey);
+    // A root scan walked everything, so its reconcile replaces from the root.
+    expect(recorded?.input.reconcile).toEqual({ mode: 'walk', walkedPrefix: '' });
+  });
+
+  it('scopes the reconcile prefix to a subtree target', async () => {
+    initRepo(root, REMOTE_URL);
+    writeCall(join(root, 'src', 'pay.ts'), 'api.alpha-corp.com');
+
+    const recorded = await scanAndRecord(db, join(root, 'src'), base);
+
+    // What a forward carries decides what a deployment clears, so a subtree
+    // scan must not describe itself as having walked the project root.
+    expect(recorded?.input.reconcile).toEqual({ mode: 'walk', walkedPrefix: 'src' });
+  });
+
+  it('keeps the source snippet on every resolved hit', async () => {
+    initRepo(root, REMOTE_URL);
+    writeCall(join(root, 'src', 'pay.ts'), 'api.alpha-corp.com');
+
+    const recorded = await scanAndRecord(db, root, base);
+
+    // The local copy is the one with the evidence on it: the snippet is what
+    // the Data Shares page shows for a call site. It is also exactly what must
+    // not leave the device, which is why nothing forwards this object as it is.
+    expect(recorded?.input.hits.length).toBeGreaterThan(0);
+    for (const hit of recorded?.input.hits ?? []) {
+      expect(hit.site.snippet).toContain('api.alpha-corp.com');
+    }
   });
 });
 

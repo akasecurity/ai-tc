@@ -149,6 +149,16 @@ describe('renderEgressLine', () => {
       callSites: 12,
       truncated: false,
       droppedFiles: [],
+      // The resolved input rides back with the totals. This line renders none
+      // of it, so the smallest well-formed one keeps the fixture honest about
+      // the shape without pretending the renderer reads it.
+      input: {
+        projectKey: 'git:https://github.com/acme/widgets.git',
+        project: 'widgets',
+        projectId: null,
+        reconcile: { mode: 'walk', walkedPrefix: '' },
+        hits: [],
+      },
       ...overrides,
     };
   }

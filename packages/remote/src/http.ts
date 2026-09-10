@@ -102,7 +102,7 @@ export class RemoteRequestInvalid extends Error {
  * tell "the deployment is running a version this build cannot read" from "the
  * deployment could not be reached", and those point a user at completely
  * different things. Recovering that from an error's WORDING joins the two
- * packages by nothing but a string — the defect ./failure.ts's `statusOf`
+ * packages by nothing but a string — the defect ./failure-kind.ts's `statusOf`
  * comment describes for the status path, reintroduced on the body path.
  */
 export class RemoteResponseInvalid extends Error {

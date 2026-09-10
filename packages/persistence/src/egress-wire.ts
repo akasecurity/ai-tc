@@ -1,16 +1,23 @@
 // The device-side projection of a project's egress-recording unit onto the
-// wire-boundary-safe shape both attached gateways forward. This is the ONLY
-// place that builds an `EgressIngestRequest` — neither gateway hand-rolls the
+// wire-boundary-safe shape every forwarding surface sends. This is the ONLY
+// place that builds an `EgressIngestRequest` — no caller hand-rolls the
 // payload, so the privacy boundary has exactly one implementation.
+//
+// It sits in this package, beside the cap helpers it applies, because the
+// plugin gateways are not the only callers: the CLI and the dashboard record
+// the same register and neither may depend on the plugin stack. A projection
+// living above that line would have had to be written twice, and two copies of
+// a privacy boundary is one copy too many.
 import { createHash } from 'node:crypto';
 
-import { capHits, withoutDroppedFiles } from '@akasecurity/persistence';
 import type {
   EgressIngestHit,
   EgressIngestRequest,
   RecordProjectEgressInput,
   ResolvedEgressHit,
 } from '@akasecurity/schema';
+
+import { capHits, withoutDroppedFiles } from './repositories/shares.ts';
 
 /**
  * Digest a local `projectKey` for the wire.

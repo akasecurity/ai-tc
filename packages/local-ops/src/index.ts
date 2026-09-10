@@ -10,7 +10,7 @@ export {
 } from './background-schedule.ts';
 export { claudeAvailable, installClaudePlugin, updateClaudePlugin } from './claude-plugin.ts';
 export type { CliPluginBin, CliPluginManager } from './cli-plugin-manager.ts';
-export { createCliPluginManager } from './cli-plugin-manager.ts';
+export { createCliPluginManager, hostCliVersion, versionTokenFrom } from './cli-plugin-manager.ts';
 export { codexAvailable, installCodexPlugin, updateCodexPlugin } from './codex-plugin.ts';
 export type { EgressRecordResult } from './egress-record.ts';
 export { recordProjectEgress } from './egress-record.ts';
@@ -55,6 +55,14 @@ export { AGENT_PLUGINS, findAgent, pluginRef } from './registry.ts';
 export type { Reinvocation } from './self-exec.ts';
 export { isSea, reinvokeArgv } from './self-exec.ts';
 export { compareSemver, isNewer } from './semver.ts';
+export type {
+  SharesForwardConnection,
+  SharesForwardDeps,
+  SharesForwardOutcome,
+  SharesForwardSender,
+  SharesForwardSendResult,
+} from './shares-forward.ts';
+export { FORWARD_FAILURE_LINES, forwardProjectEgress } from './shares-forward.ts';
 export {
   cachePath,
   CHECK_TTL_MS,

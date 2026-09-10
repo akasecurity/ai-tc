@@ -14,6 +14,7 @@
 import { loadConfig } from '@akasecurity/plugin-sdk';
 
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
+import { warnIfHostBelowFloor } from './host-floor-notice.ts';
 import { parseJson, readStdin } from './shared.ts';
 import { parseStopPayload } from './stop-payload.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
@@ -25,6 +26,10 @@ async function main(): Promise<void> {
   // A symlinked store path redirects the corpus without failing anything;
   // say so once per session (stderr, so the stdout contract is untouched).
   warnIfStoreRedirected(config, trigger.sessionId);
+  // This host may be too old for hook events AKA's manifest registers, which
+  // the host drops individually and silently. Stop is one of the two events
+  // where the transcript's newest record is guaranteed to be this run's.
+  warnIfHostBelowFloor(config, trigger.sessionId, trigger.transcriptPath);
   // Throttled, detached spawn — the hook never waits on the reconcile.
   triggerReconcile(config.dataDir, trigger.sessionId, trigger.transcriptPath);
 }

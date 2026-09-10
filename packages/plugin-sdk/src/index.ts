@@ -36,6 +36,22 @@ export {
 } from './fingerprint.ts';
 export type { GuardedScanner, GuardedScanOptions, GuardedScanPartition } from './guarded-scan.ts';
 export { createGuardedScanner } from './guarded-scan.ts';
+export type { HostFeature, HostFloorRow } from './host-floor.ts';
+export {
+  BASELINE_HOOK_EVENTS,
+  HOST_FEATURE,
+  HOST_FLOORS,
+  hostCeilingNotice,
+  hostCompatibilityLines,
+  hostFloorGaps,
+  hostFloorNotice,
+  hostVersionFromRecord,
+  hostVersionFromTranscript,
+  MAX_TESTED_HOST,
+  readHostVersionCache,
+  recordHostVersion,
+  requiredHostVersion,
+} from './host-floor.ts';
 export type { IgnoreLayer, IgnoreState } from './ignore-layers.ts';
 export { childRel, evaluateIgnore, readIgnoreLayer, withLayer } from './ignore-layers.ts';
 export type { ResolveInventoryInput } from './inventory-resolver.ts';

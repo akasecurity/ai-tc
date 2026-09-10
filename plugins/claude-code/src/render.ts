@@ -592,6 +592,10 @@ export interface HealthReport {
   recommendCount: number;
   unreviewed: { critical: number; high: number; medium: number; low: number };
   score: number; // for the footer "health NN/100"
+  // Host-compatibility lines, empty when the caller supplies none. This is one
+  // of the two surfaces that names WHICH protection a too-old host has cost the
+  // user; the in-session notice stays generic on purpose.
+  host: string[];
 }
 
 const GAUGE_LABEL_W = 14;
@@ -674,6 +678,11 @@ export function renderHealth(r: HealthReport): string {
   const stats = `Open findings ${String(r.openFindings)}` + `    Scan coverage ${String(pct)}%`;
   lines.push(indent(stats), '');
 
+  if (r.host.length > 0) {
+    for (const line of r.host) lines.push(indent(line));
+    lines.push('');
+  }
+
   lines.push(indent('Detections & actions — last 7 days'));
   const maxDay = Math.max(1, ...r.week.map((d) => d.total));
   for (const d of r.week) {
@@ -735,6 +744,7 @@ export function buildHealthReport(
   summary: HealthSummary,
   findings: FindingView[],
   activity: DayActivity[],
+  hostLines: readonly string[] = [],
 ): HealthReport {
   const status = findingStatus(summary);
 
@@ -780,6 +790,7 @@ export function buildHealthReport(
     recommendCount: buildRecommendations(findings).length,
     unreviewed: status.unreviewed,
     score: status.score,
+    host: [...hostLines],
   };
 }
 
@@ -1070,6 +1081,8 @@ export type Severity = (typeof SEVERITIES)[number];
 
 export interface QueryOptions {
   severity?: Severity;
+  /** Host-compatibility lines, resolved by the caller that holds the data dir. */
+  hostLines?: readonly string[];
 }
 
 // `exceptions` is listed for the user-facing usage line but dispatched
@@ -1110,7 +1123,7 @@ export async function runQuery(
         gateway.recentFindings({ limit: 500 }),
         gateway.activityByDay(7),
       ]);
-      return renderHealth(buildHealthReport(summary, findings, activity));
+      return renderHealth(buildHealthReport(summary, findings, activity, opts.hostLines));
     }
     case 'recommend': {
       const [findings, summary] = await Promise.all([

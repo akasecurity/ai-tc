@@ -228,6 +228,15 @@ describe('runScan — an ordinary installed snapshot', () => {
       // response carries no notice at all, so a `droppedRules` that appeared on
       // every scan would fail here rather than reading as normal.
       expect(result.droppedRules).toBeUndefined();
+
+      // The egress recorder returns the resolved input it wrote — source lines
+      // and the project key in plaintext — alongside the totals, and this
+      // result is serialised to the browser. Only the totals may cross, and
+      // the field's declared type cannot enforce that on the runtime object.
+      expect(result.egress).toBeDefined();
+      const wire = JSON.stringify(result);
+      expect(wire).not.toContain('"input"');
+      expect(wire).not.toContain('projectKey');
     },
     CASE_TIMEOUT_MS,
   );

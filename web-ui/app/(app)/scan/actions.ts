@@ -48,6 +48,21 @@ export interface ScanResult {
   droppedRules?: string;
 }
 
+// A Server Action's result is serialised to the browser, and the recorder hands
+// back the resolved input it wrote beside the totals: every call site's source
+// line, and the project key in plaintext. Declaring the field as the summary
+// type drops neither — the serialiser walks the runtime object — so the totals
+// are picked by name and the local half never leaves the server.
+function summaryOf(recorded: EgressWriteSummary): EgressWriteSummary {
+  return {
+    destinations: recorded.destinations,
+    endpoints: recorded.endpoints,
+    callSites: recorded.callSites,
+    truncated: recorded.truncated,
+    droppedFiles: recorded.droppedFiles,
+  };
+}
+
 export async function runScan(path: string): Promise<ScanResult> {
   const target = path.trim();
   if (target === '') return { ok: false, error: 'Enter a file or directory path.' };
@@ -130,13 +145,18 @@ export async function runScan(path: string): Promise<ScanResult> {
   // depend on the ruleset — so the recorded destinations ride along with the
   // pack-state error rather than being dropped.
   if (noPacksError !== undefined)
-    return { ok: false, error: noPacksError, egress: egress ?? undefined, droppedRules };
+    return {
+      ok: false,
+      error: noPacksError,
+      egress: egress ? summaryOf(egress) : undefined,
+      droppedRules,
+    };
 
   return {
     ok: true,
     scanned: result.scanned,
     findings: result.findings,
-    egress: egress ?? undefined,
+    egress: egress ? summaryOf(egress) : undefined,
     droppedRules,
   };
 }

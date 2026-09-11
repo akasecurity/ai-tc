@@ -1090,7 +1090,8 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
   // working stops working silently.
   //
   // REBUILT, not `CREATE INDEX IF NOT EXISTS`, and the difference is the whole
-  // reason this block is shaped this way. `IF NOT EXISTS` matches on the [[aka:pii:AE.AJQ5A7YPHWAM5CRRZWOFYQQ3DQ.D26D6PFZU7OWAALE]]  // against a store that already holds the four-column version it is a silent
+  // reason this block is shaped this way. `IF NOT EXISTS` matches on the index's
+  // name alone: against a store that already holds the four-column version it is a silent
   // no-op however many columns the statement names. Editing the column list in
   // place would therefore reach only stores that have never opened before —
   // every upgraded store would keep the narrow index, the delivery-state read

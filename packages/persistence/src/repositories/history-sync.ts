@@ -124,12 +124,23 @@ export interface HistorySyncCounts {
    */
   skipped: number;
   /**
-   * Rows THIS DEPLOYMENT refused. Separated from `skipped` because the two ask
-   * different things of a reader: a skip is a fact about the row, a refusal is
-   * one deployment's verdict on it, and re-attaching elsewhere frees the second
-   * and not the first.
+   * STRUCTURAL rows this deployment refused. Separated from `skipped` because
+   * the two ask different things of a reader: a skip is a fact about the row, a
+   * refusal is one deployment's verdict on it, and re-attaching elsewhere frees
+   * the second and not the first.
+   *
+   * Structural only, and not by oversight: a refused CAPTURE is counted in
+   * `capturesSkipped` instead, because nothing frees that one either. See that
+   * statement for why re-arming a capture is the one thing the lane must not do.
    */
   refused: number;
+  /**
+   * STRUCTURAL rows the attached window closed over, undelivered. Counted here
+   * for the same reason `refused` is: the surfaced total is built from this
+   * shape, and a bucket the total does not name is a row that leaves the number
+   * without being reported anywhere.
+   */
+  detached: number;
   capturesSkipped: number;
 }
 
@@ -258,7 +269,7 @@ const ROW_COLUMNS = `id,
  *
  *   NULL              not delivered
  *   positive epoch ms delivered at that instant
- *   -1                permanently skipped; the row could not be rebuilt
+ *   -1                terminal on this lane; `sync_failure` says which reason
  *
  * The claim is POLITENESS, NOT CORRECTNESS. Nothing in this tree can hold
  * exclusion across a network round trip, so two drains would send the same rows
@@ -471,7 +482,9 @@ export class SqliteHistorySyncRepository {
                        AND (sync_failure IS NULL OR sync_failure = 'payload_invalid')
                   THEN 1 ELSE 0 END) AS skipped,
          SUM(CASE WHEN synced_at = ${String(SKIPPED)}
-                       AND sync_failure = 'deployment_refused' THEN 1 ELSE 0 END) AS refused
+                       AND sync_failure = 'deployment_refused' THEN 1 ELSE 0 END) AS refused,
+         SUM(CASE WHEN synced_at = ${String(SKIPPED)}
+                       AND sync_failure = 'detached_undelivered' THEN 1 ELSE 0 END) AS detached
        FROM audit_events
        WHERE event_type IN (${TYPE_LIST})`,
     );
@@ -482,10 +495,19 @@ export class SqliteHistorySyncRepository {
     // report a terminal loss once and then drop it on the next pass — while the
     // rows stayed gone.
     this.captureSkipCountStmt = db.prepare(
+      // EVERY sentinel capture, whatever the reason — deliberately NOT split the
+      // way the structural totals are. The split exists because a refusal is
+      // terminal only against the deployment that gave it, and the structural
+      // re-arm frees it on a change of deployment. The capture lane has no such
+      // escape: re-arming a capture would offer one deployment's undelivered
+      // prompts, with their text, to a deployment that never saw them, which is
+      // exactly what disownCapturesStmt exists to prevent. So on this lane both
+      // reasons mean the same thing — this row will not be sent — and splitting
+      // them would put refused captures in a bucket nothing reads and nothing
+      // frees.
       `SELECT COUNT(*) AS skipped
          FROM audit_events
         WHERE synced_at = ${String(SKIPPED)}
-          AND (sync_failure IS NULL OR sync_failure <> 'deployment_refused')
           AND event_type IN (${CAPTURE_TYPE_LIST})`,
     );
 
@@ -498,12 +520,18 @@ export class SqliteHistorySyncRepository {
           SET endpoint_fingerprint = :fingerprint, backlog_before = :backlogBefore
         WHERE id = 1`,
     );
-    // WHICH terminal rows are re-armed, and why it is not all of them. A row
-    // this machine could not express fails the same way against any deployment,
-    // so `payload_invalid` stays put. The other two are terminal only against
-    // the deployment that produced them — a refusal is one deployment's verdict
-    // on one body, and a row the attached window closed over was simply never
-    // offered to anyone — so both are freed here, exactly as a delivered row is.
+    // WHICH terminal rows are re-armed, and why it is not all of them. STRUCTURAL
+    // ONLY: the capture half is disownCapturesStmt below, and no capture is ever
+    // re-armed whatever its reason, because offering one deployment's
+    // undelivered prompts to another is the leak that statement exists to
+    // prevent.
+    //
+    // A row this machine could not express fails the same way against any
+    // deployment, so `payload_invalid` stays put. The other two are terminal only
+    // against the deployment that produced them — a refusal is one deployment's
+    // verdict on one body, and a row the attached window closed over was simply
+    // never offered to anyone — so both are freed here, exactly as a delivered
+    // row is.
     //
     // Freeing `detached_undelivered` is what keeps this change from LOSING data.
     // Before these columns existed, detach stamped that window with a delivery
@@ -840,6 +868,7 @@ export class SqliteHistorySyncRepository {
       sent: number | null;
       skipped: number | null;
       refused: number | null;
+      detached: number | null;
     }>(this.countsStmt, { before });
     const captures = getRow<{ skipped: number | null }>(this.captureSkipCountStmt);
     // SUM() over no rows is NULL, which is zero of each here.
@@ -848,6 +877,7 @@ export class SqliteHistorySyncRepository {
       sent: row?.sent ?? 0,
       skipped: row?.skipped ?? 0,
       refused: row?.refused ?? 0,
+      detached: row?.detached ?? 0,
       capturesSkipped: captures?.skipped ?? 0,
     };
   }

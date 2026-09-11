@@ -135,7 +135,7 @@ describe('SqliteHistorySyncRepository — counting', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
     db.historySync.markSynced(['s-1'], T0);
-    db.historySync.markSkipped(['s-1-llm']);
+    db.historySync.markSkipped(['s-1-llm'], T0);
 
     // The capture row is in none of the structural three — and `capturesSkipped`
     // is its own lifetime figure, zero here because nothing skipped a capture.
@@ -143,6 +143,7 @@ describe('SqliteHistorySyncRepository — counting', () => {
       pending: 1,
       sent: 1,
       skipped: 1,
+      refused: 0,
       capturesSkipped: 0,
     });
   });
@@ -154,7 +155,7 @@ describe('SqliteHistorySyncRepository — counting', () => {
   it('counts a permanently skipped capture, and keeps counting it', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
-    db.historySync.markSkipped(['s-1-prompt']);
+    db.historySync.markSkipped(['s-1-prompt'], T0);
 
     expect(db.historySync.counts(ALL).capturesSkipped).toBe(1);
     // Still there on a later read, with nothing else having happened.
@@ -169,6 +170,7 @@ describe('SqliteHistorySyncRepository — counting', () => {
       pending: 0,
       sent: 0,
       skipped: 0,
+      refused: 0,
       capturesSkipped: 0,
     });
   });
@@ -178,7 +180,7 @@ describe('SqliteHistorySyncRepository — counting', () => {
   it('does not offer a skipped row again', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
-    db.historySync.markSkipped(['s-1', 's-1-llm', 's-1-tool']);
+    db.historySync.markSkipped(['s-1', 's-1-llm', 's-1-tool'], T0);
 
     expect(db.historySync.pendingSessions(10, ALL)).toEqual([]);
   });
@@ -394,10 +396,58 @@ describe('SqliteHistorySyncRepository — which deployment the stamps are for', 
   it('leaves permanently skipped rows skipped across a change of deployment', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
-    db.historySync.markSkipped(['s-1-llm']);
+    db.historySync.markSkipped(['s-1-llm'], T0);
     db.historySync.rearmFor('fingerprint-b', ALL);
 
     expect(db.historySync.counts(ALL).skipped).toBe(1);
+  });
+
+  // The inverse, and the reason the failure columns exist. A 400/413/422 is one
+  // deployment's verdict on one body, not a fact about the row, so pointing at a
+  // different deployment has to offer it again.
+  it('frees a deployment refusal across a change of deployment, and offers the row again', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.markRefused(['s-1-llm'], T0);
+
+    // Terminal while this machine points here: the lane must not re-offer a row
+    // this deployment has already rejected, or it stalls on it for ever.
+    expect(db.historySync.counts(ALL).refused).toBe(1);
+    expect(db.historySync.counts(ALL).skipped).toBe(0);
+    expect(db.historySync.pendingRows('s-1', 10, ALL).map((r) => r.id)).not.toContain('s-1-llm');
+
+    db.historySync.rearmFor('fingerprint-b', ALL);
+
+    expect(db.historySync.counts(ALL).refused).toBe(0);
+    expect(db.historySync.pendingRows('s-1', 10, ALL).map((r) => r.id)).toContain('s-1-llm');
+  });
+
+  // A delivered row carries no reason. Leaving one behind would let the store
+  // hold two contradictory answers about one row, with a surface free to render
+  // either.
+  it('clears a failure reason when the row is later delivered', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.markRefused(['s-1-llm'], T0);
+    db.historySync.markSynced(['s-1-llm'], T0 + 1_000);
+
+    const p = db.historySync.partition();
+    expect(p).toMatchObject({ synced: 1, refused: 0, failed: 0 });
+  });
+
+  // Every tracked row lands in exactly one bucket: a reader rendering them as a
+  // breakdown of `total` is entitled to have them sum to it.
+  it('partitions every tracked row exactly once', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    seedSession(db, 's-2', 1);
+    db.historySync.markSynced(['s-1'], T0);
+    db.historySync.markSkipped(['s-1-llm'], T0);
+    db.historySync.markRefused(['s-1-tool'], T0);
+
+    const p = db.historySync.partition();
+    expect(p.queued + p.inProgress + p.synced + p.failed + p.refused).toBe(p.total);
+    expect(p).toMatchObject({ synced: 1, failed: 1, refused: 1 });
   });
 });
 
@@ -657,7 +707,7 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
   it('counts a permanent skip as failed, not as queued', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
-    db.historySync.markSkipped(['s-1-llm']);
+    db.historySync.markSkipped(['s-1-llm'], T0);
     const p = db.historySync.partition();
     expect(p).toMatchObject({ queued: 2, failed: 1 });
     expect(p.queued + p.inProgress + p.synced + p.failed).toBe(p.total);
@@ -686,6 +736,7 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
       inProgress: 0,
       synced: 0,
       failed: 0,
+      refused: 0,
       total: 0,
     });
   });

@@ -4,6 +4,7 @@ import type { AuditEventRow } from '@akasecurity/schema';
 
 import { allRows, getRow } from '../internal/rows.ts';
 import { withTransaction } from '../internal/transactions.ts';
+import { type SyncFailureReason } from '../sync-failure.ts';
 
 /**
  * The event types this drain will ever send.
@@ -84,7 +85,19 @@ const SKIPPED = -1;
 export interface HistorySyncCounts {
   pending: number;
   sent: number;
+  /**
+   * Rows THIS MACHINE could not express on the wire — terminal everywhere, so a
+   * change of deployment does not free them. A deployment's own refusal is
+   * counted in `refused` instead, and is not included here.
+   */
   skipped: number;
+  /**
+   * Rows THIS DEPLOYMENT refused. Separated from `skipped` because the two ask
+   * different things of a reader: a skip is a fact about the row, a refusal is
+   * one deployment's verdict on it, and re-attaching elsewhere frees the second
+   * and not the first.
+   */
+  refused: number;
   capturesSkipped: number;
 }
 
@@ -130,18 +143,28 @@ export interface HistorySyncCounts {
  *     bounds on `started_at < backlogBefore`, so a post-attach row is never
  *     re-offered by anything: undeliverable for ever, yet reading as queued.
  *
- * Two caveats survive, and neither is closed here. `inProgress` is structurally
- * always 0 until `claimRows`/`releaseStaleClaims` gain a caller — they have
- * none. And `failed` counts a SKIP, not a failed attempt: `classify` returns
- * `'skip'` for both a local rebuild defect and a deployment's 400/413/422, while
- * a transient network failure leaves the row NULL and reads as queued, which is
- * correct — it is still owed.
+ * `failed` and `refused` are separated, and the split is the reason the failure
+ * columns exist. Both hold the same skip sentinel — `synced_at` goes on saying
+ * WHETHER a row is outstanding — but `failed` is a row this machine cannot
+ * express on the wire, terminal against any deployment, while `refused` is one
+ * deployment's verdict on one body. Re-attaching elsewhere frees the second and
+ * leaves the first, which a single bucket could not express.
+ *
+ * A transient network failure is in NEITHER: it leaves the row NULL and reads
+ * as queued, which is correct — it is still owed.
+ *
+ * `failed` cannot be ambiguous on a store that has been through the upgrade
+ * adding these columns: that upgrade re-armed every sentinel row written before
+ * a reason could be recorded, so anything sitting here since carries one.
  */
 export interface HistorySyncPartition {
   queued: number;
   inProgress: number;
   synced: number;
+  /** Rows this machine cannot express on the wire. Terminal everywhere. */
   failed: number;
+  /** Rows this deployment refused. Freed by a change of deployment. */
+  refused: number;
   total: number;
 }
 
@@ -338,7 +361,12 @@ export class SqliteHistorySyncRepository {
     );
 
     this.stampStmt = db.prepare(
-      `UPDATE audit_events SET synced_at = :at, sync_claimed_at = NULL WHERE id = :id`,
+      `UPDATE audit_events
+          SET synced_at = :at,
+              sync_claimed_at = NULL,
+              sync_failed_at = :failedAt,
+              sync_failure = :failure
+        WHERE id = :id`,
     );
 
     // Claim only what is still unsent: a row that settled between the read and
@@ -367,7 +395,11 @@ export class SqliteHistorySyncRepository {
          SUM(CASE WHEN synced_at IS NULL AND sync_claimed_at IS NULL THEN 1 ELSE 0 END) AS queued,
          SUM(CASE WHEN synced_at IS NULL AND sync_claimed_at IS NOT NULL THEN 1 ELSE 0 END) AS inProgress,
          SUM(CASE WHEN synced_at > 0 THEN 1 ELSE 0 END) AS synced,
-         SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0 THEN 1 ELSE 0 END) AS failed,
+         SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0
+                       AND sync_failure = 'deployment_refused' THEN 1 ELSE 0 END) AS refused,
+         SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0
+                       AND (sync_failure IS NULL OR sync_failure <> 'deployment_refused')
+                  THEN 1 ELSE 0 END) AS failed,
          COUNT(*) AS total
        FROM audit_events
        WHERE event_type IN (${TYPE_LIST})`,
@@ -377,7 +409,11 @@ export class SqliteHistorySyncRepository {
       `SELECT
          SUM(CASE WHEN synced_at IS NULL AND started_at < :before THEN 1 ELSE 0 END) AS pending,
          SUM(CASE WHEN synced_at > 0 THEN 1 ELSE 0 END) AS sent,
-         SUM(CASE WHEN synced_at = ${String(SKIPPED)} THEN 1 ELSE 0 END) AS skipped
+         SUM(CASE WHEN synced_at = ${String(SKIPPED)}
+                       AND (sync_failure IS NULL OR sync_failure <> 'deployment_refused')
+                  THEN 1 ELSE 0 END) AS skipped,
+         SUM(CASE WHEN synced_at = ${String(SKIPPED)}
+                       AND sync_failure = 'deployment_refused' THEN 1 ELSE 0 END) AS refused
        FROM audit_events
        WHERE event_type IN (${TYPE_LIST})`,
     );
@@ -391,6 +427,7 @@ export class SqliteHistorySyncRepository {
       `SELECT COUNT(*) AS skipped
          FROM audit_events
         WHERE synced_at = ${String(SKIPPED)}
+          AND (sync_failure IS NULL OR sync_failure <> 'deployment_refused')
           AND event_type IN (${CAPTURE_TYPE_LIST})`,
     );
 
@@ -447,8 +484,10 @@ export class SqliteHistorySyncRepository {
           AND started_at < :attachedAt`,
     );
     this.rearmStmt = db.prepare(
-      `UPDATE audit_events SET synced_at = NULL
-        WHERE synced_at > 0 AND event_type IN (${TYPE_LIST})`,
+      `UPDATE audit_events
+          SET synced_at = NULL, sync_failed_at = NULL, sync_failure = NULL
+        WHERE (synced_at > 0 OR sync_failure = 'deployment_refused')
+          AND event_type IN (${TYPE_LIST})`,
     );
 
     // A heartbeat in the FUTURE counts as stale. A backwards clock correction
@@ -595,20 +634,47 @@ export class SqliteHistorySyncRepository {
     return Number(this.markCaptureBacklogOwedStmt.run({ before }).changes);
   }
 
-  /** Record delivery. Called only AFTER the far side has accepted the rows. */
+  /**
+   * Record delivery. Called only AFTER the far side has accepted the rows.
+   *
+   * CLEARS any failure reason in the same statement. A row that failed against
+   * one deployment and then landed is delivered, and leaving the reason behind
+   * would leave the store holding two contradictory answers about one row —
+   * with the surface free to render either.
+   */
   markSynced(ids: readonly string[], atMs: number): void {
-    this.stampAll(ids, atMs);
+    this.stampAll(ids, atMs, null);
   }
 
   /**
-   * Record that a row will never be sent.
+   * Record that THIS MACHINE cannot express the row on the wire.
    *
    * Reserved for a local defect — a row that cannot be rebuilt into a valid
-   * payload. A row that merely failed to reach the deployment stays NULL, so it
+   * payload, or a body the client itself refused to send. It fails identically
+   * against every deployment, so it is terminal everywhere and the re-arm leaves
+   * it alone. A row that merely failed to REACH the deployment stays NULL, so it
    * is retried; marking those would turn one outage into permanent data loss.
    */
-  markSkipped(ids: readonly string[]): void {
-    this.stampAll(ids, SKIPPED);
+  markSkipped(ids: readonly string[], atMs: number): void {
+    this.stampAll(ids, SKIPPED, 'payload_invalid', atMs);
+  }
+
+  /**
+   * Record that THIS DEPLOYMENT refused the row.
+   *
+   * The same sentinel as `markSkipped`, and deliberately so: both stop the row
+   * being re-offered on this lane, and `synced_at` goes on answering whether a
+   * row is outstanding rather than why. What separates them is the reason, and
+   * what the reason buys is the re-arm — a refusal is one deployment's verdict
+   * on one body, so it is terminal only for as long as this machine points at
+   * that deployment, and `rearmFor` clears it when the deployment changes.
+   *
+   * Leaving such a row NULL instead would be worse than the loss it replaces:
+   * these reads carry no cursor, so an unstamped row the deployment refuses is
+   * the head of every subsequent page, and the lane stalls behind it for ever.
+   */
+  markRefused(ids: readonly string[], atMs: number): void {
+    this.stampAll(ids, SKIPPED, 'deployment_refused', atMs);
   }
 
   private eachInTransaction(ids: readonly string[], run: (id: string) => void): void {
@@ -622,15 +688,25 @@ export class SqliteHistorySyncRepository {
     );
   }
 
-  private stampAll(ids: readonly string[], value: number): void {
+  private stampAll(
+    ids: readonly string[],
+    value: number,
+    failure: SyncFailureReason | null,
+    failedAtMs?: number,
+  ): void {
     if (ids.length === 0) return;
+    // Written together, always. The pair is one fact — a row is failed, at a
+    // time, for a reason — and a statement that set only some of it would leave
+    // a reason with no timestamp behind it, or a stale reason on a row that has
+    // since been delivered.
+    const failedAt = failure === null ? null : (failedAtMs ?? null);
     // One short IMMEDIATE transaction: the write lock is taken up front rather
     // than upgraded mid-way, so a concurrent writer meets a busy database at the
     // start instead of half-way through the stamps.
     withTransaction(
       this.db,
       () => {
-        for (const id of ids) this.stampStmt.run({ at: value, id });
+        for (const id of ids) this.stampStmt.run({ at: value, failedAt, failure, id });
       },
       'IMMEDIATE',
     );
@@ -679,22 +755,26 @@ export class SqliteHistorySyncRepository {
       inProgress: row?.inProgress ?? 0,
       synced: row?.synced ?? 0,
       failed: row?.failed ?? 0,
+      refused: row?.refused ?? 0,
       total: row?.total ?? 0,
     };
   }
 
   /** `pending` counts only what is inside the backlog; sent and skipped are totals. */
   counts(before: number): HistorySyncCounts {
-    const row = getRow<{ pending: number | null; sent: number | null; skipped: number | null }>(
-      this.countsStmt,
-      { before },
-    );
+    const row = getRow<{
+      pending: number | null;
+      sent: number | null;
+      skipped: number | null;
+      refused: number | null;
+    }>(this.countsStmt, { before });
     const captures = getRow<{ skipped: number | null }>(this.captureSkipCountStmt);
     // SUM() over no rows is NULL, which is zero of each here.
     return {
       pending: row?.pending ?? 0,
       sent: row?.sent ?? 0,
       skipped: row?.skipped ?? 0,
+      refused: row?.refused ?? 0,
       capturesSkipped: captures?.skipped ?? 0,
     };
   }

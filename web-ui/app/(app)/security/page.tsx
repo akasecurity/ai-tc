@@ -171,10 +171,15 @@ export default async function SecurityPage({
               capability constant, not a measurement of anything in the store, so no
               destination could corroborate it — and a supported provider with no
               findings would land on an empty list. */}
-          <ScanCoverageCardView {...coverage} isLoading={false} error={null} rangeLabel={label} />
+          <ScanCoverageCardView {...coverage} isLoading={false} error={null} />
         </div>
 
-        <FindingsOverTimeCardView points={points} isLoading={false} error={null} />
+        <FindingsOverTimeCardView
+          points={points}
+          granularity={timeseries.granularity}
+          isLoading={false}
+          error={null}
+        />
 
         <MttrTrendCardView points={mttrPoints} isLoading={false} error={null} />
 

@@ -33,7 +33,7 @@
  * the SECURITY.md link, and cli/test/privacy-claims.test.ts covers the CLI
  * footnote's own disclosures, which derive from the CLI's flags.
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -41,6 +41,7 @@ import { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+const PLUGIN_ROOT = fileURLToPath(new URL('../', import.meta.url));
 
 /**
  * One repo-relative posix path, read from the repo root. Rows are addressed by
@@ -278,20 +279,38 @@ const EGRESS_PATHS = [
   // Passive and default-on: no command, no consent. `npm view` rather than
   // `update notice` as the marker, because the mechanism is what a reader
   // needs — the dedicated case below pins the disclosure words themselves.
-  { name: 'update notice', marker: /npm view/, childProcess: true, carriesUserData: false },
+  // `inBundle: undefined` rather than omitted, the way the SDK's isolation
+  // options are declined: this path is the CLI's, which this package does not
+  // build, so the artifact tier below has nothing here to look in. Spelled out
+  // so it reads as out of scope rather than as a row somebody forgot.
+  {
+    name: 'update notice',
+    marker: /npm view/,
+    childProcess: true,
+    carriesUserData: false,
+    inBundle: undefined,
+  },
   {
     name: 'package-manager install',
     marker: /package-manager installs/,
     childProcess: true,
     carriesUserData: false,
+    inBundle: undefined,
   },
+  // The supply-chain check is NOT a row. `verifyProvenance` is still in `src/`,
+  // but it is reachable from no shipped entry — `intro.ts` calls the plain card
+  // builder and says so in its own comment — so esbuild drops it and the spawn
+  // is in none of the built scripts. It was disclosed here for as long as this
+  // table was checked only against the README. Wiring it back means restoring
+  // this row WITH its `inBundle` marker, which is what the artifact tier below
+  // will then hold to the bundle.
   {
-    name: 'supply-chain check',
-    marker: /npm audit signatures/,
+    name: 'setup calibration',
+    marker: /\/aka:setup/,
     childProcess: true,
-    carriesUserData: false,
+    carriesUserData: true,
+    inBundle: /CLAUDE_CODE_SKIP_PROMPT_HISTORY/,
   },
-  { name: 'setup calibration', marker: /\/aka:setup/, childProcess: true, carriesUserData: true },
   // The first and only path the source itself opens a connection on. Its
   // `childProcess: false` is what makes the sub-count below mean something:
   // every other row is a spawn, and the footnote has to keep saying so.
@@ -300,6 +319,7 @@ const EGRESS_PATHS = [
     marker: /aka attach/,
     childProcess: false,
     carriesUserData: true,
+    inBundle: undefined,
   },
 ] as const;
 
@@ -469,6 +489,61 @@ describe('README.md aka-<name> dispatch disclosure', () => {
    * Pinned here rather than in a general "enumeration is complete" tier, because
    * only the pages that commit to a count owe this, and there are two of them.
    */
+  /**
+   * The half the tier above cannot supply: the TABLE checked against the
+   * ARTIFACT.
+   *
+   * Every count on this page derives from `EGRESS_PATHS`, and the enumeration
+   * case checks each row against the README — so the prose and the table cannot
+   * drift apart. Nothing checked the table against the code. A row whose path is
+   * removed from the shipped plugin, or never wired into it, leaves every
+   * derived count internally consistent and the page externally false: it goes
+   * on telling a reader the product makes a network call it does not make.
+   *
+   * That is not hypothetical. `verifyProvenance` exists in `src/`, is reachable
+   * from no shipped entry (`intro.ts` calls the plain card builder and says so),
+   * and esbuild therefore drops it — the `npm audit signatures` spawn the
+   * footnote described was in none of the built scripts while this table
+   * asserted it, and every count on the page agreed with itself throughout.
+   *
+   * Only rows this PLUGIN implements can be checked here; the update notice and
+   * the package-manager installs live in the CLI, which this package does not
+   * build. A row carrying no `inBundle` is out of scope rather than exempt.
+   */
+  describe('a disclosed path this plugin implements is in the shipped bundle', () => {
+    const scriptsDir = join(PLUGIN_ROOT, 'scripts');
+    const bundles = readdirSync(scriptsDir)
+      .filter((f) => f.endsWith('.js'))
+      .map((f) => readFileSync(join(scriptsDir, f), 'utf8'));
+
+    it('has bundles to read, and they carry code this tier can find', () => {
+      // The control. An empty or unreadable script set makes every presence
+      // check below pass for the wrong reason, and a regex that matches nothing
+      // anywhere would read as "the path was dropped" rather than "the search is
+      // broken". Both are refused here before anything is concluded.
+      expect(bundles.length, 'the plugin builds before it tests — see turbo.json').toBeGreaterThan(
+        10,
+      );
+      expect(
+        bundles.some((b) => b.includes('renderSetupIntro')),
+        'a marker known to be in the shipped card code found nothing — the search is broken, not the artifact',
+      ).toBe(true);
+    });
+
+    it.each(EGRESS_PATHS.filter((p) => p.inBundle !== undefined))(
+      'ships the code behind the $name path',
+      ({ name, inBundle }) => {
+        expect(
+          bundles.some((b) => inBundle.test(b)),
+          `the footnote discloses the ${name} path, but no built script under ` +
+            `plugins/claude-code/scripts/ carries it. Either wire it into a shipped entry, or ` +
+            `stop disclosing a network call this artifact does not make — and move the counts ` +
+            `with it.`,
+        ).toBe(true);
+      },
+    );
+  });
+
   it('discloses the default-on update notice and its opt-out', () => {
     expect(footnote).toMatch(/update notice/i);
     expect(footnote).toMatch(/on by default/i);

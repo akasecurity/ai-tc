@@ -88,6 +88,24 @@ export const EventMetadata = z
     // different facts about the same row: the first is a policy the user chose,
     // the second is a masking the host could not perform. Absent means no
     // degrade happened, which is every ordinary capture.
+    //
+    // TWO LIMITS a reader of a stored row has to know, because the grain here
+    // is the CAPTURE while `actionTaken` is per FINDING:
+    //
+    //   - It does not say WHICH finding degraded. A capture carrying a degraded
+    //     `redact` alongside a finding ASSIGNED the same action stores both
+    //     identically and one reason for the pair; attributing it to both
+    //     describes the assigned one wrongly, and to neither loses the degrade.
+    //   - PRESENCE IS NOT CAUSATION. The value is the action the lost redact
+    //     became, not the reason the capture ended as it did — a capture denied
+    //     by some other finding's own Block policy still carries `block` here,
+    //     and clearing the workspace's fallback would not have let it through.
+    //     Gate on the value against what a fallback can produce; never read the
+    //     field's presence as "this was the fallback's doing".
+    //
+    // Both are pinned as behaviour in @akasecurity/plugin-sdk's runtime suite.
+    // Closing either means moving the reason onto the finding row, which
+    // already carries its own action.
     redactDegradedTo: ActionTaken.optional(),
   })
   .meta({ id: 'EventMetadata' });

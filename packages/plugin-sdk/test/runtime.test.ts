@@ -1090,16 +1090,25 @@ describe('a redact the caller cannot carry out', () => {
     // degrade that never happened.
     const gateway = fakeGateway(redactBundle());
     const runtime = createPluginRuntime(gateway, settingsWith('warn'));
-    await runtime.capture({
+    const out = await runtime.capture({
       kind: 'tool_use',
       sourceTool: 'claude-code',
       text: 'here is SECRET_MARKER',
     });
     await runtime.close();
 
+    // The enforcement the absence below leans on, ASSERTED rather than assumed.
+    // `capture` persists on `always` by default, so the row lands whether or
+    // not anything matched — without this the case cannot separate "redacted,
+    // reason absent" from "found nothing, reason absent", and it collapses into
+    // the trivial claim that a finding-free capture carries no reason. Verified:
+    // pointing the text at a marker no rule matches left all 55 cases green.
+    expect(out.action).toBe('redact');
+    expect(out.text).not.toContain('SECRET_MARKER');
+
     expect(gateway.records).toHaveLength(1);
-    // The capture DID redact — so this is a row where enforcement happened and
-    // the reason is still absent, not a row where nothing was found.
+    // So this is a row where enforcement happened and the reason is still
+    // absent, which is the claim the control is making.
     expect(gateway.records[0]?.event.metadata?.redactDegradedTo).toBeUndefined();
   });
 
@@ -1149,6 +1158,79 @@ describe('a redact the caller cannot carry out', () => {
     );
     expect(gateway.records[0]?.event.content).not.toContain('SECRET_MARKER');
     expect(gateway.records[0]?.findings.map((f) => f.actionTaken)).toEqual(['block']);
+    await runtime.close();
+  });
+
+  // Every case above is SINGLE-FINDING, which is the shape that made the
+  // defect this field replaced invisible. These two are the multi-finding
+  // shape, and they pin what the field CANNOT say — a limit the persisted
+  // contract now states, rather than one a reader has to discover.
+  function mixedBundle(secondAction: 'warn' | 'block'): PolicyBundle {
+    const b = bundle();
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'test/secret-marker' },
+        action: 'redact',
+        enabled: true,
+      },
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'test/pii-marker' },
+        action: secondAction,
+        enabled: true,
+      },
+    ];
+    return b;
+  }
+
+  const BOTH = 'here is SECRET_MARKER and PII_MARKER';
+
+  it('cannot say WHICH finding degraded when two share an action', async () => {
+    // The secret's `redact` cannot be carried out and becomes `warn`; the PII
+    // finding was ASSIGNED `warn` and never involved a redact. Both persist
+    // identically, and the row carries one reason for the pair.
+    const gateway = fakeGateway(mixedBundle('warn'));
+    const runtime = createPluginRuntime(gateway, settingsWith('warn'));
+
+    await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: BOTH },
+      { rewritable: false },
+    );
+
+    const [record] = gateway.records;
+    expect(record?.findings).toHaveLength(2);
+    expect(record?.findings.map((f) => f.actionTaken)).toEqual(['warn', 'warn']);
+    // One reason, two indistinguishable findings. Attribute it to both and the
+    // PII finding is described wrongly; attribute it to neither and the secret's
+    // degrade is lost. That is the per-capture grain, pinned rather than fixed —
+    // closing it means moving the reason onto the finding row.
+    expect(record?.event.metadata?.redactDegradedTo).toBe('warn');
+    await runtime.close();
+  });
+
+  it('is present on a deny another finding produced, so presence is not causation', async () => {
+    // The sharper half. The secret's redact degrades to `block`, and the PII
+    // finding blocks on its OWN assigned policy — so the capture would have
+    // been denied with no fallback in play at all.
+    const gateway = fakeGateway(mixedBundle('block'));
+    const runtime = createPluginRuntime(gateway, settingsWith('block'));
+
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: BOTH },
+      { rewritable: false },
+    );
+
+    expect(out.action).toBe('block');
+    // A consumer reading this as "denied because masking was impossible here"
+    // would be wrong: clearing `redactFallback` leaves the deny standing. The
+    // in-process contract says to gate on the VALUE rather than its presence
+    // and warns that the grain is per capture; the persisted contract says so
+    // too, because a store reader cannot see that contract.
+    expect(out.redactDegradedTo).toBe('block');
+    expect(gateway.records[0]?.findings.map((f) => f.actionTaken)).toEqual(['block', 'block']);
     await runtime.close();
   });
 });

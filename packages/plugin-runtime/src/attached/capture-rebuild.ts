@@ -1,12 +1,6 @@
 import { captureWireId } from '@akasecurity/persistence';
 import type { AuditEventRow } from '@akasecurity/schema';
-import {
-  ActionTaken,
-  EventKind,
-  EventMetadata,
-  IngestEvent,
-  SourceTool,
-} from '@akasecurity/schema';
+import { EventKind, EventMetadata, IngestEvent, SourceTool } from '@akasecurity/schema';
 
 /**
  * One stored capture row → the wire event the outbox owes the deployment.
@@ -148,9 +142,10 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
     // dropped rather than assembled into an event the deployment would refuse
     // with a 400 — which, on a drain that reads the head of the unstamped set
     // with no cursor, is the per-row door that retires the whole lane.
-    ...(ActionTaken.safeParse(attributes.redact_degraded_to).success
-      ? { redactDegradedTo: ActionTaken.parse(attributes.redact_degraded_to) }
-      : {}),
+    ...withField(
+      'redactDegradedTo',
+      keep(stringOrUndefined(attributes.redact_degraded_to), REDACT_DEGRADED_TO),
+    ),
     // inspectionMs is DELIBERATELY not carried. It measures latency a live host
     // session actually waited on, and a row being drained hours later is not
     // that; the field's own contract says a replay leaves it absent rather than
@@ -212,6 +207,7 @@ const CORRELATION_ID = EventMetadata.shape.correlationId;
 const TRACE_ID = EventMetadata.shape.traceId;
 // The ELEMENT schema, not the array's: what is filtered here is each id.
 const EXCEPTION_ID = EventMetadata.shape.exceptionIds.unwrap().element;
+const REDACT_DEGRADED_TO = EventMetadata.shape.redactDegradedTo.unwrap();
 
 function isoOrUndefined(epochMs: number): string | undefined {
   if (!Number.isFinite(epochMs)) return undefined;

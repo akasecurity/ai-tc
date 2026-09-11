@@ -1,7 +1,7 @@
 import { captureWireId } from '@akasecurity/persistence';
 import { buildIngestEvent } from '@akasecurity/plugin-sdk';
 import type { AuditEventRow } from '@akasecurity/schema';
-import { IngestEvent } from '@akasecurity/schema';
+import { ActionTaken, EventMetadata, IngestEvent } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { rebuildCapture } from '../../src/attached/capture-rebuild.ts';
@@ -169,6 +169,37 @@ describe('rebuildCapture', () => {
       const event = withBag({ redact_degraded_to: 'sideways' });
       expect(event?.content).toBe('the text of a prompt');
       expect(event?.metadata?.redactDegradedTo).toBeUndefined();
+    });
+
+    it('accepts exactly what the WIRE field accepts, however that narrows', () => {
+      // The anti-drift rule this file states at its derivation block, asserted
+      // rather than assumed. The two cases above pass whether the guard is
+      // derived from `EventMetadata` or keyed on `ActionTaken` directly,
+      // because today those admit the same members — so neither pins the thing
+      // the derivation exists for.
+      //
+      // `redactDegradedTo`'s real range is narrower than `ActionTaken`:
+      // `RedactFallback` extracts monitor|warn|block and the ceiling only ever
+      // weakens, so narrowing the wire field is a natural next step. A guard
+      // keyed on `ActionTaken` would go on admitting the members the wire had
+      // dropped, the assembled event would be refused whole, and the caller
+      // would stamp the row skipped for ever — the per-row door this file's
+      // own comment says it exists to shut.
+      const wire = EventMetadata.shape.redactDegradedTo.unwrap();
+      for (const value of ActionTaken.options) {
+        const event = withBag({ redact_degraded_to: value });
+        // The CAPTURE survives whatever the bag held — asserted first, because
+        // it is the half that discriminates. Reading only the field cannot:
+        // an admitted-but-unwireable value makes the closing `IngestEvent`
+        // parse refuse the whole event, `rebuildCapture` returns undefined,
+        // and `?.metadata?.redactDegradedTo` is then undefined too — the same
+        // reading a correctly dropped field produces. Checked without this,
+        // narrowing the wire field left both guards green.
+        expect(event?.content, `redact_degraded_to: ${value}`).toBe('the text of a prompt');
+        expect(event?.metadata?.redactDegradedTo, `redact_degraded_to: ${value}`).toBe(
+          wire.safeParse(value).success ? value : undefined,
+        );
+      }
     });
 
     it('drops the field entirely when no exception id survives', () => {

@@ -820,8 +820,8 @@ recorded. If the user asks why a secret in a file edit wasn't caught, say so
 plainly rather than implying it is picked up somewhere else.
 
 A redact policy cannot mask a **shell command**, because rewriting one silently
-changes what runs. What happens in its place is the workspace's **redact
-fallback**, on the Settings page. It ships as **warn**, which means the command
+changes what runs. What happens in its place is the workspace's **redact fallback** (`redactFallback` in
+`~/.aka/settings/settings.json`, or pinned for a machine by an administrator). It ships as **warn**, which means the command
 **runs with the value unmasked** and AKA says so in the session. Set it to
 **block** to get the older behaviour, where the call is denied and the message
 explains what to remove. The `apply_patch` field is different: it is stored

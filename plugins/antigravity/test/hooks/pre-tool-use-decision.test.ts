@@ -57,9 +57,9 @@ function finding(ruleId: string, rawMatch: string, text: string): Finding {
 
 // What the runtime hands this module for a field this host cannot rewrite: the
 // policy resolved to `redact`, the capture declared the field unrewritable, and
-// the action is therefore the workspace's `redactFallback`. `redactDegraded`
-// carries that fact, and it is the only thing separating this from a policy
-// that genuinely said `warn`.
+// the action is therefore the workspace's `redactFallback`. `redactDegradedTo`
+// carries that fact — the ACTION the lost redact became — and it is the only
+// thing separating this from a policy that genuinely said `warn`.
 //
 // The text is the ORIGINAL, unmasked — nothing was rewritten, which is the
 // point. A block carries null, as decide() returns for one.
@@ -152,9 +152,13 @@ describe('decidePreToolUse — a redact this host cannot perform follows the fal
     // the credential's doing and a note naming a `block` fallback would state
     // a setting this workspace does not have.
     //
-    // Sharper on this host than the others: `blockedRules` below is built only
-    // from results at `block` or `redact`, so under a `warn` fallback the
-    // degraded finding contributes no rule id to the deny at all.
+    // Both findings DO reach the deny here, and that is worth saying because
+    // the opposite is easy to assume: the rule-id filter keys on the RESULT's
+    // action, not each finding's, so a blocking result contributes every rule
+    // id it carries — `core-pii/ip-address` included, asserted below. The
+    // starvation case where a degraded finding contributes nothing needs it in
+    // a SEPARATE scanned field whose own action is `warn`, which is the shape
+    // the Claude Code sibling builds rather than this one.
     const mixed: CaptureResult = {
       action: 'block',
       text: null,
@@ -171,6 +175,8 @@ describe('decidePreToolUse — a redact this host cannot perform follows the fal
       decidePreToolUse('run_command', [{ spec: RUN_COMMAND, result: mixed }]),
     );
     expect(reason).toContain('secrets-infra/db-connection-string');
+    // The comment above, asserted rather than claimed.
+    expect(reason).toContain('core-pii/ip-address');
     expect(reason).not.toContain(NO_REWRITE_REDACT_NOTE);
   });
 

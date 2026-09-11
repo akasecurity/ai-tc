@@ -454,3 +454,37 @@ describe('setup.md execution contract', () => {
     expect(setupMd).not.toContain('Ask permission before running it, warmly');
   });
 });
+
+// The redact-fallback disclosure this plugin adds. Guarded here because the
+// Antigravity sibling's wording is pinned by its own suite and these two were
+// not, so this paragraph could go stale with nothing red — which is how it
+// came to claim an MCP leaf keeps true redaction while the same change made
+// every MCP leaf unrewritable.
+describe('setup.md redact-fallback disclosure', () => {
+  const section = setupMd.slice(setupMd.indexOf('## Known limitations'));
+  const flat = section.replace(/\s+/g, ' ');
+
+  it('names the class, the default and the way back', () => {
+    expect(flat).toMatch(/redact policy cannot mask text that EXECUTES/i);
+    expect(flat).toMatch(/redact fallback/i);
+    // The default and its consequence together: "warn" alone would leave a
+    // reader thinking something was withheld.
+    expect(flat).toMatch(/ships as \*\*warn\*\*/i);
+    expect(flat).toMatch(/with the value unmasked/i);
+    expect(flat).toMatch(/Set it to \*\*block\*\*/i);
+  });
+
+  it('puts an MCP payload leaf in the EXECUTABLE class, not the masked one', () => {
+    // `mcpFields` marks every string leaf executable — the schema is the
+    // server's, so a leaf could be a body, a query or a command — and the hook
+    // captures it `rewritable: false`. So it can neither be masked in place nor
+    // reach the vault tokenizer, and copy listing it beside `Write`/`Edit` as
+    // keeping true redaction would describe coverage this plugin does not have,
+    // on the one surface the wizard reads aloud when asked why.
+    expect(flat).toMatch(/MCP payload leaf is in the same class/i);
+
+    const dataFields = /Data fields are unaffected[^.]*\./i.exec(flat)?.[0];
+    expect(dataFields).toBeDefined();
+    expect(dataFields).not.toMatch(/MCP/i);
+  });
+});

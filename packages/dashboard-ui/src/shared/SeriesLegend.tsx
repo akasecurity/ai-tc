@@ -29,8 +29,9 @@ export interface SeriesVisibility<S extends { key: string }> {
  * anything — the grid renders over a y-scale with no data behind it, and the
  * hover tooltip degrades to a bare date with no rows — so the refusal keeps
  * every reachable state one that says something. The legend marks that series
- * `aria-disabled` rather than `disabled`, so it keeps its focus stop and can
- * still explain itself.
+ * `aria-disabled` rather than `disabled`, so it keeps its focus stop, and its
+ * accessible name carries the reason so that keeping the stop is worth
+ * something.
  */
 export function useSeriesVisibility<S extends { key: string }>(
   series: readonly S[],
@@ -147,6 +148,7 @@ export function SeriesLegend<S extends { key: string; label: string; color: stri
         const isHidden = hidden.has(s.key);
         const isLast = !isHidden && visible.length === 1;
         const meta = metaText(metaLabel?.(s.key));
+        const entryName = meta === null ? s.label : `${s.label}, ${meta}`;
         return (
           <button
             key={s.key}
@@ -155,7 +157,13 @@ export function SeriesLegend<S extends { key: string; label: string; color: stri
             // computed from its own text, and the flex `gap` separating the
             // label from its value is not a character, so the two would be
             // announced run together. The name still contains the visible text.
-            aria-label={meta === null ? s.label : `${s.label}, ${meta}`}
+            //
+            // P2: the locked reason rides the NAME rather than `title`. Once
+            // `aria-label` is set, `title` is demoted to the accessible
+            // DESCRIPTION, which is announced inconsistently and never at all
+            // without a pointer — so the entry that cannot be actioned would
+            // say why to nobody using a keyboard.
+            aria-label={isLast ? `${entryName}, only series left` : entryName}
             aria-pressed={!isHidden}
             aria-disabled={isLast || undefined}
             title={
@@ -174,7 +182,17 @@ export function SeriesLegend<S extends { key: string; label: string; color: stri
               // conflict last-wins, so the locked entry's override below holds.
               '-mx-1 inline-flex cursor-pointer items-center gap-1.5 rounded-sm px-1 transition-colors',
               'hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40',
-              isHidden && 'opacity-55',
+              // P1: de-emphasis by TOKEN, never by alpha. A hidden entry is
+              // still the operable control that brings its series back, so
+              // WCAG 1.4.3's carve-out for an INACTIVE component does not
+              // reach it and its text owes 4.5:1. `opacity` composites the
+              // text against the card and collapses that — measured 2.33:1
+              // (light label), 2.17:1 (light value), 3.99:1 (dark label) and
+              // 2.82:1 (dark value) at 0.55. No alpha survives: even 0.95
+              // lands at 4.49:1, because the value sits at 4.97:1 unfaded.
+              // `text-text-3` measures 4.97:1 light / 5.77:1 dark, and the
+              // hollow swatch carries the rest of the signal.
+              isHidden && 'text-text-3',
               // The only series left cannot be hidden, so it offers neither the
               // pointer nor the hover highlight that say a click does something.
               isLast && 'cursor-default hover:bg-transparent',

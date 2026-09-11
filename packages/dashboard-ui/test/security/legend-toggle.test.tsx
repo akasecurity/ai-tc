@@ -195,6 +195,49 @@ describe('chart legend toggles', () => {
     expect(swatch('High').style.boxShadow).toBe('');
   });
 
+  it('never dims an operable entry with alpha', () => {
+    // P1. `opacity` composites the text against the card, and no alpha
+    // survives 4.5:1 here — even 0.95 lands at 4.49:1. WCAG 1.4.3's carve-out
+    // is for an INACTIVE component; a hidden entry is the operable control
+    // that brings its series back, which `puts a hidden severity back …`
+    // proves. (Whether the TOKEN is dark enough is a separate guard, in
+    // legend-contrast.test.ts — neither can see the other's failure.)
+    mount(
+      <FindingsOverTimeCardView
+        points={FINDINGS}
+        granularity="day"
+        isLoading={false}
+        error={null}
+      />,
+    );
+    click('Critical');
+
+    expect(legendButton('Critical').className).not.toMatch(/(^|[:\s])opacity-\d+/);
+    // The de-emphasis is still THERE, just carried by a token — without this
+    // the case passes on a legend that marks a hidden entry not at all.
+    expect(legendButton('Critical').className).toContain('text-text-3');
+
+    // And the entry that genuinely cannot be actioned is not the dimmed one.
+    click('High');
+    click('Medium');
+    expect(legendButton('Low').className).not.toMatch(/(^|[:\s])opacity-\d+/);
+  });
+
+  it('names the locked entry with the reason it will not respond', () => {
+    // P2. `title` is demoted to the accessible DESCRIPTION once `aria-label`
+    // is set, and needs a pointer besides — so the reason has to ride the NAME.
+    mount(<MttrTrendCardView points={MTTR} isLoading={false} error={null} />);
+    click('Critical');
+    click('High');
+    click('Medium');
+
+    expect(legendButton('Low').getAttribute('aria-label')).toBe('Low, 1d 1h, only series left');
+    // An operable entry must NOT carry it, or the name says the opposite of
+    // the truth on every other entry.
+    click('Critical');
+    expect(legendButton('Low').getAttribute('aria-label')).toBe('Low, 1d 1h');
+  });
+
   it('removes a severity from the chart when its legend entry is clicked', () => {
     mount(
       <FindingsOverTimeCardView

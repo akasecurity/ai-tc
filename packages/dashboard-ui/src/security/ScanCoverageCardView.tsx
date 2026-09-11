@@ -35,13 +35,17 @@ export function ScanCoverageCardView({ providers, isLoading, error }: ScanCovera
         </CardIcon>
         <CardHeading>
           <CardTitle>Coverage by provider</CardTitle>
-          {/* No range, and "can inspect" rather than a past tense. scanCoverage()
-              returns a curated per-provider constant — what each host's hook
-              contract PERMITS AKA to see, fixed at build time — and echoes the
-              range without reading it. A window here, or wording that reads as a
-              count of scans that ran, would both claim a measurement the number
-              never makes. */}
-          <CardDescription>Share of traffic AKA can inspect</CardDescription>
+          {/* No range, no past tense, and no "share of". scanCoverage() returns a
+              curated per-provider constant — what each host's hook contract EXPOSES
+              to AKA, fixed at build time — and echoes the range without reading it.
+              Each of those three would claim something the number does not carry: a
+              window claims a measurement, a past tense claims scans that ran, and a
+              "share of traffic" claims a denominator that does not exist. The value
+              is weighted by no call volume (Codex's 80 is `apply_patch` going
+              unhooked, whatever fraction of a user's calls that turns out to be) and
+              is not computed from a channel count either — the 40s are curated
+              positions below every terminal-harness row. */}
+          <CardDescription>What each integration exposes to AKA</CardDescription>
         </CardHeading>
       </CardHeader>
       <CardContent aria-busy={isLoading} className="flex flex-col gap-2.5">

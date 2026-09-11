@@ -84,6 +84,35 @@ export const Policy = z
   .meta({ id: 'Policy' });
 export type Policy = z.infer<typeof Policy>;
 
+// The built-in policy vocabulary, declared ABOVE PolicyBundle because that
+// schema references `RedactFallback` and a `const` is not hoisted — the order
+// is load-bearing, not tidiness. The catalog built ON these ids stays below,
+// with the rest of M1.
+// Single source of truth for the built-in policy ids, declared in display order
+// (monitor → warn → redact → vault → block, least → most restrictive). This one runtime
+// array feeds the Zod enum (BuiltinPolicyId), PATCH membership validation, the
+// catalog display order (BUILTIN_ORDER), and the catalog keys (BUILTIN_POLICIES) —
+// so the literal set is declared exactly once here.
+export const KNOWN_BUILTIN_IDS = ['monitor', 'warn', 'redact', 'vault', 'block'] as const;
+
+export const BuiltinPolicyId = z.enum(KNOWN_BUILTIN_IDS).meta({ id: 'BuiltinPolicyId' });
+export type BuiltinPolicyId = z.infer<typeof BuiltinPolicyId>;
+
+// What a `redact` decision degrades to on a field the host cannot rewrite in
+// place (WorkspaceSettings.redactFallback).
+//
+// An `.extract()` over the built-in ids rather than a fresh `z.enum` of the
+// same three strings, for the reason CLAUDE.md §2 gives about the harness
+// vocabulary: a subset spelled again is a subset free to drift, and this one
+// has to stay inside the action ladder so `strongerAction` can merge a
+// control-plane value raise-only without a second rank order being invented.
+// 'redact' and 'vault' are excluded because they are the thing that could not
+// be carried out; the three that remain are what is left to choose between.
+export const RedactFallback = BuiltinPolicyId.extract(['monitor', 'warn', 'block']).meta({
+  id: 'RedactFallback',
+});
+export type RedactFallback = z.infer<typeof RedactFallback>;
+
 export const PolicyBundle = z
   .object({
     version: z.string(),
@@ -132,6 +161,16 @@ export const PolicyBundle = z
     // control plane), so no name resolution stands between the decision and the
     // comparison.
     prohibitedModels: z.array(z.string()).optional(),
+    // What a resolved `redact` becomes on a field the host cannot rewrite, as
+    // the ORGANIZATION would have it. Merged raise-only against the device's own
+    // `WorkspaceSettings.redactFallback` (see strongerRedactFallback below), so
+    // a control plane can tighten a machine and never loosen one — the same
+    // direction `mergeRaiseOnly` enforces for policies.
+    //
+    // Optional so an older backend, and an older on-disk cache, still parses;
+    // absent leaves the device's own setting in force, which is the behaviour
+    // that predates the field and the safe direction to default.
+    redactFallback: RedactFallback.optional(),
     customKeywords: z.array(z.string()),
     fetchedAt: z.iso.datetime(),
   })
@@ -236,31 +275,6 @@ export function severityFloorPosture(): Record<DetectionCategory, 'warn' | 'moni
 }
 
 // ─── M1: Built-in policy catalog (read-only) ────────────────────────────────
-
-// Single source of truth for the built-in policy ids, declared in display order
-// (monitor → warn → redact → vault → block, least → most restrictive). This one runtime
-// array feeds the Zod enum (BuiltinPolicyId), PATCH membership validation, the
-// catalog display order (BUILTIN_ORDER), and the catalog keys (BUILTIN_POLICIES) —
-// so the literal set is declared exactly once here.
-export const KNOWN_BUILTIN_IDS = ['monitor', 'warn', 'redact', 'vault', 'block'] as const;
-
-export const BuiltinPolicyId = z.enum(KNOWN_BUILTIN_IDS).meta({ id: 'BuiltinPolicyId' });
-export type BuiltinPolicyId = z.infer<typeof BuiltinPolicyId>;
-
-// What a `redact` decision degrades to on a field the host cannot rewrite in
-// place (WorkspaceSettings.redactFallback).
-//
-// An `.extract()` over the built-in ids rather than a fresh `z.enum` of the
-// same three strings, for the reason CLAUDE.md §2 gives about the harness
-// vocabulary: a subset spelled again is a subset free to drift, and this one
-// has to stay inside the action ladder so `strongerAction` can merge a
-// control-plane value raise-only without a second rank order being invented.
-// 'redact' and 'vault' are excluded because they are the thing that could not
-// be carried out; the three that remain are what is left to choose between.
-export const RedactFallback = BuiltinPolicyId.extract(['monitor', 'warn', 'block']).meta({
-  id: 'RedactFallback',
-});
-export type RedactFallback = z.infer<typeof RedactFallback>;
 
 // Display order of the built-in catalog. Aliases the canonical id set (already
 // declared least → most restrictive) so display order can never drift from
@@ -403,6 +417,31 @@ export function isActionAtLeast(action: string, floor: ActionTaken): boolean {
 /** The stronger of two actions. */
 export function strongerAction(a: ActionTaken, b: ActionTaken): ActionTaken {
   return actionRank(a) >= actionRank(b) ? a : b;
+}
+
+/**
+ * The stronger of a device's own redact fallback and the one its organization
+ * ships — raise-only, so an attached machine can be tightened by a control
+ * plane and never loosened by one.
+ *
+ * Compared through `builtinPolicyToAction` on the ladder above rather than by a
+ * rank order written here. A second ordering over the same three ids is the
+ * drift that comment describes, and it would be invisible: every value in this
+ * enum is also a `BuiltinPolicyId`, so a hand-written rank that disagreed would
+ * still typecheck and still return something plausible.
+ *
+ * A tie keeps the local value. That matters only for identity — both ids
+ * resolve to the same action either way.
+ */
+export function strongerRedactFallback(
+  local: RedactFallback,
+  remote: RedactFallback | undefined,
+): RedactFallback {
+  if (remote === undefined) return local;
+  const localAction = builtinPolicyToAction(local);
+  return localAction === strongerAction(localAction, builtinPolicyToAction(remote))
+    ? local
+    : remote;
 }
 
 /**

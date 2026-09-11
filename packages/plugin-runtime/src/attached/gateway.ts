@@ -1105,6 +1105,17 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
       // exactly what it did, leaving the whole control inert on every device
       // while every test around it stayed green.
       prohibitedModels: cached.prohibitedModels,
+      // NAMED for the same reason as the line above, and it is the same defect
+      // if it is not: `...local` above spreads the DEVICE's bundle, so a field
+      // only the cache carries is dropped in silence. That is what left
+      // `prohibitedModels` inert on every attached device with every test
+      // around it green.
+      //
+      // Taken from the cache rather than merged here, because merging it needs
+      // the device's own SETTING — which is not a bundle field and is not in
+      // scope at this seam. The runtime does that merge, raise-only, where both
+      // values are in hand (createPluginRuntime's ensureInitialized).
+      redactFallback: cached.redactFallback,
       // ALSO HONOURED FROM THE CACHE, and not a bundle field at all: each
       // merged policy's own `provenance`. `mergeRaiseOnly` spreads the policies
       // it emits, so an 'authored' policy arriving from the control plane

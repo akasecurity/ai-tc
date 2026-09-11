@@ -50,7 +50,10 @@ function burned(work: () => unknown): number {
 // uses wherever a ratio has to survive a shared runner: noise only ever adds
 // time, so the minimum is the one reading a loaded machine cannot inflate.
 // Both sides use the same estimator over the same count — a stall-immune
-// denominator against a noisy numerator is its own failure mode.
+// denominator against a noisy numerator is its own failure mode. That parity
+// survives the growth block below, which times a WINDOW of repetitions rather
+// than one pass: the estimator and the pass count are unchanged, and each side
+// divides by its own repetition count before the two are compared.
 const PASSES = 3;
 
 function fastest(work: () => unknown): number {
@@ -333,32 +336,150 @@ describe('the inputs above are adversarial for what they replaced', () => {
   const SMALL = MB / 128;
   const LARGE = SMALL * 2;
 
-  // Between linear's 2 and quadratic's 4. The floor keeps a sub-tick small side
-  // from making the quotient meaningless — without it a fast machine that
-  // measures 0 at SMALL turns any large reading into a pass.
+  // Between linear's 2 and quadratic's 4.
   const SUPERLINEAR = 3;
-  const FLOOR_MS = 1;
+
+  // Both readings are divided into each other, so everything the two share
+  // cancels and a uniformly slower machine moves the quotient not at all. What
+  // does NOT cancel is the CLOCK. A delta between two quantized readings
+  // carries up to a tick of error whichever way it falls, and at these input
+  // sizes a tick can be most of the measurement: POSIX reports microseconds
+  // (0.001ms, measured), while Windows credits a whole scheduler tick — ~15.6ms
+  // — to whichever thread was running at the timer interrupt.
+  //
+  // That is not hypothetical. A Windows leg read `taking a snippet per hit` at
+  // 15.0ms and 31.0ms — a ratio of 2.07 against the 3 demanded, reported out as
+  // LINEAR — for a shape that measures 7.9ms and 31.2ms on an arm64 Mac and
+  // stays quadratic (3.88 / 3.98 / 4.00) across three further doublings. That
+  // is ONE occurrence and the mechanism behind it was never proven; what needs
+  // no proof is that a 7.9ms quantity cannot be divided by a clock that moves
+  // in 15.6ms steps. The sizing below removes the question rather than settling
+  // it — and it was owed on a second case regardless, since `counting each
+  // hit's line from zero` measures 0.99ms here, where the old floor of 1ms
+  // turned its quotient into `large > 3ms`: an absolute threshold wearing a
+  // ratio's clothes, which is the one shape this file argues against.
+  //
+  // So each side is measured over as many REPETITIONS as it takes to fill a
+  // window the clock can resolve, then divided by its own repetition count.
+  // Repetitions rather than a larger input, because these are the quadratic
+  // shapes: doubling the input to buy a readable window costs four times the
+  // work where doubling the repetitions costs two. And each side is sized
+  // independently, so the expensive side fills the same window with a quarter
+  // of the passes rather than overshooting it fourfold.
+  //
+  // The cost is therefore bounded by the WINDOW rather than by the machine — a
+  // slower runner fills the same window with fewer passes — so this does not
+  // grow the wall clock on the leg that prompted it.
+
+  /**
+   * The smallest non-zero interval this thread's CPU clock reports.
+   *
+   * The probe's busy loop GROWS until a delta appears: one sized for a
+   * microsecond clock reads zero on a coarse clock for ever, and reporting zero
+   * would hand the caller a window of no width at all.
+   */
+  function clockResolutionMs(): number {
+    for (let work = 1_000; work <= 134_217_728; work *= 8) {
+      let best = Infinity;
+      let seen = 0;
+      for (let attempt = 0; attempt < 32 && seen < 8; attempt += 1) {
+        const before = cpuMs();
+        let sink = 0;
+        for (let i = 0; i < work; i += 1) sink += i;
+        const delta = cpuMs() - before;
+        // `sink` is read so the loop cannot be optimized away outright. Were it
+        // removed, every delta would read zero, the work would grow to the cap,
+        // and this would report an unusable clock rather than a fast one.
+        if (delta > 0 && sink >= 0) {
+          best = Math.min(best, delta);
+          seen += 1;
+        }
+      }
+      if (best !== Infinity) return best;
+    }
+    return Infinity;
+  }
+
+  const CLOCK_RESOLUTION_MS = clockResolutionMs();
+
+  // How many resolutions wide one timed window has to be. Each side then
+  // carries at most 1/16 of relative error and the quotient at most ~1/8, which
+  // leaves a genuinely quadratic shape reading 3.5 or better against the 3
+  // demanded, and a genuinely linear one 2.25 or worse.
+  const RESOLUTION_MARGIN = 16;
+
+  // The absolute floor beneath the clock-derived one. On a microsecond clock
+  // the margin above lands at 16us, and a window that short measures whatever
+  // the collector happened to do inside it rather than the shape.
+  const MIN_WINDOW_MS = 5;
+
+  const WINDOW_MS = Math.max(MIN_WINDOW_MS, CLOCK_RESOLUTION_MS * RESOLUTION_MARGIN);
+
+  /** How many passes of `work` fill one window, sized from a measurement. */
+  function repetitionsFilling(work: () => unknown): number {
+    let reps = 1;
+    for (let attempt = 0; attempt < 32; attempt += 1) {
+      const ms = burned(() => {
+        for (let i = 0; i < reps; i += 1) work();
+      });
+      if (ms >= WINDOW_MS) return reps;
+      // Aim at the window from what was just measured, with a little overshoot.
+      // A reading the clock rounded to zero carries no scale to aim with, so
+      // step blind instead of dividing by it.
+      const aimed = ms > 0 ? Math.ceil(reps * (WINDOW_MS / ms) * 1.25) : reps * 8;
+      reps = Math.max(reps + 1, aimed);
+    }
+    throw new Error(
+      `could not fill a ${WINDOW_MS.toFixed(3)}ms window in 32 attempts, at a measured clock ` +
+        `resolution of ${CLOCK_RESOLUTION_MS.toFixed(4)}ms. The growth measurement below cannot ` +
+        `be trusted on this clock, so it is refused rather than reported.`,
+    );
+  }
 
   function growth(shape: (bytes: number) => () => unknown): {
     small: number;
     large: number;
     ratio: number;
+    window: string;
   } {
-    const small = fastest(shape(SMALL));
-    const large = fastest(shape(LARGE));
-    return { small, large, ratio: large / Math.max(small, FLOOR_MS) };
+    const smallWork = shape(SMALL);
+    const largeWork = shape(LARGE);
+    const smallReps = repetitionsFilling(smallWork);
+    const largeReps = repetitionsFilling(largeWork);
+    const over = (work: () => unknown, reps: number) => (): void => {
+      for (let i = 0; i < reps; i += 1) work();
+    };
+    const small = fastest(over(smallWork, smallReps)) / smallReps;
+    const large = fastest(over(largeWork, largeReps)) / largeReps;
+    if (small === 0) {
+      throw new Error(
+        `the small side measured 0ms over ${String(smallReps)} passes, after a window sized to ` +
+          `${WINDOW_MS.toFixed(3)}ms. The clock moved under the measurement; refusing to divide ` +
+          `by it rather than reporting the quotient that produces.`,
+      );
+    }
+    return {
+      small,
+      large,
+      ratio: large / small,
+      window:
+        `${WINDOW_MS.toFixed(3)}ms windows at a measured clock resolution of ` +
+        `${CLOCK_RESOLUTION_MS.toFixed(4)}ms, filled by ${String(smallReps)} and ` +
+        `${String(largeReps)} passes`,
+    };
   }
 
   function expectSuperlinear(
     label: string,
-    measured: { small: number; large: number; ratio: number },
+    measured: { small: number; large: number; ratio: number; window: string },
   ): void {
     expect(
       measured.ratio,
-      `${label} cost ${measured.small.toFixed(1)}ms and ${measured.large.toFixed(1)}ms at one ` +
-        `and two units of input — a ratio of ${measured.ratio.toFixed(2)}, i.e. LINEAR. This ` +
-        `input no longer makes that shape blow up, so the budget case it backs proves nothing. ` +
-        `Rebuild the hostile shape.`,
+      `${label} cost ${measured.small.toFixed(3)}ms and ${measured.large.toFixed(3)}ms per pass ` +
+        `at one and two units of input — a ratio of ${measured.ratio.toFixed(2)}, i.e. LINEAR. ` +
+        `This input no longer makes that shape blow up, so the budget case it backs proves ` +
+        `nothing. Rebuild the hostile shape. Measured over ${measured.window}, so the clock is ` +
+        `not what produced this.`,
     ).toBeGreaterThan(SUPERLINEAR);
   }
 

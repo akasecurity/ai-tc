@@ -435,20 +435,36 @@ function SettingGroup({ title, children }: { title: string; children: ReactNode 
   );
 }
 
+/** `1 setting` / `3 settings`, so the sentence below reads in either case. */
+const settings = (count: number): string =>
+  count === 1 ? '1 setting' : `${String(count)} settings`;
+
 /**
- * The line rendered when an administrator's file locks keys this build does
- * not know. Such a lock is dropped from the locked set rather than failing the
- * whole file (which would run the machine unmanaged), and this is the one
- * place that says a lock exists which is not being applied. A count rather
- * than the names: the names are the administrator's to fix, in the file.
+ * The line rendered when an administrator's file names settings this build does
+ * not know — pinned, locked, or both. Such a name is dropped rather than
+ * failing the whole file (which would run the machine unmanaged), and this is
+ * the one place that says an administrative decision exists which is not being
+ * applied. Counts rather than the names: the names are the administrator's to
+ * fix, in the file.
+ *
+ * PINS AND LOCKS ARE COUNTED SEPARATELY inside one sentence. Two sentences read
+ * worse and a single merged count reads wrong: an unapplied lock leaves a
+ * control the administrator meant to freeze still editable, while an unapplied
+ * pin leaves a default they meant to set unset. Those send an administrator to
+ * different lines of their own file, so the sentence has to keep them apart
+ * even though the remedy — update AKA — is the same one.
  */
-export function managedUnknownLocksNotice(context: ManagedContext): string | undefined {
-  const count = context.unknownLockedFields?.length ?? 0;
-  if (!context.present || count === 0) return undefined;
+export function managedUnrecognizedNotice(context: ManagedContext): string | undefined {
+  const locks = context.unknownLockedFields?.length ?? 0;
+  const pins = context.unknownValueFields?.length ?? 0;
+  if (!context.present || locks + pins === 0) return undefined;
   const who = context.organization ?? 'Your organization';
-  return count === 1
-    ? `${who} locks 1 setting this version of AKA does not recognize. Update AKA to apply it.`
-    : `${who} locks ${String(count)} settings this version of AKA does not recognize. Update AKA to apply them.`;
+  const clauses = [
+    ...(pins > 0 ? [`pins ${settings(pins)}`] : []),
+    ...(locks > 0 ? [`locks ${settings(locks)}`] : []),
+  ];
+  const what = locks + pins === 1 ? 'it' : 'them';
+  return `${who} ${clauses.join(' and ')} this version of AKA does not recognize. Update AKA to apply ${what}.`;
 }
 
 export interface WorkspaceSettingsFormViewProps {
@@ -582,7 +598,7 @@ export function WorkspaceSettingsFormView({
   // ends up editable.
   const lockOn = (key: ManagedSettingKey): string | undefined =>
     isFieldManaged(managed, key) ? managedByLabel(managed) : undefined;
-  const unknownLocks = managedUnknownLocksNotice(managed);
+  const unrecognized = managedUnrecognizedNotice(managed);
 
   const dirty =
     historicalAccess !== settings.historicalAccess ||
@@ -606,9 +622,9 @@ export function WorkspaceSettingsFormView({
 
   return (
     <div className="flex max-w-4xl flex-col gap-7">
-      {unknownLocks !== undefined && (
+      {unrecognized !== undefined && (
         <p className="text-xs text-text-3" data-slot="managed-unknown-locks">
-          {unknownLocks}
+          {unrecognized}
         </p>
       )}
       <SettingGroup title="Connection">

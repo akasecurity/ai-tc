@@ -3,6 +3,7 @@ import {
   BUILTIN_POLICIES,
   HISTORY_SYNC_PAYLOAD_VERSION,
   KNOWN_BUILTIN_IDS,
+  RedactFallback,
   TriageHit,
   VAULT_CONSENT_VERSION,
 } from '@akasecurity/schema';
@@ -40,6 +41,9 @@ import {
   MODEL_JUDGE_CHOICES,
   MODEL_JUDGE_SECTION_DESCRIPTION,
   MODEL_JUDGE_SECTION_LABEL,
+  REDACT_FALLBACK_CHOICES,
+  REDACT_FALLBACK_SECTION_DESCRIPTION,
+  REDACT_FALLBACK_SECTION_LABEL,
   submitAttach,
   VAULT_CHOICES,
   VAULT_SECTION_DESCRIPTION,
@@ -87,6 +91,14 @@ const FORM_COPY: Record<string, string> = {
   VAULT_SECTION_LABEL,
   VAULT_SECTION_DESCRIPTION,
   HANDLING_SECTION_LINK_LABEL,
+  REDACT_FALLBACK_SECTION_LABEL,
+  REDACT_FALLBACK_SECTION_DESCRIPTION,
+  ...Object.fromEntries(
+    REDACT_FALLBACK_CHOICES.flatMap((c) => [
+      [`REDACT_FALLBACK_CHOICES.${c.value}.label`, c.label],
+      [`REDACT_FALLBACK_CHOICES.${c.value}.description`, c.description],
+    ]),
+  ),
   ...Object.fromEntries(
     HISTORICAL_CHOICES.flatMap((c) => [
       [`HISTORICAL_CHOICES.${c.value}.label`, c.label],
@@ -133,6 +145,43 @@ describe('WorkspaceSettingsFormView copy', () => {
     // And it is explicit that no global handling setting exists, because one
     // did, it drove nothing, and users read it as if it did.
     expect(HANDLING_SECTION_DESCRIPTION).toMatch(/no global handling setting/i);
+  });
+
+  it('offers the fallback as a degradation choice, not as a handling setting', () => {
+    // The section it sits in says "There is no global handling setting", and
+    // that sentence stays true only if this row never reads as one. So the copy
+    // has to say what it does NOT do, in the same breath as what it does — a
+    // control here that looked like a global Redact/Block switch would
+    // contradict the line directly above it.
+    expect(REDACT_FALLBACK_SECTION_DESCRIPTION).toMatch(/cannot be masked in place/i);
+    expect(REDACT_FALLBACK_SECTION_DESCRIPTION).toMatch(
+      /does not change what any detection is set to/i,
+    );
+    // And it names the two cases concretely rather than gesturing at "some
+    // fields": a user cannot weigh Block against Warn without knowing that a
+    // shell command and a URL are what is at stake.
+    expect(REDACT_FALLBACK_SECTION_DESCRIPTION).toMatch(/shell command/i);
+    expect(REDACT_FALLBACK_SECTION_DESCRIPTION).toMatch(/URL/);
+  });
+
+  it('offers exactly the three fallback values the schema allows', () => {
+    // Derived from the stored vocabulary, so a value added to RedactFallback
+    // fails here rather than being silently unreachable from the only surface
+    // that sets it.
+    expect(REDACT_FALLBACK_CHOICES.map((c) => c.value).sort()).toEqual(
+      [...RedactFallback.options].sort(),
+    );
+  });
+
+  it('says that a warning is invisible on the host that cannot print one', () => {
+    // Antigravity's PreToolUse has no message channel, so wherever `warn` is
+    // applied on that host it can differ from `monitor` only in the recorded
+    // action. A user choosing "with a warning" would otherwise expect something
+    // on screen. Asserted on the PROPERTY rather than on the host name, because
+    // which hosts apply this choice at all moves as each is wired — the section
+    // copy carries that, and each plugin's Known limitations is the authority.
+    const warn = REDACT_FALLBACK_CHOICES.find((c) => c.value === 'warn');
+    expect(warn?.description).toMatch(/no channel to print on/i);
   });
 
   it('names both of an attached machine\u2019s senders, not just the plugin', () => {
@@ -850,6 +899,32 @@ describe('administratively locked rows', () => {
     );
     expect(inputFor(html, 'historicalAccess')).not.toContain('disabled');
     expect(html).not.toContain('data-slot="managed-notice"');
+  });
+
+  it('renders the redact-fallback row, and an administrator can lock it', () => {
+    // It is a real control, not just copy: it renders inputs under its own
+    // name, and the managed overlay reaches it the way it reaches every other
+    // row — `redactFallback` is already a ManagedSettingKey.
+    const html = renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, {
+        settings,
+        onSave: () => undefined,
+        managed: {
+          present: true,
+          organization: 'Acme',
+          lockedFields: ['redactFallback'],
+        },
+      }),
+    );
+    expect(inputFor(html, 'redactFallback')).toContain('disabled');
+    expect(html).toContain('data-slot="managed-notice"');
+
+    // The positive control: unmanaged, the same row is editable — so the
+    // assertion above is a lock rather than a row that is always disabled.
+    const open = renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, { settings, onSave: () => undefined }),
+    );
+    expect(inputFor(open, 'redactFallback')).not.toContain('disabled');
   });
 
   it('says when the administrator locked a key this build does not know', () => {

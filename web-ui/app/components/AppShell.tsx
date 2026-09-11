@@ -70,7 +70,17 @@ function Sidebar({ pathname }: { pathname: string }) {
   return (
     <aside className="flex w-62 flex-col border-r border-border bg-surface shrink-0">
       <div className="flex h-16 items-center border-b border-hairline px-5">
-        <AkaLogo aria-label="AKA" className="h-8 w-auto text-mark-fg" />
+        {/* Home is /security, the same destination the first nav row carries — the
+            redirect at `/` would reach it too, one hop later. `aria-label` moves to
+            the link so the accessible name says where it GOES; the mark itself is
+            then decorative, and announcing "AKA" twice would be noise. */}
+        <Link
+          href="/security"
+          aria-label="AKA — go to Security"
+          className="rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+        >
+          <AkaLogo aria-hidden className="h-8 w-auto text-mark-fg" />
+        </Link>
       </div>
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-3.5">
         {NAV.map((item) => (

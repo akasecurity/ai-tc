@@ -180,6 +180,18 @@ export {
   formatCostTotal,
   formatUsd,
 } from '@akasecurity/schema';
+// The recommendation rollup and the posture score, also from `@akasecurity/schema`
+// and re-exported for the same reason: each plugin's `render.ts` reaches the shared
+// maths through its one SDK door rather than taking a schema dependency of its own.
+// `HealthStatus` is schema's name for what the renderers call `FindingStatus` — a
+// finding's own `FindingStatus` is its lifecycle, a different thing.
+export type { HealthStatus, Recommendation, RecommendationInput } from '@akasecurity/schema';
+export {
+  buildRecommendations,
+  findingStatus,
+  healthScore,
+  severityWeight,
+} from '@akasecurity/schema';
 // Posture evaluation re-exported for @akasecurity/plugin-runtime, which may not
 // depend on @akasecurity/detections directly (the SDK is its one detections door).
 export { configPostureDefinitions, evaluateConfigPosture } from '@akasecurity/detections';

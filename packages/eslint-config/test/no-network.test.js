@@ -520,6 +520,10 @@ const DOCUMENTED_OPT_OUTS = {
   // install.sh / install.ps1 can be driven against a local base. File-scoped
   // to the one helper that binds it; see CLAUDE.md §4.
   'tools/installer/eslint.config.mjs': ['node:http'],
+  // The Scan page's Data Shares forward is a Server Action that sends, so its
+  // suite stands a real server on loopback and reads the request off the wire.
+  // File-scoped to the one helper that binds it; see CLAUDE.md §4.
+  'web-ui/eslint.config.mjs': ['node:http'],
 };
 
 /** The module names a resolved `no-restricted-imports` value bans, or null if absent. */

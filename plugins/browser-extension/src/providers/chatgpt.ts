@@ -227,12 +227,16 @@ export const chatgptAdapter: ProviderAdapter = {
   // exists for this site. An empty table forwards nothing, so the parser above
   // is unreachable in production and its suite is what exercises it.
   //
-  // ONE FURTHER THING BLOCKS DECLARING BOTH ROUTES AT ONCE, and it is an
-  // interface limit rather than a missing observation. `parseStream()` is
-  // passed no URL, so an adapter cannot tell which of its own endpoints
-  // produced the stream it is reading — and these two routes do not share a
-  // parser, because one is HTML frames and the other is SSE. Until the matched
-  // endpoint reaches the parsers, this adapter can serve at most one of them.
+  // Serving BOTH routes is now possible: `parseStream` is handed the matched
+  // exchange, so an adapter can branch on WHICH of its own endpoints produced
+  // the stream — necessary here because the two share no parser, one streaming
+  // HTML frames and the other Server-Sent Events, and both are `conversation`
+  // so their kind does not tell them apart. What still blocks it is the
+  // authenticated route's PATH and a sanitised capture for each, not the seam.
+  //
+  // The branch is not written yet, and deliberately: with no endpoint declared
+  // there is nothing to branch ON, and a dispatch whose arms are unreachable
+  // reads as coverage of a route this adapter cannot observe.
   endpoints: [],
   requiredPaths: { request: [], response: [] },
   // No endpoint is declared above, so no fixture exists for the sanitiser to

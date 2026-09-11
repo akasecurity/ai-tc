@@ -132,6 +132,7 @@ export { SqliteFindingsRepository } from './repositories/findings.ts';
 export type {
   HistorySyncCounts,
   HistorySyncInspectionRow,
+  HistorySyncKindPartition,
   HistorySyncLease,
   HistorySyncPartition,
 } from './repositories/history-sync.ts';

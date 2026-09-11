@@ -95,12 +95,61 @@ const CAPTURE_TYPE_LIST = OUTBOX_CAPTURE_EVENT_TYPES.map((t) => `'${t}'`).join('
  * None of that is a claim they are unimportant — only that a delivery-state read
  * has nothing true to say about a row no lane will ever carry.
  */
+export type CountedEventType = (typeof COUNTED_EVENT_TYPES)[number];
+
 export const COUNTED_EVENT_TYPES = [
   ...STRUCTURAL_EVENT_TYPES,
   ...OUTBOX_CAPTURE_EVENT_TYPES,
 ] as const;
 
 const COUNTED_TYPE_LIST = COUNTED_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
+
+/**
+ * The delivery-state buckets, written ONCE.
+ *
+ * Two reads project them — the aggregate and the per-kind breakdown — and a
+ * surface shows both together, so a bucket defined twice is two numbers that
+ * disagree about the same rows in the same view. Composed rather than repeated
+ * for that reason, not for brevity.
+ */
+const PARTITION_BUCKETS = `
+         SUM(CASE WHEN synced_at IS NULL AND sync_claimed_at IS NULL THEN 1 ELSE 0 END) AS queued,
+         SUM(CASE WHEN synced_at IS NULL AND sync_claimed_at IS NOT NULL THEN 1 ELSE 0 END) AS inProgress,
+         SUM(CASE WHEN synced_at > 0 THEN 1 ELSE 0 END) AS synced,
+         SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0
+                       AND sync_failure = 'deployment_refused' THEN 1 ELSE 0 END) AS refused,
+         SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0
+                       AND sync_failure = 'detached_undelivered' THEN 1 ELSE 0 END) AS detached,
+         -- Spelled as what it INCLUDES rather than what it excludes, so a reason
+         -- added later lands in no bucket and fails the sum assertion, instead
+         -- of silently joining this one.
+         SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0
+                       AND (sync_failure IS NULL OR sync_failure = 'payload_invalid')
+                  THEN 1 ELSE 0 END) AS failed,
+         COUNT(*) AS total`;
+
+/**
+ * WHICH ROWS THESE READS ARE ABOUT, and the half that is not a type filter.
+ *
+ * A structural row is always somebody's to deliver: the live path owns it, and
+ * the drain re-offers it. A CAPTURE is only ever outstanding when a live forward
+ * marked it owed — a capture recorded while this machine was detached, or before
+ * anyone consented, was offered to nobody and is owed to nobody. Counted on type
+ * alone it would read as queued, and on a working machine that is most of the
+ * capture rows in the store: a backlog figure made of rows nothing will ever
+ * send.
+ *
+ * So a capture enters these reads only once it is owed or already settled. The
+ * buckets stay simple because this clause has already decided what "outstanding"
+ * means for each lane.
+ */
+const COUNTED_SCOPE = `
+       WHERE event_type IN (${COUNTED_TYPE_LIST})
+         AND (
+           event_type IN (${TYPE_LIST})
+           OR synced_at IS NOT NULL
+           OR outbox_owed = 1
+         )`;
 
 /** `synced_at` values that are not a delivery time. */
 const SKIPPED = -1;
@@ -198,6 +247,22 @@ export interface HistorySyncCounts {
  * adding these columns: that upgrade re-armed every sentinel row written before
  * a reason could be recorded, so anything sitting here since carries one.
  */
+/**
+ * One delivery-state partition per event kind, for a surface that shows the
+ * lanes separately rather than as one number.
+ *
+ * The aggregate hides the thing a reader most wants: on a working machine the
+ * structural kinds sit near 70% delivered while the two that carry TEXT sit near
+ * 20%, because the live forward settles a small row and a large one waits for
+ * the drain. One bar averages those into a number that describes neither.
+ *
+ * `kind` is drawn from the counted vocabulary, so a kind no lane carries cannot
+ * appear here — see COUNTED_EVENT_TYPES for which and why.
+ */
+export interface HistorySyncKindPartition extends HistorySyncPartition {
+  kind: CountedEventType;
+}
+
 export interface HistorySyncPartition {
   queued: number;
   inProgress: number;
@@ -300,6 +365,7 @@ export class SqliteHistorySyncRepository {
   private readonly captureSkipCountStmt: StatementSync;
   private readonly disownCapturesStmt: StatementSync;
   private readonly partitionStmt: StatementSync;
+  private readonly partitionByKindStmt: StatementSync;
   private readonly claimRowStmt: StatementSync;
   private readonly releaseRowStmt: StatementSync;
   private readonly releaseStaleClaimsStmt: StatementSync;
@@ -437,41 +503,25 @@ export class SqliteHistorySyncRepository {
     // total. `failed` is `IS NOT NULL AND <= 0` rather than `= -1` for that
     // reason: the ledger only ever writes -1 there, but a row is better counted
     // as failed than silently missing from a rendered breakdown.
-    this.partitionStmt = db.prepare(
-      `SELECT
-         SUM(CASE WHEN synced_at IS NULL AND sync_claimed_at IS NULL THEN 1 ELSE 0 END) AS queued,
-         SUM(CASE WHEN synced_at IS NULL AND sync_claimed_at IS NOT NULL THEN 1 ELSE 0 END) AS inProgress,
-         SUM(CASE WHEN synced_at > 0 THEN 1 ELSE 0 END) AS synced,
-         SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0
-                       AND sync_failure = 'deployment_refused' THEN 1 ELSE 0 END) AS refused,
-         SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0
-                       AND sync_failure = 'detached_undelivered' THEN 1 ELSE 0 END) AS detached,
-         -- Spelled as what it INCLUDES rather than what it excludes, so a reason
-         -- added later lands in no bucket and fails the sum assertion, instead
-         -- of silently joining this one.
-         SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0
-                       AND (sync_failure IS NULL OR sync_failure = 'payload_invalid')
-                  THEN 1 ELSE 0 END) AS failed,
-         COUNT(*) AS total
-       FROM audit_events
-       -- WHICH ROWS THIS IS ABOUT, and the half that is not a type filter.
-       -- A structural row is always somebody's to deliver: the live path owns
-       -- it, and the drain re-offers it. A CAPTURE is only ever outstanding
-       -- when a live forward marked it owed — a capture recorded while this
-       -- machine was detached, or before anyone consented, was offered to
-       -- nobody and is owed to nobody. Counted on type alone it would read as
-       -- queued, and on a working machine that is most of the capture rows in
-       -- the store: a backlog figure made of rows nothing will ever send.
-       --
-       -- So a capture enters this read only once it is owed or already settled.
-       -- The buckets below stay simple because this clause has already decided
-       -- what "outstanding" means for each lane.
-       WHERE event_type IN (${COUNTED_TYPE_LIST})
-         AND (
-           event_type IN (${TYPE_LIST})
-           OR synced_at IS NOT NULL
-           OR outbox_owed = 1
-         )`,
+    this.partitionStmt = db.prepare(`SELECT${PARTITION_BUCKETS}
+       FROM audit_events${COUNTED_SCOPE}`);
+
+    // The same partition, per kind.
+    //
+    // INDEXED BY, and not as belt-and-braces. Adding `GROUP BY event_type` is
+    // enough to move the planner off the sync index and onto `idx_audit_type_t`,
+    // which leads with the same column and carries none of the delivery state —
+    // so every group becomes a row fetch on the largest table in the store, for
+    // a read a surface polls. The store never runs ANALYZE, so this is decided
+    // from schema shape alone and does not vary with the data.
+    //
+    // Grouping on the column the index LEADS with is what keeps this a walk in
+    // index order rather than a temp B-tree, which is the other half of the
+    // plan the sibling case pins.
+    this.partitionByKindStmt = db.prepare(
+      `SELECT event_type AS kind,${PARTITION_BUCKETS}
+       FROM audit_events INDEXED BY idx_audit_events_sync${COUNTED_SCOPE}
+       GROUP BY event_type`,
     );
 
     this.countsStmt = db.prepare(
@@ -848,6 +898,32 @@ export class SqliteHistorySyncRepository {
    * requiring one would force a caller to invent one and report the whole store
    * as queued.
    */
+  /**
+   * The same partition, one row per kind that a lane carries.
+   *
+   * A kind with nothing to report is ABSENT rather than a row of zeros: the
+   * scope decides which rows exist at all, so a kind that has never been
+   * recorded — or whose captures nobody ever owed — produces no group. A caller
+   * rendering a fixed list of kinds must therefore treat a missing one as "no
+   * rows", never as "zero sent"; the two look identical in a bar and mean
+   * different things.
+   */
+  partitionByKind(): HistorySyncKindPartition[] {
+    return allRows<Record<keyof HistorySyncPartition, number | null> & { kind: CountedEventType }>(
+      this.partitionByKindStmt,
+      {},
+    ).map((row) => ({
+      kind: row.kind,
+      queued: row.queued ?? 0,
+      inProgress: row.inProgress ?? 0,
+      synced: row.synced ?? 0,
+      failed: row.failed ?? 0,
+      refused: row.refused ?? 0,
+      detached: row.detached ?? 0,
+      total: row.total ?? 0,
+    }));
+  }
+
   partition(): HistorySyncPartition {
     const row = getRow<Record<keyof HistorySyncPartition, number | null>>(this.partitionStmt, {});
     return {

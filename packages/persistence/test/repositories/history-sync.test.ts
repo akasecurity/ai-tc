@@ -856,6 +856,69 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
   // adding a kind that no lane carries, and every row of it would then sit in a
   // bucket that can never drain. Each kind below is excluded for its own
   // recorded reason; this is where that stops being prose.
+  // The aggregate hides what a reader most wants: the structural kinds and the
+  // two that carry TEXT settle at very different rates, because the live forward
+  // takes a small row and a large one waits for the drain. One bar averages them
+  // into a number describing neither.
+  it('breaks the partition down per kind, and reconciles with the aggregate', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    seedSession(db, 's-2', 1);
+    db.historySync.markSynced(['s-1-llm'], T0);
+    db.historySync.markRefused(['s-1-tool'], T0);
+    db.historySync.markSkipped(['s-1-prompt'], T0);
+
+    const byKind = db.historySync.partitionByKind();
+    const aggregate = db.historySync.partition();
+
+    // Every bucket reconciles: a surface shows both, so a per-kind number that
+    // did not add up to the aggregate would be two answers about one machine.
+    for (const bucket of [
+      'queued',
+      'inProgress',
+      'synced',
+      'failed',
+      'refused',
+      'detached',
+      'total',
+    ] as const) {
+      expect(byKind.reduce((sum, k) => sum + k[bucket], 0)).toBe(aggregate[bucket]);
+    }
+    expect(byKind.find((k) => k.kind === 'llm_call')).toMatchObject({ synced: 1, queued: 1 });
+    expect(byKind.find((k) => k.kind === 'tool_call')).toMatchObject({ refused: 1, queued: 1 });
+  });
+
+  // ABSENT, not a row of zeros. The two look identical in a bar and mean
+  // different things — "nothing to send" against "nothing recorded" — and the
+  // scope decides which rows exist at all, so a kind nobody ever owed produces
+  // no group rather than an empty one.
+  it('omits a kind with nothing to report rather than reporting zeros', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+
+    const kinds = db.historySync.partitionByKind().map((k) => k.kind);
+    // seedSession writes three structural kinds and one owed capture.
+    expect(kinds.sort()).toEqual(['llm_call', 'prompt', 'session', 'tool_call']);
+    expect(kinds).not.toContain('response');
+  });
+
+  // The lane rule holds PER KIND too: an unowed capture is outside the scope, so
+  // it cannot appear in its kind's row either.
+  it('does not count an unowed capture in its own kind', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.auditEvents.insertAuditEvent({
+      id: 'never-offered',
+      eventType: 'response',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(4 * MINUTE),
+      content: 'recorded while nobody was listening',
+    });
+
+    expect(db.historySync.partitionByKind().map((k) => k.kind)).not.toContain('response');
+  });
+
   it('counts exactly the kinds a lane carries', () => {
     const db = store.open();
     const carried = ['session', 'llm_call', 'tool_call', 'prompt', 'response', 'tool_use'] as const;
@@ -1203,6 +1266,25 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     // own explains and recurse.
     return recorded.flatMap((q) => explain(raw, q).map((row) => row.detail)).join(' | ');
   };
+
+  it('answers the per-kind breakdown through the index, with no temp B-tree', () => {
+    const plan = planFor((ledger) => {
+      ledger.partitionByKind();
+    });
+    expect(plan).toContain('idx_audit_events_sync');
+    expect(plan).not.toContain('SCAN audit_events');
+    // REFUSED BY NAME. Adding the GROUP BY is enough to move the planner onto
+    // this index, which leads with the same column and carries none of the
+    // delivery state — so every group becomes a row fetch on the largest table
+    // in the store. That is what the INDEXED BY on the statement prevents, and
+    // this is what would go red if somebody removed it.
+    expect(plan).not.toContain('idx_audit_type_t');
+    // The index LEADS with event_type, so grouping on it is a walk in index
+    // order. A temp B-tree here would mean the grouping column stopped being the
+    // prefix — the same reorder the sibling case warns about, seen from the
+    // other side.
+    expect(plan).not.toContain('TEMP B-TREE');
+  });
 
   it('answers the delivery-state partition through the index, not by scanning', () => {
     const plan = planFor((ledger) => ledger.partition());

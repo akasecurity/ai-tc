@@ -286,3 +286,95 @@ describe('egress-wire-privacy: serialized payload', () => {
     expectNoEchoOf(serialized, '/Users/alice');
   });
 });
+
+// ─── hashProjectKey: linearity ─────────────────────────────────────────────
+
+describe('hashProjectKey — linear in the remote URL', () => {
+  // The canonicalization runs on the remote URL of whatever repository the
+  // scanner was pointed at, read from that repository's own git config. Its
+  // length is therefore chosen by whoever wrote the clone, and the two callers
+  // — `aka scan` and the dashboard's folder-scan Server Action — sit on the
+  // calling thread with no harness timeout between them and a hostile repo.
+  //
+  // CPU time rather than wall time, for the reason the per-rule budget uses it:
+  // the question is whether this does work proportional to the square of its
+  // input, which is a statement about WORK. A thread the scheduler took the
+  // core away from accumulates wall time having executed nothing, so a
+  // wall-clock verdict here is satisfiable by a stall this code had no part in.
+  // `threadCpuUsage` rather than `cpuUsage` because the latter sums the whole
+  // process, V8's background GC and compiler threads included.
+  const cpuMs = (): number => {
+    const { user, system } = process.threadCpuUsage();
+    return (user + system) / 1000;
+  };
+
+  function burned(work: () => unknown): number {
+    const before = cpuMs();
+    work();
+    return cpuMs() - before;
+  }
+
+  // The fastest of a few passes: noise only ever adds time, so the minimum is
+  // the reading a loaded runner cannot inflate.
+  function fastest(work: () => unknown): number {
+    let best = Infinity;
+    for (let i = 0; i < 3; i += 1) best = Math.min(best, burned(work));
+    return best;
+  }
+
+  // A slash run that does not reach the end of the string, which is what makes
+  // an end-anchored `+` quadratic: the anchor fails after consuming the whole
+  // run, and the engine retries from every position inside it. The leading run
+  // is stripped first, so only a run in the MIDDLE reaches the trailing form —
+  // hence the `a` in front.
+  const slashRun = (n: number): string => `/a${'/'.repeat(n)}b`;
+
+  // 0.08ms of CPU for the whole digest at this size, measured on an arm64 Mac,
+  // against a budget 1,200x above it. The control below burns 500ms — 5x the
+  // budget — at 40,000, well under half this input, which is what makes this a
+  // correctness assertion rather than a benchmark: no runner is slow enough to
+  // cross it, and no quadratic trim is fast enough to stay under. Both margins
+  // are stated because only the smaller one bounds how far this can be
+  // tightened.
+  //
+  // The size is chosen so that the retired form REDDENS this case rather than
+  // timing out in it. A synchronous body cannot be interrupted, so one that
+  // overruns runs to completion and is reported as a timeout — which reads as a
+  // budget failure and is not one. At 100,000 the quadratic costs ~2.9s a pass,
+  // so three passes still land inside the package's ceiling and the assertion
+  // is what fails.
+  const BUDGET_MS = 100;
+  const HOSTILE_LENGTH = 100_000;
+  const CONTROL_LENGTH = 40_000;
+
+  // The pattern this case exists to keep retired. A frozen copy — nothing in
+  // `src/` spells it any more — whose only job is to prove the input above
+  // really is adversarial. Without it a case fed a harmless string passes for
+  // ever.
+  const REPLACED_TRAILING_SLASHES = /\/+$/;
+
+  it('digests a remote carrying a long slash run inside the budget', () => {
+    const key = `git:https://h.example${slashRun(HOSTILE_LENGTH)}`;
+
+    const spent = fastest(() => hashProjectKey(key));
+
+    expect(spent).toBeLessThan(BUDGET_MS);
+  });
+
+  it('canonicalizes that remote rather than being fast by declining to', () => {
+    // The positive control on the case above: a `canonicalGitUrl` that returned
+    // its input untouched would pay nothing and pass the budget for ever.
+    const run = slashRun(HOSTILE_LENGTH);
+    expect(hashProjectKey(`git:https://H.Example${run}`)).toBe(
+      hashProjectKey(`git:https://h.example${run}.git`),
+    );
+  });
+
+  it('would blow that budget on a fraction of the input, through the retired form', () => {
+    // The control that keeps the two cases above honest. One pass, because the
+    // assertion is that this is EXPENSIVE and noise only ever adds time.
+    const spent = burned(() => REPLACED_TRAILING_SLASHES.exec(slashRun(CONTROL_LENGTH)));
+
+    expect(spent).toBeGreaterThan(BUDGET_MS);
+  });
+});

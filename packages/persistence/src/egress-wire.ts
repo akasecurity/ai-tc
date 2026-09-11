@@ -39,6 +39,33 @@ const PROJECT_KEY_DIGEST_VERSION = 'v2';
 const SCP_FORM = /^(?:[^@/]+@)?([^/:]+):(.+)$/;
 const SCHEME_FORM = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?(\/.*)?$/i;
 
+const SLASH = '/'.charCodeAt(0);
+const GIT_SUFFIX = '.git';
+
+/**
+ * A path with its leading and trailing `/` runs removed.
+ *
+ * Written as a scan rather than as `/^\/+/` and `/\/+$/` because the trailing
+ * form is QUADRATIC in a slash run that does not reach the end of the string:
+ * the anchor fails after consuming the whole run, and the engine retries from
+ * every position inside it. Measured on an arm64 Mac against `a` + n slashes +
+ * `b` — 30ms at n=10,000, 114ms at 20,000, 450ms at 40,000, 11.5s at 200,000,
+ * i.e. exactly 4x the cost for 2x the input.
+ *
+ * That is reachable rather than theoretical. This runs on the remote URL of
+ * whatever repository the scanner was pointed at, read out of that repository's
+ * own git config, so its length is chosen by whoever wrote the clone — and the
+ * two callers are `aka scan` and the dashboard's folder-scan Server Action,
+ * which has no harness timeout at all.
+ */
+function trimSlashes(path: string): string {
+  let start = 0;
+  let end = path.length;
+  while (start < end && path.charCodeAt(start) === SLASH) start += 1;
+  while (end > start && path.charCodeAt(end - 1) === SLASH) end -= 1;
+  return path.slice(start, end);
+}
+
 /**
  * One repository's remote URL reduced to the form every clone of it shares.
  *
@@ -75,10 +102,8 @@ function canonicalGitUrl(url: string): string {
   const host = (scheme?.[1] ?? scp?.[1])?.toLowerCase();
   if (host === undefined) return trimmed;
   const path = (scheme === null ? scp?.[2] : scheme[2]) ?? '';
-  const cleaned = path
-    .replace(/^\/+/, '')
-    .replace(/\/+$/, '')
-    .replace(/\.git$/, '');
+  const bare = trimSlashes(path);
+  const cleaned = bare.endsWith(GIT_SUFFIX) ? bare.slice(0, -GIT_SUFFIX.length) : bare;
   return cleaned === '' ? host : `${host}/${cleaned}`;
 }
 

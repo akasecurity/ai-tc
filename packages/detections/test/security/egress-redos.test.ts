@@ -333,11 +333,35 @@ describe('the inputs above are adversarial for what they replaced', () => {
   // work in a package whose testTimeout is 20s) narrowed the same margin
   // further, because a quadratic side shrinks 4x where a linear one shrinks 2x.
   // Do not put an absolute or cross-implementation comparison back.
-  const SMALL = MB / 128;
-  const LARGE = SMALL * 2;
+  // ONE unit against FOUR, not against two. The span is what sets the margin
+  // this verdict has to survive: across 2x a linear shape reads 2 and a
+  // quadratic one 4, so a bar at 3 tolerates 25% of skew either way — and 25%
+  // is less skew than a shared runner actually produces. A No-network leg read
+  // `the replaced punctuation pattern` at 46.340ms and 119.111ms, a ratio of
+  // 2.57 where an idle Mac reads 4.54, on a clock whose measured resolution was
+  // 0.2310ms — so quantization was ruled out by the failure message itself, and
+  // the skew was 36%. Across 4x the same shapes read 4 and 16, so a bar at 8
+  // tolerates 50% in one direction and 100% in the other, and that same 36%
+  // would have read 10.2 against the 8 demanded.
+  const SMALL = MB / 256;
+  const LARGE = SMALL * 4;
 
-  // Between linear's 2 and quadratic's 4.
-  const SUPERLINEAR = 3;
+  // At the 4x span above, a linear shape reads 4 and a textbook quadratic one
+  // 16. The four shapes here are not textbook — regex backtracking is not
+  // exactly n^2 — and measure 11.33 to 16.81 over three idle runs, so the real
+  // separation to split is 4 against ~11, not 4 against 16.
+  //
+  // 6 splits it: 1.5x above a linear reading and 1.89x below the worst measured
+  // one. Deliberately nearer the bottom, because the two errors are not
+  // symmetric and the observed one has a direction. Every skew this file has
+  // actually seen DEFLATED the quotient — 2.07 against 4 on a Windows leg, 2.57
+  // against 4.54 on a No-network one — because it inflates whichever side is
+  // cheaper or measured first, and that side is the denominator. Reading a
+  // quadratic shape as LINEAR reddens a tree whose diff cannot explain it,
+  // which is what this file has spent two legs doing; reading a linear shape as
+  // superlinear needs the numerator to gain 50% on the denominator, against the
+  // drift rather than with it.
+  const SUPERLINEAR = 6;
 
   // Both readings are divided into each other, so everything the two share
   // cancels and a uniformly slower machine moves the quotient not at all. What
@@ -406,15 +430,23 @@ describe('the inputs above are adversarial for what they replaced', () => {
   const CLOCK_RESOLUTION_MS = clockResolutionMs();
 
   // How many resolutions wide one timed window has to be. Each side then
-  // carries at most 1/16 of relative error and the quotient at most ~1/8, which
-  // leaves a genuinely quadratic shape reading 3.5 or better against the 3
-  // demanded, and a genuinely linear one 2.25 or worse.
-  const RESOLUTION_MARGIN = 16;
+  // carries at most 1/8 of relative error and the quotient at most ~1/4, which
+  // leaves a genuinely quadratic shape reading 12.4 or better against the 8
+  // demanded, and a genuinely linear one 5.1 or worse. The 4x span above is
+  // what pays for this: at a 2x span the same error budget needed twice the
+  // window, and on a 16ms clock that is 256ms per side rather than 128ms.
+  const RESOLUTION_MARGIN = 8;
 
   // The absolute floor beneath the clock-derived one. On a microsecond clock
-  // the margin above lands at 16us, and a window that short measures whatever
-  // the collector happened to do inside it rather than the shape.
-  const MIN_WINDOW_MS = 5;
+  // the margin above lands in the tens of microseconds, and a window that short
+  // measures whatever the collector happened to do inside it rather than the
+  // shape. It is set well above that for a second reason: a window one pass
+  // wide averages nothing, and the cheapest side here is the one whose spread
+  // shows it — at a 5ms floor the tag shape's small side was a single ~7ms pass
+  // and the quotient ranged 11.78 to 16.81 over three runs. At 25ms each side
+  // is averaged over as many passes as it takes, which costs the same total
+  // work and spends it on a steadier number.
+  const MIN_WINDOW_MS = 25;
 
   const WINDOW_MS = Math.max(MIN_WINDOW_MS, CLOCK_RESOLUTION_MS * RESOLUTION_MARGIN);
 
@@ -452,8 +484,28 @@ describe('the inputs above are adversarial for what they replaced', () => {
     const over = (work: () => unknown, reps: number) => (): void => {
       for (let i = 0; i < reps; i += 1) work();
     };
-    const small = fastest(over(smallWork, smallReps)) / smallReps;
-    const large = fastest(over(largeWork, largeReps)) / largeReps;
+    const overSmall = over(smallWork, smallReps);
+    const overLarge = over(largeWork, largeReps);
+
+    // Measured in ALTERNATION, behind a discarded pair, because measuring one
+    // side to completion and then the other puts every drift between them
+    // squarely on the quotient — and the side measured first is the
+    // denominator. A ramping CPU clock, a JIT still tiering up, and a
+    // collection triggered by the setup allocations all drift the same way, and
+    // all of them inflate whichever side goes first. Alternating makes each
+    // side's minimum come from an adjacent pass rather than from a different
+    // phase of the run, so a drift the two share cancels the way a slower
+    // machine does.
+    overSmall();
+    overLarge();
+    let smallBest = Infinity;
+    let largeBest = Infinity;
+    for (let pass = 0; pass < PASSES; pass += 1) {
+      smallBest = Math.min(smallBest, burned(overSmall));
+      largeBest = Math.min(largeBest, burned(overLarge));
+    }
+    const small = smallBest / smallReps;
+    const large = largeBest / largeReps;
     if (small === 0) {
       throw new Error(
         `the small side measured 0ms over ${String(smallReps)} passes, after a window sized to ` +
@@ -479,7 +531,7 @@ describe('the inputs above are adversarial for what they replaced', () => {
     expect(
       measured.ratio,
       `${label} cost ${measured.small.toFixed(3)}ms and ${measured.large.toFixed(3)}ms per pass ` +
-        `at one and two units of input — a ratio of ${measured.ratio.toFixed(2)}, i.e. LINEAR. ` +
+        `at one and four units of input — a ratio of ${measured.ratio.toFixed(2)}, i.e. LINEAR. ` +
         `This input no longer makes that shape blow up, so the budget case it backs proves ` +
         `nothing. Rebuild the hostile shape. Measured over ${measured.window}, so the clock is ` +
         `not what produced this.`,

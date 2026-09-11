@@ -98,7 +98,7 @@ describe('non-declaring adapters (runs today)', () => {
       it("parseRequest('{}') does not throw and reports requiredPathsSeen: false", () => {
         let parsed: ParsedRequest | undefined;
         expect(() => {
-          parsed = adapter.parseRequest('{}');
+          parsed = adapter.parseRequest('{}', matchedExchangeFor(adapter));
         }).not.toThrow();
         expect(parsed?.requiredPathsSeen).toBe(false);
       });
@@ -180,7 +180,7 @@ for (const adapter of declaring) {
       it('adapter.parseRequest() satisfies its own required request paths', () => {
         const fixture = loadFixture(adapter.id, REQUEST_FIXTURE);
         const body = fixture.chunks.join('');
-        const parsed = adapter.parseRequest(body);
+        const parsed = adapter.parseRequest(body, matchedExchangeFor(adapter, fixture.url));
         expect(parsed.requiredPathsSeen).toBe(true);
         const decoded: unknown =
           fixture.format === 'urlencoded'

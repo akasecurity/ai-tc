@@ -507,14 +507,17 @@ describe('E — the declared network contract', () => {
     for (const input of unmet) {
       let parsed: ParsedRequest | undefined;
       expect(() => {
-        parsed = claudeAdapter.parseRequest(input);
+        parsed = claudeAdapter.parseRequest(input, EXCHANGE);
       }, input.slice(0, 40)).not.toThrow();
       expect(parsed?.requiredPathsSeen, input.slice(0, 40)).toBe(false);
     }
   });
 
   it('E2b: a body carrying both fields reports them, and invents no conversation id', () => {
-    const parsed = claudeAdapter.parseRequest('{"model":"a-model","prompt":"hi","extra":1}');
+    const parsed = claudeAdapter.parseRequest(
+      '{"model":"a-model","prompt":"hi","extra":1}',
+      EXCHANGE,
+    );
     expect(parsed.requiredPathsSeen).toBe(true);
     expect(parsed.model).toBe('a-model');
     expect(parsed.prompt).toBe('hi');

@@ -750,6 +750,39 @@ jobs:
             turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
             turbo-${{ runner.os }}-
 
+      # Two facts the cap's arithmetic currently INFERS and should not:
+      # the runner's logical CPU count, and the worker count vitest sizes from
+      # it — derived today by dividing a package's aggregate `tests` time by its
+      # reported `Duration` and noticing the quotient tops out near 3.
+      #
+      # Nothing depends on what these print. They are here so the NEXT decision
+      # about this leg can be measured rather than argued.
+      - name: Runner facts
+        continue-on-error: true
+        run: |
+          $cs = Get-CimInstance Win32_ComputerSystem
+          $os = Get-CimInstance Win32_OperatingSystem
+          "logical CPUs: $($cs.NumberOfLogicalProcessors)"
+          "availableParallelism (what vitest sizes its pool from): $(node -e "process.stdout.write(String(require('node:os').availableParallelism()))")"
+          "total RAM MB: $([math]::Round($os.TotalVisibleMemorySize / 1KB))"
+          "free RAM MB:  $([math]::Round($os.FreePhysicalMemory / 1KB))"
+          Get-PSDrive -PSProvider FileSystem |
+            Where-Object { $null -ne $_.Used } |
+            ForEach-Object { "drive $($_.Name): used $([math]::Round($_.Used / 1GB))GB free $([math]::Round($_.Free / 1GB))GB" }
+
+      # DETACHED, not Start-Job. Each `run:` step is its own PowerShell, and a
+      # background job dies with the session that created it — so a job started
+      # here would be gone before the first test ran, having written an empty
+      # file that reads exactly like a quiet runner.
+      - name: Start runner sampler
+        continue-on-error: true
+        run: |
+          $proc = Start-Process pwsh -PassThru -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile', '-File', 'tools/ci/windows-runner-sampler.ps1'
+          )
+          "sampler pid: $($proc.Id)"
+          "$($proc.Id)" | Set-Content (Join-Path $env:RUNNER_TEMP 'sampler-pid')
+
       - name: Test the shipped surface and its enforcement
         # --continue: report every package's failures in one run instead of
         # hiding later packages behind the first red one.
@@ -944,6 +977,33 @@ jobs:
         env:
           AKA_INSTALLER_ALLOW_USER_PATH: '1'
         run: pnpm turbo run test --concurrency=1 --filter=@akasecurity/installer -- --maxWorkers=2
+
+      # `always()`, because the run this most needs to explain is the one that
+      # FAILED — a summary that prints only on success describes the case nobody
+      # is investigating.
+      - name: Runner samples
+        if: always()
+        continue-on-error: true
+        run: |
+          $pidFile = Join-Path $env:RUNNER_TEMP 'sampler-pid'
+          if (Test-Path $pidFile) {
+            Stop-Process -Id (Get-Content $pidFile) -Force -ErrorAction SilentlyContinue
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'runner-samples.csv'
+          if (-not (Test-Path $path)) { "no samples were written"; exit 0 }
+          $rows = @(Import-Csv $path)
+          "samples: $($rows.Count) over $([math]::Round($rows.Count * 10 / 60, 1)) minutes"
+          foreach ($col in 'cpu_pct', 'disk_queue', 'avail_mb') {
+            $vals = @($rows | ForEach-Object { [double]$_.$col } | Sort-Object)
+            if ($vals.Count -eq 0) { continue }
+            $p95 = $vals[[math]::Min($vals.Count - 1, [int][math]::Floor(0.95 * $vals.Count))]
+            $p50 = $vals[[int][math]::Floor(0.5 * $vals.Count)]
+            "$col  min $($vals[0])  p50 $p50  p95 $p95  max $($vals[-1])"
+          }
+          # The whole series too: a p95 cannot show a stall that lasted one
+          # sample, and the stalls this exists to explain are 20-55 seconds.
+          "--- full series ---"
+          Get-Content $path
 
       - name: Save Turbo cache
         if: ${{ !cancelled() && steps.turbo-cache.outputs.cache-hit != 'true' }}

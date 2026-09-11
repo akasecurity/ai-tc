@@ -404,6 +404,12 @@ describe('the inputs above are adversarial for what they replaced', () => {
    * The probe's busy loop GROWS until a delta appears: one sized for a
    * microsecond clock reads zero on a coarse clock for ever, and reporting zero
    * would hand the caller a window of no width at all.
+   *
+   * A clock that reports nothing even at the cap is REFUSED here rather than
+   * reported upward. Every number below divides by this one, so an unusable
+   * reading has to stop the measurement at the point where it can still be
+   * named: carried onward it is not a bad quotient but an unbounded loop, and
+   * the loop is synchronous, so nothing can interrupt it.
    */
   function clockResolutionMs(): number {
     for (let work = 1_000; work <= 134_217_728; work *= 8) {
@@ -424,7 +430,12 @@ describe('the inputs above are adversarial for what they replaced', () => {
       }
       if (best !== Infinity) return best;
     }
-    return Infinity;
+    throw new Error(
+      "this thread's CPU clock reported no non-zero delta across busy loops up to 134,217,728 " +
+        'iterations, so its resolution cannot be measured and no window can be sized against ' +
+        'it. Refusing to measure rather than reporting a quotient divided by a clock that ' +
+        'never moved.',
+    );
   }
 
   const CLOCK_RESOLUTION_MS = clockResolutionMs();
@@ -450,6 +461,17 @@ describe('the inputs above are adversarial for what they replaced', () => {
 
   const WINDOW_MS = Math.max(MIN_WINDOW_MS, CLOCK_RESOLUTION_MS * RESOLUTION_MARGIN);
 
+  // A ceiling on the repetition count, and it is what makes the refusal below
+  // REACHABLE rather than decorative. Both growth rules compound — an aimed
+  // count divides by a measurement, and the blind one multiplies by 8 — so
+  // without a ceiling a window that cannot be filled arrives at attempt 32 with
+  // a pass count no machine finishes, and the loop that runs it is synchronous:
+  // vitest's timeout cannot interrupt a body that never yields, so the worker
+  // hangs where it was supposed to refuse. The largest legitimate count measured
+  // is ~164,000 (a deliberately linear shape filling a 16ms clock's window), so
+  // this sits ~60x above anything real and still costs under a second to reach.
+  const MAX_REPETITIONS = 10_000_000;
+
   /** How many passes of `work` fill one window, sized from a measurement. */
   function repetitionsFilling(work: () => unknown): number {
     let reps = 1;
@@ -463,6 +485,14 @@ describe('the inputs above are adversarial for what they replaced', () => {
       // step blind instead of dividing by it.
       const aimed = ms > 0 ? Math.ceil(reps * (WINDOW_MS / ms) * 1.25) : reps * 8;
       reps = Math.max(reps + 1, aimed);
+      if (!Number.isFinite(reps) || reps > MAX_REPETITIONS) {
+        throw new Error(
+          `sizing a ${WINDOW_MS.toFixed(3)}ms window reached ${String(reps)} passes, past the ` +
+            `${String(MAX_REPETITIONS)} ceiling, at a measured clock resolution of ` +
+            `${CLOCK_RESOLUTION_MS.toFixed(4)}ms. Refusing rather than running a synchronous ` +
+            `loop that nothing can interrupt.`,
+        );
+      }
     }
     throw new Error(
       `could not fill a ${WINDOW_MS.toFixed(3)}ms window in 32 attempts, at a measured clock ` +

@@ -1584,10 +1584,10 @@ index over two VIRTUAL columns and 5,020 ms read from the rows. Migration 0029's
 `idx_audit_capture_rollup` carries `(event_type, started_at, repo, id)` for the four
 capture kinds so the four broad rollups answer from the index, and the four reads carry
 `INDEXED BY`; the page went ~15 s to ~2 s warm, with `topSources` — which needs `repo` for
-every capture event in its window — going 8,922 ms COLD to 72 ms. (That read measures
-8,278 ms warm, which is the figure `security-probe-plans.test.ts` quotes against the page's
-warm total; the two differ by the cache state and neither is usable without it.) Two traps
-come with it.
+every capture event in its window — going 8,278 ms to 72 ms WARM, and 8,922 ms to 74 ms
+COLD. The pairs are like-for-like on purpose: a before-figure and an after-figure measured
+in different cache states describe no speedup at all, and `security-probe-plans.test.ts`
+quotes the warm pair against this same warm page total. Two traps come with it.
 `EXPLAIN QUERY PLAN` will NOT say COVERING for a read naming `repo`, because SQLite counts
 a generated column's dependency on `attributes` as a reference to the row even while
 reading the value from the index, so the timing is the evidence and the label is not —

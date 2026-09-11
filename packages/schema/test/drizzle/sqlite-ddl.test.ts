@@ -114,11 +114,19 @@ describe('SQLITE_MIGRATIONS', () => {
  *
  * SQLite refuses to prove a partial index applies unless the query's own
  * predicate matches the index's, and its implication prover does not reason
- * about `IN`-list containment — so the two lists must be the SAME SET, in both
- * directions. A narrower query list is refused exactly as a wider one is. With
- * `INDEXED BY` forcing the choice, a mismatch is not a slower plan: `prepare()`
- * raises "no query solution" and every one of those reads throws on every page
- * load.
+ * about `IN`-list containment — or about ORDER. The two lists must be the same
+ * SEQUENCE: narrowing, widening and REORDERING are all refused alike. Measured
+ * against `node:sqlite` on this workspace's own Node, same index and join
+ * shape — a canonical index against a reordered query list, and a reordered
+ * index against a canonical query list, both raise `no query solution` even
+ * though the two are the same set.
+ *
+ * That last one is why this compares sequences rather than sets. A reorder is
+ * an ordinary edit — an alphabetize, a sort-keys rule, a kind inserted in
+ * logical position rather than appended — and a set comparison cannot see it.
+ * With `INDEXED BY` forcing the choice, a mismatch is not a slower plan:
+ * `prepare()` raises "no query solution" and every one of those reads throws on
+ * every page load.
  *
  * The query side is DERIVED (`CAPTURE_EVENT_TYPES_SQL` is `EventKind.options`),
  * and a shipped migration is immutable. So the enum is the one thing that can
@@ -145,13 +153,15 @@ describe('the capture-rollup index predicate', () => {
       .map((v) => v.trim().replace(/^'|'$/g, ''))
       .filter((v) => v !== '');
 
-    // Sets, both directions — narrowing throws just as widening does.
-    expect([...inList].sort()).toEqual([...EventKind.options].sort());
+    // SEQUENCE, not set: a reorder throws just as a narrowing or a widening
+    // does, and sorting both sides here would let exactly that edit through.
+    expect(inList).toEqual([...EventKind.options]);
   });
 
   it('is the same list the reads interpolate', () => {
     // The other half: the query side could be changed without touching the enum.
     const fromSql = CAPTURE_EVENT_TYPES_SQL.split(',').map((v) => v.trim().replace(/^'|'$/g, ''));
-    expect([...fromSql].sort()).toEqual([...EventKind.options].sort());
+    // Order-sensitive for the identical reason.
+    expect(fromSql).toEqual([...EventKind.options]);
   });
 });

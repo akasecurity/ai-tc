@@ -114,10 +114,27 @@ export const ManagedSettings = z
       else unknown.push(name);
     }
 
-    const knownValues: Record<string, unknown> = {};
+    // `Object.hasOwn`, never `name in shape`: `in` consults the PROTOTYPE CHAIN,
+    // so every `Object.prototype` name — `toString`, `constructor`, `valueOf`,
+    // `__proto__` and the rest — classifies as known, is handed to the nested
+    // schema, and is dropped there with nothing reported. That is exactly the
+    // silence this split exists to end, reached from the one direction the
+    // split itself created.
+    //
+    // `__proto__` specifically never reaches here: the `z.record` above strips
+    // it, so a pin by that name is neither applied nor reported. That is Zod's
+    // behaviour rather than this function's, and it is the safe direction — but
+    // it IS one more silently dropped pin, so do not read the split below as
+    // covering it.
+    //
+    // The accumulator is null-prototype anyway. Nothing can reach it through
+    // `__proto__` today, and that is a property of the parser above rather than
+    // of this loop; a plain `{}` here would make the loop's correctness depend
+    // on it.
+    const knownValues = Object.create(null) as Record<string, unknown>;
     const unknownValues: string[] = [];
     for (const [name, value] of Object.entries(values)) {
-      if (name in ManagedSettingsValues.shape) knownValues[name] = value;
+      if (Object.hasOwn(ManagedSettingsValues.shape, name)) knownValues[name] = value;
       else unknownValues.push(name);
     }
     const pinned = ManagedSettingsValues.safeParse(knownValues);

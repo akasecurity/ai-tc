@@ -6,6 +6,8 @@ export {
   backgroundSyncLabel,
   installBackgroundSync,
   renderPlist,
+  type SyncRunStart,
+  triggerHistorySyncRun,
   uninstallBackgroundSync,
 } from './background-schedule.ts';
 export { claudeAvailable, installClaudePlugin, updateClaudePlugin } from './claude-plugin.ts';

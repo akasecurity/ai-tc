@@ -324,18 +324,25 @@ describe('runsTestViaPackageScript', () => {
 describe('CI caps the worker pool where it bounds package concurrency', () => {
   const hits = workflowCommands();
 
-  it('still carries at least one cap, so removing it is a deliberate edit', () => {
-    // A floor rather than an exact set: adding one to another leg is normal.
-    // Dropping the last one reds here rather than passing quietly, which is
-    // what a bound that was landed for a measured reason is owed — the leg it
-    // was landed for goes back to failing intermittently, and nothing in a
-    // diff would say so.
+  it('still carries a cap on every invocation of the leg it was landed for', () => {
+    // THREE, because the Windows job makes three `turbo run test` calls and a
+    // cap on some of them is the defect this number encodes: the first version
+    // of this capped only the first invocation, which left `web-ui` — named by
+    // that job's own comment as one of the two heaviest fsync-bound suites on
+    // the leg — running an uncapped pool. A cap that misses the thing it was
+    // aimed at reads in a diff exactly like one that does not.
+    //
+    // A floor rather than an exact set, because adding a capped invocation
+    // elsewhere is normal and must not fail here. Dropping BELOW three means
+    // the leg has gone back to an uncapped pool somewhere, and nothing else in
+    // a diff would say so.
     const capped = hits.filter((h) => runsTurboTest(h.cmd) && maxWorkersOf(h.cmd) !== undefined);
     expect(
-      capped.length,
-      'no `turbo run test` invocation caps its vitest pool any more; each package task ' +
-        'again forks a pool sized to the runner, and two of those contend for one disk',
-    ).toBeGreaterThanOrEqual(1);
+      capped.map(describeHit),
+      'fewer than three `turbo run test` invocations cap their vitest pool; the Windows ' +
+        'leg makes three, and an uncapped one forks a pool sized to the runner',
+    ).toHaveLength(capped.length);
+    expect(capped.length).toBeGreaterThanOrEqual(3);
   });
 
   it('sends every cap through the `--` separator rather than to turbo', () => {

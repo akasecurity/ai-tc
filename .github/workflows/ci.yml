@@ -779,6 +779,13 @@ jobs:
         # direction. packages/eslint-config/test/ci-test-concurrency.test.js
         # holds both.
         #
+        # ALL THREE of this job's turbo invocations carry it, including the two
+        # below that already run at `--concurrency=1`. That is not redundant:
+        # --concurrency bounds how many PACKAGES run, and a package running
+        # alone still forks a host-sized pool — so web-ui, which the pairing
+        # note below names as one of the two heaviest fsync-bound suites on this
+        # leg, was the one thing a first-invocation-only cap would have missed.
+        #
         # Two packages are deliberately NOT in this list. web-ui and the
         # installer each run in their own invocation below, and each for a
         # measured reason given at its step; both are the same shape of
@@ -896,7 +903,9 @@ jobs:
       # reporting, for the same reason that step takes `--continue`.
       - name: Test the dashboard suites
         if: ${{ !cancelled() }}
-        run: pnpm turbo run test --concurrency=1 --filter=@akasecurity/web-ui --filter=@akasecurity/dashboard-ui
+        run: >
+          pnpm turbo run test --concurrency=1 --filter=@akasecurity/web-ui
+          --filter=@akasecurity/dashboard-ui -- --maxWorkers=2
 
       # The installer suite runs in its OWN turbo invocation too, AFTER the
       # filters above and the dashboard step, rather than beside any of them.
@@ -934,7 +943,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           AKA_INSTALLER_ALLOW_USER_PATH: '1'
-        run: pnpm turbo run test --concurrency=1 --filter=@akasecurity/installer
+        run: pnpm turbo run test --concurrency=1 --filter=@akasecurity/installer -- --maxWorkers=2
 
       - name: Save Turbo cache
         if: ${{ !cancelled() && steps.turbo-cache.outputs.cache-hit != 'true' }}

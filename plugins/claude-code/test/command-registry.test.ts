@@ -1,4 +1,5 @@
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -151,5 +152,93 @@ describe('chaining-line secret-scan continuation selection', () => {
       (c) => c !== '/aka:scan' && c !== '/aka:secretscan',
     );
     expect(() => selectSecretScanContinuation(withoutSecretScan)).toThrow();
+  });
+});
+
+describe('shipped command prose names commands in their invokable form', () => {
+  // These files reach the user either way — scan.md's description is shown, and
+  // setup.md is the wizard script the model follows and quotes from. A command
+  // file `foo.md` registers as `/aka:foo`, so a bare `/foo` in that prose is a
+  // call-to-action nobody can invoke. Two had drifted with nothing looking at
+  // them, which is what this scan is for.
+  const PLUGIN_DIR = fileURLToPath(new URL('..', import.meta.url));
+  const COMMANDS_DIR = join(PLUGIN_DIR, 'commands');
+  const NAMES = readRegisteredCommands().map((c) => c.replace('/aka:', ''));
+
+  // Every markdown file the tarball carries, not just commands/. npm ships the
+  // `files` entries plus README.md whether or not it is listed — confirmed
+  // against `npm pack --dry-run`, where README.md appears despite its absence
+  // from `files`. Scanning commands/ alone left the README, which names four
+  // commands and is the most-read page here, guarded by nothing.
+  const pkg = JSON.parse(readFileSync(join(PLUGIN_DIR, 'package.json'), 'utf8')) as {
+    files?: string[];
+  };
+  const SHIPPED_ROOTS = [...(pkg.files ?? []), 'README.md'];
+
+  // `scripts/` is build output and may be absent before a build, so a missing
+  // root is skipped rather than fatal — the coverage assertion below is what
+  // catches a walk that silently found nothing.
+  const shippedMarkdown = (): string[] => {
+    const found: string[] = [];
+    for (const root of SHIPPED_ROOTS) {
+      const abs = join(PLUGIN_DIR, root);
+      if (!existsSync(abs)) continue;
+      if (statSync(abs).isFile()) {
+        if (abs.endsWith('.md')) found.push(root);
+        continue;
+      }
+      for (const entry of readdirSync(abs, { recursive: true, withFileTypes: true })) {
+        if (entry.isFile() && entry.name.endsWith('.md')) {
+          found.push(relative(PLUGIN_DIR, join(entry.parentPath, entry.name)));
+        }
+      }
+    }
+    return found;
+  };
+
+  // `/aka:foo` contains no `/foo` substring — its only slash is followed by `a` —
+  // so a bare occurrence is exactly what this matches. The leading class rejects a
+  // path segment or URL tail (`scripts/scan-worker.js`, `~/.aka/data`), which is
+  // the only shape that would otherwise read as a bare command.
+  const bareForm = (): RegExp => new RegExp(`(^|[^A-Za-z0-9_:/.\\-])/(${NAMES.join('|')})\\b`, 'g');
+
+  const scan = (text: string): string[] =>
+    text
+      .split('\n')
+      .flatMap((line, i) =>
+        [...line.matchAll(bareForm())].map((m) => `${String(i + 1)}: ${m[0].trim()}`),
+      );
+
+  it('no shipped markdown names a bare /<command>', () => {
+    const offenders = shippedMarkdown().flatMap((rel) =>
+      scan(readFileSync(join(PLUGIN_DIR, rel), 'utf8')).map((hit) => `${rel}:${hit}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it('the walk reaches the README and every command file', () => {
+    // A walk that found nothing reports an empty offender list, which reads
+    // exactly like a clean tree — so pin what it must have covered.
+    const walked = new Set(shippedMarkdown());
+    expect(walked).toContain('README.md');
+    for (const f of readdirSync(COMMANDS_DIR).filter((n) => n.endsWith('.md'))) {
+      expect(walked).toContain(join('commands', f));
+    }
+  });
+
+  it('the matcher catches a bare form and passes the namespaced one', () => {
+    // Without this control a broken pattern reports an empty offender list for
+    // ever, which reads exactly like a clean tree.
+    expect(scan('visible via `/findings`.')).toHaveLength(1);
+    expect(scan('and pointed at `/health`.')).toHaveLength(1);
+    expect(scan('Run /recommend to review 5 prioritized actions.')).toHaveLength(1);
+
+    // The namespaced form is what every corrected site uses.
+    expect(scan('visible via `/aka:findings`.')).toEqual([]);
+    expect(scan('Run /aka:recommend <n> to act on one, or /aka:health.')).toEqual([]);
+
+    // Paths and URLs carry these words after a slash and are not commands.
+    expect(scan('scripts/scan-worker.js and ~/.aka/data/aka.db')).toEqual([]);
+    expect(scan('see https://example.com/health for more')).toEqual([]);
   });
 });

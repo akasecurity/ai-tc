@@ -18,11 +18,17 @@ export type { RunResult } from './exec.ts';
 export { binExists, runCapture, runInherit } from './exec.ts';
 export type {
   CollectedFile,
+  CollectFilesOptions,
   ScannedFileFindings,
   ScanPathOptions,
   ScanPathResult,
 } from './fs-scan.ts';
-export { collectFiles, scanPathIntoStore } from './fs-scan.ts';
+export {
+  collectFiles,
+  isProtectedTarget,
+  ProtectedTargetError,
+  scanPathIntoStore,
+} from './fs-scan.ts';
 export type {
   DroppedRules,
   GuardedFileScanner,

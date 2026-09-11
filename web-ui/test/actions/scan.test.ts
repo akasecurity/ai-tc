@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -251,6 +251,30 @@ describe('runScan — an ordinary installed snapshot', () => {
     },
     CASE_TIMEOUT_MS,
   );
+});
+
+describe('runScan — a protected target', () => {
+  it('answers with a recoverable refusal instead of rejecting the action', async () => {
+    // A THROWN Server Action rejects, and the browser then renders a framework
+    // error page in place of the `{ ok: false, error }` this action is written
+    // to return. The AKA home is the reachable case: the folder picker walks to
+    // it like any other directory.
+    //
+    // The seeded file is the control — the walk WOULD have yielded it, so a
+    // refused scan cannot be confused with an empty directory.
+    const akaHome = join(home, '.aka');
+    mkdirSync(akaHome, { recursive: true });
+    writeFileSync(join(akaHome, 'notes.txt'), 'hello\n');
+    installPulled([]);
+
+    const result = await runScan(akaHome);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain(akaHome);
+    // Not a completed scan of a directory it never opened: `scanned` is the
+    // field the page renders a count from.
+    expect(result.scanned).toBeUndefined();
+  });
 });
 
 /**

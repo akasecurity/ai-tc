@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { FindingView } from '@akasecurity/plugin-sdk';
+import type { FindingView, HealthSummary } from '@akasecurity/plugin-sdk';
 import {
   buildRecommendations as sdkBuildRecommendations,
   severityFloorPosture,
@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildHandoffOffer,
+  buildHealthReport,
   buildRecommendations,
   RE_TUNE_HINT,
   renderAdjustConfirm,
@@ -25,8 +26,10 @@ import {
   renderCategoriesTuned,
   renderDetections,
   renderFirstRun,
+  renderHealth,
   renderPosture,
   renderPostureGrid,
+  renderRecommend,
   renderRecommendedPosture,
   renderStartLight,
   topFindings,
@@ -744,5 +747,61 @@ describe('renderDetections — the policy column', () => {
     const out = renderDetections([item({ policyId: 'my-custom-policy' })]);
     expect(out).toContain('my-custom-policy');
     expect(out).not.toContain(BUILTIN_POLICIES[DEFAULT_PACK_POLICY_ID].name);
+  });
+});
+
+describe('read-surface footers name skills this host can actually invoke', () => {
+  // This host invokes a skill by its frontmatter `name:` (`aka-health`), not as a
+  // slash command — `/aka:health` is the Claude Code plugin's namespace and
+  // resolves to nothing here. Neither footer was pinned by anything, which is
+  // exactly how the sibling plugin's two footers drifted to a bare `/recommend`.
+  const REGISTRY = readRegisteredSkills();
+
+  const summary: HealthSummary = {
+    findings: 2,
+    byAction: { block: 1, redact: 1, warn: 0, allow: 0, log: 0 },
+    bySeverity: { critical: 1, high: 0, medium: 0, low: 1 },
+    coverage: 1,
+  };
+  const status = {
+    score: 72,
+    unreviewed: { critical: 1, high: 0, medium: 0, low: 1 },
+    openFindings: 2,
+  };
+
+  it('the health footer names the recommend skill', () => {
+    const findings = [finding(), finding({ category: 'pii', severity: 'low' })];
+    const out = renderHealth(buildHealthReport(summary, findings, []));
+    expect(out).toContain('Use the aka-recommend skill to review');
+    // No slash-command form of any kind reaches this host's transcript.
+    expect(out).not.toContain('/aka:');
+    expect(out).not.toContain('/recommend');
+  });
+
+  it('the recommend footer names the recommend and health skills', () => {
+    const findings = [finding(), finding({ category: 'pii', severity: 'low' })];
+    const recs = buildRecommendations(findings);
+    // The footer renders only on the populated path, so an empty build would
+    // leave every assertion below holding vacuously.
+    expect(recs.length).toBeGreaterThan(0);
+    const out = renderRecommend(recs, status);
+    expect(out).toContain('Use aka-recommend <n> to act on one, or aka-health for the summary.');
+    expect(out).not.toContain('/aka:');
+    expect(out).not.toContain('/health');
+  });
+
+  it('every skill either footer names is one the plugin ships', () => {
+    // The names are read OUT OF the rendered footers rather than listed here, so
+    // a footer that grows a third skill is checked too. Listing them instead
+    // would pass while that third skill was renamed out of existence.
+    const findings = [finding(), finding({ category: 'pii', severity: 'low' })];
+    const health = renderHealth(buildHealthReport(summary, findings, []));
+    const recommend = renderRecommend(buildRecommendations(findings), status);
+    const named = [
+      ...health.matchAll(/\baka-[a-z-]+/g),
+      ...recommend.matchAll(/\baka-[a-z-]+/g),
+    ].map((m) => m[0]);
+    expect(named.length).toBeGreaterThan(0);
+    for (const skill of named) expect(REGISTRY).toContain(skill);
   });
 });

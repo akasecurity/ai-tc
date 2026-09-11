@@ -9,7 +9,7 @@
 // basenames return null and are never parsed).
 import type { EgressEcosystem } from '@akasecurity/schema';
 
-import { redactSnippet } from './extract.ts';
+import { lineIndexAt, lineStartOffsets, lineTextAt, redactSnippet } from './extract.ts';
 import { normalizePypi } from './registry.ts';
 
 /** One dependency-manifest file kind this module knows how to parse. */
@@ -119,9 +119,9 @@ function makeHit(
   ecosystem: EgressEcosystem,
   pkg: string,
   line: number,
-  rawLine: string,
+  snippet: string,
 ): ManifestSdkHit {
-  return { ecosystem, pkg, line, snippet: redactSnippet(rawLine) };
+  return { ecosystem, pkg, line, snippet };
 }
 
 // ── package.json (npm) ───────────────────────────────────────────────────
@@ -131,14 +131,20 @@ function extractPackageJson(text: string): ManifestSdkHit[] {
   if (parsed === null) return [];
   const seen = new Set<string>();
   const hits: ManifestSdkHit[] = [];
+  const lines = manifestLines(text);
+  // Once per SECTION, not once per dependency: the offset is the same for every
+  // key in it, and a manifest's key count grows with its size.
+  const tokens = quotedTokenOffsets(text);
+  const dependenciesAt = sectionOffset(text, 'dependencies');
+  const optionalAt = sectionOffset(text, 'optionalDependencies');
   for (const pkg of objectKeys(parsed.dependencies)) {
     seen.add(pkg);
-    hits.push(hitAtQuotedKey('npm', pkg, text, 'dependencies'));
+    hits.push(hitAtQuotedKey('npm', pkg, text, dependenciesAt, lines, tokens));
   }
   for (const pkg of objectKeys(parsed.optionalDependencies)) {
     if (seen.has(pkg)) continue;
     seen.add(pkg);
-    hits.push(hitAtQuotedKey('npm', pkg, text, 'optionalDependencies'));
+    hits.push(hitAtQuotedKey('npm', pkg, text, optionalAt, lines, tokens));
   }
   return hits;
 }
@@ -154,11 +160,11 @@ const REQUIREMENTS_NAME = /^\s*([A-Za-z0-9][\w.-]*)/;
 
 function extractRequirementsTxt(text: string): ManifestSdkHit[] {
   const hits: ManifestSdkHit[] = [];
-  eachLine(text, (rawLine, lineNumber) => {
+  eachLine(text, (rawLine, lineNumber, snippet) => {
     const match = REQUIREMENTS_NAME.exec(rawLine);
     const name = match?.[1];
     if (name === undefined) return;
-    hits.push(makeHit('pypi', normalizePypi(name), lineNumber, rawLine));
+    hits.push(makeHit('pypi', normalizePypi(name), lineNumber, snippet()));
   });
   return hits;
 }
@@ -175,7 +181,7 @@ function extractPyprojectToml(text: string): ManifestSdkHit[] {
   let section = '';
   let inDependenciesArray = false;
 
-  eachLine(text, (rawLine, lineNumber) => {
+  eachLine(text, (rawLine, lineNumber, snippet) => {
     const sectionMatch = TOML_SECTION.exec(rawLine);
     if (sectionMatch) {
       section = sectionMatch[1]?.trim() ?? '';
@@ -191,7 +197,7 @@ function extractPyprojectToml(text: string): ManifestSdkHit[] {
       for (const spec of quotedStrings(rawLine)) {
         const name = PEP508_NAME.exec(spec)?.[1];
         if (name !== undefined)
-          hits.push(makeHit('pypi', normalizePypi(name), lineNumber, rawLine));
+          hits.push(makeHit('pypi', normalizePypi(name), lineNumber, snippet()));
       }
       if (rawLine.includes(']')) inDependenciesArray = false;
       return;
@@ -202,7 +208,7 @@ function extractPyprojectToml(text: string): ManifestSdkHit[] {
       // 'python' pins the interpreter version, not a dependency — the same
       // platform-package exclusion composer.json applies to 'php'.
       if (key !== undefined && key !== 'python') {
-        hits.push(makeHit('pypi', normalizePypi(key), lineNumber, rawLine));
+        hits.push(makeHit('pypi', normalizePypi(key), lineNumber, snippet()));
       }
     }
   });
@@ -230,7 +236,7 @@ function extractGoMod(text: string): ManifestSdkHit[] {
   const hits: ManifestSdkHit[] = [];
   let blockKeyword: string | null = null;
 
-  eachLine(text, (rawLine, lineNumber) => {
+  eachLine(text, (rawLine, lineNumber, snippet) => {
     if (blockKeyword === null) {
       const open = GO_BLOCK_OPEN.exec(rawLine)?.[1];
       if (open !== undefined) {
@@ -238,7 +244,7 @@ function extractGoMod(text: string): ManifestSdkHit[] {
         return;
       }
       const path = GO_REQUIRE_SINGLE_LINE.exec(rawLine)?.[1];
-      if (path !== undefined) hits.push(makeHit('go', path, lineNumber, rawLine));
+      if (path !== undefined) hits.push(makeHit('go', path, lineNumber, snippet()));
       return;
     }
 
@@ -248,7 +254,7 @@ function extractGoMod(text: string): ManifestSdkHit[] {
     }
     if (blockKeyword === 'require') {
       const path = GO_MODULE_VERSION_LINE.exec(rawLine)?.[1];
-      if (path !== undefined) hits.push(makeHit('go', path, lineNumber, rawLine));
+      if (path !== undefined) hits.push(makeHit('go', path, lineNumber, snippet()));
     }
   });
 
@@ -272,7 +278,25 @@ const POM_CONTEXT_TAGS = new Set([
   'exclusions',
   'exclusion',
 ]);
-const XML_TAG = /<(\/?)([A-Za-z][\w.-]*)([^<>]*)>/g;
+// The name run is MAXIMAL, so whatever follows it is either `>` or a character
+// the name class cannot hold. Spelling that out — rather than letting the
+// attribute group start with characters the name group could also have taken —
+// is what keeps this linear. The two groups otherwise share an alphabet, so a
+// `<` that never closes makes the engine retry every split point of the name
+// run against the rest of the line. That is reachable from any repository being
+// scanned: a manifest line is file content, bounded only by the walker's 1 MB
+// cap. Measured on one line of `<a` followed by 64K word characters: 2,613 ms
+// before, 0.1 ms after, and ~4x per doubling before against flat after.
+//
+// The two classes are spelled separately and must stay exact complements. Widen
+// the name's tail without widening what the attribute blob may open with — to
+// allow `:` for a namespaced tag, say — and the pattern stops matching tags it
+// used to, silently and with no output to inspect; widen the opener instead and
+// the split point is ambiguous again and the quadratic is back. Neither failure
+// shows up in a fixture that does not happen to use the character, so the
+// relationship is read out of this line and asserted in
+// test/egress/xml-tag-classes.test.ts rather than left to review.
+const XML_TAG = /<(\/?)([A-Za-z][\w.-]*)((?:[^<>\w.-][^<>]*)?)>/g;
 const LEADING_TEXT = /^([^<]*)/;
 
 function extractPomXml(text: string): ManifestSdkHit[] {
@@ -280,7 +304,7 @@ function extractPomXml(text: string): ManifestSdkHit[] {
   const stack: string[] = [];
   let inComment = false;
 
-  eachLine(text, (rawLine, lineNumber) => {
+  eachLine(text, (rawLine, lineNumber, snippet) => {
     const stripped = stripXmlComments(rawLine, inComment);
     inComment = stripped.inComment;
     const visible = stripped.visible;
@@ -302,7 +326,7 @@ function extractPomXml(text: string): ManifestSdkHit[] {
         const after = visible.slice(match.index + match[0].length);
         const value = LEADING_TEXT.exec(after)?.[1]?.trim() ?? '';
         if (value !== '' && isProjectDependencyGroupId(stack)) {
-          hits.push(makeHit('maven', value, lineNumber, rawLine));
+          hits.push(makeHit('maven', value, lineNumber, snippet()));
         }
         continue;
       }
@@ -341,11 +365,11 @@ const LINE_COMMENT = /^\s*\/\//;
 
 function extractBuildGradle(text: string): ManifestSdkHit[] {
   const hits: ManifestSdkHit[] = [];
-  eachLine(text, (rawLine, lineNumber) => {
+  eachLine(text, (rawLine, lineNumber, snippet) => {
     if (LINE_COMMENT.test(rawLine)) return;
     for (const match of rawLine.matchAll(GRADLE_DEPENDENCY)) {
       const groupId = match[1];
-      if (groupId !== undefined) hits.push(makeHit('maven', groupId, lineNumber, rawLine));
+      if (groupId !== undefined) hits.push(makeHit('maven', groupId, lineNumber, snippet()));
     }
   });
   return hits;
@@ -357,9 +381,9 @@ const GEMFILE_DEPENDENCY = /^\s*gem\s+['"]([\w-]+)['"]/;
 
 function extractGemfile(text: string): ManifestSdkHit[] {
   const hits: ManifestSdkHit[] = [];
-  eachLine(text, (rawLine, lineNumber) => {
+  eachLine(text, (rawLine, lineNumber, snippet) => {
     const name = GEMFILE_DEPENDENCY.exec(rawLine)?.[1];
-    if (name !== undefined) hits.push(makeHit('rubygems', name, lineNumber, rawLine));
+    if (name !== undefined) hits.push(makeHit('rubygems', name, lineNumber, snippet()));
   });
   return hits;
 }
@@ -375,7 +399,7 @@ function extractCargoToml(text: string): ManifestSdkHit[] {
   // header itself and subsequent lines are detail fields, not new crates.
   let mode: 'none' | 'plain' | 'dotted' = 'none';
 
-  eachLine(text, (rawLine, lineNumber) => {
+  eachLine(text, (rawLine, lineNumber, snippet) => {
     const sectionMatch = TOML_SECTION.exec(rawLine);
     if (sectionMatch) {
       const name = sectionMatch[1]?.trim() ?? '';
@@ -384,7 +408,7 @@ function extractCargoToml(text: string): ManifestSdkHit[] {
       } else if (name.startsWith('dependencies.')) {
         mode = 'dotted';
         const crate = name.slice('dependencies.'.length);
-        if (crate !== '') hits.push(makeHit('cargo', crate, lineNumber, rawLine));
+        if (crate !== '') hits.push(makeHit('cargo', crate, lineNumber, snippet()));
       } else {
         mode = 'none';
       }
@@ -393,7 +417,7 @@ function extractCargoToml(text: string): ManifestSdkHit[] {
 
     if (mode === 'plain') {
       const crate = CARGO_KEY.exec(rawLine)?.[1];
-      if (crate !== undefined) hits.push(makeHit('cargo', crate, lineNumber, rawLine));
+      if (crate !== undefined) hits.push(makeHit('cargo', crate, lineNumber, snippet()));
     }
   });
 
@@ -406,7 +430,10 @@ function extractComposerJson(text: string): ManifestSdkHit[] {
   const parsed = parseJson(text);
   if (parsed === null) return [];
   const pkgs = objectKeys(parsed.require).filter((pkg) => pkg !== 'php' && !pkg.startsWith('ext-'));
-  return pkgs.map((pkg) => hitAtQuotedKey('composer', pkg, text, 'require'));
+  const lines = manifestLines(text);
+  const tokens = quotedTokenOffsets(text);
+  const requireAt = sectionOffset(text, 'require');
+  return pkgs.map((pkg) => hitAtQuotedKey('composer', pkg, text, requireAt, lines, tokens));
 }
 
 // ── .csproj (nuget) ───────────────────────────────────────────────────────
@@ -416,11 +443,11 @@ const CSPROJ_PACKAGE_REFERENCE = /<PackageReference\s+Include="([^"]+)"/;
 function extractCsproj(text: string): ManifestSdkHit[] {
   const hits: ManifestSdkHit[] = [];
   let inComment = false;
-  eachLine(text, (rawLine, lineNumber) => {
+  eachLine(text, (rawLine, lineNumber, snippet) => {
     const stripped = stripXmlComments(rawLine, inComment);
     inComment = stripped.inComment;
     const name = CSPROJ_PACKAGE_REFERENCE.exec(stripped.visible)?.[1];
-    if (name !== undefined) hits.push(makeHit('nuget', name, lineNumber, rawLine));
+    if (name !== undefined) hits.push(makeHit('nuget', name, lineNumber, snippet()));
   });
   return hits;
 }
@@ -432,11 +459,11 @@ const PACKAGES_CONFIG_PACKAGE = /<package\s+id="([^"]+)"/;
 function extractPackagesConfig(text: string): ManifestSdkHit[] {
   const hits: ManifestSdkHit[] = [];
   let inComment = false;
-  eachLine(text, (rawLine, lineNumber) => {
+  eachLine(text, (rawLine, lineNumber, snippet) => {
     const stripped = stripXmlComments(rawLine, inComment);
     inComment = stripped.inComment;
     const name = PACKAGES_CONFIG_PACKAGE.exec(stripped.visible)?.[1];
-    if (name !== undefined) hits.push(makeHit('nuget', name, lineNumber, rawLine));
+    if (name !== undefined) hits.push(makeHit('nuget', name, lineNumber, snippet()));
   });
   return hits;
 }
@@ -472,10 +499,22 @@ function stripXmlComments(
   }
 }
 
-function eachLine(text: string, fn: (rawLine: string, lineNumber: number) => void): void {
+// The third argument is the line's redacted snippet, computed at most ONCE
+// however many hits the line carries. Redacting is a walk of the line, and a
+// manifest written on one line puts every hit on it — so taking the snippet per
+// hit is quadratic in the dependency count. Measured on a minified pom.xml
+// before this: 68 / 280 / 1,315 / 5,205 ms at 500 / 1000 / 2000 / 4000
+// dependencies, against 2.4 / 2.2 / 4.0 / 7.3 ms for the same manifest
+// pretty-printed.
+function eachLine(
+  text: string,
+  fn: (rawLine: string, lineNumber: number, snippet: () => string) => void,
+): void {
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i += 1) {
-    fn(lines[i] ?? '', i + 1);
+    const rawLine = lines[i] ?? '';
+    let cached: string | undefined;
+    fn(rawLine, i + 1, () => (cached ??= redactSnippet(rawLine)));
   }
 }
 
@@ -515,29 +554,145 @@ function objectKeys(value: unknown): string[] {
 // production one. The keys this module reads always came from parsing that
 // same text, so the quoted form is always present somewhere at or after the
 // section key.
+/**
+ * Line arithmetic for one manifest, built ONCE per file.
+ *
+ * Both halves were O(file) per HIT, and a manifest's dependency count grows
+ * with its size, so both were quadratic in it: the line number counted newlines
+ * from offset zero, and the snippet re-redacted the hit's whole line — which on
+ * a manifest written without indentation is the whole file. Neither needs
+ * crafted input. Measured on an ordinary pretty-printed package.json before
+ * this: 3.4 / 8.1 / 26.7 / 109.5 ms at 250 / 500 / 1000 / 2000 dependencies.
+ */
+interface ManifestLines {
+  numberAt: (index: number) => number;
+  snippetAt: (index: number) => string;
+}
+
+function manifestLines(text: string): ManifestLines {
+  const starts = lineStartOffsets(text);
+  const snippets = new Map<number, string>();
+  return {
+    numberAt: (index) => lineIndexAt(starts, index) + 1,
+    snippetAt: (index) => {
+      const line = lineIndexAt(starts, index);
+      const cached = snippets.get(line);
+      if (cached !== undefined) return cached;
+      const value = redactSnippet(lineTextAt(text, starts, line));
+      snippets.set(line, value);
+      return value;
+    },
+  };
+}
+
+function sectionOffset(text: string, sectionKey: string): number {
+  const at = text.indexOf(`"${sectionKey}"`);
+  return at === -1 ? 0 : at;
+}
+
+const QUOTE = 0x22;
+const BACKSLASH = 0x5c;
+
+// Every quoted token in the manifest, at its FIRST offset, collected in one
+// pass. The alternative is an `indexOf` per dependency, which scans the file
+// again for each one — the third way this extractor was quadratic in a
+// manifest's own dependency count, and the one left after the line number and
+// the snippet.
+//
+// Scanned by hand rather than with a pattern, and that is not a preference.
+// The obvious spelling — a global match of a quoted run with escapes — is
+// POLYNOMIAL on a token that never terminates: the match fails, the scan
+// retries at the next position, and every `"` inside a run of `\"` is another
+// start that walks to the end. Both callers happen to gate that shape out by
+// returning on unparseable JSON before they build this index, but the property
+// should not rest on a check two functions away. This walk visits each
+// character once and resumes past each closing quote, so a token can never be
+// re-entered and the question does not arise.
+function quotedTokenOffsets(text: string): ReadonlyMap<string, number[]> {
+  const at = new Map<string, number[]>();
+  for (let i = 0; i < text.length; i += 1) {
+    if (text.charCodeAt(i) !== QUOTE) continue;
+    let end = i + 1;
+    while (end < text.length && text.charCodeAt(end) !== QUOTE) {
+      // A backslash consumes whatever follows it, so an escaped quote cannot
+      // close the token.
+      end += text.charCodeAt(end) === BACKSLASH ? 2 : 1;
+    }
+    // Unterminated: nothing after this can be a whole token either.
+    if (end >= text.length) break;
+    // Keyed by the DECODED name, not the raw slice. A JSON key may be written
+    // with escapes — `@scope\/pkg` names the same package as `@scope/pkg` —
+    // and the caller looks a name up as the PARSER gave it, so a raw key misses
+    // every escaped one. That miss was not only a cost: it fell through to an
+    // `indexOf` for a spelling the file does not contain, which finds nothing,
+    // and the hit was then recorded at line 1 with the bare name as its
+    // snippet. Only a token carrying a backslash is decoded, so an ordinary key
+    // pays a scan for one character and no allocation beyond the slice.
+    const inner = text.slice(i + 1, end);
+    const name = inner.includes('\\') ? decodeJsonString(text.slice(i, end + 1)) : inner;
+    if (name !== undefined) {
+      // EVERY offset, not just the first. A name that also appears earlier in
+      // the file — `peerDependencies` written above `dependencies`,
+      // `require-dev` above `require` — has a first offset before the section
+      // being read, and an index that only knew that one sent each of those
+      // keys back to the per-hit scan this exists to replace. The walk is left
+      // to right, so each list is already ascending and needs no sort.
+      const seen = at.get(name);
+      if (seen === undefined) at.set(name, [i]);
+      else seen.push(i);
+    }
+    i = end;
+  }
+  return at;
+}
+
+// One quoted token's value, or undefined when it is not a well-formed JSON
+// string. An undecodable token cannot be a key in a manifest that parsed, so
+// leaving it out of the index costs nothing.
+function decodeJsonString(quoted: string): string | undefined {
+  try {
+    return JSON.parse(quoted) as string;
+  } catch {
+    return undefined;
+  }
+}
+
+// The first offset at or after `from` in an ascending list, or undefined when
+// every occurrence is behind it.
+function firstAtOrAfter(offsets: readonly number[], from: number): number | undefined {
+  let low = 0;
+  let high = offsets.length - 1;
+  let found: number | undefined;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const at = offsets[mid] ?? 0;
+    if (at >= from) {
+      found = at;
+      high = mid - 1;
+    } else {
+      low = mid + 1;
+    }
+  }
+  return found;
+}
+
 function hitAtQuotedKey(
   ecosystem: EgressEcosystem,
   pkg: string,
   text: string,
-  sectionKey: string,
+  searchFrom: number,
+  lines: ManifestLines,
+  tokens: ReadonlyMap<string, number[]>,
 ): ManifestSdkHit {
-  const sectionStart = text.indexOf(`"${sectionKey}"`);
-  const searchFrom = sectionStart === -1 ? 0 : sectionStart;
-  const index = text.indexOf(`"${pkg}"`, searchFrom);
-  if (index === -1) return makeHit(ecosystem, pkg, 1, pkg);
-  return makeHit(ecosystem, pkg, lineNumberAt(text, index), lineContaining(text, index));
-}
-
-function lineNumberAt(text: string, index: number): number {
-  let line = 1;
-  for (let i = 0; i < index; i += 1) {
-    if (text[i] === '\n') line += 1;
-  }
-  return line;
-}
-
-function lineContaining(text: string, index: number): string {
-  const start = text.lastIndexOf('\n', index) + 1;
-  const end = text.indexOf('\n', index);
-  return text.slice(start, end === -1 ? text.length : end);
+  // The token index answers this for a name that appears as a whole quoted
+  // token, which every dependency key in a well-formed manifest is. Anything
+  // else — a name spelled across an escape, a key the tokenizer did not pair —
+  // falls back to the scan this replaced, so behaviour is unchanged and only
+  // the cost moves. That fallback is O(file) and this runs once per dependency,
+  // so anything that widens what reaches it puts the quadratic straight back.
+  const offsets = tokens.get(pkg);
+  const known = offsets === undefined ? undefined : firstAtOrAfter(offsets, searchFrom);
+  const index = known ?? text.indexOf(`"${pkg}"`, searchFrom);
+  if (index === -1) return makeHit(ecosystem, pkg, 1, redactSnippet(pkg));
+  return { ecosystem, pkg, line: lines.numberAt(index), snippet: lines.snippetAt(index) };
 }

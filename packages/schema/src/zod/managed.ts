@@ -78,7 +78,21 @@ export const ManagedSettings = z
     // decision from a bug. Absent renders as a generic "your organization".
     organization: z.string().min(1).optional(),
     // What the administrator pinned.
-    values: ManagedSettingsValues.default({}),
+    //
+    // Parsed as a RECORD rather than as the nested schema, and split below for
+    // the same reason `lockedFields` is parsed as names: a plain `z.object`
+    // drops an unrecognised key and succeeds, so a pin this build does not know
+    // vanished and nothing anywhere said so. A pin with no lock is a supported
+    // shape — it is a DEFAULT the user may still change — so that silence hit
+    // exactly the file an administrator is most likely to write while a fleet
+    // is mid-upgrade.
+    //
+    // Splitting here rather than calling `.strict()`: strict would REFUSE the
+    // file, which is the outcome the lock half already rejected — an older
+    // build then runs entirely unmanaged, every pin and lock gone. A bad KNOWN
+    // value still fails, because the nested schema is re-run over the known
+    // subset and its issues are re-raised on this parse.
+    values: z.record(z.string(), z.unknown()).default({}),
     // Which of those the user may not change. A key here with no matching value
     // freezes whatever the user last chose; a value with no lock is a DEFAULT
     // the user may still override. The two are separable on purpose.
@@ -92,19 +106,56 @@ export const ManagedSettings = z
     // is still never HONOURED: the lockable set stays explicit above.
     lockedFields: z.array(z.string()).default([]),
   })
-  .transform(({ lockedFields, ...rest }) => {
+  .transform(({ lockedFields, values, ...rest }, ctx) => {
     const known: ManagedSettingKey[] = [];
     const unknown: string[] = [];
     for (const name of lockedFields) {
       if (isManagedSettingKey(name)) known.push(name);
       else unknown.push(name);
     }
-    // The unknown list is present only when non-empty, so the ordinary file
+
+    // `Object.hasOwn`, never `name in shape`: `in` consults the PROTOTYPE CHAIN,
+    // so every `Object.prototype` name — `toString`, `constructor`, `valueOf`,
+    // `__proto__` and the rest — classifies as known, is handed to the nested
+    // schema, and is dropped there with nothing reported. That is exactly the
+    // silence this split exists to end, reached from the one direction the
+    // split itself created.
+    //
+    // `__proto__` specifically never reaches here: the `z.record` above strips
+    // it, so a pin by that name is neither applied nor reported. That is Zod's
+    // behaviour rather than this function's, and it is the safe direction — but
+    // it IS one more silently dropped pin, so do not read the split below as
+    // covering it.
+    //
+    // The accumulator is null-prototype anyway. Nothing can reach it through
+    // `__proto__` today, and that is a property of the parser above rather than
+    // of this loop; a plain `{}` here would make the loop's correctness depend
+    // on it.
+    const knownValues = Object.create(null) as Record<string, unknown>;
+    const unknownValues: string[] = [];
+    for (const [name, value] of Object.entries(values)) {
+      if (Object.hasOwn(ManagedSettingsValues.shape, name)) knownValues[name] = value;
+      else unknownValues.push(name);
+    }
+    const pinned = ManagedSettingsValues.safeParse(knownValues);
+    if (!pinned.success) {
+      // Re-raised on THIS parse, under the `values` path, so a typo in a key
+      // this build does know is still a damaged file rather than a silently
+      // dropped pin. Losing that refusal is what makes the tolerance above
+      // dangerous instead of merely forgiving.
+      for (const issue of pinned.error.issues)
+        ctx.addIssue({ ...issue, path: ['values', ...issue.path] });
+      return z.NEVER;
+    }
+
+    // Each unknown list is present only when non-empty, so the ordinary file
     // carries no key for it and a consumer spreading the result carries none.
     return {
       ...rest,
+      values: pinned.data,
       lockedFields: known,
       ...(unknown.length > 0 ? { unknownLockedFields: unknown } : {}),
+      ...(unknownValues.length > 0 ? { unknownValueFields: unknownValues } : {}),
     };
   })
   .meta({ id: 'ManagedSettings' });
@@ -119,14 +170,23 @@ export interface ManagedContext {
   present: boolean;
   organization?: string;
   lockedFields: readonly ManagedSettingKey[];
-  // HOW MANY locks this build does not know, so a surface can say a lock
-  // exists that it is not applying. A count rather than the names, because
-  // this context is handed to a client component and is therefore serialized
-  // to the browser on every settings render: `lockedFields` is bounded by the
-  // enum, while the names are whatever the administrator's file happens to
-  // contain. The names stay on the parsed `ManagedSettings` for a reader that
-  // wants them. Absent when there are none.
+  // HOW MANY locks and HOW MANY pinned values this build does not know, so a
+  // surface can say an administrator set something it is not applying.
+  //
+  // COUNTS rather than the names, because this context is handed to a client
+  // component and is therefore serialized to the browser on every settings
+  // render: `lockedFields` is bounded by the enum, while the names are whatever
+  // the administrator's file happens to contain. Nothing is lost by counting —
+  // every consumer reads `.length` — and the names stay on the parsed
+  // `ManagedSettings` for a reader that wants them.
+  //
+  // Two numbers rather than one, and neither inferred from the other, because
+  // the consequences differ: an unapplied LOCK leaves a control the
+  // administrator meant to freeze still editable, while an unapplied PIN leaves
+  // a default they meant to set unset. A surface may say both in one sentence;
+  // it may not derive one from the other. Each is absent when it is zero.
   unknownLockedCount?: number;
+  unknownValueCount?: number;
 }
 
 export const NO_MANAGED_CONTEXT: ManagedContext = { present: false, lockedFields: [] };

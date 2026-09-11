@@ -127,7 +127,13 @@ const HOT_READS: readonly HotRead[] = [
   { name: '/security scanCoverage', run: (c) => c.security.scanCoverage('30d') },
   { name: '/security topSources', run: (c) => c.security.topSources('30d', { limit: 5 }) },
   { name: '/security recentlyResolved', run: (c) => c.security.recentlyResolved() },
-  { name: '/security recentFindings', run: (c) => c.findings.recentFindings({ limit: 500 }) },
+  { name: '/security recommendationInputs', run: (c) => c.security.recommendationInputs() },
+  // NOT a `/security` read any more — the recommendations card reads the
+  // status-scoped rollup above instead. It stays here because it is still the hot read behind
+  // `aka tui`, `aka stats`, `aka plugins` and all three plugins' recommend and
+  // first-run screens, and `findings.ts` names this file as what stops its
+  // early-terminating scan regressing to a temp B-tree.
+  { name: 'CLI recentFindings', run: (c) => c.findings.recentFindings({ limit: 500 }) },
   // --- /findings: three views over one filtered set ---------------------------
   // Each view is its own read, and the session-scoped types read is listed
   // separately because the scope changes which index drives the scan.
@@ -219,19 +225,24 @@ const EXPECTED_FULL_INDEX_SCANS: Readonly<Record<string, readonly string[]>> = {
   '/security scanCoverage': [],
   '/security topSources': [],
   '/security recentlyResolved': ['finding_resolution'],
-  // The ONE entry in this set that does not grow with the store, and the reason
-  // the paragraph above says "usually" rather than "always". `recentFindings`
-  // scans `idx_audit_started_at` in DESC order precisely so its `LIMIT` can stop
-  // the scan after `limit` findings — EXPLAIN QUERY PLAN has no way to say
-  // "terminates early", so a bounded scan and an unbounded one print the same
-  // word. Measured at 0.9 ms against 35.0 ms for the temp-B-tree form it
-  // replaced, on the same 40,000-event store.
+  // The same allowance its resolution-aware siblings carry, and for the same reason:
+  // deciding whether a finding is still OPEN means reaching the latest resolution
+  // per key, and that derived table is scanned once rather than probed per finding.
+  // The findings side is a grouped aggregate, so what this returns is O(distinct
+  // rule × category × severity) however large the store — which is why it is not on
+  // the flat-ratio list in `security-page-scale.test.ts` either.
+  '/security recommendationInputs': ['finding_resolution'],
+  // The ONE entry in this set that does not grow with the store, and the reason the
+  // paragraph above says "usually" rather than "always". `recentFindings` scans
+  // `idx_audit_started_at` in DESC order precisely so its `LIMIT` can stop the scan
+  // after `limit` findings — EXPLAIN QUERY PLAN has no way to say "terminates
+  // early", so a bounded scan and an unbounded one print the same word. Measured at
+  // 0.9 ms against 35.0 ms for the temp-B-tree form it replaced, on the same
+  // 40,000-event store.
   //
-  // So this row must not be read as a cost to remove: removing it means going
-  // back to sorting every finding in the store. What DOES bound it is a ratio
-  // across two store sizes, which a plan cannot express and
-  // `security-page-scale.test.ts` asserts instead.
-  '/security recentFindings': ['audit_events'],
+  // So this row must not be read as a cost to remove: removing it means going back
+  // to sorting every finding in the store.
+  'CLI recentFindings': ['audit_events'],
   // The findings page. Every unscoped read here walks `idx_audit_started_at`
   // in DESC order the way `recentFindings` does, and for the same reason: the
   // order the page wants falls out of the index, so nothing is sorted. All of

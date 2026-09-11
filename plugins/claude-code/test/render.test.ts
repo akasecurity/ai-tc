@@ -6,7 +6,11 @@ import { fileURLToPath } from 'node:url';
 
 import { handleCapture, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { FindingView, HealthSummary, PluginConfig } from '@akasecurity/plugin-sdk';
-import { createPluginRuntime, severityFloorPosture } from '@akasecurity/plugin-sdk';
+import {
+  buildRecommendations as sdkBuildRecommendations,
+  createPluginRuntime,
+  severityFloorPosture,
+} from '@akasecurity/plugin-sdk';
 import type {
   BuiltinPolicyId,
   DetectionCategory,
@@ -195,6 +199,18 @@ describe('pure renderers', () => {
     );
     expect(out).toContain('Claude Code: 2.0.0 (last seen)');
     expect(out).toContain('model-switch protection');
+  });
+
+  it('recommend: re-exports the shared rollup rather than holding a second copy', () => {
+    // What this module still owes is the WIRING: that its re-export names the one
+    // shared implementation rather than a second copy of it. The rollup's own
+    // behaviour — the label counting the NAMED rule while the rank follows category
+    // volume — is asserted against that implementation in
+    // `packages/schema/test/security/recommendations.test.ts`. Restating it here
+    // would re-run schema's suite through a re-export, and a plugin that had drifted
+    // back to a local copy would go green on it, which is the defect the move
+    // removed.
+    expect(buildRecommendations).toBe(sdkBuildRecommendations);
   });
 
   it('recommend: ranks by severity, numbered list with severity badges', () => {

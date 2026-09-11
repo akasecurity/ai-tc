@@ -32,4 +32,16 @@ export default [
     files: ['src/commands/dashboard.ts'],
     rules: drizzleWallRules({ allow: ['node:net'] }),
   },
+  {
+    // The suite for `aka scan`'s Data Shares forward stands a real server on
+    // 127.0.0.1 and reads the request off the wire: a stubbed transport can show
+    // what the command decided, never what it sent, and the claims that forward
+    // makes — no source text in the body, a digested project key, the credential
+    // in a header and nowhere else — are all about the bytes that left the
+    // process. Scoped to the one helper that binds it; every other network
+    // import stays banned here, and both halves of the ban drop together so the
+    // exception holds whichever import form the file uses.
+    files: ['test/helpers/loopback.ts'],
+    rules: drizzleWallRules({ allow: ['node:http'] }),
+  },
 ];

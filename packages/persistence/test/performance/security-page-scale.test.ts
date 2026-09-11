@@ -10,16 +10,16 @@
  * reads as ideal can still be linear in the store: `mttrTrend` used to drive
  * from `audit_events` on an index, joining every capture event before its window
  * predicate could reject a row, and every step of that plan was a SEARCH. And a
- * plan that reads as a full scan can be bounded: `recentFindings` deliberately
- * scans `idx_audit_started_at` so its LIMIT can stop early, and EXPLAIN QUERY
- * PLAN has no text for "terminates after 500 rows".
+ * plan that reads as ideal can still be unbounded in the store: a range SEEK on
+ * `idx_audit_started_at` prints the same word whether the window holds ten rows or
+ * ten million, and EXPLAIN QUERY PLAN has no text for "how many".
  *
  * So the plans pin the mechanism and this pins the consequence. Neither implies
  * the other.
  *
  * ## The experiment: hold the ANSWER fixed, grow the store
  *
- * All three reads return a bounded answer — the newest 500 findings, the newest
+ * All three reads return a bounded answer — one window's findings, the newest
  * 20 resolutions, a 30-day MTTR trend over a fixed resolution set. So the
  * property is stated as: with the same number of rows to RETURN, a ten-fold
  * larger store must not cost meaningfully more.
@@ -163,12 +163,9 @@ const SAMPLES = 25;
  * has already overrun this same ceiling once, at 135,237 ms.
  *
  * **Cutting the corpus is the usual remedy and is not available here**, so the
- * ceiling moves instead. `findingRate` cannot come down: at 0.1 the small corpus
- * holds 191 findings and `recentFindings` returns 191 rows against the large
- * corpus's 500, so the two sides would measure different amounts of work and the
- * ratio would stop meaning anything. And 2k -> 20k is already the cheapest pair
- * giving a 10x separation. Raising a ceiling that asserts nothing is not the same
- * act as relaxing a budget that does.
+ * ceiling moves instead. 2k -> 20k is already the cheapest pair giving a 10x
+ * separation, and raising a ceiling that asserts nothing is not the same act as
+ * relaxing a budget that does.
  */
 const SEED_TIMEOUT_MS = 240_000;
 
@@ -222,7 +219,13 @@ interface Scale {
   readonly samples: Record<string, number[]>;
 }
 
-const READS = ['recentFindings', 'recentlyResolved', 'mttrTrend', 'severitySummary'] as const;
+const READS = [
+  'recommendationInputs',
+  'recentFindings',
+  'recentlyResolved',
+  'mttrTrend',
+  'severitySummary',
+] as const;
 type ReadName = (typeof READS)[number];
 
 async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Scale> {
@@ -275,6 +278,7 @@ async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Sc
   // returns 30 points and 0 non-null buckets. Counting non-null buckets is what
   // makes the guard mean "this read found something".
   const run: Record<ReadName, () => Promise<number>> = {
+    recommendationInputs: async () => (await security.recommendationInputs()).length,
     recentFindings: async () => (await findings.recentFindings({ limit: 500 })).length,
     recentlyResolved: async () => (await security.recentlyResolved(20)).items.length,
     mttrTrend: async () =>
@@ -365,6 +369,10 @@ describe(`/security read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
     }
   });
 
+  // `recentFindings` is measured here though the security page no longer issues it:
+  // its LIMIT-bounded scan is what `aka tui`, `aka stats` and the three plugins pay,
+  // and this ratio is the only thing that would notice it regressing to a sort over
+  // every finding in the store.
   for (const name of ['recentFindings', 'recentlyResolved', 'mttrTrend'] as const) {
     it(`${name} stays flat as the store grows`, () => {
       const smallest = fastest(small.samples[name] ?? []);
@@ -380,6 +388,31 @@ describe(`/security read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
       expect(largest, `${name} gross-regression backstop`).toBeLessThan(GROSS_REGRESSION_MS);
     });
   }
+
+  // `recommendationInputs` is NOT in the flat set above, and that is a measurement
+  // rather than an omission. It RETURNS little — a grouped aggregate, so
+  // O(distinct rule × category × severity) rows however large the store — but it
+  // READS every finding to group them, so the work still tracks store size.
+  //
+  // That distinction is the whole reason it is pinned rather than assumed: a plan
+  // shows the grouping, and the returned length shows nothing, so only a ratio can
+  // say which of the two the cost follows.
+  it('recommendationInputs grows: it groups over every finding to build its rollup', () => {
+    const smallest = fastest(small.samples.recommendationInputs ?? []);
+    const largest = fastest(large.samples.recommendationInputs ?? []);
+    const ratio = largest / smallest;
+    expect(
+      ratio,
+      `recommendationInputs was ${smallest.toFixed(3)} ms at ` +
+        `${SMALL_EVENTS.toLocaleString('en-US')} events and ${largest.toFixed(3)} ms at ` +
+        `${LARGE_EVENTS.toLocaleString('en-US')} — ratio ${ratio.toFixed(2)}, which must exceed ` +
+        `${String(CONTROL_FLOOR)}. A FLAT result here means the grouping stopped ` +
+        'reading the whole store, so this is no longer measuring what the page pays.',
+    ).toBeGreaterThan(CONTROL_FLOOR);
+    expect(largest, 'recommendationInputs gross-regression backstop').toBeLessThan(
+      GROSS_REGRESSION_MS,
+    );
+  });
 
   it('the control grows: severitySummary is linear in findings by design', () => {
     const smallest = fastest(small.samples.severitySummary ?? []);

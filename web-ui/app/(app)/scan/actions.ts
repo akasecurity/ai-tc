@@ -6,18 +6,22 @@ import { basename, dirname, join, sep } from 'node:path';
 
 import {
   createGuardedFileScanner,
+  forwardProjectEgress,
   recordProjectEgress,
   recordProjectInventory,
   scanPathIntoStore,
   type ScanPathResult,
+  type SharesForwardOutcome,
 } from '@akasecurity/local-ops';
-import { dataDir } from '@akasecurity/persistence';
+import { dataDir, defaultDataDir } from '@akasecurity/persistence';
+import { createSharesSender } from '@akasecurity/remote';
 import { type EgressWriteSummary, SOURCE_TOOL } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
 import { db } from '../../lib/db';
 import { describeDropped } from '../../lib/dropped-rules';
 import { scanWorkerUrl } from '../../lib/scan-worker';
+import { describeForward, type ForwardLine } from './forward-copy';
 
 // The web twin of `aka scan [path]` — the shared pipeline walks the path and
 // records redacted events + masked findings into the local store. No shell is
@@ -33,6 +37,14 @@ import { scanWorkerUrl } from '../../lib/scan-worker';
 // killed and then runs the scan itself under a wall-clock bound on a worker
 // thread. A machine with no pulled or custom regex rule — the overwhelming
 // majority — starts no thread and pays nothing.
+//
+// On an attached machine the register this scan writes is also forwarded to the
+// deployment this home's settings name, after the local write. What crosses is
+// the same projection the plugin's own scanner sends — destination hosts,
+// endpoints and file/line call sites, with no source text and the project key
+// replaced by a digest. It can fail every way a network call can, and none of
+// them change the scan's result: the walk is already on disk by then, and the
+// outcome is reported to the person who clicked Scan rather than swallowed.
 
 export interface ScanResult {
   ok: boolean;
@@ -45,9 +57,41 @@ export interface ScanResult {
   // replacing them — but it means the ruleset that ran was smaller than the one
   // the Detections page lists, which the user has to be told.
   droppedRules?: string;
+  // Where the register went, on a machine that is attached. Absent on one that
+  // is not, and on a scan that recorded no register to forward — the page then
+  // renders exactly what it always did.
+  forward?: SharesForwardOutcome;
+  // The line the page shows for `forward`, rendered HERE rather than in the
+  // browser: the wording and tone come from the copy module, which reads the
+  // shared failure sentences out of a Node-only package, and a client component
+  // importing that would pull the whole package into the browser bundle.
+  forwardLine?: ForwardLine;
 }
 
-export async function runScan(path: string): Promise<ScanResult> {
+// A Server Action's result is serialised to the browser, and the recorder hands
+// back the resolved input it wrote beside the totals: every call site's source
+// line, and the project key in plaintext. Declaring the field as the summary
+// type drops neither — the serialiser walks the runtime object — so the totals
+// are picked by name and the local half never leaves the server.
+function summaryOf(recorded: EgressWriteSummary): EgressWriteSummary {
+  return {
+    destinations: recorded.destinations,
+    endpoints: recorded.endpoints,
+    callSites: recorded.callSites,
+    truncated: recorded.truncated,
+    droppedFiles: recorded.droppedFiles,
+  };
+}
+
+/**
+ * Walk `path`, record what it found, and — on an attached machine — forward the
+ * register it just recorded unless `options.forward` is false, which is the
+ * Scan page's own checkbox saying "keep this one local".
+ */
+export async function runScan(
+  path: string,
+  options: { forward?: boolean } = {},
+): Promise<ScanResult> {
   const target = path.trim();
   if (target === '') return { ok: false, error: 'Enter a file or directory path.' };
   try {
@@ -112,6 +156,35 @@ export async function runScan(path: string): Promise<ScanResult> {
   // Data Shares store (fail-open; null when the toggle is off, the target has
   // no resolvable project, or the write failed).
   const egress = recordProjectEgress(db(), target, result.egress);
+
+  // After the local write, and in its own catch: the value of a scan is what is
+  // already on disk, and nothing here may cost the caller its counts. The state
+  // machine is documented never to throw — this guards the action's result
+  // against the day that stops being true, not the outcome.
+  let forward: SharesForwardOutcome | undefined;
+  if (egress) {
+    try {
+      // Awaited inside this one action, so on an attached machine whose
+      // deployment is down the click waits up to the send's deadline before the
+      // counts appear. A second, client-started action would remove that wait
+      // at the cost of a two-call shape and a page rendering counts it has not
+      // finished reporting on; the one-call shape is kept deliberately.
+      const outcome = await forwardProjectEgress(defaultDataDir(), egress.input, {
+        send: createSharesSender(),
+        enabled: options.forward !== false,
+      });
+      // A machine attached to nothing has nothing to report about, and the field
+      // stays absent rather than carrying a status: that keeps what a standalone
+      // install's page receives exactly what it received before this action
+      // could forward anything at all.
+      if (outcome.status !== 'not-attached') forward = outcome;
+    } catch {
+      forward = undefined;
+    }
+  }
+
+  const forwardLine = forward === undefined ? undefined : (describeForward(forward) ?? undefined);
+
   revalidatePath('/findings');
   revalidatePath('/security');
   revalidatePath('/inventory');
@@ -121,14 +194,23 @@ export async function runScan(path: string): Promise<ScanResult> {
   // depend on the ruleset — so the recorded destinations ride along with the
   // pack-state error rather than being dropped.
   if (noPacksError !== undefined)
-    return { ok: false, error: noPacksError, egress: egress ?? undefined, droppedRules };
+    return {
+      ok: false,
+      error: noPacksError,
+      egress: egress ? summaryOf(egress) : undefined,
+      droppedRules,
+      forward,
+      forwardLine,
+    };
 
   return {
     ok: true,
     scanned: result.scanned,
     findings: result.findings,
-    egress: egress ?? undefined,
+    egress: egress ? summaryOf(egress) : undefined,
     droppedRules,
+    forward,
+    forwardLine,
   };
 }
 

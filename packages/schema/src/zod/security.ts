@@ -86,8 +86,7 @@ export type EnforcementActionsResponse = z.infer<typeof EnforcementActionsRespon
 //
 // New detections per bucket, split by severity. Granularity is server-chosen
 // from the range (7d/30d → day; 3m/6m → week). Buckets with no findings are
-// present with zeros. `low` is intentionally omitted (the chart plots
-// critical/high/medium); add it if the widget grows a fourth series.
+// present with zeros, for all four severities.
 export const TimeseriesGranularity = z.enum(['day', 'week']).meta({ id: 'TimeseriesGranularity' });
 export type TimeseriesGranularity = z.infer<typeof TimeseriesGranularity>;
 
@@ -98,6 +97,10 @@ export const FindingsTimeseriesPoint = z
     critical: z.number().int().nonnegative(),
     high: z.number().int().nonnegative(),
     medium: z.number().int().nonnegative(),
+    // Optional and additive, so a producer written against the earlier
+    // three-series contract keeps validating. A consumer plotting it resolves the
+    // absent case itself — the chart point requires a number.
+    low: z.number().int().nonnegative().optional(),
   })
   .meta({ id: 'FindingsTimeseriesPoint' });
 export type FindingsTimeseriesPoint = z.infer<typeof FindingsTimeseriesPoint>;
@@ -149,6 +152,10 @@ export const ResolvedFeedItem = z
     findingKey: z.string(),
     ruleId: z.string(),
     severity: Severity,
+    // Repository slug, and the file path RELATIVE to it. The pair is what
+    // identifies the file: a bare path matches the same name in every repo.
+    // Optional and additive; empty when the event carried no repo.
+    repo: z.string().optional(),
     path: z.string(),
     // ISO-8601 datetime (matches FindingInstance.detectedAt / the rest of the
     // findings domain). The reader `.toISOString()`s the DB epoch-ms values.

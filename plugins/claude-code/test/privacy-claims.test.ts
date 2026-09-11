@@ -339,6 +339,17 @@ describe('README.md aka-<name> dispatch disclosure', () => {
     expect(footnote).toMatch(new RegExp(`not one of the ${countWord(EGRESS_PATHS.length)}`, 'i'));
   });
 
+  it('names the register a manual scan forwards under the attachment', () => {
+    // The attached path carries more than captured activity: a scan run on an
+    // attached machine forwards the Data Shares register it recorded. Pinned on
+    // its own, because the EGRESS_PATHS row for that path only asks for
+    // `aka attach`, which the footnote mentions regardless of this clause.
+    expect(footnote).toMatch(/Data Shares register/);
+    expect(footnote).toMatch(/Scan page/);
+    expect(footnote).toMatch(/--no-forward/);
+    expect(footnote).toMatch(/no source text/i);
+  });
+
   // The count word and the paths it counts, checked against EACH OTHER rather
   // than against a literal.
   //

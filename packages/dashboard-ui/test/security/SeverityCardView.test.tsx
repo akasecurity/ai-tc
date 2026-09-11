@@ -56,8 +56,23 @@ describe('SeverityCardView', () => {
   });
 
   it('centres the total, so the ring and the legend sum to the figure inside it', () => {
-    const html = render();
-    expect(html).toContain('>35<');
+    // Deliberately past 999. The centre is COMPACT, and compactCount leaves anything
+    // under 1,000 byte-identical to numberFormat — so against the shared 35-row
+    // fixture this case reads the same whether the centre rounds or not, and a revert
+    // to the unrounded figure passed the whole package suite. The legend moves in
+    // step with the total, or the property this case is named for — ring, legend and
+    // centre being one number — stops holding in its own fixture.
+    const large: SeveritySummaryItem[] = [
+      { severity: 'critical', count: 400, caught: 7, openAtRest: 393 },
+      { severity: 'high', count: 600, caught: 600, openAtRest: 0 },
+      { severity: 'medium', count: 0, caught: 0, openAtRest: 0 },
+      { severity: 'low', count: 234, caught: 1, openAtRest: 233 },
+    ];
+    const html = render({ bySeverity: large, total: 1234 });
+    expect(html).toContain('>1.2k<');
+    // Both halves, because compactCount is LOSSY: asserting the ring alone lets the
+    // exact figure go, and asserting the title alone lets the ring stop rounding.
+    expect(html).toContain('title="1,234"');
   });
 
   it('centres a bare number, with no sub-label under the figure', () => {

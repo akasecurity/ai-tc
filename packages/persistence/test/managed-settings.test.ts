@@ -119,6 +119,45 @@ describe('readManagedSettings — fail-open on a damaged administrative file', (
     expect(context.unknownLockedFields).toEqual(['lockFromANewerBuild']);
   });
 
+  it('keeps every pin it knows beside one it does not, and reports the stranger', () => {
+    // The mirror of the lock case, and the half that was silent: a pin with no
+    // lock is a supported shape — a default the user may still change — so an
+    // administrator writing one against a newer key had it dropped with
+    // nothing anywhere saying so.
+    writeManaged({
+      organization: 'Acme',
+      values: { runMode: 'attached', pinFromANewerBuild: true },
+    });
+
+    const managed = readManagedSettings([managedFile()]);
+
+    expect(managed?.values).toEqual({ runMode: 'attached' });
+    expect(managed?.unknownValueFields).toEqual(['pinFromANewerBuild']);
+    const context = managedContextOf(managed);
+    expect(context.present).toBe(true);
+    expect(context.unknownValueFields).toEqual(['pinFromANewerBuild']);
+  });
+
+  it('carries no unknown-pin key when every pin is known', () => {
+    // The control on the case above: a context that always carried the key
+    // would satisfy it whether or not anything was dropped.
+    writeManaged({ organization: 'Acme', values: { runMode: 'attached' } });
+
+    expect(managedContextOf(readManagedSettings([managedFile()]))).not.toHaveProperty(
+      'unknownValueFields',
+    );
+  });
+
+  it('runs unmanaged on a BAD value under a key it does know', () => {
+    // The line between tolerance and damage. The pin half is forgiving about a
+    // NAME from a newer build and must stay strict about a value it can read
+    // and reject — otherwise a typo'd enum reads as healthy while the
+    // administrator's decision is not applied.
+    writeManaged({ organization: 'Acme', values: { runMode: 'attachd' } });
+
+    expect(readManagedSettings([managedFile()])).toBeNull();
+  });
+
   it('runs UNMANAGED rather than refusing when the file is malformed', () => {
     // The posture cuts one way and it is deliberate: a typo in an MDM payload
     // must not break every hook on every managed machine at once. Stated as

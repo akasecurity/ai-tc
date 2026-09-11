@@ -136,7 +136,78 @@ function toRun(command: string, result: SpawnSyncReturns<string>): InstallerRun 
  */
 const SCRIPT_TIMEOUT_MS = 60_000;
 
-async function runScript(
+/**
+ * A run that died inside .NET's own startup rather than inside the script.
+ *
+ * `compressArchive` already retries this crash where it builds the fixture
+ * archive; the same corruption reaches the run that executes the installer, and
+ * that call site had nothing. It arrives differently here, which is why the
+ * signal check there does not cover it: the archive build sees the child killed
+ * (`signal: 'SIGABRT'`), while pwsh running a `-File` script gets far enough to
+ * write an unhandled-exception trace to stderr and exit non-zero. So the
+ * discriminator is the TEXT, and it has to be one the installer can never
+ * produce itself — install.ps1 writes its own refusals (`checksum mismatch` and
+ * the rest) and never a .NET exception trace.
+ *
+ * Both markers are required. `Unhandled exception.` alone would also match a
+ * genuine crash inside a `Compress-Archive` the script itself ran, which is a
+ * real failure this must not swallow; pairing it with the assembly-name parser
+ * narrows it to the startup corruption, where the script has not begun.
+ */
+const CLR_ABORT_MARKERS = ['Unhandled exception.', 'assembly name was invalid'] as const;
+
+// Three attempts against a 60s per-attempt kill ceiling is 180s of budget, and
+// this package's testTimeout/hookTimeout is 120s — so three attempts that each
+// ran to their SIGKILL would surface as a bare vitest timeout rather than as
+// anything this file says.
+//
+// That cannot arise from what this retries. A CLR startup abort is near-instant:
+// the process dies before the script it was handed begins, which is exactly what
+// `diedInClrStartup` keys on. An attempt that is RETRIED therefore costs no
+// meaningful budget, and an attempt that spends real time is by construction one
+// that ran and is returned rather than retried.
+//
+// Written down because the two constants sit twenty lines apart and nothing
+// structural ties either to the ceiling: a future marker matching something slow
+// would spend the budget three times over and report it as a timeout.
+const SCRIPT_ATTEMPTS = 3;
+
+/** What `runScript` spawns with, injectable so the abort can be driven. */
+export type ScriptRunner = (
+  command: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+) => Promise<InstallerRun>;
+
+function diedInClrStartup({ status, stderr }: InstallerRun): boolean {
+  // A zero exit is a run that happened, whatever it wrote.
+  if (status === 0) return false;
+  return CLR_ABORT_MARKERS.every((marker) => stderr.includes(marker));
+}
+
+/**
+ * Run a script, retrying only a CLR startup abort.
+ *
+ * Bounded and narrow on purpose: a retry that widened to any non-zero exit
+ * would re-run the refusals this suite exists to assert, and a flake budget
+ * spent on a real failure reports green for a script that never worked.
+ */
+export async function runScript(
+  command: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  // Injectable for the same reason `compressArchive`'s runner is: driven
+  // against a real pwsh this branch is dead code on every leg that runs the
+  // suite, because the abort cannot be provoked on demand.
+  spawnOne: ScriptRunner = spawnScript,
+): Promise<InstallerRun> {
+  for (let attempt = 1; ; attempt += 1) {
+    const result = await spawnOne(command, args, env);
+    if (attempt >= SCRIPT_ATTEMPTS || !diedInClrStartup(result)) return result;
+  }
+}
+
+async function spawnScript(
   command: string,
   args: readonly string[],
   env: NodeJS.ProcessEnv,

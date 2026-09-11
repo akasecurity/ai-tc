@@ -119,12 +119,17 @@ export function UNSAFE_TEST_ONLY_setManagedSettingsPaths(paths: readonly string[
  * on every managed machine breaking at once, which is a far worse outcome than
  * a lock that has to be noticed and repaired.
  *
- * One shape is deliberately NOT read as damage: a `lockedFields` entry naming a
- * key this build does not know. That is what an older build sees when an
- * administrator locks a key a newer build added, and refusing the whole file
- * there ran it unmanaged, every pin and lock gone. The schema drops such a name
- * from the locked set and reports it as `unknownLockedFields`, so every lock
- * this build understands still holds and the surface can say one does not.
+ * Two shapes are deliberately NOT read as damage, and they are the same shape
+ * on either half of the file: a `lockedFields` entry, or a `values` key, naming
+ * a setting this build does not know. That is what an older build sees when an
+ * administrator locks or pins a key a newer build added, and refusing the whole
+ * file there ran it unmanaged, every pin and lock gone. The schema drops such a
+ * name and reports it — `unknownLockedFields` for the lock half,
+ * `unknownValueFields` for the pin half — so everything this build understands
+ * still holds and the surface can say what does not.
+ *
+ * A bad value under a key this build DOES know is still damage, and still fails
+ * the file. That is what keeps the tolerance above from covering a typo.
  */
 export function readManagedSettings(
   paths: readonly string[] = testOnlyManagedPaths ?? managedSettingsPaths(),
@@ -157,6 +162,9 @@ export function managedContextOf(managed: ManagedSettings | null): ManagedContex
     ...(managed.unknownLockedFields === undefined
       ? {}
       : { unknownLockedFields: managed.unknownLockedFields }),
+    ...(managed.unknownValueFields === undefined
+      ? {}
+      : { unknownValueFields: managed.unknownValueFields }),
   };
 }
 

@@ -554,14 +554,17 @@ describe('the settings route — the sync panel', () => {
 
   // Every relative label on the page has to be computed against ONE instant, or
   // the server render and the hydration disagree whenever a rounding boundary
-  // falls between them and React discards the markup.
+  // falls between them and React discards the markup. That the instant is
+  // captured per REQUEST rather than once per process is pinned separately, in
+  // render-instant-wiring.
   it('hands the panel the instant this render is measured against', () => {
     attach();
     grant();
 
     const before = Date.now();
-    const renderedAt = panel().renderedAt;
-    expect(renderedAt).toBeGreaterThanOrEqual(before);
-    expect(renderedAt).toBeLessThanOrEqual(Date.now());
+    const props = renderPanel();
+    if (props === null) throw new Error('the page rendered no sync panel');
+    expect(props.renderedAt).toBeGreaterThanOrEqual(before);
+    expect(props.renderedAt).toBeLessThanOrEqual(Date.now());
   });
 });

@@ -22,7 +22,8 @@ export default function SettingsPage() {
   // panel describes a relationship with a deployment: a machine without one has
   // no lanes, no backlog and no button, and a card of zeros saying so is a
   // different claim from silence.
-  const sync = readSyncPanel(settings, credentialState, renderInstant());
+  const renderedAt = renderInstant();
+  const sync = readSyncPanel(settings, credentialState, renderedAt);
   return (
     <div className="p-6">
       <PageHead title="Settings" sub="Workspace configuration for this machine." />
@@ -32,7 +33,7 @@ export default function SettingsPage() {
           section this sits under. */}
       {sync !== null && (
         <div className="mt-4">
-          <SyncPanel sync={sync} />
+          <SyncPanel sync={sync} renderedAt={renderedAt} />
         </div>
       )}
     </div>

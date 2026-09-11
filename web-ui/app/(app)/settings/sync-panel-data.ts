@@ -30,7 +30,10 @@ import { db } from '../../lib/db.ts';
  * that can hold them — this is the serialisable half, and every field in it is
  * a number, a string or a member of a closed enum.
  */
-export type SyncPanelData = Omit<SyncPanelViewProps, 'onSyncNow' | 'busy' | 'startError'>;
+export type SyncPanelData = Omit<
+  SyncPanelViewProps,
+  'onSyncNow' | 'busy' | 'startError' | 'renderedAt'
+>;
 
 /**
  * What each counted lane is called on screen.
@@ -133,7 +136,13 @@ function toRow(p: HistorySyncKindPartition): SyncKindRow | null {
 export function readSyncPanel(
   settings: WorkspaceSettings,
   credentialState: CredentialState,
-  renderedAt: number,
+  /**
+   * The instant to judge the claim and the breaker against — the route's own,
+   * so every time-derived answer on the page comes from ONE reading of the
+   * clock. It is not returned: the panel takes `renderedAt` as its own prop,
+   * the way every other consumer on every other route does.
+   */
+  at: number,
 ): SyncPanelData | null {
   const connection = settings.controlPlane;
   if (!isAttached(settings) || connection === undefined) return null;
@@ -143,13 +152,12 @@ export function readSyncPanel(
   const progress = readHistorySyncState(dir);
   const base = {
     deployment: connection.label ?? connection.endpoint,
-    renderedAt,
-    running: isHistorySyncLeaseLive(ledger.lease(), renderedAt),
+    running: isHistorySyncLeaseLive(ledger.lease(), at),
     // The breaker, which is the answer to "I pressed the button and nothing
     // happened". A pass started while it is open declines before it opens the
     // store, and the child is detached, so that decision reaches no surface at
     // all unless this page reads the same file the pass would.
-    paused: isForwardPaused(readForwardHealth(dir, renderedAt), renderedAt),
+    paused: isForwardPaused(readForwardHealth(dir, at), at),
     localOnly: LOCAL_ONLY,
     ...(progress === null
       ? {}

@@ -1,6 +1,6 @@
 'use client';
 
-import { SyncPanelView } from '@akasecurity/dashboard-ui';
+import { SyncPanelView, useRenderClock } from '@akasecurity/dashboard-ui';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState, useTransition } from 'react';
 
@@ -50,11 +50,16 @@ export const SYNC_START_GRACE_MS = 20_000;
  * them would put one `busy` flag across both, so asking for a pass would
  * disable the settings form.
  */
-export function SyncPanel({ sync }: { sync: SyncPanelData }) {
+export function SyncPanel({ sync, renderedAt }: { sync: SyncPanelData; renderedAt: number }) {
   const router = useRouter();
   const [startError, setStartError] = useState<string | null>(null);
   const [busy, startTransition] = useTransition();
   const [awaitingStart, setAwaitingStart] = useState(false);
+
+  // The server's instant, advanced after hydration so "3 minutes ago" keeps up
+  // in a tab left open. The panel re-renders from the server only while a pass
+  // is running; when nothing is, this is the only thing that moves the label.
+  const now = useRenderClock(renderedAt);
 
   const polling = sync.running || awaitingStart;
   useEffect(() => {
@@ -88,6 +93,7 @@ export function SyncPanel({ sync }: { sync: SyncPanelData }) {
   return (
     <SyncPanelView
       {...sync}
+      renderedAt={now}
       busy={busy}
       startError={startError ?? undefined}
       onSyncNow={() => {

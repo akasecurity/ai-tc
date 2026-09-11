@@ -155,15 +155,30 @@ describe('chaining-line secret-scan continuation selection', () => {
   });
 });
 
+const PLUGIN_DIR = fileURLToPath(new URL('..', import.meta.url));
+const COMMANDS_DIR = join(PLUGIN_DIR, 'commands');
+const NAMES = readRegisteredCommands().map((c) => c.replace('/aka:', ''));
+
+// `/aka:foo` contains no `/foo` substring — its only slash is followed by `a` —
+// so a bare occurrence is exactly what this matches. The leading class rejects a
+// path segment or URL tail (`scripts/scan-worker.js`, `~/.aka/data`), which is
+// the only shape that would otherwise read as a bare command. Shared by both
+// scans below: two matchers for one rule could disagree about what a bare form is.
+const bareForm = (): RegExp => new RegExp(`(^|[^A-Za-z0-9_:/.\\-])/(${NAMES.join('|')})\\b`, 'g');
+
+const scan = (text: string): string[] =>
+  text
+    .split('\n')
+    .flatMap((line, i) =>
+      [...line.matchAll(bareForm())].map((m) => `${String(i + 1)}: ${m[0].trim()}`),
+    );
+
 describe('shipped command prose names commands in their invokable form', () => {
   // These files reach the user either way — scan.md's description is shown, and
   // setup.md is the wizard script the model follows and quotes from. A command
   // file `foo.md` registers as `/aka:foo`, so a bare `/foo` in that prose is a
   // call-to-action nobody can invoke. Two had drifted with nothing looking at
   // them, which is what this scan is for.
-  const PLUGIN_DIR = fileURLToPath(new URL('..', import.meta.url));
-  const COMMANDS_DIR = join(PLUGIN_DIR, 'commands');
-  const NAMES = readRegisteredCommands().map((c) => c.replace('/aka:', ''));
 
   // Every markdown file the tarball carries, not just commands/. npm ships the
   // `files` entries plus README.md whether or not it is listed — confirmed
@@ -196,19 +211,6 @@ describe('shipped command prose names commands in their invokable form', () => {
     return found;
   };
 
-  // `/aka:foo` contains no `/foo` substring — its only slash is followed by `a` —
-  // so a bare occurrence is exactly what this matches. The leading class rejects a
-  // path segment or URL tail (`scripts/scan-worker.js`, `~/.aka/data`), which is
-  // the only shape that would otherwise read as a bare command.
-  const bareForm = (): RegExp => new RegExp(`(^|[^A-Za-z0-9_:/.\\-])/(${NAMES.join('|')})\\b`, 'g');
-
-  const scan = (text: string): string[] =>
-    text
-      .split('\n')
-      .flatMap((line, i) =>
-        [...line.matchAll(bareForm())].map((m) => `${String(i + 1)}: ${m[0].trim()}`),
-      );
-
   it('no shipped markdown names a bare /<command>', () => {
     const offenders = shippedMarkdown().flatMap((rel) =>
       scan(readFileSync(join(PLUGIN_DIR, rel), 'utf8')).map((hit) => `${rel}:${hit}`),
@@ -240,5 +242,71 @@ describe('shipped command prose names commands in their invokable form', () => {
     // Paths and URLs carry these words after a slash and are not commands.
     expect(scan('scripts/scan-worker.js and ~/.aka/data/aka.db')).toEqual([]);
     expect(scan('see https://example.com/health for more')).toEqual([]);
+  });
+});
+
+describe('shipped source strings name commands in their invokable form', () => {
+  // The markdown scan above cannot see a command named from TypeScript, and two
+  // shipped strings had drifted there — filescan.ts's scan follow-up and
+  // backfill.ts's historical-scan result both said `/findings`, which resolves to
+  // nothing. Both reach the user on ordinary paths and neither was pinned.
+  //
+  // Only QUOTED SPANS are scanned. Comments are the noise to exclude: this
+  // package names commands bare in doc headers on purpose (query.ts, firstrun.ts,
+  // present.ts), and those are fine because nobody types a comment. Two limits are
+  // real and stated rather than papered over — a bare form inside a template
+  // literal spanning several lines is missed, as is one in a trailing comment that
+  // happens to contain a matched pair of quotes.
+  const SRC_DIR = join(PLUGIN_DIR, 'src');
+
+  // A full-line comment cannot hold a string, so dropping those first keeps an
+  // apostrophe in prose from opening a bogus span.
+  const isCommentLine = (line: string): boolean => /^\s*(\/\/|\*|\/\*)/.test(line);
+  const QUOTED = /'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`/g;
+
+  const scanSource = (text: string): string[] =>
+    text
+      .split('\n')
+      .flatMap((line, i) =>
+        isCommentLine(line)
+          ? []
+          : (line.match(QUOTED) ?? []).flatMap((span) =>
+              scan(span).map(() => `${String(i + 1)}: ${span.trim()}`),
+            ),
+      );
+
+  const sourceFiles = (): string[] =>
+    readdirSync(SRC_DIR, { recursive: true, withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.endsWith('.ts'))
+      .map((e) => relative(PLUGIN_DIR, join(e.parentPath, e.name)));
+
+  it('no shipped source string names a bare /<command>', () => {
+    const offenders = sourceFiles().flatMap((rel) =>
+      scanSource(readFileSync(join(PLUGIN_DIR, rel), 'utf8')).map((hit) => `${rel}:${hit}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it('the source scan sees a string, ignores a comment, and reaches every file', () => {
+    // Without this control a broken span extractor reports an empty offender list
+    // for ever, which reads exactly like a clean tree.
+    expect(scanSource(`const FOLLOW_UP = 'Run /findings to review details.';`)).toHaveLength(1);
+    expect(scanSource('const x = `… — review them with /findings.`;')).toHaveLength(1);
+    expect(scanSource(`const x = "Run /health";`)).toHaveLength(1);
+
+    // The namespaced form is what both corrected sites now use.
+    expect(scanSource(`const FOLLOW_UP = 'Run /aka:findings to review details.';`)).toEqual([]);
+
+    // Comments name commands bare on purpose here and must not be flagged.
+    expect(scanSource(' * Invoked by the /health, /findings, /recommend commands')).toEqual([]);
+    expect(scanSource('// (the /findings look); without it the header gets…')).toEqual([]);
+
+    // A path in a string is not a command.
+    expect(scanSource(`const p = 'scripts/scan-worker.js';`)).toEqual([]);
+
+    // And the walk must actually reach the two files this guard was added for.
+    const walked = new Set(sourceFiles());
+    expect(walked).toContain(join('src', 'filescan.ts'));
+    expect(walked).toContain(join('src', 'backfill.ts'));
   });
 });

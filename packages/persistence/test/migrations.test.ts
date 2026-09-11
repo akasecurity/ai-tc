@@ -3,7 +3,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { SQLITE_MIGRATIONS } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { columnNames, schemaObjectExists } from '../src/db/migrations/introspection.ts';
+import {
+  columnNames,
+  indexColumns,
+  schemaObjectExists,
+} from '../src/db/migrations/introspection.ts';
 import { inspectionDefinitionId, sourceProjectId } from '../src/ids.ts';
 import {
   applyMigrations,
@@ -13,6 +17,7 @@ import {
   runLegacyHistoryBackfill,
   TOKEN_USAGE_COLUMNS,
 } from '../src/migrations.ts';
+import { SYNC_FAILURE_REASONS } from '../src/sync-failure.ts';
 import { assertNoOpenTransaction } from './helpers/transactions.ts';
 
 // The six token-usage generated columns are defined in THREE places that must stay
@@ -769,12 +774,6 @@ describe('migration 0006 (installed_packs write gate)', () => {
 // ─── Migration 0011 (egress writer) ──────────────────────────────────────────
 
 const EGRESS_WRITER_TAG = '0011_egress_writer';
-
-// The columns an index covers, in index order.
-function indexColumns(db: DatabaseSync, index: string): string[] {
-  // PRAGMA can't be parameterized; the name comes from our own DDL constants.
-  return (db.prepare(`PRAGMA index_info(${index})`).all() as { name: string }[]).map((c) => c.name);
-}
 
 // The NOT NULL flag of one column, as table_xinfo reports it.
 function columnNotNull(db: DatabaseSync, table: string, column: string): number | undefined {
@@ -1743,6 +1742,201 @@ describe('migration 0013 + legacy history backfill', () => {
       expect(
         (db.prepare('SELECT count(*) AS n FROM inspection_findings').get() as { n: number }).n,
       ).toBe(totalFindings);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+/**
+ * The delivery-failure columns, and the index they widened.
+ *
+ * Both halves here are SILENT when they break, which is why each has a case
+ * rather than being left to the fresh-store path that every other suite takes.
+ * A fresh store runs the `CREATE` and reads correct either way; only a store
+ * that already carries the narrow index can tell you whether the widening
+ * actually lands, and only a second pass over a migrated store can tell you
+ * whether it lands over and over.
+ */
+describe('delivery-failure state', () => {
+  const NARROW_SYNC_INDEX = ['event_type', 'synced_at', 'sync_claimed_at', 'started_at'];
+  const WIDE_SYNC_INDEX = [...NARROW_SYNC_INDEX, 'sync_failure'];
+
+  // The shape a store carried before the failure columns existed: the four-column
+  // index, no `sync_failure`, and a row frozen by the skip sentinel. Built by
+  // migrating and then walking back, because hand-writing the old schema would
+  // drift from what those stores really hold.
+  function downgradeToNarrowIndex(db: DatabaseSync): void {
+    db.exec('DROP INDEX IF EXISTS idx_audit_events_sync');
+    db.exec(`CREATE INDEX idx_audit_events_sync ON audit_events (${NARROW_SYNC_INDEX.join(', ')})`);
+  }
+
+  it('widens the sync index on a store that already has the narrow one', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      downgradeToNarrowIndex(db);
+      expect(indexColumns(db, 'idx_audit_events_sync')).toEqual(NARROW_SYNC_INDEX);
+
+      // Second open ("reopen"). `CREATE INDEX IF NOT EXISTS` matches on the NAME,
+      // so without the DROP this assertion reads the narrow list back — which is
+      // exactly what every upgraded store would have kept while a fresh-store
+      // test reported the widening working.
+      applyMigrations(db);
+      expect(indexColumns(db, 'idx_audit_events_sync')).toEqual(WIDE_SYNC_INDEX);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('does not rebuild the sync index on a store that already has the wide one', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      expect(indexColumns(db, 'idx_audit_events_sync')).toEqual(WIDE_SYNC_INDEX);
+
+      // The other half of the same trap: the DROP that makes the widening land
+      // sits in a function that runs on EVERY open, so an unguarded one rebuilds
+      // the index of the most numerous table every time the store is opened.
+      // Recording the statements is what makes that observable — the index looks
+      // identical either way.
+      const statements: string[] = [];
+      const realExec = db.exec.bind(db);
+      Object.defineProperty(db, 'exec', {
+        configurable: true,
+        value: (sql: string) => {
+          statements.push(sql);
+          realExec(sql);
+        },
+      });
+      try {
+        applyMigrations(db);
+      } finally {
+        Object.defineProperty(db, 'exec', { configurable: true, value: realExec });
+      }
+
+      const touchedSyncIndex = statements.filter((sql) => sql.includes('idx_audit_events_sync'));
+      expect(touchedSyncIndex).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('re-arms pre-existing permanent skips exactly once, on the upgrade that gives them a reason', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      // Walk back to a store with no `sync_failure` column: that absence is what
+      // the one-time re-arm is keyed on, so dropping the column is what makes
+      // this a genuine upgrade rather than a re-run. The index has to come off
+      // first — it names the column, and SQLite refuses to drop a column an
+      // index depends on — which is also the order a real pre-upgrade store was
+      // in: narrow index, no column. The guard triggers name it too, for the
+      // same reason and with the same consequence.
+      downgradeToNarrowIndex(db);
+      db.exec('DROP TRIGGER IF EXISTS aka_sync_failure_guard');
+      db.exec('ALTER TABLE audit_events DROP COLUMN sync_failure');
+      db.exec(
+        `INSERT INTO audit_events (id, event_type, started_at, synced_at)
+         VALUES ('frozen', 'tool_call', 1, -1)`,
+      );
+
+      applyMigrations(db);
+      const afterUpgrade = db
+        .prepare(`SELECT synced_at AS syncedAt FROM audit_events WHERE id = 'frozen'`)
+        .get() as { syncedAt: number | null };
+      // Freed: every `-1` reaching that upgrade was written by a build that could
+      // not tell a deployment's refusal from a row this machine cannot express,
+      // and nothing re-arms the sentinel those rows were collapsed into.
+      expect(afterUpgrade.syncedAt).toBeNull();
+
+      // A row skipped AFTER the upgrade has a reason of its own and must stay put.
+      // Re-arming on every open would re-offer every permanently-skipped row for
+      // ever, which is the failure the one-time guard exists to avoid.
+      db.exec(`UPDATE audit_events SET synced_at = -1 WHERE id = 'frozen'`);
+      applyMigrations(db);
+      const afterReopen = db
+        .prepare(`SELECT synced_at AS syncedAt FROM audit_events WHERE id = 'frozen'`)
+        .get() as { syncedAt: number | null };
+      expect(afterReopen.syncedAt).toBe(-1);
+    } finally {
+      db.close();
+    }
+  });
+
+  // The re-arm is scoped by event type so it SEEKS rather than scanning the
+  // largest table in the store — 4.8 seconds measured on a real 6 GB one, on the
+  // path every hook takes to open the store. Nothing about the RESULT changes if
+  // the scope is dropped, so a result assertion holds it not at all; the plan is
+  // what would go red if a later index reorder put that scan back.
+  //
+  // The statement is captured from the migration rather than restated here: a
+  // plan for SQL spelled twice is a plan for a statement nothing issues.
+  it('answers the one-time re-arm from the index, not by scanning', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      downgradeToNarrowIndex(db);
+      db.exec('DROP TRIGGER IF EXISTS aka_sync_failure_guard');
+      db.exec('ALTER TABLE audit_events DROP COLUMN sync_failure');
+
+      const statements: string[] = [];
+      const realExec = db.exec.bind(db);
+      Object.defineProperty(db, 'exec', {
+        configurable: true,
+        value: (sql: string) => {
+          statements.push(sql);
+          realExec(sql);
+        },
+      });
+      try {
+        applyMigrations(db);
+      } finally {
+        Object.defineProperty(db, 'exec', { configurable: true, value: realExec });
+      }
+
+      const rearm = statements.filter((sql) => /UPDATE\s+\S+\s+SET synced_at = NULL/.test(sql));
+      // Without this the assertions below would hold vacuously on a migration
+      // that stopped re-arming at all.
+      expect(rearm).toHaveLength(1);
+
+      const plan = (
+        db.prepare(`EXPLAIN QUERY PLAN ${rearm[0] ?? ''}`).all() as { detail: string }[]
+      )
+        .map((row) => row.detail)
+        .join(' | ');
+      expect(plan).toContain('idx_audit_events_sync');
+      expect(plan).not.toContain('SCAN audit_events');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('refuses a sync_failure value outside the closed set', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      db.exec(
+        `INSERT INTO audit_events (id, event_type, started_at) VALUES ('row', 'tool_call', 1)`,
+      );
+
+      // The column sits in the same row as `content`, is queryable, and is
+      // rendered — so the store is made structurally incapable of holding
+      // anything else rather than trusted not to. Enforced by a trigger rather
+      // than a CHECK because a CHECK can only arrive with the column, and an ADD
+      // COLUMN carrying one scans the whole table — see the migration.
+      expect(() => {
+        db.exec(`UPDATE audit_events SET sync_failure = 'nonsense' WHERE id = 'row'`);
+      }).toThrow(/not one of the recorded reasons/);
+      // The UPDATE path is the only one guarded, and the only one any writer
+      // uses — see the migration for the measured reason an INSERT guard is not
+      // worth its cost on this table.
+
+      for (const reason of SYNC_FAILURE_REASONS) {
+        expect(() => {
+          db.prepare('UPDATE audit_events SET sync_failure = ? WHERE id = ?').run(reason, 'row');
+        }).not.toThrow();
+      }
     } finally {
       db.close();
     }

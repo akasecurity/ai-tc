@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertHostArchitecture,
+  describeRun,
   type InstallerRun,
   powershellEnv,
   runScript,
@@ -132,20 +133,32 @@ const CLR_ABORT_STDERR =
   'Unhandled exception. System.IO.FileLoadException: The given assembly name was invalid.\n' +
   "File name: 'System.Private.Uri, <truncated mid-token by the crash>'";
 
+/**
+ * An `InstallerRun` for a case that cares about two of its fields.
+ *
+ * A builder rather than five object literals: `signal` and `elapsedMs` say
+ * nothing about the retry, and spelling them at every site makes the field the
+ * case IS about harder to see — while a sixth field added later would be five
+ * more edits, each of which reads as a decision and is not one.
+ */
+function runOf(over: Partial<InstallerRun>): InstallerRun {
+  return { status: 0, signal: null, elapsedMs: 1, stdout: '', stderr: '', ...over };
+}
+
 function aborts(times: number, then: InstallerRun): { run: ScriptRunner; calls: () => number } {
   let calls = 0;
   const run: ScriptRunner = () => {
     calls += 1;
     if (calls <= times) {
-      return Promise.resolve({ status: 134, stdout: '', stderr: CLR_ABORT_STDERR });
+      return Promise.resolve(runOf({ status: 134, stderr: CLR_ABORT_STDERR }));
     }
     return Promise.resolve(then);
   };
   return { run, calls: () => calls };
 }
 
-const REFUSAL: InstallerRun = { status: 1, stdout: '', stderr: 'checksum mismatch' };
-const SUCCESS: InstallerRun = { status: 0, stdout: 'ok', stderr: '' };
+const REFUSAL: InstallerRun = runOf({ status: 1, stderr: 'checksum mismatch' });
+const SUCCESS: InstallerRun = runOf({ stdout: 'ok' });
 
 describe('runScript retries a CLR startup abort', () => {
   it('re-runs past an abort and returns the run that happened', async () => {
@@ -180,11 +193,10 @@ describe('runScript retries a CLR startup abort', () => {
     // An unhandled .NET exception from a `Compress-Archive` the SCRIPT ran is a
     // real failure. Only the assembly-name parser marks the startup corruption,
     // so both markers are required and this one carries the first alone.
-    const selfInflicted: InstallerRun = {
+    const selfInflicted: InstallerRun = runOf({
       status: 1,
-      stdout: '',
       stderr: 'Unhandled exception. System.IO.IOException: There is not enough space on the disk.',
-    };
+    });
     const { run, calls } = aborts(0, selfInflicted);
     const result = await runScript('pwsh', [], {}, run);
     expect(result).toEqual(selfInflicted);
@@ -195,7 +207,7 @@ describe('runScript retries a CLR startup abort', () => {
     // A run that happened is a run that happened. Without this a script that
     // printed the marker and succeeded would be re-run, and the second run's
     // side effects would land on top of the first's.
-    const noisySuccess: InstallerRun = { status: 0, stdout: '', stderr: CLR_ABORT_STDERR };
+    const noisySuccess: InstallerRun = runOf({ stderr: CLR_ABORT_STDERR });
     const { run, calls } = aborts(0, noisySuccess);
     const result = await runScript('pwsh', [], {}, run);
     expect(result).toEqual(noisySuccess);
@@ -212,3 +224,113 @@ function errorFrom(fn: () => void): Error | undefined {
     return err as Error;
   }
 }
+
+/**
+ * What a failing assertion about a run is allowed to say about it.
+ *
+ * These read like formatting tests and are not. The assertions that fail
+ * intermittently on CI are `expect(status).not.toBe(0)`, which vitest renders
+ * as `expected +0 not to be +0` — a message that names neither the script nor
+ * anything it did. Three occurrences of one signature produced no evidence
+ * between them and two investigations dead-ended for the lack of it, so what
+ * this carries is the difference between the next occurrence being an answer
+ * and being another investigation.
+ */
+describe('a real spawn fills the record', () => {
+  // Every case above injects a runner, so all of them would pass with
+  // `elapsedMs` hardcoded to zero and the signal never read — and the reading
+  // this whole record exists for is the one taken from a real child. Driven
+  // through the default runner for that reason, against this very Node rather
+  // than a PowerShell: the fields are filled by `spawnScript`, which does not
+  // care what it started, and requiring an interpreter here would leave the
+  // measurement unpinned on exactly the hosts that have none.
+  it('reports the status, the streams and a non-zero elapsed', async () => {
+    const result = await runScript(
+      process.execPath,
+      ['-e', 'process.stdout.write("ran"); process.stderr.write("noted")'],
+      {},
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.signal).toBeNull();
+    expect(result.stdout).toBe('ran');
+    expect(result.stderr).toBe('noted');
+    // Not a timing assertion — no budget, no ceiling. Starting a process and
+    // reading its output cannot take zero, so a zero here means the clock is
+    // not wired rather than that the machine is fast.
+    expect(result.elapsedMs).toBeGreaterThan(0);
+  });
+});
+
+describe('describeRun', () => {
+  it('names the three readings that separate a run from a non-run', () => {
+    const line = describeRun(runOf({ status: 0, signal: null, elapsedMs: 107 }));
+
+    expect(line).toContain('status=0');
+    expect(line).toContain('signal=null');
+    expect(line).toContain('elapsed=107ms');
+  });
+
+  it('carries both streams', () => {
+    const line = describeRun(runOf({ stdout: 'downloading', stderr: 'checksum mismatch' }));
+
+    expect(line).toContain('downloading');
+    expect(line).toContain('checksum mismatch');
+  });
+
+  it('says an empty stream is empty rather than rendering nothing', () => {
+    // "the script printed nothing" and "the message was lost on the way here"
+    // look identical when an empty stream renders as an empty string, and they
+    // point at opposite causes.
+    const line = describeRun(runOf({ stdout: '', stderr: '' }));
+
+    expect(line).toContain('stdout: (empty)');
+    expect(line).toContain('stderr: (empty)');
+  });
+
+  it('excerpts a long stream and says how long it really was', () => {
+    // A 46 MB archive download can print a great deal, and a message that
+    // scrolls the failure off the top of a CI log is one nobody reads.
+    const long = 'z'.repeat(5_000);
+
+    const line = describeRun(runOf({ stderr: long }));
+
+    expect(line.length).toBeLessThan(2_000);
+    expect(line).toContain('(5000 chars)');
+  });
+
+  it('reaches the failure message vitest actually renders', () => {
+    // The assumption the whole change rests on, and it is not self-evident:
+    // `expect(actual, message)` is vitest's second parameter, so a runner
+    // upgrade that stopped honouring it would leave every call site above
+    // compiling, passing, and carrying nothing. Driven through the real
+    // assertion rather than asserted about it.
+    const run = runOf({ status: 0, elapsedMs: 107, stderr: 'nothing was downloaded' });
+
+    const error = errorFrom(() => {
+      expect(run.status, describeRun(run)).not.toBe(0);
+    });
+
+    expect(error).toBeDefined();
+    expect(error?.message).toContain('elapsed=107ms');
+    expect(error?.message).toContain('nothing was downloaded');
+  });
+
+  it('keeps a stream that fits, whole', () => {
+    // The control on the case above, and it has to say BOTH things. An excerpt
+    // that truncated everything would satisfy the length bound for ever — and
+    // so would one that took the truncation branch on EVERY stream, because
+    // `slice(0, EXCERPT_CHARS)` of a 75-character string still contains the
+    // whole string. It just arrives annotated as an excerpt of itself, and a
+    // `toContain` alone cannot tell the two apart: forcing that branch left all
+    // of this file's cases green.
+    //
+    // One bound call, so the presence check and the absence check describe the
+    // same bytes rather than two independent reads.
+    const whole = 'aka: checksum mismatch for aka-1.2.3-win32-x64.zip -- refusing to install.';
+    const line = describeRun(runOf({ stderr: whole }));
+
+    expect(line).toContain(whole);
+    expect(line).not.toContain('chars)');
+  });
+});

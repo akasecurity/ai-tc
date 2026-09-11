@@ -340,6 +340,7 @@ describe('detachFromControlPlane', () => {
       historySyncConsent: 'granted',
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
+      redactFallback: 'warn',
     });
     expect(isHistorySyncConsentValid(readWorkspaceSettings().historySyncConsent, ENDPOINT)).toBe(
       true,
@@ -462,6 +463,7 @@ describe('detachFromControlPlane', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'off',
+      redactFallback: 'warn',
     });
     await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY });
     await detachFromControlPlane();
@@ -506,6 +508,7 @@ describe('write failures are reported, never thrown', () => {
         historySyncConsent: 'revoked',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
+        redactFallback: 'warn',
       });
       expect(res.ok).toBe(false);
       expect(res.error).toContain('settings.json');
@@ -613,6 +616,7 @@ describe('untyped wire input', () => {
         historySyncConsent: 'revoked',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
+        redactFallback: 'warn',
       });
       expect(res.ok).toBe(false);
       expect(res.error).toContain('historicalAccess');
@@ -626,6 +630,7 @@ describe('untyped wire input', () => {
         historicalAccess: 'session-only',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
+        redactFallback: 'warn',
       });
       expect(res.ok).toBe(false);
       expect(res.error).toContain('modelJudgeConsent');
@@ -640,6 +645,7 @@ describe('untyped wire input', () => {
         historySyncConsent: 'revoked',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
+        redactFallback: 'warn',
       });
       expect(res).toEqual({ ok: true });
       expect(readWorkspaceSettings().historicalAccess).toBe('full');

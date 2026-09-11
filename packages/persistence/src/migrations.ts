@@ -8,6 +8,7 @@ import {
   evidenceExists,
   type EvidenceObject,
   evidenceObjects,
+  indexColumns,
   indexExists,
   schemaObjectExists,
 } from './db/migrations/introspection.ts';
@@ -16,6 +17,8 @@ import { bindParams } from './internal/rows.ts';
 import { backupPath, reapStalePartials, snapshotStore } from './internal/snapshot.ts';
 import { withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
+import { COUNTED_EVENT_TYPES } from './repositories/history-sync.ts';
+import { syncFailureRejectCondition } from './sync-failure.ts';
 
 // --- migration-DDL introspection --------------------------------------------
 // drizzle's generated SQLite DDL is rigidly formatted — backtick-quoted
@@ -988,6 +991,91 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
   if (!columns.includes('outbox_owed')) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN outbox_owed integer`);
   }
+  // WHY a row that failed needs two more columns, and not a fourth value in
+  // `synced_at`. That column is already tri-valued — NULL, a delivery time, the
+  // skip sentinel — and three shipped predicates are pinned against it
+  // (`> 0`, `<= 0`, `= -1`). A `-2` meaning "the deployment refused this" would
+  // silently join the bucket `<= 0` already counts, so the store would hold the
+  // distinction and no read could express it.
+  //
+  // `sync_failed_at` is when, `sync_failure` is why. The skip sentinel goes on
+  // saying WHETHER a row is outstanding, which is what every existing predicate
+  // asks it.
+  if (!columns.includes('sync_failed_at')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN sync_failed_at integer`);
+  }
+  if (!columns.includes('sync_failure')) {
+    // The ALTER and the re-arm below are ONE unit. As separate autocommit
+    // statements, a crash between them leaves the column present — so this
+    // branch never runs again — with the re-arm never run, and the rows it
+    // exists to free stay frozen for the life of the store with nothing left to
+    // notice. withTransaction rather than a bare BEGIN: this runs inside
+    // runMigrations, which may already hold one, and the helper opens a
+    // savepoint instead of throwing when it does.
+    withTransaction(
+      db,
+      () => {
+        // PLAIN, and the closed set is enforced by the trigger below
+        // instead. A CHECK can only arrive with the column, and an ADD COLUMN
+        // carrying one makes SQLite scan the whole table to validate rows that
+        // are all NULL — measured at 23 seconds on a real 6 GB store against
+        // 0.1 ms without. This runs inside the call every hook makes to open the
+        // store, under a ten-second host timeout, so that difference is not a
+        // performance nicety: a migration that cannot finish inside the timeout
+        // is killed, rolls back, and is retried by the next hook, for ever.
+        db.exec(`ALTER TABLE ${table} ADD COLUMN sync_failure text`);
+        // ONCE, on the upgrade that gives a skip somewhere to say why.
+        //
+        // Every `-1` on a store reaching this line was written by a build that
+        // could not tell "this deployment refused the body" from "this machine
+        // cannot express the row", and collapsed both into a sentinel nothing
+        // re-arms. The 413 half of that is one deployment's body limit, so those
+        // rows were never a fact about themselves — they were frozen by a
+        // classification the store had no room to record.
+        //
+        // Re-offering them costs one retry each and is self-correcting: a row
+        // that really is a local defect fails identically on the next pass and
+        // lands back here as `payload_invalid`, carrying the reason it never
+        // had. A row that was a 413 gets the chance the sentinel took from it.
+        // Measured zero such rows on a real 313,644-row store, so the one-time
+        // re-send this can provoke is bounded by a population that is empty or
+        // negligible — but it is bounded by the CHECK's absence either way,
+        // since this branch cannot run twice.
+        //
+        // SCOPED BY EVENT TYPE so it can be answered from the index. The bare
+        // form is a full scan of the largest table in the store — 4.8 seconds
+        // measured on that same 6 GB store, spent on the same blocking path as
+        // the ALTER above. Leading the sync index with `event_type` means this
+        // seeks instead. Scoping loses nothing: the sentinel is only ever
+        // written to rows the drain's own reads returned, and those reads are
+        // type-filtered to exactly these lanes.
+        db.exec(
+          `UPDATE ${table} SET synced_at = NULL
+            WHERE synced_at = -1
+              AND event_type IN (${COUNTED_EVENT_TYPES.map((t) => `'${t}'`).join(', ')})`,
+        );
+      },
+      'IMMEDIATE',
+    );
+  }
+  // The closed set, enforced where the column is actually written. A trigger
+  // costs nothing to install at any table size, unlike the CHECK it replaces,
+  // and refuses the same values — see syncFailureRejectCondition.
+  //
+  // ON UPDATE ONLY, and that is measured rather than assumed. Every writer of
+  // this column is an UPDATE: the two that give up on a row, and the one that
+  // closes the attached window. No insert path sets it at all. Guarding INSERT
+  // as well would therefore refuse nothing that happens — and it is not free,
+  // because a table carrying a trigger an INSERT could fire makes SQLite open a
+  // statement journal for every insert: measured at 54 ms against 34 ms for
+  // 40,000 rows, a 59% tax on the hottest write in the product. The UPDATE
+  // guard alone measured 36 ms, inside the noise.
+  db.exec(
+    `CREATE TRIGGER IF NOT EXISTS aka_sync_failure_guard
+       BEFORE UPDATE OF sync_failure ON ${table}
+       WHEN ${syncFailureRejectCondition()}
+       BEGIN SELECT RAISE(ABORT, 'sync_failure is not one of the recorded reasons'); END`,
+  );
   // For the DELIVERY-STATE read specifically. That one aggregates over every row
   // of the tracked types on each call — a surface showing it re-runs it per
   // render — and `audit_events` is the table captures land in, the numerous
@@ -1000,10 +1088,56 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
   // drain's read is not served by it either, and gets its own index below. Every
   // plan is pinned in the ledger's tests, because a column order that stops
   // working stops working silently.
-  db.exec(
-    `CREATE INDEX IF NOT EXISTS idx_audit_events_sync
-       ON audit_events (event_type, synced_at, sync_claimed_at, started_at)`,
-  );
+  //
+  // REBUILT, not `CREATE INDEX IF NOT EXISTS`, and the difference is the whole
+  // reason this block is shaped this way. `IF NOT EXISTS` matches on the index's
+  // name alone: against a store that already holds the four-column version it is a silent
+  // no-op however many columns the statement names. Editing the column list in
+  // place would therefore reach only stores that have never opened before —
+  // every upgraded store would keep the narrow index, the delivery-state read
+  // would stop being covered and fall back to scanning the table captures land
+  // in, and no test building a fresh store could see it, because a fresh store
+  // takes the CREATE path where the statement is the truth.
+  //
+  // And the obvious fix is the second trap: an unconditional DROP + CREATE in a
+  // function that runs on EVERY database open rebuilds the index on every open.
+  // Comparing against the columns actually present is what makes the rebuild
+  // happen once, on the store that needs it, and never again.
+  const syncIndexColumns = [
+    'event_type',
+    'synced_at',
+    'sync_claimed_at',
+    'started_at',
+    // Appended LAST on purpose. The delivery-state read now projects it, so it
+    // has to be in the index for the read to stay covered — but putting it
+    // ahead of `started_at` would reorder the prefix the structural drain's
+    // reads match on.
+    'sync_failure',
+    // `outbox_owed` is DELIBERATELY ABSENT, and it was measured both ways.
+    //
+    // The delivery-state read tests it — a capture's state depends on whether a
+    // live forward marked it owed — so carrying it here makes that read covering
+    // rather than a row fetch per row: 16 ms against 40 ms on a real 6 GB store.
+    // But a sixth column changes what the planner charges for this index, and
+    // with no ANALYZE statistics it plans from schema shape alone: measured, it
+    // then stops choosing the per-session index for the token rollup and walks
+    // every `llm_call` in the store through the event-type index instead. That
+    // read grows with the store; this one does not.
+    //
+    // 40 ms on the largest store measured, once per render, is a cost worth
+    // paying to leave every other read's plan where it was.
+  ];
+  const currentSyncIndex = indexColumns(db, 'idx_audit_events_sync');
+  const syncIndexMatches =
+    currentSyncIndex.length === syncIndexColumns.length &&
+    currentSyncIndex.every((column, i) => column === syncIndexColumns[i]);
+  if (!syncIndexMatches) {
+    db.exec('DROP INDEX IF EXISTS idx_audit_events_sync');
+    db.exec(
+      `CREATE INDEX idx_audit_events_sync
+         ON audit_events (${syncIndexColumns.join(', ')})`,
+    );
+  }
   // The CAPTURE drain's read, which has no lower bound to stop a walk.
   //
   // Its predicate is `outbox_owed = 1` plus the capture types, ordered by

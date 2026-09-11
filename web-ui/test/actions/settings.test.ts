@@ -62,6 +62,7 @@ describe('saveSettings — the redact fallback', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         redactFallback: value,
+        bodyRetention: { enabled: false, retainDays: 30 },
       });
       expect(res).toEqual({ ok: true });
       expect(readWorkspaceSettings().redactFallback).toBe(value);
@@ -80,6 +81,7 @@ describe('saveSettings — the redact fallback', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       redactFallback: 'block',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
 
     const res = await saveSettings({
@@ -89,6 +91,7 @@ describe('saveSettings — the redact fallback', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'full',
       redactFallback: 'redact',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
 
     expect(res.ok).toBe(false);
@@ -107,6 +110,7 @@ describe('saveSettings — the redact fallback', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       redactFallback: 7,
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(res.ok).toBe(false);
     // WHICH guard refused it, not merely that something did. `ok: false` is

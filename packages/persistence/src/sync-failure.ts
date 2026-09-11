@@ -27,11 +27,10 @@
  *   to send. It fails identically against every deployment, so it is terminal
  *   everywhere and the re-arm leaves it alone.
  * - `detached_undelivered` — the attached window closed with the row still
- *   undelivered. Declared here so the CHECK admits it; nothing writes it yet,
- *   and that is deliberate rather than an oversight. A CHECK cannot be widened
- *   in place on SQLite — admitting one more member means rewriting the table —
- *   so a member the detach path is going to need is cheaper to admit now than
- *   to add later.
+ *   undelivered, so it was never offered to anyone. Not a fault of the row or
+ *   of a deployment. Terminal for the attachment that closed over it, and freed
+ *   by a change of deployment like a refusal, since the next deployment has seen
+ *   none of this machine's history.
  *
  * A row carrying one of these keeps `synced_at` at the skip sentinel. The
  * column answers "why", never "whether" — nothing reads `sync_failure` to

@@ -654,6 +654,57 @@ describe('SqliteHistorySyncRepository — closing the attached period', () => {
 
     expect(db.historySync.pendingSessions(10, ALL)).toEqual(['s-before']);
   });
+
+  // THE POINT of recording a reason here. Closing the window makes those rows
+  // no longer outstanding, which is what lets the boundary move — but it says
+  // nothing about whether any of them arrived, and writing a delivery time said
+  // the opposite. Every case above asserts only that they stop being pending,
+  // which is why one detach could turn a window of undelivered rows into a
+  // window of delivered ones without reddening anything.
+  it('does not report the closed window as delivered', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.rearmFor('fp', T0);
+
+    db.historySync.closeAttachedWindow(T0, T0 + MINUTE);
+
+    const p = db.historySync.partition();
+    expect(p.synced).toBe(0);
+    expect(p.detached).toBe(3);
+    // Still not outstanding — the boundary can move, which is what this is for.
+    expect(p.queued).toBe(0);
+    expect(db.historySync.counts(ALL).sent).toBe(0);
+  });
+
+  // A row that genuinely reached the deployment before the detach keeps saying
+  // so: the window covers what is still NULL, never what is already settled.
+  it('leaves a row delivered before the detach alone', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.rearmFor('fp', T0);
+    db.historySync.markSynced(['s-1'], T0);
+
+    db.historySync.closeAttachedWindow(T0, T0 + MINUTE);
+
+    expect(db.historySync.partition()).toMatchObject({ synced: 1, detached: 2 });
+  });
+
+  // And the half that would have been a silent LOSS. Before a reason could be
+  // recorded, this wrote a delivery time, so the re-arm freed the window like
+  // any other stamp and the rows reached the next deployment. A terminal marker
+  // that the re-arm did not name would have quietly stopped that.
+  it('offers the closed window to a NEW deployment, as a delivery time used to', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.rearmFor('fp-a', T0);
+    db.historySync.closeAttachedWindow(T0, T0 + MINUTE);
+    expect(db.historySync.pendingSessions(10, ALL)).toEqual([]);
+
+    db.historySync.rearmFor('fp-b', ALL);
+
+    expect(db.historySync.pendingSessions(10, ALL)).toEqual(['s-1']);
+    expect(db.historySync.partition().detached).toBe(0);
+  });
 });
 
 // The delivery-state partition backs a surface that reports what has been sent,
@@ -755,6 +806,7 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
       synced: 0,
       failed: 0,
       refused: 0,
+      detached: 0,
       total: 0,
     });
   });

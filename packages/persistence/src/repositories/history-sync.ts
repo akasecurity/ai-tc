@@ -169,6 +169,12 @@ export interface HistorySyncPartition {
   failed: number;
   /** Rows this deployment refused. Freed by a change of deployment. */
   refused: number;
+  /**
+   * Rows the attached window closed over — never offered to anyone, because the
+   * machine detached while they were still outstanding. Not a failure of the
+   * row or of a deployment, which is why it is neither of the two above.
+   */
+  detached: number;
   total: number;
 }
 
@@ -402,7 +408,12 @@ export class SqliteHistorySyncRepository {
          SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0
                        AND sync_failure = 'deployment_refused' THEN 1 ELSE 0 END) AS refused,
          SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0
-                       AND (sync_failure IS NULL OR sync_failure <> 'deployment_refused')
+                       AND sync_failure = 'detached_undelivered' THEN 1 ELSE 0 END) AS detached,
+         -- Spelled as what it INCLUDES rather than what it excludes, so a reason
+         -- added later lands in no bucket and fails the sum assertion, instead
+         -- of silently joining this one.
+         SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0
+                       AND (sync_failure IS NULL OR sync_failure = 'payload_invalid')
                   THEN 1 ELSE 0 END) AS failed,
          COUNT(*) AS total
        FROM audit_events
@@ -414,7 +425,7 @@ export class SqliteHistorySyncRepository {
          SUM(CASE WHEN synced_at IS NULL AND started_at < :before THEN 1 ELSE 0 END) AS pending,
          SUM(CASE WHEN synced_at > 0 THEN 1 ELSE 0 END) AS sent,
          SUM(CASE WHEN synced_at = ${String(SKIPPED)}
-                       AND (sync_failure IS NULL OR sync_failure <> 'deployment_refused')
+                       AND (sync_failure IS NULL OR sync_failure = 'payload_invalid')
                   THEN 1 ELSE 0 END) AS skipped,
          SUM(CASE WHEN synced_at = ${String(SKIPPED)}
                        AND sync_failure = 'deployment_refused' THEN 1 ELSE 0 END) AS refused
@@ -453,10 +464,24 @@ export class SqliteHistorySyncRepository {
           SET endpoint_fingerprint = :fingerprint, backlog_before = :backlogBefore
         WHERE id = 1`,
     );
-    // WHICH terminal rows are re-armed, and it is not all of them. A row this
-    // machine could not express fails the same way against any deployment, so
-    // `payload_invalid` stays put; a refusal is one deployment's verdict on one
-    // body, so it is freed here exactly as a delivered row is.
+    // WHICH terminal rows are re-armed, and why it is not all of them. STRUCTURAL
+    // ONLY: the capture half is disownCapturesStmt below, and no capture is ever
+    // re-armed whatever its reason, because offering one deployment's
+    // undelivered prompts to another is the leak that statement exists to
+    // prevent.
+    //
+    // A row this machine could not express fails the same way against any
+    // deployment, so `payload_invalid` stays put. The other two are terminal only
+    // against the deployment that produced them — a refusal is one deployment's
+    // verdict on one body, and a row the attached window closed over was simply
+    // never offered to anyone — so both are freed here, exactly as a delivered
+    // row is.
+    //
+    // Freeing `detached_undelivered` is what keeps this change from LOSING data.
+    // Before these columns existed, detach stamped that window with a delivery
+    // time, so the clause below re-armed it like any other stamp and the rows
+    // reached the next deployment. Marking them terminal without naming them
+    // here would quietly stop that.
     // STRUCTURAL ONLY, and the capture half is handled by disownCapturesStmt
     // below rather than here — the two lanes discard different things.
     //
@@ -501,7 +526,8 @@ export class SqliteHistorySyncRepository {
     this.rearmStmt = db.prepare(
       `UPDATE audit_events
           SET synced_at = NULL, sync_failed_at = NULL, sync_failure = NULL
-        WHERE (synced_at > 0 OR sync_failure = 'deployment_refused')
+        WHERE (synced_at > 0
+               OR sync_failure IN ('deployment_refused', 'detached_undelivered'))
           AND event_type IN (${TYPE_LIST})`,
     );
 
@@ -530,7 +556,10 @@ export class SqliteHistorySyncRepository {
     // drain has never covered it — stamping it is what lets the boundary move
     // forward afterwards without re-sending any of it.
     this.closeWindowStmt = db.prepare(
-      `UPDATE audit_events SET synced_at = :at
+      `UPDATE audit_events
+          SET synced_at = ${String(SKIPPED)},
+              sync_failed_at = :at,
+              sync_failure = 'detached_undelivered'
         WHERE synced_at IS NULL
           AND event_type IN (${TYPE_LIST})
           AND started_at >= :attachedAt`,
@@ -771,6 +800,7 @@ export class SqliteHistorySyncRepository {
       synced: row?.synced ?? 0,
       failed: row?.failed ?? 0,
       refused: row?.refused ?? 0,
+      detached: row?.detached ?? 0,
       total: row?.total ?? 0,
     };
   }
@@ -894,11 +924,18 @@ export class SqliteHistorySyncRepository {
    * recorded in that window sit after the boundary and before the re-attach, so
    * neither path takes them, and the pending count reports none outstanding.
    *
-   * Stamping the attached window is not a claim that every one of those rows
-   * reached the deployment — the live path drops on failure and says so
-   * elsewhere. It records that they were ITS to deliver, which is exactly the
-   * status quo: they sit outside the frozen boundary today and are equally never
-   * re-sent. Making it explicit is what lets the boundary move.
+   * WHAT IT RECORDS, and what it deliberately does not. These rows were the
+   * closing attachment's to deliver and are no longer outstanding — that is what
+   * lets the boundary move. It is NOT a claim that any of them arrived, and the
+   * distinction is not academic: this used to write a delivery TIME, which every
+   * read treats as delivery, so one detach turned a window of undelivered rows
+   * into a window of delivered ones and no surface could tell. It writes the
+   * skip sentinel and a reason of its own instead, so "no longer owed" and
+   * "received" stop being the same fact.
+   *
+   * A change of deployment still frees them (see the re-arm), because the next
+   * deployment has seen none of this machine's history — so the rows reach it
+   * exactly as they did when this wrote a delivery time.
    *
    * ONE TRANSACTION, so a crash cannot release the boundary while leaving the
    * window unstamped — that half-state would re-send the whole attached period

@@ -1,3 +1,8 @@
+'use client';
+// Required: the legend below toggles which severities the chart plots, so this
+// card owns visibility state. Its props stay plain data, so a server-rendered
+// caller (web-ui's security page) hands them across the boundary unchanged.
+
 import type { FindingsTimeseriesPoint, TimeseriesGranularity } from '@akasecurity/schema';
 import {
   Card,
@@ -14,6 +19,7 @@ import {
 import { COLORS } from '../lib/colors.ts';
 import { AreaChart } from '../shared/charts.tsx';
 import { AnalyticsIcon } from '../shared/icons.tsx';
+import { SeriesLegend, useSeriesVisibility } from '../shared/SeriesLegend.tsx';
 import { WidgetEmpty, WidgetError } from './widget-shared.tsx';
 
 // One day's point with a presentation `label` (the raw `timestamp` resolved to a
@@ -75,6 +81,11 @@ export function FindingsOverTimeCardView({
   // producer reaches this — and summing an absent value yields NaN, which is not
   // `=== 0`, reporting a genuinely empty range as populated.
   const isEmpty = points.every((p) => FINDINGS_SERIES.every((s) => !p[s.key]));
+  // The chart is handed only the visible series, while `isEmpty` above stays
+  // over ALL of them: the empty state describes the range, not the filter.
+  const visibility = useSeriesVisibility(FINDINGS_SERIES);
+  // Must stay equal to the condition the AreaChart below renders under.
+  const chartShown = !error && !isLoading && !isEmpty;
   return (
     <Card className="mt-4 shadow-sm xl:mt-5">
       <CardHeader>
@@ -90,12 +101,7 @@ export function FindingsOverTimeCardView({
           </CardDescription>
         </CardHeading>
         <CardAction className="gap-3 text-xs text-text-2">
-          {FINDINGS_SERIES.map((s) => (
-            <span key={s.key} className="inline-flex items-center gap-1.5">
-              <span className="size-2 rounded-xs" style={{ background: s.color }} />
-              {s.label}
-            </span>
-          ))}
+          <SeriesLegend series={FINDINGS_SERIES} visibility={visibility} interactive={chartShown} />
         </CardAction>
       </CardHeader>
       <CardContent aria-busy={isLoading} className="pb-2">
@@ -106,7 +112,7 @@ export function FindingsOverTimeCardView({
         ) : isEmpty ? (
           <WidgetEmpty message="No findings in this range." />
         ) : (
-          <AreaChart data={points} series={FINDINGS_SERIES} height={160} />
+          <AreaChart data={points} series={visibility.visible} height={160} />
         )}
       </CardContent>
     </Card>

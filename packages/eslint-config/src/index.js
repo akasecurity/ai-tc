@@ -277,8 +277,11 @@ const DRIZZLE_IMPORT_MESSAGE =
  * that flat config would otherwise replace, so a caller adding one restriction
  * to the wall and silently losing every other is this module's own failure
  * mode reached from the inside. A caller's entries go LAST, matching
- * `noNetworkImports`, so the wall's own message is the one a reader sees for a
- * specifier both halves name.
+ * `noNetworkImports`, so for a specifier both halves name the wall's message is
+ * REPORTED FIRST — not the only one reported. `no-restricted-imports` emits
+ * every matching entry rather than stopping at the first, verified against the
+ * workspace's own ESLint: two `paths` entries naming one specifier produce two
+ * messages, ordered as the array is.
  * @param {{
  *   allow?: string[],
  *   paths?: { name: string, message: string }[],

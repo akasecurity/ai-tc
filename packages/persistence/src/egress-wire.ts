@@ -20,13 +20,81 @@ import type {
 import { capHits, withoutDroppedFiles } from './repositories/shares.ts';
 
 /**
+ * The shape of the string that is digested, stamped into the digest itself.
+ *
+ * Without it a later change to the canonicalization below is INVISIBLE: every
+ * device silently moves to a new digest, history stays under the old one, and
+ * nothing on either side can tell the two apart or say which rule produced a
+ * given hash. With it, a future revision is a different version and the
+ * difference is legible.
+ *
+ * Bumping it re-buckets every project on the receiving side, so it moves only
+ * when the canonical form itself does.
+ */
+const PROJECT_KEY_DIGEST_VERSION = 'v2';
+
+// A `git:` URL in scp form — `[user@]host:path`, which has no `://` and whose
+// first colon separates host from path. Anchored on a host that cannot contain
+// `/`, so a `path:`-style absolute path is never mistaken for one.
+const SCP_FORM = /^(?:[^@/]+@)?([^/:]+):(.+)$/;
+const SCHEME_FORM = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?(\/.*)?$/i;
+
+/**
+ * One repository's remote URL reduced to the form every clone of it shares.
+ *
+ * The same repository is cloned four ways that produce four different strings —
+ * scp-style, HTTPS with `.git`, HTTPS without it, and any case variant of the
+ * host — and digesting those raw gives one repository four identities, which is
+ * the opposite of what the digest exists for.
+ *
+ * What is normalized, and why only this much:
+ *   - the transport scheme and any userinfo are dropped. `git@`/`https://` say
+ *     how a clone authenticates, not which repository it is.
+ *   - the host is lowercased. DNS is case-insensitive by definition, so this
+ *     cannot merge two different hosts.
+ *   - a trailing `.git` and trailing slashes go. Both are spellings of the
+ *     same remote.
+ *
+ * The PATH's case is deliberately left alone. Forges differ — GitHub treats it
+ * case-insensitively, a self-hosted git over a case-sensitive filesystem does
+ * not — so lowercasing it would merge two genuinely different repositories on
+ * the hosts that distinguish them. Merging identities is the worse error here
+ * than failing to merge: convergence that is missed shows up as two projects a
+ * human can reconcile, while a collision silently blends two repositories'
+ * egress into one.
+ *
+ * A string that matches neither form is returned trimmed and otherwise as-is.
+ * It is still a stable identity for whatever produced it; it simply does not
+ * get the convergence, which is better than guessing at a shape this does not
+ * recognize.
+ */
+function canonicalGitUrl(url: string): string {
+  const trimmed = url.trim();
+  const scheme = SCHEME_FORM.exec(trimmed);
+  const scp = scheme === null ? SCP_FORM.exec(trimmed) : null;
+  const host = (scheme?.[1] ?? scp?.[1])?.toLowerCase();
+  if (host === undefined) return trimmed;
+  const path = (scheme === null ? scp?.[2] : scheme[2]) ?? '';
+  const cleaned = path
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+    .replace(/\.git$/, '');
+  return cleaned === '' ? host : `${host}/${cleaned}`;
+}
+
+/**
  * Digest a local `projectKey` for the wire.
  *
- * Unsalted SHA-256 over the FULL prefixed key (including its `git:` / `path:`
- * prefix), rendered as 64 lowercase hex characters. Uniform across both
- * variants — there is no branch on prefix — which is what keeps `git:X` and
- * `path:X` from aliasing to the same digest while letting the same `git:`
- * identity converge to the same digest across every device that scanned it.
+ * Unsalted SHA-256 over the version, the prefix and the canonical key, rendered
+ * as 64 lowercase hex characters. The `git:` / `path:` prefix is part of the
+ * input — there is no digest that drops it — which is what keeps `git:X` and
+ * `path:X` from aliasing, while the canonicalization above is what lets the
+ * same `git:` identity converge across every device that scanned it.
+ *
+ * Only a `git:` key is canonicalized. A `path:` key is a local filesystem path:
+ * it never converges across devices (that is the whole reason a repo with a
+ * remote is keyed by the remote), and case-folding it would merge two real
+ * directories on the case-sensitive filesystems where most of them live.
  *
  * WHAT THIS DOES NOT BUY. The digest is for stable cross-device identity, not
  * concealment. Its inputs are low-entropy and enumerable — a repo URL, or a
@@ -43,7 +111,12 @@ import { capHits, withoutDroppedFiles } from './repositories/shares.ts';
  * contract change, not a one-line swap here.
  */
 export function hashProjectKey(projectKey: string): string {
-  return createHash('sha256').update(projectKey, 'utf8').digest('hex');
+  const canonical = projectKey.startsWith('git:')
+    ? `git:${canonicalGitUrl(projectKey.slice('git:'.length))}`
+    : projectKey;
+  return createHash('sha256')
+    .update(`${PROJECT_KEY_DIGEST_VERSION}:${canonical}`, 'utf8')
+    .digest('hex');
 }
 
 function toIngestHit(hit: ResolvedEgressHit): EgressIngestHit {

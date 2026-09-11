@@ -20,6 +20,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
 
+import { CAPTURE_EVENT_TYPES_SQL } from '../../zod/event.ts';
 import { COL } from '../columns.ts';
 
 export const events = sqliteTable(
@@ -561,7 +562,7 @@ export const auditEvents = sqliteTable(
     // each one by name.
     index('idx_audit_capture_rollup')
       .on(t.eventType, t.startedAt, t.repo, t.id)
-      .where(sql`event_type IN ('prompt','response','code_change','tool_use')`),
+      .where(sql`event_type IN (${sql.raw(CAPTURE_EVENT_TYPES_SQL)})`),
     // The body-expiry sweep's candidate seek. Partial on `content IS NOT NULL`,
     // so it holds only rows that still HAVE a body to expire and empties itself
     // as the sweep catches up — the steady state is a near-empty index rather

@@ -2,6 +2,7 @@ import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
 import { CAPTURE_EVENT_TYPES_SQL } from '@akasecurity/schema';
 
+import { OUTBOX_CAPTURE_TYPE_LIST } from '../internal/outbox-lane.ts';
 import { withTransaction } from '../internal/transactions.ts';
 
 /**
@@ -81,8 +82,16 @@ export interface BodyExpiryOptions {
 const DEFAULT_BATCH_SIZE = 500;
 const DEFAULT_MAX_ROWS = 50_000;
 
-/** The kinds an attached machine forwards, and which are therefore lane-gated. */
-const SYNC_LANE_TYPES_SQL = `'prompt','response','tool_use'`;
+/**
+ * The kinds an attached machine forwards, and which are therefore lane-gated.
+ *
+ * Taken from the drain's own list rather than written out beside it. The two
+ * decide opposite things from the same vocabulary — that one what to SEND, this
+ * one what may not be EXPIRED until sent — so a kind added there has to move
+ * this gate in the same commit. Duplicated, adding `code_change` to the drain
+ * would start owing those bodies while this gate went on clearing them.
+ */
+const SYNC_LANE_TYPES_SQL = OUTBOX_CAPTURE_TYPE_LIST;
 
 export class SqliteBodyRetentionRepository {
   private readonly candidatesStmt: StatementSync;

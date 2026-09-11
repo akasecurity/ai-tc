@@ -13,7 +13,10 @@
  * the body. Measured on a 6 GB store: the same 53,383 rows cost 14 ms read
  * through a covering index over two VIRTUAL columns and 5,020 ms read from the
  * rows — and `topSources`, which needs `repo` for every capture event in its
- * window, cost 8,278 ms of the page's ~15 s.
+ * window, cost 8,278 ms WARM, of the page's ~15 s warm total. The same read
+ * measured 8,922 ms COLD, which is the figure the before/after in CLAUDE.md
+ * quotes; both are real and the condition is what separates them, so neither is
+ * usable without it.
  *
  * The reads carry `INDEXED BY` because the planner prices from the schema —
  * nothing here runs `ANALYZE` — and otherwise prefers the general event-type

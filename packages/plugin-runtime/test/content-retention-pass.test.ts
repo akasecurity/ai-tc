@@ -5,7 +5,7 @@
  * it never throws — it runs with stdio ignored and nobody watching, so a
  * rejection would be an unhandled rejection that reaches no one.
  */
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -73,11 +73,29 @@ describe('runContentRetentionPass', () => {
     expect(runContentRetentionPass({ base })).toEqual({ ran: false, reason: 'disabled' });
   });
 
-  it('reports rather than throws when the settings file is unreadable', () => {
-    // Nobody is watching this process. A throw here reaches no one at all.
+  it('reads a corrupt settings file as an unonboarded machine, so the pass is DISABLED', () => {
+    // Not the `unreadable` branch, and worth pinning as its own fact because it
+    // reads like one: `readUserSettings` already fails open to
+    // `defaultWorkspaceSettings()` on a corrupt file, so expiry comes back off
+    // and the pass declines before it ever opens a store. An enabled setting
+    // written beforehand is overwritten by the corruption and does nothing.
     applyOnboarding({ bodyRetention: { enabled: true, retainDays: 30 } }, base, null);
     writeFileSync(join(settingsDir(base), 'settings.json'), '{ not json');
-    expect(() => runContentRetentionPass({ base })).not.toThrow();
-    expect(runContentRetentionPass({ base }).ran).toBe(false);
+
+    expect(runContentRetentionPass({ base })).toEqual({ ran: false, reason: 'disabled' });
+  });
+
+  it('reports rather than throws when the STORE cannot be opened', () => {
+    // The `catch` is this function's whole safety property — it runs detached
+    // with stdio ignored and nobody watching, so a throw reaches no one at all —
+    // and it is the one branch nothing else reaches. Settings stay valid and
+    // enabled; the store is what is broken, which is also the likelier failure
+    // for an hourly background pass.
+    applyOnboarding({ bodyRetention: { enabled: true, retainDays: 30 } }, base, null);
+    mkdirSync(join(dataDir(base), 'aka.db'), { recursive: true });
+
+    // The exact reason, not merely `ran: false` — `disabled` is what a setup
+    // that does not do what it reads as doing would report here.
+    expect(runContentRetentionPass({ base })).toEqual({ ran: false, reason: 'unreadable' });
   });
 });

@@ -1,7 +1,8 @@
 import { parseArgs } from 'node:util';
 
 import { dataDir, openLocalDatabase, readEffectiveSettings } from '@akasecurity/persistence';
-import { canSweepSyncLane } from '@akasecurity/schema';
+import type { ManagedSettings } from '@akasecurity/schema';
+import { canSweepSyncLane, isFieldManaged, managedByLabel } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 import type { Prompter } from '../lib/prompter.ts';
@@ -43,7 +44,14 @@ function fmtBytes(n: number): string {
   return `${v.toFixed(1)} ${units[i] ?? 'GB'}`;
 }
 
-export function runPrune(argv: string[], io: Prompter = terminalPrompter()): void {
+export function runPrune(
+  argv: string[],
+  io: Prompter = terminalPrompter(),
+  // The administrator's file, for tests. `undefined` reads the real system
+  // locations, exactly as `applyOnboarding`'s own override does; `null` is an
+  // explicitly unmanaged machine.
+  managedOverride?: ManagedSettings | null,
+): void {
   let values: {
     home?: string | undefined;
     'dry-run'?: boolean | undefined;
@@ -80,8 +88,24 @@ export function runPrune(argv: string[], io: Prompter = terminalPrompter()): voi
     overrideDays = parsed;
   }
 
-  const { settings } = readEffectiveSettings(base);
+  const { settings, managed } = readEffectiveSettings(base, managedOverride);
   const retention = settings.bodyRetention;
+
+  // A lock reaches this command, not only the settings WRITE path. `--days`
+  // does not persist anything, so it slips past `applyOnboarding`'s
+  // `ManagedFieldError` — but it decides what gets destroyed, and it decides it
+  // in the worse direction: a shorter window expires strictly MORE than the
+  // pinned policy allows, permanently, on a machine whose administrator set
+  // that lock to stop exactly this. The refusal is the same argument as the
+  // `--days` validation above, applied to who is asking rather than to what
+  // they typed.
+  if (overrideDays !== undefined && isFieldManaged(managed, 'bodyRetention')) {
+    io.err(
+      `aka prune: ${managedByLabel(managed)} sets the retention window; --days cannot override it.\n`,
+    );
+    return;
+  }
+
   if (!retention.enabled && overrideDays === undefined) {
     io.out('Body expiry is off. Turn it on in Settings, or pass --days to run a one-off pass.\n');
     return;

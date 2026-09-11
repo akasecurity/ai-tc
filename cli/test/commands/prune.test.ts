@@ -116,6 +116,42 @@ describe('aka prune', () => {
     expect(io.output()).toContain('Expired 1 bodies');
   });
 
+  it('refuses --days when an administrator has locked the window', () => {
+    // The lock reaches the COMMAND, not just the settings write. --days narrows
+    // the window, so the bypass would expire strictly more than the pinned
+    // policy allows — permanently, on a machine whose administrator locked it to
+    // stop exactly that.
+    seedBody(60);
+    const io = recorder();
+    runPrune(['--home', base, '--days', '7'], io, {
+      specVersion: 1,
+      organization: 'Acme',
+      values: {},
+      lockedFields: ['bodyRetention'],
+    });
+
+    expect(io.errors()).toContain('--days cannot override it');
+    expect(io.output()).toBe('');
+  });
+
+  it('still runs a locked machine on its own pinned window', () => {
+    // The control: a lock freezes what may be CHANGED, not whether the sweep
+    // runs. Without this the refusal above is satisfied by a command that
+    // stopped working on managed machines entirely.
+    seedBody(60);
+    applyOnboarding({ bodyRetention: { enabled: true, retainDays: 30 } }, base, null);
+
+    const io = recorder();
+    runPrune(['--home', base], io, {
+      specVersion: 1,
+      organization: 'Acme',
+      values: {},
+      lockedFields: ['bodyRetention'],
+    });
+
+    expect(io.output()).toContain('Expired 1 bodies');
+  });
+
   it('says the file does not shrink, because that is the next question', () => {
     seedBody(60);
     const io = recorder();

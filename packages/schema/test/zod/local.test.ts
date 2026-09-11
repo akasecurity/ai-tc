@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  canSweepSyncLane,
   controlPlaneName,
   defaultWorkspaceSettings,
   HISTORY_SYNC_PAYLOAD_VERSION,
@@ -412,5 +413,57 @@ describe('isHistorySyncConsentStale', () => {
         ).toBe(false);
       }
     }
+  });
+});
+
+/**
+ * The predicate standing between an attached machine and permanent loss of
+ * undelivered bodies.
+ *
+ * Every caller supplies its answer as a boolean, so nothing else in the tree
+ * executes the clauses that return FALSE — and false is the safe answer here.
+ * Turning a `!==` into `===` or dropping the consent clause leaves the rest of
+ * the suite green while an hourly detached pass starts clearing `prompt`,
+ * `response` and `tool_use` bodies that a deployment is still owed.
+ */
+describe('canSweepSyncLane', () => {
+  const base = defaultWorkspaceSettings();
+  const connection = { endpoint: 'https://cp.example', attachedAt: '2026-01-01T00:00:00.000Z' };
+
+  it('is true on a machine that has never attached and never granted', () => {
+    expect(canSweepSyncLane(base)).toBe(true);
+  });
+
+  it('is false while attached', () => {
+    expect(canSweepSyncLane({ ...base, runMode: 'attached', controlPlane: connection })).toBe(
+      false,
+    );
+  });
+
+  it('is false on a bare runMode with no descriptor', () => {
+    // Half an attachment is not "not attached": `isAttached` needs both, and
+    // this predicate is deliberately wider than `isAttached`.
+    expect(canSweepSyncLane({ ...base, runMode: 'attached' })).toBe(false);
+  });
+
+  it('is false on a bare descriptor with no runMode', () => {
+    expect(canSweepSyncLane({ ...base, controlPlane: connection })).toBe(false);
+  });
+
+  it('is false on a DETACHED machine that still holds a history-sync grant', () => {
+    // The clause with no `isAttached` analogue, and the reason this predicate
+    // exists rather than a call to that one. `aka sync-history --on` claims the
+    // backlog retroactively with no age bound, so a grant outliving a detach
+    // still owes those bodies.
+    expect(
+      canSweepSyncLane({
+        ...base,
+        historySyncConsent: {
+          acknowledgedAt: '2026-01-01T00:00:00.000Z',
+          payloadVersion: 3,
+          endpoint: 'https://cp.example',
+        },
+      }),
+    ).toBe(false);
   });
 });

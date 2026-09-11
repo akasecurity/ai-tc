@@ -274,6 +274,13 @@ describe('backgroundSyncLabel', () => {
 // surfaces describing them diverge.
 describe('triggerHistorySyncRun', () => {
   const BASE = '/Users/x/.aka';
+  // Non-optional, because `BackgroundScheduleDeps['reinvoke']` includes
+  // `undefined` and exactOptionalPropertyTypes refuses that for an optional
+  // property. Naming the function type keeps the stubs honest instead.
+  type Reinvoke = (
+    subcommand: string,
+    extraArgs?: string[],
+  ) => { command: string; args: string[] } | null;
 
   it('spawns the same argv the scheduler installs', () => {
     const spawned: { command: string; args: readonly string[] }[] = [];
@@ -283,8 +290,10 @@ describe('triggerHistorySyncRun', () => {
     }));
 
     const result = triggerHistorySyncRun(BASE, {
-      reinvoke: reinvoke as unknown as BackgroundScheduleDeps['reinvoke'],
-      startDetached: (command, args) => spawned.push({ command, args }),
+      reinvoke: reinvoke as unknown as Reinvoke,
+      startDetached: (command, args) => {
+        spawned.push({ command, args });
+      },
     });
 
     expect(reinvoke).toHaveBeenCalledWith('sync-history', ['--run', '--home', BASE]);
@@ -301,7 +310,7 @@ describe('triggerHistorySyncRun', () => {
       reinvoke: (() => ({
         command: 'aka',
         args: ['sync-history'],
-      })) as unknown as BackgroundScheduleDeps['reinvoke'],
+      })) as unknown as Reinvoke,
       startDetached: () => {
         throw new Error('EACCES');
       },
@@ -319,8 +328,10 @@ describe('triggerHistorySyncRun', () => {
       reinvoke: (() => ({
         command: 'node',
         args: ['cli.js', 'sync-history', '--run', '--home', BASE],
-      })) as unknown as BackgroundScheduleDeps['reinvoke'],
-      startDetached: (command) => spawned.push(command),
+      })) as unknown as Reinvoke,
+      startDetached: (command) => {
+        spawned.push(command);
+      },
     });
     expect(result.started).toBe(true);
     expect(spawned).toEqual(['node']);
@@ -331,8 +342,10 @@ describe('triggerHistorySyncRun', () => {
   it('reports, rather than swallows, having nothing to re-invoke', () => {
     const spawned: string[] = [];
     const result = triggerHistorySyncRun(BASE, {
-      reinvoke: (() => null) as unknown as BackgroundScheduleDeps['reinvoke'],
-      startDetached: (command) => spawned.push(command),
+      reinvoke: (() => null) as unknown as Reinvoke,
+      startDetached: (command) => {
+        spawned.push(command);
+      },
     });
     expect(result).toEqual({ started: false, reason: 'no-cli-entry' });
     // And nothing was started: the report is not a label on a child that ran.

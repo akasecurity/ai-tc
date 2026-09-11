@@ -6,7 +6,12 @@ import {
   watchButtonClick,
   watchEnterToSend,
 } from './dom-utils.ts';
-import type { ExchangeAssembler, ProviderAdapter, WebExchangeSummary } from './types.ts';
+import type {
+  ExchangeAssembler,
+  ParsedRequest,
+  ProviderAdapter,
+  WebExchangeSummary,
+} from './types.ts';
 
 // Same caveat as chatgpt.ts: best-effort, layered fallback selectors that
 // can go stale with a site redesign — verify against the live site before
@@ -17,6 +22,28 @@ const COMPOSER_SELECTORS = [
   'form [contenteditable="true"]',
 ];
 const SEND_BUTTON_SELECTORS = ['button[aria-label*="send" i]', 'fieldset button[type="submit"]'];
+
+// The completion route's own path segments, spelled as constants because the
+// endpoint pattern below is BUILT from them rather than repeating them: they
+// are also what `protocolTokens` declares, so a fixture records the real route
+// instead of a row of surrogates while the two ids between them are still
+// replaced.
+//
+// Both ids are shape-matched rather than captured — nothing here reads them,
+// and the conversation id is not recoverable from the request body at all.
+const SEGMENT_API = 'api';
+const SEGMENT_ORGANIZATIONS = 'organizations';
+const SEGMENT_CONVERSATIONS = 'chat_conversations';
+const SEGMENT_COMPLETION = 'completion';
+const SEGMENT_ID = '[0-9a-fA-F-]{36}';
+
+// Anchored end to end, so it matches the completion route and nothing else the
+// site serves. The tap matches path+query against this, and an anchored pattern
+// is what keeps a query string from reaching a pattern written against a path.
+const COMPLETION_PATH = new RegExp(
+  `^/${SEGMENT_API}/${SEGMENT_ORGANIZATIONS}/${SEGMENT_ID}` +
+    `/${SEGMENT_CONVERSATIONS}/${SEGMENT_ID}/${SEGMENT_COMPLETION}$`,
+);
 
 function findSendButton(): HTMLElement | null {
   return firstMatch(SEND_BUTTON_SELECTORS);
@@ -210,45 +237,82 @@ export const claudeAdapter: ProviderAdapter = {
     return true;
   },
 
-  // NETWORK HALF. `endpoints` stays empty and `requiredPaths` stays empty: an
-  // empty `endpoints` puts nothing in the tap's build-time table, so nothing
-  // from this site is forwarded and createClaudeStreamAssembler above is
-  // never reached in production. This is NOT because the contract is
-  // unknown — claude.ai's response stream (the SSE event sequence and the
-  // message_start/content_block_* keys it carries) was fully observed and is
-  // implemented above — but because a declaring adapter owes committed
-  // fixtures under test/fixtures/claude-ai/, produced only by
-  // scripts/sanitize-capture.mjs from a real capture, and no sanitised
-  // capture exists for this site yet. The sanitiser's value-preservation gate
-  // no longer stands in the way of that: `protocolTokens` below is where this
-  // stream's protocol tokens (`content_block_delta`, `conversation_ready`,
-  // `message_start`, …) would be declared once a real capture exists, and
-  // `isDeclarableToken` (src/sanitize/classify.ts) is what the sanitiser
-  // checks them against. Declaring one without the fixtures it implies is
-  // still refused by the bar — what declaring costs, and the exact set owed,
-  // is on EXPECTED_DECLARING_ADAPTERS in test/helpers/fixture-bar.ts.
+  // NETWORK HALF. Declared against a real capture: a signed-in turn on
+  // claude.ai, sanitised by scripts/sanitize-capture.mjs into
+  // test/fixtures/claude-ai/. Nothing below is inferred from the survey
+  // alone — the stream parser above was written from the observed event
+  // sequence and then driven against the captured bytes unchanged, and the
+  // request keys named here are the ones that capture carries.
   //
-  // When that list is filled, `requiredPaths.response` may name only fields a
-  // capture has actually shown populated. A declared path the site never
-  // fills makes `closeExchange` record a shape miss on every healthy turn, so
-  // a permanently-absent field reads as permanent drift. On the observed
-  // stream that is messageId, model and responseText. `stopReason` is NOT
-  // among them: it is a key on message_start.message whose value was never
-  // recorded, and message_delta — where a terminal stop_reason would arrive —
-  // is read by nothing here.
-  endpoints: [],
-  requiredPaths: { request: [], response: [] },
-  // No endpoint is declared above, so nothing here is reachable in
-  // production yet either — see the NETWORK HALF note above on why this
-  // stays empty until a real capture exists, not because the tokens
-  // themselves are unknown.
-  protocolTokens: [],
-  // The completion request's body keys were never observed: the tap only
-  // learned to decode a typed-array body in a later commit than the capture
-  // that would have shown them. This reads no key and never claims the
-  // shape is met — returning `requiredPathsSeen: true` while reading nothing
-  // would be vacuously true, and it is the one boolean the bridge trusts to
-  // detect outbound drift.
-  parseRequest: () => ({ requiredPathsSeen: false }),
+  // `requiredPaths.response` names only fields the capture showed
+  // POPULATED. A declared path the site never fills makes `closeExchange`
+  // record a shape miss on every healthy turn, so a permanently-absent
+  // field reads as permanent drift. `stopReason` is therefore NOT among
+  // them: it is a key on message_start.message that arrived null, and
+  // message_delta — where a terminal stop_reason would arrive — is read by
+  // nothing here. `usage` is absent from this stream entirely, which is why
+  // the summary reports usageSource 'none' rather than estimating.
+  endpoints: [{ host: 'claude.ai', path: COMPLETION_PATH, kind: 'conversation' }],
+  requiredPaths: {
+    request: ['model', 'prompt'],
+    response: ['messageId', 'model', 'responseText'],
+  },
+  // What this adapter switches on: the `case` labels parseStream dispatches
+  // on, the one `delta.type` it compares, and the path segments its endpoint
+  // anchors on. Every one is a value the sanitiser must keep verbatim or a
+  // fixture cannot exercise the dispatch — or record the route — at all. Nothing here is a pattern
+  // or a prefix: the sanitiser preserves a captured value only on an EXACT
+  // match, and the detector still gates each one. Adding to this list means
+  // updating EXPECTED_PROTOCOL_TOKENS in test/helpers/fixture-bar.ts in the
+  // same diff.
+  protocolTokens: [
+    // The path segments the endpoint above anchors on. Declared so a fixture
+    // records the real route rather than a row of surrogates: the two ids
+    // between them are NOT declared and are still replaced, so the shape
+    // survives and the identifiers do not.
+    'api',
+    'organizations',
+    'chat_conversations',
+    'completion',
+    // The `case` labels parseStream dispatches on.
+    'conversation_ready',
+    'message_start',
+    'content_block_start',
+    'content_block_delta',
+    'content_block_stop',
+    'message_delta',
+    'message_limit',
+    'message_stop',
+    'text_delta',
+  ],
+  // The outbound turn. `model` and `prompt` are top-level strings on the
+  // completion body; both are required, so a body carrying neither reports
+  // its shape unmet rather than half-met.
+  //
+  // `conversationId` is NOT recoverable here and is deliberately absent
+  // rather than guessed: the body carries the two turn message uuids and no
+  // conversation uuid — that id exists only in the request URL, which this
+  // seam is not passed. Returning a message uuid under that name would put
+  // a wrong id on every stored row.
+  //
+  // The body arrives gzip-compressed on the wire; the tap inflates it
+  // before this is reached, so this sees ordinary JSON text.
+  parseRequest: (body: string): ParsedRequest => {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(body);
+    } catch {
+      // A body this cannot parse is one whose shape it cannot report on.
+      return { requiredPathsSeen: false };
+    }
+    if (!isPlainObject(payload)) return { requiredPathsSeen: false };
+    const model = isNonEmptyString(payload.model) ? payload.model : undefined;
+    const prompt = isNonEmptyString(payload.prompt) ? payload.prompt : undefined;
+    return {
+      ...(model !== undefined ? { model } : {}),
+      ...(prompt !== undefined ? { prompt } : {}),
+      requiredPathsSeen: model !== undefined && prompt !== undefined,
+    };
+  },
   parseStream: createClaudeStreamAssembler,
 };

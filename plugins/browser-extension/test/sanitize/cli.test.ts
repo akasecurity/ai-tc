@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { claudeAdapter } from '../../src/providers/claude.ts';
 import { resolveProtocolTokens } from '../../src/sanitize/index.ts';
 import { sanitizeCapture } from '../../src/sanitize/sanitize-capture.ts';
 import { errorFrom, expectNoEchoOf } from '../helpers/no-echo.ts';
@@ -341,10 +342,12 @@ describe('sanitize-capture CLI', () => {
   });
 
   it('K9: the CLI passes exactly what the resolver returns (byte-identity, the K2 shape)', () => {
-    // claude-ai declares no protocol tokens today, but the point of the
-    // resolver split (mirroring toTapEndpoints) is that this stays true once
-    // it declares some: the CLI is wired to WHATEVER protocolTokensForSite
-    // returns, not to a hardcoded empty set.
+    // The point of the resolver split (mirroring toTapEndpoints) is that the
+    // CLI is wired to WHATEVER protocolTokensForSite returns rather than to a
+    // constant. The stand-in below therefore carries the adapter's OWN
+    // declaration, read from the adapter: hardcoding a list here would make
+    // this pass only while that list happened to match, which is exactly the
+    // coupling the case exists to prove.
     const raw = JSON.stringify({ a: RAW });
     const inPath = join(dir, 'in.json');
     writeFileSync(inPath, raw);
@@ -372,7 +375,13 @@ describe('sanitize-capture CLI', () => {
         // A single-adapter registry stand-in, mirroring what the shim
         // resolves through the real one — this is the assertion that the
         // wiring uses the SITE'S OWN declaration rather than a constant.
-        [{ id: 'claude-ai', hostnames: ['claude.ai'], protocolTokens: [] }] as never,
+        [
+          {
+            id: 'claude-ai',
+            hostnames: ['claude.ai'],
+            protocolTokens: claudeAdapter.protocolTokens,
+          },
+        ] as never,
         'claude-ai',
       ),
       detect: () => [],
@@ -532,11 +541,18 @@ describe('the CLI is wired to the declaring adapter (K13)', () => {
     symlinkSync(join(PACKAGE_ROOT, 'node_modules'), join(root, 'node_modules'), 'dir');
     const adapterPath = join(root, 'src', 'providers', 'claude.ts');
     const source = readFileSync(adapterPath, 'utf8');
-    const marker = '  protocolTokens: [],';
+    // Matches the WHOLE declaration rather than an empty-array literal: the
+    // adapter declares real tokens now, so a marker spelled `[]` would find
+    // nothing. The class excludes `]`, which the array's own entries and
+    // comments never contain.
+    const marker = /^ {2}protocolTokens: \[[^\]]*\],$/m;
     // Fails loudly rather than silently patching nothing: a copy whose
-    // adapter was never patched declares nothing, and every assertion below
-    // would then be asserting the state this case exists to move away from.
-    if (!source.includes(marker)) throw new Error('claude.ts no longer carries the patch marker');
+    // adapter was never patched declares its own tokens, and every assertion
+    // below would then be asserting the state this case exists to move away
+    // from.
+    if (!marker.test(source)) {
+      throw new Error('claude.ts no longer carries a protocolTokens declaration to patch');
+    }
     writeFileSync(adapterPath, source.replace(marker, `  protocolTokens: [${declaration}],`));
     return root;
   }

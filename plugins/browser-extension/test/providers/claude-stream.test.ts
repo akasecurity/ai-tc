@@ -414,20 +414,84 @@ describe('D — edges and garbage', () => {
   });
 });
 
-describe('E — the adapter stays honest while undeclared', () => {
-  it('E1: endpoints and requiredPaths stay empty', () => {
-    expect(claudeAdapter.endpoints).toEqual([]);
-    expect(claudeAdapter.requiredPaths).toEqual({ request: [], response: [] });
+describe('E — the declared network contract', () => {
+  const ORG = '11111111-2222-4333-8444-555555555555';
+  const CONV = '66666666-7777-4888-8999-aaaaaaaaaaaa';
+  const ROUTE = `/api/organizations/${ORG}/chat_conversations/${CONV}/completion`;
+
+  it('E1: one conversation endpoint on claude.ai, matching the completion route', () => {
+    expect(claudeAdapter.endpoints).toHaveLength(1);
+    const endpoint = claudeAdapter.endpoints[0];
+    expect(endpoint?.host).toBe('claude.ai');
+    expect(endpoint?.kind).toBe('conversation');
+    expect(endpoint?.path.test(ROUTE)).toBe(true);
   });
 
-  it('E2: parseRequest never throws and always reports the shape unmet', () => {
-    const inputs = ['', '{}', 'not json', '{"prompt":"hi","model":"m"}', 'a'.repeat(1024 * 1024)];
-    for (const input of inputs) {
-      let parsed: ParsedRequest | undefined;
-      expect(() => {
-        parsed = claudeAdapter.parseRequest(input);
-      }).not.toThrow();
-      expect(parsed?.requiredPathsSeen).toBe(false);
+  it('E1b: the pattern is anchored, so it claims no neighbouring route', () => {
+    const path = claudeAdapter.endpoints[0]?.path;
+    expect(path).toBeDefined();
+    // The tap matches path+query, so an unanchored tail is what a query string
+    // would slip through; the prefix cases are the mirror of that.
+    for (const miss of [
+      `${ROUTE}?beta=true`,
+      `${ROUTE}/retry`,
+      `/proxy${ROUTE}`,
+      `/api/organizations/${ORG}/chat_conversations/${CONV}/title`,
+      `/api/organizations/${ORG}/chat_conversations/${CONV}`,
+      `/api/organizations/${ORG}/projects`,
+      // Both ids are shape-matched: a segment that is not id-shaped is not this route.
+      `/api/organizations/${ORG}/chat_conversations/latest/completion`,
+    ]) {
+      expect(path?.test(miss), miss).toBe(false);
     }
+  });
+
+  it('E1c: requiredPaths name only fields the capture showed populated', () => {
+    // A declared path the site never fills makes closeExchange record a shape
+    // miss on every healthy turn, so a permanently-absent field would read as
+    // permanent drift. stopReason and usage are absent from this stream and
+    // are deliberately not named.
+    expect(claudeAdapter.requiredPaths).toEqual({
+      request: ['model', 'prompt'],
+      response: ['messageId', 'model', 'responseText'],
+    });
+  });
+
+  it('E2: parseRequest never throws, and reports the shape met only when both fields are read', () => {
+    const unmet = [
+      '',
+      '{}',
+      'not json',
+      '[]',
+      'null',
+      '"a string"',
+      '{"prompt":"hi"}',
+      '{"model":"m"}',
+      '{"model":"","prompt":"hi"}',
+      '{"model":123,"prompt":"hi"}',
+      'a'.repeat(1024 * 1024),
+    ];
+    for (const input of unmet) {
+      let parsed: ParsedRequest | undefined;
+      expect(
+        () => {
+          parsed = claudeAdapter.parseRequest(input);
+        },
+        input.slice(0, 40),
+      ).not.toThrow();
+      expect(parsed?.requiredPathsSeen, input.slice(0, 40)).toBe(false);
+    }
+  });
+
+  it('E2b: a body carrying both fields reports them, and invents no conversation id', () => {
+    const parsed = claudeAdapter.parseRequest('{"model":"a-model","prompt":"hi","extra":1}');
+    expect(parsed.requiredPathsSeen).toBe(true);
+    expect(parsed.model).toBe('a-model');
+    expect(parsed.prompt).toBe('hi');
+    // The completion body carries the two turn message uuids and no
+    // conversation uuid — that id exists only in the URL, which this seam is
+    // not passed. Returning a message uuid under that name would put a wrong
+    // id on every stored row.
+    expect(parsed.conversationId).toBeUndefined();
   });
 });

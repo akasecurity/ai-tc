@@ -43,11 +43,11 @@ export const MIN_STREAM_CHUNKS = 2;
  * required once they exist. Never widen this to make a red suite quiet —
  * ship the fixtures instead.
  */
-export const EXPECTED_DECLARING_ADAPTERS: readonly WebSourceTool[] = [];
+export const EXPECTED_DECLARING_ADAPTERS: readonly WebSourceTool[] = [SOURCE_TOOL.ClaudeAi];
 
 /**
- * Every protocol token an adapter declares, pinned EXACTLY — empty arrays for
- * both sites today.
+ * Every protocol token an adapter declares, pinned EXACTLY — claude.ai's
+ * thirteen today, and an empty array for chatgpt, which declares nothing.
  *
  * Same shape and same reason as `EXPECTED_DECLARING_ADAPTERS`: a ratchet in
  * both directions. A token added to `ProviderAdapter.protocolTokens` reds
@@ -80,7 +80,21 @@ export const EXPECTED_DECLARING_ADAPTERS: readonly WebSourceTool[] = [];
  */
 export const EXPECTED_PROTOCOL_TOKENS: Readonly<Record<WebSourceTool, readonly string[]>> = {
   [SOURCE_TOOL.ChatGpt]: [],
-  [SOURCE_TOOL.ClaudeAi]: [],
+  [SOURCE_TOOL.ClaudeAi]: [
+    'api',
+    'organizations',
+    'chat_conversations',
+    'completion',
+    'conversation_ready',
+    'message_start',
+    'content_block_start',
+    'content_block_delta',
+    'content_block_stop',
+    'message_delta',
+    'message_limit',
+    'message_stop',
+    'text_delta',
+  ],
 };
 
 export interface Approvals {

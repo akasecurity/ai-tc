@@ -1,4 +1,4 @@
-import type { FindingsTimeseriesPoint } from '@akasecurity/schema';
+import type { FindingsTimeseriesPoint, TimeseriesGranularity } from '@akasecurity/schema';
 import {
   Card,
   CardAction,
@@ -30,6 +30,23 @@ export type FindingsChartPoint = Omit<FindingsTimeseriesPoint, 'timestamp' | 'lo
 
 export interface FindingsTimeseriesView {
   points: FindingsChartPoint[];
+  /**
+   * The width of one plotted point, which the SERVER chooses from the range
+   * (day for 7d/30d, week for 3m/6m) and returns alongside the points. The
+   * subtitle names it, so a hardcoded cadence there misreports a weekly bucket
+   * as a daily one by a factor of seven.
+   *
+   * `null` is "not known yet" and drops the cadence clause entirely. The header
+   * renders ABOVE the loading and error states, so a host with no response in
+   * hand would otherwise have to invent a bucket width and have it displayed as
+   * fact — guessing `day` under a 6m range reproduces exactly the mislabel this
+   * prop exists to remove, for as long as the request is in flight.
+   *
+   * Nullable but REQUIRED, rather than optional: a default reads as safe at
+   * every call site that omits it, which is every call site until somebody
+   * remembers, while `null` is a decision the host has to write down.
+   */
+  granularity: TimeseriesGranularity | null;
   isLoading: boolean;
   error: string | null;
 }
@@ -43,7 +60,12 @@ const FINDINGS_SERIES: { key: FindingsSeriesKey; label: string; color: string }[
   { key: 'low', label: 'Low', color: COLORS.sevLow },
 ];
 
-export function FindingsOverTimeCardView({ points, isLoading, error }: FindingsTimeseriesView) {
+export function FindingsOverTimeCardView({
+  points,
+  granularity,
+  isLoading,
+  error,
+}: FindingsTimeseriesView) {
   // Every plotted series counts, `low` included — summing only the top three
   // renders "No findings" over a range that genuinely holds low-severity ones.
   // Derived from the plotted series rather than a hand-written sum, for two
@@ -61,7 +83,11 @@ export function FindingsOverTimeCardView({ points, isLoading, error }: FindingsT
         </CardIcon>
         <CardHeading>
           <CardTitle>Findings over time</CardTitle>
-          <CardDescription>New sensitive-data detections per day</CardDescription>
+          {/* Built as one string rather than an inline conditional, so the space
+              before "per" cannot go missing to JSX whitespace collapsing. */}
+          <CardDescription>
+            {`New sensitive-data detections${granularity === null ? '' : ` per ${granularity}`}`}
+          </CardDescription>
         </CardHeading>
         <CardAction className="gap-3 text-xs text-text-2">
           {FINDINGS_SERIES.map((s) => (

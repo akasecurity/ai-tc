@@ -26,12 +26,7 @@ export interface ScanCoverageView {
   error: string | null;
 }
 
-export function ScanCoverageCardView({
-  providers,
-  isLoading,
-  error,
-  rangeLabel,
-}: ScanCoverageView & { rangeLabel: string }) {
+export function ScanCoverageCardView({ providers, isLoading, error }: ScanCoverageView) {
   return (
     <Card className="flex flex-col shadow-sm">
       <CardHeader>
@@ -39,8 +34,14 @@ export function ScanCoverageCardView({
           <ShieldCheckIcon aria-hidden focusable={false} className="size-4" />
         </CardIcon>
         <CardHeading>
-          <CardTitle>Scan coverage</CardTitle>
-          <CardDescription>By provider · {rangeLabel.toLowerCase()}</CardDescription>
+          <CardTitle>Coverage by provider</CardTitle>
+          {/* No range, and "can inspect" rather than a past tense. scanCoverage()
+              returns a curated per-provider constant — what each host's hook
+              contract PERMITS AKA to see, fixed at build time — and echoes the
+              range without reading it. A window here, or wording that reads as a
+              count of scans that ran, would both claim a measurement the number
+              never makes. */}
+          <CardDescription>Share of traffic AKA can inspect</CardDescription>
         </CardHeading>
       </CardHeader>
       <CardContent aria-busy={isLoading} className="flex flex-col gap-2.5">
@@ -78,7 +79,7 @@ export function ScanCoverageCardView({
                     max={100}
                     color={color}
                     height={6}
-                    aria-label={`${PROVIDERS[p.provider].label} scan coverage`}
+                    aria-label={`${PROVIDERS[p.provider].label} coverage`}
                   />
                 )}
                 {disabled ? (

@@ -1831,8 +1831,10 @@ describe('delivery-failure state', () => {
       // this a genuine upgrade rather than a re-run. The index has to come off
       // first — it names the column, and SQLite refuses to drop a column an
       // index depends on — which is also the order a real pre-upgrade store was
-      // in: narrow index, no column.
+      // in: narrow index, no column. The guard triggers name it too, for the
+      // same reason and with the same consequence.
       downgradeToNarrowIndex(db);
+      db.exec('DROP TRIGGER IF EXISTS aka_sync_failure_guard');
       db.exec('ALTER TABLE audit_events DROP COLUMN sync_failure');
       db.exec(
         `INSERT INTO audit_events (id, event_type, started_at, synced_at)
@@ -1872,10 +1874,15 @@ describe('delivery-failure state', () => {
 
       // The column sits in the same row as `content`, is queryable, and is
       // rendered — so the store is made structurally incapable of holding
-      // anything else rather than trusted not to.
+      // anything else rather than trusted not to. Enforced by a trigger pair
+      // rather than a CHECK because a CHECK can only arrive with the column, and
+      // an ADD COLUMN carrying one scans the whole table — see the migration.
       expect(() => {
         db.exec(`UPDATE audit_events SET sync_failure = 'nonsense' WHERE id = 'row'`);
-      }).toThrow(/CHECK constraint failed/);
+      }).toThrow(/not one of the recorded reasons/);
+      // The UPDATE path is the only one guarded, and the only one any writer
+      // uses — see the migration for the measured reason an INSERT guard is not
+      // worth its cost on this table.
 
       for (const reason of SYNC_FAILURE_REASONS) {
         expect(() => {

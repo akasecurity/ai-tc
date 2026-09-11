@@ -677,8 +677,9 @@ describe('SqliteHistorySyncRepository — closing the attached period', () => {
     const p = db.historySync.partition();
     expect(p.synced).toBe(0);
     expect(p.detached).toBe(3);
-    // Still not outstanding — the boundary can move, which is what this is for.
-    expect(p.queued).toBe(0);
+    // The owed CAPTURE is untouched: closing the window is a structural-lane
+    // act, and the capture lane carries no boundary to close.
+    expect(p.queued).toBe(1);
     expect(db.historySync.counts(ALL).sent).toBe(0);
   });
 
@@ -692,7 +693,7 @@ describe('SqliteHistorySyncRepository — closing the attached period', () => {
 
     db.historySync.closeAttachedWindow(T0, T0 + MINUTE);
 
-    expect(db.historySync.partition()).toMatchObject({ synced: 1, detached: 2 });
+    expect(db.historySync.partition()).toMatchObject({ synced: 1, detached: 2, queued: 1 });
   });
 
   // And the half that would have been a silent LOSS. Before a reason could be
@@ -722,21 +723,21 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
     seedSession(db, 's-1', 0);
     // Three structural rows per session; the capture leaf is not tracked yet.
     const p = db.historySync.partition();
-    expect(p.total).toBe(3);
-    expect(p.queued + p.inProgress + p.synced + p.failed).toBe(p.total);
-    expect(p).toMatchObject({ queued: 3, inProgress: 0, synced: 0, failed: 0 });
+    expect(p.total).toBe(4); // three structural, plus the capture seedSession owes
+    expect(p.queued + p.inProgress + p.synced + p.failed + p.refused + p.detached).toBe(p.total);
+    expect(p).toMatchObject({ queued: 4, inProgress: 0, synced: 0, failed: 0 });
   });
 
   it('moves a row through claimed, then settled', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
     db.historySync.claimRows(['s-1'], T0 + MINUTE);
-    expect(db.historySync.partition()).toMatchObject({ queued: 2, inProgress: 1, synced: 0 });
+    expect(db.historySync.partition()).toMatchObject({ queued: 3, inProgress: 1, synced: 0 });
 
     db.historySync.markSynced(['s-1'], T0 + 2 * MINUTE);
     // Settling clears the claim in the same write, so the row cannot read as
     // both delivered and in flight.
-    expect(db.historySync.partition()).toMatchObject({ queued: 2, inProgress: 0, synced: 1 });
+    expect(db.historySync.partition()).toMatchObject({ queued: 3, inProgress: 0, synced: 1 });
   });
 
   it('returns a claim to the queue when a send fails', () => {
@@ -746,7 +747,7 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
     expect(db.historySync.partition().inProgress).toBe(2);
 
     db.historySync.releaseRows(['s-1', 's-1-llm']);
-    expect(db.historySync.partition()).toMatchObject({ queued: 3, inProgress: 0 });
+    expect(db.historySync.partition()).toMatchObject({ queued: 4, inProgress: 0 });
   });
 
   it('never claims a row that already settled', () => {
@@ -755,28 +756,20 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
     db.historySync.markSynced(['s-1'], T0 + MINUTE);
     // A claim racing a settle must not drag a delivered row back into flight.
     db.historySync.claimRows(['s-1'], T0 + 2 * MINUTE);
-    expect(db.historySync.partition()).toMatchObject({ synced: 1, inProgress: 0, queued: 2 });
+    expect(db.historySync.partition()).toMatchObject({ synced: 1, inProgress: 0, queued: 3 });
   });
 
-  // The SETTLED half of the scope claim. Its sibling below ('does not yet count
-  // captures') pins the static shape — a capture is absent from `total`. This
-  // one pins what happens when the live path STAMPS that capture through
-  // `markCaptureDelivered`: still nothing, because the row was never counted.
-  // Both are needed. Without this one, the docstring's load-bearing sentence —
-  // that a live stamp settles nothing visible here — has no test at all, and the
-  // stamp could start moving `synced` with the suite fully green.
-  it('does not count a capture, before or after the live path stamps it', () => {
+  // An OWED capture is part of what the machine still owes, so it is counted —
+  // and settling it moves it, which is the half a structural-only read could not
+  // express at all.
+  it('counts an owed capture, and moves it when the live path stamps it', () => {
     const db = store.open();
-    seedSession(db, 's-1', 0);
-    const before = db.historySync.partition();
-    expect(before).toMatchObject({ total: 3, queued: 3 });
+    seedSession(db, 's-1', 0); // 3 structural + 1 capture, marked owed
+    expect(db.historySync.partition()).toMatchObject({ total: 4, queued: 4, synced: 0 });
 
     db.historySync.markSynced(['s-1-prompt'], T0 + MINUTE);
 
-    // Same numbers: the capture row was never in `total`, so settling it is not
-    // a state change this query can see. `synced` staying 0 is the assertion
-    // that matters — it is what would break if the capture joined the lane.
-    expect(db.historySync.partition()).toMatchObject({ total: 3, queued: 3, synced: 0 });
+    expect(db.historySync.partition()).toMatchObject({ total: 4, queued: 3, synced: 1 });
   });
 
   it('counts a permanent skip as failed, not as queued', () => {
@@ -784,8 +777,8 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
     seedSession(db, 's-1', 0);
     db.historySync.markSkipped(['s-1-llm'], T0);
     const p = db.historySync.partition();
-    expect(p).toMatchObject({ queued: 2, failed: 1 });
-    expect(p.queued + p.inProgress + p.synced + p.failed).toBe(p.total);
+    expect(p).toMatchObject({ queued: 3, failed: 1 });
+    expect(p.queued + p.inProgress + p.synced + p.failed + p.refused + p.detached).toBe(p.total);
   });
 
   it('sweeps a claim a dead drain left behind', () => {
@@ -796,7 +789,7 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
     expect(db.historySync.partition().inProgress).toBe(1);
 
     expect(db.historySync.releaseStaleClaims(T0 + MINUTE)).toBe(1);
-    expect(db.historySync.partition()).toMatchObject({ queued: 3, inProgress: 0 });
+    expect(db.historySync.partition()).toMatchObject({ queued: 4, inProgress: 0 });
     // A fresh claim is left alone.
     db.historySync.claimRows(['s-1'], T0 + 10 * MINUTE);
     expect(db.historySync.releaseStaleClaims(T0 + MINUTE)).toBe(0);
@@ -817,12 +810,76 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
     });
   });
 
-  it('does not yet count captures — the lane has not been widened', () => {
+  // The other half of the lane rule, and the one that keeps the number honest on
+  // a real machine: a capture nothing marked owed was offered to nobody. Counted
+  // on type alone it would read as queued, and most capture rows in a working
+  // store are exactly that — recorded while detached, or before anyone
+  // consented. They belong in no bucket.
+  it('does not count a capture no forward ever owed', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
-    // seedSession writes a prompt row too. Until the drain can carry content
-    // safely, it is not part of the tracked set and must not appear here.
-    expect(db.historySync.partition().total).toBe(3);
+    db.auditEvents.insertAuditEvent({
+      id: 'never-offered',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(4 * MINUTE),
+      content: 'recorded while nobody was listening',
+    });
+
+    // 3 structural + the ONE capture seedSession marked owed.
+    expect(db.historySync.partition().total).toBe(4);
+  });
+
+  // `code_change` reaches no lane by construction, so it is absent whatever its
+  // markers say — and on a working machine it is the most numerous kind, so
+  // counting it would put a permanent majority in a bucket nothing can drain.
+  it('does not count a kind no lane carries, even when it is marked owed', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.auditEvents.insertAuditEvent({
+      id: 'a-file',
+      eventType: 'code_change',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(4 * MINUTE),
+      content: 'the whole file',
+    });
+    db.historySync.markCaptureOwed('a-file');
+
+    expect(db.historySync.partition().total).toBe(4);
+  });
+
+  // WHICH kinds this read is about, asserted as behaviour rather than by reading
+  // the constant back. The vocabulary is derived from the two lane lists, so a
+  // read cannot widen what leaves the machine — but nothing stops a later edit
+  // adding a kind that no lane carries, and every row of it would then sit in a
+  // bucket that can never drain. Each kind below is excluded for its own
+  // recorded reason; this is where that stops being prose.
+  it('counts exactly the kinds a lane carries', () => {
+    const db = store.open();
+    const carried = ['session', 'llm_call', 'tool_call', 'prompt', 'response', 'tool_use'] as const;
+    const notCarried = ['code_change', 'config_scan', 'model_refusal'] as const;
+
+    db.auditEvents.ensureSessionRoot('root', at(0));
+    for (const [i, eventType] of [...carried.slice(1), ...notCarried].entries()) {
+      const id = `row-${eventType}`;
+      db.auditEvents.insertAuditEvent({
+        id,
+        eventType,
+        rootSessionId: 'root',
+        parentId: 'root',
+        startedAt: at((i + 1) * MINUTE),
+        content: 'text',
+      });
+      // Marked owed indiscriminately: a kind no lane carries must stay absent
+      // even when a marker says otherwise, which is the case a type filter
+      // alone would let through.
+      db.historySync.markCaptureOwed(id);
+    }
+
+    // The session root plus one row per carried kind; nothing else.
+    expect(db.historySync.partition().total).toBe(carried.length);
   });
 });
 
@@ -1147,13 +1204,23 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     return recorded.flatMap((q) => explain(raw, q).map((row) => row.detail)).join(' | ');
   };
 
-  it('answers the delivery-state partition from the index alone', () => {
+  it('answers the delivery-state partition through the index, not by scanning', () => {
     const plan = planFor((ledger) => ledger.partition());
-    // COVERING is the property that matters: this read runs on every render of a
-    // surface that shows it, and without the index it is a full table scan.
+    // SEEKING is the property that matters: this read runs on every render of a
+    // surface that shows it, and without the index it is a full table scan of
+    // the table captures land in.
     expect(plan).toContain('idx_audit_events_sync');
-    expect(plan).toContain('COVERING INDEX');
     expect(plan).not.toContain('SCAN audit_events');
+    // COVERING is DELIBERATELY NOT ASSERTED, and the reason is measured rather
+    // than a shrug. The read tests `outbox_owed` — a capture's state depends on
+    // whether a live forward marked it owed — so carrying that column in this
+    // index would make the read covering: 16 ms against 40 ms on a real 6 GB
+    // store. But a sixth column changes what the planner charges for this index,
+    // and with no ANALYZE statistics it plans from schema shape alone; measured,
+    // it then stops choosing the per-session index for the token rollup and
+    // walks every `llm_call` in the store instead. That read grows with the
+    // store and this one does not, so the narrower index wins. If this ever
+    // reads COVERING again, check the token rollup's plan before celebrating.
   });
 
   it('finds pending sessions on the index that bounds started_at, not the new one', () => {

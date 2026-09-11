@@ -70,6 +70,38 @@ const OUTBOX_CAPTURE_EVENT_TYPES = ['prompt', 'response', 'tool_use'] as const;
 
 const CAPTURE_TYPE_LIST = OUTBOX_CAPTURE_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
 
+/**
+ * The kinds a DELIVERY-STATE READ may count. Read-only: nothing that sends or
+ * stamps a row may be written in terms of it.
+ *
+ * DERIVED from the two lists above rather than written out, and the direction is
+ * the point. Those two decide what leaves the machine, and each is interpolated
+ * into statements that SEND and statements that STAMP — so widening one to make
+ * a surface show more would widen egress in the same edit, which is the shape of
+ * change this constant exists to make impossible. Derived, a read follows the
+ * send lists and can never lead them: adding a kind here is not expressible
+ * without adding it to a lane first.
+ *
+ * WHAT IS ABSENT, and why each is absent rather than forgotten:
+ *   - `code_change` is refused by the capture lane by construction. Sending it
+ *     would ship whole source files, gitignored scratch included, as first-time
+ *     egress rather than a retry. It is the most numerous kind on a working
+ *     machine, so counting it would put a permanent majority in a bucket no lane
+ *     can ever drain — a progress figure that cannot reach its own total.
+ *   - `config_scan` is forwarded live and stamped, but sits in neither lane, so
+ *     an undelivered one is owed by nobody. Counting it as outstanding would
+ *     assert that something will send it.
+ *   - `model_refusal` reaches no lane either.
+ * None of that is a claim they are unimportant — only that a delivery-state read
+ * has nothing true to say about a row no lane will ever carry.
+ */
+export const COUNTED_EVENT_TYPES = [
+  ...STRUCTURAL_EVENT_TYPES,
+  ...OUTBOX_CAPTURE_EVENT_TYPES,
+] as const;
+
+const COUNTED_TYPE_LIST = COUNTED_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
+
 /** `synced_at` values that are not a delivery time. */
 const SKIPPED = -1;
 
@@ -121,17 +153,15 @@ export interface HistorySyncCounts {
  * the three and the numbers do not sum to anything. These four do sum to
  * `total`, which is what a surface reporting delivery state needs.
  *
- * SCOPE, and the caveat that follows from it: every column here is measured
- * over STRUCTURAL rows only — `partitionStmt` carries the same
- * `event_type IN (…)` filter as the rest of this ledger. Capture rows are not
- * counted in `total`, so this is the delivery state of the structural lane, not
- * of everything the machine owes a deployment.
+ * SCOPE: both lanes, and only the rows a lane will actually carry. Structural
+ * rows are counted unconditionally — the live path owns every one of them and
+ * the drain re-offers them. A capture is counted once it is owed or settled,
+ * because a capture nothing marked owed was offered to nobody; counting it on
+ * type alone would report most of a working machine's capture rows as a backlog
+ * that nothing will ever send.
  *
- * That scope is why `markCaptureDelivered` does NOT settle anything visible
- * here. It stamps a capture row, through the same UPDATE a drain uses, so the
- * two are indistinguishable afterwards — but this query never counts capture
- * rows, so the stamp is invisible to it by construction. The stamp exists for a
- * capture drain to read; it is not a fix for this read.
+ * Kinds no lane carries are absent entirely — see COUNTED_EVENT_TYPES for which
+ * and why. A read has nothing true to say about a row that cannot be sent.
  *
  * `queued` no longer over-counts the rows it used to. A structural row the live
  * path forwarded successfully is now stamped at the forward site through
@@ -424,7 +454,24 @@ export class SqliteHistorySyncRepository {
                   THEN 1 ELSE 0 END) AS failed,
          COUNT(*) AS total
        FROM audit_events
-       WHERE event_type IN (${TYPE_LIST})`,
+       -- WHICH ROWS THIS IS ABOUT, and the half that is not a type filter.
+       -- A structural row is always somebody's to deliver: the live path owns
+       -- it, and the drain re-offers it. A CAPTURE is only ever outstanding
+       -- when a live forward marked it owed — a capture recorded while this
+       -- machine was detached, or before anyone consented, was offered to
+       -- nobody and is owed to nobody. Counted on type alone it would read as
+       -- queued, and on a working machine that is most of the capture rows in
+       -- the store: a backlog figure made of rows nothing will ever send.
+       --
+       -- So a capture enters this read only once it is owed or already settled.
+       -- The buckets below stay simple because this clause has already decided
+       -- what "outstanding" means for each lane.
+       WHERE event_type IN (${COUNTED_TYPE_LIST})
+         AND (
+           event_type IN (${TYPE_LIST})
+           OR synced_at IS NOT NULL
+           OR outbox_owed = 1
+         )`,
     );
 
     this.countsStmt = db.prepare(

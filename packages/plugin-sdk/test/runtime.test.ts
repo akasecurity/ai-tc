@@ -1114,4 +1114,72 @@ describe('a redact the caller cannot carry out', () => {
     expect(gateway.records[0]?.findings.map((f) => f.actionTaken)).toEqual(['block']);
     await runtime.close();
   });
+
+  // `redactDegradedTo` is the ACTION the lost redact became, and the only thing
+  // that can tell that from "the capture's worst action" is a capture where the
+  // two DIFFER. Every other case in the tree is single-finding, where the fold
+  // and the worst action coincide and `redactDegradedTo === action` holds
+  // whichever way it is computed; the host suites that assert a mismatch build
+  // their `CaptureResult` by hand and never reach `decide()`.
+  //
+  // So this pair is the whole guard on the producing layer. Replacing the fold
+  // with the capture's `worst` — the boolean semantics this field replaced —
+  // leaves the other 633 cases green and fails only the first of these.
+  function mixedBundle(): PolicyBundle {
+    const b = bundle();
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'test/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'test/pii-marker' },
+        action: 'redact',
+        enabled: true,
+      },
+    ];
+    return b;
+  }
+
+  const MIXED = 'SECRET_MARKER and PII_MARKER together';
+
+  it('names what the LOST redact became, not what the capture did', async () => {
+    // A deny that reports `redactDegradedTo: 'block'` explains itself by naming
+    // a fallback the workspace never set — here the workspace set `warn`, and
+    // the deny came from the other finding's own Block policy.
+    const gateway = fakeGateway(mixedBundle());
+    const runtime = createPluginRuntime(gateway, settingsWith('warn'));
+
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: MIXED },
+      { rewritable: false },
+    );
+
+    expect(out.action).toBe('block');
+    expect(out.redactDegradedTo).toBe('warn');
+    await runtime.close();
+  });
+
+  it('still reports the fallback when it happens to equal the capture action', async () => {
+    // The positive control on the case above: without it, a runtime that had
+    // stopped producing the field at all would satisfy a lone `not.toBe`.
+    // Here the fold and the worst action genuinely coincide, so this one is
+    // expected to read the same either way — it proves the field is emitted.
+    const gateway = fakeGateway(mixedBundle());
+    const runtime = createPluginRuntime(gateway, settingsWith('block'));
+
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: MIXED },
+      { rewritable: false },
+    );
+
+    expect(out.action).toBe('block');
+    expect(out.redactDegradedTo).toBe('block');
+    await runtime.close();
+  });
 });

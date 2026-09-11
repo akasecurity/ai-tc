@@ -16,6 +16,9 @@ import { chmodSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from '
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { openLocalDatabase } from '@akasecurity/persistence';
+import { bundledDetections } from '@akasecurity/plugin-sdk';
+import type { BuiltinPolicyId } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { withTempHome } from '../helpers/run-hook.ts';
@@ -211,3 +214,77 @@ describe.each(HOOKS)(
   },
   60_000,
 );
+
+// ─── Enforcement, as the counterpart to the fault rows above ────────────────
+//
+// Every case above proves the hook says something when it CANNOT decide. This
+// pair proves what it says when it can — and specifically that the capture
+// declares this host's fields unrewritable, which nothing else here reaches.
+//
+// A positive control in the strict sense: with `rewritable: true` planted in
+// the hook, a redact policy resolves to a redact, the decision module denies it
+// as it always did, and every other case in this package still passes. The
+// whole point of the change these guard is that a redact this host cannot
+// perform now follows `redactFallback` — so the shipped default lets the call
+// through, and only a row driving a real finding can see it.
+const RULE_ID = 'secrets/twilio-key';
+function secretFixture(): { namespace: string; packId: string; example: string } {
+  const pack = bundledDetections().find((p) => p.rules.some((r) => r.id === RULE_ID));
+  const example = pack?.rules.find((r) => r.id === RULE_ID)?.examples?.[0];
+  if (pack === undefined || example === undefined) {
+    throw new Error(`bundled rule ${RULE_ID} is missing from the pack registry or has no example`);
+  }
+  return { namespace: pack.namespace, packId: pack.packId, example };
+}
+const FIXTURE = secretFixture();
+
+function seedPolicy(home: string, policy: BuiltinPolicyId): void {
+  const db = openLocalDatabase(join(home, '.aka', 'data'));
+  try {
+    db.installedPacks.recordInventory(bundledDetections());
+    db.installedPacks.setPolicy(FIXTURE.namespace, FIXTURE.packId, policy);
+  } finally {
+    db.close();
+  }
+}
+
+function runPreToolUse(home: string) {
+  return runHook(
+    'pre-tool-use',
+    [],
+    home,
+    JSON.stringify({
+      toolCall: { name: 'run_command', args: { CommandLine: `deploy ${FIXTURE.example}` } },
+      stepIdx: 0,
+      conversationId: 'conv-enforce',
+      workspacePaths: ['/tmp'],
+    }),
+  );
+}
+
+describe('pre-tool-use enforcement — a redact this host cannot perform', () => {
+  it('LETS THE CALL THROUGH under the shipped warn fallback', () => {
+    const run = withTempHome((home) => {
+      seedPolicy(home, 'redact');
+      return runPreToolUse(home);
+    }, 'aka-agy-enforce-redact-');
+
+    // Allow, not deny: this host has no way to mask an argument, the workspace
+    // has not chosen `block`, so the command runs. Before the fallback existed
+    // this was an unconditional deny.
+    expect(soleObject(run)).toEqual({ decision: 'allow' });
+  });
+
+  it('denies under an explicit block policy, so the row is not vacuous', () => {
+    // The control. Without it, a hook that allowed EVERYTHING would satisfy the
+    // case above — and so would a rule that stopped being detected at all.
+    const run = withTempHome((home) => {
+      seedPolicy(home, 'block');
+      return runPreToolUse(home);
+    }, 'aka-agy-enforce-block-');
+
+    const decided = soleObject(run) as { decision: string; reason?: string };
+    expect(decided.decision).toBe('deny');
+    expect(decided.reason ?? '').toContain(RULE_ID);
+  });
+});

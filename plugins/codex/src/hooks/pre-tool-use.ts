@@ -94,7 +94,17 @@ async function main(): Promise<void> {
 
       const result = await runtime.capture(
         { kind, sourceTool: SOURCE_TOOL.Codex, text: value, metadata },
-        kind === 'tool_use' ? { persist: 'with-findings' } : {},
+        {
+          ...(kind === 'tool_use' ? { persist: 'with-findings' as const } : {}),
+          // Per FIELD: a field that EXECUTES cannot be masked in place, because
+          // rewriting a command changes what runs. The stored `apply_patch`
+          // field can be, and keeps true redaction. A redact on the executable
+          // one degrades to the configured `redactFallback` inside the runtime,
+          // where the emitted decision, the recorded action and the ledger all
+          // read one answer — this hook used to escalate it and record it as
+          // `redact`, describing a masking that never happened.
+          rewritable: !spec.executable,
+        },
       );
       scanned.push({ spec, result });
     }

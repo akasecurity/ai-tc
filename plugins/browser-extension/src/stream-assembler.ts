@@ -1,4 +1,11 @@
-// Event-stream line framing, shared by every site adapter.
+// Response framing, shared by the site adapters.
+//
+// Two schemes live here because they answer the same question — where does one
+// complete unit end, given chunks that arrive on network boundaries rather than
+// on the format's own. `createSseAssembler` frames `data:` lines;
+// `createDpuFrameAssembler` frames the length-prefixed `<template>` frames
+// chatgpt.com's anonymous path streams.
+//
 //
 // Response chunks arrive on network boundaries, which land in the middle of
 // lines — so an adapter that parses a chunk as though it were an event drops
@@ -110,6 +117,132 @@ export function createSseAssembler(): SseAssembler {
       if (line === '') return [];
       const payload = payloadOf(line);
       return payload === null ? [] : [payload];
+    },
+  };
+}
+
+// The opener of one declarative-partial-update frame. The digits between the
+// quotes are the frame's CONTENT LENGTH, in the same units a decoded chunk is
+// measured in, and `>` closes the tag immediately after them.
+const DPU_OPEN_PREFIX = '<template data-web-mobile-dpu-frame="';
+const DPU_CLOSE = '</template>';
+
+// The largest frame this will buffer toward. A length is read off the stream
+// before any of the content behind it has arrived, so an absurd one — a
+// corrupted digit run, or a page answering with something else entirely —
+// would otherwise hold the assembler waiting for bytes that never come while
+// the buffer it is filling grows to meet them.
+const DPU_MAX_FRAME_LENGTH = 1024 * 1024;
+// Enough for that ceiling and nothing like enough to be a payload, so a run of
+// digits this long is a malformed opener rather than a big frame.
+const DPU_MAX_DIGITS = 9;
+
+export interface DpuFrameAssembler {
+  // The complete frames this chunk finished, in order, each as the markup
+  // BETWEEN the opener and its terminator. A chunk that finishes none returns
+  // an empty array.
+  push(chunk: string): string[];
+  // A frame whose content is complete but whose terminator never arrived. The
+  // length prefix is what makes that recoverable rather than a guess: the
+  // content is known whole from its declared length, so a stream cut inside
+  // the trailing `</template>` costs nothing.
+  end(): string[];
+}
+
+/**
+ * Frame a length-prefixed `<template data-web-mobile-dpu-frame="n">` stream.
+ *
+ * The length prefix is load-bearing rather than a convenience. Frames nest —
+ * a frame's own content carries further `<template>` elements — so framing on
+ * the first `</template>` cuts a frame short and hands the parser above half
+ * an element. Reading the declared length means the terminator is only ever
+ * CHECKED, never searched for.
+ *
+ * Anything that does not line up is RESYNCHRONISED rather than repaired: the
+ * opener is skipped and the scan resumes after it. A frame this cannot read is
+ * a frame this reports nothing about; it never emits content it had to guess
+ * the extent of.
+ */
+export function createDpuFrameAssembler(): DpuFrameAssembler {
+  let buffer = '';
+  // How far into `buffer` the opener scan has already looked. Without it a
+  // stream that never frames is re-scanned from the start on every chunk,
+  // which is quadratic in the response length on the page's own main thread —
+  // the cost createSseAssembler keeps its fragment list to avoid.
+  let searchFrom = 0;
+
+  function drain(frames: string[], atEnd: boolean): void {
+    for (;;) {
+      const open = buffer.indexOf(DPU_OPEN_PREFIX, searchFrom);
+      if (open === -1) {
+        // Nothing framed here. Keep only what could still be the head of an
+        // opener split across this chunk boundary.
+        const keep = Math.max(0, buffer.length - (DPU_OPEN_PREFIX.length - 1));
+        buffer = buffer.slice(keep);
+        searchFrom = 0;
+        return;
+      }
+      const digitsAt = open + DPU_OPEN_PREFIX.length;
+      const quote = buffer.indexOf('"', digitsAt);
+      if (quote === -1) {
+        // The digits are still arriving. Hold position rather than consuming.
+        if (buffer.length - digitsAt > DPU_MAX_DIGITS) {
+          searchFrom = open + 1;
+          continue;
+        }
+        searchFrom = open;
+        return;
+      }
+      const digits = buffer.slice(digitsAt, quote);
+      const length = /^[0-9]{1,9}$/.test(digits) ? Number(digits) : -1;
+      if (length < 0 || length > DPU_MAX_FRAME_LENGTH || buffer.charAt(quote + 1) !== '>') {
+        // A malformed opener, or a well-formed one whose `>` has not arrived.
+        // Only the second is worth waiting for.
+        if (length >= 0 && length <= DPU_MAX_FRAME_LENGTH && quote + 1 >= buffer.length) {
+          searchFrom = open;
+          return;
+        }
+        searchFrom = open + 1;
+        continue;
+      }
+      const contentAt = quote + 2;
+      const contentEnd = contentAt + length;
+      if (buffer.length < contentEnd) {
+        // The content is still arriving.
+        searchFrom = open;
+        return;
+      }
+      const terminated = buffer.startsWith(DPU_CLOSE, contentEnd);
+      if (!terminated && buffer.length < contentEnd + DPU_CLOSE.length && !atEnd) {
+        searchFrom = open;
+        return;
+      }
+      if (!terminated && !atEnd) {
+        // The declared length did not land on a terminator, so it did not mean
+        // what this reads it to mean. Resynchronise rather than emit content
+        // whose extent is now a guess.
+        searchFrom = open + 1;
+        continue;
+      }
+      frames.push(buffer.slice(contentAt, contentEnd));
+      buffer = buffer.slice(terminated ? contentEnd + DPU_CLOSE.length : contentEnd);
+      searchFrom = 0;
+    }
+  }
+
+  return {
+    push(chunk: string): string[] {
+      const frames: string[] = [];
+      buffer += chunk;
+      drain(frames, false);
+      return frames;
+    },
+    end(): string[] {
+      const frames: string[] = [];
+      drain(frames, true);
+      buffer = '';
+      searchFrom = 0;
+      return frames;
     },
   };
 }

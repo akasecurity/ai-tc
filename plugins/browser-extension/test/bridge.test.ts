@@ -52,10 +52,13 @@ interface FakeAdapterOptions {
   // What parseStream was handed for this exchange, so a case can assert the
   // bridge passes the MATCHED endpoint rather than merely some endpoint.
   onExchange?: (exchange: MatchedExchange) => void;
+  // The same, for the request half — it is reached on a different subset of
+  // turns, so one option cannot stand in for the other.
+  onRequestExchange?: (exchange: MatchedExchange) => void;
   summary?: WebExchangeSummary | null;
   onEnd?: () => void;
   onPush?: (chunk: string) => void;
-  parseRequest?: (body: string) => ParsedRequest;
+  parseRequest?: (body: string, exchange: MatchedExchange) => ParsedRequest;
   requiredPaths?: { request: readonly string[]; response: readonly string[] };
 }
 
@@ -75,7 +78,10 @@ function fakeAdapter(options: FakeAdapterOptions = {}): ProviderAdapter {
     ],
     requiredPaths: options.requiredPaths ?? { request: [], response: [] },
     protocolTokens: [],
-    parseRequest: options.parseRequest ?? (() => ({ requiredPathsSeen: true })),
+    parseRequest: (body, exchange) => {
+      options.onRequestExchange?.(exchange);
+      return options.parseRequest?.(body, exchange) ?? { requiredPathsSeen: true };
+    },
     parseStream: (exchange): ExchangeAssembler => ({
       push: (chunk) => {
         options.onExchange?.(exchange);
@@ -1185,6 +1191,66 @@ describe('the exchange parseStream is handed', () => {
     // The conversation endpoint, not the account one declared beside it.
     expect(seen[0]?.endpoint).toBe(adapter.endpoints[0]);
     expect(seen[0]?.endpoint).not.toBe(adapter.endpoints[1]);
+  });
+
+  it('reaches parseRequest too, with the same match', () => {
+    const stream: MatchedExchange[] = [];
+    const request: MatchedExchange[] = [];
+    const adapter = fakeAdapter({
+      onExchange: (e) => {
+        stream.push(e);
+      },
+      onRequestExchange: (e) => {
+        request.push(e);
+      },
+    });
+    const h = harness(adapter);
+    h.feed(
+      { type: 'patched', fetch: true, xhr: true },
+      {
+        type: 'request',
+        id: 1,
+        url: 'https://site.test/api/conversation/abc',
+        method: 'POST',
+        body: '{}',
+      },
+      { type: 'chunk', id: 1, text: 'x' },
+    );
+    expect(request).toHaveLength(1);
+    expect(request[0]?.endpoint).toBe(adapter.endpoints[0]);
+    expect(request[0]?.url).toBe('https://site.test/api/conversation/abc');
+    // Both halves of one exchange are told the same thing.
+    expect(request[0]).toEqual(stream[0]);
+  });
+
+  it('does NOT reach parseRequest for a body the bridge declined, though the stream half still runs', () => {
+    // Why anything read off the URL belongs in parseStream: this seam is
+    // skipped for a body over REQUEST_BODY_MAX_BYTES, so a field recovered
+    // here goes missing on exactly those turns.
+    const stream: MatchedExchange[] = [];
+    const request: MatchedExchange[] = [];
+    const adapter = fakeAdapter({
+      onExchange: (e) => {
+        stream.push(e);
+      },
+      onRequestExchange: (e) => {
+        request.push(e);
+      },
+    });
+    const h = harness(adapter);
+    h.feed(
+      { type: 'patched', fetch: true, xhr: true },
+      {
+        type: 'request',
+        id: 1,
+        url: 'https://site.test/api/conversation/abc',
+        method: 'POST',
+        body: 'x'.repeat(REQUEST_BODY_MAX_BYTES + 1),
+      },
+      { type: 'chunk', id: 1, text: 'x' },
+    );
+    expect(request).toHaveLength(0);
+    expect(stream).toHaveLength(1);
   });
 
   it('classifyCompiled agrees with matchCompiled, because it is derived from it', () => {

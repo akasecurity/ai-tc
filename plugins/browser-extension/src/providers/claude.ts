@@ -319,12 +319,14 @@ export const claudeAdapter: ProviderAdapter = {
   // completion body; both are required, so a body carrying neither reports
   // its shape unmet rather than half-met.
   //
-  // `conversationId` is NOT recoverable HERE and is deliberately absent rather
-  // than guessed: the body carries the two turn message uuids and no
-  // conversation uuid. That id exists only in the request URL, which this seam
-  // is still not passed — `parseStream` is, and reads it there, so the summary
-  // carries it even though this does not. Returning a message uuid under that
-  // name would put a wrong id on every stored row.
+  // `conversationId` is deliberately NOT returned here, even though the
+  // matched URL is now in reach. The body carries the two turn message uuids
+  // and no conversation uuid, so it could only come from the URL — and
+  // `parseStream` is the better seam for that: this one is reached only for a
+  // body the bridge admitted, so a request with no body, or one over
+  // REQUEST_BODY_MAX_BYTES, would lose the id here while keeping it there.
+  // Returning a message uuid under that name would put a wrong id on every
+  // stored row.
   //
   // The body arrives gzip-compressed on the wire; the tap inflates it
   // before this is reached, so this sees ordinary JSON text.

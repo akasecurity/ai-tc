@@ -308,7 +308,10 @@ export function createBridge(options: BridgeOptions): Bridge {
         unparsedBodies += 1;
       } else {
         try {
-          const parsed = adapter.parseRequest(message.body);
+          const parsed = adapter.parseRequest(message.body, {
+            url: message.url,
+            endpoint: matched.source,
+          });
           model = parsed.model;
           conversationId = parsed.conversationId;
           if (!parsed.requiredPathsSeen) {

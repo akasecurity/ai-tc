@@ -131,6 +131,37 @@ describe('DataSharesClient', () => {
     expect(html).toContain('Needs review');
   });
 
+  // The queue is selected on trust rather than kind, so its count spans every
+  // tab while the table under it shows one. These three pin the qualifier to
+  // the case where those two really can disagree on screen.
+  it('qualifies the review count once more than one kind tab exists', () => {
+    const html = render({
+      groups: [group('provider', 1), group('ip', 3)],
+      review: [reviewItem()],
+    });
+    expect(html).toContain('All destinations');
+  });
+
+  it('omits the qualifier when a single group means nothing is narrowed', () => {
+    const html = render({ groups: [group('provider', 1)], review: [reviewItem()] });
+    expect(html).toContain('Needs review');
+    expect(html).not.toContain('All destinations');
+  });
+
+  // Not a qualifier case at all: the server sends an empty queue while a term
+  // is set (page.tsx), so the strip is absent rather than showing a count over
+  // filtered rows. Asserted here because the opposite was believed during
+  // review, and nothing else in the tree pins it.
+  it('shows no strip at all while a search term is active', () => {
+    const html = render({
+      q: 'nonexistent',
+      groups: [group('provider', 1), group('ip', 3)],
+      review: [],
+    });
+    expect(html).not.toContain('Needs review');
+    expect(html).not.toContain('All destinations');
+  });
+
   // The Sheet's own content never appears in this output: ui-kit's Sheet is
   // built on @radix-ui/react-dialog, whose Portal only mounts once a
   // useLayoutEffect flips `mounted` — a client-only effect renderToStaticMarkup

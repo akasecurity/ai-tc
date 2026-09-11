@@ -2,25 +2,57 @@
 // how each is worded. Pure — no I/O, no React, no Node API.
 //
 // It lives in schema rather than beside any one renderer because FOUR surfaces
-// render it and every one of them must agree on the numbers: the dashboard's
-// Recommended Actions card, `aka tui`'s Recommend screen, and the `/aka:recommend`
-// output of the Claude Code, Codex and Antigravity plugins. Those last three cannot
-// import the dashboard package, so the logic used to be copied per plugin — and the
-// copies drifted, one gaining a `code_flaw` advice line the others lacked and a
-// title none of them had.
-import type { FindingView } from '../zod/local.ts';
+// render it and all of them must agree on the numbers: the dashboard's Recommended
+// Actions card, `aka tui`'s Recommend screen, and the `/aka:recommend` output of the
+// Claude Code, Codex and Antigravity plugins. The plugins cannot import the
+// dashboard package, so schema is the one place all four can reach.
+import type { DetectionCategory, Severity } from '../zod/finding.ts';
+import type { FindingView, HealthSummary } from '../zod/local.ts';
 
 /**
- * Descending severity weight — bigger is worse.
+ * Descending severity weight — bigger is worse. Distinct from the private
+ * `SEVERITY_ORDER` ranks in `findings-*-build.ts`, which run the other way
+ * (critical = 0) and order a list rather than weigh a bucket.
  *
- * Exported because the plugins sort their own top-findings list by it. Distinct
- * from the private `SEVERITY_ORDER` ranks in `findings-*-build.ts`, which run the
- * other way (critical = 0) and order a list rather than weigh a bucket.
+ * Annotated over `Severity`, so a member added there fails the build here instead
+ * of weighing 0 and silently sorting last.
  */
-export const SEVERITY_WEIGHT: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+const SEVERITY_WEIGHT: Record<Severity, number> = {
+  critical: 4,
+  high: 3,
+  medium: 2,
+  low: 1,
+};
+
+/**
+ * The same table indexed by a plain string, for the callers that hold one.
+ *
+ * `FindingView.severity` is `string` at this layer, so the lookups below cannot use
+ * the annotated table directly. Two names over one literal is the pattern
+ * `findings-group-build.ts` uses for `SEVERITY_ORDER`/`SEVERITY_RANK`: the
+ * annotation buys the exhaustiveness, the alias buys the index.
+ */
+const SEVERITY_WEIGHT_BY_STRING = SEVERITY_WEIGHT as Partial<Record<string, number>>;
+
+/**
+ * The weight of `severity`, and 0 for one this build does not rank.
+ *
+ * The accessor is what is exported rather than either table, for the reason
+ * {@link recommendationCopy} is: a caller holds a `string`, so indexing the
+ * annotated table is a TS7053 at every call site and the cast that silences it
+ * would be written once per caller. The three plugins rank their own top-findings
+ * list through this.
+ */
+export function severityWeight(severity: string): number {
+  return SEVERITY_WEIGHT_BY_STRING[severity] ?? 0;
+}
 
 // Plain-language next step per detection category, shown by the Recommend view.
-const ADVICE: Record<string, string> = {
+//
+// Annotated over `DetectionCategory` rather than `string`: a category added to the
+// enum is then a compile error here, which is what stops it reaching a renderer as
+// a raw `<category> finding` fallback. `code_flaw` and `config` did exactly that.
+const ADVICE: Record<DetectionCategory, string> = {
   secret:
     'Rotate the exposed credentials and move them out of prompts (secrets manager / env vars).',
   pii: 'Remove or mask personal data before it reaches the model.',
@@ -34,7 +66,7 @@ const ADVICE: Record<string, string> = {
   custom: 'Review against your organization’s custom policy.',
 };
 
-const REC_TEMPLATE: Record<string, { title: string; action: string }> = {
+const REC_TEMPLATE: Record<DetectionCategory, { title: string; action: string }> = {
   secret: { title: 'Exposed secret detected', action: 'Rotate' },
   pii: { title: 'Personal data in a prompt', action: 'Remove' },
   financial: { title: 'Financial data detected', action: 'Strip' },
@@ -112,7 +144,7 @@ export function bucketizeRecommendations(findings: RecommendationInput[]): Bucke
       ruleId: f.ruleId,
     };
     b.categoryCount += n;
-    const w = SEVERITY_WEIGHT[f.severity] ?? 0;
+    const w = severityWeight(f.severity);
     if (w > b.weight) {
       b.weight = w;
       b.severity = f.severity;
@@ -167,9 +199,61 @@ export interface RecommendationCopy {
  * row. Resolving it in one place is what lets every surface fall back identically.
  */
 export function recommendationCopy(category: string): RecommendationCopy {
-  const template = REC_TEMPLATE[category] ?? { title: `${category} finding`, action: 'Review' };
+  // Indexed through the string aliases: a finding's `category` is `string` at this
+  // layer, and the fallback below is the whole point — a category this build does
+  // not know must still render something.
+  const template = REC_TEMPLATE_BY_STRING[category] ?? {
+    title: `${category} finding`,
+    action: 'Review',
+  };
   return {
     ...template,
-    advice: ADVICE[category] ?? 'Review this finding against your policy.',
+    advice: ADVICE_BY_STRING[category] ?? 'Review this finding against your policy.',
+  };
+}
+
+const ADVICE_BY_STRING = ADVICE as Partial<Record<string, string>>;
+const REC_TEMPLATE_BY_STRING = REC_TEMPLATE as Partial<
+  Record<string, { title: string; action: string }>
+>;
+
+/**
+ * The posture summary the Recommend screens head with.
+ *
+ * Named `HealthStatus` here, not `FindingStatus`: schema already exports that for a
+ * finding's lifecycle (`open` | `handled` | `resolved` | `dismissed`), which is a
+ * different thing. The renderers alias it back to their historical name, so no
+ * consumer moves.
+ */
+export interface HealthStatus {
+  score: number;
+  unreviewed: { critical: number; high: number; medium: number; low: number };
+  openFindings: number;
+}
+
+// Derived posture score (0–100). HEURISTIC — nothing stores a posture score, so
+// this blends what is on hand: category coverage (how much sensitive data is under
+// an enabled policy) and the share of findings that were acted on (block/redact/
+// warn) rather than let through. One implementation, so every Recommend screen and
+// first-run card reads the same number and a different scoring model is one edit.
+export function healthScore(summary: HealthSummary): number {
+  const handled = summary.byAction.block + summary.byAction.redact + summary.byAction.warn;
+  const handledRatio = summary.findings === 0 ? 1 : handled / summary.findings;
+  return Math.round(100 * (0.6 * summary.coverage + 0.4 * handledRatio));
+}
+
+/**
+ * The status bar's three numbers, from a whole-store health summary.
+ *
+ * `openFindings` is the summary's finding total and sums `bySeverity`. What is
+ * passed in matters more than what comes out: every caller feeds the WHOLE-STORE
+ * summary rather than the page it just fetched, so the bar reads identically across
+ * surfaces whose row limits differ.
+ */
+export function findingStatus(summary: HealthSummary): HealthStatus {
+  return {
+    score: healthScore(summary),
+    unreviewed: { ...summary.bySeverity },
+    openFindings: summary.findings,
   };
 }

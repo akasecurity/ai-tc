@@ -1,7 +1,14 @@
-import type { FindingView, HealthSummary } from '@akasecurity/schema';
+import type { FindingView, HealthStatus, HealthSummary } from '@akasecurity/schema';
+import {
+  buildRecommendations as schemaBuildRecommendations,
+  findingStatus as schemaFindingStatus,
+  healthScore as schemaHealthScore,
+} from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import type { FindingStatus } from '../../src/security/recommendations.ts';
 import {
+  buildRecommendations,
   buildRecommendedActions,
   findingStatus,
   healthScore,
@@ -34,22 +41,27 @@ function finding(overrides: Partial<FindingView>): FindingView {
   };
 }
 
-describe('healthScore', () => {
-  it('blends coverage (60%) with the handled ratio (40%)', () => {
-    // handled = 2+4+1 = 7 of 10 → 0.7; score = 100*(0.6*0.5 + 0.4*0.7) = 58
-    expect(healthScore(summary())).toBe(58);
+// The `./recommendations` subpath is a published entry point: `cli/src/tui/report.ts`
+// imports the rollup and the posture score from it by name, and the maths behind
+// those names now lives in `@akasecurity/schema`. So what this module owes is the
+// WIRING — that each name still resolves to the one shared implementation. The
+// behaviour itself is asserted against that implementation in
+// `packages/schema/test/security/recommendations.test.ts`; re-asserting it here
+// would re-run schema's suite through a re-export and would go green on a local
+// copy that had drifted back, which is the defect the move removed.
+describe('the ./recommendations re-exports', () => {
+  it("names schema's own functions, not a second copy of them", () => {
+    expect(buildRecommendations).toBe(schemaBuildRecommendations);
+    expect(findingStatus).toBe(schemaFindingStatus);
+    expect(healthScore).toBe(schemaHealthScore);
   });
 
-  it('treats zero findings as fully handled', () => {
-    expect(healthScore(summary({ findings: 0, coverage: 1 }))).toBe(100);
-  });
-});
-
-describe('findingStatus', () => {
-  it('carries the severity buckets and open count through', () => {
-    const status = findingStatus(summary());
-    expect(status.openFindings).toBe(10);
-    expect(status.unreviewed).toEqual({ critical: 1, high: 2, medium: 3, low: 4 });
+  it("keeps FindingStatus as the historical name for schema's HealthStatus", () => {
+    // The annotations are the assertion — an alias that stopped resolving fails the
+    // build here rather than in the CLI, which is the consumer that cannot move.
+    const status: FindingStatus = findingStatus(summary());
+    const asSchema: HealthStatus = status;
+    expect(asSchema).toBe(status);
   });
 });
 

@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { FindingView } from '../../src/index.ts';
 import { DetectionCategory } from '../../src/index.ts';
-import { buildRecommendations } from '../../src/security/recommendations.ts';
+import { buildRecommendations, severityWeight } from '../../src/security/recommendations.ts';
 
 function finding(overrides: Partial<FindingView> = {}): FindingView {
   return {
@@ -27,6 +27,19 @@ function finding(overrides: Partial<FindingView> = {}): FindingView {
     ...overrides,
   };
 }
+
+describe('severityWeight', () => {
+  it('ranks the four severities descending and weighs an unranked one 0', () => {
+    // The accessor is exported rather than the table because every caller holds a
+    // plain `string` — `FindingView.severity` is not the closed enum at that layer.
+    // An unranked value must weigh 0, which sorts it last; the raw lookup it wraps
+    // yields `undefined`, and the plugins' comparator subtracts one weight from
+    // another, so an unwrapped miss would produce NaN and leave the list in input
+    // order with nothing failing.
+    expect(['critical', 'high', 'medium', 'low'].map(severityWeight)).toEqual([4, 3, 2, 1]);
+    expect(severityWeight('bogus')).toBe(0);
+  });
+});
 
 describe('buildRecommendations', () => {
   it('gives every detection category a written title and advice', () => {

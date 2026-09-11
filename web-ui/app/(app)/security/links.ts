@@ -102,7 +102,8 @@ export function resolvedFindingHref(ruleId: string, repo: string, path: string):
  * the card mirrors `deriveFindingStatus` for exactly that reason.
  *
  * Filters by RULE rather than by the recommendation's category because the card
- * counts per rule (see `bucketize`), and `/findings` has no category dimension.
+ * counts per rule (see `bucketizeRecommendations`), and `/findings` has no
+ * category dimension.
  * `severity` is never added alongside: it is constant within a rule, so it would
  * filter every row or none.
  */

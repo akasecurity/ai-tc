@@ -37,7 +37,9 @@ describe('renderReport — the marketplace-pin note', () => {
 
   it('explains a pin that is BEHIND npm, naming the marketplace that has to move', () => {
     const out = renderReport(
-      report({ marketplacePin: { marketplace: 'akasecurity', npmLatest: '0.9.10' } }),
+      report({
+        marketplacePin: { marketplace: 'akasecurity', npmLatest: '0.9.10', npmAhead: true },
+      }),
     );
 
     expect(out).toContain('Pinned by a marketplace');
@@ -49,9 +51,12 @@ describe('renderReport — the marketplace-pin note', () => {
   });
 
   it.each([
-    ['a pin that equals npm', { marketplace: 'akasecurity', npmLatest: '0.9.9' }],
-    ['a pin AHEAD of npm', { marketplace: 'akasecurity', npmLatest: '0.9.8' }],
-    ['a pin with no npm answer to compare', { marketplace: 'akasecurity', npmLatest: null }],
+    ['a pin that equals npm', { marketplace: 'akasecurity', npmLatest: '0.9.9', npmAhead: false }],
+    ['a pin AHEAD of npm', { marketplace: 'akasecurity', npmLatest: '0.9.8', npmAhead: false }],
+    [
+      'a pin with no npm answer to compare',
+      { marketplace: 'akasecurity', npmLatest: null, npmAhead: false },
+    ],
   ])('says nothing about %s, which explains nothing', (_label, marketplacePin) => {
     // A note on every pinned row would be noise on the happy path, where the
     // pin and npm agree — which is most of the time, and is why this defect

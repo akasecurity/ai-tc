@@ -54,10 +54,7 @@ export default function UpdatesPage() {
     // local file the host itself wrote, so there is no request to amortise, and
     // a stale pin would put this page back to offering an update the host
     // cannot deliver — the defect the pin exists to close.
-    marketplacePin: (agent) =>
-      agent.marketplace !== undefined && agent.pluginName !== undefined
-        ? marketplacePinnedVersion(agent.marketplace, agent.pluginName)
-        : null,
+    marketplacePin: (agent) => marketplacePinnedVersion(agent),
   });
 
   // The CLI's command depends on how THIS copy was installed (npm global under

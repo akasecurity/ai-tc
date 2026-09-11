@@ -255,7 +255,13 @@ export function gatherReport(deps: ReportDeps): UpdateReport {
     const latest = pin ?? npmLatest;
     const pinned =
       pin !== null && agent.marketplace !== undefined
-        ? { marketplacePin: { marketplace: agent.marketplace, npmLatest } }
+        ? {
+            marketplacePin: {
+              marketplace: agent.marketplace,
+              npmLatest,
+              npmAhead: npmLatest !== null && isNewer(npmLatest, pin),
+            },
+          }
         : {};
     const installed = deps.installed.get(ref) ?? null;
     if (installed === null) {
@@ -282,9 +288,10 @@ export function gatherReportLive(): UpdateReport {
     viewVersion: npmViewVersion,
     installed: installedAgentPluginVersions(),
     cliInstalled: cliVersion(),
-    marketplacePin: (agent) =>
-      agent.marketplace !== undefined && agent.pluginName !== undefined
-        ? marketplacePinnedVersion(agent.marketplace, agent.pluginName)
-        : null,
+    // No coordinate guard here: `marketplacePinnedVersion` owns both that and
+    // the HOST check, because a guard written at the call site admits Codex —
+    // its registry entry carries a marketplace and a plugin name like any
+    // other — into a reader that only understands Claude Code's layout.
+    marketplacePin: (agent) => marketplacePinnedVersion(agent),
   });
 }

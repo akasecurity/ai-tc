@@ -1,7 +1,5 @@
 import type { ComponentStatus, UpdateReport } from '@akasecurity/schema';
 
-import { isNewer } from './semver.ts';
-
 /**
  * The lines explaining a `latest` that came from a marketplace pin.
  *
@@ -19,8 +17,7 @@ function pinNotes(report: UpdateReport): string[] {
   const notes: string[] = [];
   for (const s of report.statuses) {
     const pin = s.marketplacePin;
-    if (!pin || s.latest === null || pin.npmLatest === null) continue;
-    if (!isNewer(pin.npmLatest, s.latest)) continue;
+    if (!pin || !pin.npmAhead || s.latest === null || pin.npmLatest === null) continue;
     notes.push(
       `    ${s.name}: the ${pin.marketplace} marketplace pins v${s.latest}. ` +
         `npm has v${pin.npmLatest}, which this machine cannot install until that ` +

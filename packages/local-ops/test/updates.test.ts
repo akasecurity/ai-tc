@@ -104,7 +104,12 @@ describe('gatherReport — the marketplace pin decides what "latest" means', () 
 
     const plugin = report.statuses.find((s) => s.id === 'claude-code');
     expect(plugin?.latest).toBe('0.9.9');
-    expect(plugin?.marketplacePin).toEqual({ marketplace: 'akasecurity', npmLatest: '0.9.10' });
+    expect(plugin?.marketplacePin).toEqual({
+      marketplace: 'akasecurity',
+      npmLatest: '0.9.10',
+      // npm is ahead of the pin, which is the only case worth explaining.
+      npmAhead: true,
+    });
   });
 
   it('does NOT offer an update the host cannot install', () => {
@@ -196,6 +201,8 @@ describe('gatherReport — the marketplace pin decides what "latest" means', () 
     expect(report.statuses.find((s) => s.id === 'claude-code')?.marketplacePin).toEqual({
       marketplace: 'akasecurity',
       npmLatest: null,
+      // Nothing to compare against, so nothing to explain.
+      npmAhead: false,
     });
   });
 });

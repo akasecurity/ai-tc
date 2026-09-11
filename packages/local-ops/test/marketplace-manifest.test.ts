@@ -18,6 +18,20 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { marketplacePinnedVersion } from '../src/marketplace-manifest.ts';
+import type { AgentPlugin } from '../src/registry.ts';
+
+/** A Claude-Code-hosted agent with the coordinates a lookup needs. */
+const agent = (over: Partial<AgentPlugin> = {}): AgentPlugin => ({
+  id: 'claude-code',
+  name: 'Claude Code plugin',
+  sourceTool: 'claude-code',
+  description: '',
+  npmPackage: '@akasecurity/ai-tc-claude-code',
+  pluginName: 'ai-tc',
+  marketplace: 'akasecurity',
+  cliBin: 'claude',
+  ...over,
+});
 
 let claudeHome: string;
 
@@ -58,7 +72,12 @@ describe('marketplacePinnedVersion', () => {
   it('reads the version the host would install', () => {
     registerMarketplace('akasecurity', [npmEntry('ai-tc', '0.9.9')]);
 
-    expect(marketplacePinnedVersion('akasecurity', 'ai-tc', claudeHome)).toBe('0.9.9');
+    expect(
+      marketplacePinnedVersion(
+        agent({ marketplace: 'akasecurity', pluginName: 'ai-tc' }),
+        claudeHome,
+      ),
+    ).toBe('0.9.9');
   });
 
   it('picks the named plugin out of a manifest listing several', () => {
@@ -70,8 +89,18 @@ describe('marketplacePinnedVersion', () => {
       npmEntry('other', '1.2.3'),
     ]);
 
-    expect(marketplacePinnedVersion('akasecurity', 'ai-tc', claudeHome)).toBe('0.9.9');
-    expect(marketplacePinnedVersion('akasecurity', 'other', claudeHome)).toBe('1.2.3');
+    expect(
+      marketplacePinnedVersion(
+        agent({ marketplace: 'akasecurity', pluginName: 'ai-tc' }),
+        claudeHome,
+      ),
+    ).toBe('0.9.9');
+    expect(
+      marketplacePinnedVersion(
+        agent({ marketplace: 'akasecurity', pluginName: 'other' }),
+        claudeHome,
+      ),
+    ).toBe('1.2.3');
   });
 
   it('says nothing for an entry that carries no pin', () => {
@@ -83,7 +112,12 @@ describe('marketplacePinnedVersion', () => {
       { name: 'preflight', source: { source: 'github', repo: 'akasecurity/preflight-skills' } },
     ]);
 
-    expect(marketplacePinnedVersion('akasecurity', 'preflight', claudeHome)).toBeNull();
+    expect(
+      marketplacePinnedVersion(
+        agent({ marketplace: 'akasecurity', pluginName: 'preflight' }),
+        claudeHome,
+      ),
+    ).toBeNull();
   });
 
   it('follows installLocation rather than assuming the conventional layout', () => {
@@ -104,7 +138,12 @@ describe('marketplacePinnedVersion', () => {
       'utf8',
     );
 
-    expect(marketplacePinnedVersion('akasecurity', 'ai-tc', claudeHome)).toBe('1.1.1');
+    expect(
+      marketplacePinnedVersion(
+        agent({ marketplace: 'akasecurity', pluginName: 'ai-tc' }),
+        claudeHome,
+      ),
+    ).toBe('1.1.1');
   });
 
   it.each([
@@ -170,14 +209,67 @@ describe('marketplacePinnedVersion', () => {
     // a throw would take down `aka update` and the passive notice with it.
     seed();
 
-    expect(marketplacePinnedVersion('akasecurity', 'ai-tc', claudeHome)).toBeNull();
+    expect(
+      marketplacePinnedVersion(
+        agent({ marketplace: 'akasecurity', pluginName: 'ai-tc' }),
+        claudeHome,
+      ),
+    ).toBeNull();
   });
+
+  it('answers nothing for a Codex-hosted agent, whatever its coordinates say', () => {
+    // The registry's Codex entry carries `marketplace: 'ai-tc'` and
+    // `pluginName: 'aka-codex'` like any other, so a caller gating on "are the
+    // coordinates present" admits it into a reader that only understands Claude
+    // Code's layout — answering it out of `~/.claude`'s ledger. Inert today only
+    // because no marketplace named `ai-tc` is registered there, which is one
+    // `plugin marketplace add` away from being false.
+    registerMarketplace('ai-tc', [npmEntry('aka-codex', '9.9.9')]);
+
+    expect(
+      marketplacePinnedVersion(
+        agent({ cliBin: 'codex', marketplace: 'ai-tc', pluginName: 'aka-codex' }),
+        claudeHome,
+      ),
+    ).toBeNull();
+    // The control on the line above: that manifest IS readable, so the null is
+    // the host check rather than a lookup that failed for its own reasons.
+    expect(
+      marketplacePinnedVersion(
+        agent({ cliBin: 'claude', marketplace: 'ai-tc', pluginName: 'aka-codex' }),
+        claudeHome,
+      ),
+    ).toBe('9.9.9');
+  });
+
+  it.each<'marketplace' | 'pluginName'>(['marketplace', 'pluginName'])(
+    'answers nothing for an agent carrying no %s',
+    (field) => {
+      // `exactOptionalPropertyTypes` makes an explicit `undefined` a different
+      // thing from an absent key, and the registry's own entries omit these
+      // rather than setting them undefined — so the fixture deletes the key.
+      registerMarketplace('akasecurity', [npmEntry('ai-tc', '0.9.9')]);
+      // Rebuilt WITHOUT the key rather than deleted from a complete one:
+      // `exactOptionalPropertyTypes` makes an explicit `undefined` a different
+      // thing from an absent key, and the registry's entries omit these.
+      const incomplete = Object.fromEntries(
+        Object.entries(agent()).filter(([key]) => key !== field),
+      ) as AgentPlugin;
+
+      expect(marketplacePinnedVersion(incomplete, claudeHome)).toBeNull();
+    },
+  );
 
   it('does not confuse two marketplaces that list the same plugin name', () => {
     // The control on the lookup: registering one marketplace must not make its
     // pin answer for another's, which a reader keyed only on plugin name would.
     registerMarketplace('akasecurity', [npmEntry('ai-tc', '0.9.9')]);
 
-    expect(marketplacePinnedVersion('some-other-marketplace', 'ai-tc', claudeHome)).toBeNull();
+    expect(
+      marketplacePinnedVersion(
+        agent({ marketplace: 'some-other-marketplace', pluginName: 'ai-tc' }),
+        claudeHome,
+      ),
+    ).toBeNull();
   });
 });

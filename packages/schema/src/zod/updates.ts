@@ -36,6 +36,13 @@ export interface MarketplacePin {
   // Carried rather than recomputed because a surface that re-derived it would
   // ask the registry a second time to explain one line of output.
   npmLatest: string | null;
+  // Whether npm is strictly AHEAD of the pin — the only case worth explaining,
+  // since a pin that equals npm explains nothing and the two agree on the happy
+  // path. Computed where semver comparison already lives rather than in each
+  // renderer: `@akasecurity/dashboard-ui` may not import `local-ops` at all, so
+  // a view deriving this would either cross a package wall or carry a second
+  // comparator that could disagree with the first.
+  npmAhead: boolean;
 }
 
 // An available agent plugin the user has NOT installed yet — surfaced so they

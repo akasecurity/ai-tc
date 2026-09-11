@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import type { AgentPlugin } from './registry.ts';
+
 // What the HOST will actually install, read from the marketplace manifest it
 // resolved — as distinct from what npm has published.
 //
@@ -58,24 +60,32 @@ function marketplaceRoot(claudeHome: string, marketplace: string): string | null
 }
 
 /**
- * The version a marketplace manifest pins a plugin to, or null.
+ * The version a marketplace manifest pins an agent's plugin to, or null.
  *
- * Null covers every way this can fail to produce an ANSWER — the marketplace is
- * not registered, the manifest is absent or damaged, the plugin is not listed,
- * or its entry carries no version. That is deliberate rather than lazy: an
- * entry with no pin is the shape a `github` or `git-subdir` source really has,
- * and for those the host does follow the published head, so npm's latest is the
- * right answer and the caller falls back to it.
+ * Null covers every way this can fail to produce an ANSWER — the agent is not
+ * hosted by Claude Code, it carries no marketplace coordinates, the marketplace
+ * is not registered, the manifest is absent or damaged, the plugin is not
+ * listed, or its entry carries no version. That is deliberate rather than lazy:
+ * an entry with no pin is the shape a `github` or `git-subdir` source really
+ * has, and for those the host does follow the published head, so npm's latest is
+ * the right answer and the caller falls back to it.
  *
- * Claude Code's layout only. A Codex-hosted plugin is simply absent from this
- * file, so it falls back to npm — which is what it did before. Do not read this
- * as covering that host.
+ * THE HOST CHECK IS HERE rather than at the call sites, and that is the whole
+ * reason this takes an agent instead of two strings. Everything below reads
+ * CLAUDE CODE's layout, and every registered agent carries a marketplace and a
+ * plugin name — the Codex entry's are `ai-tc` / `aka-codex`. A caller gating on
+ * "are the coordinates present" therefore admits Codex into this reader, which
+ * would answer it out of `~/.claude`'s ledger. That is inert today only because
+ * no marketplace named `ai-tc` happens to be registered there, and dogfooding
+ * both hosts against this repo is the obvious way to make it not inert.
  */
 export function marketplacePinnedVersion(
-  marketplace: string,
-  pluginName: string,
+  agent: AgentPlugin,
   claudeHome: string = join(homedir(), '.claude'),
 ): string | null {
+  if (agent.cliBin !== 'claude') return null;
+  const { marketplace, pluginName } = agent;
+  if (marketplace === undefined || pluginName === undefined) return null;
   const root = marketplaceRoot(claudeHome, marketplace);
   if (root === null) return null;
   const manifest = readJson(join(root, '.claude-plugin', 'marketplace.json'));

@@ -2,10 +2,10 @@
  * Why a row this machine owed the deployment will not be sent again as it is.
  *
  * ONE SOURCE, because two consumers must agree and they live on opposite sides
- * of the store: the migration builds this list into a CHECK constraint on
+ * of the store: the migration builds this list into the guard it installs on
  * `audit_events.sync_failure`, and the ledger writes values into it. A second
- * spelling would be a constraint violation at runtime rather than a type error
- * at build, on a write path whose whole job is to record why something failed.
+ * spelling would be a refusal at runtime rather than a type error at build, on a
+ * write path whose whole job is to record why something failed.
  *
  * WHY AN ENUM AND NOT FREE TEXT. The tree already gives this reason three
  * times — `forward-policy.ts` keeps its `lastFailure` an enum because "a
@@ -48,8 +48,8 @@ export type SyncFailureReason = (typeof SYNC_FAILURE_REASONS)[number];
  * The condition a write must NOT satisfy, built from the list so the guard and
  * the writers cannot drift.
  *
- * ENFORCED BY A TRIGGER PAIR RATHER THAN A CHECK, and the reason is a measured
- * one about where this column is installed. A CHECK can only arrive with the
+ * ENFORCED BY A TRIGGER RATHER THAN A CHECK, and the reason is a measured one
+ * about where this column is installed. A CHECK can only arrive with the
  * column, and `ALTER TABLE ADD COLUMN` carrying one makes SQLite scan the whole
  * table to validate rows that are all NULL: measured linear in table size, and
  * 23 seconds on a real 6 GB store. A plain ADD COLUMN is constant-time at 0.1 ms
@@ -61,9 +61,17 @@ export type SyncFailureReason = (typeof SYNC_FAILURE_REASONS)[number];
  * the timeout does not merely fail, it blocks the user's work and then rolls
  * back and does it again on the next hook.
  *
- * The guarantee is unchanged: a value outside the set is refused by the database
- * on INSERT and on UPDATE alike, so the store stays structurally incapable of
- * holding one rather than trusted not to.
+ * ON UPDATE ONLY, which is narrower than the CHECK it replaces and is the
+ * deliberate half of the trade. Every writer of this column is an UPDATE — the
+ * two that give up on a row, and the one that closes the attached window — and
+ * the column is not in the canonical schema, so no insert path names it. A
+ * trigger an INSERT could fire is not free either: it makes SQLite open a
+ * statement journal for every insert into the table captures land in, measured
+ * at a 59% tax on the hottest write in the product.
+ *
+ * So the guarantee is: a value outside the set is refused by the database on
+ * every path that writes this column. A raw INSERT naming it directly would not
+ * be caught, and nothing in the product issues one.
  *
  * Single-quoted literals, and the members are compile-time constants from this
  * file — never anything that reached the process from outside it.

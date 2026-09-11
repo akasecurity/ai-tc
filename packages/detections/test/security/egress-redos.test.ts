@@ -347,17 +347,20 @@ describe('the inputs above are adversarial for what they replaced', () => {
   // (0.001ms, measured), while Windows credits a whole scheduler tick — ~15.6ms
   // — to whichever thread was running at the timer interrupt.
   //
-  // That is not hypothetical. A Windows leg read `taking a snippet per hit` at
-  // 15.0ms and 31.0ms — a ratio of 2.07 against the 3 demanded, reported out as
-  // LINEAR — for a shape that measures 7.9ms and 31.2ms on an arm64 Mac and
-  // stays quadratic (3.88 / 3.98 / 4.00) across three further doublings. That
-  // is ONE occurrence and the mechanism behind it was never proven; what needs
-  // no proof is that a 7.9ms quantity cannot be divided by a clock that moves
-  // in 15.6ms steps. The sizing below removes the question rather than settling
-  // it — and it was owed on a second case regardless, since `counting each
-  // hit's line from zero` measures 0.99ms here, where the old floor of 1ms
-  // turned its quotient into `large > 3ms`: an absolute threshold wearing a
-  // ratio's clothes, which is the one shape this file argues against.
+  // That is not hypothetical, and it is not inferred. A Windows leg read
+  // `taking a snippet per hit` at 15.0ms and 31.0ms — a ratio of 2.07 against
+  // the 3 demanded, reported out as LINEAR — for a shape that measures 7.9ms
+  // and 31.2ms on an arm64 Mac and stays quadratic (3.88 / 3.98 / 4.00) across
+  // three further doublings. The runner's own clock produced those two numbers:
+  // its smallest non-zero `threadCpuUsage` delta measures 16.0000ms, which the
+  // `Runner facts` step in ci.yml reports, so 15.0 and 31.0 are one and two
+  // ticks of it and a 7.9ms quantity has nowhere to land but a whole tick.
+  //
+  // The second case was owed the same fix whatever that leg had done.
+  // `counting each hit's line from zero` measures 0.99ms here, where the old
+  // floor of 1ms turned its quotient into `large > 3ms` — an absolute threshold
+  // wearing a ratio's clothes, which is the one shape this file argues against
+  // everywhere else.
   //
   // So each side is measured over as many REPETITIONS as it takes to fill a
   // window the clock can resolve, then divided by its own repetition count.

@@ -620,19 +620,41 @@ function quotedTokenOffsets(text: string): ReadonlyMap<string, number[]> {
     }
     // Unterminated: nothing after this can be a whole token either.
     if (end >= text.length) break;
-    const quoted = text.slice(i, end + 1);
-    // EVERY offset, not just the first. A name that also appears earlier in the
-    // file — `peerDependencies` written above `dependencies`, `require-dev`
-    // above `require` — has a first offset before the section being read, and
-    // an index that only knew that one sent each of those keys back to the
-    // per-hit scan this exists to replace. The walk is left to right, so each
-    // list is already ascending and needs no sort.
-    const seen = at.get(quoted);
-    if (seen === undefined) at.set(quoted, [i]);
-    else seen.push(i);
+    // Keyed by the DECODED name, not the raw slice. A JSON key may be written
+    // with escapes — `@scope\/pkg` names the same package as `@scope/pkg` —
+    // and the caller looks a name up as the PARSER gave it, so a raw key misses
+    // every escaped one. That miss was not only a cost: it fell through to an
+    // `indexOf` for a spelling the file does not contain, which finds nothing,
+    // and the hit was then recorded at line 1 with the bare name as its
+    // snippet. Only a token carrying a backslash is decoded, so an ordinary key
+    // pays a scan for one character and no allocation beyond the slice.
+    const inner = text.slice(i + 1, end);
+    const name = inner.includes('\\') ? decodeJsonString(text.slice(i, end + 1)) : inner;
+    if (name !== undefined) {
+      // EVERY offset, not just the first. A name that also appears earlier in
+      // the file — `peerDependencies` written above `dependencies`,
+      // `require-dev` above `require` — has a first offset before the section
+      // being read, and an index that only knew that one sent each of those
+      // keys back to the per-hit scan this exists to replace. The walk is left
+      // to right, so each list is already ascending and needs no sort.
+      const seen = at.get(name);
+      if (seen === undefined) at.set(name, [i]);
+      else seen.push(i);
+    }
     i = end;
   }
   return at;
+}
+
+// One quoted token's value, or undefined when it is not a well-formed JSON
+// string. An undecodable token cannot be a key in a manifest that parsed, so
+// leaving it out of the index costs nothing.
+function decodeJsonString(quoted: string): string | undefined {
+  try {
+    return JSON.parse(quoted) as string;
+  } catch {
+    return undefined;
+  }
 }
 
 // The first offset at or after `from` in an ascending list, or undefined when
@@ -668,7 +690,7 @@ function hitAtQuotedKey(
   // falls back to the scan this replaced, so behaviour is unchanged and only
   // the cost moves. That fallback is O(file) and this runs once per dependency,
   // so anything that widens what reaches it puts the quadratic straight back.
-  const offsets = tokens.get(`"${pkg}"`);
+  const offsets = tokens.get(pkg);
   const known = offsets === undefined ? undefined : firstAtOrAfter(offsets, searchFrom);
   const index = known ?? text.indexOf(`"${pkg}"`, searchFrom);
   if (index === -1) return makeHit(ecosystem, pkg, 1, redactSnippet(pkg));

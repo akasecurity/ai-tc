@@ -1864,6 +1864,54 @@ describe('delivery-failure state', () => {
     }
   });
 
+  // The re-arm is scoped by event type so it SEEKS rather than scanning the
+  // largest table in the store — 4.8 seconds measured on a real 6 GB one, on the
+  // path every hook takes to open the store. Nothing about the RESULT changes if
+  // the scope is dropped, so a result assertion holds it not at all; the plan is
+  // what would go red if a later index reorder put that scan back.
+  //
+  // The statement is captured from the migration rather than restated here: a
+  // plan for SQL spelled twice is a plan for a statement nothing issues.
+  it('answers the one-time re-arm from the index, not by scanning', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      downgradeToNarrowIndex(db);
+      db.exec('DROP TRIGGER IF EXISTS aka_sync_failure_guard');
+      db.exec('ALTER TABLE audit_events DROP COLUMN sync_failure');
+
+      const statements: string[] = [];
+      const realExec = db.exec.bind(db);
+      Object.defineProperty(db, 'exec', {
+        configurable: true,
+        value: (sql: string) => {
+          statements.push(sql);
+          realExec(sql);
+        },
+      });
+      try {
+        applyMigrations(db);
+      } finally {
+        Object.defineProperty(db, 'exec', { configurable: true, value: realExec });
+      }
+
+      const rearm = statements.filter((sql) => /UPDATE\s+\S+\s+SET synced_at = NULL/.test(sql));
+      // Without this the assertions below would hold vacuously on a migration
+      // that stopped re-arming at all.
+      expect(rearm).toHaveLength(1);
+
+      const plan = (
+        db.prepare(`EXPLAIN QUERY PLAN ${rearm[0] ?? ''}`).all() as { detail: string }[]
+      )
+        .map((row) => row.detail)
+        .join(' | ');
+      expect(plan).toContain('idx_audit_events_sync');
+      expect(plan).not.toContain('SCAN audit_events');
+    } finally {
+      db.close();
+    }
+  });
+
   it('refuses a sync_failure value outside the closed set', () => {
     const db = new DatabaseSync(':memory:');
     try {
@@ -1874,9 +1922,9 @@ describe('delivery-failure state', () => {
 
       // The column sits in the same row as `content`, is queryable, and is
       // rendered — so the store is made structurally incapable of holding
-      // anything else rather than trusted not to. Enforced by a trigger pair
-      // rather than a CHECK because a CHECK can only arrive with the column, and
-      // an ADD COLUMN carrying one scans the whole table — see the migration.
+      // anything else rather than trusted not to. Enforced by a trigger rather
+      // than a CHECK because a CHECK can only arrive with the column, and an ADD
+      // COLUMN carrying one scans the whole table — see the migration.
       expect(() => {
         db.exec(`UPDATE audit_events SET sync_failure = 'nonsense' WHERE id = 'row'`);
       }).toThrow(/not one of the recorded reasons/);

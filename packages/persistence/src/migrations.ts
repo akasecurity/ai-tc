@@ -1015,7 +1015,7 @@ function ensureSyncedAtColumn(db: DatabaseSync, table: 'audit_events'): void {
     withTransaction(
       db,
       () => {
-        // PLAIN, and the closed set is enforced by the trigger pair below
+        // PLAIN, and the closed set is enforced by the trigger below
         // instead. A CHECK can only arrive with the column, and an ADD COLUMN
         // carrying one makes SQLite scan the whole table to validate rows that
         // are all NULL — measured at 23 seconds on a real 6 GB store against

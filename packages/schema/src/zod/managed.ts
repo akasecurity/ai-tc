@@ -78,7 +78,21 @@ export const ManagedSettings = z
     // decision from a bug. Absent renders as a generic "your organization".
     organization: z.string().min(1).optional(),
     // What the administrator pinned.
-    values: ManagedSettingsValues.default({}),
+    //
+    // Parsed as a RECORD rather than as the nested schema, and split below for
+    // the same reason `lockedFields` is parsed as names: a plain `z.object`
+    // drops an unrecognised key and succeeds, so a pin this build does not know
+    // vanished and nothing anywhere said so. A pin with no lock is a supported
+    // shape — it is a DEFAULT the user may still change — so that silence hit
+    // exactly the file an administrator is most likely to write while a fleet
+    // is mid-upgrade.
+    //
+    // Splitting here rather than calling `.strict()`: strict would REFUSE the
+    // file, which is the outcome the lock half already rejected — an older
+    // build then runs entirely unmanaged, every pin and lock gone. A bad KNOWN
+    // value still fails, because the nested schema is re-run over the known
+    // subset and its issues are re-raised on this parse.
+    values: z.record(z.string(), z.unknown()).default({}),
     // Which of those the user may not change. A key here with no matching value
     // freezes whatever the user last chose; a value with no lock is a DEFAULT
     // the user may still override. The two are separable on purpose.
@@ -92,19 +106,39 @@ export const ManagedSettings = z
     // is still never HONOURED: the lockable set stays explicit above.
     lockedFields: z.array(z.string()).default([]),
   })
-  .transform(({ lockedFields, ...rest }) => {
+  .transform(({ lockedFields, values, ...rest }, ctx) => {
     const known: ManagedSettingKey[] = [];
     const unknown: string[] = [];
     for (const name of lockedFields) {
       if (isManagedSettingKey(name)) known.push(name);
       else unknown.push(name);
     }
-    // The unknown list is present only when non-empty, so the ordinary file
+
+    const knownValues: Record<string, unknown> = {};
+    const unknownValues: string[] = [];
+    for (const [name, value] of Object.entries(values)) {
+      if (name in ManagedSettingsValues.shape) knownValues[name] = value;
+      else unknownValues.push(name);
+    }
+    const pinned = ManagedSettingsValues.safeParse(knownValues);
+    if (!pinned.success) {
+      // Re-raised on THIS parse, under the `values` path, so a typo in a key
+      // this build does know is still a damaged file rather than a silently
+      // dropped pin. Losing that refusal is what makes the tolerance above
+      // dangerous instead of merely forgiving.
+      for (const issue of pinned.error.issues)
+        ctx.addIssue({ ...issue, path: ['values', ...issue.path] });
+      return z.NEVER;
+    }
+
+    // Each unknown list is present only when non-empty, so the ordinary file
     // carries no key for it and a consumer spreading the result carries none.
     return {
       ...rest,
+      values: pinned.data,
       lockedFields: known,
       ...(unknown.length > 0 ? { unknownLockedFields: unknown } : {}),
+      ...(unknownValues.length > 0 ? { unknownValueFields: unknownValues } : {}),
     };
   })
   .meta({ id: 'ManagedSettings' });
@@ -123,6 +157,12 @@ export interface ManagedContext {
   // surface can say a lock exists that it is not applying. Absent when there
   // are none.
   unknownLockedFields?: readonly string[];
+  // The same for PINNED VALUES, and kept separate rather than folded in
+  // because the two have different consequences: an unapplied lock leaves a
+  // control the administrator meant to freeze still editable, while an
+  // unapplied pin leaves a default they meant to set unset. A surface may say
+  // both in one sentence; it may not infer one from the other.
+  unknownValueFields?: readonly string[];
 }
 
 export const NO_MANAGED_CONTEXT: ManagedContext = { present: false, lockedFields: [] };

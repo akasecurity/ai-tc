@@ -1133,7 +1133,24 @@ describe('a redact the caller cannot carry out', () => {
     // deployment may raise — never a ceiling it may lower.
     const b = redactBundle();
     b.redactFallback = 'block';
-    const runtime = createPluginRuntime(fakeGateway(b), managedPin('warn'));
+    const settings = managedPin('warn');
+
+    // The pin LANDED, asserted before the merge consumes it — and this line is
+    // the whole of this case's coverage of the overlay.
+    //
+    // The merge is a max, so wherever the BUNDLE wins it returns the same action
+    // whether the pin arrived or `managedPin`'s `monitor` base did: max(warn,
+    // block) and max(monitor, block) are both `block`. Nothing downstream of
+    // `overlayManagedSettings` can see that it ran, so without this the case is
+    // outcome-identical to the settings-vs-bundle case above and its name would
+    // promise evidence it does not hold.
+    //
+    // Picking different values does not rescue it. Raise-only means a pin is
+    // observable through `out.action` only where the PIN wins — which is the
+    // sibling below, and is why that one is where the overlay mutation lands.
+    expect(settings.redactFallback).toBe('warn');
+
+    const runtime = createPluginRuntime(fakeGateway(b), settings);
 
     const out = await runtime.capture(
       { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },

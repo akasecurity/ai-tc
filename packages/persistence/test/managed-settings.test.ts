@@ -101,7 +101,7 @@ describe('readManagedSettings — fail-open on a damaged administrative file', (
     expect(managed?.organization).toBe('Acme');
     expect(managed?.lockedFields).toEqual(['runMode']);
     // Every lock was known, so the context carries no key saying otherwise.
-    expect(managedContextOf(managed)).not.toHaveProperty('unknownLockedFields');
+    expect(managedContextOf(managed)).not.toHaveProperty('unknownLockedCount');
   });
 
   it('keeps every lock it knows beside one it does not, and reports the stranger', () => {
@@ -116,7 +116,10 @@ describe('readManagedSettings — fail-open on a damaged administrative file', (
     const context = managedContextOf(managed);
     expect(context.present).toBe(true);
     expect(isFieldManaged(context, 'runMode')).toBe(true);
-    expect(context.unknownLockedFields).toEqual(['lockFromANewerBuild']);
+    // The COUNT crosses, not the names: the context is serialized to the
+    // browser, and the names are unbounded where the enum is not.
+    expect(context.unknownLockedCount).toBe(1);
+    expect(context).not.toHaveProperty('unknownLockedFields');
   });
 
   it('keeps every pin it knows beside one it does not, and reports the stranger', () => {
@@ -135,7 +138,11 @@ describe('readManagedSettings — fail-open on a damaged administrative file', (
     expect(managed?.unknownValueFields).toEqual(['pinFromANewerBuild']);
     const context = managedContextOf(managed);
     expect(context.present).toBe(true);
-    expect(context.unknownValueFields).toEqual(['pinFromANewerBuild']);
+    // The COUNT crosses, not the names — the same rule the lock half follows,
+    // and for the same reason: this context is serialized to a client
+    // component, and a pin name is whatever the administrator's file holds.
+    expect(context.unknownValueCount).toBe(1);
+    expect(context).not.toHaveProperty('unknownValueFields');
   });
 
   it('carries no unknown-pin key when every pin is known', () => {
@@ -144,7 +151,7 @@ describe('readManagedSettings — fail-open on a damaged administrative file', (
     writeManaged({ organization: 'Acme', values: { runMode: 'attached' } });
 
     expect(managedContextOf(readManagedSettings([managedFile()]))).not.toHaveProperty(
-      'unknownValueFields',
+      'unknownValueCount',
     );
   });
 

@@ -1,15 +1,18 @@
 'use server';
 
-import { uninstallBackgroundSync } from '@akasecurity/local-ops';
+import { triggerHistorySyncRun, uninstallBackgroundSync } from '@akasecurity/local-ops';
 import {
   applyOnboarding,
   clearAttachmentDerivedState,
   dataDir,
   defaultDataDir,
+  isForwardPaused,
   isSafeEndpoint,
   ManagedFieldError,
   openLocalDatabase,
   readControlPlaneCredentialFile,
+  readControlPlaneCredentialState,
+  readForwardHealth,
   readWorkspaceSettings,
   removeControlPlaneCredential,
   seedCaptureBacklogOwed,
@@ -26,6 +29,7 @@ import {
   AttachInput,
   HistoricalAccess,
   HISTORY_SYNC_PAYLOAD_VERSION,
+  isAttached,
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
   isVaultConsentValid,
@@ -49,6 +53,12 @@ import {
   malformedInput,
   managedRefusal,
   SETTINGS_WRITE_ERROR,
+  SYNC_KEY_UNUSABLE,
+  SYNC_NO_CLI_ENTRY,
+  SYNC_NOT_ATTACHED,
+  SYNC_NOT_GRANTED,
+  SYNC_PAUSED,
+  SYNC_SPAWN_FAILED,
 } from '../../lib/action-refusals';
 
 // The web twin of the `/aka:setup` wizard's editable knobs, writing the same
@@ -483,6 +493,73 @@ export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
   // so that is the one base its own attach path could ever have installed
   // the scheduler against.
   uninstallBackgroundSync(defaultDataDir());
+  revalidatePath('/settings');
+  return { ok: true };
+}
+
+/**
+ * Ask this machine to drain what it owes its deployment, now.
+ *
+ * TAKES NO ARGUMENT, which is the whole of its input validation. Every other
+ * mutating action here parses an untrusted body before reading a field; this
+ * one has no body to parse, so there is nothing a caller can shape. What it
+ * does instead is re-derive the gate from disk — a Server Action is an ordinary
+ * POST, and a page open since before a detach, a revoked key or a withdrawn
+ * grant will happily send one.
+ *
+ * THE PASS IS DETACHED, and that is not an accident of the spawn. A drain runs
+ * for up to two minutes; a Server Action that waited for it would hold the
+ * request open past every proxy timeout between here and the browser, and a
+ * user who navigated away would kill the pass mid-batch. So this returns as
+ * soon as the child exists, and the only thing it can ever report is whether
+ * one started. What the pass then does is recorded in the ledger and in the
+ * progress file, which the panel reads on its next render.
+ *
+ * It covers exactly what the drain covers — the two delivery lanes the ledger
+ * counts, and nothing else. Findings, project data shares and inventory are not
+ * rows this sends, and the panel says so beside the button rather than letting
+ * it imply otherwise.
+ */
+// eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
+export async function syncNow(): Promise<SaveSettingsResult> {
+  const settings = readWorkspaceSettings();
+  const endpoint = settings.controlPlane?.endpoint;
+  if (!isAttached(settings) || endpoint === undefined) {
+    return { ok: false, error: SYNC_NOT_ATTACHED };
+  }
+  // The NARROW reader, not readControlPlaneCredentialFile: this branch needs a
+  // verdict, and the wide read returns the key beside it.
+  if (!readControlPlaneCredentialState(settingsDir(), settings.controlPlane).usable) {
+    return { ok: false, error: SYNC_KEY_UNUSABLE };
+  }
+  if (!isHistorySyncConsentValid(settings.historySyncConsent, endpoint)) {
+    return { ok: false, error: SYNC_NOT_GRANTED };
+  }
+
+  // LAST of the gates, and the only one read fresh at this instant rather than
+  // from the render that drew the button. The cooldown is short and clears
+  // itself, so a panel drawn seconds ago can say paused about a machine that is
+  // free to send again — refusing on that stale answer would be this surface
+  // inventing a pause of its own.
+  const now = Date.now();
+  if (isForwardPaused(readForwardHealth(dataDir(), now), now)) {
+    return { ok: false, error: SYNC_PAUSED };
+  }
+
+  // The default home, for the same reason detach uninstalls the scheduler
+  // against it: this dashboard has no `--home` concept and always operates on
+  // the real one.
+  const start = triggerHistorySyncRun(defaultDataDir());
+  if (!start.started) {
+    return {
+      ok: false,
+      error: start.reason === 'no-cli-entry' ? SYNC_NO_CLI_ENTRY : SYNC_SPAWN_FAILED,
+    };
+  }
+
+  // The pass has started, not finished, so this render will still show the
+  // backlog. What it picks up is the CLAIM the child takes, which is what turns
+  // the panel's "Sending…" on and disables the control.
   revalidatePath('/settings');
   return { ok: true };
 }

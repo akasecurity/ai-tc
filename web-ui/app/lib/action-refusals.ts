@@ -129,3 +129,56 @@ export const ATTACH_ENDPOINT_UNPARSEABLE =
  */
 export const ATTACH_LABEL_INVALID =
   'That name cannot be used: it must be under 200 characters and contain no control characters. It is shown in `aka status`, where an escape sequence could hide part of what that reports.';
+
+/**
+ * The four refusals `syncNow` adds.
+ *
+ * The first three re-state a gate the panel has already applied, and they exist
+ * because a Server Action is an HTTP POST: a client that has been open since
+ * before a detach, a revoked key or a withdrawn grant can still send one, and
+ * the answer must be a sentence rather than a pass that starts and dies.
+ *
+ * The last two are the only thing this surface can ever learn about a pass it
+ * asks for. The child is detached, so a pass that STARTS is never heard from
+ * again here — which makes "it did not start" the whole of what there is to
+ * report, and makes saying whether a retry could help the useful half.
+ */
+export const SYNC_NOT_ATTACHED =
+  'This machine is not attached to a deployment, so there is nothing to send to.';
+
+/**
+ * Worded as a setting rather than a fault: nothing is broken, and the fix is a
+ * decision the user makes on this page.
+ */
+export const SYNC_NOT_GRANTED =
+  'Existing activity is not shared with your deployment, so a pass would send nothing. Change that above to start sending it.';
+
+export const SYNC_KEY_UNUSABLE =
+  'This machine cannot use its key for your deployment, so a pass would send nothing. Re-attach to repair it.';
+
+/**
+ * No `aka` command to re-invoke — a dashboard started by a runner that resolves
+ * no entry script.
+ *
+ * Says a retry will not help, because on this install it never will, and says
+ * what still runs without this button so the reader does not read it as data
+ * loss. Both halves matter: the queue is intact either way.
+ */
+export const SYNC_NO_CLI_ENTRY =
+  'This dashboard could not find the aka command it would run, so no pass was started here. Nothing was lost — what is queued stays queued, and a pass still runs when a session starts.';
+
+/**
+ * The breaker is open, so a pass would decline before it opened the store.
+ *
+ * Checked here rather than left to the pass because the pass is DETACHED: its
+ * refusal reaches nothing, and the button would appear to do nothing at all —
+ * which is exactly the report this panel was built to answer. The cooldown is
+ * short and self-clearing, so the wording asks for a wait rather than an
+ * action, and says the queue is intact for the same reason the two below do.
+ */
+export const SYNC_PAUSED =
+  'Sending is paused after repeated failures and resumes on its own. Nothing was lost — what is queued stays queued.';
+
+/** The spawn itself failed — unlike the above, worth trying again. */
+export const SYNC_SPAWN_FAILED =
+  'A sync pass could not be started just now. Nothing was lost — what is queued stays queued. Try again in a moment.';

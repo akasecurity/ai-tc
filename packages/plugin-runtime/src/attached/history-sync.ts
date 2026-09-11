@@ -82,6 +82,63 @@ const CAPTURE_GRACE_MS = 30_000;
 const CAPTURE_BATCH_SIZE = INGEST_BATCH_MAX;
 
 /**
+ * The most captured text one request may carry, measured before it is encoded.
+ *
+ * A ROW COUNT IS NOT A SIZE, and on this lane that gap is the whole problem.
+ * `IngestEvent.content` carries a prompt, a reply or a tool result and is bounded
+ * by nothing, so a hundred rows is anywhere from a few kilobytes to several
+ * megabytes. Measured on a real store: the mean capture is 2.0 KiB, so a full
+ * hundred is ~0.19 MiB and nothing notices — while the hundred LARGEST sum to
+ * 6.10 MiB. A drain that happens to page a run of long tool results therefore
+ * builds a body many times the size of a typical one, with nothing on either
+ * side watching.
+ *
+ * Why bound it here rather than leave it to the deployment: a body the far side
+ * refuses comes back 413, and a 413 is one deployment's verdict on one body, so
+ * those rows stop being offered on this lane until the machine points somewhere
+ * else. Splitting is free; a refusal is not.
+ *
+ * SUMMED `content`, not the encoded body. That is the quantity this loop already
+ * holds before it serialises anything, and the approximation is safe because of
+ * the gap it sits in rather than its precision: escaping and the envelope add a
+ * fraction, while the ceiling the far side applies is several times this. A
+ * deployment whose own limit sits near this number is one this constant cannot
+ * help with, and the 413 path is what covers that.
+ */
+const CAPTURE_BATCH_BYTES = 1024 * 1024;
+
+/**
+ * Split a page into what one request may carry, and what cannot be carried at all.
+ *
+ * A row is never split, so a single capture larger than the whole budget cannot
+ * be made to fit by any batching. It is separated out rather than left to head
+ * every subsequent page for ever — the same reasoning `rebuildCapture`'s refusal
+ * already follows, and the reason this returns two lists instead of truncating.
+ *
+ * Rows that simply do not fit ALONGSIDE what was taken are left where they are:
+ * the next read is the new head of the unstamped set, so they come back on the
+ * next turn of the loop with no cursor to keep.
+ */
+function underByteCeiling<T extends { id: string; event: IngestEvent }>(
+  ready: readonly T[],
+): { fitting: T[]; oversized: string[] } {
+  const fitting: T[] = [];
+  const oversized: string[] = [];
+  let bytes = 0;
+  for (const item of ready) {
+    const size = Buffer.byteLength(item.event.content, 'utf8');
+    if (size > CAPTURE_BATCH_BYTES) {
+      oversized.push(item.id);
+      continue;
+    }
+    if (bytes + size > CAPTURE_BATCH_BYTES) break;
+    bytes += size;
+    fitting.push(item);
+  }
+  return { fitting, oversized };
+}
+
+/**
  * The share of one pass the structural lane may spend before it yields.
  *
  * Most of it, because the pre-attach backlog is the finite half and finishing it
@@ -752,14 +809,31 @@ async function drainCaptures(
       continue;
     }
 
+    // BY BYTES AS WELL AS ROWS. A capture too large to ride with anything else
+    // is left for the next turn; one too large to ride at all is terminal here,
+    // because no batching can make it fit and the read has no cursor to step
+    // past it with.
+    const { fitting, oversized } = underByteCeiling(ready);
+    if (oversized.length > 0) {
+      d.ledger.markSkipped(oversized, d.now());
+      skipped += oversized.length;
+    }
+    if (fitting.length === 0) {
+      // Only reachable when the whole page was oversized. Yield for the same
+      // reason the unbuildable branch above does.
+      beat();
+      await d.sleep(PACE_INTERVAL_MS);
+      continue;
+    }
+
     // Same shape as the structural lane's claim, and this is the lane where an
     // abandoned mark actually costs rows: `pendingCaptureRows` filters on
     // `sync_claimed_at IS NULL`.
-    const readyIds = ready.map((r) => r.id);
+    const readyIds = fitting.map((r) => r.id);
     d.ledger.claimRows(readyIds, d.now());
     let result: ChunkResult;
     try {
-      result = await sendCaptureChunk(d, ready, beat);
+      result = await sendCaptureChunk(d, fitting, beat);
     } finally {
       releaseClaim(d, readyIds);
     }

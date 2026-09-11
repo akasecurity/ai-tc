@@ -1024,6 +1024,64 @@ describe('runHistorySync — the capture lane', () => {
     };
   };
 
+  // A row COUNT is not a size on this lane: `content` is unbounded, so a page of
+  // a hundred is anywhere from a few kilobytes to several megabytes. A body the
+  // far side refuses comes back 413, which is terminal for those rows until the
+  // machine points at a different deployment — so the split has to happen here.
+  it('splits a page by BYTES, not just by row count', async () => {
+    attach({ grantFor: ENDPOINT });
+    const big = 'x'.repeat(600 * 1024);
+    seedCaptures([
+      { id: 'cap-1', content: big },
+      { id: 'cap-2', content: big },
+      { id: 'cap-3', content: big },
+    ]);
+
+    const requests: number[][] = [];
+    await run({
+      sendBatch: (events) => Promise.resolve({ settled: events.length }),
+      sendCaptures: (events) => {
+        requests.push(events.map((e) => e.content.length));
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+
+    // 1.8 MiB of text cannot ride in one request under a 1 MiB ceiling.
+    expect(requests.length).toBeGreaterThan(1);
+    for (const sizes of requests) {
+      expect(sizes.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(1024 * 1024);
+    }
+    // And every row still went.
+    expect(requests.flat()).toHaveLength(3);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
+  });
+
+  // A row larger than the whole budget cannot be made to fit by any batching,
+  // and this read has no cursor — so left alone it would head every future page
+  // for ever and the lane would stall behind it.
+  it('gives up on a capture too large to ride at all, and sends the rest', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([
+      { id: 'cap-huge', content: 'x'.repeat(2 * 1024 * 1024) },
+      { id: 'cap-small', content: 'a modest prompt' },
+    ]);
+
+    const sent: string[] = [];
+    await run({
+      sendBatch: (events) => Promise.resolve({ settled: events.length }),
+      sendCaptures: (events) => {
+        for (const e of events) sent.push(e.content);
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+
+    expect(sent).toEqual(['a modest prompt']);
+    // Terminal, and named: this machine cannot express the row, so no change of
+    // deployment frees it.
+    expect(ledger((db) => db.historySync.counts(ALL).capturesSkipped)).toBe(1);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
+  });
+
   it('sends a queued capture WITH its text, and settles it', async () => {
     attach({ grantFor: ENDPOINT });
     seedCaptures([{ id: 'cap-1' }]);

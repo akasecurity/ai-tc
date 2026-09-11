@@ -133,6 +133,7 @@ export type {
   HistorySyncCounts,
   HistorySyncInspectionRow,
   HistorySyncLease,
+  HistorySyncPartition,
 } from './repositories/history-sync.ts';
 export {
   SqliteHistorySyncRepository,

@@ -96,8 +96,54 @@ export function userPathOptIn(): boolean {
 export interface InstallerRun {
   /** The script's exit status; null if it was killed by a signal. */
   status: number | null;
+  /** The signal that killed it, or null for an ordinary exit. */
+  signal: NodeJS.Signals | null;
+  /**
+   * Wall time from spawn to close, in ms.
+   *
+   * Carried because it is the one reading that separates a script that ran and
+   * reached a decision from one that barely started, and nothing else here can
+   * tell them apart: both arrive as an exit status. The refusal cases below
+   * take ~3.6s on a Linux runner, so a refusal that reports 107ms did not
+   * refuse — whatever its status says.
+   */
+  elapsedMs: number;
   stdout: string;
   stderr: string;
+}
+
+/** How much of a stream to carry into a failure message. */
+const EXCERPT_CHARS = 600;
+
+function excerpt(stream: string): string {
+  const trimmed = stream.trim();
+  if (trimmed === '') return '(empty)';
+  return trimmed.length <= EXCERPT_CHARS
+    ? trimmed
+    : `${trimmed.slice(0, EXCERPT_CHARS)}… (${String(trimmed.length)} chars)`;
+}
+
+/**
+ * What a run actually did, for the message on an assertion about it.
+ *
+ * Vitest renders `expect(status).not.toBe(0)` as `expected +0 not to be +0`,
+ * which says nothing about the script — and these assertions are exactly the
+ * ones that fail intermittently on CI, where the process is gone by the time
+ * anyone reads the log. Three occurrences of one signature have now produced no
+ * evidence at all between them, and two investigations dead-ended for the lack
+ * of it. Passed as vitest's message argument, this turns the next occurrence
+ * into an answer rather than another investigation.
+ *
+ * Both streams are carried, and an empty one says so rather than rendering as
+ * nothing: "the script printed nothing" and "the message was lost" look
+ * identical otherwise, and they point at opposite causes.
+ */
+export function describeRun(run: InstallerRun): string {
+  return [
+    `status=${String(run.status)} signal=${String(run.signal)} elapsed=${run.elapsedMs.toFixed(0)}ms`,
+    `stdout: ${excerpt(run.stdout)}`,
+    `stderr: ${excerpt(run.stderr)}`,
+  ].join('\n');
 }
 
 export interface InstallerOverrides {
@@ -112,11 +158,17 @@ export interface InstallerOverrides {
 }
 
 /** Fail loudly on a spawn that never started; a silent null status reads as a refusal. */
-function toRun(command: string, result: SpawnSyncReturns<string>): InstallerRun {
+function toRun(command: string, result: SpawnSyncReturns<string>, startedAt: number): InstallerRun {
   if (result.error !== undefined) {
     throw new Error(`could not spawn ${command}: ${result.error.message}`);
   }
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  return {
+    status: result.status,
+    signal: result.signal,
+    elapsedMs: performance.now() - startedAt,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
 }
 
 /**
@@ -213,6 +265,7 @@ async function spawnScript(
   env: NodeJS.ProcessEnv,
 ): Promise<InstallerRun> {
   return await new Promise<InstallerRun>((resolve, reject) => {
+    const startedAt = performance.now();
     const child = spawn(command, args, {
       env,
       timeout: SCRIPT_TIMEOUT_MS,
@@ -227,8 +280,12 @@ async function spawnScript(
     child.on('error', (err) => {
       reject(new Error(`could not spawn ${command}: ${err.message}`));
     });
-    child.on('close', (status) => {
-      resolve({ status, stdout, stderr });
+    // The SIGNAL is the second argument, and dropping it is how a killed run
+    // and a clean one become the same record: `status` is null for both a
+    // SIGKILL from the timeout above and anything else that killed the child,
+    // and only the signal says which.
+    child.on('close', (status, signal) => {
+      resolve({ status, signal, elapsedMs: performance.now() - startedAt, stdout, stderr });
     });
   });
 }
@@ -351,6 +408,7 @@ export async function runInstallPs1(
  * caveat in install-ps1.test.ts.
  */
 export function readUserPath(exe: string): string | null {
+  const startedAt = performance.now();
   const result = spawnSync(
     exe,
     [
@@ -361,7 +419,7 @@ export function readUserPath(exe: string): string | null {
     ],
     { encoding: 'utf8', env: powershellEnv() },
   );
-  const run = toRun(`${exe} (read user Path)`, result);
+  const run = toRun(`${exe} (read user Path)`, result, startedAt);
   if (run.status !== 0) throw new Error(`could not read the user Path: ${run.stderr}`);
   const value = run.stdout.replace(/\r?\n$/u, '');
   return value === 'ABSENT' ? null : value.slice('PRESENT'.length);
@@ -372,6 +430,7 @@ export function writeUserPath(exe: string, value: string | null): void {
   // The value travels in the child's environment rather than inside the command
   // string: a user Path is full of backslashes, semicolons and spaces, and
   // quoting it into `-Command` is a way to corrupt the thing being restored.
+  const startedAt = performance.now();
   const result = spawnSync(
     exe,
     [
@@ -388,6 +447,6 @@ export function writeUserPath(exe: string, value: string | null): void {
       }),
     },
   );
-  const run = toRun(`${exe} (restore user Path)`, result);
+  const run = toRun(`${exe} (restore user Path)`, result, startedAt);
   if (run.status !== 0) throw new Error(`could not restore the user Path: ${run.stderr}`);
 }

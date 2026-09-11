@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 import type { AvailablePlugin, ComponentStatus, UpdateReport } from '@akasecurity/schema';
 
 import { runCapture } from './exec.ts';
-import { AGENT_PLUGINS, pluginRef } from './registry.ts';
+import { marketplacePinnedVersion } from './marketplace-manifest.ts';
+import { AGENT_PLUGINS, type AgentPlugin, pluginRef } from './registry.ts';
 import { compareSemver, isNewer, isSemver } from './semver.ts';
 
 // Pure update-report gathering: version discovery over npm + the local Claude Code
@@ -26,6 +27,16 @@ export interface ReportDeps {
   viewVersion: (pkg: string) => string | null;
   installed: Map<string, string>;
   cliInstalled: string | null;
+  // What the HOST would install for this agent, from the marketplace manifest
+  // it resolved — null when no pin applies and npm's latest is the right
+  // answer. See marketplace-manifest.ts for why the two can differ.
+  //
+  // REQUIRED, not optional. An optional seam reads as safe at every call site
+  // that omits it, which is every call site until somebody remembers — and the
+  // one that omitted it would go back to reporting an update the host cannot
+  // deliver, silently. Required, the compiler names each caller that has to
+  // decide; a caller with no marketplace to read says so with `() => null`.
+  marketplacePin: (agent: AgentPlugin) => string | null;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -235,7 +246,23 @@ export function gatherReport(deps: ReportDeps): UpdateReport {
   for (const agent of AGENT_PLUGINS) {
     const ref = pluginRef(agent);
     if (!ref || !agent.npmPackage) continue;
-    const latest = deps.viewVersion(agent.npmPackage);
+    const npmLatest = deps.viewVersion(agent.npmPackage);
+    // The pin WINS where there is one, because it is what the host resolves an
+    // install through. npm's answer is kept beside it rather than discarded:
+    // it is the only thing that can explain a machine reading "up to date" at a
+    // version the user can see is behind.
+    const pin = deps.marketplacePin(agent);
+    const latest = pin ?? npmLatest;
+    const pinned =
+      pin !== null && agent.marketplace !== undefined
+        ? {
+            marketplacePin: {
+              marketplace: agent.marketplace,
+              npmLatest,
+              npmAhead: npmLatest !== null && isNewer(npmLatest, pin),
+            },
+          }
+        : {};
     const installed = deps.installed.get(ref) ?? null;
     if (installed === null) {
       availablePlugins.push({ id: agent.id, name: agent.name, latest });
@@ -248,6 +275,7 @@ export function gatherReport(deps: ReportDeps): UpdateReport {
       installed,
       latest,
       updateAvailable: latest !== null && isNewer(latest, installed),
+      ...pinned,
     });
   }
   return { statuses, availablePlugins };
@@ -260,5 +288,10 @@ export function gatherReportLive(): UpdateReport {
     viewVersion: npmViewVersion,
     installed: installedAgentPluginVersions(),
     cliInstalled: cliVersion(),
+    // No coordinate guard here: `marketplacePinnedVersion` owns both that and
+    // the HOST check, because a guard written at the call site admits Codex —
+    // its registry entry carries a marketplace and a plugin name like any
+    // other — into a reader that only understands Claude Code's layout.
+    marketplacePin: (agent) => marketplacePinnedVersion(agent),
   });
 }

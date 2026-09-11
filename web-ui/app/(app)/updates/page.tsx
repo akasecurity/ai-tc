@@ -8,6 +8,7 @@ import {
   gatherReport,
   installedAgentPluginVersions,
   installedPluginScope,
+  marketplacePinnedVersion,
   planCliUpdate,
   pluginRef,
   readCache,
@@ -49,6 +50,11 @@ export default function UpdatesPage() {
     },
     installed: installedAgentPluginVersions(),
     cliInstalled: cliVersion(process.cwd()),
+    // Read live rather than from the cache, unlike `latest` above: the pin is a
+    // local file the host itself wrote, so there is no request to amortise, and
+    // a stale pin would put this page back to offering an update the host
+    // cannot deliver — the defect the pin exists to close.
+    marketplacePin: (agent) => marketplacePinnedVersion(agent),
   });
 
   // The CLI's command depends on how THIS copy was installed (npm global under

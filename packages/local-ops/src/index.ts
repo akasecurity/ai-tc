@@ -48,6 +48,7 @@ export {
   detectInstallChannel,
   planCliUpdate,
 } from './install-channel.ts';
+export { marketplacePinnedVersion } from './marketplace-manifest.ts';
 export type { ProjectInventoryResult } from './project-inventory.ts';
 export { recordProjectInventory } from './project-inventory.ts';
 export type { AgentPlugin } from './registry.ts';

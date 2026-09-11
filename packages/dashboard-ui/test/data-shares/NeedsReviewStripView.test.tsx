@@ -23,7 +23,11 @@ describe('NeedsReviewStripView', () => {
 
   it('renders the scope qualifier when one is given', () => {
     const html = renderToStaticMarkup(
-      <NeedsReviewStripView items={[reviewDestination()]} onOpen={vi.fn()} scope="All destinations" />,
+      <NeedsReviewStripView
+        items={[reviewDestination()]}
+        onOpen={vi.fn()}
+        scope="All destinations"
+      />,
     );
     expect(html).toContain('All destinations');
   });
@@ -40,7 +44,11 @@ describe('NeedsReviewStripView', () => {
       <NeedsReviewStripView items={[reviewDestination()]} onOpen={vi.fn()} />,
     );
     const withScope = renderToStaticMarkup(
-      <NeedsReviewStripView items={[reviewDestination()]} onOpen={vi.fn()} scope="All destinations" />,
+      <NeedsReviewStripView
+        items={[reviewDestination()]}
+        onOpen={vi.fn()}
+        scope="All destinations"
+      />,
     );
     expect(without).not.toContain('All destinations');
     expect(spans(withScope)).toBe(spans(without) + 1);

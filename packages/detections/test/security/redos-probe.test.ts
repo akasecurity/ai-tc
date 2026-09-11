@@ -241,6 +241,85 @@ describe('checkRuleTiming', () => {
     expect(result.verdict).toBe('uncorroborated');
   });
 
+  // The floor is a millisecond threshold, and a millisecond threshold is only
+  // as meaningful as the clock underneath it. Every number in the comment above
+  // `CPU_CORROBORATION_SHARE` was taken on an arm64 Mac, where
+  // `process.threadCpuUsage()` resolves to 0.001ms. It is not universal: on the
+  // Windows CI runner the same call's smallest non-zero delta measures
+  // 16.0000ms, because Windows credits a whole scheduler tick to whichever
+  // thread was running at the timer interrupt. The `Runner facts` step in
+  // ci.yml reports it.
+  //
+  // So on that host the corroborating reading is not "how much CPU the probe
+  // burned" but "how many timer interrupts it was running at", and the measured
+  // separation the constant sits in — 0.2-7.7ms of stalled-benign work against
+  // 44.5ms for the cheapest genuine breach — collapses onto a lattice of 0, 16,
+  // 32. The constant survives that, but only just, and for a reason nothing
+  // wrote down: 20 is above one tick and below two, so a benign rule can be
+  // charged at most one tick and still not corroborate, while a real breach
+  // crosses two.
+  //
+  // That is a 4ms margin holding up an unrecoverable outcome, so these three
+  // cases pin it. A share of 0.16 or less puts the floor at or under one tick,
+  // at which point ANY benign rule whose probe happens to straddle a single
+  // timer interrupt is corroborated and permanently quarantined — the exact
+  // false accusation the split exists to refuse, reintroduced by a constant
+  // that still reads as conservative.
+  const COARSEST_TICK_MS = 16;
+
+  it('keeps the floor above one tick of the coarsest clock a supported host has', () => {
+    expect(
+      CORROBORATION_FLOOR_MS,
+      `the floor is ${String(CORROBORATION_FLOOR_MS)}ms against a ${String(COARSEST_TICK_MS)}ms ` +
+        `scheduler tick on Windows. At or below one tick, a benign rule that merely straddles a ` +
+        `timer interrupt reads as a full tick of corroborating work and is quarantined for ever. ` +
+        `Lower the share only with a clock this coarse in mind.`,
+    ).toBeGreaterThan(COARSEST_TICK_MS);
+  });
+
+  it('refuses a benign rule that a tick-quantized clock charged one whole tick', () => {
+    const rule = regexRule('ZZQTICK[0-9]{6}');
+    let reads = 0;
+    const stalled = vi.spyOn(performance, 'now').mockImplementation(() => reads++ * BUDGET_MS * 2);
+    try {
+      // The most a benign rule can be charged where CPU is credited in whole
+      // ticks: one tick per probe window, for a probe that straddled a single
+      // timer interrupt while burning almost nothing.
+      let charged = 0;
+      const oneTickPerProbe: ProbeClock = () => (charged += COARSEST_TICK_MS);
+      const result = checkRuleTiming(rule, oneTickPerProbe);
+
+      expect(result.worstMs).toBeGreaterThanOrEqual(BUDGET_MS);
+      expect(result.corroboratedMs).toBe(COARSEST_TICK_MS);
+      expect(
+        result.verdict,
+        'one tick is what a benign rule gets for being unlucky with the timer, not evidence it ' +
+          'did any work. Caching that disables a rule the user installed, permanently.',
+      ).toBe('uncorroborated');
+    } finally {
+      stalled.mockRestore();
+    }
+  });
+
+  it('still corroborates when that same coarse clock charges two ticks', () => {
+    // The control for the case above, and the other half of what makes the
+    // constant's placement load-bearing: quarantine has to stay REACHABLE on a
+    // coarse clock, or a Windows host could never cache a verdict at all.
+    const rule = regexRule('ZZQTICK2[0-9]{6}');
+    let reads = 0;
+    const stalled = vi.spyOn(performance, 'now').mockImplementation(() => reads++ * BUDGET_MS * 2);
+    try {
+      let charged = 0;
+      const twoTicksPerProbe: ProbeClock = () => (charged += 2 * COARSEST_TICK_MS);
+      const result = checkRuleTiming(rule, twoTicksPerProbe);
+
+      expect(result.corroboratedMs).toBe(2 * COARSEST_TICK_MS);
+      expect(result.verdict).toBe('over-budget');
+    } finally {
+      stalled.mockRestore();
+    }
+  });
+
   // A genuinely catastrophic pattern must still be quarantinable on a real
   // clock — the control for every case above. If corroboration ever stopped
   // succeeding on real work, the two stalled-clock cases would still pass and

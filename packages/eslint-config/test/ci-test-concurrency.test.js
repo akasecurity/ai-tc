@@ -133,6 +133,23 @@ const runsTestViaPackageScript = (cmd) =>
 /** The value of `--concurrency`, in either the `=` or space-separated form. */
 const concurrencyOf = (cmd) => /--concurrency[=\s]+(\S+)/.exec(cmd)?.[1];
 
+/** The value of `--maxWorkers`, in either the `=` or space-separated form. */
+const maxWorkersOf = (cmd) => /--maxWorkers[=\s]+(\S+)/.exec(cmd)?.[1];
+
+/**
+ * True when the command's `--maxWorkers` sits after a `--` separator.
+ *
+ * The separator is the whole mechanism: turbo consumes its own flags up to it
+ * and forwards what follows to each task's own command. `--maxWorkers` before
+ * it is a turbo flag turbo does not have, and after it is a vitest flag vitest
+ * does. Both spellings read identically in a diff.
+ */
+const capIsPassedThrough = (cmd) => {
+  const separator = / -- /.exec(cmd)?.index;
+  const cap = /--maxWorkers[=\s]/.exec(cmd)?.index;
+  return separator !== undefined && cap !== undefined && cap > separator;
+};
+
 describe('CI bounds the concurrency of every turbo test run', () => {
   const hits = workflowCommands();
 
@@ -291,5 +308,72 @@ describe('runsTestViaPackageScript', () => {
     ['pnpm build', false],
   ])('%s -> %s', (cmd, expected) => {
     expect(runsTestViaPackageScript(cmd)).toBe(expected);
+  });
+});
+
+// The SECOND layer, and the one that was unbounded while the first was
+// asserted. `--concurrency` caps how many PACKAGE tasks run at once; each of
+// those forks a vitest pool sized to the machine, and no vitest.config.ts in
+// this workspace sets maxWorkers, poolOptions or fileParallelism. Two packages
+// on a four-core runner is therefore up to six fsync-bound workers on one
+// disk, which is the multiplier the Windows leg starves under.
+//
+// As above, the NUMBER is deliberately not asserted: what the right cap is
+// depends on the runner and is settled by measuring the pass rate. What is
+// asserted is the mechanism, because the mechanism is what fails silently.
+describe('CI caps the worker pool where it bounds package concurrency', () => {
+  const hits = workflowCommands();
+
+  it('still carries at least one cap, so removing it is a deliberate edit', () => {
+    // A floor rather than an exact set: adding one to another leg is normal.
+    // Dropping the last one reds here rather than passing quietly, which is
+    // what a bound that was landed for a measured reason is owed — the leg it
+    // was landed for goes back to failing intermittently, and nothing in a
+    // diff would say so.
+    const capped = hits.filter((h) => runsTurboTest(h.cmd) && maxWorkersOf(h.cmd) !== undefined);
+    expect(
+      capped.length,
+      'no `turbo run test` invocation caps its vitest pool any more; each package task ' +
+        'again forks a pool sized to the runner, and two of those contend for one disk',
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  it('sends every cap through the `--` separator rather than to turbo', () => {
+    // The mirror image of the trap above. `--concurrency` handed to a package
+    // script reaches vitest, which has no such flag; `--maxWorkers` handed to
+    // turbo reaches turbo, which has no such flag. Both read as a bound.
+    const misplaced = hits.filter(
+      (h) => maxWorkersOf(h.cmd) !== undefined && !capIsPassedThrough(h.cmd),
+    );
+    expect(
+      misplaced.map(describeHit),
+      '`--maxWorkers` before the `--` separator is a turbo flag, not a vitest one',
+    ).toEqual([]);
+  });
+
+  it('gives each a value that is actually a positive integer', () => {
+    const bad = hits.filter((h) => {
+      const v = maxWorkersOf(h.cmd);
+      return v !== undefined && !/^[1-9]\d*$/.test(v);
+    });
+    expect(bad.map(describeHit), '--maxWorkers needs a positive integer').toEqual([]);
+  });
+});
+
+describe('capIsPassedThrough', () => {
+  it.each([
+    // The shape this suite exists to keep: turbo's own flags, the separator,
+    // then the task's.
+    ['pnpm turbo run test --concurrency=2 -- --maxWorkers=2', true],
+    ['pnpm turbo run test --concurrency=2 --filter=x -- --maxWorkers=4', true],
+    // Before the separator: turbo's, and turbo has no such flag.
+    ['pnpm turbo run test --maxWorkers=2 --concurrency=2', false],
+    ['pnpm turbo run test --maxWorkers=2 -- --silent', false],
+    // No separator at all.
+    ['pnpm turbo run test --concurrency=2 --maxWorkers=2', false],
+    // No cap to place.
+    ['pnpm turbo run test --concurrency=2', false],
+  ])('%s -> %s', (cmd, expected) => {
+    expect(capIsPassedThrough(cmd)).toBe(expected);
   });
 });

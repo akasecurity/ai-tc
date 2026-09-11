@@ -758,6 +758,27 @@ jobs:
         # needed it most — Windows has the most expensive fsync of the three, so
         # it is where disk contention turned into timeouts first and worst.
         #
+        # --maxWorkers is the OTHER half of the same arithmetic, and until now
+        # only one half was bounded. --concurrency caps how many PACKAGES run
+        # at once; each of those is a `vitest run` that forks a pool sized to
+        # the machine, and no vitest.config.ts in this workspace sets
+        # maxWorkers, poolOptions or fileParallelism. So two packages on a
+        # four-core runner put up to six workers on one disk — the figure the
+        # web-ui pairing note below arrives at from measurement — and they
+        # contend for fsync rather than CPU, because nothing here mocks
+        # node:sqlite or the filesystem.
+        #
+        # 2 x 2 = 4, the runner's core count. It is a starting point chosen
+        # from the arithmetic rather than a tuned value; what settles it is the
+        # pass rate on this leg.
+        #
+        # It goes AFTER `--`, which is what sends it to each task's own
+        # `vitest run`. Before the separator turbo consumes it, and a line like
+        # that reads in a diff exactly like a cap and is not one — the mirror
+        # image of the trap the concurrency note documents in the other
+        # direction. packages/eslint-config/test/ci-test-concurrency.test.js
+        # holds both.
+        #
         # Two packages are deliberately NOT in this list. web-ui and the
         # installer each run in their own invocation below, and each for a
         # measured reason given at its step; both are the same shape of
@@ -788,6 +809,8 @@ jobs:
           --filter=@akasecurity/local-ops
           --filter=@akasecurity/eslint-config
           --filter=@akasecurity/plugin-browser-extension
+          --
+          --maxWorkers=2
 
       # web-ui's suite runs in its OWN turbo invocation, AFTER the shipped-surface
       # filters above rather than beside them, and the reason is a measured pairing

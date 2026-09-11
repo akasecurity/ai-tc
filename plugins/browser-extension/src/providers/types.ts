@@ -147,7 +147,18 @@ export interface ProviderAdapter {
 
   // The outbound message. Never throws for a body it does not recognise —
   // it returns what it found, with requiredPathsSeen false.
-  parseRequest(body: string): ParsedRequest;
+  //
+  // `exchange` names which endpoint matched and at what URL, as it does for
+  // parseStream. A site whose routes take different request shapes — form
+  // encoding on one, JSON on the other — cannot tell them apart from the body
+  // alone, which is the same bind parseStream was in.
+  //
+  // Prefer parseStream for anything read off the URL rather than the body.
+  // This seam is REACHED ONLY FOR A BODY THE BRIDGE ADMITTED: a request with
+  // no body, or one over REQUEST_BODY_MAX_BYTES, opens an exchange that never
+  // calls this. A field recovered here would go missing on exactly those
+  // turns, while the same field recovered in parseStream survives them.
+  parseRequest(body: string, exchange: MatchedExchange): ParsedRequest;
 
   // A fresh assembler per exchange. Streams arrive in pieces that do not
   // respect event boundaries, so framing is the assembler's business rather

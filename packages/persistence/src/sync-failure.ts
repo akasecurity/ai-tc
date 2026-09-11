@@ -45,19 +45,30 @@ export const SYNC_FAILURE_REASONS = [
 export type SyncFailureReason = (typeof SYNC_FAILURE_REASONS)[number];
 
 /**
- * The CHECK predicate, built from the list so the constraint and the writers
- * cannot drift.
+ * The condition a write must NOT satisfy, built from the list so the guard and
+ * the writers cannot drift.
  *
- * `IS NULL OR … IN (…)` rather than a bare `IN`: the column is added by
- * `ALTER TABLE ADD COLUMN` to a table that already holds rows, and every one of
- * them reads NULL. SQLite does not validate existing rows at ALTER time, but a
- * later `UPDATE` that touched such a row would have to satisfy the constraint,
- * and a bare `IN` would refuse the NULL the row legitimately carries.
+ * ENFORCED BY A TRIGGER PAIR RATHER THAN A CHECK, and the reason is a measured
+ * one about where this column is installed. A CHECK can only arrive with the
+ * column, and `ALTER TABLE ADD COLUMN` carrying one makes SQLite scan the whole
+ * table to validate rows that are all NULL: measured linear in table size, and
+ * 23 seconds on a real 6 GB store. A plain ADD COLUMN is constant-time at 0.1 ms
+ * whatever the size, and creating the triggers is free.
+ *
+ * That difference decides it, because this runs inside the call every hook
+ * makes to open the store, under a host timeout of ten seconds — and on a host
+ * that reads a killed hook as a refusal, a migration that cannot finish inside
+ * the timeout does not merely fail, it blocks the user's work and then rolls
+ * back and does it again on the next hook.
+ *
+ * The guarantee is unchanged: a value outside the set is refused by the database
+ * on INSERT and on UPDATE alike, so the store stays structurally incapable of
+ * holding one rather than trusted not to.
  *
  * Single-quoted literals, and the members are compile-time constants from this
  * file — never anything that reached the process from outside it.
  */
-export function syncFailureCheckPredicate(column = 'sync_failure'): string {
+export function syncFailureRejectCondition(column = 'sync_failure'): string {
   const members = SYNC_FAILURE_REASONS.map((r) => `'${r}'`).join(', ');
-  return `${column} IS NULL OR ${column} IN (${members})`;
+  return `NEW.${column} IS NOT NULL AND NEW.${column} NOT IN (${members})`;
 }

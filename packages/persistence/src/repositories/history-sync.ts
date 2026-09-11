@@ -308,6 +308,39 @@ export interface HistorySyncLease {
   heartbeatAt: number | null;
 }
 
+/**
+ * How long a claim survives without a heartbeat before anyone may take it.
+ *
+ * HERE, beside the claim it governs, rather than beside the drain that holds
+ * one. Two readers need it and they sit on opposite sides of a package wall:
+ * the drain, which passes it to `claim`, and a dashboard that only wants to
+ * know whether a pass is running right now and may not import the plugin
+ * runtime at all. Defined twice it would be two answers to "is this pass
+ * alive", and the surface's would be the one nothing tests against a real
+ * claim.
+ */
+export const HISTORY_SYNC_LEASE_STALE_MS = 60_000;
+
+/**
+ * Whether a claim is held by something still alive.
+ *
+ * THE EXACT NEGATION of the predicate `claim` uses to decide it may take one,
+ * including the future-heartbeat clause: a backwards clock correction makes a
+ * claim takeable, so a surface that called the same claim live would show
+ * "Sending…" against a pass that any other process is free to displace.
+ *
+ * Pure, so the surface that renders it can be tested without a store — and
+ * `lease-liveness.test.ts` drives this and a real `claim()` over the same rows
+ * to keep the two from drifting.
+ */
+export function isHistorySyncLeaseLive(
+  lease: HistorySyncLease | undefined,
+  nowMs: number,
+): boolean {
+  if (lease === undefined || lease.ownerPid === null || lease.heartbeatAt === null) return false;
+  return lease.heartbeatAt >= nowMs - HISTORY_SYNC_LEASE_STALE_MS && lease.heartbeatAt <= nowMs;
+}
+
 const ROW_COLUMNS = `id,
    parent_id AS parentId,
    root_session_id AS rootSessionId,

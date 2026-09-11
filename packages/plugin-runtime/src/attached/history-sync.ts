@@ -3,6 +3,7 @@ import { hostname } from 'node:os';
 
 import type { HistorySyncCounts, LocalDatabase } from '@akasecurity/persistence';
 import {
+  HISTORY_SYNC_LEASE_STALE_MS,
   openLocalDatabase,
   readControlPlaneCredentialFile,
   readWorkspaceSettings,
@@ -41,9 +42,6 @@ export const HISTORY_REQUEST_TIMEOUT_MS = 15_000;
  * deadline and keeps only a tally.
  */
 export const HISTORY_PASS_BUDGET_MS = 120_000;
-
-/** A claim whose holder has not checked in for this long is takeable. */
-export const HISTORY_LEASE_STALE_MS = 60_000;
 
 /** How often the holder says it is still alive. */
 const HEARTBEAT_EVERY_MS = 10_000;
@@ -385,7 +383,7 @@ export async function runHistorySync(
     }
 
     const pid = process.pid;
-    if (!ledger.claim(pid, hostname(), now(), HISTORY_LEASE_STALE_MS)) {
+    if (!ledger.claim(pid, hostname(), now(), HISTORY_SYNC_LEASE_STALE_MS)) {
       return didNotRun('already-running');
     }
 
@@ -553,7 +551,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   // the claims being swept belong to passes that are gone, not to a live
   // sibling. The same staleness window as the lease, for the same reason: a mark
   // younger than that may belong to a pass still heartbeating.
-  d.ledger.releaseStaleClaims(startedAt - HISTORY_LEASE_STALE_MS);
+  d.ledger.releaseStaleClaims(startedAt - HISTORY_SYNC_LEASE_STALE_MS);
   // A RESERVED SLICE, not an ordering. Running captures after the structural
   // loop is right within a pass — a capture whose session root has not arrived is
   // a stub until it does — but that loop exits only when the whole backlog is
@@ -801,7 +799,7 @@ async function drainCaptures(
       // run of unbuildable rows would otherwise be a loop that never yields and
       // never checks in. Twenty thousand rows carrying an attribute the wire
       // rejects is one uninterrupted synchronous stretch: no heartbeat past
-      // HISTORY_LEASE_STALE_MS, so a second child takes the claim from a drain
+      // HISTORY_SYNC_LEASE_STALE_MS, so a second child takes the claim from a drain
       // that is alive, and no yield at all, so the event loop is held for the
       // whole pass budget.
       beat();

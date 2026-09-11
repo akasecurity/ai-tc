@@ -139,6 +139,7 @@ export {
 } from './repositories/exceptions.ts';
 export { SqliteFindingsRepository } from './repositories/findings.ts';
 export type {
+  CountedEventType,
   HistorySyncCounts,
   HistorySyncInspectionRow,
   HistorySyncKindPartition,
@@ -146,6 +147,9 @@ export type {
   HistorySyncPartition,
 } from './repositories/history-sync.ts';
 export {
+  COUNTED_EVENT_TYPES,
+  HISTORY_SYNC_LEASE_STALE_MS,
+  isHistorySyncLeaseLive,
   SqliteHistorySyncRepository,
   STRUCTURAL_EVENT_TYPES,
 } from './repositories/history-sync.ts';

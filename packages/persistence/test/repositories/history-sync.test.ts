@@ -5,7 +5,11 @@ import { describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
 import { seedCaptureBacklogOwed } from '../../src/history-backfill.ts';
-import { SqliteHistorySyncRepository } from '../../src/repositories/history-sync.ts';
+import {
+  HISTORY_SYNC_LEASE_STALE_MS,
+  isHistorySyncLeaseLive,
+  SqliteHistorySyncRepository,
+} from '../../src/repositories/history-sync.ts';
 import type { RecordedQuery } from '../helpers/query-plans.ts';
 import { explain, recordingConnection } from '../helpers/query-plans.ts';
 import { useTempStore } from '../helpers/temp-store.ts';
@@ -540,6 +544,71 @@ describe('SqliteHistorySyncRepository — the claim', () => {
     db.historySync.release(101);
 
     expect(db.historySync.lease()?.ownerPid).toBe(202);
+  });
+});
+
+/**
+ * `isHistorySyncLeaseLive` is what a SURFACE asks instead of trying to take the
+ * claim, so the only thing worth asserting about it is that it gives the same
+ * answer the claim itself would. Every case below drives BOTH — the predicate,
+ * and a real `claim()` by another process on the same row at the same instant —
+ * and requires them to disagree in exactly the way they should: takeable is
+ * not-live, and live is not-takeable.
+ */
+describe('isHistorySyncLeaseLive', () => {
+  const STALE = HISTORY_SYNC_LEASE_STALE_MS;
+
+  /**
+   * The claim, read and then attempted, at one instant. Returns both answers so
+   * a case can assert they are opposites rather than assert one and trust the
+   * other.
+   */
+  const both = (offsetFromClaim: number): { live: boolean; takeable: boolean } => {
+    const db = store.open();
+    db.historySync.claim(101, 'host-a', T0, STALE);
+    const now = T0 + offsetFromClaim;
+    // READ FIRST: `claim` mutates the row it is asked about, so reading after
+    // it would describe whichever holder won rather than the one under test.
+    const live = isHistorySyncLeaseLive(db.historySync.lease(), now);
+    return { live, takeable: db.historySync.claim(202, 'host-b', now, STALE) };
+  };
+
+  it('calls a claim taken this instant live', () => {
+    expect(both(0)).toEqual({ live: true, takeable: false });
+  });
+
+  it('calls a claim live right up to the staleness window', () => {
+    expect(both(STALE)).toEqual({ live: true, takeable: false });
+  });
+
+  it('calls a claim dead one millisecond past it', () => {
+    expect(both(STALE + 1)).toEqual({ live: false, takeable: true });
+  });
+
+  // The clause that is easiest to leave out, and the one a surface feels: a
+  // backwards clock correction makes the claim takeable by anyone, so calling
+  // it live would show a pass as running while another process displaced it.
+  it('calls a heartbeat stamped in the future dead, exactly as the claim does', () => {
+    expect(both(-1)).toEqual({ live: false, takeable: true });
+  });
+
+  it('calls an untouched store dead', () => {
+    const db = store.open();
+    expect(isHistorySyncLeaseLive(db.historySync.lease(), T0)).toBe(false);
+  });
+
+  it('calls a released claim dead', () => {
+    const db = store.open();
+    db.historySync.claim(101, 'host-a', T0, STALE);
+    db.historySync.release(101);
+
+    expect(isHistorySyncLeaseLive(db.historySync.lease(), T0)).toBe(false);
+  });
+
+  // A store too old to have the singleton row at all, which `lease()` reports
+  // as undefined. A surface must read that as "nothing is running", never crash.
+  it('calls a missing row dead', () => {
+    expect(isHistorySyncLeaseLive(undefined, T0)).toBe(false);
   });
 });
 

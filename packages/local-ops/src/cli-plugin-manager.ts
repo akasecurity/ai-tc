@@ -108,7 +108,10 @@ type Step = readonly string[];
 
 interface HostVerbs {
   install: (ref: string) => Step[];
-  update: (ref: string) => Step[];
+  // The scope is the one the plugin is ALREADY INSTALLED AT, read from the
+  // host's own ledger — not a preference. A host whose update verb takes no
+  // scope ignores it.
+  update: (ref: string, scope?: string) => Step[];
   // Registering the marketplace. REQUIRED before the op — without it the op
   // fails on an unknown marketplace — so a failure here genuinely should stop
   // whatever follows.
@@ -129,13 +132,30 @@ interface HostVerbs {
 const HOST_VERBS: Record<CliPluginBin, HostVerbs> = {
   claude: {
     install: (ref) => [['plugin', 'install', ref]],
-    update: (ref) => [['plugin', 'update', ref]],
+    // `claude plugin update` defaults to `--scope user`, so a bare ref targets
+    // the user scope whatever the read side looked at. `installedPluginVersions`
+    // prefers a user record and FALLS BACK to the first one with a version, so
+    // on a machine where an enterprise drop-in put the plugin at `managed` the
+    // two halves talked about different installs: the comparison read the
+    // managed record and reported an update, and the apply then failed with
+    // `Plugin "ai-tc" is not installed at scope user`.
+    //
+    // Stated rather than defaulted, and stated whenever the ledger names one —
+    // including `user`. An implicit agreement between the two halves is exactly
+    // what broke, so the reading the comparison used is the one spelled here.
+    // Whether a given scope may be updated at all is the host's call: `managed`
+    // is an administrator's install, and a refusal from `claude` naming that is
+    // a true answer, unlike the one this replaces.
+    update: (ref, scope) => [['plugin', 'update', ref, ...(scope ? ['--scope', scope] : [])]],
     register: (source) => [['plugin', 'marketplace', 'add', source]],
     refresh: (marketplace) => [['plugin', 'marketplace', 'update', marketplace]],
   },
   codex: {
     install: (ref) => [['plugin', 'add', ref]],
-    // No `update` verb — `add` is the whole operation. It resolves the plugin
+    // No `update` verb — `add` is the whole operation, and it takes no scope:
+    // Codex keeps one plugin cache per home, so there is nothing to target.
+    // The parameter is ignored here rather than absent, so the two hosts share
+    // one signature and a caller cannot pass a scope to only one of them. It resolves the plugin
     // from the marketplace manifest, which for this repo's entries names an npm
     // package with no version pin, so `add` picks up a published bump on its
     // own. Refreshing the git snapshot is about the MANIFEST (a renamed package,
@@ -199,8 +219,26 @@ export interface CliPluginManager {
   update: (ref: string) => boolean;
 }
 
-export function createCliPluginManager(bin: CliPluginBin): CliPluginManager {
+/**
+ * A manager for one host CLI, optionally bound to the scope a plugin is
+ * already installed at.
+ *
+ * The scope is supplied HERE rather than at each update entry point, and that
+ * is structural rather than tidy: there are four ways to reach the update verb
+ * (`updateSteps`, `updateRecipe`, `updateSpawnPlan`, `update`), and a
+ * per-call parameter is one a caller can thread into the spawn and forget in
+ * the hint — which would print a command that does not do what the spawn did.
+ * Bound here, every one of them agrees by construction.
+ *
+ * Absent means "whatever the host defaults to", which is what every caller got
+ * before a scope could be read at all.
+ */
+export function createCliPluginManager(
+  bin: CliPluginBin,
+  installedScope?: string,
+): CliPluginManager {
   const verbs = HOST_VERBS[bin];
+  const update = (ref: string): Step[] => verbs.update(ref, installedScope);
   const runAll = (steps: Step[]): boolean => steps.every((args) => runInherit(bin, [...args]));
   const render = (steps: Step[]): string[] => steps.map((args) => `${bin} ${args.join(' ')}`);
   const marketplaceSteps = (source: string, marketplace?: string): Step[] => [
@@ -221,14 +259,13 @@ export function createCliPluginManager(bin: CliPluginBin): CliPluginManager {
     available: () => binExists(bin),
     marketplaceSteps,
     installSteps: (ref) => verbs.install(ref),
-    updateSteps: (ref) => verbs.update(ref),
+    updateSteps: (ref) => update(ref),
     installRecipe: (ref, source) => recipe(verbs.install(ref), source),
-    updateRecipe: (ref, source) => recipe(verbs.update(ref), source),
+    updateRecipe: (ref, source) => recipe(update(ref), source),
     installSpawnPlan: (ref, source, marketplace) =>
       spawnPlan(verbs.install(ref), source, marketplace),
-    updateSpawnPlan: (ref, source, marketplace) =>
-      spawnPlan(verbs.update(ref), source, marketplace),
+    updateSpawnPlan: (ref, source, marketplace) => spawnPlan(update(ref), source, marketplace),
     install: (ref) => runAll(verbs.install(ref)),
-    update: (ref) => runAll(verbs.update(ref)),
+    update: (ref) => runAll(update(ref)),
   };
 }

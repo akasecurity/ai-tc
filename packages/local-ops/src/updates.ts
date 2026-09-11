@@ -75,12 +75,30 @@ function installedPluginsPath(claudeHome: string): string {
   return join(claudeHome, 'plugins', 'installed_plugins.json');
 }
 
+/** One installed record, as the two readers below project it. */
+export interface InstalledPlugin {
+  version: string;
+  // The scope the version above was read from, when the ledger names one. It
+  // is what an update has to target: the reader below falls back past `user`,
+  // so the record a comparison used is not necessarily the one a host CLI
+  // would pick on its own.
+  scope?: string;
+}
+
 // Parse ~/.claude/plugins/installed_plugins.json (v2) into a map of
-// `<plugin>@<marketplace>` → installed version. Missing/garbage file → empty map.
-export function installedPluginVersions(
+// `<plugin>@<marketplace>` → the record the comparison should use. Missing or
+// garbage file → empty map.
+//
+// The SCOPE is carried beside the version rather than dropped, and that is the
+// whole point of this shape: the fallback below reads a record at any scope,
+// while `claude plugin update` defaults to `user`. Returning only the version
+// made the two halves talk about different installs with nothing to reconcile
+// them, so a plugin an enterprise drop-in had put at `managed` was reported
+// out of date and could never be updated.
+export function installedPlugins(
   claudeHome: string = join(homedir(), '.claude'),
-): Map<string, string> {
-  const out = new Map<string, string>();
+): Map<string, InstalledPlugin> {
+  const out = new Map<string, InstalledPlugin>();
   const path = installedPluginsPath(claudeHome);
   if (!existsSync(path)) return out;
   let raw: unknown;
@@ -96,9 +114,24 @@ export function installedPluginVersions(
     const record =
       records.find((r): r is Record<string, unknown> => isRecord(r) && r.scope === 'user') ??
       records.find((r): r is Record<string, unknown> => isRecord(r));
-    if (record && typeof record.version === 'string') out.set(ref, record.version);
+    if (record && typeof record.version === 'string') {
+      out.set(ref, {
+        version: record.version,
+        ...(typeof record.scope === 'string' ? { scope: record.scope } : {}),
+      });
+    }
   }
   return out;
+}
+
+/** The scope a ref is installed at, or undefined when the ledger names none. */
+export function installedPluginScope(ref: string, claudeHome?: string): string | undefined {
+  return installedPlugins(claudeHome).get(ref)?.scope;
+}
+
+// The version-only projection every version comparison takes.
+export function installedPluginVersions(claudeHome?: string): Map<string, string> {
+  return new Map([...installedPlugins(claudeHome)].map(([ref, { version }]) => [ref, version]));
 }
 
 // Codex CLI caches an installed plugin's contents under

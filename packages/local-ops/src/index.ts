@@ -83,6 +83,7 @@ export {
   gatherReportLive,
   installedAgentPluginVersions,
   installedCodexPluginVersions,
+  installedPluginScope,
   installedPluginVersions,
   npmViewVersion,
 } from './updates.ts';

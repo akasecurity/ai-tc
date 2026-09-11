@@ -56,7 +56,12 @@ const NODE_DIR = dirname(process.execPath);
 // Every spawn in exec.ts is anchored at the user's home on Windows and at this
 // process's cwd elsewhere; the probe has to mirror it, because Windows searches
 // the working directory BEFORE walking PATH.
-const SPAWN_CWD = process.platform === 'win32' ? homedir() : process.cwd();
+//
+// Read at CALL time rather than once at module load: the setup below stubs the
+// home directory, so a constant captured before that stub would have the probe
+// mirroring a different cwd than the spawn it stands in for — which is the one
+// thing this value exists to prevent.
+const spawnCwd = (): string => (process.platform === 'win32' ? homedir() : process.cwd());
 
 interface Recorded {
   readonly bin: string;
@@ -67,6 +72,7 @@ let dir: string;
 let binDir: string;
 let failDir: string;
 let emptyDir: string;
+let homeDir: string;
 let callsPath: string;
 
 /**
@@ -119,6 +125,13 @@ function commandLines(): string[] {
   return calls().map((c) => `${c.bin} ${c.args.join(' ')}`);
 }
 
+/** Seed Claude Code's install ledger inside the stubbed home. */
+function writeInstalledLedger(plugins: Record<string, unknown[]>): void {
+  const pluginsDir = join(homeDir, '.claude', 'plugins');
+  mkdirSync(pluginsDir, { recursive: true });
+  writeFileSync(join(pluginsDir, 'installed_plugins.json'), JSON.stringify({ plugins }), 'utf8');
+}
+
 function failStep(token: string): void {
   writeFileSync(join(failDir, token), '');
 }
@@ -129,7 +142,7 @@ function armShims(commands: readonly string[]): void {
   vi.stubEnv('PATH', path);
   const probeEnv: NodeJS.ProcessEnv = { PATH: path, ...WINDOWS_SYSTEM_ENV };
   for (const command of commands) {
-    assertShimResolves(command, probeEnv, { shell: SHIM_NEEDS_SHELL, cwd: SPAWN_CWD });
+    assertShimResolves(command, probeEnv, { shell: SHIM_NEEDS_SHELL, cwd: spawnCwd() });
   }
 }
 
@@ -138,8 +151,18 @@ beforeEach(() => {
   binDir = join(dir, 'bin');
   failDir = join(dir, 'fail');
   emptyDir = join(dir, 'empty');
+  homeDir = join(dir, 'home');
   callsPath = join(dir, 'calls.jsonl');
-  for (const sub of [binDir, failDir, emptyDir]) mkdirSync(sub);
+  for (const sub of [binDir, failDir, emptyDir, homeDir]) mkdirSync(sub);
+  // A controlled home, because the update path reads Claude Code's install
+  // ledger out of it to learn which scope to target. Without this the argv a
+  // case asserts depends on whether the developer running it happens to have
+  // the plugin installed — and CI, where no ledger exists, would go on passing
+  // while a workstation failed. `os.homedir()` reads these two variables, and
+  // `n/no-process-env` is why the write goes through vitest rather than an
+  // assignment.
+  vi.stubEnv('HOME', homeDir);
+  vi.stubEnv('USERPROFILE', homeDir);
   writeFileSync(callsPath, '');
   for (const command of ['claude', 'codex']) {
     writeCommandShim(binDir, command, shimBody(command, callsPath, failDir));
@@ -242,6 +265,30 @@ describe('what an install/update really spawns', () => {
     );
   });
 
+  it('targets the scope the plugin is really installed at', () => {
+    // The end of the chain, across the process boundary. `claude plugin update`
+    // defaults to `--scope user`, while the version comparison reads a record
+    // at ANY scope — so on a machine where an enterprise drop-in put the plugin
+    // at `managed`, the update was reported as available and then refused with
+    // `Plugin "ai-tc" is not installed at scope user`, for ever.
+    //
+    // Asserted on the ARGV the child received rather than on a rendered string:
+    // every other surface here is a projection, and this is the one that runs.
+    writeInstalledLedger({ 'ai-tc@akasecurity': [{ version: '0.9.8', scope: 'managed' }] });
+    armShims(['claude']);
+
+    const res = applyPluginUpdate('claude-code', 'capture');
+
+    expect(res.ok).toBe(true);
+    expect(calls().at(-1)?.args).toEqual([
+      'plugin',
+      'update',
+      'ai-tc@akasecurity',
+      '--scope',
+      'managed',
+    ]);
+  });
+
   it('runs Codex’s verbs, which are its own — never Claude Code’s', () => {
     armShims(['codex']);
 
@@ -304,8 +351,13 @@ function applyInChild(op: 'install' | 'update', agentId: string, mode: ApplyMode
     // The same closed PATH the in-process cases use. A child that inherited the
     // host's PATH would resolve the developer's REAL `claude` and run a live
     // plugin install against their machine — measured, not hypothetical.
-    env: { PATH: path, ...WINDOWS_SYSTEM_ENV },
-    cwd: SPAWN_CWD,
+    //
+    // The home goes with it, for the same reason one level over: the update
+    // path reads Claude Code's install ledger to learn which scope to target,
+    // and a child given no HOME falls back to the OS user database — i.e. the
+    // developer's real home, which is what the closed PATH exists to keep out.
+    env: { PATH: path, HOME: homeDir, USERPROFILE: homeDir, ...WINDOWS_SYSTEM_ENV },
+    cwd: spawnCwd(),
   });
   // The runner always prints its marker, so an absent one means it never got
   // there — a silent stdout would otherwise satisfy the negative case below

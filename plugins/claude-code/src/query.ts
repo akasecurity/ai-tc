@@ -15,7 +15,7 @@
  */
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
-import { loadConfig } from '@akasecurity/plugin-sdk';
+import { hostCompatibilityLines, loadConfig, readHostVersionCache } from '@akasecurity/plugin-sdk';
 
 import { fenced } from './present.ts';
 import {
@@ -76,7 +76,16 @@ try {
     try {
       const severity = parseSeverity(args);
       process.stdout.write(
-        `${fenced(await runQuery(sub, gateway, severity !== undefined ? { severity } : {}))}\n`,
+        `${fenced(
+          await runQuery(sub, gateway, {
+            ...(severity !== undefined ? { severity } : {}),
+            // Resolved here rather than inside runQuery, which holds a gateway
+            // and not the data dir. Read from the cache a hook wrote: probing
+            // `claude --version` would answer for the install on PATH, which
+            // need not be the one running any session.
+            hostLines: hostCompatibilityLines(readHostVersionCache(config.dataDir)),
+          }),
+        )}\n`,
       );
     } finally {
       await gateway.close();

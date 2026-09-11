@@ -9,10 +9,32 @@ import type {
   DataGateway,
   DayActivity,
   FindingView,
+  HealthStatus as FindingStatus,
   HealthSummary,
+  Recommendation,
   SessionTokenReport,
 } from '@akasecurity/plugin-sdk';
-import { aggregateTokenUsage, formatCostTotal, formatUsd } from '@akasecurity/plugin-sdk';
+import {
+  aggregateTokenUsage,
+  buildRecommendations,
+  findingStatus,
+  formatCostTotal,
+  formatUsd,
+  severityWeight,
+} from '@akasecurity/plugin-sdk';
+
+// Re-exported so callers keep importing the recommendation rollup and the posture
+// score from this module, exactly as they did when both were declared here. The
+// maths lives in schema now, shared with the dashboard and the other two plugins.
+// `FindingStatus` is this module's historical name for what schema calls
+// `HealthStatus`; schema needs the unambiguous one, since a finding's own
+// `FindingStatus` is its lifecycle.
+//
+// `findingStatus` stays private: every surface here passes it the whole-store
+// summary its schema doc describes, so the footer reads the same on /findings
+// (25 rows) as on /health and /recommend (500).
+export type { FindingStatus };
+export { buildRecommendations, healthScore } from '@akasecurity/plugin-sdk';
 import type {
   ActionTaken,
   BuiltinPolicyId,
@@ -52,8 +74,6 @@ import { selectRegisteredSkills } from './skills-registry.ts';
 export const STORE_UNAVAILABLE_NOTE =
   "I couldn't check my records just now — we can check again soon. Your Antigravity session keeps going, and I'll fill in as you work.";
 
-const SEVERITY_WEIGHT: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
-
 // Severity → shade glyph: heavier fill = more severe (critical solid, low light),
 // so the severity column reads as texture with no color. The same four glyphs
 // carry intensity on the /health chart and the unreviewed tallies.
@@ -67,19 +87,6 @@ const SEVERITY_GLYPH: Record<string, string> = {
 function severityGlyph(severity: string): string {
   return SEVERITY_GLYPH[severity] ?? SHADE.light;
 }
-
-// Plain-language next step per detection category, shown by `/recommend`.
-const ADVICE: Record<string, string> = {
-  secret:
-    'Rotate the exposed credentials and move them out of prompts (secrets manager / env vars).',
-  pii: 'Remove or mask personal data before it reaches the model.',
-  financial: 'Strip card and account numbers; share only non-sensitive references.',
-  phi: 'Remove protected health information — it should never reach an external model.',
-  code_context: 'Confirm this proprietary code context is safe to share.',
-  code_flaw:
-    'Review the flagged pattern and apply the secure alternative (parameterized queries, safe deserializers, etc.).',
-  custom: 'Review against your organization’s custom policy.',
-};
 
 // "2026-06-19T11:14:53.000Z" → "06-19 11:14" (compact, table-friendly). A
 // finding missing its timestamp renders a placeholder rather than a blank cell
@@ -348,18 +355,6 @@ export function renderSetupIntro(meta: PluginMeta): string {
   return [heading, '', indent(details), '', indent(ask)].join('\n');
 }
 
-// Derived posture score (0–100). HEURISTIC — we don't store a posture score, so
-// this blends what we actually have: category coverage (how much sensitive-data
-// is under an enabled policy) and the share of findings that were acted on
-// (block/redact/warn) rather than let through. Centralized so the /health and
-// first-run screens agree, and so it can be swapped for the product's intended
-// scoring model in one place.
-export function healthScore(summary: HealthSummary): number {
-  const handled = summary.byAction.block + summary.byAction.redact + summary.byAction.warn;
-  const handledRatio = summary.findings === 0 ? 1 : handled / summary.findings;
-  return Math.round(100 * (0.6 * summary.coverage + 0.4 * handledRatio));
-}
-
 // The "First run" completion screen. Posture, findings and
 // recommendations are real; `health` is the derived score above. The host's
 // input box and window chrome are not the plugin's to draw.
@@ -393,7 +388,7 @@ export interface FirstRunSummary {
 export function topFindings(findings: FindingView[], limit = 10): FindingView[] {
   return [...findings]
     .sort((a, b) => {
-      const sev = (SEVERITY_WEIGHT[b.severity] ?? 0) - (SEVERITY_WEIGHT[a.severity] ?? 0);
+      const sev = severityWeight(b.severity) - severityWeight(a.severity);
       return sev !== 0 ? sev : b.occurredAt.localeCompare(a.occurredAt);
     })
     .slice(0, limit);
@@ -599,13 +594,6 @@ function renderGauge(g: HealthGauge): string {
   return `${padEnd(g.label, GAUGE_LABEL_W)}  ${fill}  ${score} ${outOf}   ${g.note}`;
 }
 
-// The persistent status line shared by /findings, /health and /recommend.
-export interface FindingStatus {
-  score: number;
-  unreviewed: { critical: number; high: number; medium: number; low: number };
-  openFindings: number;
-}
-
 // `color` is opt-in and honored only by the status line (the one ANSI-capable
 // surface). The transcript footers on /findings, /health and /recommend call
 // this with no options and stay monochrome, since ANSI doesn't render there.
@@ -642,21 +630,6 @@ function renderStatusBar(s: FindingStatus, opts: { color?: boolean } = {}): stri
 // in red. See present.ts's module comment on `paint`.
 export function renderStatusLine(summary: HealthSummary): string {
   return renderStatusBar(findingStatus(summary), { color: true });
-}
-
-// Shared status powering the bar on /findings, /health and /recommend: the
-// derived score, the unreviewed-by-severity tally, and the open-findings count.
-// All three come from the whole-store health summary — NOT the finding page a
-// given command fetched — so the footer reads identically on every surface
-// regardless of each command's row limit (25 on /findings vs 500 elsewhere).
-// `openFindings` is the real finding total (the store has no resolution state,
-// so every finding is open) and sums `bySeverity`.
-function findingStatus(summary: HealthSummary): FindingStatus {
-  return {
-    score: healthScore(summary),
-    unreviewed: { ...summary.bySeverity },
-    openFindings: summary.findings,
-  };
 }
 
 export function renderHealth(r: HealthReport): string {
@@ -779,79 +752,6 @@ export function buildHealthReport(
     unreviewed: status.unreviewed,
     score: status.score,
   };
-}
-
-// One row of the /recommend list. Severity drives ordering + the shade label;
-// `context` is the meta left of the arrow, `action` the verb after.
-export interface Recommendation {
-  severity: string;
-  title: string;
-  description: string;
-  context: string;
-  action: string;
-}
-
-// Per-category copy for findings-derived recommendations (the live source until
-// the setup-health recommender lands). Title + the verb after the → arrow.
-const REC_TEMPLATE: Record<string, { title: string; action: string }> = {
-  secret: { title: 'Exposed secret detected', action: 'Rotate' },
-  pii: { title: 'Personal data in a prompt', action: 'Remove' },
-  financial: { title: 'Financial data detected', action: 'Strip' },
-  phi: { title: 'Health information detected', action: 'Remove' },
-  code_context: { title: 'Proprietary code shared', action: 'Review' },
-  custom: { title: 'Custom policy match', action: 'Review' },
-};
-
-// Cap on the recommendation list. One entry per category, so today it's bounded
-// by the handful of REC_TEMPLATE categories — but custom rules can mint new
-// categories, so cap it explicitly. Entries are severity-ranked, so the cap keeps
-// the most important; the slice only ever drops low-priority overflow.
-const MAX_RECOMMENDATIONS = 10;
-
-// Derive recommendations from real findings: one per category, ranked by
-// severity then frequency, described with the category's advice. (Setup-health
-// items — MCP/hooks/permissions — need detectors we don't have, so
-// the live list speaks to the sensitive-data findings we actually capture.)
-export function buildRecommendations(findings: FindingView[]): Recommendation[] {
-  interface Bucket {
-    category: string;
-    count: number;
-    severity: string;
-    weight: number;
-    ruleId: string;
-  }
-  const buckets = new Map<string, Bucket>();
-  for (const f of findings) {
-    const b = buckets.get(f.category) ?? {
-      category: f.category,
-      count: 0,
-      severity: f.severity,
-      weight: 0,
-      ruleId: f.ruleId,
-    };
-    b.count++;
-    const w = SEVERITY_WEIGHT[f.severity] ?? 0;
-    if (w > b.weight) {
-      b.weight = w;
-      b.severity = f.severity;
-      b.ruleId = f.ruleId;
-    }
-    buckets.set(f.category, b);
-  }
-
-  return [...buckets.values()]
-    .sort((a, b) => b.weight - a.weight || b.count - a.count)
-    .slice(0, MAX_RECOMMENDATIONS)
-    .map((b) => {
-      const t = REC_TEMPLATE[b.category] ?? { title: `${b.category} finding`, action: 'Review' };
-      return {
-        severity: b.severity,
-        title: t.title,
-        description: ADVICE[b.category] ?? 'Review this finding against your policy.',
-        context: `${b.ruleId} · ${String(b.count)} finding${b.count === 1 ? '' : 's'}`,
-        action: t.action,
-      };
-    });
 }
 
 // Description wrap width for a recommendation. The body sits indented under the

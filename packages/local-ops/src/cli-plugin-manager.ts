@@ -1,4 +1,5 @@
-import { binExists, runInherit } from './exec.ts';
+import { binExists, runCapture, runInherit } from './exec.ts';
+import { isSemver } from './semver.ts';
 
 // Generic delegator onto a host CLI's own plugin manager — the supported way
 // to install and update its plugins. The AKA CLI is a hub over these, never a
@@ -30,6 +31,76 @@ import { binExists, runInherit } from './exec.ts';
 //     from a source that cannot be upgraded) must not abort an operation that
 //     would have succeeded against the cached snapshot.
 export type CliPluginBin = 'claude' | 'codex';
+
+/**
+ * The version a host CLI reports for itself, or undefined when it cannot be
+ * read (not on PATH, a non-zero exit, no version-shaped token in the output).
+ *
+ * SOUND AT INSTALL TIME, AND ONLY THERE. `aka plugins install` delegates to the
+ * host binary resolved from PATH, so the version that binary reports is the one
+ * being installed into. Inside a session it would NOT be sound: the host running
+ * the session can be a different install from the one on PATH — measured, 2.1.258
+ * on PATH against 2.1.260 actually running — so the hook path reads the version
+ * off the transcript instead of asking here.
+ *
+ * Fail-silent by construction: every caller treats undefined as "do not warn".
+ */
+// Wrapping punctuation a version is commonly printed inside, and nothing more.
+// Both are bounded so neither can backtrack; see `versionTokenFrom` for why an
+// unbounded or open-ended strip was wrong in two different directions.
+const LEADING_WRAP = /^[([{"'`]{0,2}[vV]?/;
+const TRAILING_WRAP = /[)\]}"'`,;]{0,4}$/;
+
+/**
+ * The first token in a `--version` output that parses as a version.
+ *
+ * Separated from the spawn so it can be tested directly: the shape of this scan
+ * is the whole of what the install gate depends on, and driving it through a
+ * child process would test the child instead. `hostCliVersion` is then only the
+ * spawn.
+ *
+ * Validated with `isSemver` from this package rather than a private regex, so
+ * one grammar serves the parse and the comparison. A local copy would sit
+ * outside the mirroring convention both `semver.ts` headers already name, and a
+ * grammar widened under that convention (accepting `+build`, say) would leave
+ * this behind — the gate would then reject versions the comparator accepts and
+ * go silent.
+ *
+ * The two strips are an ENUMERATED, BOUNDED set of wrapping punctuation, not
+ * "everything up to the first digit". Both properties are load-bearing:
+ *
+ * - Bounded, because an unbounded trailing `[^\w.-]+$` is polynomial on a token
+ *   the host CLI controls — measured 281/1089/4276 ms at 25k/50k/100k commas,
+ *   clean n². (Reproducing it needs a LEADING DIGIT: without one the leading
+ *   strip eats the commas first and it measures 0 ms.)
+ * - Enumerated, because `^[^\d]*` accepts any prefix, so
+ *   `@anthropic-ai/claude-code@3.0.0` resolved to `3.0.0` — an npm notice on the
+ *   first line then outranked the real version, which is a MISSED warning on a
+ *   security gate. `foo-2.1.258` and a URL path went the same way.
+ *
+ * The PRERELEASE is deliberately kept: `2.1.251-rc.1` must not collapse to
+ * `2.1.251`, which compares EQUAL to a floor that build predates, letting it
+ * clear a gate it should trip.
+ *
+ * The first line wins over the rest, because that is where a `--version` prints.
+ * That narrows, but does not eliminate, a version-shaped token appearing before
+ * the real one: a notice on a LATER line now loses, while one on the first line
+ * still wins. It fails toward silence — a spurious higher version clears every
+ * floor — so it costs a missed warning, never a wrong one.
+ */
+export function versionTokenFrom(stdout: string): string | undefined {
+  const [firstLine = ''] = stdout.split('\n');
+  for (const token of [...firstLine.trim().split(/\s+/), ...stdout.split(/\s+/)]) {
+    const candidate = token.replace(LEADING_WRAP, '').replace(TRAILING_WRAP, '');
+    if (isSemver(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+export function hostCliVersion(bin: CliPluginBin): string | undefined {
+  const { ok, stdout } = runCapture(bin, ['--version'], 5_000);
+  return ok ? versionTokenFrom(stdout) : undefined;
+}
 
 // One command's argv, minus the binary. A step list rather than a single argv
 // because Codex's marketplace prep is two commands.

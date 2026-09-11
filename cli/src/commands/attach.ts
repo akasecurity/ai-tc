@@ -21,6 +21,7 @@ import {
   renderAttachedStatus,
   renderPolicyLine,
 } from '@akasecurity/plugin-runtime';
+import { hostCompatibilityLines, readHostVersionCache } from '@akasecurity/plugin-sdk';
 import { createAttachClient, createRemoteClient } from '@akasecurity/remote';
 import type { HistorySyncConsent, ManagedSettings } from '@akasecurity/schema';
 import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
@@ -487,6 +488,10 @@ async function askAboutHistory(
       `Verified against ${identity.tenantName}.`,
       '',
       'Activity from here on is sent to that deployment automatically.',
+      // The register a scan records crosses under this same attachment, and
+      // `aka scan` is a verb people reasonably think of as local — so consent
+      // is where it gets named, and named with what it does and does not carry.
+      'So is the Data Shares register a scan records — destinations and call sites, never source text.',
       ...(backlog === undefined ? [] : [backlog]),
       'AKA can also keep anything a live send fails to deliver, instead of',
       'dropping it.',
@@ -701,6 +706,18 @@ export async function runStatus(argv: string[], deps: AttachDeps = {}): Promise<
   // Only for an attached machine: a standalone one has no policy to be current.
   const attached = !block.startsWith('AKA: standalone');
   io.out(attached ? `${block}\n${await renderPolicyLine(dataDir)}\n` : `${block}\n`);
+  // The host's own version, and which of AKA's protections it is too old for.
+  // This is one of the two surfaces carrying that detail: someone reading it has
+  // come looking, which is why it names protections where the in-session notice
+  // deliberately does not. Read from the cache a hook wrote, so it reports "last
+  // seen" rather than probing — `claude --version` would answer for the install
+  // on PATH, which need not be the one running any session.
+  // Guarded, because `[]` means "nothing to say" and `[].join('\n')` is `''` —
+  // which this template would turn into a bare newline. That is the COMMON case,
+  // not an edge one: a CLI-only install, a Codex-only install, and any Claude
+  // Code install before its first completed turn all have no cache to read.
+  const hostLines = hostCompatibilityLines(readHostVersionCache(dataDir));
+  if (hostLines.length > 0) io.out(`${hostLines.join('\n')}\n`);
 }
 
 /**

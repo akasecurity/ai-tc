@@ -23,6 +23,7 @@ export {
 } from './control-plane-credential.ts';
 export type { InventoryContext, LocalDatabase, ResolvedInventory } from './database.ts';
 export { openLocalDatabase } from './database.ts';
+export { hashProjectKey, toEgressIngestRequest } from './egress-wire.ts';
 export type { ExceptionPolicyProvider, RevealDecision } from './exception-policy.ts';
 export { UserGrantPolicyProvider } from './exception-policy.ts';
 export type { FileLockFailure, FileLockOptions } from './file-lock.ts';
@@ -105,6 +106,7 @@ export type {
   InventoryReadPort,
   PoliciesReadPort,
   PolicyCatalogReadPort,
+  RecommendationInputRow,
   SecurityViews,
   SharesReadPort,
 } from './ports.ts';
@@ -164,7 +166,7 @@ export {
   withoutDroppedFiles,
 } from './repositories/shares.ts';
 export { SqliteSourceProjectRepository } from './repositories/source-project.ts';
-export { compareBinaryVersions } from './semver.ts';
+export { compareBinaryVersions, isParseableBinaryVersion } from './semver.ts';
 export type { OnboardingAnswers } from './settings.ts';
 export type { EffectiveSettings } from './settings.ts';
 export {

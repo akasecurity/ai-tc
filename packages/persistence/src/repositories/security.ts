@@ -25,7 +25,7 @@ import {
 } from '@akasecurity/schema';
 
 import { allRows } from '../internal/rows.ts';
-import type { SecurityViews } from '../ports.ts';
+import type { RecommendationInputRow, SecurityViews } from '../ports.ts';
 import { LATEST_RESOLUTION_BY_KEY_SQL } from './resolution-sql.ts';
 
 const DAY_MS = 86_400_000;
@@ -131,9 +131,9 @@ function toUtcDateString(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-// The timeseries plots critical/high/medium only (low omitted by contract).
-function isTimeseriesSeverity(s: string): s is 'critical' | 'high' | 'medium' {
-  return s === 'critical' || s === 'high' || s === 'medium';
+// The timeseries plots all four severities, matching the MTTR trend beside it.
+function isTimeseriesSeverity(s: string): s is 'critical' | 'high' | 'medium' | 'low' {
+  return s === 'critical' || s === 'high' || s === 'medium' || s === 'low';
 }
 
 // One finding within a window, carrying its parent event's epoch-millis timestamp
@@ -142,6 +142,8 @@ interface FindingTimeRow {
   occurredAt: number;
   severity: string;
   actionTaken: string;
+  ruleId: string;
+  category: string;
 }
 
 /**
@@ -312,12 +314,19 @@ export class SqliteSecurityRepository implements SecurityViews {
     const windowStart = startOfUtcDay(now) - (lenDays - 1) * DAY_MS;
     const rows = this.findingsInRange(windowStart, now);
 
-    const points: FindingsTimeseriesPoint[] = Array.from({ length: numBuckets }, (_, i) => ({
-      timestamp: toUtcDateString(windowStart + i * bucketMs),
-      critical: 0,
-      high: 0,
-      medium: 0,
-    }));
+    // `low` is optional on the wire (additive, so a three-series producer still
+    // validates), but every bucket built here carries it — requiring it locally is what
+    // keeps the `bucket[r.severity]++` below total rather than `number | undefined`.
+    const points: (FindingsTimeseriesPoint & { low: number })[] = Array.from(
+      { length: numBuckets },
+      (_, i) => ({
+        timestamp: toUtcDateString(windowStart + i * bucketMs),
+        critical: 0,
+        high: 0,
+        medium: 0,
+        low: 0,
+      }),
+    );
     for (const r of rows) {
       const idx = Math.floor((r.occurredAt - windowStart) / bucketMs);
       const bucket = points[idx];
@@ -575,6 +584,7 @@ export class SqliteSecurityRepository implements SecurityViews {
       finding_key: string;
       rule_id: string;
       severity: Severity;
+      repo: string | null;
       path: string | null;
       first_detected_at: number;
       latest_resolved_at: number;
@@ -583,6 +593,7 @@ export class SqliteSecurityRepository implements SecurityViews {
         `SELECT f.finding_key AS finding_key,
                 d.rule_id AS rule_id,
                 d.severity AS severity,
+                e.repo AS repo,
                 e.file_path AS path,
                 COALESCE(f.first_detected_at, e.started_at) AS first_detected_at,
                 latest.resolved_at AS latest_resolved_at
@@ -603,6 +614,7 @@ export class SqliteSecurityRepository implements SecurityViews {
     const items: ResolvedFeedItem[] = rows.map((r) => ({
       findingKey: r.finding_key,
       ruleId: r.rule_id,
+      repo: r.repo ?? '',
       severity: r.severity,
       path: r.path ?? '',
       resolvedAt: new Date(r.latest_resolved_at).toISOString(),
@@ -614,6 +626,61 @@ export class SqliteSecurityRepository implements SecurityViews {
     return Promise.resolve({ items });
   }
 
+  /**
+   * Per-rule tallies of the findings that are still OPEN, whole-store.
+   *
+   * Scoped by status rather than by time, because the card this feeds is a to-do
+   * list: a secret committed three weeks ago and never rotated is still the most
+   * important thing to fix, and any window hides it. It carried a "newest N
+   * findings" cap and then a range; the first meant a different span on every
+   * machine, and the second reported "no recommendations" over live exposure.
+   *
+   * `open` mirrors `deriveFindingStatus` — at-rest, minus resolved and dismissed —
+   * so a row's count is exactly what `?status=open&type=<rule>` returns. Note that
+   * is NOT `severitySummary`'s `openAtRest`, which keeps dismissed findings (a
+   * dismissal is a judgement, not a remediation) and drops untracked legacy rows.
+   * The two answer different questions and only this one has to match a link.
+   *
+   * Aggregated in SQL: the result is O(distinct rule × category × severity), so a
+   * whole-store scope costs a grouped scan rather than a row per finding.
+   */
+  recommendationInputs(): Promise<RecommendationInputRow[]> {
+    const rows = allRows<{
+      rule_id: string;
+      category: string;
+      severity: string;
+      count: number;
+    }>(
+      this.db.prepare(
+        `SELECT d.rule_id AS rule_id,
+                d.category AS category,
+                d.severity AS severity,
+                COUNT(*) AS count
+         FROM inspection_findings f
+         JOIN audit_events e ON e.id = f.audit_event_id
+         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+         LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
+           ON latest.finding_key = f.finding_key
+         WHERE e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
+           AND e.event_type = 'code_change'
+           AND (
+             f.finding_key IS NULL
+             OR latest.status IS NULL
+             OR latest.status NOT IN ('resolved', 'dismissed')
+           )
+         GROUP BY d.rule_id, d.category, d.severity`,
+      ),
+    );
+    return Promise.resolve(
+      rows.map((r) => ({
+        ruleId: r.rule_id,
+        category: r.category,
+        severity: r.severity,
+        count: r.count,
+      })),
+    );
+  }
+
   // Findings whose parent event occurred in [fromMs, toMs), with the parent's
   // epoch-millis timestamp. started_at is an INTEGER column, so the bounds stay
   // numeric and the JS aggregations bucket/split on ms directly.
@@ -622,9 +689,15 @@ export class SqliteSecurityRepository implements SecurityViews {
       occurred_at: number;
       severity: string;
       action_taken: string;
+      rule_id: string;
+      category: string;
     }>(
       this.db.prepare(
-        `SELECT e.started_at AS occurred_at, d.severity AS severity, f.action_taken AS action_taken
+        // `rule_id`/`category` cost nothing extra: inspection_definitions is already
+        // joined for `severity`, so they are two more columns off a row this read
+        // already fetches. They feed the recommended-actions rollup.
+        `SELECT e.started_at AS occurred_at, d.severity AS severity, f.action_taken AS action_taken,
+                d.rule_id AS rule_id, d.category AS category
          FROM inspection_findings f
          JOIN audit_events e ON e.id = f.audit_event_id
          JOIN inspection_definitions d ON d.id = f.inspection_definition_id
@@ -638,6 +711,8 @@ export class SqliteSecurityRepository implements SecurityViews {
       occurredAt: r.occurred_at,
       severity: r.severity,
       actionTaken: r.action_taken,
+      ruleId: r.rule_id,
+      category: r.category,
     }));
   }
 }

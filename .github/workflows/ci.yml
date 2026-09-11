@@ -994,8 +994,12 @@ jobs:
           $rows = @(Import-Csv $path)
           "samples: $($rows.Count) over $([math]::Round($rows.Count * 10 / 60, 1)) minutes"
           foreach ($col in 'cpu_pct', 'disk_queue', 'avail_mb') {
-            $vals = @($rows | ForEach-Object { [double]$_.$col } | Sort-Object)
-            if ($vals.Count -eq 0) { continue }
+            # Empty fields are skipped rather than read as zero: the sampler
+            # leaves a column blank for a counter this image does not carry, and
+            # a blank coerced to 0 would report a perfectly idle disk.
+            $vals = @($rows | Where-Object { $_.$col -ne '' } |
+              ForEach-Object { [double]$_.$col } | Sort-Object)
+            if ($vals.Count -eq 0) { "$col  (not available on this image)"; continue }
             $p95 = $vals[[math]::Min($vals.Count - 1, [int][math]::Floor(0.95 * $vals.Count))]
             $p50 = $vals[[int][math]::Floor(0.5 * $vals.Count)]
             "$col  min $($vals[0])  p50 $p50  p95 $p95  max $($vals[-1])"

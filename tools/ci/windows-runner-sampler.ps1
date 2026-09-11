@@ -18,18 +18,29 @@
 $ErrorActionPreference = 'Continue'
 $out = Join-Path $env:RUNNER_TEMP 'runner-samples.csv'
 'time,cpu_pct,disk_queue,avail_mb' | Set-Content $out
-while ($true) {
+
+# PER COUNTER, not one call for the three. Under `-ErrorAction Stop` a single
+# call promotes any per-counter error to a terminating one, so a name this image
+# does not carry loses the whole tick — and since a renamed counter is not a
+# transient condition, it loses EVERY tick and the file ends as its header line
+# alone. That is the empty series this sampler exists to never produce, and it
+# would read exactly like a quiet runner.
+#
+# Read separately, a missing counter costs its own column and nothing else.
+function Read-Counter {
+  param([string] $Path)
   try {
-    $counters = Get-Counter -Counter @(
-      '\Processor(_Total)\% Processor Time',
-      '\PhysicalDisk(_Total)\Current Disk Queue Length',
-      '\Memory\Available MBytes'
-    ) -ErrorAction Stop
-    $values = $counters.CounterSamples | ForEach-Object { [math]::Round($_.CookedValue, 1) }
-    "$(Get-Date -Format o),$($values -join ',')" | Add-Content $out
+    $sample = (Get-Counter -Counter $Path -ErrorAction Stop).CounterSamples[0]
+    return [math]::Round($sample.CookedValue, 1)
   } catch {
-    # A counter this image does not carry: keep sampling the ones it does on the
-    # next tick rather than ending the series.
+    return ''
   }
+}
+
+while ($true) {
+  $cpu = Read-Counter '\Processor(_Total)\% Processor Time'
+  $disk = Read-Counter '\PhysicalDisk(_Total)\Current Disk Queue Length'
+  $mem = Read-Counter '\Memory\Available MBytes'
+  "$(Get-Date -Format o),$cpu,$disk,$mem" | Add-Content $out
   Start-Sleep -Seconds 10
 }

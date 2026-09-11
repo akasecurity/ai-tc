@@ -992,6 +992,17 @@ jobs:
           $path = Join-Path $env:RUNNER_TEMP 'runner-samples.csv'
           if (-not (Test-Path $path)) { "no samples were written"; exit 0 }
           $rows = @(Import-Csv $path)
+          # Said BEFORE the per-column loop, because otherwise a sampler that
+          # never ticked prints "(not available on this image)" three times and
+          # reads as three renamed counters. Those are opposite conclusions —
+          # one is "this image lacks the counter", the other is "the sampler did
+          # not run" — and the second is the one the next reader has to know,
+          # since it invalidates the whole measurement rather than one column.
+          if ($rows.Count -eq 0) {
+            "no samples collected — the file exists but carries only its header, so the " +
+              "sampler was killed before its first tick or never started"
+            exit 0
+          }
           "samples: $($rows.Count) over $([math]::Round($rows.Count * 10 / 60, 1)) minutes"
           foreach ($col in 'cpu_pct', 'disk_queue', 'avail_mb') {
             # Empty fields are skipped rather than read as zero: the sampler

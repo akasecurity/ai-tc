@@ -90,6 +90,9 @@ export function EnforcementCardView({
                   {a.delta !== 0 && (
                     // Direction (arrow + sign) conveys the change; color stays neutral
                     // because a drop in enforcement counts isn't unambiguously "good".
+                    // The delta is period-over-period — the preceding window of equal
+                    // length — so the label names no fixed span. The window it compares
+                    // against is the range rendered in the subtitle above.
                     <div className="mt-1 inline-flex items-center gap-0.5 text-xs font-semibold text-text-3">
                       {up ? (
                         <ArrowUpIcon aria-hidden focusable={false} className="size-3" />
@@ -97,7 +100,7 @@ export function EnforcementCardView({
                         <ArrowDownIcon aria-hidden focusable={false} className="size-3" />
                       )}
                       {up ? '+' : '−'}
-                      {numberFormat.format(Math.abs(a.delta))} wk/wk
+                      {numberFormat.format(Math.abs(a.delta))} vs. prior
                     </div>
                   )}
                 </Tile>

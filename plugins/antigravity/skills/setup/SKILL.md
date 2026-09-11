@@ -851,8 +851,8 @@ its output is `{ decision, reason, permissionOverrides }` with no field for
 modified args. So a policy that says "redact" cannot be carried out here at all,
 on file writes as much as on shell commands.
 
-What happens in its place is the workspace's **redact fallback**, on the
-Settings page. It ships as **warn**, which on this host means the tool call
+What happens in its place is the workspace's **redact fallback** (`redactFallback` in
+`~/.aka/settings/settings.json`, or pinned for a machine by an administrator). It ships as **warn**, which on this host means the tool call
 **runs with the value unmasked** — and since PreToolUse has no message channel
 (below), the warning appears only in findings and the dashboard, not in the
 session. Set it to **block** to get the older behaviour, where AKA denies the

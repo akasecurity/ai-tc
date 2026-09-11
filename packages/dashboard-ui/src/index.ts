@@ -323,6 +323,14 @@ export {
 
 // Settings views — the web twin of the `/aka:setup` wizard's editable knobs.
 export {
+  type SyncKindRow,
+  type SyncLastOutcome,
+  type SyncLocalOnlyLine,
+  type SyncPanelState,
+  SyncPanelView,
+  type SyncPanelViewProps,
+} from './settings/SyncPanelView.tsx';
+export {
   WorkspaceSettingsFormView,
   type WorkspaceSettingsFormViewProps,
 } from './settings/WorkspaceSettingsFormView.tsx';

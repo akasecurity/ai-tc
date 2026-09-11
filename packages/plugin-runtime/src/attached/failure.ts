@@ -1,3 +1,4 @@
+import type { ControlPlaneFailure } from '@akasecurity/persistence';
 import { classifyRemoteFailure, statusOf } from '@akasecurity/remote';
 
 /**
@@ -29,7 +30,12 @@ import { classifyRemoteFailure, statusOf } from '@akasecurity/remote';
  *                   why the surfaces that render it say what they observed
  *                   rather than guessing at a cause.
  */
-export type ControlPlaneFailure = 'unauthorized' | 'forbidden' | 'unreachable';
+// Defined in @akasecurity/persistence, beside the breaker file that stores it
+// and the reader a dashboard uses, for the reason that file's own docblock
+// gives. Re-exported here because this is where it is PRODUCED — the classifier
+// below is its only writer, and a caller of `classifyFailure` should be able to
+// name its result without reaching past this module.
+export type { ControlPlaneFailure };
 
 /**
  * The status reader is the transport's own, re-exported: `forward-policy.ts`

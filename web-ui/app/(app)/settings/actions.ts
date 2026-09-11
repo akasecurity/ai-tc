@@ -31,6 +31,7 @@ import {
   isVaultConsentValid,
   MODEL_JUDGE_PAYLOAD_VERSION,
   parseActionInput,
+  RedactFallback,
   SaveSettingsInput,
   VAULT_CONSENT_VERSION,
   VaultInlineReveal,
@@ -134,10 +135,12 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
 
   const historicalAccess = HistoricalAccess.safeParse(data.historicalAccess);
   const inlineReveal = VaultInlineReveal.safeParse(data.vaultInlineReveal);
+  const redactFallback = RedactFallback.safeParse(data.redactFallback);
   const vaultChoice = data.vaultConsent;
   if (
     !historicalAccess.success ||
     !inlineReveal.success ||
+    !redactFallback.success ||
     (vaultChoice !== 'on' && vaultChoice !== 'off')
   ) {
     return { ok: false, error: 'Invalid settings value.' };
@@ -207,6 +210,11 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
         // above for the logic itself.
         historySyncConsent: consent,
         vaultInlineReveal: inlineReveal.data,
+        // What a detection set to Redact does on a field that cannot be masked
+        // in place. Not a handling setting — it never changes what a detection
+        // is assigned — so it carries no consent record and is written like any
+        // other plain preference.
+        redactFallback: redactFallback.data,
       };
     });
   } catch (error) {

@@ -213,6 +213,10 @@ export function overlayManagedSettings(
   if (values.vaultInlineReveal !== undefined) merged.vaultInlineReveal = values.vaultInlineReveal;
   if (values.dataSharesInPlace !== undefined) merged.dataSharesInPlace = values.dataSharesInPlace;
   if (values.redactFallback !== undefined) merged.redactFallback = values.redactFallback;
+  // Replaced whole rather than field-merged: the toggle and the day count are
+  // one pinned unit, so a pin that set only `enabled` must not leave the user's
+  // own `retainDays` in force beside it.
+  if (values.bodyRetention !== undefined) merged.bodyRetention = values.bodyRetention;
 
   if (values.vaultConsent !== undefined) {
     merged.vaultConsent = values.vaultConsent

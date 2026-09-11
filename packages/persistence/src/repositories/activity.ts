@@ -271,6 +271,7 @@ interface TimelineRow {
   target_id: string | null;
   internal: number | null;
   flagged: number | null;
+  content_expired_at: number | null;
 }
 
 /** Map one raw timeline row onto the contract AuditEvent, or null when its
@@ -295,6 +296,10 @@ function buildAuditEvent(row: TimelineRow): AuditEvent | null {
     targetId: row.target_id,
     internal: intToBool(row.internal),
     flagged: intToBool(row.flagged),
+    // Only meaningful when the title came out empty — a row whose body was
+    // expired but whose title fell back to `tool_name` still has something to
+    // render, and flagging it would make the view apologise for nothing.
+    bodyExpired: row.content_expired_at !== null && (row.title ?? '') === '',
   };
 }
 
@@ -309,6 +314,7 @@ const TIMELINE_COLUMNS = `
   event_type,
   started_at,
   coalesce(content, json_extract(attributes, '$.tool_name')) AS title,
+  content_expired_at,
   coalesce(json_extract(attributes, '$.detail'), json_extract(attributes, '$.target')) AS detail,
   coalesce(json_extract(attributes, '$.tool_name'), json_extract(attributes, '$.tool')) AS tool,
   json_extract(attributes, '$.severity') AS severity,

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { BodyRetention } from './local.ts';
 import { RedactFallback } from './policy.ts';
 
 // Administratively-supplied configuration: a second settings source that an
@@ -33,6 +34,10 @@ export const ManagedSettingKey = z
     'modelJudgeConsent',
     'dataSharesInPlace',
     'redactFallback',
+    // Pins the toggle and the day count together — see BodyRetention on why the
+    // two are one unit. An administrator mandating a window wants the count
+    // enforced with it, not one a user can widen while the toggle stays on.
+    'bodyRetention',
   ])
   .meta({ id: 'ManagedSettingKey' });
 export type ManagedSettingKey = z.infer<typeof ManagedSettingKey>;
@@ -67,6 +72,7 @@ export const ManagedSettingsValues = z
     modelJudgeConsent: z.boolean().optional(),
     dataSharesInPlace: z.boolean().optional(),
     redactFallback: RedactFallback.optional(),
+    bodyRetention: BodyRetention.optional(),
   })
   .meta({ id: 'ManagedSettingsValues' });
 export type ManagedSettingsValues = z.infer<typeof ManagedSettingsValues>;

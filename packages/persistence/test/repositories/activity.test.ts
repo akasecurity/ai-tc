@@ -537,6 +537,34 @@ describe('getSession', () => {
     expect(fetched).toHaveLength(session?.events.length ?? -1);
   });
 
+  it('marks a prompt whose body was expired, rather than titling it blank', async () => {
+    // The timeline titles a prompt/response from `content`, so local body
+    // expiry leaves it with nothing to show. A blank line reads as a bug; the
+    // flag is what lets the view say the body is gone while the event, its
+    // badges and its links all stay.
+    seedSessionA();
+    raw.exec(
+      `UPDATE audit_events SET content = NULL, content_expired_at = 1
+         WHERE root_session_id = 'A' AND event_type = 'prompt'`,
+    );
+
+    const session = await activity().getSession('A');
+    const prompts = session?.events.filter((e) => e.kind === 'prompt') ?? [];
+    expect(prompts.length, 'no prompt on the timeline to assert about').toBeGreaterThan(0);
+    for (const p of prompts) {
+      expect(p.title).toBe('');
+      expect(p.bodyExpired).toBe(true);
+    }
+  });
+
+  it('does not mark an event that never had a body', async () => {
+    // The control. `bodyExpired` keys on the STAMP, so a row that simply never
+    // carried a title must not claim something was taken from it.
+    seedSessionA();
+    const session = await activity().getSession('A');
+    for (const e of session?.events ?? []) expect(e.bodyExpired).toBe(false);
+  });
+
   it('assembles detail: tokens, tools, rollups, and drops structural rows', async () => {
     seedSessionA();
     const session = await activity().getSession('A');

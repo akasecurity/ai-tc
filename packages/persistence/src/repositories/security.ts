@@ -227,7 +227,7 @@ export class SqliteSecurityRepository implements SecurityViews {
                       ELSE 0
                     END) AS open_at_rest
          FROM inspection_findings f
-         JOIN audit_events e ON e.id = f.audit_event_id
+         JOIN audit_events e INDEXED BY idx_audit_capture_rollup ON e.id = f.audit_event_id
          JOIN inspection_definitions d ON d.id = f.inspection_definition_id
          LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
            ON latest.finding_key = f.finding_key
@@ -514,7 +514,7 @@ export class SqliteSecurityRepository implements SecurityViews {
       this.db.prepare(
         `SELECT e.repo AS repo, count(*) AS c
          FROM inspection_findings f
-         JOIN audit_events e ON e.id = f.audit_event_id
+         JOIN audit_events e INDEXED BY idx_audit_capture_rollup ON e.id = f.audit_event_id
          WHERE e.started_at >= :from AND e.started_at < :to
            AND e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
            AND e.repo IS NOT NULL
@@ -657,7 +657,7 @@ export class SqliteSecurityRepository implements SecurityViews {
                 d.severity AS severity,
                 COUNT(*) AS count
          FROM inspection_findings f
-         JOIN audit_events e ON e.id = f.audit_event_id
+         JOIN audit_events e INDEXED BY idx_audit_capture_rollup ON e.id = f.audit_event_id
          JOIN inspection_definitions d ON d.id = f.inspection_definition_id
          LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
            ON latest.finding_key = f.finding_key
@@ -699,7 +699,7 @@ export class SqliteSecurityRepository implements SecurityViews {
         `SELECT e.started_at AS occurred_at, d.severity AS severity, f.action_taken AS action_taken,
                 d.rule_id AS rule_id, d.category AS category
          FROM inspection_findings f
-         JOIN audit_events e ON e.id = f.audit_event_id
+         JOIN audit_events e INDEXED BY idx_audit_capture_rollup ON e.id = f.audit_event_id
          JOIN inspection_definitions d ON d.id = f.inspection_definition_id
          WHERE e.started_at >= :from AND e.started_at < :to
            AND e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})

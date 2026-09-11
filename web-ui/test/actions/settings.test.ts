@@ -129,6 +129,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(res).toEqual({ ok: true });
 
@@ -159,6 +160,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       // A real unrelated edit, so this is a save that had to do something.
       vaultInlineReveal: 'full',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
 
     // THE POSITIVE CONTROL. Without it every assertion below is satisfied by a
@@ -202,6 +204,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       // A real unrelated edit, or the save proves nothing.
       vaultInlineReveal: 'full',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(res.ok).toBe(true);
 
@@ -244,6 +247,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       // never had cause to make.
       vaultInlineReveal: 'full',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(res.ok).toBe(true);
     expect(readWorkspaceSettings().historySyncConsent).toEqual(current);
@@ -304,6 +308,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(res.ok).toBe(true);
 
@@ -339,6 +344,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
 
     expect(readWorkspaceSettings().historySyncConsent).toBeUndefined();
@@ -352,6 +358,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     const first = readWorkspaceSettings().vaultConsent;
     expect(first).toBeDefined();
@@ -370,6 +377,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       // second save proves nothing about a re-stamp it never had cause to make.
       vaultInlineReveal: 'off',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(res).toEqual({ ok: true });
 
@@ -386,6 +394,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(rawSettings()).toContain('vaultConsent');
 
@@ -396,6 +405,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(res).toEqual({ ok: true });
 
@@ -415,6 +425,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     const before = rawSettings();
 
@@ -425,6 +436,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'granted',
       vaultInlineReveal: 'masked',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(res.ok).toBe(false);
     expect(rawSettings()).toBe(before);
@@ -442,6 +454,7 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: forged as unknown as string,
       vaultInlineReveal: 'masked',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(res.ok).toBe(false);
     expect(() => rawSettings()).toThrow(); // nothing was ever written
@@ -480,11 +493,71 @@ describe('stale-grant re-consent and inline reveal', () => {
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(result.ok).toBe(true);
     const persisted = readWorkspaceSettings(join(home, '.aka'));
     expect(persisted.vaultConsent?.version).toBe(VAULT_CONSENT_VERSION);
     expect(persisted.vaultConsent?.acknowledgedAt).not.toBe('2020-01-01T00:00:00.000Z');
+  });
+
+  it('persists the retention horizon the user chose', async () => {
+    const res = await saveSettings({
+      historicalAccess: 'session-only',
+      modelJudgeConsent: 'revoked',
+      historySyncConsent: 'revoked',
+      vaultConsent: 'off',
+      vaultInlineReveal: 'masked',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: true, retainDays: 7 },
+    });
+    expect(res.ok).toBe(true);
+
+    const saved = readWorkspaceSettings(join(home, '.aka')).bodyRetention;
+    expect(saved).toEqual({ enabled: true, retainDays: 7 });
+  });
+
+  it('defaults the horizon to 30 days on a store that never set one', () => {
+    // The default is the product's answer, not the form's — a machine that has
+    // never opened Settings must already carry it.
+    expect(readWorkspaceSettings(join(home, '.aka')).bodyRetention).toEqual({
+      enabled: false,
+      retainDays: 30,
+    });
+  });
+
+  it('refuses a horizon outside the legal range rather than clamping it', async () => {
+    // Clamping would expire a different set of bodies than the one asked for,
+    // and expiry is not undoable. Both ends, and the non-integer case.
+    for (const retainDays of [0, -1, 3651, 2.5]) {
+      const res = await saveSettings({
+        historicalAccess: 'session-only',
+        modelJudgeConsent: 'revoked',
+        historySyncConsent: 'revoked',
+        vaultConsent: 'off',
+        vaultInlineReveal: 'masked',
+        redactFallback: 'warn',
+        bodyRetention: { enabled: true, retainDays },
+      });
+      expect(res.ok, `retainDays ${String(retainDays)} was accepted`).toBe(false);
+    }
+    // Nothing was written by any of the refusals.
+    expect(readWorkspaceSettings(join(home, '.aka')).bodyRetention.enabled).toBe(false);
+  });
+
+  it('refuses a malformed bodyRetention without throwing', async () => {
+    for (const bodyRetention of [null, 'always', 42, { enabled: 'yes', retainDays: 30 }]) {
+      const res = await saveSettings({
+        historicalAccess: 'session-only',
+        modelJudgeConsent: 'revoked',
+        historySyncConsent: 'revoked',
+        vaultConsent: 'off',
+        vaultInlineReveal: 'masked',
+        bodyRetention,
+      });
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error).toBeTruthy();
+    }
   });
 
   it('persists a valid inline-reveal mode and rejects junk', async () => {
@@ -495,6 +568,7 @@ describe('stale-grant re-consent and inline reveal', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'full',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(ok.ok).toBe(true);
     expect(readWorkspaceSettings(join(home, '.aka')).vaultInlineReveal).toBe('full');
@@ -506,6 +580,7 @@ describe('stale-grant re-consent and inline reveal', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'loud',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(bad.ok).toBe(false);
   });

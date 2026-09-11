@@ -8,6 +8,7 @@ export const COL = {
   occurredAt: 'occurred_at',
   contentHash: 'content_hash',
   content: 'content',
+  contentExpiredAt: 'content_expired_at',
   metadata: 'metadata',
   eventId: 'event_id',
   ruleId: 'rule_id',

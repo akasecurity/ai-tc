@@ -341,6 +341,7 @@ describe('detachFromControlPlane', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(isHistorySyncConsentValid(readWorkspaceSettings().historySyncConsent, ENDPOINT)).toBe(
       true,
@@ -464,6 +465,7 @@ describe('detachFromControlPlane', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'off',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY });
     await detachFromControlPlane();
@@ -509,6 +511,7 @@ describe('write failures are reported, never thrown', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         redactFallback: 'warn',
+        bodyRetention: { enabled: false, retainDays: 30 },
       });
       expect(res.ok).toBe(false);
       expect(res.error).toContain('settings.json');
@@ -617,6 +620,7 @@ describe('untyped wire input', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         redactFallback: 'warn',
+        bodyRetention: { enabled: false, retainDays: 30 },
       });
       expect(res.ok).toBe(false);
       expect(res.error).toContain('historicalAccess');
@@ -631,6 +635,7 @@ describe('untyped wire input', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         redactFallback: 'warn',
+        bodyRetention: { enabled: false, retainDays: 30 },
       });
       expect(res.ok).toBe(false);
       expect(res.error).toContain('modelJudgeConsent');
@@ -646,6 +651,7 @@ describe('untyped wire input', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         redactFallback: 'warn',
+        bodyRetention: { enabled: false, retainDays: 30 },
       });
       expect(res).toEqual({ ok: true });
       expect(readWorkspaceSettings().historicalAccess).toBe('full');

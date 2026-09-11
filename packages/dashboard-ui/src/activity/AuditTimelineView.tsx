@@ -63,7 +63,15 @@ function EventRow({
       </div>
       <div className={cn('pt-0.5', last ? 'pb-0' : 'pb-4.5')}>
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-ui font-semibold text-text">{event.title}</span>
+          {/* An expired body leaves nothing to title the row with. Saying so is
+              the point: a blank line reads as a bug, while "Body expired" reads
+              as the retention setting doing what it was switched on to do. The
+              event, its badges and everything it links to are all still here. */}
+          {event.bodyExpired ? (
+            <span className="text-ui font-semibold text-text-2 italic">Body expired</span>
+          ) : (
+            <span className="text-ui font-semibold text-text">{event.title}</span>
+          )}
           {event.severity && <SeverityBadge severity={event.severity} />}
           {event.flagged && (
             <Badge variant="critical" className="h-6 gap-1.5">

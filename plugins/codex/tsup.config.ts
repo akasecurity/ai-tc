@@ -65,6 +65,7 @@ export default defineConfig({
     // in scripts/ like every other entry, because that is where
     // triggerHistorySync resolves it from.
     'history-sync': 'src/history-sync.ts',
+    'content-retention': 'src/content-retention.ts',
     // Read surface (aka:health · aka:findings · aka:recommend · aka:audit) + onboarding (aka:setup)
     query: 'src/query.ts',
     // aka:dashboard — launches the web dashboard via the `aka` CLI

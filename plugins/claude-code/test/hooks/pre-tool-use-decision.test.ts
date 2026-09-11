@@ -313,6 +313,7 @@ function settings(): WorkspaceSettings {
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
     redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
   };
 }
 

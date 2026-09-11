@@ -340,27 +340,43 @@ describe('the inputs above are adversarial for what they replaced', () => {
   // `the replaced punctuation pattern` at 46.340ms and 119.111ms, a ratio of
   // 2.57 where an idle Mac reads 4.54, on a clock whose measured resolution was
   // 0.2310ms — so quantization was ruled out by the failure message itself, and
-  // the skew was 36%. Across 4x the same shapes read 4 and 16, so a bar at 8
-  // tolerates 50% in one direction and 100% in the other, and that same 36%
-  // would have read 10.2 against the 8 demanded.
+  // the skew was 36%. Across 4x the two populations separate far enough that
+  // the same 36% lands nowhere near the bar: measured here, a linear shape
+  // reads 4.20-4.33 and these quadratic ones 10.42-18.27.
   const SMALL = MB / 256;
   const LARGE = SMALL * 4;
 
-  // At the 4x span above, a linear shape reads 4 and a textbook quadratic one
-  // 16. The four shapes here are not textbook — regex backtracking is not
-  // exactly n^2 — and measure 11.33 to 16.81 over three idle runs, so the real
-  // separation to split is 4 against ~11, not 4 against 16.
+  // At the 4x span above a textbook linear shape reads 4 and a textbook
+  // quadratic one 16, but neither population is textbook and the bar is set
+  // from what they actually read. Measured over 16 readings on an idle machine:
+  // these four shapes read 10.42 to 18.27, a shape made genuinely linear
+  // (constant work per hit) reads 4.20 to 4.33, and one made flat outright
+  // (LARGE = SMALL) reads 0.98 to 1.00.
   //
-  // 6 splits it: 1.5x above a linear reading and 1.89x below the worst measured
-  // one. Deliberately nearer the bottom, because the two errors are not
-  // symmetric and the observed one has a direction. Every skew this file has
-  // actually seen DEFLATED the quotient — 2.07 against 4 on a Windows leg, 2.57
-  // against 4.54 on a No-network one — because it inflates whichever side is
-  // cheaper or measured first, and that side is the denominator. Reading a
-  // quadratic shape as LINEAR reddens a tree whose diff cannot explain it,
-  // which is what this file has spent two legs doing; reading a linear shape as
-  // superlinear needs the numerator to gain 50% on the denominator, against the
-  // drift rather than with it.
+  // Fold in the window's own error — each side carries at most 1/8, so the
+  // quotient carries a factor of (1+1/8)/(1-1/8) either way — and the two
+  // worst cases are 4.33 x 1.29 = 5.57 on the linear side and 10.42 x 0.78 =
+  // 8.10 on the quadratic one. 6 sits between them, and NOT in the middle:
+  //
+  //   linear    5.57 -> 6      a 1.08x margin, the TIGHT side
+  //   quadratic 8.10 -> 6      a 1.35x margin
+  //
+  // That asymmetry is chosen rather than inherited, and the reason is that the
+  // two errors are not equally likely here. Every skew this file has actually
+  // seen DEFLATED the quotient — 2.07 against 4 on a Windows leg, 2.57 against
+  // 4.54 on a No-network one, 2.91 against 3.86 on a macOS one — because it
+  // inflates whichever side is cheaper or measured first, and that side is the
+  // denominator. Deflation walks a QUADRATIC reading down toward the bar, which
+  // is the false-LINEAR verdict that has reddened three legs on diffs that
+  // could not reach this file. It walks a LINEAR reading away from the bar. So
+  // the tight margin sits on the side the observed drift moves away from, and
+  // the roomy one on the side it moves toward.
+  //
+  // Reading it the other way needs the numerator to gain on the denominator by
+  // 8% beyond the window's own error — a direction nothing here has produced.
+  // If it ever does, RAISE this rather than widening the window: the balance
+  // point of the two worst cases above is 6.7, and 7 buys the linear side 1.26x
+  // at the cost of taking the quadratic side to 1.16x.
   const SUPERLINEAR = 6;
 
   // Both readings are divided into each other, so everything the two share
@@ -441,11 +457,13 @@ describe('the inputs above are adversarial for what they replaced', () => {
   const CLOCK_RESOLUTION_MS = clockResolutionMs();
 
   // How many resolutions wide one timed window has to be. Each side then
-  // carries at most 1/8 of relative error and the quotient at most ~1/4, which
-  // leaves a genuinely quadratic shape reading 12.4 or better against the 8
-  // demanded, and a genuinely linear one 5.1 or worse. The 4x span above is
-  // what pays for this: at a 2x span the same error budget needed twice the
-  // window, and on a 16ms clock that is 256ms per side rather than 128ms.
+  // carries at most 1/8 of relative error, so the quotient carries a factor of
+  // (1+1/8)/(1-1/8) — about 1.29 — in whichever direction hurts. Applied to the
+  // measured populations beside `SUPERLINEAR`, that is 8.10 for the worst
+  // quadratic reading and 5.57 for the worst linear one, against a bar of 6.
+  // The 4x span above is what pays for this: at a 2x span the same error budget
+  // needed twice the window, and on a 16ms clock that is 256ms per side rather
+  // than 128ms.
   const RESOLUTION_MARGIN = 8;
 
   // The absolute floor beneath the clock-derived one. On a microsecond clock

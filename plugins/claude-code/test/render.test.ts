@@ -6,7 +6,11 @@ import { fileURLToPath } from 'node:url';
 
 import { handleCapture, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { FindingView, HealthSummary, PluginConfig } from '@akasecurity/plugin-sdk';
-import { createPluginRuntime, severityFloorPosture } from '@akasecurity/plugin-sdk';
+import {
+  buildRecommendations as sdkBuildRecommendations,
+  createPluginRuntime,
+  severityFloorPosture,
+} from '@akasecurity/plugin-sdk';
 import type {
   BuiltinPolicyId,
   DetectionCategory,
@@ -170,6 +174,43 @@ describe('pure renderers', () => {
     // No fabricated gauges/metrics remain.
     expect(out).not.toContain('Tokens saved');
     expect(out).not.toContain('MCP servers');
+  });
+
+  it('health: renders the host-compatibility block when the caller supplies one', () => {
+    // The positive control for the /aka:health wiring. `buildHealthReport`'s
+    // 4th argument defaults to [], so every pre-existing call site takes the
+    // default and `render.ts`'s `if (r.host.length > 0)` is never exercised —
+    // deleting that block outright stays green without this case.
+    const summary: HealthSummary = {
+      findings: 3,
+      byAction: { block: 2, redact: 1, warn: 0, allow: 0, log: 0 },
+      bySeverity: { critical: 2, high: 0, medium: 0, low: 1 },
+      coverage: 1,
+    };
+    const out = strip(
+      renderHealth(
+        buildHealthReport(
+          summary,
+          [finding()],
+          [],
+          ['Claude Code: 2.0.0 (last seen)', '  inactive: model-switch protection'],
+        ),
+      ),
+    );
+    expect(out).toContain('Claude Code: 2.0.0 (last seen)');
+    expect(out).toContain('model-switch protection');
+  });
+
+  it('recommend: re-exports the shared rollup rather than holding a second copy', () => {
+    // What this module still owes is the WIRING: that its re-export names the one
+    // shared implementation rather than a second copy of it. The rollup's own
+    // behaviour — the label counting the NAMED rule while the rank follows category
+    // volume — is asserted against that implementation in
+    // `packages/schema/test/security/recommendations.test.ts`. Restating it here
+    // would re-run schema's suite through a re-export, and a plugin that had drifted
+    // back to a local copy would go green on it, which is the defect the move
+    // removed.
+    expect(buildRecommendations).toBe(sdkBuildRecommendations);
   });
 
   it('recommend: ranks by severity, numbered list with severity badges', () => {

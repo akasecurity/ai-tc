@@ -18,7 +18,15 @@ import { WidgetEmpty, WidgetError } from './widget-shared.tsx';
 
 // One day's point with a presentation `label` (the raw `timestamp` resolved to a
 // short date by the data layer).
-export type FindingsChartPoint = Omit<FindingsTimeseriesPoint, 'timestamp'> & { label: string };
+//
+// `low` is REQUIRED here though it is optional on the wire: it is plotted as a
+// series, and AreaChart's `data` is `Record<K, number | null>`, which an optional
+// property does not satisfy. Requiring it makes each host resolve the absent case
+// (`p.low ?? 0`) rather than leaving a hole the chart would read as a gap.
+export type FindingsChartPoint = Omit<FindingsTimeseriesPoint, 'timestamp' | 'low'> & {
+  label: string;
+  low: number;
+};
 
 export interface FindingsTimeseriesView {
   points: FindingsChartPoint[];
@@ -32,10 +40,19 @@ const FINDINGS_SERIES: { key: FindingsSeriesKey; label: string; color: string }[
   { key: 'critical', label: 'Critical', color: COLORS.sevCritical },
   { key: 'high', label: 'High', color: COLORS.sevHigh },
   { key: 'medium', label: 'Medium', color: COLORS.sevMedium },
+  { key: 'low', label: 'Low', color: COLORS.sevLow },
 ];
 
 export function FindingsOverTimeCardView({ points, isLoading, error }: FindingsTimeseriesView) {
-  const isEmpty = points.every((p) => p.critical + p.high + p.medium === 0);
+  // Every plotted series counts, `low` included — summing only the top three
+  // renders "No findings" over a range that genuinely holds low-severity ones.
+  // Derived from the plotted series rather than a hand-written sum, for two
+  // reasons. A series added to FINDINGS_SERIES is counted here automatically. And
+  // each value is tested for falsiness instead of added: `low` is OPTIONAL on the
+  // wire and this package ships to hosts whose types are erased, so a three-series
+  // producer reaches this — and summing an absent value yields NaN, which is not
+  // `=== 0`, reporting a genuinely empty range as populated.
+  const isEmpty = points.every((p) => FINDINGS_SERIES.every((s) => !p[s.key]));
   return (
     <Card className="mt-4 shadow-sm xl:mt-5">
       <CardHeader>

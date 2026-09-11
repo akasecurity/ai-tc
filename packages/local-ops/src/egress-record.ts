@@ -11,7 +11,7 @@ import {
   resolveWorktreeRoot,
   toPosix,
 } from '@akasecurity/plugin-sdk';
-import type { EgressWriteSummary } from '@akasecurity/schema';
+import type { EgressWriteSummary, RecordProjectEgressInput } from '@akasecurity/schema';
 
 // The egress-recording pass shared by `aka scan` and the web-ui's Scan page:
 // take the raw per-file extraction the walk produced, anchor it to a stable
@@ -28,8 +28,23 @@ import type { EgressWriteSummary } from '@akasecurity/schema';
 // side benefit of a scan, so any failure returns null and never breaks the
 // scan that triggered it.
 
-/** What one egress-recording pass wrote, for host display (`aka scan`). */
-export type EgressRecordResult = EgressWriteSummary & { project: string };
+/**
+ * What one egress-recording pass wrote, plus the resolved input it wrote, for a
+ * caller that goes on to forward it.
+ */
+export type EgressRecordResult = EgressWriteSummary & {
+  project: string;
+  /**
+   * The exact input the store consumed: the plaintext prefixed `projectKey`,
+   * the resolved hits with their snippets, and the walk-mode reconcile.
+   *
+   * LOCAL data, and the reason it is returned rather than rebuilt is that
+   * resolving it is the expensive half of this pass. A forwarder projects it
+   * through `toEgressIngestRequest`, which is what strips the snippets and
+   * digests the key; nothing prints, logs or serialises it as it stands.
+   */
+  input: RecordProjectEgressInput;
+};
 
 /**
  * Record the egress `scanPathIntoStore` collected for `target`. Returns the
@@ -111,14 +126,17 @@ export function recordProjectEgress(
       files.push({ ...hit, file, vendored: isVendoredPath(file) });
     }
 
-    const summary = db.shares.recordProjectEgress({
+    // Built once and handed on: the caller that forwards must send the SAME
+    // input the store took, not a second resolution of the same tree.
+    const input: RecordProjectEgressInput = {
       projectKey,
       project,
       projectId,
       reconcile: { mode: 'walk', walkedPrefix: toPosix(relative(root, abs)) },
       hits: resolveEgress(files),
-    });
-    return { ...summary, project };
+    };
+    const summary = db.shares.recordProjectEgress(input);
+    return { ...summary, project: input.project, input };
   } catch {
     return null;
   }

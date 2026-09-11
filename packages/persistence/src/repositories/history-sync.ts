@@ -102,6 +102,13 @@ export interface HistorySyncCounts {
    * statement for why re-arming a capture is the one thing the lane must not do.
    */
   refused: number;
+  /**
+   * STRUCTURAL rows the attached window closed over, undelivered. Counted here
+   * for the same reason `refused` is: the surfaced total is built from this
+   * shape, and a bucket the total does not name is a row that leaves the number
+   * without being reported anywhere.
+   */
+  detached: number;
   capturesSkipped: number;
 }
 
@@ -428,7 +435,9 @@ export class SqliteHistorySyncRepository {
                        AND (sync_failure IS NULL OR sync_failure = 'payload_invalid')
                   THEN 1 ELSE 0 END) AS skipped,
          SUM(CASE WHEN synced_at = ${String(SKIPPED)}
-                       AND sync_failure = 'deployment_refused' THEN 1 ELSE 0 END) AS refused
+                       AND sync_failure = 'deployment_refused' THEN 1 ELSE 0 END) AS refused,
+         SUM(CASE WHEN synced_at = ${String(SKIPPED)}
+                       AND sync_failure = 'detached_undelivered' THEN 1 ELSE 0 END) AS detached
        FROM audit_events
        WHERE event_type IN (${TYPE_LIST})`,
     );
@@ -812,6 +821,7 @@ export class SqliteHistorySyncRepository {
       sent: number | null;
       skipped: number | null;
       refused: number | null;
+      detached: number | null;
     }>(this.countsStmt, { before });
     const captures = getRow<{ skipped: number | null }>(this.captureSkipCountStmt);
     // SUM() over no rows is NULL, which is zero of each here.
@@ -820,6 +830,7 @@ export class SqliteHistorySyncRepository {
       sent: row?.sent ?? 0,
       skipped: row?.skipped ?? 0,
       refused: row?.refused ?? 0,
+      detached: row?.detached ?? 0,
       capturesSkipped: captures?.skipped ?? 0,
     };
   }

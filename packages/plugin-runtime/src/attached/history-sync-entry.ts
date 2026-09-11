@@ -95,13 +95,21 @@ export async function runHistorySyncPass(
       // `sentTotal` and `pendingTotal` would announce a permanent loss once and
       // drop it on the next pass, while the rows stayed gone.
       //
-      // THREE terms, not two. Splitting a deployment's refusal out of `skipped`
-      // gave the store a truer answer and silently shrank this one: a structural
-      // row a deployment rejected used to land in `skipped` and reach this
-      // number, and after the split it reached nothing. The capture term needs
-      // no counterpart — that lane keeps both reasons in one total, because
-      // neither is ever freed there.
-      skippedTotal: result.counts.skipped + result.counts.refused + result.counts.capturesSkipped,
+      // EVERY reason the store can name, not just the original one. Splitting
+      // `skipped` into its reasons gave the store a truer answer and silently
+      // shrank this number twice over: a structural row a deployment rejected,
+      // and a window a detach closed over undelivered, both used to land in
+      // `skipped` and reach a surface, and after the splits each reached
+      // nothing. A bucket this sum does not name is a row that disappears from
+      // the only total anyone sees.
+      //
+      // The capture term needs no counterpart: that lane keeps both of its
+      // reasons in one total, because neither is ever freed there.
+      skippedTotal:
+        result.counts.skipped +
+        result.counts.refused +
+        result.counts.detached +
+        result.counts.capturesSkipped,
       // The first pass that ran is when this machine started sending, and it
       // keeps that answer across every later pass.
       startedAtMs: previous?.startedAtMs ?? result.atMs,

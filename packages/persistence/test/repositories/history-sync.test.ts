@@ -144,6 +144,7 @@ describe('SqliteHistorySyncRepository — counting', () => {
       sent: 1,
       skipped: 1,
       refused: 0,
+      detached: 0,
       capturesSkipped: 0,
     });
   });
@@ -171,6 +172,7 @@ describe('SqliteHistorySyncRepository — counting', () => {
       sent: 0,
       skipped: 0,
       refused: 0,
+      detached: 0,
       capturesSkipped: 0,
     });
   });
@@ -667,6 +669,10 @@ describe('SqliteHistorySyncRepository — closing the attached period', () => {
     db.historySync.rearmFor('fp', T0);
 
     db.historySync.closeAttachedWindow(T0, T0 + MINUTE);
+
+    // And it reaches the total a surface is built from, rather than leaving the
+    // number without being reported anywhere.
+    expect(db.historySync.counts(ALL).detached).toBe(3);
 
     const p = db.historySync.partition();
     expect(p.synced).toBe(0);

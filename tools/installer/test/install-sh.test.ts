@@ -27,7 +27,7 @@ import {
   writeRelease,
   writeSums,
 } from './helpers/release-fixture.ts';
-import { realDistDir, runInstallSh } from './helpers/run-installer.ts';
+import { describeRun, realDistDir, runInstallSh } from './helpers/run-installer.ts';
 import { type ReleaseServer, serveRelease } from './helpers/serve-release.ts';
 
 const REAL_DIST = realDistDir();
@@ -90,7 +90,7 @@ describe.skipIf(process.platform === 'win32' || hostIsUnsupportedByInstallSh())(
       const result = await run();
 
       expect(result.stderr).toBe('');
-      expect(result.status).toBe(0);
+      expect(result.status, describeRun(result)).toBe(0);
       // The script runs `aka --version` itself and prints what it got, so this
       // asserts the extracted binary was reached and ran.
       expect(result.stdout).toContain(expectedVersionOutput(FIXTURE_VERSION));
@@ -121,7 +121,7 @@ describe.skipIf(process.platform === 'win32' || hostIsUnsupportedByInstallSh())(
 
       const result = await run();
 
-      expect(result.status).not.toBe(0);
+      expect(result.status, describeRun(result)).not.toBe(0);
       expect(result.stderr).toContain('checksum mismatch');
       // Nothing extracted, nothing linked. The happy path above is the positive
       // control for these two reads — without it, a script that always refused
@@ -144,7 +144,7 @@ describe.skipIf(process.platform === 'win32' || hostIsUnsupportedByInstallSh())(
 
       const result = await run();
 
-      expect(result.status).not.toBe(0);
+      expect(result.status, describeRun(result)).not.toBe(0);
       expect(result.stderr).toContain('not listed in SHA256SUMS');
       // The DISTINCT path, not the mismatch one. Without the `[ -n "$want" ]`
       // guard an unlisted archive compares against an empty expectation and is
@@ -171,7 +171,7 @@ describe.skipIf(process.platform === 'win32' || hostIsUnsupportedByInstallSh())(
       const result = await run(real.version);
 
       expect(result.stderr).toBe('');
-      expect(result.status).toBe(0);
+      expect(result.status, describeRun(result)).toBe(0);
       // `aka --version` prints a bare X.Y.Z, and it has to be the version the
       // asset name claimed — the installer resolved the asset from that string.
       expect(result.stdout).toContain(real.version);

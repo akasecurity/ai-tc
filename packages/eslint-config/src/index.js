@@ -279,7 +279,11 @@ const DRIZZLE_IMPORT_MESSAGE =
  * mode reached from the inside. A caller's entries go LAST, matching
  * `noNetworkImports`, so the wall's own message is the one a reader sees for a
  * specifier both halves name.
- * @param {{ allow?: string[], paths?: object[], patterns?: object[] }} [opts]
+ * @param {{
+ *   allow?: string[],
+ *   paths?: { name: string, message: string }[],
+ *   patterns?: { group: string[], message: string }[],
+ * }} [opts]
  */
 export function drizzleWallRules(opts = {}) {
   const { paths = [], patterns = [], ...rest } = opts;

@@ -5,13 +5,14 @@
  * it never throws — it runs with stdio ignored and nobody watching, so a
  * rejection would be an unhandled rejection that reaches no one.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { applyOnboarding, dataDir, openLocalDatabase, settingsDir } from '@akasecurity/persistence';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { runContentRetentionPass } from '../src/content-retention-pass.ts';
 
 const DAY = 86_400_000;
@@ -38,7 +39,7 @@ describe('runContentRetentionPass', () => {
     base = mkdtempSync(join(tmpdir(), 'aka-retention-pass-'));
   });
   afterEach(() => {
-    rmSync(base, { recursive: true, force: true });
+    removeTree(base);
   });
 
   it('makes no pass while the setting is off', () => {

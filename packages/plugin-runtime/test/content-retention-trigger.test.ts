@@ -7,13 +7,14 @@
  * marker file appearing on disk is a feature nobody switched on announcing
  * itself.
  */
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   CONTENT_RETENTION_MARKER_NAME,
   CONTENT_RETENTION_SCRIPT_NAME,
@@ -46,7 +47,7 @@ describe('triggerContentRetention', () => {
     dir = mkdtempSync(join(tmpdir(), 'aka-retention-trigger-'));
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    removeTree(dir);
   });
 
   it('spawns the sibling child when expiry is on', () => {

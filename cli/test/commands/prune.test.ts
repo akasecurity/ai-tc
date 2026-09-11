@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { applyOnboarding, dataDir, openLocalDatabase } from '@akasecurity/persistence';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { runPrune } from '../../src/commands/prune.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
 
@@ -53,7 +54,7 @@ describe('aka prune', () => {
     base = mkdtempSync(join(tmpdir(), 'aka-prune-'));
   });
   afterEach(() => {
-    rmSync(base, { recursive: true, force: true });
+    removeTree(base);
   });
 
   it('refuses to run while body expiry is off', () => {

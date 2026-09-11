@@ -8,7 +8,7 @@ import {
   historySyncStatePath,
   readHistorySyncState,
   writeHistorySyncState,
-} from '../../src/attached/history-state.ts';
+} from '../src/history-sync-state.ts';
 
 let dir: string;
 

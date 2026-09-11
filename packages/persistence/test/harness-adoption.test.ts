@@ -172,6 +172,8 @@ const OWN_TEMP_TREE: Readonly<Record<string, string>> = {
     'the home is handed to child processes, which mint into it before any handle here exists',
   'test/concurrency/settings-race.test.ts':
     'the home is handed to child processes racing settings.json, and holds no store',
+  'test/history-sync-state.test.ts':
+    'one JSON file under a data dir — this module never opens the store, it only reads and writes the drain’s progress file',
   'test/file-lock.test.ts': 'a bare directory to take sibling .lock files in — no store',
   'test/fingerprint.test.ts':
     'on the harness for its store; the extra tree is a second home used to pin key isolation',

@@ -22,6 +22,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'EXCEPTION_KEY_FILENAME',
   'FileKeyProvider',
   'FileLockError',
+  'HISTORY_SYNC_STATE_FILENAME',
   'KeyUnclaimableError',
   'KeychainKeyProvider',
   'MAX_EGRESS_CALL_SITES_PER_PROJECT',
@@ -85,6 +86,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'fingerprintValue',
   'formatPointer',
   'hashProjectKey',
+  'historySyncStatePath',
   'inspectionDefinitionId',
   'inspectionFindingId',
   'inventoryId',
@@ -115,6 +117,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'readControlPlaneCredentialState',
   'readEffectiveSettings',
   'readFingerprintKey',
+  'readHistorySyncState',
   'readLocalHistoryPreview',
   'readManagedSettings',
   'readWorkspaceSettings',
@@ -137,6 +140,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'withFileLock',
   'withoutDroppedFiles',
   'writeControlPlaneCredential',
+  'writeHistorySyncState',
   'writeOwnerOnlyFileSync',
 ];
 

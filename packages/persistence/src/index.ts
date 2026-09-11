@@ -44,6 +44,15 @@ export { seedCaptureBacklogOwed } from './history-backfill.ts';
 export type { LocalHistoryPreview } from './history-preview.ts';
 export { readLocalHistoryPreview } from './history-preview.ts';
 export {
+  HISTORY_SYNC_STATE_FILENAME,
+  type HistorySyncOutcome,
+  type HistorySyncPhase,
+  type HistorySyncState,
+  historySyncStatePath,
+  readHistorySyncState,
+  writeHistorySyncState,
+} from './history-sync-state.ts';
+export {
   captureId,
   captureWireId,
   classifiedDataId,

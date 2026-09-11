@@ -428,7 +428,14 @@ describe('the inputs above are adversarial for what they replaced', () => {
    * the loop is synchronous, so nothing can interrupt it.
    */
   function clockResolutionMs(): number {
+    // The widest loop actually TRIED, reported rather than restated. The levels
+    // are `1_000 * 8^k`, so the ceiling below is not itself one of them — the
+    // walk stops at 32,768,000 and the next step overshoots — and a refusal
+    // naming the ceiling would claim a loop 4x wider than any that ran. Derived
+    // here so it stays true if the ceiling moves.
+    let widest = 0;
     for (let work = 1_000; work <= 134_217_728; work *= 8) {
+      widest = work;
       let best = Infinity;
       let seen = 0;
       for (let attempt = 0; attempt < 32 && seen < 8; attempt += 1) {
@@ -447,10 +454,10 @@ describe('the inputs above are adversarial for what they replaced', () => {
       if (best !== Infinity) return best;
     }
     throw new Error(
-      "this thread's CPU clock reported no non-zero delta across busy loops up to 134,217,728 " +
-        'iterations, so its resolution cannot be measured and no window can be sized against ' +
-        'it. Refusing to measure rather than reporting a quotient divided by a clock that ' +
-        'never moved.',
+      `this thread's CPU clock reported no non-zero delta across busy loops up to ` +
+        `${String(widest)} iterations, so its resolution cannot be measured and no window can ` +
+        `be sized against it. Refusing to measure rather than reporting a quotient divided by ` +
+        `a clock that never moved.`,
     );
   }
 

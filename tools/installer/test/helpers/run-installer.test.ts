@@ -317,10 +317,20 @@ describe('describeRun', () => {
   });
 
   it('keeps a stream that fits, whole', () => {
-    // The control on the case above: an excerpt that truncated everything
-    // would satisfy the length bound for ever.
+    // The control on the case above, and it has to say BOTH things. An excerpt
+    // that truncated everything would satisfy the length bound for ever — and
+    // so would one that took the truncation branch on EVERY stream, because
+    // `slice(0, EXCERPT_CHARS)` of a 75-character string still contains the
+    // whole string. It just arrives annotated as an excerpt of itself, and a
+    // `toContain` alone cannot tell the two apart: forcing that branch left all
+    // of this file's cases green.
+    //
+    // One bound call, so the presence check and the absence check describe the
+    // same bytes rather than two independent reads.
     const whole = 'aka: checksum mismatch for aka-1.2.3-win32-x64.zip -- refusing to install.';
+    const line = describeRun(runOf({ stderr: whole }));
 
-    expect(describeRun(runOf({ stderr: whole }))).toContain(whole);
+    expect(line).toContain(whole);
+    expect(line).not.toContain('chars)');
   });
 });

@@ -89,4 +89,92 @@ describe('ManagedSettings parsing', () => {
       false,
     );
   });
+
+  it('keeps a pin it knows and reports one it does not', () => {
+    // The mirror of the lock case above, and the half that used to be silent:
+    // a plain `z.object` drops an unrecognised key and succeeds, so this pin
+    // vanished with nothing anywhere saying so.
+    const parsed = ManagedSettings.parse({
+      values: { runMode: 'attached', notASetting: true, alsoNew: 'x' },
+    });
+
+    expect(parsed.values).toEqual({ runMode: 'attached' });
+    expect(parsed.unknownValueFields).toEqual(['notASetting', 'alsoNew']);
+  });
+
+  it('reports no unknown pins at all when every pin is known', () => {
+    const parsed = ManagedSettings.parse({ values: { runMode: 'attached' } });
+
+    expect(parsed.values).toEqual({ runMode: 'attached' });
+    expect(parsed).not.toHaveProperty('unknownValueFields');
+  });
+
+  it('still refuses a BAD value under a key it does know', () => {
+    // The line between tolerance and damage, and the reason the split re-runs
+    // the nested schema rather than calling `.strict()` or trusting the record.
+    // Without this a typo'd enum would be kept as an unparsed value or dropped
+    // as unknown, and either way the administrator's decision is not applied
+    // and the file still reads as healthy.
+    const bad = ManagedSettings.safeParse({ values: { runMode: 'attachd' } });
+
+    expect(bad.success).toBe(false);
+    expect(bad.error?.issues[0]?.path).toEqual(['values', 'runMode']);
+  });
+
+  it('refuses a values that is not an object at all', () => {
+    // Same boundary the lockedFields shape case draws: tolerance is for a NAME
+    // this build does not know, never for a shape it cannot read.
+    expect(ManagedSettings.safeParse({ values: 'runMode' }).success).toBe(false);
+    expect(ManagedSettings.safeParse({ values: [1] }).success).toBe(false);
+  });
+
+  it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty', 'isPrototypeOf'])(
+    'reports a pin named %s rather than swallowing it',
+    (name) => {
+      // Every one of these is an `Object.prototype` member, so a `name in shape`
+      // test calls it KNOWN, hands it to the nested schema and loses it there
+      // with nothing reported — the exact silence this split exists to end,
+      // reached from the one direction the split itself created.
+      const parsed = ManagedSettings.parse({ values: { runMode: 'attached', [name]: 'x' } });
+
+      expect(parsed.values).toEqual({ runMode: 'attached' });
+      expect(parsed.unknownValueFields).toEqual([name]);
+    },
+  );
+
+  it('drops a `__proto__` pin in the parser, before the split can report it', () => {
+    // Pinned as the LIMIT it is rather than as a fix. The managed file arrives
+    // through JSON.parse, which makes `__proto__` an own enumerable key rather
+    // than invoking the setter, so an administrator's file can really carry
+    // one — and `z.record` strips it before the known/unknown split runs. The
+    // pin is therefore neither applied nor reported: safe, and still silent.
+    //
+    // Built through JSON.parse for that reason; an object literal would invoke
+    // the setter and test a shape this code never sees. If Zod's record ever
+    // stops stripping it, this case goes red and the split has to report it.
+    const values: unknown = JSON.parse('{"runMode":"attached","__proto__":{"polluted":true}}');
+
+    const parsed = ManagedSettings.parse({ values });
+
+    expect(parsed.values).toEqual({ runMode: 'attached' });
+    expect(parsed).not.toHaveProperty('unknownValueFields');
+    // And nothing downstream carries an administrator-supplied prototype.
+    expect(Object.getPrototypeOf(parsed.values)).not.toHaveProperty('polluted');
+  });
+
+  it('tolerates an unknown pin and an unknown lock in one file, separately', () => {
+    // The shape a mid-upgrade fleet really produces: the newer build's key
+    // both pinned and locked. Both halves are reported, and neither is folded
+    // into the other — an unapplied lock and an unapplied pin have different
+    // consequences for the administrator reading the notice.
+    const parsed = ManagedSettings.parse({
+      values: { runMode: 'attached', newerKey: 1 },
+      lockedFields: ['runMode', 'newerKey'],
+    });
+
+    expect(parsed.values).toEqual({ runMode: 'attached' });
+    expect(parsed.lockedFields).toEqual(['runMode']);
+    expect(parsed.unknownValueFields).toEqual(['newerKey']);
+    expect(parsed.unknownLockedFields).toEqual(['newerKey']);
+  });
 });

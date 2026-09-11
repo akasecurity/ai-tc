@@ -243,6 +243,55 @@ describe('pure renderers', () => {
     expect(one).toContain('1 recommendation for your setup');
   });
 
+  it('health/recommend footers name commands in the invokable /aka: namespace', () => {
+    // Both footers named a bare `/recommend` / `/health` once. Neither resolves
+    // when typed: a command file `foo.md` registers as `/aka:foo`, so the bare
+    // form is a call-to-action the user cannot invoke. Nothing pinned these two
+    // lines while they were literals, which is how they drifted — this is that
+    // pin. The namespaced form does not contain the bare one (`/aka:recommend`
+    // has no `/recommend` substring: its only `/` is followed by `a`), so a
+    // plain not.toContain is an exact check for the defect.
+    const summary: HealthSummary = {
+      findings: 2,
+      byAction: { block: 1, redact: 1, warn: 0, allow: 0, log: 0 },
+      bySeverity: { critical: 1, high: 0, medium: 0, low: 1 },
+      coverage: 1,
+    };
+    const findings = [finding(), finding({ category: 'pii', severity: 'low' })];
+    const status = {
+      score: 72,
+      unreviewed: { critical: 1, high: 0, medium: 0, low: 1 },
+      openFindings: 2,
+    };
+
+    const health = strip(renderHealth(buildHealthReport(summary, findings, [])));
+    expect(health).toContain('Run /aka:recommend to review');
+    expect(health).not.toContain('/recommend');
+
+    const recs = buildRecommendations(findings);
+    // The footer only renders on the populated path, so an empty build would
+    // make every assertion below hold vacuously.
+    expect(recs.length).toBeGreaterThan(0);
+    const recommend = strip(renderRecommend(recs, status));
+    expect(recommend).toContain(
+      'Run /aka:recommend <n> to act on one, or /aka:health for the summary.',
+    );
+    expect(recommend).not.toContain('/recommend');
+    expect(recommend).not.toContain('/health');
+
+    // Every command the footers name must be one the plugin registers — and the
+    // names are read OUT OF the rendered footers rather than listed here, so a
+    // footer that grows a third command is checked too. Listing them instead
+    // would pass while that third command was renamed out of existence.
+    const named = [
+      ...health.matchAll(/\/aka:[a-z-]+/g),
+      ...recommend.matchAll(/\/aka:[a-z-]+/g),
+    ].map((m) => m[0]);
+    expect(named.length).toBeGreaterThan(0);
+    const registry = readRegisteredCommands();
+    for (const cmd of named) expect(registry).toContain(cmd);
+  });
+
   it('audit: decision log with action and source', () => {
     const out = strip(renderAudit([finding({ actionTaken: 'redact' })]));
     expect(out).toContain('Recent decisions (1)');

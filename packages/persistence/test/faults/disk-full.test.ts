@@ -41,7 +41,13 @@ import { fillStore, primaryCode, SQLITE_FULL } from '../helpers/fault-injection.
 import { useTempStore } from '../helpers/temp-store.ts';
 import { assertNoOpenTransaction } from '../helpers/transactions.ts';
 
-const store = useTempStore('aka-fault-diskfull-');
+// One store PER DESCRIBE, because these cases do not all want the same setup.
+// Rebuilding the schema per test costs ~7x seeding the migrated template
+// (measured 11.4ms against 1.6ms), and the Windows leg charges roughly 30x that
+// again — which is what put this file at its per-test ceiling. A describe whose
+// SUBJECT is the open path or a migration cannot take the template: a
+// pre-migrated store would leave its assertions holding for a reason the case
+// is not about, and a vacuous pass is worse than the timeout it replaces.
 
 /** Big enough that a capped store runs out inside a bounded number of rows. */
 const PAGE_HUNGRY_CONTENT = 'x'.repeat(4096);
@@ -89,6 +95,9 @@ function writeUntilFull(auditEvents: SqliteAuditEventsRepository): Error | undef
 }
 
 describe('a repository write that runs the store out of room', () => {
+  // Subject is a write on a store that is already open.
+  const store = useTempStore('aka-fault-diskfull-write-', { migrated: true });
+
   it('raises SQLITE_FULL and leaves no partial rows behind', () => {
     store.open().close();
     const raw = store.openRaw();
@@ -171,6 +180,9 @@ describe('a repository write that runs the store out of room', () => {
 });
 
 describe('the SQLITE_FULL fail-open branch', () => {
+  // Subject is the fail-open branch, not the open.
+  const store = useTempStore('aka-fault-diskfull-branch-', { migrated: true });
+
   it('swallows the failure and reports only that nothing committed', () => {
     store.open().close();
     const raw = store.openRaw();
@@ -218,6 +230,11 @@ describe('the SQLITE_FULL fail-open branch', () => {
 });
 
 describe('running out of room mid-migration', () => {
+  // The MIGRATION is this describe's subject, which is the exclusion
+  // CLAUDE.md names outright: a pre-migrated store has nothing left to
+  // migrate, so every assertion here would hold vacuously.
+  const store = useTempStore('aka-fault-diskfull-migrate-');
+
   /**
    * Cap a fresh store so the applier commits some migrations and then runs out,
    * leaving a genuinely half-migrated file.
@@ -327,6 +344,9 @@ describe('running out of room mid-migration', () => {
  * rather than another `openRaw()`.
  */
 describe('the facade’s fail-open closures with no room left', () => {
+  // Subject is the facade closures on a store that is already open.
+  const store = useTempStore('aka-fault-diskfull-facade-', { migrated: true });
+
   /** Bound on the fill loop — a backstop, not the expected count. */
   const MAX_CAPTURES_TO_FILL = 128;
   /**

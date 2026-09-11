@@ -14,16 +14,19 @@ import {
 import { Donut } from '../shared/charts.tsx';
 import { AlertOctagonIcon } from '../shared/icons.tsx';
 import { SEVERITY_META } from './meta.ts';
-import { numberFormat, WidgetEmpty, WidgetError } from './widget-shared.tsx';
+import { compactCount, numberFormat, WidgetEmpty, WidgetError } from './widget-shared.tsx';
 
 // Props = the data the connected wrapper's hook (or a server fetch) produces.
 // `bySeverity` is expected pre-normalized to display order (zero-filled).
 //
 // The card reports ONE measure: how many findings there are, by severity. The
 // ring, the centre figure and the legend are three renderings of that same
-// number, so any two of them can be read against each other. It carried a
-// lifecycle cut as well — a `caught` ring under a `caught` centre, above a
-// `needs remediation` row and a legend of totals — which put three different
+// number, so any two of them can be read against each other — with one caveat:
+// the centre is ROUNDED (compactCount), so at a boundary it reads `10k` over a
+// legend summing to 9,999. The unrounded total is the CardDescription's text.
+//
+// It carried a lifecycle cut as well — a `caught` ring under a `caught` centre,
+// above a `needs remediation` row and a legend of totals — which put three different
 // populations in one card: a reader who took the legend as the breakdown of
 // "needs remediation" was out by every finding the plugin caught in flight.
 // The lifecycle split still exists where it can be read on its own terms
@@ -88,8 +91,19 @@ export function SeverityCardView({
               size={120}
               thickness={15}
             >
-              <div className="font-display text-2xl font-semibold leading-none text-text">
-                {numberFormat.format(total)}
+              {/* Compact in the ring: the centre is a 90px hole and a six-figure
+                  total would wrap or overflow it. compactCount rounds across its
+                  own boundary (9,999 reads `10k`), so the exact number has to stay
+                  reachable — that is the CardDescription above, which renders it as
+                  TEXT for every reader. The title here is a pointer-only
+                  convenience and can never be the only copy: a `title` on a
+                  non-focusable div is unreachable by keyboard and absent on touch.
+                  Both formatters pin en-US, so neither is a hydration mismatch. */}
+              <div
+                className="font-display text-2xl font-semibold leading-none text-text"
+                title={numberFormat.format(total)}
+              >
+                {compactCount(total)}
               </div>
             </Donut>
             <div className="flex flex-1 flex-col gap-2">

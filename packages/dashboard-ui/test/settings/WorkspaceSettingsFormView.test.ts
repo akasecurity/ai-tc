@@ -36,7 +36,7 @@ import {
   HISTORY_SYNC_STALE_NOTICE,
   INLINE_REVEAL_CHOICES,
   INLINE_REVEAL_SECTION_DESCRIPTION,
-  managedUnknownLocksNotice,
+  managedUnrecognizedNotice,
   MODEL_JUDGE_CHOICES,
   MODEL_JUDGE_SECTION_DESCRIPTION,
   MODEL_JUDGE_SECTION_LABEL,
@@ -878,14 +878,14 @@ describe('administratively locked rows', () => {
   });
 
   it('words the unknown-lock notice for one and for several, and never on an unmanaged machine', () => {
-    const one = managedUnknownLocksNotice({
+    const one = managedUnrecognizedNotice({
       present: true,
       lockedFields: [],
       unknownLockedCount: 1,
     });
     expect(one).toContain('Your organization locks 1 setting');
     expect(one).toContain('apply it.');
-    const several = managedUnknownLocksNotice({
+    const several = managedUnrecognizedNotice({
       present: true,
       organization: 'Acme',
       lockedFields: [],
@@ -896,9 +896,67 @@ describe('administratively locked rows', () => {
     // Gated on `present` like isFieldManaged: a stale context must not
     // announce locks from an administrator who is not there.
     expect(
-      managedUnknownLocksNotice({ present: false, lockedFields: [], unknownLockedCount: 1 }),
+      managedUnrecognizedNotice({ present: false, lockedFields: [], unknownLockedCount: 1 }),
     ).toBeUndefined();
-    expect(managedUnknownLocksNotice({ present: true, lockedFields: [] })).toBeUndefined();
+    expect(managedUnrecognizedNotice({ present: true, lockedFields: [] })).toBeUndefined();
+  });
+
+  it('words the same notice for an unrecognised PIN, which is the silent half', () => {
+    // A pin with no lock is a supported shape — the schema's own comment calls
+    // it a default the user may still change — so an administrator writing one
+    // against a newer key got nothing applied and nothing said. The lock half
+    // had a notice; this is the same sentence covering the other half.
+    const one = managedUnrecognizedNotice({
+      present: true,
+      lockedFields: [],
+      unknownValueCount: 1,
+    });
+    expect(one).toContain('Your organization pins 1 setting');
+    expect(one).toContain('apply it.');
+    const several = managedUnrecognizedNotice({
+      present: true,
+      organization: 'Acme',
+      lockedFields: [],
+      unknownValueCount: 2,
+    });
+    expect(several).toContain('Acme pins 2 settings');
+    expect(several).toContain('apply them.');
+    expect(
+      managedUnrecognizedNotice({ present: false, lockedFields: [], unknownValueCount: 1 }),
+    ).toBeUndefined();
+  });
+
+  it('counts pins and locks separately inside one sentence', () => {
+    // Not one merged count, and not two sentences. The two send an
+    // administrator to different lines of their own file: an unapplied lock
+    // leaves a control they meant to freeze editable, an unapplied pin leaves a
+    // default they meant to set unset.
+    const both = managedUnrecognizedNotice({
+      present: true,
+      organization: 'Acme',
+      lockedFields: [],
+      unknownLockedCount: 1,
+      unknownValueCount: 2,
+    });
+
+    expect(both).toBe(
+      'Acme pins 2 settings and locks 1 setting this version of AKA does not recognize. ' +
+        'Update AKA to apply them.',
+    );
+  });
+
+  it('says "them" once the two halves total more than one', () => {
+    // The pluralisation reads the TOTAL, not either half. One pin and one lock
+    // is two unapplied decisions, and a sentence ending "apply it" would name
+    // one of them.
+    expect(
+      managedUnrecognizedNotice({
+        present: true,
+        lockedFields: [],
+        unknownLockedCount: 1,
+        unknownValueCount: 1,
+      }),
+    ).toContain('apply them.');
   });
 });
 

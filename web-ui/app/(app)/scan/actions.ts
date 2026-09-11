@@ -7,6 +7,7 @@ import { basename, dirname, join, sep } from 'node:path';
 import {
   createGuardedFileScanner,
   forwardProjectEgress,
+  isProtectedTarget,
   recordProjectEgress,
   recordProjectInventory,
   scanPathIntoStore,
@@ -140,7 +141,15 @@ export async function runScan(
       // uses the plugin's keyed-HMAC fingerprint and reconciles onto the same
       // row on re-scan instead of duplicating (see scanPathIntoStore).
       dataDir: dataDir(),
+      // No `akaHome`: this server always reads the default home, which is what
+      // the scanner's own default resolves to. `--home` has no counterpart here.
     });
+  } catch (err) {
+    if (!isProtectedTarget(err)) throw err;
+    // A refusal is a recoverable answer, not a crash: rethrown, it would reject
+    // the Server Action and the browser would get a framework error page in
+    // place of the message. Same shape as the missing-target answer above.
+    return { ok: false, error: `Cannot scan ${err.path}: it holds credentials AKA never reads.` };
   } finally {
     await guard.close();
   }

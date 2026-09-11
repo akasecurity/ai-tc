@@ -23,7 +23,7 @@ cryptography, hardcoded credentials, dev-mode configuration leaks, and other
 OWASP Top 10 issues.
 
 Results are recorded to the local store (`~/.aka/data/aka.db`) and are visible
-via `/findings`. Re-running `/aka:scan` is safe — files whose content has already
+via `/aka:findings`. Re-running `/aka:scan` is safe — files whose content has already
 been recorded are skipped.
 
 Files excluded by the repo's `.gitignore` are **still scanned** — local scratch

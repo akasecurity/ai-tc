@@ -101,6 +101,12 @@ const RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
 // call path.
 const REQUEST_BODY_DECODE_MAX_BYTES = 1024 * 1024;
 
+// The ceiling on what a COMPRESSED body may expand to. A separate limit from
+// the one above because the compressed size bounds nothing: a few KB of gzip
+// can expand without limit, so a tap that inflated to completion and measured
+// the result would let a page exhaust this tab's memory on demand.
+const REQUEST_BODY_INFLATE_MAX_BYTES = 4 * 1024 * 1024;
+
 // Whether `text` carries a C0 control character no text body would. Tab,
 // newline and carriage return are excluded because a text body does carry them.
 // Written as a scan rather than a regular expression: a literal spelling these
@@ -221,6 +227,8 @@ const urlQuery = accessorOf(URL.prototype, 'search');
 const urlHref = accessorOf(URL.prototype, 'href');
 const Decoder = TextDecoder;
 const decodeText = methodOf(TextDecoder.prototype, 'decode');
+const U8 = Uint8Array;
+const Decompressor = typeof DecompressionStream === 'function' ? DecompressionStream : undefined;
 
 /**
  * Patch `win`'s two transports and forward matched traffic over `port`.
@@ -327,6 +335,70 @@ export function installTap(win: Window, port: MessagePort, endpoints: readonly T
     return hasControlBytes(text) ? null : text;
   }
 
+  // A byte view over a buffer, or over a view of one, without copying it.
+  function bytesOf(body: unknown): Uint8Array | null {
+    try {
+      const view = body as { buffer?: ArrayBuffer; byteOffset?: number; byteLength: number };
+      return view.buffer === undefined
+        ? new U8(body as ArrayBuffer)
+        : new U8(view.buffer, view.byteOffset ?? 0, view.byteLength);
+    } catch {
+      return null;
+    }
+  }
+
+  // The gzip header: magic 1f 8b, then the deflate method. Read off the BYTES
+  // rather than a Content-Encoding header, because the page sets that header
+  // itself and a tap that trusted it would inflate whatever it was told to.
+  function isGzip(body: unknown): boolean {
+    const u8 = bytesOf(body);
+    return u8 !== null && u8.length > 2 && u8[0] === 0x1f && u8[1] === 0x8b && u8[2] === 0x08;
+  }
+
+  /**
+   * Inflate a gzip request body and decode it as text.
+   *
+   * Reading a buffer consumes nothing, so unlike a request stream this costs
+   * the page's own request nothing — the same argument that lets the plain
+   * byte branch below decode without disturbing the page.
+   *
+   * The output is bounded AS IT ARRIVES, never after: see
+   * REQUEST_BODY_INFLATE_MAX_BYTES. The read is cancelled the moment the
+   * ceiling is crossed, and the rejection that follows takes the ordinary
+   * unreadable-body path rather than forwarding a partial body.
+   */
+  async function inflateToText(body: unknown): Promise<string> {
+    if (Decompressor === undefined) throw new Error('no decompressor');
+    const stream = new Decompressor('gzip');
+    const writer = stream.writable.getWriter();
+    void writer.write(body as BufferSource).catch(() => undefined);
+    void writer.close().catch(() => undefined);
+    const reader = stream.readable.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const step = await reader.read();
+      if (step.done) break;
+      const chunk = step.value as Uint8Array;
+      total += chunk.byteLength;
+      if (total > REQUEST_BODY_INFLATE_MAX_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error('inflate ceiling');
+      }
+      chunks.push(chunk);
+    }
+    const joined = new U8(total);
+    let at = 0;
+    for (const chunk of chunks) {
+      joined.set(chunk, at);
+      at += chunk.byteLength;
+    }
+    if (decodeText === undefined) throw new Error('no decoder');
+    const text = String(decodeText.call(new Decoder('utf-8', { fatal: true }), joined));
+    if (hasControlBytes(text)) throw new Error('control bytes');
+    return text;
+  }
+
   function planBody(body: unknown): BodyPlan {
     if (body === undefined || body === null) return { kind: 'sync', body: null };
     if (typeof body === 'string') return { kind: 'sync', body };
@@ -346,6 +418,11 @@ export function installTap(win: Window, port: MessagePort, endpoints: readonly T
       // its turn as encoded JSON would otherwise have the whole exchange
       // refused rather than observed.
       if (typeof (candidate as { byteLength?: unknown }).byteLength === 'number') {
+        // Ahead of the plain decode, because gzip bytes are never valid UTF-8:
+        // left to the branch below, a compressed body is refused every time.
+        if (Decompressor !== undefined && isGzip(body)) {
+          return { kind: 'deferred', body: inflateToText(body) };
+        }
         const text = decodeTextBody(body);
         return text === null ? { kind: 'unreadable' } : { kind: 'sync', body: text };
       }

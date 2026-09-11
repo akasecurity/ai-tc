@@ -171,6 +171,32 @@ function xhrWindow() {
   return { win: { XMLHttpRequest: Xhr } as unknown as Window, create: () => new Xhr() };
 }
 
+/**
+ * Gzip `text` the way a page would: through CompressionStream, so the bytes
+ * under test are a real gzip member rather than a hand-built header.
+ */
+async function gzipOf(text: string): Promise<Uint8Array<ArrayBuffer>> {
+  const stream = new CompressionStream('gzip');
+  const writer = stream.writable.getWriter();
+  void writer.write(new TextEncoder().encode(text));
+  void writer.close();
+  const chunks: Uint8Array[] = [];
+  const reader = stream.readable.getReader();
+  for (;;) {
+    const step = await reader.read();
+    if (step.done) break;
+    chunks.push(step.value);
+  }
+  const total = chunks.reduce((sum, c) => sum + c.byteLength, 0);
+  const joined = new Uint8Array(new ArrayBuffer(total));
+  let at = 0;
+  for (const c of chunks) {
+    joined.set(c, at);
+    at += c.byteLength;
+  }
+  return joined;
+}
+
 describe('installTap: the command surface', () => {
   it('accepts no message, so nothing in the page can widen what it forwards', async () => {
     const { fn } = fakeFetch('telemetry');
@@ -363,6 +389,70 @@ describe('installTap: the fetch half', () => {
 
     expect(h.of('error')[0]).toMatchObject({ reason: 'unparsed_body' });
     expect(h.of('request')).toHaveLength(0);
+  });
+
+  it('inflates a gzip-compressed request body', async () => {
+    // A real site compresses its completion body client-side, so the bytes are
+    // never valid UTF-8 and the decode branch above refuses every one of them.
+    // Inflating is safe for the same reason decoding is: reading a buffer
+    // consumes nothing, so the page's own request still carries its body.
+    const { fn } = fakeFetch('ok');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+
+    installTap(win, h.port, [CONVERSATION]);
+    await fetchOn(win)('https://site.test/api/conversation', {
+      method: 'POST',
+      body: await gzipOf('{"prompt":"hi"}'),
+    });
+    // The inflate is a stream read, so it spans more than one macrotask.
+    await h.waitFor(() => h.of('request').length > 0);
+
+    expect(h.of('request')[0]).toMatchObject({ method: 'POST', body: '{"prompt":"hi"}' });
+  });
+
+  it('forwards no body for a gzip body that expands past the inflate ceiling', async () => {
+    // The compressed size bounds the expansion not at all, so the ceiling is
+    // charged against the output AS IT ARRIVES. Without it a few KB of gzip
+    // exhausts the tab's memory on demand.
+    //
+    // A failed inflate is a DEFERRED body that rejected, so it takes the same
+    // path a Request clone that could not be read takes: the exchange still
+    // opens, carrying a null body, rather than being refused outright. That is
+    // deliberate — the response half is still worth capturing — and what
+    // matters here is that the partial read never reaches the wire.
+    const { fn } = fakeFetch('ok');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+
+    installTap(win, h.port, [CONVERSATION]);
+    await fetchOn(win)('https://site.test/api/conversation', {
+      method: 'POST',
+      body: await gzipOf('a'.repeat(5 * 1024 * 1024)),
+    });
+    await h.waitFor(() => h.of('request').length > 0 || h.of('error').length > 0);
+
+    expect(h.of('request')).toHaveLength(1);
+    expect(h.of('request')[0]).toMatchObject({ method: 'POST', body: null });
+  });
+
+  it('forwards no body for a gzip body whose inflated bytes are not text', async () => {
+    // The gate the plain-bytes branch applies, applied to what came OUT of the
+    // decompressor: inflating is a way to reach the bytes, never a reason to
+    // trust them. Same deferred-rejection path as the ceiling case above.
+    const { fn } = fakeFetch('ok');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+
+    installTap(win, h.port, [CONVERSATION]);
+    await fetchOn(win)('https://site.test/api/conversation', {
+      method: 'POST',
+      body: await gzipOf('{\u0000\u0000}'),
+    });
+    await h.waitFor(() => h.of('request').length > 0 || h.of('error').length > 0);
+
+    expect(h.of('request')).toHaveLength(1);
+    expect(h.of('request')[0]).toMatchObject({ method: 'POST', body: null });
   });
 
   it('refuses binary that decodes cleanly but carries control characters', async () => {

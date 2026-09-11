@@ -6,6 +6,7 @@ import {
   backgroundSyncLabel,
   installBackgroundSync,
   renderPlist,
+  triggerHistorySyncRun,
   uninstallBackgroundSync,
 } from '../src/background-schedule.ts';
 
@@ -265,5 +266,76 @@ describe('backgroundSyncLabel', () => {
   it('is deterministic for the same base and distinct across bases', () => {
     expect(backgroundSyncLabel(BASE)).toBe(backgroundSyncLabel(BASE));
     expect(backgroundSyncLabel(BASE)).not.toBe(backgroundSyncLabel(OTHER_BASE));
+  });
+});
+
+// Starting a pass by hand shares the scheduler's argv on purpose: a pass started
+// by a person and a pass started on a timer must be the same pass, or the two
+// surfaces describing them diverge.
+describe('triggerHistorySyncRun', () => {
+  const BASE = '/Users/x/.aka';
+
+  it('spawns the same argv the scheduler installs', () => {
+    const spawned: { command: string; args: readonly string[] }[] = [];
+    const reinvoke = vi.fn(() => ({
+      command: '/usr/bin/aka',
+      args: ['sync-history', '--run', '--home', BASE],
+    }));
+
+    const result = triggerHistorySyncRun(BASE, {
+      reinvoke: reinvoke as unknown as BackgroundScheduleDeps['reinvoke'],
+      startDetached: (command, args) => spawned.push({ command, args }),
+    });
+
+    expect(reinvoke).toHaveBeenCalledWith('sync-history', ['--run', '--home', BASE]);
+    expect(result.started).toBe(true);
+    // The CHILD's argv, not merely what the builder was handed: this is what
+    // decides whether the pass a person started is the pass the timer starts.
+    expect(spawned).toEqual([
+      { command: '/usr/bin/aka', args: ['sync-history', '--run', '--home', BASE] },
+    ]);
+  });
+
+  it('reports a spawn that throws rather than claiming it started', () => {
+    const result = triggerHistorySyncRun(BASE, {
+      reinvoke: (() => ({
+        command: 'aka',
+        args: ['sync-history'],
+      })) as unknown as BackgroundScheduleDeps['reinvoke'],
+      startDetached: () => {
+        throw new Error('EACCES');
+      },
+    });
+    expect(result).toEqual({ started: false, reason: 'spawn-failed' });
+  });
+
+  // Its neighbour returns early off darwin because a LaunchAgent is a macOS
+  // object. A child process is not, and copying that gate would make the control
+  // do nothing at all on Linux and Windows while reporting success.
+  it('starts on a platform that has no LaunchAgent', () => {
+    const spawned: string[] = [];
+    const result = triggerHistorySyncRun(BASE, {
+      platform: 'linux',
+      reinvoke: (() => ({
+        command: 'node',
+        args: ['cli.js', 'sync-history', '--run', '--home', BASE],
+      })) as unknown as BackgroundScheduleDeps['reinvoke'],
+      startDetached: (command) => spawned.push(command),
+    });
+    expect(result.started).toBe(true);
+    expect(spawned).toEqual(['node']);
+  });
+
+  // The passive callers of this argv swallow the null — a scheduler that cannot
+  // install is best-effort background work. A control somebody pressed is not.
+  it('reports, rather than swallows, having nothing to re-invoke', () => {
+    const spawned: string[] = [];
+    const result = triggerHistorySyncRun(BASE, {
+      reinvoke: (() => null) as unknown as BackgroundScheduleDeps['reinvoke'],
+      startDetached: (command) => spawned.push(command),
+    });
+    expect(result).toEqual({ started: false, reason: 'no-cli-entry' });
+    // And nothing was started: the report is not a label on a child that ran.
+    expect(spawned).toEqual([]);
   });
 });

@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -44,6 +45,12 @@ export interface BackgroundScheduleDeps {
   mkdir?: (dir: string) => void;
   removeFile?: (path: string) => void;
   runLaunchctl?: (args: string[]) => boolean;
+  /**
+   * Starting the detached child. Injectable for the same reason every other
+   * boundary here is: without it a test of the argv actually spawns a process,
+   * and the only thing it could then assert is that spawning did not throw.
+   */
+  startDetached?: (command: string, args: readonly string[]) => void;
 }
 
 function launchAgentsDir(deps: BackgroundScheduleDeps): string {
@@ -145,6 +152,58 @@ function guiDomain(): string {
  * bounced so it picks up the new ProgramArguments; launchctl does not reload
  * a loaded job's argv from a plist it was never told changed.
  */
+/**
+ * What starting a drain pass by hand could not do.
+ *
+ * `spawn-failed` is the process refusing to start at all; `no-cli-entry` is the
+ * plain-node case where there is no entry script to re-invoke (see self-exec).
+ * Both are REPORTED rather than swallowed, unlike the passive callers of the
+ * same argv — a scheduler that cannot install and a cache that cannot refresh
+ * are best-effort background work, while a control somebody pressed owes them an
+ * answer.
+ */
+function defaultStartDetached(command: string, args: readonly string[]): void {
+  // Detached with its output discarded, so the pass outlives whatever started
+  // it — a dashboard request, or a command that has already printed.
+  spawn(command, [...args], { detached: true, stdio: 'ignore' }).unref();
+}
+
+export type SyncRunStart =
+  { started: true } | { started: false; reason: 'no-cli-entry' | 'spawn-failed' };
+
+/**
+ * Start one drain pass now, in a child that outlives this process.
+ *
+ * The same argv the scheduler installs, from the same builder — a pass started
+ * by hand and a pass started on a timer must be the same pass, or the two
+ * surfaces describing them diverge.
+ *
+ * NO PLATFORM GATE, unlike its neighbour. That one is gated because a LaunchAgent
+ * is a macOS object and there is nothing to install elsewhere; this spawns a
+ * child, which every platform has. Copying the gate would make the control a
+ * silent no-op on Linux and Windows.
+ *
+ * `started: true` means the CHILD WAS SPAWNED, and deliberately claims nothing
+ * beyond that. The child is detached with its output discarded, so nothing here
+ * can see whether the pass ran, was refused by a closed breaker, or found the
+ * lease already held. A surface that needs to know watches the store instead —
+ * a real pass takes the lease, and one that never appears is one that never
+ * started, whatever the reason.
+ */
+export function triggerHistorySyncRun(
+  base: string,
+  deps: BackgroundScheduleDeps = {},
+): SyncRunStart {
+  const reinvoke = (deps.reinvoke ?? reinvokeArgv)('sync-history', ['--run', '--home', base]);
+  if (reinvoke === null) return { started: false, reason: 'no-cli-entry' };
+  try {
+    (deps.startDetached ?? defaultStartDetached)(reinvoke.command, reinvoke.args);
+    return { started: true };
+  } catch {
+    return { started: false, reason: 'spawn-failed' };
+  }
+}
+
 export function installBackgroundSync(base: string, deps: BackgroundScheduleDeps = {}): void {
   try {
     if ((deps.platform ?? process.platform) !== 'darwin') return;

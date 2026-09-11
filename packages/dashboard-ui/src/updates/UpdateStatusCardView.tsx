@@ -104,6 +104,9 @@ export function UpdateStatusCardView({
         <div className="flex flex-col">
           {statuses.map((s, i) => {
             const outcome = outcomes[s.id];
+            // Bound once: the presence check and the render must not be free to
+            // disagree if this grows a branch.
+            const note = pinNote(s);
             return (
               <div key={s.id} className={cn('py-3', i > 0 && 'border-t border-hairline')}>
                 <div className="flex items-center gap-3">
@@ -113,9 +116,9 @@ export function UpdateStatusCardView({
                       {s.installed ?? '—'}
                       {s.latest && s.updateAvailable && ` → ${s.latest}`}
                     </div>
-                    {pinNote(s) !== undefined && (
+                    {note !== undefined && (
                       <div className="mt-1 text-xs text-text-3" data-slot="marketplace-pin-note">
-                        {pinNote(s)}
+                        {note}
                       </div>
                     )}
                   </div>

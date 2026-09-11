@@ -23,9 +23,9 @@ describe('NeedsReviewStripView', () => {
 
   it('renders the scope qualifier when one is given', () => {
     const html = renderToStaticMarkup(
-      <NeedsReviewStripView items={[reviewDestination()]} onOpen={vi.fn()} scope="Fleet-wide" />,
+      <NeedsReviewStripView items={[reviewDestination()]} onOpen={vi.fn()} scope="All destinations" />,
     );
-    expect(html).toContain('Fleet-wide');
+    expect(html).toContain('All destinations');
   });
 
   it('omits the scope qualifier entirely when none is given', () => {
@@ -40,9 +40,9 @@ describe('NeedsReviewStripView', () => {
       <NeedsReviewStripView items={[reviewDestination()]} onOpen={vi.fn()} />,
     );
     const withScope = renderToStaticMarkup(
-      <NeedsReviewStripView items={[reviewDestination()]} onOpen={vi.fn()} scope="Fleet-wide" />,
+      <NeedsReviewStripView items={[reviewDestination()]} onOpen={vi.fn()} scope="All destinations" />,
     );
-    expect(without).not.toContain('Fleet-wide');
+    expect(without).not.toContain('All destinations');
     expect(spans(withScope)).toBe(spans(without) + 1);
   });
 
@@ -53,14 +53,14 @@ describe('NeedsReviewStripView', () => {
       <NeedsReviewStripView
         items={[reviewDestination({ id: 'a' }), reviewDestination({ id: 'b' })]}
         onOpen={vi.fn()}
-        scope="Fleet-wide"
+        scope="All destinations"
       />,
     );
     expect(html).not.toContain('sr-only');
     // The qualifier belongs to the count, so it renders between the count and
     // the description rather than trailing the sentence.
-    expect(html.indexOf('>2<')).toBeLessThan(html.indexOf('Fleet-wide'));
-    expect(html.indexOf('Fleet-wide')).toBeLessThan(html.indexOf('Raw IPs'));
+    expect(html.indexOf('>2<')).toBeLessThan(html.indexOf('All destinations'));
+    expect(html.indexOf('All destinations')).toBeLessThan(html.indexOf('Raw IPs'));
   });
 
   it('announces that it opens a dialog', () => {

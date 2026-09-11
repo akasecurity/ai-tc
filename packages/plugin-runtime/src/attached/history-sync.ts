@@ -583,7 +583,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
           try {
             result = await sendChunk(d, chunk, beat);
           } finally {
-            d.ledger.releaseRows(chunkIds);
+            releaseClaim(d, chunkIds);
           }
           sent += result.sent;
           skipped += result.skipped;
@@ -761,7 +761,7 @@ async function drainCaptures(
     try {
       result = await sendCaptureChunk(d, ready, beat);
     } finally {
-      d.ledger.releaseRows(readyIds);
+      releaseClaim(d, readyIds);
     }
     sent += result.sent;
     skipped += result.skipped;
@@ -1103,6 +1103,25 @@ async function sendWithRetries(
     }
   }
   return { verdict: 'unreachable' };
+}
+
+/**
+ * Drop a claim, without letting that failure replace the one being reported.
+ *
+ * `releaseRows` opens its own IMMEDIATE transaction, so on the very path this
+ * runs in a `finally` FOR — a settle that rethrew because the store was busy —
+ * the release can meet the same busy store and throw over the original. The
+ * error a reader has to diagnose is the first one.
+ *
+ * Swallowing costs nothing durable: the next pass sweeps stale claims before it
+ * reads anything, so an undropped claim is healed within one lease window.
+ */
+function releaseClaim(d: Pick<DrainDeps, 'ledger'>, ids: readonly string[]): void {
+  try {
+    d.ledger.releaseRows(ids);
+  } catch {
+    // Deliberately silent: see above. The sweep is what puts it right.
+  }
 }
 
 /**

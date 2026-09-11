@@ -402,6 +402,24 @@ describe('SqliteHistorySyncRepository — which deployment the stamps are for', 
     expect(db.historySync.counts(ALL).skipped).toBe(1);
   });
 
+  // The capture lane's half of the split, and the case that was missing: a
+  // capture a deployment refuses must still be counted SOMEWHERE. It is not in
+  // the structural `refused`, and nothing ever frees it — re-arming a capture
+  // would offer one deployment's prompts to another — so the lane's own
+  // lifetime total is where it has to land.
+  it('counts a refused capture in the capture lane, which never frees one', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.markRefused(['s-1-prompt'], T0);
+
+    expect(db.historySync.counts(ALL).capturesSkipped).toBe(1);
+
+    // And a change of deployment leaves it exactly where it is, unlike the
+    // structural refusal above.
+    db.historySync.rearmFor('fingerprint-b', ALL);
+    expect(db.historySync.counts(ALL).capturesSkipped).toBe(1);
+  });
+
   // The inverse, and the reason the failure columns exist. A 400/413/422 is one
   // deployment's verdict on one body, not a fact about the row, so pointing at a
   // different deployment has to offer it again.

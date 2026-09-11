@@ -1096,8 +1096,6 @@ describe('the legacy drop defers when the store changed under the write lock', (
         backup,
       );
 
-      // The count really was unchanged — without this the case could be
-      // passing because the swap moved it after all.
       const after = db.prepare('SELECT count(*) AS n FROM events').get() as { n: number };
       // The count really was unchanged — without this the case could be passing
       // because the swap moved it after all, and the rowid half would go

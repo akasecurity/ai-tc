@@ -156,6 +156,20 @@ const SCRIPT_TIMEOUT_MS = 60_000;
  */
 const CLR_ABORT_MARKERS = ['Unhandled exception.', 'assembly name was invalid'] as const;
 
+// Three attempts against a 60s per-attempt kill ceiling is 180s of budget, and
+// this package's testTimeout/hookTimeout is 120s — so three attempts that each
+// ran to their SIGKILL would surface as a bare vitest timeout rather than as
+// anything this file says.
+//
+// That cannot arise from what this retries. A CLR startup abort is near-instant:
+// the process dies before the script it was handed begins, which is exactly what
+// `diedInClrStartup` keys on. An attempt that is RETRIED therefore costs no
+// meaningful budget, and an attempt that spends real time is by construction one
+// that ran and is returned rather than retried.
+//
+// Written down because the two constants sit twenty lines apart and nothing
+// structural ties either to the ceiling: a future marker matching something slow
+// would spend the budget three times over and report it as a timeout.
 const SCRIPT_ATTEMPTS = 3;
 
 /** What `runScript` spawns with, injectable so the abort can be driven. */

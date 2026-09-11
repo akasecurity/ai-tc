@@ -10,6 +10,7 @@ import {
   detectInstallChannel,
   findAgent,
   gatherReportLive,
+  installedPluginScope,
   outdated,
   planCliUpdate,
   pluginRef,
@@ -162,7 +163,11 @@ function applyPluginUpdate(status: ComponentStatus): boolean {
   // by and notices one they were not told about. It is printed as a list and
   // never joined with `&&`: that join would state a chaining rule this code
   // does not follow, since a failed refresh is survivable here.
-  const manager = createCliPluginManager(cliBin);
+  // Bound to the scope the plugin is really installed at, so the printed
+  // recipe, the announced spawn plan and the spawn itself all name the same
+  // install — the version comparison reads a record at any scope, while the
+  // host's update verb defaults to `user`.
+  const manager = createCliPluginManager(cliBin, installedPluginScope(ref));
   const recipe = manager.updateRecipe(ref, agent.marketplaceSource).join(' && ');
   if (!manager.available()) {
     process.stderr.write(

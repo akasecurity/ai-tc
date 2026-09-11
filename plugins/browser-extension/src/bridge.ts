@@ -30,6 +30,7 @@ import type {
   EndpointKind,
   ExchangeAssembler,
   ProviderAdapter,
+  ProviderEndpoint,
   WebExchangeSummary,
 } from './providers/types.ts';
 import type { SharedScope } from './tab-session.ts';
@@ -156,6 +157,10 @@ export interface CompiledEndpoint {
   readonly host: string;
   readonly path: RegExp;
   readonly kind: EndpointKind;
+  // The adapter's own declaration this was compiled FROM, carried by reference
+  // so a match can hand the adapter back the object it wrote rather than this
+  // re-anchored copy. An adapter serving several routes branches on it.
+  readonly source: ProviderEndpoint;
 }
 
 // The same rule the tap compiles: the host is matched EXACTLY and the path
@@ -171,6 +176,7 @@ export function compileEndpoints(adapter: ProviderAdapter): CompiledEndpoint[] {
         host: endpoint.host,
         path: new RegExp(`^(?:${endpoint.path.source})`),
         kind: endpoint.kind,
+        source: endpoint,
       });
     } catch {
       // A pattern that will not compile classifies nothing, rather than taking
@@ -181,14 +187,19 @@ export function compileEndpoints(adapter: ProviderAdapter): CompiledEndpoint[] {
 }
 
 /**
- * Classify a forwarded URL against a compiled endpoint table: exact host
- * match, path anchored at its start. `null` when the URL does not parse or no
+ * Match a forwarded URL against a compiled endpoint table: exact host match,
+ * path anchored at its start. `null` when the URL does not parse or no
  * endpoint claims it.
+ *
+ * Returns the ENTRY rather than its `kind`. Two routes of the same kind are
+ * indistinguishable by kind alone — which is what left an adapter unable to
+ * tell its own routes apart once the bytes arrived — so the caller gets the
+ * match itself and reads whichever part it needs.
  */
-export function classifyCompiled(
+export function matchCompiled(
   compiled: readonly CompiledEndpoint[],
   url: string,
-): EndpointKind | null {
+): CompiledEndpoint | null {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -200,9 +211,22 @@ export function classifyCompiled(
     if (parsed.host !== endpoint.host) continue;
     // The query rides along so a pattern MAY key on one; the anchor is what
     // stops a query reaching a pattern written against a path.
-    if (endpoint.path.test(`${parsed.pathname}${parsed.search}`)) return endpoint.kind;
+    if (endpoint.path.test(`${parsed.pathname}${parsed.search}`)) return endpoint;
   }
   return null;
+}
+
+/**
+ * The KIND a forwarded URL classifies as, or null. Derived from
+ * `matchCompiled` rather than matching a second time: two matchers over one
+ * table are free to disagree about what a URL is, and that disagreement is
+ * invisible until a site moves.
+ */
+export function classifyCompiled(
+  compiled: readonly CompiledEndpoint[],
+  url: string,
+): EndpointKind | null {
+  return matchCompiled(compiled, url)?.kind ?? null;
 }
 
 interface InFlight {
@@ -249,8 +273,8 @@ export function createBridge(options: BridgeOptions): Bridge {
   // patched (see maybeReport).
   let reported: string | null = null;
 
-  function classify(url: string): EndpointKind | null {
-    return classifyCompiled(endpoints, url);
+  function match(url: string): CompiledEndpoint | null {
+    return matchCompiled(endpoints, url);
   }
 
   // Retire every DOM send whose window has closed with nothing to answer it.
@@ -269,7 +293,8 @@ export function createBridge(options: BridgeOptions): Bridge {
     // adapter's own declarations decide what a forwarded URL means. Anything
     // else — an account endpoint, or a URL this adapter does not claim — opens
     // no exchange and touches no counter.
-    if (classify(message.url) !== 'conversation') return;
+    const matched = match(message.url);
+    if (matched?.kind !== 'conversation') return;
 
     sweepBlind();
     // This turn answers the oldest DOM send still inside its window.
@@ -301,7 +326,9 @@ export function createBridge(options: BridgeOptions): Bridge {
 
     let assembler: ExchangeAssembler | null = null;
     try {
-      assembler = adapter.parseStream();
+      // The adapter's OWN endpoint object, not the re-anchored copy the bridge
+      // matches with: an adapter serving several routes branches on identity.
+      assembler = adapter.parseStream({ url: message.url, endpoint: matched.source });
     } catch {
       parseFailures += 1;
     }

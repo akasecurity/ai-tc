@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest';
 
 import { claudeAdapter } from '../../src/providers/claude.ts';
 import type { ParsedRequest, WebExchangeSummary } from '../../src/providers/types.ts';
+import { matchedExchangeFor } from '../helpers/matched-exchange.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 // ---- SSE event builders -----------------------------------------------
@@ -91,8 +92,13 @@ const S_EVENTS: readonly string[] = [
 ];
 const S = S_EVENTS.join('');
 
+// The conversation uuid the EXCHANGE's url names — recovered from the matched
+// URL rather than from the stream, because it appears nowhere in the payloads.
+const CONVERSATION_UUID = '66666666-7777-4888-8999-aaaaaaaaaaaa';
+
 const EXPECTED_SUMMARY: WebExchangeSummary = {
   messageId: UUID,
+  conversationId: CONVERSATION_UUID,
   model: MODEL,
   responseText: 'hello thereworld!',
   usageSource: 'none',
@@ -100,7 +106,7 @@ const EXPECTED_SUMMARY: WebExchangeSummary = {
 };
 
 function replay(chunks: readonly string[]): WebExchangeSummary | null {
-  const assembler = claudeAdapter.parseStream();
+  const assembler = claudeAdapter.parseStream(EXCHANGE);
   for (const chunk of chunks) assembler.push(chunk);
   return assembler.end();
 }
@@ -113,6 +119,14 @@ function summaryHasOwn(summary: WebExchangeSummary | null, key: string): boolean
   expect(summary).not.toBeNull();
   return summary !== null && Object.hasOwn(summary, key);
 }
+
+// The exchange the bridge would hand parseStream for this adapter's one
+// declared route, resolved through the bridge's own matcher.
+const EXCHANGE = matchedExchangeFor(
+  claudeAdapter,
+  'https://claude.ai/api/organizations/11111111-2222-4333-8444-555555555555' +
+    '/chat_conversations/66666666-7777-4888-8999-aaaaaaaaaaaa/completion',
+);
 
 describe('claudeAdapter.parseStream — canonical stream S', () => {
   it('assembles the expected summary with no other own keys', () => {
@@ -211,10 +225,29 @@ describe('A — event-level assembly', () => {
     expect(summary?.toolCalls).toEqual([]);
   });
 
-  it('A8: conversationId, turnIndex and startedAt are absent', () => {
+  it('A8: conversationId comes from the matched URL, never from the stream', () => {
+    // It appears in no payload — the stream carries the two message uuids and
+    // no conversation uuid — so recovering it is entirely a property of the
+    // exchange parseStream was handed.
     expect(PARENT_UUID).not.toBe(UUID);
+    expect(S).not.toContain(CONVERSATION_UUID);
+    expect(replay([S])?.conversationId).toBe(CONVERSATION_UUID);
+  });
+
+  it('A8b: a URL naming no conversation segment yields no id, rather than a wrong one', () => {
+    // Reached when the matched URL is not the shape this reads. Leaving the
+    // field undefined is the whole point: a segment picked positionally from
+    // an unexpected path would put a wrong id on every stored row.
+    const assembler = claudeAdapter.parseStream({
+      url: 'https://claude.ai/api/organizations/abc/something-else/def/completion',
+      endpoint: EXCHANGE.endpoint,
+    });
+    assembler.push(S);
+    expect(summaryHasOwn(assembler.end(), 'conversationId')).toBe(false);
+  });
+
+  it('A8c: turnIndex and startedAt stay absent', () => {
     const summary = replay([S]);
-    expect(summaryHasOwn(summary, 'conversationId')).toBe(false);
     expect(summaryHasOwn(summary, 'turnIndex')).toBe(false);
     expect(summaryHasOwn(summary, 'startedAt')).toBe(false);
   });
@@ -303,7 +336,7 @@ describe('C — chunk-boundary robustness', () => {
   });
 
   it('C6: a terminator-free body yields no summary and no fabricated text', () => {
-    const assembler = claudeAdapter.parseStream();
+    const assembler = claudeAdapter.parseStream(EXCHANGE);
     const chunk = 'x'.repeat(4096);
     for (let i = 0; i < 512; i += 1) assembler.push(chunk);
     // 2 MB of a response carrying no `data:` line at all — an error page, or
@@ -317,7 +350,7 @@ describe('C — chunk-boundary robustness', () => {
 
 describe('D — edges and garbage', () => {
   it('D1: a stream that ends before any message id was recovered returns null', () => {
-    const assembler = claudeAdapter.parseStream();
+    const assembler = claudeAdapter.parseStream(EXCHANGE);
     assembler.push(conversationReadyEvent());
     assembler.push('data: {"type":"message_st');
     expect(assembler.end()).toBeNull();
@@ -348,7 +381,7 @@ describe('D — edges and garbage', () => {
       ':comment\n\n',
     ];
     for (const input of inputs) {
-      const assembler = claudeAdapter.parseStream();
+      const assembler = claudeAdapter.parseStream(EXCHANGE);
       expect(() => {
         assembler.push(input);
       }).not.toThrow();
@@ -381,7 +414,7 @@ describe('D — edges and garbage', () => {
   });
 
   it('D6: end() is idempotent and a later push cannot change it', () => {
-    const assembler = claudeAdapter.parseStream();
+    const assembler = claudeAdapter.parseStream(EXCHANGE);
     assembler.push(S);
     const first = assembler.end();
     assembler.push(contentBlockDeltaEvent(0, 'MORE-TEXT-AFTER-END'));
@@ -392,7 +425,7 @@ describe('D — edges and garbage', () => {
 
   it('D7: the reverse-order and injected-unknown shapes already hold', () => {
     const reversed = [...S_EVENTS].reverse();
-    const assembler = claudeAdapter.parseStream();
+    const assembler = claudeAdapter.parseStream(EXCHANGE);
     expect(() => {
       for (const event of reversed) assembler.push(event);
     }).not.toThrow();

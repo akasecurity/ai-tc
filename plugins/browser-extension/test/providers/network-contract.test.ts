@@ -45,6 +45,7 @@ import {
   REQUEST_FIXTURE,
   STREAM_FIXTURE,
 } from '../helpers/fixture-bar.ts';
+import { matchedExchangeFor } from '../helpers/matched-exchange.ts';
 import { errorFrom, expectNoEchoOf } from '../helpers/no-echo.ts';
 
 // The REAL engine, not a stub: the bar's whole point is to re-judge a
@@ -89,7 +90,7 @@ describe('non-declaring adapters (runs today)', () => {
       });
 
       it('parseStream() does not throw and end() reports null', () => {
-        const assembler = adapter.parseStream();
+        const assembler = adapter.parseStream(matchedExchangeFor(adapter));
         expect(() => assembler.end()).not.toThrow();
         expect(assembler.end()).toBeNull();
       });
@@ -192,7 +193,7 @@ for (const adapter of declaring) {
 
       it('replaying stream.json yields a summary satisfying its own required response paths', () => {
         const fixture = loadFixture(adapter.id, STREAM_FIXTURE);
-        const assembler = adapter.parseStream();
+        const assembler = adapter.parseStream(matchedExchangeFor(adapter, fixture.url));
         for (const chunk of fixture.chunks) assembler.push(chunk);
         const summary = assembler.end();
         expect(summary).not.toBeNull();
@@ -207,7 +208,7 @@ for (const adapter of declaring) {
         const joined = fixture.chunks.join('');
 
         function expectSurvives(chunks: readonly string[]): void {
-          const assembler = adapter.parseStream();
+          const assembler = adapter.parseStream(matchedExchangeFor(adapter, fixture.url));
           expect(() => {
             for (const c of chunks) assembler.push(c);
           }).not.toThrow();
@@ -241,14 +242,14 @@ for (const adapter of declaring) {
         }
         // (f) end() called twice
         {
-          const assembler = adapter.parseStream();
+          const assembler = adapter.parseStream(matchedExchangeFor(adapter, fixture.url));
           for (const c of fixture.chunks) assembler.push(c);
           assembler.end();
           expect(() => assembler.end()).not.toThrow();
         }
         // (g) end() with no push at all
         {
-          const assembler = adapter.parseStream();
+          const assembler = adapter.parseStream(matchedExchangeFor(adapter, fixture.url));
           expect(() => assembler.end()).not.toThrow();
         }
       });
@@ -315,8 +316,22 @@ describe('the bar FIRES (non-vacuous today: driven against a site with no fixtur
 
 describe('classifyCompiled (non-vacuous today: a synthetic adapter, not a registry one)', () => {
   const table: CompiledEndpoint[] = [
-    { host: 'chatgpt.com', path: /^\/backend-api\/conversation(?:\/|$)/, kind: 'conversation' },
-    { host: 'chatgpt.com', path: /^\/backend-api\/accounts(?:\/|$)/, kind: 'account' },
+    {
+      host: 'chatgpt.com',
+      path: /^\/backend-api\/conversation(?:\/|$)/,
+      kind: 'conversation',
+      source: {
+        host: 'chatgpt.com',
+        path: /^\/backend-api\/conversation(?:\/|$)/,
+        kind: 'conversation',
+      },
+    },
+    {
+      host: 'chatgpt.com',
+      path: /^\/backend-api\/accounts(?:\/|$)/,
+      kind: 'account',
+      source: { host: 'chatgpt.com', path: /^\/backend-api\/accounts(?:\/|$)/, kind: 'account' },
+    },
   ];
 
   it('B7: exact host match is required', () => {

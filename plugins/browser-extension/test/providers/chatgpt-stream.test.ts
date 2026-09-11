@@ -21,7 +21,12 @@ import { describe, expect, it } from 'vitest';
 
 import { chatgptAdapter } from '../../src/providers/chatgpt.ts';
 import type { WebExchangeSummary } from '../../src/providers/types.ts';
+import { matchedExchangeFor } from '../helpers/matched-exchange.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+
+// This adapter declares no endpoint yet, so the helper supplies the only
+// shape available to it — see its own note on what that stand-in does not mean.
+const EXCHANGE = matchedExchangeFor(chatgptAdapter);
 
 const MESSAGE_ID = '88556658-40aa-4d53-9001-5dab5cc3b02d';
 const CONVERSATION_ID = '0f3a91c2-7d54-4e18-9b26-5ac81de70f43';
@@ -59,7 +64,7 @@ function blockFrame(inner: string, withMessageId = false): string {
 }
 
 function run(stream: string, chunk = 17): WebExchangeSummary | null {
-  const assembler = chatgptAdapter.parseStream();
+  const assembler = chatgptAdapter.parseStream(EXCHANGE);
   for (let i = 0; i < stream.length; i += chunk) assembler.push(stream.slice(i, i + chunk));
   return assembler.end();
 }
@@ -167,7 +172,7 @@ describe('chatgpt anonymous stream', () => {
   });
 
   it('is silent after end and never throws on a late push', () => {
-    const assembler = chatgptAdapter.parseStream();
+    const assembler = chatgptAdapter.parseStream(EXCHANGE);
     assembler.push(PRELUDE + blockFrame(block('done'), true));
     expect(assembler.end()?.responseText).toBe('done');
     expect(() => {

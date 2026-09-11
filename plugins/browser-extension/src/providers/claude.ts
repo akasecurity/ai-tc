@@ -8,6 +8,7 @@ import {
 } from './dom-utils.ts';
 import type {
   ExchangeAssembler,
+  MatchedExchange,
   ParsedRequest,
   ProviderAdapter,
   WebExchangeSummary,
@@ -36,6 +37,33 @@ const SEGMENT_ORGANIZATIONS = 'organizations';
 const SEGMENT_CONVERSATIONS = 'chat_conversations';
 const SEGMENT_COMPLETION = 'completion';
 const SEGMENT_ID = '[0-9a-fA-F-]{36}';
+
+/**
+ * The conversation uuid, read off the matched URL's own path.
+ *
+ * It is recoverable ONLY here: the completion body carries the two turn
+ * message uuids and no conversation uuid, so before `parseStream` was given
+ * the matched exchange this field had nowhere to come from and was left
+ * undefined rather than guessed.
+ *
+ * Read by SEGMENT rather than by re-running the endpoint pattern: the pattern
+ * shape-matches both ids without capturing either, and adding a capture group
+ * to it would couple the route's own matching to this one field.
+ */
+function conversationIdOf(url: string): string | undefined {
+  let path: string;
+  try {
+    path = new URL(url).pathname;
+  } catch {
+    // A URL this cannot parse is one no id can be read from.
+    return undefined;
+  }
+  const segments = path.split('/');
+  const at = segments.indexOf(SEGMENT_CONVERSATIONS);
+  if (at === -1) return undefined;
+  const value = segments[at + 1];
+  return value === undefined || value === '' ? undefined : value;
+}
 
 // Anchored end to end, so it matches the completion route and nothing else the
 // site serves. The tap matches path+query against this, and an anchored pattern
@@ -82,7 +110,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * claude.ai actually sends. `endpoints` stays empty below, so none of this is
  * reachable in production yet.
  */
-function createClaudeStreamAssembler(): ExchangeAssembler {
+function createClaudeStreamAssembler(exchange: MatchedExchange): ExchangeAssembler {
+  const conversationId = conversationIdOf(exchange.url);
   const sse = createSseAssembler();
   let messageId: string | undefined;
   let model: string | undefined;
@@ -204,6 +233,7 @@ function createClaudeStreamAssembler(): ExchangeAssembler {
         messageId,
         usageSource: 'none',
         toolCalls: [],
+        ...(conversationId !== undefined ? { conversationId } : {}),
         ...(model !== undefined ? { model } : {}),
         ...(stopReason !== undefined ? { stopReason } : {}),
         ...(text !== '' ? { responseText: text } : {}),
@@ -289,11 +319,12 @@ export const claudeAdapter: ProviderAdapter = {
   // completion body; both are required, so a body carrying neither reports
   // its shape unmet rather than half-met.
   //
-  // `conversationId` is NOT recoverable here and is deliberately absent
-  // rather than guessed: the body carries the two turn message uuids and no
-  // conversation uuid — that id exists only in the request URL, which this
-  // seam is not passed. Returning a message uuid under that name would put
-  // a wrong id on every stored row.
+  // `conversationId` is NOT recoverable HERE and is deliberately absent rather
+  // than guessed: the body carries the two turn message uuids and no
+  // conversation uuid. That id exists only in the request URL, which this seam
+  // is still not passed — `parseStream` is, and reads it there, so the summary
+  // carries it even though this does not. Returning a message uuid under that
+  // name would put a wrong id on every stored row.
   //
   // The body arrives gzip-compressed on the wire; the tap inflates it
   // before this is reached, so this sees ordinary JSON text.

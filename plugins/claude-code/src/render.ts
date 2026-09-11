@@ -682,7 +682,9 @@ export function renderHealth(r: HealthReport): string {
   lines.push(indent(`${String(r.weekFindings)} findings in the last 7 days`));
 
   lines.push('');
-  lines.push(indent(`Run /recommend to review ${String(r.recommendCount)} prioritized actions.`));
+  lines.push(
+    indent(`Run /aka:recommend to review ${String(r.recommendCount)} prioritized actions.`),
+  );
 
   lines.push('');
   lines.push(
@@ -798,7 +800,7 @@ export function renderRecommend(recs: Recommendation[], status: FindingStatus): 
   });
 
   lines.push(
-    indent('Run /recommend <n> to act on one, or /health for the summary.'),
+    indent('Run /aka:recommend <n> to act on one, or /aka:health for the summary.'),
     '',
     indent(renderStatusBar(status)),
   );

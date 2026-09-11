@@ -797,10 +797,11 @@ what happened, show the one-liner so they can retry later, and continue the
 wizard normally. The plugin is already fully set up and works on its own; a
 failed CLI install changes nothing about that.
 
-**Close the wizard.** The first-run summary already confirmed the saved posture
-and pointed at the aka-health skill. Whichever way the CLI offer went —
-installed, declined, or a failed install you already reported — end with one
-warm close: "That's it — I'm watching out for Codex going forward."
+**Close the wizard.** The first-run summary already confirmed the saved posture,
+reported the health score, and pointed at the aka-dashboard and aka-scan
+skills. Whichever way the CLI offer went — installed, declined, or a failed
+install you already reported — end with one warm close: "That's it — I'm
+watching out for Codex going forward."
 
 Before you finish, confirm every AKA_SHOW region on the path you took was
 relayed to the user. If you summarized one instead of pasting it, paste it now.

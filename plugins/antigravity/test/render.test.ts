@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 
 import type { FindingView } from '@akasecurity/plugin-sdk';
-import { severityFloorPosture } from '@akasecurity/plugin-sdk';
+import {
+  buildRecommendations as sdkBuildRecommendations,
+  severityFloorPosture,
+} from '@akasecurity/plugin-sdk';
 import type { BuiltinPolicyId, DetectionCategory, DetectionListItem } from '@akasecurity/schema';
 import {
   BUILTIN_POLICIES,
@@ -15,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildHandoffOffer,
+  buildRecommendations,
   RE_TUNE_HINT,
   renderAdjustConfirm,
   renderApplied,
@@ -45,6 +49,20 @@ function finding(overrides: Partial<FindingView> = {}): FindingView {
     ...overrides,
   };
 }
+
+describe('buildRecommendations', () => {
+  it('re-exports the shared rollup rather than holding a second copy', () => {
+    // What this module still owes is the WIRING: that its re-export names the one
+    // shared implementation rather than a second copy of it. The rollup's own
+    // behaviour — the label counting the NAMED rule while the rank follows category
+    // volume — is asserted against that implementation in
+    // `packages/schema/test/security/recommendations.test.ts`. Restating it here
+    // would re-run schema's suite through a re-export, and a plugin that had drifted
+    // back to a local copy would go green on it, which is the defect the move
+    // removed.
+    expect(buildRecommendations).toBe(sdkBuildRecommendations);
+  });
+});
 
 describe('renderPosture', () => {
   it('lists each category with its action, aligned', () => {

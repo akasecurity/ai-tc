@@ -181,6 +181,20 @@ describe('WorkspaceSettingsFormView copy', () => {
     expect(warn?.description).toMatch(/no channel to print on/i);
   });
 
+  it('names both of an attached machine\u2019s senders, not just the plugin', () => {
+    // The sweep above bans a phrase list; it cannot see a sender that goes
+    // unmentioned. This notice said only that the plugin forwards, which stopped
+    // being the whole truth once a scan started from the dashboard forwarded the
+    // register it records — leaving a consent surface describing half of what an
+    // attached machine sends.
+    expect(CONNECTION_FORWARDING_NOTICE).toMatch(/plugin forwards/i);
+    expect(CONNECTION_FORWARDING_NOTICE).toMatch(/Scan page/);
+    expect(CONNECTION_FORWARDING_NOTICE).toMatch(/Data Shares register/i);
+    // And it says what does NOT cross, because the register is extracted from
+    // source and a reader has no other way to know the source stays here.
+    expect(CONNECTION_FORWARDING_NOTICE).toMatch(/never source text/i);
+  });
+
   it('names every built-in archetype in the enforcement pointer', () => {
     // A user sent to the Detections page should already know what they will be
     // choosing between. Derived from the catalog so an added archetype fails

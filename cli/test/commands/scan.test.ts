@@ -5,15 +5,42 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 import { maskMatch } from '@akasecurity/detections';
-import type { EgressRecordResult, ProjectInventoryResult } from '@akasecurity/local-ops';
-import { DB_FILENAME, MAX_EGRESS_CALL_SITES_PER_PROJECT } from '@akasecurity/persistence';
+import type {
+  EgressRecordResult,
+  ProjectInventoryResult,
+  SharesForwardConnection,
+  SharesForwardOutcome,
+  SharesForwardSendResult,
+} from '@akasecurity/local-ops';
+import { FORWARD_FAILURE_LINES } from '@akasecurity/local-ops';
+import {
+  applyOnboarding,
+  ATTACHED_FORWARD_DROPS_FILENAME,
+  ATTACHED_FORWARD_STATE_FILENAME,
+  DB_FILENAME,
+  MAX_EGRESS_CALL_SITES_PER_PROJECT,
+  settingsDir,
+  writeControlPlaneCredential,
+} from '@akasecurity/persistence';
 import { bundledDetections, dataDir } from '@akasecurity/plugin-sdk';
-import type { Severity } from '@akasecurity/schema';
-import { DEFAULT_ACTIONS, Severity as SeverityEnum } from '@akasecurity/schema';
+import type { EgressIngestRequest, Severity } from '@akasecurity/schema';
+import {
+  DEFAULT_ACTIONS,
+  EgressIngestRequest as EgressIngestRequestSchema,
+  RemoteFailureKind,
+  Severity as SeverityEnum,
+} from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTrees } from '../../../test/helpers/remove-tree.ts';
-import { renderEgressLine, renderInventoryLine, runScan } from '../../src/commands/scan.ts';
+import type { ScanDeps } from '../../src/commands/scan.ts';
+import {
+  renderEgressLine,
+  renderForwardLine,
+  renderInventoryLine,
+  runScan,
+} from '../../src/commands/scan.ts';
+import { startLoopbackServer } from '../helpers/loopback.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 // `aka scan`'s two machine contracts — `--format json` (what another program
@@ -78,7 +105,7 @@ const POINTER = `[[aka:secret:AE.${'A'.repeat(26)}.${'B'.repeat(16)}]]`;
 // key set. Asserted as SETS rather than with a type: a TypeScript interface
 // asserts nothing at run time, and an extra field silently added to the payload
 // is a contract change a consumer has to cope with just as much as a missing one.
-const PAYLOAD_KEYS = ['target', 'scanned', 'findings', 'inventory', 'egress'];
+const PAYLOAD_KEYS = ['target', 'scanned', 'findings', 'inventory', 'egress', 'forward'];
 const FINDING_KEYS = [
   'file',
   'gitignored',
@@ -109,6 +136,7 @@ interface ScanPayload {
   findings: ScanFinding[];
   inventory: { name: string; url: string; fileCount: number; truncated: boolean } | null;
   egress: { destinations: number; endpoints: number; callSites: number; truncated: boolean } | null;
+  forward: SharesForwardOutcome | null;
 }
 
 describe('renderInventoryLine', () => {
@@ -149,6 +177,16 @@ describe('renderEgressLine', () => {
       callSites: 12,
       truncated: false,
       droppedFiles: [],
+      // The resolved input rides back with the totals. This line renders none
+      // of it, so the smallest well-formed one keeps the fixture honest about
+      // the shape without pretending the renderer reads it.
+      input: {
+        projectKey: 'git:https://github.com/acme/widgets.git',
+        project: 'widgets',
+        projectId: null,
+        reconcile: { mode: 'walk', walkedPrefix: '' },
+        hits: [],
+      },
       ...overrides,
     };
   }
@@ -198,15 +236,19 @@ describe('runScan', () => {
 
   // Every run goes through the real argv parser — the flags ARE the contract, so
   // a helper that bypassed parseArgs would pin something no user can invoke.
-  async function scan(args: string[]): Promise<void> {
+  async function scan(args: string[], deps: ScanDeps = {}): Promise<void> {
     out = '';
     err = '';
     process.exitCode = undefined;
-    await runScan([...args, '--home', home]);
+    await runScan([...args, '--home', home], deps);
   }
 
-  async function scanJson(target: string, extra: string[] = []): Promise<ScanPayload> {
-    await scan([target, '--format', 'json', ...extra]);
+  async function scanJson(
+    target: string,
+    extra: string[] = [],
+    deps: ScanDeps = {},
+  ): Promise<ScanPayload> {
+    await scan([target, '--format', 'json', ...extra], deps);
     return JSON.parse(out) as ScanPayload;
   }
 
@@ -757,6 +799,375 @@ describe('runScan', () => {
       // skipped — so the bypass is what the direct target buys.
       const walked = await scanJson(root);
       expect(walked.findings.map((f) => f.file)).not.toContain(file);
+    });
+  });
+
+  // What `aka scan` does about the register it just wrote, on a machine that is
+  // attached to a deployment.
+  //
+  // The transport is INJECTED in every case but two, and that is not only for
+  // speed: it is the only way to reach each refusal the deployment can answer
+  // with, and each of those has its own remediation to render. The two
+  // exceptions drive the real client against a real loopback server, because
+  // the claims that matter most here — no source text in the body, a digested
+  // project key, the credential in a header and nowhere else — are claims about
+  // the bytes that left the process, and a fake sender is handed a value rather
+  // than a request.
+  //
+  // Every case runs against the temp `--home` this file already sets up, so an
+  // attachment on the machine running the suite decides nothing. The fake
+  // sender is the only sender those cases install; there is no second one for a
+  // stray real send to go out through.
+  describe('forwarding', () => {
+    const ENDPOINT = 'https://aka.acme.test';
+    const LABEL = 'Acme Prod';
+    // High-entropy and not credential-shaped, so expectNoEchoOf's window cannot
+    // collide with ordinary output text (see the Testing conventions).
+    const TEST_KEY = 'm4rk8wq2zv7nt3hc6yb9pl5sd1xg0fj';
+
+    interface Sent {
+      connection: SharesForwardConnection;
+      request: EgressIngestRequest;
+    }
+
+    // Both halves of an attachment, written through the real writers: the
+    // settings descriptor that names a deployment, and a credential file minted
+    // for that same deployment. `apiKey: null` writes only the first half,
+    // which is the shape a machine is in after a hand-edited settings.json or a
+    // credential someone deleted.
+    function attachHome(
+      options: { endpoint?: string; label?: string; apiKey?: string | null } = {},
+    ): void {
+      const endpoint = options.endpoint ?? ENDPOINT;
+      applyOnboarding(
+        {
+          runMode: 'attached',
+          controlPlane: {
+            endpoint,
+            attachedAt: '2026-09-01T10:00:00.000Z',
+            ...(options.label === undefined ? {} : { label: options.label }),
+          },
+        },
+        home,
+        // No managed overlay: an administrator's file on the machine running
+        // this suite must not decide what these cases see.
+        null,
+      );
+      const apiKey = options.apiKey === undefined ? TEST_KEY : options.apiKey;
+      if (apiKey === null) return;
+      writeControlPlaneCredential(settingsDir(home), { specVersion: 1, endpoint, apiKey });
+    }
+
+    // Records what it was handed, so a case can assert both what crossed and
+    // that nothing did.
+    function recorder(answer: SharesForwardSendResult | (() => never)) {
+      const sent: Sent[] = [];
+      return {
+        sent,
+        send: (connection: SharesForwardConnection, request: EgressIngestRequest) => {
+          sent.push({ connection, request });
+          if (typeof answer === 'function') return answer();
+          return Promise.resolve(answer);
+        },
+      };
+    }
+
+    // One outbound call site, so the register has something in it. A bare URL
+    // constant is the smallest thing the extractor records, and it matches no
+    // bundled rule — which the --fail-on case below depends on.
+    function writeCallSite(): void {
+      writeFileSync(
+        join(root, 'client.ts'),
+        "export const CHARGES = 'https://api.stripe.com/v1/charges';\n",
+      );
+    }
+
+    // The forward's own line, told apart from the local-write line above it by
+    // its verb rather than by position — both start `Data shares:`.
+    function forwardLine(): string | null {
+      return out.split('\n').find((line) => /^Data shares: (?:not )?forwarded/.test(line)) ?? null;
+    }
+
+    it('sends nothing and reports nothing on a machine attached to no deployment', async () => {
+      writeCallSite();
+      const transport = recorder({ ok: true });
+
+      await scan([root], { send: transport.send });
+
+      expect(transport.sent).toEqual([]);
+      // The whole point of the null outcome: a standalone install's output is
+      // what it was before this command could forward anything at all.
+      expect(forwardLine()).toBeNull();
+      // And the local write still happened, so the silence is about the forward
+      // rather than about the pass having been skipped.
+      expect(out).toMatch(/^Data shares: \d+ destination/m);
+    });
+
+    it('carries `forward` as a sixth JSON key, null when there is no deployment', async () => {
+      writeCallSite();
+      const transport = recorder({ ok: true });
+
+      const payload = await scanJson(root, [], { send: transport.send });
+
+      expect(Object.keys(payload).sort()).toEqual([...PAYLOAD_KEYS].sort());
+      expect(payload.forward).toBeNull();
+      expect(transport.sent).toEqual([]);
+      // The other keys are untouched by the addition.
+      expect(payload.target).toBe(root);
+      expect(payload.egress).not.toBeNull();
+    });
+
+    it('forwards the register it just recorded and says where it went', async () => {
+      writeCallSite();
+      attachHome({ label: LABEL });
+      const transport = recorder({ ok: true });
+
+      await scan([root], { send: transport.send });
+
+      const sent = transport.sent[0];
+      expect(sent).toBeDefined();
+      const request = sent?.request;
+      // A register with nothing in it would satisfy every projection assertion
+      // below vacuously.
+      expect(request?.hits.length).toBeGreaterThan(0);
+
+      // The LABEL, not the URL: what is printed is the deployment's display
+      // name when an administrator gave it one.
+      expect(forwardLine()).toBe(
+        `Data shares: forwarded to ${LABEL} · ${String(request?.hits.length ?? 0)} call site(s)`,
+      );
+
+      // The wire projection, asserted on what the sender was actually handed.
+      expect(request?.projectKey).toMatch(/^[0-9a-f]{64}$/);
+      expect(request?.reconcile.mode).toBe('walk');
+      // Serialised rather than walked, so a snippet at ANY depth is caught —
+      // including one on a field this case does not know about.
+      expect(JSON.stringify(request)).not.toContain('snippet');
+      // The plaintext project key never leaves either, and the scan's own root
+      // is what it is built from here.
+      expect(JSON.stringify(request)).not.toContain(root);
+
+      // The credential goes to the endpoint the DESCRIPTOR names.
+      expect(sent?.connection).toEqual({ endpoint: ENDPOINT, apiKey: TEST_KEY });
+    });
+
+    it('reports the forward in JSON as the outcome object', async () => {
+      writeCallSite();
+      attachHome({ label: LABEL });
+      const transport = recorder({ ok: true });
+
+      const payload = await scanJson(root, [], { send: transport.send });
+
+      expect(payload.forward).toEqual({
+        status: 'forwarded',
+        endpoint: LABEL,
+        callSites: transport.sent[0]?.request.hits.length,
+      });
+    });
+
+    // Every kind, driven from the enum rather than from a list here: a seventh
+    // one arrives as a failing case rather than as a line nobody wrote.
+    it.each(RemoteFailureKind.options)('explains a %s refusal', async (kind) => {
+      writeCallSite();
+      attachHome();
+      const transport = recorder({ ok: false, kind });
+
+      await scan([root], { send: transport.send });
+
+      expect(forwardLine()).toBe(
+        `Data shares: not forwarded to ${ENDPOINT} — ${FORWARD_FAILURE_LINES[kind]}`,
+      );
+      expect(exitCode()).toBe(0);
+    });
+
+    // The `it.each` above passes just as well if two kinds share a sentence,
+    // and a shared sentence is how somebody is sent to fix the wrong thing.
+    it('gives every kind its own remediation', () => {
+      const lines = Object.values(FORWARD_FAILURE_LINES);
+      expect(new Set(lines).size).toBe(RemoteFailureKind.options.length);
+      // The 403 has a self-service remedy that a bare "ask an admin" hides: a
+      // key minted before this route existed is refused until it is re-minted,
+      // and re-attaching is what mints one.
+      expect(FORWARD_FAILURE_LINES.forbidden).toMatch(/re-attach/);
+      expect(FORWARD_FAILURE_LINES.forbidden).toMatch(/org admin/);
+    });
+
+    it('treats a sender that throws as unreachable rather than as a failed scan', async () => {
+      writeCallSite();
+      attachHome();
+      const transport = recorder(() => {
+        throw new Error('socket hung up');
+      });
+
+      const payload = await scanJson(root, [], { send: transport.send });
+
+      expect(payload.forward).toEqual({
+        status: 'failed',
+        endpoint: ENDPOINT,
+        kind: 'unreachable',
+      });
+      expect(exitCode()).toBe(0);
+    });
+
+    it('never carries the resolved input, a snippet or the plaintext key into JSON', async () => {
+      // The recorder hands back the input it wrote beside the totals — every
+      // call site's source line and the project key in plaintext — and the JSON
+      // builder picks the totals by name. This pins that a future spread of
+      // the whole record would be caught, because --format json is the stream
+      // a CI pipeline captures.
+      writeCallSite();
+      attachHome({ label: LABEL });
+      const transport = recorder({ ok: true });
+
+      const payload = await scanJson(root, [], { send: transport.send });
+
+      const raw = JSON.stringify(payload);
+      expect(raw).not.toContain('"input"');
+      expect(raw).not.toContain('"projectKey"');
+      expect(raw).not.toContain('snippet');
+      expectNoEchoOf(raw, "export const CHARGES = 'https://api.stripe.com/v1/charges';");
+      // The positive control: the register itself was recorded and forwarded.
+      expect(payload.egress).not.toBeNull();
+      expect(payload.forward).toMatchObject({ status: 'forwarded' });
+    });
+
+    it('names the reason a run stayed local', () => {
+      // Two reasons, two lines: an opt-out names the flag the person passed,
+      // the switch names the page where it lives.
+      expect(renderForwardLine({ status: 'disabled', endpoint: LABEL, reason: 'opt-out' })).toBe(
+        'Data shares: not forwarded (--no-forward)',
+      );
+      expect(
+        renderForwardLine({ status: 'disabled', endpoint: LABEL, reason: 'data-shares-off' }),
+      ).toBe('Data shares: not forwarded (Data Shares is off in Settings)');
+    });
+
+    it('records locally and sends nothing under --no-forward', async () => {
+      writeCallSite();
+      attachHome();
+      const transport = recorder({ ok: true });
+
+      await scan([root, '--no-forward'], { send: transport.send });
+
+      expect(transport.sent).toEqual([]);
+      expect(forwardLine()).toBe('Data shares: not forwarded (--no-forward)');
+      // The flag skips the forward, never the write it would have forwarded.
+      expect(out).toMatch(/^Data shares: \d+ destination/m);
+    });
+
+    it('reports --no-forward in JSON as a disabled outcome naming the deployment', async () => {
+      writeCallSite();
+      attachHome();
+      const transport = recorder({ ok: true });
+
+      const payload = await scanJson(root, ['--no-forward'], { send: transport.send });
+
+      expect(payload.forward).toEqual({
+        status: 'disabled',
+        reason: 'opt-out',
+        endpoint: ENDPOINT,
+      });
+      expect(transport.sent).toEqual([]);
+    });
+
+    it('names the deployment it holds no usable credential for, and sends nothing', async () => {
+      writeCallSite();
+      attachHome({ apiKey: null });
+      const transport = recorder({ ok: true });
+
+      await scan([root], { send: transport.send });
+
+      expect(transport.sent).toEqual([]);
+      expect(forwardLine()).toBe(
+        `Data shares: not forwarded to ${ENDPOINT} — ` +
+          'no usable credential; re-attach with `aka attach`',
+      );
+    });
+
+    it('leaves the exit code entirely to --fail-on', async () => {
+      writeCallSite();
+      writeFileSync(join(root, 'clean.ts'), 'export const ok = 1;\n');
+      attachHome();
+
+      // A failing forward on a tree with nothing to report: the gate is about
+      // findings, and the forward is not one of them.
+      await scan([root, '--fail-on', 'low'], {
+        send: recorder({ ok: false, kind: 'unreachable' }).send,
+      });
+      expect(forwardLine()).toContain(FORWARD_FAILURE_LINES.unreachable);
+      expect(exitCode()).toBe(0);
+
+      // And the other direction: a successful forward does not rescue a tree
+      // that trips the threshold.
+      writeFileSync(join(root, 'critical.ts'), `${CRITICAL_TEXT}\n`);
+      await scan([root, '--fail-on', 'critical'], { send: recorder({ ok: true }).send });
+      expect(forwardLine()).toMatch(/^Data shares: forwarded to /);
+      expect(exitCode()).toBe(1);
+    });
+
+    it('puts a valid request on the wire, with the key in a header and nowhere else', async () => {
+      const server = await startLoopbackServer();
+      try {
+        writeCallSite();
+        attachHome({ endpoint: server.origin });
+        server.reply((_req, res) => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"ok":true}');
+        });
+
+        // NO injected sender: this is the client the command builds for itself.
+        await scan([root]);
+
+        expect(server.received).toHaveLength(1);
+        const req = server.received[0];
+        expect(req?.method).toBe('POST');
+        expect(req?.url).toBe('/v1/shares');
+        expect(req?.headers['x-api-key']).toBe(TEST_KEY);
+
+        // Validated against the contract rather than eyeballed: a body this
+        // build assembles wrongly must fail here, on the machine that still has
+        // the plaintext, rather than as somebody's remote 400.
+        const parsed = EgressIngestRequestSchema.safeParse(JSON.parse(req?.body ?? '{}'));
+        expect(parsed.error?.message ?? 'valid').toBe('valid');
+        expect(req?.body).not.toContain('snippet');
+
+        expect(forwardLine()).toMatch(/^Data shares: forwarded to /);
+        // The key rides in a header and appears in no rendered sentence, on
+        // either stream. `out` is non-empty (asserted just above), so this is
+        // not searching empty bytes.
+        expectNoEchoOf(out, TEST_KEY);
+        expect(err).toBe('');
+
+        // A manual scan is not the hook path and must not borrow its breaker: a
+        // scan on a machine with no signal would otherwise silence the session
+        // forwarding that machine does afterwards.
+        for (const name of [ATTACHED_FORWARD_STATE_FILENAME, ATTACHED_FORWARD_DROPS_FILENAME]) {
+          expect(existsSync(join(dataDir(home), name))).toBe(false);
+        }
+      } finally {
+        await server.close();
+      }
+    });
+
+    it('renders the refusal a real 403 produces', async () => {
+      const server = await startLoopbackServer();
+      try {
+        writeCallSite();
+        attachHome({ endpoint: server.origin });
+        server.reply((_req, res) => {
+          res.writeHead(403, { 'content-type': 'application/json' });
+          res.end('{"error":{"code":"FORBIDDEN"}}');
+        });
+
+        await scan([root]);
+
+        expect(forwardLine()).toBe(
+          `Data shares: not forwarded to ${server.origin} — ${FORWARD_FAILURE_LINES.forbidden}`,
+        );
+        expect(exitCode()).toBe(0);
+      } finally {
+        await server.close();
+      }
     });
   });
 

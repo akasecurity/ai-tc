@@ -174,9 +174,12 @@ describe('WorkspaceSettingsFormView copy', () => {
   });
 
   it('says that a warning is invisible on the host that cannot print one', () => {
-    // Antigravity's PreToolUse has no message channel, so `warn` there differs
-    // from `monitor` only in the recorded action. A user choosing "with a
-    // warning" on that host would otherwise expect something on screen.
+    // Antigravity's PreToolUse has no message channel, so wherever `warn` is
+    // applied on that host it can differ from `monitor` only in the recorded
+    // action. A user choosing "with a warning" would otherwise expect something
+    // on screen. Asserted on the PROPERTY rather than on the host name, because
+    // which hosts apply this choice at all moves as each is wired — the section
+    // copy carries that, and each plugin's Known limitations is the authority.
     const warn = REDACT_FALLBACK_CHOICES.find((c) => c.value === 'warn');
     expect(warn?.description).toMatch(/no channel to print on/i);
   });

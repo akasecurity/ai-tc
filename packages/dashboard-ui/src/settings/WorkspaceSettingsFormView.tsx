@@ -57,11 +57,21 @@ export const HANDLING_SECTION_LINK_LABEL = 'Configure detections';
 // hook contract offers no way to rewrite any argument.
 export const REDACT_FALLBACK_SECTION_LABEL = 'When masking is not possible';
 
+// A host applies this choice only once it DECLARES which of its fields it
+// cannot rewrite. Until it does, it refuses those calls on its own — every
+// redact on Antigravity, an executable field on the other two — whatever is
+// chosen here. That sentence is in the copy rather than in this comment for the
+// reason the section above records: a choice the machine does not honour yet,
+// presented as one it does, is the defect that removed the last control from
+// this page. It moves as each host is wired, alongside that host's Known
+// limitations, which is the authority on where it stands.
 export const REDACT_FALLBACK_SECTION_DESCRIPTION =
   'Some fields cannot be masked in place: rewriting a shell command would change what runs, and ' +
   'rewriting a URL would fetch something else. A detection set to Redact cannot be carried out ' +
   'there, and this chooses what happens instead. It does not change what any detection is set ' +
-  'to — only what happens where that answer cannot be applied.';
+  'to — only what happens where that answer cannot be applied. A plugin applies this once it ' +
+  'reports which of its fields cannot be rewritten; until then it refuses those calls outright, ' +
+  'and its Known limitations says where it stands.';
 
 export const REDACT_FALLBACK_CHOICES: Choice<WorkspaceSettings['redactFallback']>[] = [
   {
@@ -74,7 +84,7 @@ export const REDACT_FALLBACK_CHOICES: Choice<WorkspaceSettings['redactFallback']
     label: 'Let it through, with a warning',
     description:
       'The call runs with the value unmasked, and the session is told what was found (default). ' +
-      'Antigravity has no channel to print on, so there it is recorded and nothing is shown.',
+      'A host with no channel to print on records the finding and shows nothing.',
   },
   {
     value: 'block',

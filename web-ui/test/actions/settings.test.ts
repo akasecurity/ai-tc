@@ -109,6 +109,13 @@ describe('saveSettings — the redact fallback', () => {
       redactFallback: 7,
     });
     expect(res.ok).toBe(false);
+    // WHICH guard refused it, not merely that something did. `ok: false` is
+    // reachable from two: this field's shape schema rejecting a number, which
+    // reaches `malformedInput` and names the key — or, if that schema were
+    // widened, the domain enum failing later and reaching the shared refusal,
+    // which names nothing. Asserting only `ok: false` holds under the mutation
+    // this case's own title describes, so it has to name the field.
+    expect(res.error).toContain('redactFallback');
   });
 });
 

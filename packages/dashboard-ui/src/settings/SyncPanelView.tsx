@@ -211,8 +211,15 @@ export function SyncPanelView({
 
         {lastOutcome !== undefined && (
           <p className={cn('text-label', lastOutcome === 'ok' ? 'text-text-3' : 'text-text-2')}>
+            {/* The time LEADS, as a dim label, rather than trailing the
+                sentence. Appended it read "…it stays queued. just now." — a
+                lowercase fragment after a full stop, because every outcome
+                line is a whole sentence and `relativeTime` returns a phrase,
+                not one. */}
+            {lastPassAt !== undefined && (
+              <span className="text-text-3">{relativeTime(lastPassAt, renderedAt)} · </span>
+            )}
             {OUTCOME_LINE[lastOutcome]}
-            {lastPassAt !== undefined && <> {relativeTime(lastPassAt, renderedAt)}.</>}
           </p>
         )}
 

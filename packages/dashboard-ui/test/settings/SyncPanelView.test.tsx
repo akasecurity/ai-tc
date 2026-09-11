@@ -108,6 +108,18 @@ describe('SyncPanelView', () => {
     expect(html).toContain('Nothing was lost');
   });
 
+  // Appended, it read "…it stays queued. just now." — a lowercase fragment
+  // after a full stop, because every outcome line is a whole sentence and the
+  // time is a phrase. It leads instead.
+  it('puts the time before the outcome, not after the full stop', () => {
+    const html = render({ lastOutcome: 'ok', lastPassAt: '2026-09-12T09:58:00.000Z' });
+    const time = html.indexOf('ago');
+    const sentence = html.indexOf('Last pass sent');
+    expect(time).toBeGreaterThan(-1);
+    expect(sentence).toBeGreaterThan(-1);
+    expect(time).toBeLessThan(sentence);
+  });
+
   it('disables the control while a pass is already running', () => {
     const html = render({ onSyncNow: vi.fn(), running: true });
     expect(html).toContain('Sending…');

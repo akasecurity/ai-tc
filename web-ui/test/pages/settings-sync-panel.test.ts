@@ -324,6 +324,25 @@ describe('the settings route — the sync panel', () => {
 
   // ─── The bars ──────────────────────────────────────────────────────────────
 
+  // Lane order, not the store's. `partitionByKind` returns whatever its index
+  // walk produces — alphabetical by accident — which interleaves the structural
+  // kinds with the three that carry text. Those two lanes behave differently
+  // and are gated differently, and a reader comparing across them is comparing
+  // unlike things.
+  it('shows the structural kinds first, then the ones that carry text', () => {
+    attach();
+    grant();
+    seedSession('s-1');
+    withStore((db) => {
+      db.historySync.markCaptureOwed('s-1-prompt');
+    });
+    dropMemoisedDb();
+
+    const state = panel().state;
+    if (state.status !== 'ready') throw new Error('expected ready');
+    expect(state.kinds.map((k) => k.kind)).toEqual(['session', 'llm_call', 'tool_call', 'prompt']);
+  });
+
   it('gives every recorded kind a row, under a name a reader would use', () => {
     attach();
     grant();

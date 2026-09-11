@@ -269,48 +269,82 @@ describe('backgroundSyncLabel', () => {
   });
 });
 
-// Starting a pass by hand shares the scheduler's argv on purpose: a pass started
-// by a person and a pass started on a timer must be the same pass, or the two
-// surfaces describing them diverge.
+// Starting a pass by hand NAMES the `aka` command rather than re-invoking this
+// executable, and that distinction is the whole of this function's correctness.
+// Its neighbour, the scheduler, is installed BY the CLI and so may re-run its
+// own entry; this one's only caller is a dashboard Server Action, which in a
+// development workspace is a Next process — where re-invoking "this executable"
+// spawns Next with a subcommand it has never heard of, successfully, and
+// reports that a pass started. Nothing in the old tests could see that: they
+// injected the argv builder, so they asserted the child got whatever the stub
+// returned.
 describe('triggerHistorySyncRun', () => {
   const BASE = '/Users/x/.aka';
-  // Non-optional, because `BackgroundScheduleDeps['reinvoke']` includes
-  // `undefined` and exactOptionalPropertyTypes refuses that for an optional
-  // property. Naming the function type keeps the stubs honest instead.
-  type Reinvoke = (
-    subcommand: string,
-    extraArgs?: string[],
-  ) => { command: string; args: string[] } | null;
+  const PASS_ARGS = ['sync-history', '--run', '--home', BASE];
 
-  it('spawns the same argv the scheduler installs', () => {
+  it('spawns the aka command with the pass argv', () => {
     const spawned: { command: string; args: readonly string[] }[] = [];
-    const reinvoke = vi.fn(() => ({
-      command: '/usr/bin/aka',
-      args: ['sync-history', '--run', '--home', BASE],
-    }));
 
     const result = triggerHistorySyncRun(BASE, {
-      reinvoke: reinvoke as unknown as Reinvoke,
+      probeCli: () => true,
       startDetached: (command, args) => {
         spawned.push({ command, args });
       },
     });
 
-    expect(reinvoke).toHaveBeenCalledWith('sync-history', ['--run', '--home', BASE]);
     expect(result.started).toBe(true);
-    // The CHILD's argv, not merely what the builder was handed: this is what
-    // decides whether the pass a person started is the pass the timer starts.
-    expect(spawned).toEqual([
-      { command: '/usr/bin/aka', args: ['sync-history', '--run', '--home', BASE] },
-    ]);
+    // The CHILD's argv, and the command by name. `aka` is what a person types
+    // to run the same pass, and what the scheduler's own argv was built from.
+    expect(spawned).toEqual([{ command: 'aka', args: PASS_ARGS }]);
+  });
+
+  // The regression this function was rewritten for. A dashboard running under
+  // Next has an entry script — it is just not the CLI's — so any check that
+  // asks "is there something to re-invoke" answers yes and spawns the wrong
+  // program. Asking whether `aka` exists is a question with one right answer on
+  // every host.
+  it('never re-invokes the running process, whatever its entry script is', () => {
+    const spawned: string[] = [];
+    const reinvoke = vi.fn();
+
+    triggerHistorySyncRun(BASE, {
+      reinvoke: reinvoke as unknown as NonNullable<BackgroundScheduleDeps['reinvoke']>,
+      probeCli: () => true,
+      startDetached: (command) => {
+        spawned.push(command);
+      },
+    });
+
+    expect(reinvoke).not.toHaveBeenCalled();
+    expect(spawned).toEqual(['aka']);
+  });
+
+  // BEFORE the spawn, because a spawn that cannot find its command fails
+  // asynchronously — long after this has returned. Reporting success there is
+  // the failure this function exists to avoid.
+  it('reports a machine with no aka command, and starts nothing', () => {
+    const spawned: string[] = [];
+    const probed: string[] = [];
+
+    const result = triggerHistorySyncRun(BASE, {
+      probeCli: (command) => {
+        probed.push(command);
+        return false;
+      },
+      startDetached: (command) => {
+        spawned.push(command);
+      },
+    });
+
+    expect(result).toEqual({ started: false, reason: 'no-cli-entry' });
+    expect(probed).toEqual(['aka']);
+    // And nothing was started: the report is not a label on a child that ran.
+    expect(spawned).toEqual([]);
   });
 
   it('reports a spawn that throws rather than claiming it started', () => {
     const result = triggerHistorySyncRun(BASE, {
-      reinvoke: (() => ({
-        command: 'aka',
-        args: ['sync-history'],
-      })) as unknown as Reinvoke,
+      probeCli: () => true,
       startDetached: () => {
         throw new Error('EACCES');
       },
@@ -325,30 +359,12 @@ describe('triggerHistorySyncRun', () => {
     const spawned: string[] = [];
     const result = triggerHistorySyncRun(BASE, {
       platform: 'linux',
-      reinvoke: (() => ({
-        command: 'node',
-        args: ['cli.js', 'sync-history', '--run', '--home', BASE],
-      })) as unknown as Reinvoke,
+      probeCli: () => true,
       startDetached: (command) => {
         spawned.push(command);
       },
     });
     expect(result.started).toBe(true);
-    expect(spawned).toEqual(['node']);
-  });
-
-  // The passive callers of this argv swallow the null — a scheduler that cannot
-  // install is best-effort background work. A control somebody pressed is not.
-  it('reports, rather than swallows, having nothing to re-invoke', () => {
-    const spawned: string[] = [];
-    const result = triggerHistorySyncRun(BASE, {
-      reinvoke: (() => null) as unknown as Reinvoke,
-      startDetached: (command) => {
-        spawned.push(command);
-      },
-    });
-    expect(result).toEqual({ started: false, reason: 'no-cli-entry' });
-    // And nothing was started: the report is not a label on a child that ran.
-    expect(spawned).toEqual([]);
+    expect(spawned).toEqual(['aka']);
   });
 });

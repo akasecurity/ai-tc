@@ -54,6 +54,18 @@ const KIND_LABELS: Record<CountedEventType, string> = {
 };
 
 /**
+ * The order the rows are shown in, taken from the map above.
+ *
+ * LANE ORDER, deliberately: the three structural kinds, then the three that
+ * carry text. The store returns whatever order its index walk produces, which
+ * came out as Model calls, Prompts, Responses, Sessions, Tool calls, Tool
+ * inputs — alphabetical by accident, and it interleaves two lanes that behave
+ * differently and are gated differently. A reader comparing "sessions" to "tool
+ * calls" is comparing like with like; comparing "prompts" to "sessions" is not.
+ */
+const KIND_ORDER: readonly string[] = Object.keys(KIND_LABELS);
+
+/**
  * What this machine holds that its deployment does not receive as rows.
  *
  * LINES, never bars, and no counts — see SyncLocalOnlyLine for why a bar would
@@ -191,7 +203,11 @@ function panelState(
     return { status: 'not-shared' };
   }
 
-  const kinds = ledger.partitionByKind().map(toRow).filter(isRow);
+  const kinds = ledger
+    .partitionByKind()
+    .map(toRow)
+    .filter(isRow)
+    .sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind));
   return kinds.length === 0 ? { status: 'nothing-recorded' } : { status: 'ready', kinds };
 }
 

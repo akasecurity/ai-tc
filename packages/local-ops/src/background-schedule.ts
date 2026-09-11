@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -51,6 +51,10 @@ export interface BackgroundScheduleDeps {
    * and the only thing it could then assert is that spawning did not throw.
    */
   startDetached?: (command: string, args: readonly string[]) => void;
+  /** Whether the `aka` command can be found at all. Injectable, like the spawn. */
+  probeCli?: (command: string) => boolean;
+  /** The command that drives the CLI. Injectable so a test need not have one. */
+  akaCommand?: string;
 }
 
 function launchAgentsDir(deps: BackgroundScheduleDeps): string {
@@ -165,7 +169,40 @@ function guiDomain(): string {
 function defaultStartDetached(command: string, args: readonly string[]): void {
   // Detached with its output discarded, so the pass outlives whatever started
   // it — a dashboard request, or a command that has already printed.
-  spawn(command, [...args], { detached: true, stdio: 'ignore' }).unref();
+  const child = spawn(command, [...args], { detached: true, stdio: 'ignore' });
+  // A spawn failure arrives on this event, not as a throw, and a `ChildProcess`
+  // with no `error` listener re-raises it as an uncaught exception — which in a
+  // dashboard request would take down the server over a pass that did not
+  // start. There is nothing to tell: the child is detached and unwatched by
+  // design, and the probe above has already answered the case a user can act on.
+  child.on('error', () => undefined);
+  child.unref();
+}
+
+/** The command that drives the CLI, as a user's shell resolves it. */
+const AKA_COMMAND = 'aka';
+
+/**
+ * How long the presence probe may take before it is treated as present.
+ *
+ * A missing command comes back at once — `spawnSync` reports ENOENT without
+ * running anything — so this bounds only the case where something called `aka`
+ * exists and is slow to answer. That resolves to "present", which is the
+ * fail-open direction: the worst case is a pass that starts and does nothing,
+ * against the alternative of refusing a machine that is fine.
+ */
+const CLI_PROBE_TIMEOUT_MS = 5_000;
+
+function defaultProbeCli(command: string): boolean {
+  const probe = spawnSync(command, ['--version'], {
+    stdio: 'ignore',
+    timeout: CLI_PROBE_TIMEOUT_MS,
+  });
+  // ONLY absence counts as absent. A non-zero exit, a timeout, a version this
+  // build does not recognise — all of them mean something by that name is
+  // installed, and none of them is a thing to tell a user about the button they
+  // just pressed.
+  return (probe.error as NodeJS.ErrnoException | undefined)?.code !== 'ENOENT';
 }
 
 export type SyncRunStart =
@@ -174,9 +211,23 @@ export type SyncRunStart =
 /**
  * Start one drain pass now, in a child that outlives this process.
  *
- * The same argv the scheduler installs, from the same builder — a pass started
- * by hand and a pass started on a timer must be the same pass, or the two
- * surfaces describing them diverge.
+ * NAMES THE `aka` COMMAND, and does NOT re-invoke this executable the way the
+ * scheduler above does. That difference is the whole of this function's
+ * correctness, and it was found by pressing the button rather than by any test:
+ *
+ * `reinvokeArgv` re-runs THIS process's entry script, which is right for the
+ * CLI installing its own scheduler and wrong for the only caller this has — a
+ * dashboard Server Action. On the shipped path the dashboard server does run
+ * inside the CLI process, so re-invocation happens to work; in a development
+ * workspace Next is spawned directly, `process.argv[1]` is Next's own bin, and
+ * re-invoking "this executable" spawns Next with a subcommand it has never
+ * heard of. That spawn SUCCEEDS. The action reported that a pass had started,
+ * nothing ran, and the panel sat there — the exact failure this whole surface
+ * exists to make impossible.
+ *
+ * Naming the command is correct on both paths, because a machine that has the
+ * CLI has it on PATH — that is how the pass gets run by hand, and how the
+ * scheduler's own argv was built in the first place.
  *
  * NO PLATFORM GATE, unlike its neighbour. That one is gated because a LaunchAgent
  * is a macOS object and there is nothing to install elsewhere; this spawns a
@@ -194,10 +245,20 @@ export function triggerHistorySyncRun(
   base: string,
   deps: BackgroundScheduleDeps = {},
 ): SyncRunStart {
-  const reinvoke = (deps.reinvoke ?? reinvokeArgv)('sync-history', ['--run', '--home', base]);
-  if (reinvoke === null) return { started: false, reason: 'no-cli-entry' };
+  const command = deps.akaCommand ?? AKA_COMMAND;
+  // BEFORE the spawn, because a spawn that cannot find its command fails
+  // asynchronously — long after this has returned — and a control that reported
+  // success for it would be the bug this function was rewritten to remove.
+  if (!(deps.probeCli ?? defaultProbeCli)(command)) {
+    return { started: false, reason: 'no-cli-entry' };
+  }
   try {
-    (deps.startDetached ?? defaultStartDetached)(reinvoke.command, reinvoke.args);
+    (deps.startDetached ?? defaultStartDetached)(command, [
+      'sync-history',
+      '--run',
+      '--home',
+      base,
+    ]);
     return { started: true };
   } catch {
     return { started: false, reason: 'spawn-failed' };

@@ -3,7 +3,14 @@ import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { dataDir, type LocalDatabase } from '@akasecurity/persistence';
+import {
+  applyOnboarding,
+  dataDir,
+  type LocalDatabase,
+  settingsDir,
+  writeControlPlaneCredential,
+} from '@akasecurity/persistence';
+import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
@@ -87,28 +94,39 @@ function collectRenderedAt(node: unknown, into: number[] = []): number[] {
   return into;
 }
 
-// The six routes, each called the way Next calls it. An empty store is enough:
-// every read returns nothing and the page still renders its tree, which is
-// where the prop lives.
+// The seven routes, each called the way Next calls it. An empty store is
+// enough for six of them: every read returns nothing and the page still renders
+// its tree, which is where the prop lives.
+//
+// `prepare` exists for the seventh. The settings route renders its sync panel
+// only on an ATTACHED machine and renders nothing at all otherwise, which is
+// the honest shape but leaves this file's positive control — a non-empty list
+// of instants — vacuously unsatisfiable on a fresh temp home. So that route
+// says what state it has to be in first.
 const ROUTES = [
   {
     name: 'activity',
+    prepare: () => undefined,
     load: () => import('../../app/(app)/activity/page.tsx'),
   },
   {
     name: 'data-shares',
+    prepare: () => undefined,
     load: () => import('../../app/(app)/data-shares/page.tsx'),
   },
   {
     name: 'findings',
+    prepare: () => undefined,
     load: () => import('../../app/(app)/findings/page.tsx'),
   },
   {
     name: 'security',
+    prepare: () => undefined,
     load: () => import('../../app/(app)/security/page.tsx'),
   },
   {
     name: 'inventory',
+    prepare: () => undefined,
     load: () => import('../../app/(app)/inventory/page.tsx'),
   },
   {
@@ -118,18 +136,51 @@ const ROUTES = [
     // same shape as the other five; added for its zero-argument page function
     // (below), which none of the others have.
     name: 'vault',
+    prepare: () => undefined,
     load: () => import('../../app/(app)/vault/page.tsx'),
+  },
+  {
+    // The one route whose panel is conditional. Its instant reaches the sync
+    // panel, which a standalone machine does not render — so the prop's whole
+    // wiring is invisible here unless the machine is attached, keyed and
+    // sharing, which is what `prepare` arranges.
+    name: 'settings',
+    prepare: () => {
+      const endpoint = 'https://plane.example.com';
+      const at = '2026-08-01T00:00:00.000Z';
+      const base = join(home, '.aka');
+      applyOnboarding(
+        {
+          runMode: 'attached',
+          controlPlane: { endpoint, attachedAt: at },
+          historySyncConsent: {
+            acknowledgedAt: at,
+            payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+            endpoint,
+          },
+        },
+        base,
+      );
+      writeControlPlaneCredential(settingsDir(base), {
+        specVersion: 1,
+        endpoint,
+        apiKey: 'k',
+      });
+    },
+    load: () => import('../../app/(app)/settings/page.tsx'),
   },
 ] as const;
 
-// `vault/page.tsx`'s component is synchronous and takes no arguments; the
-// other five take `searchParams` as a promise, the way Next hands it.
+// `vault/page.tsx` and `settings/page.tsx` are synchronous and take no
+// arguments; the other five take `searchParams` as a promise, the way Next
+// hands it.
 // `await`ing a non-promise return still resolves, so only the call shape
 // differs.
 async function render(route: (typeof ROUTES)[number]): Promise<number[]> {
+  route.prepare();
   const mod = await route.load();
   const element =
-    route.name === 'vault'
+    route.name === 'vault' || route.name === 'settings'
       ? await (mod.default as () => unknown)()
       : await (mod.default as (props: { searchParams: Promise<object> }) => unknown)({
           searchParams: Promise.resolve({}),

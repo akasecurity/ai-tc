@@ -126,7 +126,10 @@ export function UNSAFE_TEST_ONLY_setManagedSettingsPaths(paths: readonly string[
  * file there ran it unmanaged, every pin and lock gone. The schema drops such a
  * name and reports it — `unknownLockedFields` for the lock half,
  * `unknownValueFields` for the pin half — so everything this build understands
- * still holds and the surface can say what does not.
+ * still holds and the surface can say what does not. The NAMES stop here:
+ * `managedContextOf` carries only their counts, because the context is
+ * serialized to a client component and those names are whatever an
+ * administrator's file happens to contain.
  *
  * A bad value under a key this build DOES know is still damage, and still fails
  * the file. That is what keeps the tolerance above from covering a typo.
@@ -159,12 +162,14 @@ export function managedContextOf(managed: ManagedSettings | null): ManagedContex
     present: true,
     ...(managed.organization === undefined ? {} : { organization: managed.organization }),
     lockedFields: managed.lockedFields,
+    // The COUNT crosses to the dashboard, not the names — see ManagedContext.
+    // The names remain on `managed` for any caller that wants to list them.
     ...(managed.unknownLockedFields === undefined
       ? {}
-      : { unknownLockedFields: managed.unknownLockedFields }),
+      : { unknownLockedCount: managed.unknownLockedFields.length }),
     ...(managed.unknownValueFields === undefined
       ? {}
-      : { unknownValueFields: managed.unknownValueFields }),
+      : { unknownValueCount: managed.unknownValueFields.length }),
   };
 }
 

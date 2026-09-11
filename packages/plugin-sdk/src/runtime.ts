@@ -11,7 +11,12 @@ import type {
   SourceTool,
   WorkspaceSettings,
 } from '@akasecurity/schema';
-import { builtinPolicyToAction, isActionAtLeast, strongerAction } from '@akasecurity/schema';
+import {
+  builtinPolicyToAction,
+  isActionAtLeast,
+  strongerAction,
+  strongerRedactFallback,
+} from '@akasecurity/schema';
 
 import type { DataGateway } from './data-gateway.ts';
 import { buildIngestEvent, contentHashOf } from './events.ts';
@@ -197,7 +202,13 @@ export function createPluginRuntime(
   }
   const policyMode = settings.policy;
   // What a resolved `redact` degrades to on a field the host cannot rewrite.
-  const redactFallback = settings.redactFallback;
+  //
+  // A `let`, and rebuilt in ensureInitialized beside the resolver and the
+  // bundle exceptions: an attached machine's organization can carry its own
+  // value on the policy bundle, merged RAISE-ONLY against this one. Seeded from
+  // the device's setting so a runtime that somehow enforces before initialising
+  // uses the local answer rather than none.
+  let redactFallback = settings.redactFallback;
   const dataDir = opts?.dataDir;
   let rules: Rule[] = [];
   // Runs the scan under a hard wall-clock bound when the ruleset carries any
@@ -285,6 +296,27 @@ export function createPluginRuntime(
     rules = [...verified, ...unverified];
     scanner = createGuardedScanner({ verified, unverified }, gateway, opts?.scanIsolation);
     bundleExceptions = bundle.exceptions ?? [];
+    // Raise-only, over the one enforcement ladder: an organization can tighten
+    // what happens where masking is impossible and can never loosen it. Absent
+    // on the bundle leaves the device's own setting in force.
+    //
+    // THREE sources can decide this value, and `redactFallback` is the first
+    // field where they meet: the user's own settings, an ADMINISTRATOR's
+    // managed overlay, and the control-plane bundle. It is the only member of
+    // both `ManagedSettingKey` and `PolicyBundle` — every other bundle field
+    // sits outside the administrative vocabulary, so no precedence question
+    // existed before it.
+    //
+    // `settings.redactFallback` on the left is therefore already post-overlay:
+    // an administrator's pin arrives here indistinguishable from a value the
+    // user chose. A LOCK on that pin does not constrain this merge, and that is
+    // deliberate rather than an oversight — a lock's stated contract is which
+    // fields the USER may not change, and the control plane is not the user.
+    // Both sources belong to the same organization, and the merge can only
+    // tighten, so the administrator's floor is never lowered; it can be raised
+    // by their own deployment. Say so here rather than leaving an operator to
+    // discover that a locked `warn` enforces as `block`.
+    redactFallback = strongerRedactFallback(settings.redactFallback, bundle.redactFallback);
     initialized = true;
   }
 
@@ -380,6 +412,29 @@ export function createPluginRuntime(
     const actionFor = (finding: MatchResult): ActionTaken =>
       actionForFinding(finding, excepted, rewritable);
 
+    // What did a redact this capture cannot carry out resolve to? Found by
+    // asking what the SAME finding would have resolved to on a rewritable
+    // field: where that is `redact` and this field is not rewritable, the
+    // degrade fired, and `actionFor` gives what it became.
+    //
+    // The ACTION, not the fact. `worst` below is the strongest action across
+    // every finding, so a capture mixing a degraded redact with a `block`
+    // policy returns `block` for a reason that has nothing to do with the
+    // fallback — and a consumer handed only "something degraded" cannot tell
+    // those apart. It then explains a deny by naming a fallback the workspace
+    // never set.
+    //
+    // Derived rather than tracked, so it cannot disagree with the action
+    // returned beside it — and absent whenever the ceiling already ruled the
+    // redact out, since then no masking was ever on offer to lose.
+    const degradedActions = rewritable
+      ? []
+      : findings.filter((f) => actionForFinding(f, excepted, true) === 'redact').map(actionFor);
+    const degraded =
+      degradedActions.length === 0
+        ? {}
+        : { redactDegradedTo: degradedActions.reduce((a, b) => strongerAction(a, b)) };
+
     // `worst` already reflects the legacy global ceiling: actionForFinding caps
     // block/redact to warn when it is enabled, so the collapse inherits the cap
     // and never needs to re-apply it here.
@@ -388,7 +443,7 @@ export function createPluginRuntime(
       worst = strongerAction(worst, actionFor(finding));
     }
 
-    if (worst === 'block') return { action: 'block', text: null, findings };
+    if (worst === 'block') return { action: 'block', text: null, findings, ...degraded };
     if (worst === 'redact') {
       const redactFindings = findings.filter((f) => actionFor(f) === 'redact');
       // The subset whose own detection chose Redact & Vault. A per-finding
@@ -407,9 +462,13 @@ export function createPluginRuntime(
         findings,
         enforcedFindings: redactFindings,
         reversibleFindings,
+        // No `degraded` here, and it is not an omission: `rewritable` is per
+        // CAPTURE, so on an unrewritable field every redact has already become
+        // the fallback and this branch is unreachable. Spreading it would read
+        // as a case that can happen.
       };
     }
-    return { action: worst, text, findings };
+    return { action: worst, text, findings, ...degraded };
   }
 
   // Compute (and memoize per call) the keyed fingerprint of a finding's exact

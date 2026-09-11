@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { overlayManagedSettings } from '@akasecurity/persistence';
 import type { PolicyBundle, Rule, WorkspaceSettings } from '@akasecurity/schema';
+import { MANAGED_SETTINGS_SPEC_VERSION } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { CaptureRecord, DataGateway } from '../src/data-gateway.ts';
@@ -1066,6 +1068,117 @@ describe('a redact the caller cannot carry out', () => {
     await runtime.close();
   });
 
+  it('takes the ORGANIZATION’s fallback when it is stronger than the device’s', async () => {
+    // An attached machine's bundle can carry the organization's answer. It
+    // merges raise-only against the device's own setting, so this warn becomes
+    // a block.
+    const b = redactBundle();
+    b.redactFallback = 'block';
+    const runtime = createPluginRuntime(fakeGateway(b), settingsWith('warn'));
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+    expect(out.action).toBe('block');
+    await runtime.close();
+  });
+
+  it('IGNORES a weaker organizational fallback — raise-only, never a relaxation', async () => {
+    // The direction that matters, and the reason this is a merge rather than an
+    // override: anything able to write the policy cache could otherwise turn a
+    // device's Block into a Monitor and let the value through on a field that
+    // cannot be masked.
+    const b = redactBundle();
+    b.redactFallback = 'monitor';
+    const runtime = createPluginRuntime(fakeGateway(b), settingsWith('block'));
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+    expect(out.action).toBe('block');
+    await runtime.close();
+  });
+
+  it('leaves the device’s setting in force when the bundle carries none', async () => {
+    // The control for both cases above: absent must change nothing, or a
+    // standalone machine would be quietly re-decided by a field nobody set.
+    const runtime = createPluginRuntime(fakeGateway(redactBundle()), settingsWith('block'));
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+    expect(out.action).toBe('block');
+    await runtime.close();
+  });
+
+  // `redactFallback` is the first field an ADMINISTRATOR and the control plane
+  // can both decide — the only member of both `ManagedSettingKey` and
+  // `PolicyBundle`. The two cases above drive settings-vs-bundle; this pair
+  // drives managed-pin-vs-bundle, which is the direction the field created and
+  // the one nothing asserted. Driven through the REAL `overlayManagedSettings`
+  // rather than a hand-written settings object, so it is the actual chain a
+  // managed machine takes: pin -> overlay -> `settings.redactFallback` -> merge.
+  const managedPin = (fallback: 'monitor' | 'warn' | 'block'): WorkspaceSettings =>
+    overlayManagedSettings(settingsWith('monitor'), {
+      specVersion: MANAGED_SETTINGS_SPEC_VERSION,
+      values: { redactFallback: fallback },
+      lockedFields: ['redactFallback'],
+    });
+
+  it('raises an administrator’s LOCKED pin when the organization is stricter', async () => {
+    // The operator-visible consequence, on the record as a decision rather than
+    // discovered in the field: a lock says which fields the USER may not
+    // change, and the control plane is not the user. Both belong to the same
+    // organization and the merge only tightens, so the pin is a floor the
+    // deployment may raise — never a ceiling it may lower.
+    const b = redactBundle();
+    b.redactFallback = 'block';
+    const settings = managedPin('warn');
+
+    // The pin LANDED, asserted before the merge consumes it — and this line is
+    // the whole of this case's coverage of the overlay.
+    //
+    // The merge is a max, so wherever the BUNDLE wins it returns the same action
+    // whether the pin arrived or `managedPin`'s `monitor` base did: max(warn,
+    // block) and max(monitor, block) are both `block`. Nothing downstream of
+    // `overlayManagedSettings` can see that it ran, so without this the case is
+    // outcome-identical to the settings-vs-bundle case above and its name would
+    // promise evidence it does not hold.
+    //
+    // Picking different values does not rescue it. Raise-only means a pin is
+    // observable through `out.action` only where the PIN wins — which is the
+    // sibling below, and is why that one is where the overlay mutation lands.
+    expect(settings.redactFallback).toBe('warn');
+
+    const runtime = createPluginRuntime(fakeGateway(b), settings);
+
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+
+    expect(out.action).toBe('block');
+    await runtime.close();
+  });
+
+  it('holds an administrator’s pin against a WEAKER organizational fallback', async () => {
+    // The other direction, and the control on the case above: raise-only has to
+    // protect the administrator too, or a bundle could undo the pin that a lock
+    // exists to defend. Without this, an implementation that simply preferred
+    // the bundle would satisfy the case above.
+    const b = redactBundle();
+    b.redactFallback = 'monitor';
+    const runtime = createPluginRuntime(fakeGateway(b), managedPin('block'));
+
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+
+    expect(out.action).toBe('block');
+    await runtime.close();
+  });
+
   it('records the action that ACTUALLY applied, not the policy it came from', async () => {
     // The load-bearing one. Recording 'redact' here would describe a masking
     // that did not happen while the raw value went through — the same class of
@@ -1112,6 +1225,74 @@ describe('a redact the caller cannot carry out', () => {
     );
     expect(gateway.records[0]?.event.content).not.toContain('SECRET_MARKER');
     expect(gateway.records[0]?.findings.map((f) => f.actionTaken)).toEqual(['block']);
+    await runtime.close();
+  });
+
+  // `redactDegradedTo` is the ACTION the lost redact became, and the only thing
+  // that can tell that from "the capture's worst action" is a capture where the
+  // two DIFFER. Every other case in the tree is single-finding, where the fold
+  // and the worst action coincide and `redactDegradedTo === action` holds
+  // whichever way it is computed; the host suites that assert a mismatch build
+  // their `CaptureResult` by hand and never reach `decide()`.
+  //
+  // So this pair is the whole guard on the producing layer. Replacing the fold
+  // with the capture's `worst` — the boolean semantics this field replaced —
+  // leaves the other 633 cases green and fails only the first of these.
+  function mixedBundle(): PolicyBundle {
+    const b = bundle();
+    b.policies = [
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'test/secret-marker' },
+        action: 'block',
+        enabled: true,
+      },
+      {
+        id: randomUUID(),
+        scope: 'global',
+        target: { ruleId: 'test/pii-marker' },
+        action: 'redact',
+        enabled: true,
+      },
+    ];
+    return b;
+  }
+
+  const MIXED = 'SECRET_MARKER and PII_MARKER together';
+
+  it('names what the LOST redact became, not what the capture did', async () => {
+    // A deny that reports `redactDegradedTo: 'block'` explains itself by naming
+    // a fallback the workspace never set — here the workspace set `warn`, and
+    // the deny came from the other finding's own Block policy.
+    const gateway = fakeGateway(mixedBundle());
+    const runtime = createPluginRuntime(gateway, settingsWith('warn'));
+
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: MIXED },
+      { rewritable: false },
+    );
+
+    expect(out.action).toBe('block');
+    expect(out.redactDegradedTo).toBe('warn');
+    await runtime.close();
+  });
+
+  it('still reports the fallback when it happens to equal the capture action', async () => {
+    // The positive control on the case above: without it, a runtime that had
+    // stopped producing the field at all would satisfy a lone `not.toBe`.
+    // Here the fold and the worst action genuinely coincide, so this one is
+    // expected to read the same either way — it proves the field is emitted.
+    const gateway = fakeGateway(mixedBundle());
+    const runtime = createPluginRuntime(gateway, settingsWith('block'));
+
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: MIXED },
+      { rewritable: false },
+    );
+
+    expect(out.action).toBe('block');
+    expect(out.redactDegradedTo).toBe('block');
     await runtime.close();
   });
 });

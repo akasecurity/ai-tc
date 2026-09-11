@@ -103,7 +103,17 @@ async function main(): Promise<unknown> {
 
       const result = await runtime.capture(
         { kind, sourceTool: SOURCE_TOOL.Antigravity, text: value, metadata },
-        kind === 'tool_use' ? { persist: 'with-findings' } : {},
+        {
+          ...(kind === 'tool_use' ? { persist: 'with-findings' as const } : {}),
+          // This host's PreToolUse has no `updatedInput`, so NO argument can be
+          // masked in place — the whole call is unrewritable, not just the
+          // fields that execute. A resolved redact therefore degrades to the
+          // configured `redactFallback` inside the runtime, which is the one
+          // place the emitted decision, the recorded action and the ledger all
+          // read. This hook used to escalate it to a deny itself and record it
+          // as `redact`, which described a masking that never happened.
+          rewritable: false,
+        },
       );
       scanned.push({ spec, result });
     }

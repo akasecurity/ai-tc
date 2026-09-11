@@ -299,6 +299,23 @@ export function createPluginRuntime(
     // Raise-only, over the one enforcement ladder: an organization can tighten
     // what happens where masking is impossible and can never loosen it. Absent
     // on the bundle leaves the device's own setting in force.
+    //
+    // THREE sources can decide this value, and `redactFallback` is the first
+    // field where they meet: the user's own settings, an ADMINISTRATOR's
+    // managed overlay, and the control-plane bundle. It is the only member of
+    // both `ManagedSettingKey` and `PolicyBundle` — every other bundle field
+    // sits outside the administrative vocabulary, so no precedence question
+    // existed before it.
+    //
+    // `settings.redactFallback` on the left is therefore already post-overlay:
+    // an administrator's pin arrives here indistinguishable from a value the
+    // user chose. A LOCK on that pin does not constrain this merge, and that is
+    // deliberate rather than an oversight — a lock's stated contract is which
+    // fields the USER may not change, and the control plane is not the user.
+    // Both sources belong to the same organization, and the merge can only
+    // tighten, so the administrator's floor is never lowered; it can be raised
+    // by their own deployment. Say so here rather than leaving an operator to
+    // discover that a locked `warn` enforces as `block`.
     redactFallback = strongerRedactFallback(settings.redactFallback, bundle.redactFallback);
     initialized = true;
   }

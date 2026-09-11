@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { overlayManagedSettings } from '@akasecurity/persistence';
 import type { PolicyBundle, Rule, WorkspaceSettings } from '@akasecurity/schema';
+import { MANAGED_SETTINGS_SPEC_VERSION } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { CaptureRecord, DataGateway } from '../src/data-gateway.ts';
@@ -1105,6 +1107,57 @@ describe('a redact the caller cannot carry out', () => {
       { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
       { rewritable: false },
     );
+    expect(out.action).toBe('block');
+    await runtime.close();
+  });
+
+  // `redactFallback` is the first field an ADMINISTRATOR and the control plane
+  // can both decide — the only member of both `ManagedSettingKey` and
+  // `PolicyBundle`. The two cases above drive settings-vs-bundle; this pair
+  // drives managed-pin-vs-bundle, which is the direction the field created and
+  // the one nothing asserted. Driven through the REAL `overlayManagedSettings`
+  // rather than a hand-written settings object, so it is the actual chain a
+  // managed machine takes: pin -> overlay -> `settings.redactFallback` -> merge.
+  const managedPin = (fallback: 'monitor' | 'warn' | 'block'): WorkspaceSettings =>
+    overlayManagedSettings(settingsWith('monitor'), {
+      specVersion: MANAGED_SETTINGS_SPEC_VERSION,
+      values: { redactFallback: fallback },
+      lockedFields: ['redactFallback'],
+    });
+
+  it('raises an administrator’s LOCKED pin when the organization is stricter', async () => {
+    // The operator-visible consequence, on the record as a decision rather than
+    // discovered in the field: a lock says which fields the USER may not
+    // change, and the control plane is not the user. Both belong to the same
+    // organization and the merge only tightens, so the pin is a floor the
+    // deployment may raise — never a ceiling it may lower.
+    const b = redactBundle();
+    b.redactFallback = 'block';
+    const runtime = createPluginRuntime(fakeGateway(b), managedPin('warn'));
+
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+
+    expect(out.action).toBe('block');
+    await runtime.close();
+  });
+
+  it('holds an administrator’s pin against a WEAKER organizational fallback', async () => {
+    // The other direction, and the control on the case above: raise-only has to
+    // protect the administrator too, or a bundle could undo the pin that a lock
+    // exists to defend. Without this, an implementation that simply preferred
+    // the bundle would satisfy the case above.
+    const b = redactBundle();
+    b.redactFallback = 'monitor';
+    const runtime = createPluginRuntime(fakeGateway(b), managedPin('block'));
+
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+
     expect(out.action).toBe('block');
     await runtime.close();
   });

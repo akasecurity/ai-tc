@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { ExceptionBundleEntry } from '../../src/zod/exception.ts';
 import { DetectionCategory } from '../../src/zod/finding.ts';
 import {
+  actionRank,
+  builtinPolicyToAction,
   DEFAULT_ACTIONS,
   FULL_ENFORCEMENT_POSTURE,
   Policy,
@@ -91,10 +93,6 @@ describe('PolicyBundle.ruleVersions', () => {
   });
 });
 
-// The stamp exists so a cache narrowed by an older build can be told apart from
-// one this build wrote. It is only worth anything if it actually tracks the
-// schema — a constant that drifted free of `PolicyBundle` would go on matching
-// every record forever, which is indistinguishable from not having it.
 describe('PolicyBundle.redactFallback', () => {
   const baseBundle = {
     version: '1',
@@ -144,20 +142,45 @@ describe('strongerRedactFallback — an organization tightens, never loosens', (
   });
 
   it('is total over the vocabulary, and never returns a value outside it', () => {
-    // Derived rather than enumerated: a value added to RedactFallback fails
-    // here if the merge cannot rank it, instead of silently comparing as equal.
+    // Derived rather than enumerated, so a member added to RedactFallback is
+    // covered here without editing the loop. What that buys is TOTALITY and
+    // idempotence over whatever the enum currently holds — not a guarantee that
+    // the merge can tell every pair apart, which the next case is for.
     for (const local of RedactFallback.options) {
       for (const remote of RedactFallback.options) {
         const merged = strongerRedactFallback(local, remote);
         expect(RedactFallback.options).toContain(merged);
-        // Never weaker than the local value — the whole property, stated over
-        // the ladder rather than over the three pairs above.
+        // Idempotent against the local value. NOT the whole property — it holds
+        // for an implementation that ignores `remote` entirely, since then
+        // `merged === local` and `f(local, local) === local`. The three explicit
+        // pairs above are what catch that; this states the ladder is consistent.
         expect(strongerRedactFallback(merged, local)).toBe(merged);
       }
     }
   });
+
+  it('ranks every member DISTINCTLY, so no pair can compare as equal', () => {
+    // The claim the case above used to make and could not keep. The palette
+    // maps many-to-one — `redact` and `vault` both carry `action: 'redact'` —
+    // so widening RedactFallback to a member that aliases an existing one
+    // introduces a genuinely unordered pair, and the loop above would report it
+    // green: both sides rank the same, `strongerAction` returns its first
+    // argument, and the idempotence check then passes either way.
+    //
+    // Ranked distinctly, a merge cannot silently pick one of two incomparable
+    // members. Today: monitor/warn/block rank 1/2/4.
+    const ranks = RedactFallback.options.map((id) => actionRank(builtinPolicyToAction(id)));
+    expect(
+      new Set(ranks).size,
+      `ranks ${ranks.join(', ')} for ${RedactFallback.options.join(', ')}`,
+    ).toBe(RedactFallback.options.length);
+  });
 });
 
+// The stamp exists so a cache narrowed by an older build can be told apart from
+// one this build wrote. It is only worth anything if it actually tracks the
+// schema — a constant that drifted free of `PolicyBundle` would go on matching
+// every record forever, which is indistinguishable from not having it.
 describe('POLICY_BUNDLE_SHAPE_ID tracks the schema it describes', () => {
   it('names every top-level bundle field', () => {
     const named = new Set(POLICY_BUNDLE_SHAPE_ID.split(','));

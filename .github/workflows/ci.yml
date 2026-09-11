@@ -764,6 +764,11 @@ jobs:
           $os = Get-CimInstance Win32_OperatingSystem
           "logical CPUs: $($cs.NumberOfLogicalProcessors)"
           "availableParallelism (what vitest sizes its pool from): $(node -e "process.stdout.write(String(require('node:os').availableParallelism()))")"
+          # The granularity of the clock every CPU-time guard in this repo reads.
+          # POSIX reports microseconds; Windows charges whole scheduler ticks to
+          # whichever thread was running at the interrupt, so a guard measuring a
+          # few milliseconds of work here is reading the clock rather than the work.
+          "smallest non-zero threadCpuUsage deltas, ms: $(node -e "const seen = new Set(); for (let i = 0; i < 2000; i += 1) { const a = process.threadCpuUsage(); let x = 0; for (let j = 0; j < 5000; j += 1) x += j; const b = process.threadCpuUsage(); const d = (b.user + b.system - a.user - a.system) / 1000; if (d > 0) seen.add(d); } const v = [...seen].sort((p, q) => p - q); process.stdout.write(v.length === 0 ? 'no non-zero delta in 2000 tries' : v.slice(0, 4).map((m) => m.toFixed(4)).join(', '))")"
           "total RAM MB: $([math]::Round($os.TotalVisibleMemorySize / 1KB))"
           "free RAM MB:  $([math]::Round($os.FreePhysicalMemory / 1KB))"
           Get-PSDrive -PSProvider FileSystem |

@@ -337,8 +337,10 @@ export function isHistorySyncLeaseLive(
   lease: HistorySyncLease | undefined,
   nowMs: number,
 ): boolean {
-  if (lease === undefined || lease.ownerPid === null || lease.heartbeatAt === null) return false;
-  return lease.heartbeatAt >= nowMs - HISTORY_SYNC_LEASE_STALE_MS && lease.heartbeatAt <= nowMs;
+  if (lease === undefined) return false;
+  const { ownerPid, heartbeatAt } = lease;
+  if (ownerPid === null || heartbeatAt === null) return false;
+  return heartbeatAt >= nowMs - HISTORY_SYNC_LEASE_STALE_MS && heartbeatAt <= nowMs;
 }
 
 const ROW_COLUMNS = `id,

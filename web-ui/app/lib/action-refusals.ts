@@ -167,6 +167,18 @@ export const SYNC_KEY_UNUSABLE =
 export const SYNC_NO_CLI_ENTRY =
   'This dashboard could not find the aka command it would run, so no pass was started here. Nothing was lost — what is queued stays queued, and a pass still runs when a session starts.';
 
+/**
+ * The breaker is open, so a pass would decline before it opened the store.
+ *
+ * Checked here rather than left to the pass because the pass is DETACHED: its
+ * refusal reaches nothing, and the button would appear to do nothing at all —
+ * which is exactly the report this panel was built to answer. The cooldown is
+ * short and self-clearing, so the wording asks for a wait rather than an
+ * action, and says the queue is intact for the same reason the two below do.
+ */
+export const SYNC_PAUSED =
+  'Sending is paused after repeated failures and resumes on its own. Nothing was lost — what is queued stays queued.';
+
 /** The spawn itself failed — unlike the above, worth trying again. */
 export const SYNC_SPAWN_FAILED =
   'A sync pass could not be started just now. Nothing was lost — what is queued stays queued. Try again in a moment.';

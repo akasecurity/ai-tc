@@ -19,7 +19,7 @@ import {
 } from '@akasecurity/schema';
 
 import { rebuildCapture } from './capture-rebuild.ts';
-import { BREAKER_COOLDOWN_MS, readForwardHealth } from './forward-policy.ts';
+import { isForwardPaused, readForwardHealth } from './forward-policy.ts';
 import { rebuildAuditEvent } from './history-rebuild.ts';
 import type { HistorySyncOutcome } from './history-state.ts';
 
@@ -321,8 +321,7 @@ export async function runHistorySync(
     // needs to make progress during a partial outage would be the one held off
     // indefinitely by a breaker refusing nothing.
     const nowMs = now();
-    const openedAtMs = readForwardHealth(deps.dataDir, nowMs)?.openedAtMs ?? null;
-    if (openedAtMs !== null && nowMs - openedAtMs < BREAKER_COOLDOWN_MS) {
+    if (isForwardPaused(readForwardHealth(deps.dataDir, nowMs), nowMs)) {
       return didNotRun('breaker-open');
     }
 

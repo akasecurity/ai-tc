@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +6,9 @@ import { join } from 'node:path';
 import type * as LocalOps from '@akasecurity/local-ops';
 import {
   applyOnboarding,
+  ATTACHED_FORWARD_STATE_FILENAME,
+  BREAKER_COOLDOWN_MS,
+  dataDir,
   settingsDir,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
@@ -18,6 +21,7 @@ import {
   SYNC_NO_CLI_ENTRY,
   SYNC_NOT_ATTACHED,
   SYNC_NOT_GRANTED,
+  SYNC_PAUSED,
   SYNC_SPAWN_FAILED,
 } from '../../app/lib/action-refusals.ts';
 
@@ -83,6 +87,16 @@ function attachedAndSharing(): void {
     endpoint: ENDPOINT,
     apiKey: KEY,
   });
+}
+
+/** Record a breaker that opened at `openedAtMs`, as the forward path would. */
+function openBreaker(openedAtMs: number): void {
+  const dir = dataDir(akaHome());
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, ATTACHED_FORWARD_STATE_FILENAME),
+    JSON.stringify({ consecutiveFailures: 3, openedAtMs, lastFailure: 'unreachable' }),
+  );
 }
 
 beforeEach(() => {
@@ -213,6 +227,31 @@ describe('syncNow', () => {
 
     await expect(syncNow()).resolves.toEqual({ ok: false, error: SYNC_NOT_GRANTED });
     expect(spawn.bases).toEqual([]);
+  });
+
+  // ─── Held off after repeated failures ──────────────────────────────────────
+  //
+  // Checked here rather than left to the pass, because the pass is DETACHED: a
+  // child that declines before opening the store says nothing back, so a button
+  // that spawned one would appear to do nothing at all.
+
+  it('refuses, and spawns nothing, while forwarding is paused', async () => {
+    attachedAndSharing();
+    openBreaker(Date.now());
+
+    await expect(syncNow()).resolves.toEqual({ ok: false, error: SYNC_PAUSED });
+    expect(spawn.bases).toEqual([]);
+  });
+
+  // The cooldown clears itself, and this gate is read at the moment of the
+  // click rather than from the render that drew the button — so a panel drawn
+  // seconds ago saying paused must not hold back a machine that is free again.
+  it('starts a pass once the cooldown has elapsed', async () => {
+    attachedAndSharing();
+    openBreaker(Date.now() - BREAKER_COOLDOWN_MS - 1);
+
+    await expect(syncNow()).resolves.toEqual({ ok: true });
+    expect(spawn.bases).toHaveLength(1);
   });
 
   // ─── When the start itself fails ───────────────────────────────────────────

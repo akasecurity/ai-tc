@@ -89,6 +89,22 @@ export interface SyncPanelViewProps {
   renderedAt: number;
   /** A pass currently holds the lease. */
   running: boolean;
+  /**
+   * Sending is paused after repeated failures, and a pass asked for now would
+   * make no attempt at all.
+   *
+   * NOT a member of the state union above, because it is not exclusive with
+   * any of them: the backlog beside it is still accurate and still owed, and
+   * the pause is about whether anything is being attempted, not about what the
+   * numbers mean. Folding it into the union would force a machine that is
+   * paused to stop showing what it owes — which is the one moment a reader most
+   * wants to see it.
+   *
+   * It is also the difference between a control that explains itself and one
+   * that appears to do nothing: a pass started while this is true returns
+   * immediately having sent nothing, and nothing about that reaches this page.
+   */
+  paused?: boolean | undefined;
   onSyncNow?: (() => void) | undefined;
   busy?: boolean | undefined;
   /**
@@ -149,12 +165,17 @@ export function SyncPanelView({
   lastPassAt,
   renderedAt,
   running,
+  paused,
   onSyncNow,
   busy,
   startError,
   localOnly,
 }: SyncPanelViewProps) {
   const canSync = state.status === 'ready' || state.status === 'nothing-recorded';
+  // Only where a pass could otherwise be asked for. In every other state the
+  // machine is not sending for a reason the reader can act on, and a second
+  // "paused" beside it would be two answers to one question.
+  const heldOff = canSync && paused === true;
   return (
     <Card>
       <CardHeader>
@@ -165,6 +186,7 @@ export function SyncPanelView({
           </CardDescription>
         </CardHeading>
         {running && <Tag dot={COLORS.primary}>Sending…</Tag>}
+        {!running && heldOff && <Tag dot={COLORS.sevMedium}>Paused</Tag>}
         {state.status === 'consent-stale' && <Tag>Paused</Tag>}
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
@@ -194,11 +216,22 @@ export function SyncPanelView({
           </p>
         )}
 
+        {heldOff && (
+          <p className="text-ui text-text-2">
+            Sending is paused after repeated failures. It resumes on its own — nothing was lost, and
+            what is queued above stays queued.
+          </p>
+        )}
+
         {startError !== undefined && <p className="text-ui text-text-2">{startError}</p>}
 
         {canSync && onSyncNow !== undefined && (
           <div className="flex items-center gap-2.5">
-            <Button onClick={onSyncNow} disabled={busy === true || running}>
+            {/* Disabled while held off, rather than left clickable to start a
+                pass that makes no attempt: the child is detached, so a pass
+                that declines to run says nothing back to this page, and the
+                control would appear to do nothing at all. */}
+            <Button onClick={onSyncNow} disabled={busy === true || running || heldOff}>
               {running ? 'Sending…' : 'Sync now'}
             </Button>
             {/* Says what the control covers, because it does not cover

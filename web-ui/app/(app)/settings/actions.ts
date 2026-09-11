@@ -6,11 +6,13 @@ import {
   clearAttachmentDerivedState,
   dataDir,
   defaultDataDir,
+  isForwardPaused,
   isSafeEndpoint,
   ManagedFieldError,
   openLocalDatabase,
   readControlPlaneCredentialFile,
   readControlPlaneCredentialState,
+  readForwardHealth,
   readWorkspaceSettings,
   removeControlPlaneCredential,
   seedCaptureBacklogOwed,
@@ -55,6 +57,7 @@ import {
   SYNC_NO_CLI_ENTRY,
   SYNC_NOT_ATTACHED,
   SYNC_NOT_GRANTED,
+  SYNC_PAUSED,
   SYNC_SPAWN_FAILED,
 } from '../../lib/action-refusals';
 
@@ -531,6 +534,16 @@ export async function syncNow(): Promise<SaveSettingsResult> {
   }
   if (!isHistorySyncConsentValid(settings.historySyncConsent, endpoint)) {
     return { ok: false, error: SYNC_NOT_GRANTED };
+  }
+
+  // LAST of the gates, and the only one read fresh at this instant rather than
+  // from the render that drew the button. The cooldown is short and clears
+  // itself, so a panel drawn seconds ago can say paused about a machine that is
+  // free to send again — refusing on that stale answer would be this surface
+  // inventing a pause of its own.
+  const now = Date.now();
+  if (isForwardPaused(readForwardHealth(dataDir(), now), now)) {
+    return { ok: false, error: SYNC_PAUSED };
   }
 
   // The default home, for the same reason detach uninstalls the scheduler

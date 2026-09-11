@@ -121,6 +121,45 @@ describe('SyncPanelView', () => {
     expect(html).toContain('Could not start a pass here.');
   });
 
+  // ─── Held off after repeated failures ──────────────────────────────────────
+  //
+  // The state the control was invisible in before, and the reason a user
+  // reports the button as broken: a pass started while forwarding is paused
+  // makes no attempt at all, and the child is detached, so nothing about that
+  // ever reaches this page.
+
+  it('says a pass would make no attempt, and does not offer to start one', () => {
+    const html = render({ onSyncNow: vi.fn(), paused: true });
+    expect(html).toContain('paused after repeated failures');
+    expect(html).toContain('resumes on its own');
+    expect(html).toContain('disabled');
+  });
+
+  // The bars stay. The backlog is still accurate and still owed, and the moment
+  // a machine has stopped sending is the moment a reader most wants to see what
+  // it is holding.
+  it('keeps showing what is owed while it is paused', () => {
+    const html = render({ paused: true, state: { status: 'ready', kinds: [row()] } });
+    expect(html.match(/role="meter"/g)).toHaveLength(1);
+    expect(html).toContain('Model calls');
+  });
+
+  // Two "paused" tags would be two answers to one question. Where sharing is
+  // off or the key is unusable, that is the reason the machine is silent, and
+  // the breaker behind it is beside the point.
+  it('says nothing about a pause in a state that already explains the silence', () => {
+    const html = render({ state: { status: 'not-shared' }, paused: true, onSyncNow: vi.fn() });
+    expect(html).not.toContain('repeated failures');
+  });
+
+  // A pass that IS running is not held off, whatever a stale read says — and
+  // "Sending…" beside "Paused" is a contradiction on its face.
+  it('prefers the running badge over the paused one', () => {
+    const html = render({ paused: true, running: true });
+    expect(html).toContain('Sending…');
+    expect(html.match(/Paused/g)).toBeNull();
+  });
+
   it('says what the control covers, since it does not cover the lines below it', () => {
     const html = render({ onSyncNow: vi.fn() });
     expect(html).toContain('Sends what is queued above');

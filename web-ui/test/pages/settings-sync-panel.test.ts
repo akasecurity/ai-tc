@@ -1,10 +1,12 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   applyOnboarding,
+  ATTACHED_FORWARD_STATE_FILENAME,
+  BREAKER_COOLDOWN_MS,
   dataDir,
   type LocalDatabase,
   openLocalDatabase,
@@ -159,6 +161,14 @@ function seedSession(sessionId: string): void {
   } finally {
     db.close();
   }
+}
+
+/** Record a breaker that opened at `openedAtMs`, as the forward path would. */
+function openBreaker(openedAtMs: number): void {
+  writeFileSync(
+    join(dir, ATTACHED_FORWARD_STATE_FILENAME),
+    JSON.stringify({ consecutiveFailures: 3, openedAtMs, lastFailure: 'unreachable' }),
+  );
 }
 
 /** Run something against the store the page will read from. */
@@ -448,6 +458,53 @@ describe('the settings route — the sync panel', () => {
     dropMemoisedDb();
 
     expect(panel().running).toBe(false);
+  });
+
+  // ─── Held off after repeated failures ──────────────────────────────────────
+  //
+  // THE ORIGINAL SYMPTOM. A pass started while the breaker is open declines
+  // before it opens the store, and the child is detached, so that decision
+  // reaches nothing — the button appears to do nothing at all. The page can
+  // only say so by reading the same file the pass would.
+
+  it('reports nothing paused on a machine that has not been failing', () => {
+    attach();
+    grant();
+    expect(panel().paused).toBe(false);
+  });
+
+  it('reports a machine held off while the breaker is still cooling', () => {
+    attach();
+    grant();
+    openBreaker(Date.now());
+
+    expect(panel().paused).toBe(true);
+  });
+
+  // The expensive direction. The stamp is never cleared by elapsing and the
+  // half-open probe re-stamps it before every attempt, so reading any stamp as
+  // open would show a machine as paused through the whole window in which the
+  // live path has resumed probing.
+  it('reports nothing paused once the cooldown has elapsed, stamp and all', () => {
+    attach();
+    grant();
+    openBreaker(Date.now() - BREAKER_COOLDOWN_MS - 1);
+
+    expect(panel().paused).toBe(false);
+  });
+
+  // The backlog is still accurate and still owed while a machine is held off,
+  // and that is the moment a reader most wants to see what it is holding.
+  it('still reports the backlog while it is paused', () => {
+    attach();
+    grant();
+    seedSession('s-1');
+    openBreaker(Date.now());
+    dropMemoisedDb();
+
+    const props = panel();
+    expect(props.paused).toBe(true);
+    expect(props.state.status).toBe('ready');
   });
 
   // ─── The last pass, and what is not sent as rows at all ────────────────────

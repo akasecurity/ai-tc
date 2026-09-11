@@ -7,7 +7,13 @@ import type {
   SyncPanelViewProps,
 } from '@akasecurity/dashboard-ui';
 import type { CountedEventType, HistorySyncKindPartition } from '@akasecurity/persistence';
-import { dataDir, isHistorySyncLeaseLive, readHistorySyncState } from '@akasecurity/persistence';
+import {
+  dataDir,
+  isForwardPaused,
+  isHistorySyncLeaseLive,
+  readForwardHealth,
+  readHistorySyncState,
+} from '@akasecurity/persistence';
 import type { CredentialState, WorkspaceSettings } from '@akasecurity/schema';
 import {
   isAttached,
@@ -133,11 +139,17 @@ export function readSyncPanel(
   if (!isAttached(settings) || connection === undefined) return null;
 
   const ledger = db().historySync;
-  const progress = readHistorySyncState(dataDir());
+  const dir = dataDir();
+  const progress = readHistorySyncState(dir);
   const base = {
     deployment: connection.label ?? connection.endpoint,
     renderedAt,
     running: isHistorySyncLeaseLive(ledger.lease(), renderedAt),
+    // The breaker, which is the answer to "I pressed the button and nothing
+    // happened". A pass started while it is open declines before it opens the
+    // store, and the child is detached, so that decision reaches no surface at
+    // all unless this page reads the same file the pass would.
+    paused: isForwardPaused(readForwardHealth(dir, renderedAt), renderedAt),
     localOnly: LOCAL_ONLY,
     ...(progress === null
       ? {}

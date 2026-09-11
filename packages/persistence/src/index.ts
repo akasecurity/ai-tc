@@ -40,6 +40,13 @@ export {
   readFingerprintKey,
   rotateFingerprintKey,
 } from './fingerprint.ts';
+export type { ControlPlaneFailure, ForwardHealth } from './forward-health.ts';
+export {
+  BREAKER_COOLDOWN_MS,
+  isForwardPaused,
+  parseForwardHealth,
+  readForwardHealth,
+} from './forward-health.ts';
 export { seedCaptureBacklogOwed } from './history-backfill.ts';
 export type { LocalHistoryPreview } from './history-preview.ts';
 export { readLocalHistoryPreview } from './history-preview.ts';

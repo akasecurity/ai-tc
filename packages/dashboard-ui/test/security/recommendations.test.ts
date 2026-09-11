@@ -1,7 +1,12 @@
-import type { FindingView, HealthSummary } from '@akasecurity/schema';
-import { DetectionCategory } from '@akasecurity/schema';
+import type { FindingView, HealthStatus, HealthSummary } from '@akasecurity/schema';
+import {
+  buildRecommendations as schemaBuildRecommendations,
+  findingStatus as schemaFindingStatus,
+  healthScore as schemaHealthScore,
+} from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import type { FindingStatus } from '../../src/security/recommendations.ts';
 import {
   buildRecommendations,
   buildRecommendedActions,
@@ -36,112 +41,27 @@ function finding(overrides: Partial<FindingView>): FindingView {
   };
 }
 
-describe('healthScore', () => {
-  it('blends coverage (60%) with the handled ratio (40%)', () => {
-    // handled = 2+4+1 = 7 of 10 → 0.7; score = 100*(0.6*0.5 + 0.4*0.7) = 58
-    expect(healthScore(summary())).toBe(58);
+// The `./recommendations` subpath is a published entry point: `cli/src/tui/report.ts`
+// imports the rollup and the posture score from it by name, and the maths behind
+// those names now lives in `@akasecurity/schema`. So what this module owes is the
+// WIRING — that each name still resolves to the one shared implementation. The
+// behaviour itself is asserted against that implementation in
+// `packages/schema/test/security/recommendations.test.ts`; re-asserting it here
+// would re-run schema's suite through a re-export and would go green on a local
+// copy that had drifted back, which is the defect the move removed.
+describe('the ./recommendations re-exports', () => {
+  it("names schema's own functions, not a second copy of them", () => {
+    expect(buildRecommendations).toBe(schemaBuildRecommendations);
+    expect(findingStatus).toBe(schemaFindingStatus);
+    expect(healthScore).toBe(schemaHealthScore);
   });
 
-  it('treats zero findings as fully handled', () => {
-    expect(healthScore(summary({ findings: 0, coverage: 1 }))).toBe(100);
-  });
-});
-
-describe('findingStatus', () => {
-  it('carries the severity buckets and open count through', () => {
-    const status = findingStatus(summary());
-    expect(status.openFindings).toBe(10);
-    expect(status.unreviewed).toEqual({ critical: 1, high: 2, medium: 3, low: 4 });
-  });
-});
-
-describe('buildRecommendations', () => {
-  it('gives every detection category a written title and advice', () => {
-    // The guard that would have caught `code_flaw` and `config` falling through.
-    // Both tables are keyed by plain string, so an unlisted category compiles and
-    // renders a raw fallback — "code_flaw finding" with a generic "Review" — and on
-    // a store where that category ranks first it is the most prominent row.
-    for (const category of DetectionCategory.options) {
-      const recs = buildRecommendations([finding({ category, severity: 'critical' })]);
-      expect(recs, `no recommendation built for ${category}`).toHaveLength(1);
-      const rec = recs[0];
-      expect(rec?.title, `${category} falls back to a raw title`).not.toBe(`${category} finding`);
-      expect(rec?.description, `${category} falls back to generic advice`).not.toBe(
-        'Review this finding against your policy.',
-      );
-    }
-  });
-
-  it('buckets by category, keyed to the most severe rule, sorted by weight', () => {
-    const recs = buildRecommendations([
-      finding({ category: 'pii', severity: 'low', ruleId: 'core-pii/email' }),
-      finding({ category: 'secret', severity: 'high', ruleId: 'secrets/aws-access-key' }),
-      finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/private-key' }),
-    ]);
-    expect(recs).toHaveLength(2);
-    expect(recs[0]?.severity).toBe('critical');
-    expect(recs[0]?.title).toBe('Exposed secret detected');
-    // ONE finding, because the count is the named RULE's, not its category's. The
-    // label pairs the two, so a category-wide count here would read
-    // "secrets/private-key · 2 findings" over a rule that fired once.
-    expect(recs[0]?.context).toBe('secrets/private-key · 1 finding');
-    expect(recs[1]?.severity).toBe('low');
-  });
-
-  it('ranks on the CATEGORY volume, not the named rule tally', () => {
-    // The label reports one rule so it can agree with the link, but ordering is
-    // about which kind of exposure matters most. Ranking on the rule would put a
-    // category holding 4 critical findings below one holding 2, because the rule
-    // that names the busy category fired once.
-    const recs = buildRecommendations([
-      finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/private-key' }),
-      finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/aws-access-key' }),
-      finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/aws-access-key' }),
-      finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/aws-access-key' }),
-      finding({ category: 'pii', severity: 'critical', ruleId: 'core-pii/ssn' }),
-      finding({ category: 'pii', severity: 'critical', ruleId: 'core-pii/ssn' }),
-    ]);
-    expect(recs.map((r) => r.title)).toEqual([
-      'Exposed secret detected',
-      'Personal data in a prompt',
-    ]);
-    // …and the busy category still reports its NAMED rule's count, which is 1.
-    expect(recs[0]?.context).toBe('secrets/private-key · 1 finding');
-  });
-
-  it('tallies a rule across every category it appears in, matching what a link can filter', () => {
-    // One rule id can hold definition rows in more than one category — a pack
-    // version may move it — and the findings page has no category dimension: it
-    // filters on `ruleId`. So both rows must report the rule's WHOLE tally, or a row
-    // showing 1 would open a list of 3.
-    const recs = buildRecommendations([
-      finding({ category: 'secret', severity: 'critical', ruleId: 'shared/rule' }),
-      finding({ category: 'custom', severity: 'critical', ruleId: 'shared/rule' }),
-      finding({ category: 'custom', severity: 'critical', ruleId: 'shared/rule' }),
-    ]);
-    // Two rows, one per category, both naming the same rule and the same number —
-    // which is the number `?type=shared/rule` returns.
-    expect(recs.map((r) => r.context)).toEqual([
-      'shared/rule · 3 findings',
-      'shared/rule · 3 findings',
-    ]);
-  });
-
-  it('counts the rule it names, not the category it buckets by', () => {
-    // Two rules in one category, the most-severe firing once and its neighbour
-    // three times: a category count would report 4 against the rule that fired once.
-    const recs = buildRecommendations([
-      finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/private-key' }),
-      finding({ category: 'secret', severity: 'high', ruleId: 'secrets/aws-access-key' }),
-      finding({ category: 'secret', severity: 'high', ruleId: 'secrets/aws-access-key' }),
-      finding({ category: 'secret', severity: 'high', ruleId: 'secrets/aws-access-key' }),
-    ]);
-    expect(recs).toHaveLength(1);
-    expect(recs[0]?.context).toBe('secrets/private-key · 1 finding');
-  });
-
-  it('returns nothing for no findings', () => {
-    expect(buildRecommendations([])).toEqual([]);
+  it("keeps FindingStatus as the historical name for schema's HealthStatus", () => {
+    // The annotations are the assertion — an alias that stopped resolving fails the
+    // build here rather than in the CLI, which is the consumer that cannot move.
+    const status: FindingStatus = findingStatus(summary());
+    const asSchema: HealthStatus = status;
+    expect(asSchema).toBe(status);
   });
 });
 

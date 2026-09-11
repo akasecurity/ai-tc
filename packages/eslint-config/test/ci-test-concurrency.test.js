@@ -51,6 +51,11 @@ import { REPO_ROOT } from './helpers/lint-invocations.js';
 
 const WORKFLOW_DIR = '.github/workflows';
 
+// The job id, not its display name: the name carries punctuation that would
+// have to be matched exactly, and a rename of either is caught by the control
+// below rather than passing quietly.
+const WINDOWS_JOB = 'windows';
+
 /**
  * Every `run:` command in a workflow, with folded/literal blocks joined.
  *
@@ -59,14 +64,40 @@ const WORKFLOW_DIR = '.github/workflows';
  * line-wise grep: the Windows leg spells its command across a dozen lines, so a
  * per-line scan sees `pnpm turbo run test` and `--concurrency=2` as unrelated
  * strings and can be satisfied — or fooled — by either alone.
+ * Each command carries the JOB it belongs to, because the bound this file
+ * asserts is a property of one LEG rather than of the tree. Without it the only
+ * statable rule is a count — "at least N invocations somewhere carry a cap" —
+ * which a capped invocation added to a different leg satisfies while the leg
+ * that needed it loses one. That is a proxy for the property, and this file's
+ * whole posture is that a proxy which reads green is worse than no guard.
+ *
+ * The job is tracked by INDENTATION rather than by parsing the YAML, for the
+ * same reason the block scalars are: this package has no YAML dependency, and
+ * adding one to read four keys would put a parser between the guard and the
+ * bytes it is guarding. `jobs:` sits at column 0, each job id two deeper, and
+ * anything back at column 0 ends the section.
  * @param {string} text workflow file contents
- * @returns {string[]} one entry per `run:` key, whitespace-collapsed
+ * @returns {{job: string, cmd: string}[]} one entry per `run:` key, whitespace-collapsed
  */
 export function runCommands(text) {
   const lines = text.split('\n');
   const commands = [];
+  let inJobs = false;
+  let job = '';
 
   for (let i = 0; i < lines.length; i += 1) {
+    if (/^jobs:\s*$/.test(lines[i])) {
+      inJobs = true;
+      job = '';
+      continue;
+    }
+    if (inJobs && /^\S/.test(lines[i])) {
+      inJobs = false;
+      job = '';
+    }
+    const jobStart = inJobs ? /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(lines[i]) : null;
+    if (jobStart) job = jobStart[1];
+
     const start = /^(\s*)(?:-\s+)?run:\s*(.*)$/.exec(lines[i]);
     if (!start) continue;
 
@@ -88,7 +119,7 @@ export function runCommands(text) {
     }
 
     const joined = parts.join(' ').replace(/\s+/g, ' ').trim();
-    if (joined !== '') commands.push(joined);
+    if (joined !== '') commands.push({ job, cmd: joined });
   }
 
   return commands;
@@ -100,7 +131,7 @@ export function runCommands(text) {
  * The directory is listed rather than enumerated, so a workflow added tomorrow
  * is covered without editing this file. Failures carry the filename because a
  * bare command is not actionable once this reads more than one workflow.
- * @returns {{file: string, cmd: string}[]} one entry per `run:` key
+ * @returns {{file: string, job: string, cmd: string}[]} one entry per `run:` key
  */
 function workflowCommands() {
   const dir = join(REPO_ROOT, WORKFLOW_DIR);
@@ -108,12 +139,12 @@ function workflowCommands() {
     .filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))
     .sort();
   return files.flatMap((file) =>
-    runCommands(readFileSync(join(dir, file), 'utf8')).map((cmd) => ({ file, cmd })),
+    runCommands(readFileSync(join(dir, file), 'utf8')).map(({ job, cmd }) => ({ file, job, cmd })),
   );
 }
 
 /** `file: command`, the form every failure below reports. */
-const describeHit = ({ file, cmd }) => `${file}: ${cmd}`;
+const describeHit = ({ file, job, cmd }) => `${file} [${job || '-'}]: ${cmd}`;
 
 /** True for a command that runs the workspace `test` task through turbo. */
 const runsTurboTest = (cmd) => /\bturbo\s+run\s+(?:[\w:@/-]+\s+)*test\b/.test(cmd);
@@ -132,6 +163,23 @@ const runsTestViaPackageScript = (cmd) =>
 
 /** The value of `--concurrency`, in either the `=` or space-separated form. */
 const concurrencyOf = (cmd) => /--concurrency[=\s]+(\S+)/.exec(cmd)?.[1];
+
+/** The value of `--maxWorkers`, in either the `=` or space-separated form. */
+const maxWorkersOf = (cmd) => /--maxWorkers[=\s]+(\S+)/.exec(cmd)?.[1];
+
+/**
+ * True when the command's `--maxWorkers` sits after a `--` separator.
+ *
+ * The separator is the whole mechanism: turbo consumes its own flags up to it
+ * and forwards what follows to each task's own command. `--maxWorkers` before
+ * it is a turbo flag turbo does not have, and after it is a vitest flag vitest
+ * does. Both spellings read identically in a diff.
+ */
+const capIsPassedThrough = (cmd) => {
+  const separator = / -- /.exec(cmd)?.index;
+  const cap = /--maxWorkers[=\s]/.exec(cmd)?.index;
+  return separator !== undefined && cap !== undefined && cap > separator;
+};
 
 describe('CI bounds the concurrency of every turbo test run', () => {
   const hits = workflowCommands();
@@ -234,12 +282,15 @@ describe('runCommands', () => {
       '      - name: Build',
       '        run: pnpm build',
     ].join('\n');
-    expect(runCommands(yaml)).toEqual(['pnpm turbo run test --concurrency=2', 'pnpm build']);
+    expect(runCommands(yaml).map((r) => r.cmd)).toEqual([
+      'pnpm turbo run test --concurrency=2',
+      'pnpm build',
+    ]);
   });
 
   it('does not merge two sibling run: keys', () => {
     const yaml = ['        run: pnpm lint', '        run: pnpm turbo run test'].join('\n');
-    expect(runCommands(yaml)).toEqual(['pnpm lint', 'pnpm turbo run test']);
+    expect(runCommands(yaml).map((r) => r.cmd)).toEqual(['pnpm lint', 'pnpm turbo run test']);
   });
 
   it('ends a block at a line indented no deeper than its own run: key', () => {
@@ -249,7 +300,49 @@ describe('runCommands', () => {
       '        env:',
       '          FOO: bar',
     ].join('\n');
-    expect(runCommands(yaml)).toEqual(['pnpm turbo run test']);
+    expect(runCommands(yaml).map((r) => r.cmd)).toEqual(['pnpm turbo run test']);
+  });
+});
+
+describe('runCommands — job attribution', () => {
+  // The job is what makes the cap assertion a statement about the LEG rather
+  // than a count over the tree, so its edges are pinned like the joining ones.
+  const workflow = [
+    'name: CI',
+    'on:',
+    '  push:',
+    'jobs:',
+    '  lint:',
+    '    steps:',
+    '      - run: pnpm lint',
+    '  windows:',
+    '    name: Windows · Unit tests',
+    '    steps:',
+    '      - run: pnpm turbo run test --concurrency=2',
+    '      - run: pnpm turbo run test --concurrency=1 --filter=x',
+  ].join('\n');
+
+  it('attributes each command to the job it sits in', () => {
+    expect(runCommands(workflow)).toEqual([
+      { job: 'lint', cmd: 'pnpm lint' },
+      { job: 'windows', cmd: 'pnpm turbo run test --concurrency=2' },
+      { job: 'windows', cmd: 'pnpm turbo run test --concurrency=1 --filter=x' },
+    ]);
+  });
+
+  it('leaves the jobs section at the next top-level key', () => {
+    // Without this a `run:` under a later top-level block would be credited to
+    // whichever job happened to be last — and the cap assertion would then be
+    // satisfied by a command in a different section entirely.
+    const trailing = [workflow, 'defaults:', '  run:', '    shell: bash'].join('\n');
+
+    expect(runCommands(trailing).filter((r) => r.job === 'windows')).toHaveLength(2);
+  });
+
+  it('reports no job for a fragment with no jobs: section', () => {
+    // Every other case in this file passes bare step fragments, so this is the
+    // shape they produce and it must not throw or invent an attribution.
+    expect(runCommands('        run: pnpm lint')).toEqual([{ job: '', cmd: 'pnpm lint' }]);
   });
 });
 
@@ -291,5 +384,96 @@ describe('runsTestViaPackageScript', () => {
     ['pnpm build', false],
   ])('%s -> %s', (cmd, expected) => {
     expect(runsTestViaPackageScript(cmd)).toBe(expected);
+  });
+});
+
+// The SECOND layer, and the one that was unbounded while the first was
+// asserted. `--concurrency` caps how many PACKAGE tasks run at once; each of
+// those forks a vitest pool sized to the machine, and no vitest.config.ts in
+// this workspace sets maxWorkers, poolOptions or fileParallelism. Two packages
+// on a four-core runner is therefore up to six fsync-bound workers on one
+// disk, which is the multiplier the Windows leg starves under.
+//
+// As above, the NUMBER is deliberately not asserted: what the right cap is
+// depends on the runner and is settled by measuring the pass rate. What is
+// asserted is the mechanism, because the mechanism is what fails silently.
+describe('CI caps the worker pool where it bounds package concurrency', () => {
+  const hits = workflowCommands();
+
+  it('finds the Windows unit-test job, so the assertion below is not vacuous', () => {
+    // The positive control. This bound is a property of ONE leg, so a rename or
+    // a restructure that made the job unfindable would leave the next
+    // assertion filtering an empty list and passing for ever.
+    const windows = hits.filter((h) => h.file === 'ci.yml' && h.job === WINDOWS_JOB);
+    expect(
+      windows.map(describeHit),
+      `no \`${WINDOWS_JOB}\` job in ci.yml — if it was renamed, rename it here too`,
+    ).not.toHaveLength(0);
+    expect(windows.filter((h) => runsTurboTest(h.cmd)).length).toBeGreaterThan(0);
+  });
+
+  it('caps EVERY turbo test invocation in that job', () => {
+    // The property, rather than a count standing in for it. The first version
+    // of this asserted "at least three invocations somewhere carry a cap",
+    // which a capped invocation added to a DIFFERENT leg satisfies while this
+    // one loses its own — and the defect that number was written for was
+    // exactly that shape: the cap reached only the first of three calls, so
+    // `web-ui`, named by this job's own comment as one of the two heaviest
+    // fsync-bound suites on the leg, kept a host-sized pool.
+    //
+    // Scoped to this job on purpose. Whether the macOS and Linux legs want the
+    // same cap is their own question; they are not the leg this was measured
+    // on, and asserting it here would decide that silently.
+    const uncapped = hits.filter(
+      (h) =>
+        h.file === 'ci.yml' &&
+        h.job === WINDOWS_JOB &&
+        runsTurboTest(h.cmd) &&
+        maxWorkersOf(h.cmd) === undefined,
+    );
+    expect(
+      uncapped.map(describeHit),
+      'a `turbo run test` invocation on the Windows leg forks a pool sized to the runner; ' +
+        '--concurrency bounds PACKAGES, and a package running alone still forks a full pool',
+    ).toEqual([]);
+  });
+
+  it('sends every cap through the `--` separator rather than to turbo', () => {
+    // The mirror image of the trap above. `--concurrency` handed to a package
+    // script reaches vitest, which has no such flag; `--maxWorkers` handed to
+    // turbo reaches turbo, which has no such flag. Both read as a bound.
+    const misplaced = hits.filter(
+      (h) => maxWorkersOf(h.cmd) !== undefined && !capIsPassedThrough(h.cmd),
+    );
+    expect(
+      misplaced.map(describeHit),
+      '`--maxWorkers` before the `--` separator is a turbo flag, not a vitest one',
+    ).toEqual([]);
+  });
+
+  it('gives each a value that is actually a positive integer', () => {
+    const bad = hits.filter((h) => {
+      const v = maxWorkersOf(h.cmd);
+      return v !== undefined && !/^[1-9]\d*$/.test(v);
+    });
+    expect(bad.map(describeHit), '--maxWorkers needs a positive integer').toEqual([]);
+  });
+});
+
+describe('capIsPassedThrough', () => {
+  it.each([
+    // The shape this suite exists to keep: turbo's own flags, the separator,
+    // then the task's.
+    ['pnpm turbo run test --concurrency=2 -- --maxWorkers=2', true],
+    ['pnpm turbo run test --concurrency=2 --filter=x -- --maxWorkers=4', true],
+    // Before the separator: turbo's, and turbo has no such flag.
+    ['pnpm turbo run test --maxWorkers=2 --concurrency=2', false],
+    ['pnpm turbo run test --maxWorkers=2 -- --silent', false],
+    // No separator at all.
+    ['pnpm turbo run test --concurrency=2 --maxWorkers=2', false],
+    // No cap to place.
+    ['pnpm turbo run test --concurrency=2', false],
+  ])('%s -> %s', (cmd, expected) => {
+    expect(capIsPassedThrough(cmd)).toBe(expected);
   });
 });

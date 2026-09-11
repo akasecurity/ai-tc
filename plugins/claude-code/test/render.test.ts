@@ -6,14 +6,22 @@ import { fileURLToPath } from 'node:url';
 
 import { handleCapture, resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { FindingView, HealthSummary, PluginConfig } from '@akasecurity/plugin-sdk';
-import { createPluginRuntime, severityFloorPosture } from '@akasecurity/plugin-sdk';
-import type { BuiltinPolicyId, DetectionException, DetectionListItem } from '@akasecurity/schema';
+import {
+  buildRecommendations as sdkBuildRecommendations,
+  createPluginRuntime,
+  severityFloorPosture,
+} from '@akasecurity/plugin-sdk';
+import type {
+  BuiltinPolicyId,
+  DetectionCategory,
+  DetectionException,
+  DetectionListItem,
+} from '@akasecurity/schema';
 import {
   BUILTIN_POLICIES,
   CATEGORY_EXPRESSIBLE_IDS,
   CATEGORY_INEXPRESSIBLE_IDS,
   DEFAULT_PACK_POLICY_ID,
-  DetectionCategory,
   KNOWN_BUILTIN_IDS,
   SetupHandoffOffer,
 } from '@akasecurity/schema';
@@ -193,44 +201,16 @@ describe('pure renderers', () => {
     expect(out).toContain('model-switch protection');
   });
 
-  it('gives every detection category a written title and advice', () => {
-    // The guard that would have caught `code_flaw` and `config` falling through.
-    // Both tables are keyed by plain string, so an unlisted category compiles and
-    // renders a raw fallback — "code_flaw finding" with a generic "Review" — and on
-    // a store where that category ranks first it is the most prominent row.
-    for (const category of DetectionCategory.options) {
-      const recs = buildRecommendations([finding({ category, severity: 'critical' })]);
-      expect(recs, `no recommendation built for ${category}`).toHaveLength(1);
-      const rec = recs[0];
-      expect(rec?.title, `${category} falls back to a raw title`).not.toBe(`${category} finding`);
-      expect(rec?.description, `${category} falls back to generic advice`).not.toBe(
-        'Review this finding against your policy.',
-      );
-    }
-  });
-
-  it('recommend: counts the named rule, and ranks on the category volume', () => {
-    // The one case that separates the two numbers. `secret` holds a critical rule
-    // that fired ONCE beside a high rule that fired three times; `pii` holds a
-    // critical rule that fired twice.
-    //
-    // Rank is by category volume, so `secret` (4) leads `pii` (2). The label reports
-    // the NAMED rule's tally, so it reads 1 — the number a `?type=` filter returns.
-    // A count-vs-categoryCount swap flips both assertions.
-    const recs = buildRecommendations([
-      finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/private-key' }),
-      finding({ category: 'secret', severity: 'high', ruleId: 'secrets/aws-access-key' }),
-      finding({ category: 'secret', severity: 'high', ruleId: 'secrets/aws-access-key' }),
-      finding({ category: 'secret', severity: 'high', ruleId: 'secrets/aws-access-key' }),
-      finding({ category: 'pii', severity: 'critical', ruleId: 'pii/ssn' }),
-      finding({ category: 'pii', severity: 'critical', ruleId: 'pii/ssn' }),
-    ]);
-    expect(recs.map((r) => r.title)).toEqual([
-      'Exposed secret detected',
-      'Personal data in a prompt',
-    ]);
-    expect(recs[0]?.context).toBe('secrets/private-key · 1 finding');
-    expect(recs[1]?.context).toBe('pii/ssn · 2 findings');
+  it('recommend: re-exports the shared rollup rather than holding a second copy', () => {
+    // What this module still owes is the WIRING: that its re-export names the one
+    // shared implementation rather than a second copy of it. The rollup's own
+    // behaviour — the label counting the NAMED rule while the rank follows category
+    // volume — is asserted against that implementation in
+    // `packages/schema/test/security/recommendations.test.ts`. Restating it here
+    // would re-run schema's suite through a re-export, and a plugin that had drifted
+    // back to a local copy would go green on it, which is the defect the move
+    // removed.
+    expect(buildRecommendations).toBe(sdkBuildRecommendations);
   });
 
   it('recommend: ranks by severity, numbered list with severity badges', () => {
@@ -261,6 +241,55 @@ describe('pure renderers', () => {
       renderRecommend(buildRecommendations([finding({ category: 'secret' })]), status),
     );
     expect(one).toContain('1 recommendation for your setup');
+  });
+
+  it('health/recommend footers name commands in the invokable /aka: namespace', () => {
+    // Both footers named a bare `/recommend` / `/health` once. Neither resolves
+    // when typed: a command file `foo.md` registers as `/aka:foo`, so the bare
+    // form is a call-to-action the user cannot invoke. Nothing pinned these two
+    // lines while they were literals, which is how they drifted — this is that
+    // pin. The namespaced form does not contain the bare one (`/aka:recommend`
+    // has no `/recommend` substring: its only `/` is followed by `a`), so a
+    // plain not.toContain is an exact check for the defect.
+    const summary: HealthSummary = {
+      findings: 2,
+      byAction: { block: 1, redact: 1, warn: 0, allow: 0, log: 0 },
+      bySeverity: { critical: 1, high: 0, medium: 0, low: 1 },
+      coverage: 1,
+    };
+    const findings = [finding(), finding({ category: 'pii', severity: 'low' })];
+    const status = {
+      score: 72,
+      unreviewed: { critical: 1, high: 0, medium: 0, low: 1 },
+      openFindings: 2,
+    };
+
+    const health = strip(renderHealth(buildHealthReport(summary, findings, [])));
+    expect(health).toContain('Run /aka:recommend to review');
+    expect(health).not.toContain('/recommend');
+
+    const recs = buildRecommendations(findings);
+    // The footer only renders on the populated path, so an empty build would
+    // make every assertion below hold vacuously.
+    expect(recs.length).toBeGreaterThan(0);
+    const recommend = strip(renderRecommend(recs, status));
+    expect(recommend).toContain(
+      'Run /aka:recommend <n> to act on one, or /aka:health for the summary.',
+    );
+    expect(recommend).not.toContain('/recommend');
+    expect(recommend).not.toContain('/health');
+
+    // Every command the footers name must be one the plugin registers — and the
+    // names are read OUT OF the rendered footers rather than listed here, so a
+    // footer that grows a third command is checked too. Listing them instead
+    // would pass while that third command was renamed out of existence.
+    const named = [
+      ...health.matchAll(/\/aka:[a-z-]+/g),
+      ...recommend.matchAll(/\/aka:[a-z-]+/g),
+    ].map((m) => m[0]);
+    expect(named.length).toBeGreaterThan(0);
+    const registry = readRegisteredCommands();
+    for (const cmd of named) expect(registry).toContain(cmd);
   });
 
   it('audit: decision log with action and source', () => {

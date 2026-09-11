@@ -115,6 +115,59 @@ describe('hashProjectKey — cross-device convergence', () => {
     );
   });
 
+  // A `git:` key does not always carry a remote. `resolveRepoIdentity` falls back
+  // to the worktree ROOT PATH for a repository with no remote, and both producers
+  // keep the `git:` prefix on it — so these are real keys, not hypotheticals.
+  describe('a git: key carrying a local path, which is the no-remote fallback', () => {
+    const WIN = 'C:/Users/dev/scratch/demo';
+
+    it('leaves a Windows path alone instead of reading the drive as a host', () => {
+      // Without the drive-prefix exclusion, scp form reads host `C` and path
+      // `Users/dev/scratch/demo`, and the digest is taken over `c/Users/...`.
+      expect(hashProjectKey(`git:${WIN}`)).toBe(hashProjectKey(`git:${WIN}`));
+      expect(hashProjectKey(`git:${WIN}`)).not.toBe(hashProjectKey('git:c/Users/dev/scratch/demo'));
+    });
+
+    it('keeps two checkouts apart when one merely ends in .git', () => {
+      // The defect that matters: the trailing-`.git` strip is meant for a remote
+      // spelling, and applied to a PATH it merged two distinct local checkouts
+      // into one project — the silent, unrecoverable direction.
+      expect(hashProjectKey(`git:${WIN}`)).not.toBe(hashProjectKey(`git:${WIN}.git`));
+    });
+
+    it('keeps the drive letter, since a path is not a DNS name', () => {
+      // Lowercasing is safe for a host because DNS is case-insensitive. A drive
+      // letter is not a host, and the reasoning does not transfer.
+      expect(hashProjectKey(`git:${WIN}`)).not.toBe(
+        hashProjectKey('git:c:/Users/dev/scratch/demo'),
+      );
+    });
+
+    it.each(['C:\\Users\\dev\\demo', 'D:/repos/demo', 'z:/x'])('leaves %s alone too', (path) => {
+      // Both separators and any drive letter: the producer joins on `/`, but
+      // the guard is about the PREFIX rather than about one spelling.
+      expect(hashProjectKey(`git:${path}`)).toBe(hashProjectKey(`git:${path}`));
+      expect(hashProjectKey(`git:${path}`)).not.toBe(hashProjectKey(`git:${path}.git`));
+    });
+
+    it('leaves a POSIX path alone, which never reached scp form anyway', () => {
+      // The control on the three above: this one was already correct, because a
+      // path with no colon cannot match scp form. It is here so a future change
+      // to the guard cannot break it silently.
+      expect(hashProjectKey('git:/Users/dev/demo')).not.toBe(
+        hashProjectKey('git:/Users/dev/demo.git'),
+      );
+    });
+
+    it('still canonicalizes a real scp remote, which is the point of the form', () => {
+      // The positive control for the whole describe. An exclusion that swallowed
+      // scp form entirely would satisfy every case above.
+      expect(hashProjectKey(`git:${gitUser}github.com:acme/widgets.git`)).toBe(
+        hashProjectKey('git:https://github.com/acme/widgets'),
+      );
+    });
+  });
+
   it('gives an unrecognised remote a stable digest rather than guessing', () => {
     // Neither scheme nor scp form. It gets no convergence, which is the honest
     // outcome, but it must still hash the same way twice or the device would

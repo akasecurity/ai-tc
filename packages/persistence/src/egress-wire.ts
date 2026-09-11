@@ -37,6 +37,23 @@ const PROJECT_KEY_DIGEST_VERSION = 'v2';
 // first colon separates host from path. Anchored on a host that cannot contain
 // `/`, so a `path:`-style absolute path is never mistaken for one.
 const SCP_FORM = /^(?:[^@/]+@)?([^/:]+):(.+)$/;
+
+// A Windows drive prefix, which scp form cannot be told from by shape alone:
+// `C:/Users/dev/demo` parses as host `C` and path `Users/dev/demo`.
+//
+// It has to be excluded because a `git:` key does NOT always carry a remote. A
+// repository with no remote falls back to its worktree ROOT PATH, and both
+// producers keep the `git:` prefix on that fallback — so on Windows this was
+// handed an absolute path and canonicalized it: lowercasing the drive and, far
+// worse, stripping a trailing `.git`, so `…/demo` and `…/demo.git` digested to
+// ONE project. That is the silent merge the docblock below calls the worse
+// error, produced from a value that was never a remote at all.
+//
+// Git draws this same line for this same reason — its own URL parser excludes a
+// DOS drive prefix from scp-like syntax. A local path is returned untouched,
+// exactly as a `path:` key is: it never converges across devices, so there is
+// nothing to canonicalize it toward.
+const DOS_DRIVE = /^[A-Za-z]:[\\/]/;
 const SCHEME_FORM = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?(\/.*)?$/i;
 
 const SLASH = '/'.charCodeAt(0);
@@ -97,6 +114,7 @@ function trimSlashes(path: string): string {
  */
 function canonicalGitUrl(url: string): string {
   const trimmed = url.trim();
+  if (DOS_DRIVE.test(trimmed)) return trimmed;
   const scheme = SCHEME_FORM.exec(trimmed);
   const scp = scheme === null ? SCP_FORM.exec(trimmed) : null;
   const host = (scheme?.[1] ?? scp?.[1])?.toLowerCase();

@@ -470,12 +470,33 @@ interface DrainDeps {
   backlogBefore: number;
 }
 
-/** Why one row's send stopped: the pass continues, skips it, or ends. */
-type RowVerdict = 'sent' | 'skip' | 'unreachable' | 'refused';
+/**
+ * Why one row's send stopped: the pass continues, gives up on the row, or ends.
+ *
+ * Two ways to give up on a row rather than one, mirroring `classify` — see there
+ * for why they must not be collapsed. Both end this row; only `payload-invalid`
+ * is terminal against every deployment.
+ */
+type RowVerdict = 'sent' | 'payload-invalid' | 'deployment-refused' | 'unreachable' | 'refused';
 
 async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   const startedAt = d.now();
   const deadline = startedAt + d.budgetMs;
+  // BEFORE anything is claimed, and this is half of one change rather than a
+  // tidy-up. A claim marks a row as being sent so a surface can say so; a pass
+  // that is killed between claiming and settling leaves that mark behind, and
+  // nothing else ever clears it. For a structural row that costs a wrong label.
+  // For a CAPTURE it is starvation: the capture read filters on the claim being
+  // absent, so an abandoned mark removes that row from every future page for
+  // good. Wiring the claim without this sweep would introduce exactly the defect
+  // the claim column exists to describe.
+  //
+  // Safe to run here because this function is reached only inside the lease —
+  // `runHistorySync` takes it first and gives up if another pass holds it — so
+  // the claims being swept belong to passes that are gone, not to a live
+  // sibling. The same staleness window as the lease, for the same reason: a mark
+  // younger than that may belong to a pass still heartbeating.
+  d.ledger.releaseStaleClaims(startedAt - HISTORY_LEASE_STALE_MS);
   // A RESERVED SLICE, not an ordering. Running captures after the structural
   // loop is right within a pass — a capture whose session root has not arrived is
   // a stub until it does — but that loop exits only when the whole backlog is
@@ -535,7 +556,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
           if (event === undefined) {
             // A local defect, not an outage: this row will never be expressible,
             // so retrying it for ever would stall the drain behind it.
-            d.ledger.markSkipped([row.id]);
+            d.ledger.markSkipped([row.id], d.now());
             skipped += 1;
             continue;
           }
@@ -551,7 +572,19 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
             break outer;
           }
           const chunk = ready.slice(i, i + BATCH_SIZE);
-          const result = await sendChunk(d, chunk, beat);
+          // Released in a `finally`, never after the await. `markSynced` runs
+          // inside an IMMEDIATE transaction that rethrows on a busy database, so
+          // a plain statement after the send is skipped on exactly the failure
+          // that leaves rows claimed — and `sendChunk` returns from five places,
+          // so a release on the success branch alone strands every other one.
+          const chunkIds = chunk.map((c) => c.id);
+          d.ledger.claimRows(chunkIds, d.now());
+          let result: ChunkResult;
+          try {
+            result = await sendChunk(d, chunk, beat);
+          } finally {
+            d.ledger.releaseRows(chunkIds);
+          }
           sent += result.sent;
           skipped += result.skipped;
           if (result.stopped !== undefined) {
@@ -702,7 +735,7 @@ async function drainCaptures(
     // and each call is its own IMMEDIATE transaction competing for the store's
     // write lock with the live capture path.
     if (unbuildable.length > 0) {
-      d.ledger.markSkipped(unbuildable);
+      d.ledger.markSkipped(unbuildable, d.now());
       skipped += unbuildable.length;
     }
     if (ready.length === 0) {
@@ -719,7 +752,17 @@ async function drainCaptures(
       continue;
     }
 
-    const result = await sendCaptureChunk(d, ready, beat);
+    // Same shape as the structural lane's claim, and this is the lane where an
+    // abandoned mark actually costs rows: `pendingCaptureRows` filters on
+    // `sync_claimed_at IS NULL`.
+    const readyIds = ready.map((r) => r.id);
+    d.ledger.claimRows(readyIds, d.now());
+    let result: ChunkResult;
+    try {
+      result = await sendCaptureChunk(d, ready, beat);
+    } finally {
+      d.ledger.releaseRows(readyIds);
+    }
     sent += result.sent;
     skipped += result.skipped;
     if (result.stopped !== undefined) return { sent, skipped, stopped: result.stopped };
@@ -807,7 +850,7 @@ async function sendCaptureChunk(
     // send). One row is at fault and the answer does not say which.
     const only = chunk.length === 1 ? chunk[0] : undefined;
     if (only !== undefined) {
-      d.ledger.markSkipped([only.id]);
+      recordGaveUp(d, [only.id], outcome.verdict);
       return { sent: 0, skipped: 1 };
     }
     return await isolate(d, chunk, beat);
@@ -864,7 +907,8 @@ async function sendCapturesWithRetries(
     } catch (err) {
       const kind = classify(err);
       if (kind === 'refused') return { verdict: 'refused' };
-      if (kind === 'skip') return { verdict: 'skip' };
+      if (kind === 'payload-invalid') return { verdict: 'payload-invalid' };
+      if (kind === 'deployment-refused') return { verdict: 'deployment-refused' };
       if (attempt === MAX_ATTEMPTS - 1) return { verdict: 'unreachable' };
       const ceiling = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** attempt);
       // Before the sleep, for the reason the structural ladder gives: the gap
@@ -978,7 +1022,7 @@ async function sendSingleRow(
     return { sent: 0, skipped: 0, stopped: outcome.verdict };
   }
   // Rejected on its merits — exactly one row is at fault, and it is this one.
-  d.ledger.markSkipped([one.id]);
+  recordGaveUp(d, [one.id], outcome.verdict);
   return { sent: 0, skipped: 1 };
 }
 
@@ -1044,7 +1088,8 @@ async function sendWithRetries(
     } catch (err) {
       const kind = classify(err);
       if (kind === 'refused') return { verdict: 'refused' };
-      if (kind === 'skip') return { verdict: 'skip' };
+      if (kind === 'payload-invalid') return { verdict: 'payload-invalid' };
+      if (kind === 'deployment-refused') return { verdict: 'deployment-refused' };
       if (i === MAX_ATTEMPTS - 1) return { verdict: 'unreachable' };
       // Full jitter: several machines that failed together must not retry
       // together. The deployment's own retry-after is not available — the
@@ -1058,6 +1103,31 @@ async function sendWithRetries(
     }
   }
   return { verdict: 'unreachable' };
+}
+
+/**
+ * Write one row off, for the reason the failure actually gave.
+ *
+ * ONE site rather than a choice made at each call, because the two lanes give up
+ * on a row in two different functions and a drift between them would be a row
+ * recorded as permanently undeliverable on a deployment's say-so — the exact
+ * conflation the split verdicts exist to end. Written as an exhaustive switch so
+ * a third terminal verdict fails to compile here rather than defaulting into
+ * whichever branch happens to be last.
+ */
+function recordGaveUp(
+  d: Pick<DrainDeps, 'ledger' | 'now'>,
+  ids: readonly string[],
+  verdict: 'payload-invalid' | 'deployment-refused',
+): void {
+  switch (verdict) {
+    case 'deployment-refused':
+      d.ledger.markRefused(ids, d.now());
+      return;
+    case 'payload-invalid':
+      d.ledger.markSkipped(ids, d.now());
+      return;
+  }
 }
 
 /**
@@ -1079,11 +1149,27 @@ function statusOf(err: unknown): number | null {
   return status >= 100 && status <= 599 ? status : null;
 }
 
-/** What a failure means for the pass. */
-function classify(err: unknown): 'refused' | 'skip' | 'retry' {
-  // A body this client refused to SEND is a defect on this machine, not an
-  // outage — it fails identically on every attempt and against every deployment.
-  if ((err as { name?: string }).name === 'RemoteRequestInvalid') return 'skip';
+/**
+ * What a failure means for the pass.
+ *
+ * The two terminal-for-this-row answers are kept APART, and that separation is
+ * the point rather than a detail. Both stop the row being offered again on this
+ * lane, so both used to be one word — but they are terminal over different
+ * scopes, and the store can now record which:
+ *
+ *   - `payload-invalid` is a defect on THIS MACHINE. It fails identically on
+ *     every attempt and against every deployment, so nothing frees it.
+ *   - `deployment-refused` is THIS DEPLOYMENT's verdict on one body. A body
+ *     limit is a deployment's own setting, so the same bytes may be perfectly
+ *     acceptable elsewhere, and re-attaching frees the row.
+ *
+ * Collapsed into one word, the second was recorded as the first — permanently
+ * undeliverable, on evidence that only ever described one deployment.
+ */
+function classify(err: unknown): 'refused' | 'payload-invalid' | 'deployment-refused' | 'retry' {
+  // A body this client refused to SEND never reached a deployment, so no
+  // deployment has given a verdict on it.
+  if ((err as { name?: string }).name === 'RemoteRequestInvalid') return 'payload-invalid';
   switch (statusOf(err)) {
     // Terminal in a way a timeout is not: the credential may have died with an
     // offboarded member, and every later row would fail the same way.
@@ -1091,11 +1177,11 @@ function classify(err: unknown): 'refused' | 'skip' | 'retry' {
     case 403:
       return 'refused';
     // The deployment understood the request and rejected it. Re-sending an
-    // identical body cannot change that.
+    // identical body TO THIS DEPLOYMENT cannot change that.
     case 400:
     case 413:
     case 422:
-      return 'skip';
+      return 'deployment-refused';
     default:
       return 'retry';
   }

@@ -9,7 +9,7 @@ import {
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
-import { RemoteRequestError } from '@akasecurity/remote';
+import { RemoteRequestError, RemoteRequestInvalid } from '@akasecurity/remote';
 import type { IngestEvent, RecordAuditEventRequest } from '@akasecurity/schema';
 import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -355,14 +355,20 @@ describe('runHistorySync — failures', () => {
 
   // A body the deployment understood and rejected cannot be fixed by sending it
   // again, so it becomes a counted skip rather than an endless retry.
-  it('permanently skips a row the deployment refuses on its merits', async () => {
+  // A 400/413/422 is THIS deployment's verdict on this body, so the row stops
+  // being offered on this lane — but it is recorded as a refusal rather than as
+  // a defect of the row, because a body limit is a deployment's own setting and
+  // the same bytes may be acceptable elsewhere. `skipped` is reserved for a row
+  // no deployment could take.
+  it('records a row the deployment refuses on its merits as refused, not skipped', async () => {
     attach({ grantFor: ENDPOINT });
     seedRows(1);
 
     const result = await run({ sendBatch: () => Promise.reject(new RemoteRequestError(400)) });
 
     expect(attempted(result).skipped).toBe(2);
-    expect(ledger((db) => db.historySync.counts(ALL).skipped)).toBe(2);
+    expect(ledger((db) => db.historySync.counts(ALL).refused)).toBe(2);
+    expect(ledger((db) => db.historySync.counts(ALL).skipped)).toBe(0);
   });
 
   // A batch ack is an aggregate count, so a rejection names no row. Re-sending
@@ -381,7 +387,77 @@ describe('runHistorySync — failures', () => {
 
     expect(attempted(result).sent).toBe(1);
     expect(attempted(result).skipped).toBe(1);
-    expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ sent: 1, skipped: 1 });
+    expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({
+      sent: 1,
+      refused: 1,
+      skipped: 0,
+    });
+  });
+
+  // The other half of the split. A body this client refused to SEND reached no
+  // deployment, so no deployment gave a verdict on it — it fails identically
+  // everywhere, and re-attaching must not resurrect it.
+  it('records a body this client would not send as skipped, not refused', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedRows(1);
+
+    const result = await run({
+      sendBatch: () => Promise.reject(new RemoteRequestInvalid('/v1/audit-events', undefined)),
+    });
+
+    expect(attempted(result).skipped).toBe(2);
+    expect(ledger((db) => db.historySync.counts(ALL).skipped)).toBe(2);
+    expect(ledger((db) => db.historySync.counts(ALL).refused)).toBe(0);
+
+    // And it survives a change of deployment, where a refusal would not.
+    ledger((db) => {
+      db.historySync.rearmFor('other-fingerprint', ALL);
+    });
+    expect(ledger((db) => db.historySync.counts(ALL).skipped)).toBe(2);
+  });
+
+  // A claim says a row is being sent right now. Nothing but this pass clears
+  // one, so a pass that ends — however it ends — must not leave any behind.
+  it('leaves no row claimed when the pass is over', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedRows(1);
+    seedCaptures([{ id: 'cap-1' }]);
+
+    // BOTH lanes' seams, or the unsupplied one builds a real client and the send
+    // never happens — which would leave nothing claimed for the wrong reason.
+    await run({
+      sendBatch: () => Promise.reject(new RemoteRequestError(400)),
+      sendCaptures: () => Promise.reject(new RemoteRequestError(400)),
+    });
+
+    expect(ledger((db) => db.historySync.partition().inProgress)).toBe(0);
+  });
+
+  // The sweep, and why it ships with the claim rather than after it. A pass
+  // killed mid-batch leaves its claim behind, and the capture read filters on
+  // the claim being absent — so without this, one abandoned pass removes those
+  // rows from every future page permanently.
+  it('sweeps a claim an abandoned pass left behind, and offers the capture again', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }]);
+    // Older than the staleness window, which is what marks it as belonging to a
+    // pass that is gone rather than to a live sibling.
+    ledger((db) => {
+      db.historySync.claimRows(['cap-1'], T0 - 10 * 60_000);
+    });
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
+
+    const sent: string[] = [];
+    await run({
+      sendBatch: (events) => Promise.resolve({ settled: events.length }),
+      sendCaptures: (events) => {
+        for (const e of events) sent.push(e.id);
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(ledger((db) => db.historySync.partition().inProgress)).toBe(0);
   });
 
   // A PARTIAL ack is not a delivery of the whole batch. `AuditEventBatchAck`'s

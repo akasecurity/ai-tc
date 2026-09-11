@@ -26,12 +26,7 @@ export interface ScanCoverageView {
   error: string | null;
 }
 
-export function ScanCoverageCardView({
-  providers,
-  isLoading,
-  error,
-  rangeLabel,
-}: ScanCoverageView & { rangeLabel: string }) {
+export function ScanCoverageCardView({ providers, isLoading, error }: ScanCoverageView) {
   return (
     <Card className="flex flex-col shadow-sm">
       <CardHeader>
@@ -39,8 +34,18 @@ export function ScanCoverageCardView({
           <ShieldCheckIcon aria-hidden focusable={false} className="size-4" />
         </CardIcon>
         <CardHeading>
-          <CardTitle>Scan coverage</CardTitle>
-          <CardDescription>By provider · {rangeLabel.toLowerCase()}</CardDescription>
+          <CardTitle>Coverage by provider</CardTitle>
+          {/* No range, no past tense, and no "share of". scanCoverage() returns a
+              curated per-provider constant — what each host's hook contract EXPOSES
+              to AKA, fixed at build time — and echoes the range without reading it.
+              Each of those three would claim something the number does not carry: a
+              window claims a measurement, a past tense claims scans that ran, and a
+              "share of traffic" claims a denominator that does not exist. The value
+              is weighted by no call volume (Codex's 80 is `apply_patch` going
+              unhooked, whatever fraction of a user's calls that turns out to be) and
+              is not computed from a channel count either — the 40s are curated
+              positions below every terminal-harness row. */}
+          <CardDescription>What each integration exposes to AKA</CardDescription>
         </CardHeading>
       </CardHeader>
       <CardContent aria-busy={isLoading} className="flex flex-col gap-2.5">
@@ -78,7 +83,7 @@ export function ScanCoverageCardView({
                     max={100}
                     color={color}
                     height={6}
-                    aria-label={`${PROVIDERS[p.provider].label} scan coverage`}
+                    aria-label={`${PROVIDERS[p.provider].label} coverage`}
                   />
                 )}
                 {disabled ? (

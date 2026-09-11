@@ -1,6 +1,12 @@
-import type { FindingView, HealthSummary } from '@akasecurity/schema';
+import type { FindingView, HealthStatus, HealthSummary } from '@akasecurity/schema';
+import {
+  buildRecommendations as schemaBuildRecommendations,
+  findingStatus as schemaFindingStatus,
+  healthScore as schemaHealthScore,
+} from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import type { FindingStatus } from '../../src/security/recommendations.ts';
 import {
   buildRecommendations,
   buildRecommendedActions,
@@ -35,41 +41,27 @@ function finding(overrides: Partial<FindingView>): FindingView {
   };
 }
 
-describe('healthScore', () => {
-  it('blends coverage (60%) with the handled ratio (40%)', () => {
-    // handled = 2+4+1 = 7 of 10 → 0.7; score = 100*(0.6*0.5 + 0.4*0.7) = 58
-    expect(healthScore(summary())).toBe(58);
+// The `./recommendations` subpath is a published entry point: `cli/src/tui/report.ts`
+// imports the rollup and the posture score from it by name, and the maths behind
+// those names now lives in `@akasecurity/schema`. So what this module owes is the
+// WIRING — that each name still resolves to the one shared implementation. The
+// behaviour itself is asserted against that implementation in
+// `packages/schema/test/security/recommendations.test.ts`; re-asserting it here
+// would re-run schema's suite through a re-export and would go green on a local
+// copy that had drifted back, which is the defect the move removed.
+describe('the ./recommendations re-exports', () => {
+  it("names schema's own functions, not a second copy of them", () => {
+    expect(buildRecommendations).toBe(schemaBuildRecommendations);
+    expect(findingStatus).toBe(schemaFindingStatus);
+    expect(healthScore).toBe(schemaHealthScore);
   });
 
-  it('treats zero findings as fully handled', () => {
-    expect(healthScore(summary({ findings: 0, coverage: 1 }))).toBe(100);
-  });
-});
-
-describe('findingStatus', () => {
-  it('carries the severity buckets and open count through', () => {
-    const status = findingStatus(summary());
-    expect(status.openFindings).toBe(10);
-    expect(status.unreviewed).toEqual({ critical: 1, high: 2, medium: 3, low: 4 });
-  });
-});
-
-describe('buildRecommendations', () => {
-  it('buckets by category, keyed to the most severe rule, sorted by weight', () => {
-    const recs = buildRecommendations([
-      finding({ category: 'pii', severity: 'low', ruleId: 'core-pii/email' }),
-      finding({ category: 'secret', severity: 'high', ruleId: 'secrets/aws-access-key' }),
-      finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/private-key' }),
-    ]);
-    expect(recs).toHaveLength(2);
-    expect(recs[0]?.severity).toBe('critical');
-    expect(recs[0]?.title).toBe('Exposed secret detected');
-    expect(recs[0]?.context).toBe('secrets/private-key · 2 findings');
-    expect(recs[1]?.severity).toBe('low');
-  });
-
-  it('returns nothing for no findings', () => {
-    expect(buildRecommendations([])).toEqual([]);
+  it("keeps FindingStatus as the historical name for schema's HealthStatus", () => {
+    // The annotations are the assertion — an alias that stopped resolving fails the
+    // build here rather than in the CLI, which is the consumer that cannot move.
+    const status: FindingStatus = findingStatus(summary());
+    const asSchema: HealthStatus = status;
+    expect(asSchema).toBe(status);
   });
 });
 
@@ -82,11 +74,32 @@ describe('buildRecommendedActions', () => {
     expect(actions).toHaveLength(1);
     const action = actions[0];
     expect(action?.severity).toBe('critical');
+    // The count is the named rule's own, so the card's label and the findings URL
+    // the host builds from that rule describe the same set.
     expect(action?.subjects).toEqual([
-      { type: 'rule', id: 'secrets/private-key', label: 'secrets/private-key · 2 findings' },
+      { type: 'rule', id: 'secrets/private-key', label: 'secrets/private-key · 1 finding' },
     ]);
     expect(action?.action.mode).toBe('navigate');
-    expect(action?.action.href).toBe('/findings');
+    // No host builder supplied, so no destination is invented. A generic
+    // `/findings` here would name the whole unfiltered list under a row reading
+    // "<rule> · N findings"; the card renders a hrefless action disabled instead.
+    expect(action?.action.href).toBeUndefined();
+  });
+
+  it('builds the destination the host supplies, for the rule the row names', () => {
+    const actions = buildRecommendedActions(
+      [finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/private-key' })],
+      { hrefForRule: (ruleId) => `/findings?type=${encodeURIComponent(ruleId)}&view=flat` },
+    );
+    expect(actions[0]?.action.href).toBe('/findings?type=secrets%2Fprivate-key&view=flat');
+  });
+
+  it('omits the href when the host builder declines a rule', () => {
+    const actions = buildRecommendedActions(
+      [finding({ category: 'secret', severity: 'critical', ruleId: 'secrets/private-key' })],
+      { hrefForRule: () => undefined },
+    );
+    expect(actions[0]?.action.href).toBeUndefined();
   });
 
   it('coerces an unknown severity string to low (closed enum)', () => {

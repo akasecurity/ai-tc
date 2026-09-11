@@ -1,6 +1,14 @@
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import {
@@ -16,7 +24,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import type { ScanPathResult } from '../src/fs-scan.ts';
-import { collectFiles, scanPathIntoStore } from '../src/fs-scan.ts';
+import { collectFiles, isProtectedTarget, scanPathIntoStore } from '../src/fs-scan.ts';
 import { migratedStore } from './helpers/store-templates.ts';
 
 /** The error a thunk threw, captured OUTSIDE its own catch so a never-thrown one is `undefined`. */
@@ -122,6 +130,213 @@ describe('collectFiles', () => {
     writeFileSync(file, 'hello');
     expect([...collectFiles(file)]).toEqual([{ path: file, gitignored: false }]);
     expect([...collectFiles(join(root, 'nope'))]).toEqual([]);
+  });
+
+  describe('protected credential paths', () => {
+    // `root` doubles as the fake OS home: the walk resolves the protected set
+    // from the bases it is GIVEN, so a test never has to touch the real ones —
+    // and the two bases can be moved independently, the way `--home` moves the
+    // AKA one on its own.
+    const claudeDir = () => join(root, '.claude');
+    const lockDir = () => join(claudeDir(), 'ide');
+    const seedHome = (): {
+      lock: string;
+      credentials: string;
+      codexAuth: string;
+      codexConfig: string;
+      transcript: string;
+    } => {
+      mkdirSync(lockDir(), { recursive: true });
+      const lock = join(lockDir(), '54321.lock');
+      // Shaped like the real thing — the host writes a live auth token here.
+      writeFileSync(lock, JSON.stringify({ pid: 1, ideName: 'VS Code', authToken: SECRET }));
+      chmodSync(lock, 0o600);
+      // The entry the pre-existing floor does NOT shadow: a dot-FILE directly
+      // under `~/.claude`, and dot-files are deliberately scanned. Until it was
+      // seeded here, dropping that entry from the list left this whole describe
+      // green.
+      const credentials = join(claudeDir(), '.credentials.json');
+      writeFileSync(credentials, JSON.stringify({ claudeAiOauth: { accessToken: SECRET } }));
+      chmodSync(credentials, 0o600);
+      mkdirSync(join(root, '.codex'), { recursive: true });
+      const codexAuth = join(root, '.codex', 'auth.json');
+      writeFileSync(codexAuth, JSON.stringify({ tokens: { access_token: SECRET } }));
+      chmodSync(codexAuth, 0o600);
+      // A sibling that must still be read — the exclusion is one file, not the
+      // Codex home, which also holds the transcripts this product scans.
+      const codexConfig = join(root, '.codex', 'config.toml');
+      writeFileSync(codexConfig, 'model = "gpt-5"\n');
+      mkdirSync(join(claudeDir(), 'projects'), { recursive: true });
+      const transcript = join(claudeDir(), 'projects', 'session.jsonl');
+      writeFileSync(transcript, '{"type":"user"}\n');
+      return { lock, credentials, codexAuth, codexConfig, transcript };
+    };
+
+    it('never yields the host credential files when the home directory is walked', () => {
+      const { transcript } = seedHome();
+      const files = [...collectFiles(claudeDir(), { home: root })].map((f) => f.path);
+      // The positive control sits in the same directory tree: the walk really
+      // did descend, so the lock's and the credential file's absence is an
+      // exclusion rather than an empty scan. An EXACT set, not a `some`, so an
+      // entry that stops matching is reported here.
+      expect(files).toEqual([transcript]);
+    });
+
+    it('never yields the Codex credential, and still yields its neighbours', () => {
+      const { codexConfig } = seedHome();
+      // Naming `~/.codex` walks it, so the dot-directory floor never runs —
+      // `auth.json` is excluded by the list or not at all.
+      const files = [...collectFiles(join(root, '.codex'), { home: root })].map((f) => f.path);
+      expect(files).toEqual([codexConfig]);
+    });
+
+    it('refuses a protected target by name rather than reporting an empty scan', () => {
+      // A directly-named file is explicit user intent, and this is the one
+      // thing that outranks it. Refusing SILENTLY would make both callers
+      // render a completed scan of a path this scanner never opened, which is
+      // the false negative `visit` already rethrows for an unreadable root.
+      const { lock, credentials, codexAuth } = seedHome();
+      for (const target of [lock, lockDir(), credentials, codexAuth]) {
+        const err = errorFrom(() => [...collectFiles(target, { home: root })]);
+        expect(err).toBeDefined();
+        expect(isProtectedTarget(err)).toBe(true);
+        // Named as the caller spelled it, so the message points at what to change.
+        expect(err?.message).toContain(target);
+      }
+    });
+
+    it('cannot be re-included by an .akaignore negation', () => {
+      // The precedence that makes this worth a separate case: a bare `!` beats
+      // the SKIP_DIRS/dot-directory floor, and `.akaignore` is written by
+      // whoever wrote the repo being scanned. It must not reach a directory of
+      // live auth tokens.
+      //
+      // The pattern pair is what makes this NON-VACUOUS, and the first version
+      // of this case was vacuous without it: `ide` is not a dot-directory and
+      // no default rule ignores it, so a lone `!ide/` re-includes nothing and
+      // the case passed with the guard folded into the ignore condition — the
+      // exact mistake it exists to catch. Ignoring it first and negating after
+      // is what drives `evaluateIgnore` to `unignored`, which is the state that
+      // short-circuits the floor.
+      seedHome();
+      writeFileSync(join(claudeDir(), '.akaignore'), 'ide/\n!ide/\n');
+      const files = [...collectFiles(claudeDir(), { home: root })].map((f) => f.path);
+      expect(files.some((f) => f.includes('.lock'))).toBe(false);
+    });
+
+    it('excludes AKA-s own home, which holds the vault key and the store', () => {
+      // NON-VACUOUS in both halves, which a plain walk of `root` is not: a bare
+      // `.aka` dirent is already excluded by the dot-directory floor, so that
+      // assertion holds with the predicate stubbed out. The `.aka/` + `!.aka/`
+      // pair drives `evaluateIgnore` to `unignored`, which is the state that
+      // short-circuits that floor, and the direct-name half never consults it.
+      const key = join(root, '.aka', 'keys', 'vault.key');
+      mkdirSync(dirname(key), { recursive: true });
+      writeFileSync(key, SECRET);
+      writeFileSync(join(root, 'app.ts'), 'const x = 1;\n');
+      writeFileSync(join(root, '.akaignore'), '.akaignore\n.aka/\n!.aka/\n');
+
+      const opts = { home: root, akaHome: join(root, '.aka') };
+      expect([...collectFiles(root, opts)].map((f) => f.path)).toEqual([join(root, 'app.ts')]);
+      const err = errorFrom(() => [...collectFiles(join(root, '.aka'), opts)]);
+      expect(isProtectedTarget(err)).toBe(true);
+    });
+
+    it('follows the AKA home --home moved, not the literal ~/.aka', () => {
+      // `aka scan --home ~/work-aka ~` is the failing input a single base
+      // leaves open: `work-aka` carries no leading dot, so the dot-directory
+      // floor does not reach it either, and the walk reads the vault key of the
+      // home actually in use while protecting a `~/.aka` that holds nothing.
+      const akaHome = join(root, 'work-aka');
+      const key = join(akaHome, 'keys', 'vault.key');
+      mkdirSync(dirname(key), { recursive: true });
+      writeFileSync(key, SECRET);
+      writeFileSync(join(root, 'app.ts'), 'const x = 1;\n');
+
+      // The positive control is the SAME walk under the default AKA home:
+      // nothing protects `work-aka` there, and the vault key is read. Without
+      // it, a walk that yielded neither file would satisfy the assertion below.
+      expect([...collectFiles(root, { home: root })].map((f) => f.path).sort()).toEqual(
+        [join(root, 'app.ts'), key].sort(),
+      );
+      expect([...collectFiles(root, { home: root, akaHome })].map((f) => f.path)).toEqual([
+        join(root, 'app.ts'),
+      ]);
+    });
+
+    it('keeps protecting the DEFAULT AKA home once --home has moved the one in use', () => {
+      // The mirror of the case above, and the failure that fixing that one
+      // invited: `--home` relocates the store an invocation writes to, it does
+      // not move the home already on the machine. That one goes on holding the
+      // vault key, and none of `settings`/`data`/`keys` carries a leading dot,
+      // so the dot-directory floor does not cover it either.
+      //
+      // `aka scan --home <elsewhere> ~/.aka` is the invocation: an AKA home is
+      // named as the target while `akaHome` points somewhere else entirely.
+      const defaultHome = join(root, '.aka');
+      const key = join(defaultHome, 'keys', 'vault.key');
+      mkdirSync(dirname(key), { recursive: true });
+      writeFileSync(key, SECRET);
+      const inUse = join(root, 'work-aka');
+      mkdirSync(inUse, { recursive: true });
+      const opts = { home: root, akaHome: inUse };
+
+      const err = errorFrom(() => [...collectFiles(defaultHome, opts)]);
+      expect(isProtectedTarget(err)).toBe(true);
+
+      // And on a walk, not only when named: the floor never reaches `keys/`.
+      writeFileSync(join(root, 'app.ts'), 'const x = 1;\n');
+      writeFileSync(join(root, '.akaignore'), '.akaignore\n.aka/\n!.aka/\n');
+      expect([...collectFiles(root, opts)].map((f) => f.path)).toEqual([join(root, 'app.ts')]);
+    });
+
+    it('excludes a host home reached through a symlink', (ctx) => {
+      // A dotfiles manager pointing `~/.claude` at `~/dotfiles/claude` is the
+      // ordinary shape. `resolve` is lexical while `statSync` follows the link
+      // and the walk builds every child from whichever spelling was typed, so a
+      // lexical match protects one of the two and not the other.
+      const real = join(root, 'dotfiles', 'claude');
+      mkdirSync(join(real, 'ide'), { recursive: true });
+      writeFileSync(join(real, 'ide', '54321.lock'), JSON.stringify({ authToken: SECRET }));
+      writeFileSync(join(real, 'notes.txt'), 'hello\n');
+      const link = claudeDir();
+      // Creating one needs a privilege on Windows. `ctx.skip` rather than a
+      // return: a return reports as a pass, which is a claim the run never made.
+      const failed = errorFrom(() => {
+        symlinkSync(real, link, 'junction');
+      });
+      if (failed) ctx.skip(`symlink unavailable on this host: ${failed.message}`);
+
+      // The REAL spelling is the half that carries the weight: lexically its
+      // `ide` sits under `dotfiles/`, matching no root, so a lexical match
+      // yields the lock there. The link spelling matches lexically too and is
+      // asserted alongside so neither direction can regress alone.
+      for (const target of [real, link]) {
+        const files = [...collectFiles(target, { home: root })].map((f) => f.path);
+        expect(files.some((f) => f.endsWith('.lock'))).toBe(false);
+        expect(files).toEqual([join(target, 'notes.txt')]);
+      }
+    });
+
+    it('excludes a protected path typed in another case where the volume folds it', (ctx) => {
+      seedHome();
+      const upper = join(claudeDir(), 'IDE', '54321.lock');
+      // Only meaningful where the volume folds case (APFS, NTFS). Elsewhere
+      // this path names nothing and `statSync` refuses before the exclusion is
+      // consulted, so there is no property left to assert.
+      if (!existsSync(upper)) ctx.skip('case-sensitive filesystem: ...IDE/ names no file');
+      const err = errorFrom(() => [...collectFiles(upper, { home: root })]);
+      expect(isProtectedTarget(err)).toBe(true);
+    });
+
+    it('stays narrow: an ordinary dotfile is still scanned when named', () => {
+      // Without this the exclusion could widen to every dotfile and every case
+      // above would still pass — and finding secrets in a stray dotfile is the
+      // whole job.
+      const env = join(root, '.env');
+      writeFileSync(env, ['TOKEN', SECRET].join('=') + '\n');
+      expect([...collectFiles(env, { home: root })]).toEqual([{ path: env, gitignored: false }]);
+    });
   });
 
   it('hard-skips .akaignore matches (files and directories)', () => {

@@ -147,7 +147,21 @@ export function DataSharesClient({
         )}
       >
         <div className="shrink-0">
-          <NeedsReviewStripView items={review} onOpen={makeReviewOpenHandler(setReviewOpen)} />
+          {/* The queue cuts across destination kinds (it is selected on trust,
+              not kind), while the table below shows one kind at a time — so the
+              count is wider than the rows under it whenever there is more than
+              one tab to choose between. With a single group nothing is narrowed
+              and the qualifier would be noise, hence the length check rather
+              than an unconditional value.
+
+              A search needs no qualifier here: the server sends an empty queue
+              while a term is set (see page.tsx), which hides the strip outright
+              rather than leaving a count over filtered rows. */}
+          <NeedsReviewStripView
+            items={review}
+            {...(groups.length > 1 ? { scope: 'All destinations' } : {})}
+            onOpen={makeReviewOpenHandler(setReviewOpen)}
+          />
         </div>
         {/*
           One Tabs root spanning both the populated and empty cases, so the

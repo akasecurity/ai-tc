@@ -96,8 +96,54 @@ export function userPathOptIn(): boolean {
 export interface InstallerRun {
   /** The script's exit status; null if it was killed by a signal. */
   status: number | null;
+  /** The signal that killed it, or null for an ordinary exit. */
+  signal: NodeJS.Signals | null;
+  /**
+   * Wall time from spawn to close, in ms.
+   *
+   * Carried because it is the one reading that separates a script that ran and
+   * reached a decision from one that barely started, and nothing else here can
+   * tell them apart: both arrive as an exit status. The refusal cases below
+   * take ~3.6s on a Linux runner, so a refusal that reports 107ms did not
+   * refuse — whatever its status says.
+   */
+  elapsedMs: number;
   stdout: string;
   stderr: string;
+}
+
+/** How much of a stream to carry into a failure message. */
+const EXCERPT_CHARS = 600;
+
+function excerpt(stream: string): string {
+  const trimmed = stream.trim();
+  if (trimmed === '') return '(empty)';
+  return trimmed.length <= EXCERPT_CHARS
+    ? trimmed
+    : `${trimmed.slice(0, EXCERPT_CHARS)}… (${String(trimmed.length)} chars)`;
+}
+
+/**
+ * What a run actually did, for the message on an assertion about it.
+ *
+ * Vitest renders `expect(status).not.toBe(0)` as `expected +0 not to be +0`,
+ * which says nothing about the script — and these assertions are exactly the
+ * ones that fail intermittently on CI, where the process is gone by the time
+ * anyone reads the log. Three occurrences of one signature have now produced no
+ * evidence at all between them, and two investigations dead-ended for the lack
+ * of it. Passed as vitest's message argument, this turns the next occurrence
+ * into an answer rather than another investigation.
+ *
+ * Both streams are carried, and an empty one says so rather than rendering as
+ * nothing: "the script printed nothing" and "the message was lost" look
+ * identical otherwise, and they point at opposite causes.
+ */
+export function describeRun(run: InstallerRun): string {
+  return [
+    `status=${String(run.status)} signal=${String(run.signal)} elapsed=${run.elapsedMs.toFixed(0)}ms`,
+    `stdout: ${excerpt(run.stdout)}`,
+    `stderr: ${excerpt(run.stderr)}`,
+  ].join('\n');
 }
 
 export interface InstallerOverrides {
@@ -112,11 +158,17 @@ export interface InstallerOverrides {
 }
 
 /** Fail loudly on a spawn that never started; a silent null status reads as a refusal. */
-function toRun(command: string, result: SpawnSyncReturns<string>): InstallerRun {
+function toRun(command: string, result: SpawnSyncReturns<string>, startedAt: number): InstallerRun {
   if (result.error !== undefined) {
     throw new Error(`could not spawn ${command}: ${result.error.message}`);
   }
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  return {
+    status: result.status,
+    signal: result.signal,
+    elapsedMs: performance.now() - startedAt,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
 }
 
 /**
@@ -136,12 +188,84 @@ function toRun(command: string, result: SpawnSyncReturns<string>): InstallerRun 
  */
 const SCRIPT_TIMEOUT_MS = 60_000;
 
-async function runScript(
+/**
+ * A run that died inside .NET's own startup rather than inside the script.
+ *
+ * `compressArchive` already retries this crash where it builds the fixture
+ * archive; the same corruption reaches the run that executes the installer, and
+ * that call site had nothing. It arrives differently here, which is why the
+ * signal check there does not cover it: the archive build sees the child killed
+ * (`signal: 'SIGABRT'`), while pwsh running a `-File` script gets far enough to
+ * write an unhandled-exception trace to stderr and exit non-zero. So the
+ * discriminator is the TEXT, and it has to be one the installer can never
+ * produce itself — install.ps1 writes its own refusals (`checksum mismatch` and
+ * the rest) and never a .NET exception trace.
+ *
+ * Both markers are required. `Unhandled exception.` alone would also match a
+ * genuine crash inside a `Compress-Archive` the script itself ran, which is a
+ * real failure this must not swallow; pairing it with the assembly-name parser
+ * narrows it to the startup corruption, where the script has not begun.
+ */
+const CLR_ABORT_MARKERS = ['Unhandled exception.', 'assembly name was invalid'] as const;
+
+// Three attempts against a 60s per-attempt kill ceiling is 180s of budget, and
+// this package's testTimeout/hookTimeout is 120s — so three attempts that each
+// ran to their SIGKILL would surface as a bare vitest timeout rather than as
+// anything this file says.
+//
+// That cannot arise from what this retries. A CLR startup abort is near-instant:
+// the process dies before the script it was handed begins, which is exactly what
+// `diedInClrStartup` keys on. An attempt that is RETRIED therefore costs no
+// meaningful budget, and an attempt that spends real time is by construction one
+// that ran and is returned rather than retried.
+//
+// Written down because the two constants sit twenty lines apart and nothing
+// structural ties either to the ceiling: a future marker matching something slow
+// would spend the budget three times over and report it as a timeout.
+const SCRIPT_ATTEMPTS = 3;
+
+/** What `runScript` spawns with, injectable so the abort can be driven. */
+export type ScriptRunner = (
+  command: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+) => Promise<InstallerRun>;
+
+function diedInClrStartup({ status, stderr }: InstallerRun): boolean {
+  // A zero exit is a run that happened, whatever it wrote.
+  if (status === 0) return false;
+  return CLR_ABORT_MARKERS.every((marker) => stderr.includes(marker));
+}
+
+/**
+ * Run a script, retrying only a CLR startup abort.
+ *
+ * Bounded and narrow on purpose: a retry that widened to any non-zero exit
+ * would re-run the refusals this suite exists to assert, and a flake budget
+ * spent on a real failure reports green for a script that never worked.
+ */
+export async function runScript(
+  command: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  // Injectable for the same reason `compressArchive`'s runner is: driven
+  // against a real pwsh this branch is dead code on every leg that runs the
+  // suite, because the abort cannot be provoked on demand.
+  spawnOne: ScriptRunner = spawnScript,
+): Promise<InstallerRun> {
+  for (let attempt = 1; ; attempt += 1) {
+    const result = await spawnOne(command, args, env);
+    if (attempt >= SCRIPT_ATTEMPTS || !diedInClrStartup(result)) return result;
+  }
+}
+
+async function spawnScript(
   command: string,
   args: readonly string[],
   env: NodeJS.ProcessEnv,
 ): Promise<InstallerRun> {
   return await new Promise<InstallerRun>((resolve, reject) => {
+    const startedAt = performance.now();
     const child = spawn(command, args, {
       env,
       timeout: SCRIPT_TIMEOUT_MS,
@@ -156,8 +280,12 @@ async function runScript(
     child.on('error', (err) => {
       reject(new Error(`could not spawn ${command}: ${err.message}`));
     });
-    child.on('close', (status) => {
-      resolve({ status, stdout, stderr });
+    // The SIGNAL is the second argument, and dropping it is how a killed run
+    // and a clean one become the same record: `status` is null for both a
+    // SIGKILL from the timeout above and anything else that killed the child,
+    // and only the signal says which.
+    child.on('close', (status, signal) => {
+      resolve({ status, signal, elapsedMs: performance.now() - startedAt, stdout, stderr });
     });
   });
 }
@@ -280,6 +408,7 @@ export async function runInstallPs1(
  * caveat in install-ps1.test.ts.
  */
 export function readUserPath(exe: string): string | null {
+  const startedAt = performance.now();
   const result = spawnSync(
     exe,
     [
@@ -290,7 +419,7 @@ export function readUserPath(exe: string): string | null {
     ],
     { encoding: 'utf8', env: powershellEnv() },
   );
-  const run = toRun(`${exe} (read user Path)`, result);
+  const run = toRun(`${exe} (read user Path)`, result, startedAt);
   if (run.status !== 0) throw new Error(`could not read the user Path: ${run.stderr}`);
   const value = run.stdout.replace(/\r?\n$/u, '');
   return value === 'ABSENT' ? null : value.slice('PRESENT'.length);
@@ -301,6 +430,7 @@ export function writeUserPath(exe: string, value: string | null): void {
   // The value travels in the child's environment rather than inside the command
   // string: a user Path is full of backslashes, semicolons and spaces, and
   // quoting it into `-Command` is a way to corrupt the thing being restored.
+  const startedAt = performance.now();
   const result = spawnSync(
     exe,
     [
@@ -317,6 +447,6 @@ export function writeUserPath(exe: string, value: string | null): void {
       }),
     },
   );
-  const run = toRun(`${exe} (restore user Path)`, result);
+  const run = toRun(`${exe} (restore user Path)`, result, startedAt);
   if (run.status !== 0) throw new Error(`could not restore the user Path: ${run.stderr}`);
 }

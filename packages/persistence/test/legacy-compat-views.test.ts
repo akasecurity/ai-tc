@@ -948,3 +948,192 @@ describe('the pre-drop snapshot is taken only when the drop would destroy rows',
     }
   });
 });
+
+describe('the legacy drop defers when the store changed under the write lock', () => {
+  // The window this guard covers cannot be reached by calling the migration
+  // twice or by seeding differently: it opens when the backup decision is read
+  // and closes when `BEGIN IMMEDIATE` takes the lock, and a pre-cutover binary
+  // sharing the store can write an `events` row inside it.
+  //
+  // So the row is written FROM `BEGIN IMMEDIATE` itself, through a second
+  // connection, by wrapping the handle the migration is given. That is exactly
+  // the last instant a writer can still land — one statement later the lock is
+  // held and nothing else can — and it makes the race deterministic rather than
+  // timing-dependent, which is what keeps this off the flaky-concurrency list.
+  //
+  // No product seam is added for it. `applyLegacyDropMigration` already takes
+  // the connection, so the test supplies one that does something extra.
+  function writingAtLockTime(db: DatabaseSync, write: () => void): DatabaseSync {
+    let written = false;
+    // Every method is forwarded bound to the REAL handle. A prototype clone
+    // looks equivalent and is not: `DatabaseSync`'s methods read internal slots
+    // off `this`, so calling one with a stand-in as the receiver throws — and
+    // `applyLegacyDropMigration` is fail-open, so that throw is swallowed into
+    // a deferral and every assertion here passes for the wrong reason.
+    return new Proxy(db, {
+      get(target, prop) {
+        if (prop === 'exec') {
+          return (sql: string): void => {
+            if (!written && sql === 'BEGIN IMMEDIATE') {
+              written = true;
+              write();
+            }
+            target.exec(sql);
+          };
+        }
+        const value: unknown = Reflect.get(target, prop, target);
+        return typeof value === 'function'
+          ? (value as (...args: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+  }
+
+  // The row a pre-cutover binary writes. It is in neither the snapshot (which
+  // predates it) nor `audit_events` (the backfill already ran), so a drop that
+  // went ahead would destroy it outright.
+  function arrivingWriter(file: string): () => void {
+    return () => {
+      const other = new DatabaseSync(file);
+      try {
+        other.exec('PRAGMA foreign_keys = ON');
+        insertLegacyEvent(other, `late-${randomUUID()}`, 1_700_000_000_000, null);
+      } finally {
+        other.close();
+      }
+    };
+  }
+
+  function ledgerHasDropTag(db: DatabaseSync): boolean {
+    return (
+      db.prepare('SELECT 1 FROM migration_ledger WHERE tag = ?').get(MIGRATION_0014_TAG) !==
+      undefined
+    );
+  }
+
+  // Both polarities of the ONE predicate, because a mark comparison is what
+  // lets a single condition cover them: a store that skipped the copy defers if
+  // a row appeared, and a store that TOOK one defers if a row appeared during
+  // it — the longer window, since `VACUUM INTO` over real history is seconds of
+  // wall clock. Only the second reaches `backupBeforeLegacyDrop` at all, so a
+  // guard that worked for one and not the other would pass a single-case test.
+  it.each([
+    ['a drained store, where no snapshot was taken', false],
+    ['a populated store, where the copy had already run', true],
+  ])('defers rather than dropping, on %s', (_label, seedRows) => {
+    const file = seedPreCutoverFile();
+    const backup = join(store.dataDir, 'pre-drop.bak');
+    const db = new DatabaseSync(file);
+    db.exec('PRAGMA foreign_keys = ON');
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS migration_ledger (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)',
+    );
+    try {
+      if (seedRows) insertLegacyEvent(db, 'already-here', 1_600_000_000_000, null);
+      // The positive control for the whole case: the drop is genuinely pending,
+      // so what is asserted below is a deferral rather than a drop that had
+      // already happened or could never have run.
+      expect(schemaObjectExists(db, 'table', 'events')).toBe(true);
+      expect(ledgerHasDropTag(db)).toBe(false);
+
+      applyLegacyDropMigration(writingAtLockTime(db, arrivingWriter(file)), backup);
+
+      // Deferred: the tables are still tables, no compat view replaced them,
+      // and no ledger tag claims the migration ran. The next open backfills the
+      // arriving row and re-decides from there.
+      expect(schemaObjectExists(db, 'table', 'events')).toBe(true);
+      expect(schemaObjectExists(db, 'view', 'events')).toBe(false);
+      expect(ledgerHasDropTag(db)).toBe(false);
+      // And the row that caused the deferral is still there to be copied — the
+      // whole point of deferring rather than dropping.
+      const late = db.prepare("SELECT count(*) AS n FROM events WHERE id LIKE 'late-%'").get() as {
+        n: number;
+      };
+      expect(late.n).toBe(1);
+      assertNoOpenTransaction(db);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('defers on a change that leaves the row COUNT unchanged', () => {
+    // What `max(rowid)` is in the mark for. A writer that removes one row and
+    // adds another leaves `count(*)` identical across the two reads, so a
+    // count-only mark reads as unchanged and the drop goes ahead — destroying
+    // the arriving row, which is in neither the snapshot nor `audit_events`.
+    //
+    // Verified to be the discriminating case rather than assumed: with
+    // `max(rowid)` dropped from the mark every other case here still passes,
+    // and only this one goes red.
+    const file = seedPreCutoverFile();
+    const backup = join(store.dataDir, 'pre-drop-swap.bak');
+    const db = new DatabaseSync(file);
+    db.exec('PRAGMA foreign_keys = ON');
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS migration_ledger (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)',
+    );
+    try {
+      // TWO rows, and the one removed is the LOWER. Deleting the only row
+      // would let SQLite hand the replacement rowid 1 again — count AND
+      // max(rowid) both unchanged, which the mark genuinely cannot see. With a
+      // survivor above it the replacement takes the next rowid up, which is the
+      // change this case is about.
+      insertLegacyEvent(db, 'doomed', 1_600_000_000_000, null);
+      insertLegacyEvent(db, 'survivor', 1_600_000_000_001, null);
+      const before = db.prepare('SELECT count(*) AS n FROM events').get() as { n: number };
+
+      applyLegacyDropMigration(
+        writingAtLockTime(db, () => {
+          const other = new DatabaseSync(file);
+          try {
+            other.exec('PRAGMA foreign_keys = ON');
+            other.prepare('DELETE FROM events WHERE id = ?').run('doomed');
+            insertLegacyEvent(other, `late-${randomUUID()}`, 1_700_000_000_000, null);
+          } finally {
+            other.close();
+          }
+        }),
+        backup,
+      );
+
+      const after = db.prepare('SELECT count(*) AS n FROM events').get() as { n: number };
+      // The count really was unchanged — without this the case could be passing
+      // because the swap moved it after all, and the rowid half would go
+      // untested while looking covered.
+      expect(after.n).toBe(before.n);
+
+      expect(schemaObjectExists(db, 'table', 'events')).toBe(true);
+      expect(schemaObjectExists(db, 'view', 'events')).toBe(false);
+      expect(ledgerHasDropTag(db)).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('drops normally when nothing arrives, which is what makes the deferral attributable', () => {
+    // The negative control. Without it every assertion above is satisfied by a
+    // migration that never drops anything under any condition — and that is the
+    // failure this whole describe exists to catch, one level up.
+    const file = seedPreCutoverFile();
+    const backup = join(store.dataDir, 'pre-drop-quiet.bak');
+    const db = new DatabaseSync(file);
+    db.exec('PRAGMA foreign_keys = ON');
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS migration_ledger (tag TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)',
+    );
+    try {
+      // Same wrapper, same call shape — only the writer is inert, so the mark
+      // is unchanged at the recheck.
+      applyLegacyDropMigration(
+        writingAtLockTime(db, () => undefined),
+        backup,
+      );
+
+      expect(schemaObjectExists(db, 'table', 'events')).toBe(false);
+      expect(schemaObjectExists(db, 'view', 'events')).toBe(true);
+      expect(ledgerHasDropTag(db)).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+});

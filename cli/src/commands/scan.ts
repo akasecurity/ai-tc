@@ -5,14 +5,20 @@ import type {
   EgressRecordResult,
   ProjectInventoryResult,
   ScanPathResult,
+  SharesForwardOutcome,
+  SharesForwardSender,
 } from '@akasecurity/local-ops';
 import {
+  FORWARD_FAILURE_LINES,
+  forwardProjectEgress,
+  isProtectedTarget,
   recordProjectEgress,
   recordProjectInventory,
   scanPathIntoStore,
 } from '@akasecurity/local-ops';
 import { MAX_EGRESS_CALL_SITES_PER_PROJECT, openLocalDatabase } from '@akasecurity/persistence';
 import { dataDir, registerBundledPacks } from '@akasecurity/plugin-sdk';
+import { createSharesSender } from '@akasecurity/remote';
 import { Severity, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
@@ -31,14 +37,31 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 //                         reports the project row + file tree recorded for the
 //                         repo containing the target, null outside a git repo;
 //                         `egress` reports the destinations/endpoints/call sites
-//                         written for the project, null when nothing was recorded)
+//                         written for the project, null when nothing was recorded;
+//                         `forward` reports whether that register reached the
+//                         deployment this machine is attached to, null when it is
+//                         attached to none)
 //   --fail-on <severity>  exit 1 when any finding is at or above the given
 //                         severity (critical|high|medium|low)
+//   --no-forward          record locally only; skip the forward above
 //
-// Exit codes: 0 or 1, and 1 is OVERLOADED — by FOUR paths, not three.
-// `--fail-on` raises it for findings at or above the threshold; three error
+// On an attached machine the register this scan just wrote is also forwarded to
+// that deployment, after the store handle is closed — before the JSON object is
+// written, and after the text summary, so a slow deployment delays only its own
+// line. It is the same projection the plugin's own scanner sends —
+// destination hosts, endpoints and file/line call sites, with no source text and
+// the project key replaced by a digest — and it can only ever reach the
+// deployment this home's own settings name. `--no-forward` skips it for one
+// invocation; an unattached machine sends nothing and prints no line. The
+// forward can fail every way a network call can and none of them change the
+// exit code, the findings, or the egress counts: it runs after the work that
+// matters is already on disk.
+//
+// Exit codes: 0 or 1, and 1 is OVERLOADED — by FIVE paths, not four.
+// `--fail-on` raises it for findings at or above the threshold; four error
 // paths below raise the same 1 by returning early (an unknown --format, an
-// unknown --fail-on, and a target that does not exist); and a fourth never
+// unknown --fail-on, a target that does not exist, and a target the walker
+// refuses to read because it holds live credentials); and a fifth never
 // reaches this function's own error handling at all — `parseArgs` THROWS on an
 // unknown option name (`--frmat`) or an option given no value (`--format` at
 // the end of argv), and that propagates out of runScan to cli.ts's
@@ -47,7 +70,7 @@ import { HOME_OPTION, homeBase } from '../lib/args.ts';
 // A CI gate reading only the exit status therefore cannot tell a real detection
 // from a mistyped flag or a wrong path; a scanner that reserved a distinct code
 // (2 is the usual choice) for usage errors could. Nor is the stream a complete
-// discriminator, though it separates the first four cases: an early-return
+// discriminator, though it separates the first five cases: an early-return
 // error writes a message to stderr and nothing to stdout, and a --fail-on trip
 // writes its report to stdout and nothing to stderr — but the parseArgs throw
 // writes to NEITHER from here, surfacing as whatever cli.ts prints for an
@@ -83,13 +106,65 @@ export function renderEgressLine(egress: EgressRecordResult): string {
   );
 }
 
-export async function runScan(argv: string[]): Promise<void> {
+/**
+ * The transport for the forward, isolated so a test can drive every outcome
+ * without a socket. `attach.ts` injects its `verify` the same way.
+ */
+export interface ScanDeps {
+  send?: SharesForwardSender;
+}
+
+/**
+ * The outcomes a scan reports, and the ONE predicate both output modes share.
+ *
+ * `not-attached` is a machine with no deployment to report about, so it renders
+ * exactly as a machine that recorded nothing: no text line, and `forward: null`
+ * in JSON — a consumer branches on presence, never on a status meaning "no
+ * answer". Deriving both modes from this one function is what keeps a status
+ * that should stay silent from diverging between them.
+ */
+export type ReportedForward = Exclude<SharesForwardOutcome, { status: 'not-attached' }>;
+export function reportedForward(outcome: SharesForwardOutcome | null): ReportedForward | null {
+  return outcome === null || outcome.status === 'not-attached' ? null : outcome;
+}
+
+/**
+ * The text-mode line for what the forward did, or null when there is nothing to
+ * say.
+ *
+ * A machine attached to nothing renders NOTHING, which is what keeps a
+ * standalone install's output exactly as it was before this command could
+ * forward at all.
+ */
+export function renderForwardLine(outcome: ReportedForward): string {
+  switch (outcome.status) {
+    case 'disabled':
+      return outcome.reason === 'opt-out'
+        ? 'Data shares: not forwarded (--no-forward)'
+        : 'Data shares: not forwarded (Data Shares is off in Settings)';
+    case 'no-credential':
+      return (
+        `Data shares: not forwarded to ${outcome.endpoint} — ` +
+        'no usable credential; re-attach with `aka attach`'
+      );
+    case 'forwarded':
+      return (
+        `Data shares: forwarded to ${outcome.endpoint} · ` +
+        `${String(outcome.callSites)} call site(s)`
+      );
+    case 'failed':
+      return `Data shares: not forwarded to ${outcome.endpoint} — ${FORWARD_FAILURE_LINES[outcome.kind]}`;
+  }
+}
+
+export async function runScan(argv: string[], deps: ScanDeps = {}): Promise<void> {
   const { values, positionals } = parseArgs({
     args: argv,
     options: {
       ...HOME_OPTION,
       format: { type: 'string' },
       'fail-on': { type: 'string' },
+      'no-forward': { type: 'boolean' },
     },
     allowPositionals: true,
   });
@@ -155,6 +230,11 @@ export async function runScan(argv: string[]): Promise<void> {
       ruleActions,
       sourceTool: SOURCE_TOOL.Cli,
       dataDir: storeDir,
+      // The AKA home this invocation is actually using, so the scanner's
+      // protected-path exclusion covers a `--home` store rather than the
+      // literal `~/.aka` the default would name. `home` is the same base
+      // `recordProjectEgress` takes below, for the same reason.
+      akaHome: home,
     });
     // Keep the Inventory page's project + file tree fresh for the repo just
     // scanned (fail-open, no-op outside a git repo).
@@ -163,11 +243,44 @@ export async function runScan(argv: string[]): Promise<void> {
     // (fail-open; `home` is the settings base so a --home scan reads that
     // home's own kill-switch, never the caller's real ~/.aka).
     egress = recordProjectEgress(db, target, result.egress, home);
+  } catch (err) {
+    if (!isProtectedTarget(err)) throw err;
+    // Named the same way a mistyped path is, and for the same reason: a target
+    // this scanner will not open must not be reported as a scan of it. Without
+    // this the walk's refusal would surface as an unhandled stack trace.
+    process.stderr.write(`aka scan: ${err.message}\n`);
+    process.exitCode = 1;
+    return;
   } finally {
     db.close();
   }
 
+  // AFTER the handle is closed, so no SQLite transaction is held open across a
+  // network wait, and outside the block above so a forward can never take the
+  // store down with it. Deferred into a function rather than awaited here:
+  // text mode prints the scan result BEFORE attempting the forward, so a slow
+  // or unreachable deployment delays the forward line and never the summary
+  // the command was run for. JSON mode is one object and must wait for both.
+  const recorded = egress;
+  const runForward = async (): Promise<SharesForwardOutcome | null> => {
+    if (recorded === null) return null;
+    try {
+      return await forwardProjectEgress(home, recorded.input, {
+        send: deps.send ?? createSharesSender(),
+        enabled: values['no-forward'] !== true,
+      });
+    } catch {
+      // The state machine is documented never to throw. This guards the exit
+      // code against the day that stops being true — and says so on stderr,
+      // because a silent null here would render an attached machine exactly
+      // like an unattached one and erase the only sign of the regression.
+      process.stderr.write('aka scan: forward failed unexpectedly\n');
+      return null;
+    }
+  };
+
   if (format === 'json') {
+    const forward = await runForward();
     const findings = result.files.flatMap((f) =>
       f.findings.map((d) => ({
         file: f.path,
@@ -197,9 +310,17 @@ export async function runScan(argv: string[]): Promise<void> {
           truncated: egress.truncated,
         }
       : null;
+    const forwardJson = reportedForward(forward);
     process.stdout.write(
       `${JSON.stringify(
-        { target, scanned: result.scanned, findings, inventory: inventoryJson, egress: egressJson },
+        {
+          target,
+          scanned: result.scanned,
+          findings,
+          inventory: inventoryJson,
+          egress: egressJson,
+          forward: forwardJson,
+        },
         null,
         2,
       )}\n`,
@@ -210,6 +331,8 @@ export async function runScan(argv: string[]): Promise<void> {
     );
     if (inventory) process.stdout.write(`${renderInventoryLine(inventory)}\n`);
     if (egress) process.stdout.write(`${renderEgressLine(egress)}\n`);
+    const reported = reportedForward(await runForward());
+    if (reported !== null) process.stdout.write(`${renderForwardLine(reported)}\n`);
   }
 
   if (failOn !== undefined) {

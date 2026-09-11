@@ -7,6 +7,8 @@ import {
   detectInstallChannel,
   gatherReport,
   installedAgentPluginVersions,
+  installedPluginScope,
+  marketplacePinnedVersion,
   planCliUpdate,
   pluginRef,
   readCache,
@@ -48,6 +50,11 @@ export default function UpdatesPage() {
     },
     installed: installedAgentPluginVersions(),
     cliInstalled: cliVersion(process.cwd()),
+    // Read live rather than from the cache, unlike `latest` above: the pin is a
+    // local file the host itself wrote, so there is no request to amortise, and
+    // a stale pin would put this page back to offering an update the host
+    // cannot deliver — the defect the pin exists to close.
+    marketplacePin: (agent) => marketplacePinnedVersion(agent),
   });
 
   // The CLI's command depends on how THIS copy was installed (npm global under
@@ -101,7 +108,12 @@ export default function UpdatesPage() {
       installCommands[agent.id] = none;
       continue;
     }
-    const manager = createCliPluginManager(agent.cliBin);
+    // Bound to the scope the plugin is really installed at: this page renders
+    // the update command a user copies, and the version comparison beside it
+    // reads a record at any scope while the host's update verb defaults to
+    // `user`. A copied command that targets a different install than the
+    // comparison did is the same defect, reached by hand.
+    const manager = createCliPluginManager(agent.cliBin, installedPluginScope(ref));
     const { marketplaceSource: source, marketplace } = agent;
     commands[agent.id] = manager.updateSpawnPlan(ref, source, marketplace).join('\n');
     installCommands[agent.id] = manager.installSpawnPlan(ref, source, marketplace).join('\n');

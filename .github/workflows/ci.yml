@@ -750,6 +750,49 @@ jobs:
             turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
             turbo-${{ runner.os }}-
 
+      # Two facts the cap's arithmetic currently INFERS and should not:
+      # the runner's logical CPU count, and the worker count vitest sizes from
+      # it — derived today by dividing a package's aggregate `tests` time by its
+      # reported `Duration` and noticing the quotient tops out near 3.
+      #
+      # Nothing depends on what these print. They are here so the NEXT decision
+      # about this leg can be measured rather than argued.
+      - name: Runner facts
+        continue-on-error: true
+        run: |
+          $cs = Get-CimInstance Win32_ComputerSystem
+          $os = Get-CimInstance Win32_OperatingSystem
+          "logical CPUs: $($cs.NumberOfLogicalProcessors)"
+          "availableParallelism (what vitest sizes its pool from): $(node -e "process.stdout.write(String(require('node:os').availableParallelism()))")"
+          # The granularity of the clock every CPU-time guard in this repo reads.
+          # POSIX reports microseconds; Windows charges whole scheduler ticks to
+          # whichever thread was running at the interrupt, so a guard measuring a
+          # few milliseconds of work here is reading the clock rather than the work.
+          #
+          # The busy loop GROWS until a delta appears, because a loop sized for a
+          # microsecond clock reads zero on a coarse one for ever — and "no delta"
+          # would then be printed by exactly the clock this line exists to size. The
+          # accumulator is read so V8 cannot drop the loop and report the same thing.
+          "smallest non-zero threadCpuUsage deltas, ms: $(node -e "const read = () => { const t = process.threadCpuUsage(); return (t.user + t.system) / 1000; }; let out = 'no non-zero delta up to 134217728 adds per try'; for (let work = 1000; work <= 134217728; work *= 8) { const seen = new Set(); let sink = 0; for (let i = 0; i < 64 && seen.size < 8; i += 1) { const a = read(); for (let j = 0; j < work; j += 1) sink += j; const d = read() - a; if (d > 0 && sink >= 0) seen.add(d); } if (seen.size > 0) { const v = [...seen].sort((p, q) => p - q); out = v.slice(0, 4).map((m) => m.toFixed(4)).join(', ') + ' (at ' + work + ' adds per try)'; break; } } process.stdout.write(out)")"
+          "total RAM MB: $([math]::Round($os.TotalVisibleMemorySize / 1KB))"
+          "free RAM MB:  $([math]::Round($os.FreePhysicalMemory / 1KB))"
+          Get-PSDrive -PSProvider FileSystem |
+            Where-Object { $null -ne $_.Used } |
+            ForEach-Object { "drive $($_.Name): used $([math]::Round($_.Used / 1GB))GB free $([math]::Round($_.Free / 1GB))GB" }
+
+      # DETACHED, not Start-Job. Each `run:` step is its own PowerShell, and a
+      # background job dies with the session that created it — so a job started
+      # here would be gone before the first test ran, having written an empty
+      # file that reads exactly like a quiet runner.
+      - name: Start runner sampler
+        continue-on-error: true
+        run: |
+          $proc = Start-Process pwsh -PassThru -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile', '-File', 'tools/ci/windows-runner-sampler.ps1'
+          )
+          "sampler pid: $($proc.Id)"
+          "$($proc.Id)" | Set-Content (Join-Path $env:RUNNER_TEMP 'sampler-pid')
+
       - name: Test the shipped surface and its enforcement
         # --continue: report every package's failures in one run instead of
         # hiding later packages behind the first red one.
@@ -757,6 +800,34 @@ jobs:
         # --concurrency: see the Test step in the lint job. This is the leg that
         # needed it most — Windows has the most expensive fsync of the three, so
         # it is where disk contention turned into timeouts first and worst.
+        #
+        # --maxWorkers is the OTHER half of the same arithmetic, and until now
+        # only one half was bounded. --concurrency caps how many PACKAGES run
+        # at once; each of those is a `vitest run` that forks a pool sized to
+        # the machine, and no vitest.config.ts in this workspace sets
+        # maxWorkers, poolOptions or fileParallelism. So two packages on a
+        # four-core runner put up to six workers on one disk — the figure the
+        # web-ui pairing note below arrives at from measurement — and they
+        # contend for fsync rather than CPU, because nothing here mocks
+        # node:sqlite or the filesystem.
+        #
+        # 2 x 2 = 4, the runner's core count. It is a starting point chosen
+        # from the arithmetic rather than a tuned value; what settles it is the
+        # pass rate on this leg.
+        #
+        # It goes AFTER `--`, which is what sends it to each task's own
+        # `vitest run`. Before the separator turbo consumes it, and a line like
+        # that reads in a diff exactly like a cap and is not one — the mirror
+        # image of the trap the concurrency note documents in the other
+        # direction. packages/eslint-config/test/ci-test-concurrency.test.js
+        # holds both.
+        #
+        # ALL THREE of this job's turbo invocations carry it, including the two
+        # below that already run at `--concurrency=1`. That is not redundant:
+        # --concurrency bounds how many PACKAGES run, and a package running
+        # alone still forks a host-sized pool — so web-ui, which the pairing
+        # note below names as one of the two heaviest fsync-bound suites on this
+        # leg, was the one thing a first-invocation-only cap would have missed.
         #
         # Two packages are deliberately NOT in this list. web-ui and the
         # installer each run in their own invocation below, and each for a
@@ -788,6 +859,8 @@ jobs:
           --filter=@akasecurity/local-ops
           --filter=@akasecurity/eslint-config
           --filter=@akasecurity/plugin-browser-extension
+          --
+          --maxWorkers=2
 
       # web-ui's suite runs in its OWN turbo invocation, AFTER the shipped-surface
       # filters above rather than beside them, and the reason is a measured pairing
@@ -873,7 +946,9 @@ jobs:
       # reporting, for the same reason that step takes `--continue`.
       - name: Test the dashboard suites
         if: ${{ !cancelled() }}
-        run: pnpm turbo run test --concurrency=1 --filter=@akasecurity/web-ui --filter=@akasecurity/dashboard-ui
+        run: >
+          pnpm turbo run test --concurrency=1 --filter=@akasecurity/web-ui
+          --filter=@akasecurity/dashboard-ui -- --maxWorkers=2
 
       # The installer suite runs in its OWN turbo invocation too, AFTER the
       # filters above and the dashboard step, rather than beside any of them.
@@ -911,7 +986,49 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           AKA_INSTALLER_ALLOW_USER_PATH: '1'
-        run: pnpm turbo run test --concurrency=1 --filter=@akasecurity/installer
+        run: pnpm turbo run test --concurrency=1 --filter=@akasecurity/installer -- --maxWorkers=2
+
+      # `always()`, because the run this most needs to explain is the one that
+      # FAILED — a summary that prints only on success describes the case nobody
+      # is investigating.
+      - name: Runner samples
+        if: always()
+        continue-on-error: true
+        run: |
+          $pidFile = Join-Path $env:RUNNER_TEMP 'sampler-pid'
+          if (Test-Path $pidFile) {
+            Stop-Process -Id (Get-Content $pidFile) -Force -ErrorAction SilentlyContinue
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'runner-samples.csv'
+          if (-not (Test-Path $path)) { "no samples were written"; exit 0 }
+          $rows = @(Import-Csv $path)
+          # Said BEFORE the per-column loop, because otherwise a sampler that
+          # never ticked prints "(not available on this image)" three times and
+          # reads as three renamed counters. Those are opposite conclusions —
+          # one is "this image lacks the counter", the other is "the sampler did
+          # not run" — and the second is the one the next reader has to know,
+          # since it invalidates the whole measurement rather than one column.
+          if ($rows.Count -eq 0) {
+            "no samples collected — the file exists but carries only its header, so the " +
+              "sampler was killed before its first tick or never started"
+            exit 0
+          }
+          "samples: $($rows.Count) over $([math]::Round($rows.Count * 10 / 60, 1)) minutes"
+          foreach ($col in 'cpu_pct', 'disk_queue', 'avail_mb') {
+            # Empty fields are skipped rather than read as zero: the sampler
+            # leaves a column blank for a counter this image does not carry, and
+            # a blank coerced to 0 would report a perfectly idle disk.
+            $vals = @($rows | Where-Object { $_.$col -ne '' } |
+              ForEach-Object { [double]$_.$col } | Sort-Object)
+            if ($vals.Count -eq 0) { "$col  (not available on this image)"; continue }
+            $p95 = $vals[[math]::Min($vals.Count - 1, [int][math]::Floor(0.95 * $vals.Count))]
+            $p50 = $vals[[int][math]::Floor(0.5 * $vals.Count)]
+            "$col  min $($vals[0])  p50 $p50  p95 $p95  max $($vals[-1])"
+          }
+          # The whole series too: a p95 cannot show a stall that lasted one
+          # sample, and the stalls this exists to explain are 20-55 seconds.
+          "--- full series ---"
+          Get-Content $path
 
       - name: Save Turbo cache
         if: ${{ !cancelled() && steps.turbo-cache.outputs.cache-hit != 'true' }}

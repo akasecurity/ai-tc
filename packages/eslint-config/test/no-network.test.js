@@ -497,7 +497,11 @@ const CONFIG_LOAD_TIMEOUT_MS = 60_000;
 // both directions, so it needs no mirror to drift from. Read the two together:
 // this constant is the specifier half, that check is the site half.
 const DOCUMENTED_OPT_OUTS = {
-  'cli/eslint.config.mjs': ['node:net'],
+  // Two file-scoped entries under one config: the dashboard's port probe binds
+  // a local socket to find a free port, and the scan-forward suite's loopback
+  // helper stands a real server so the bytes that forward sends can be read off
+  // the wire. See CLAUDE.md §4.
+  'cli/eslint.config.mjs': ['node:http', 'node:net'],
   'cli/eslint.scripts.config.mjs': ['node:http'],
   // The repo-root config lints the vitest no-network guard (which imports all
   // three transports it patches) and the CI egress probe (node:net). Both are
@@ -516,6 +520,10 @@ const DOCUMENTED_OPT_OUTS = {
   // install.sh / install.ps1 can be driven against a local base. File-scoped
   // to the one helper that binds it; see CLAUDE.md §4.
   'tools/installer/eslint.config.mjs': ['node:http'],
+  // The Scan page's Data Shares forward is a Server Action that sends, so its
+  // suite stands a real server on loopback and reads the request off the wire.
+  // File-scoped to the one helper that binds it; see CLAUDE.md §4.
+  'web-ui/eslint.config.mjs': ['node:http'],
 };
 
 /** The module names a resolved `no-restricted-imports` value bans, or null if absent. */
@@ -898,11 +906,20 @@ describe('documented no-network opt-outs (CLAUDE.md §4)', () => {
     for (const [file, specifiers] of Object.entries(DOCUMENTED_OPT_OUTS)) {
       const mod = configModules.get(file);
       expect(mod, `${file}: config was not loaded`).toBeDefined();
-      const optOut = mod.default.find(
+      const optOuts = mod.default.filter(
         (entry) => networkSpecifiersPermittedBy(entry.rules).length > 0,
       );
-      expect(optOut, `${file}: no opt-out entry found`).toBeDefined();
+      expect(optOuts.length, `${file}: no opt-out entry found`).toBeGreaterThan(0);
       for (const specifier of specifiers) {
+        // The entry that permits THIS specifier, not the config's first one. A
+        // config may carry several file-scoped opt-outs permitting different
+        // modules — `cli/eslint.config.mjs` does — and reading only the first
+        // asked it about a specifier it was never meant to allow, while every
+        // later entry went unexercised.
+        const optOut = optOuts.find((entry) =>
+          networkSpecifiersPermittedBy(entry.rules).includes(specifier),
+        );
+        expect(optOut, `${file}: no opt-out entry permits ${specifier}`).toBeDefined();
         const rules = {
           'no-restricted-imports': optOut.rules['no-restricted-imports'],
           'no-restricted-syntax': optOut.rules['no-restricted-syntax'],

@@ -45,6 +45,56 @@ export const HANDLING_SECTION_DESCRIPTION =
 
 export const HANDLING_SECTION_LINK_LABEL = 'Configure detections';
 
+// What happens when the handling a detection was assigned CANNOT be carried
+// out. This is not the global handling setting the section above says does not
+// exist, and the copy has to keep that distinction visible: it never chooses
+// what a detection does, only what happens on a field where the chosen answer
+// is unavailable.
+//
+// The case is narrow and concrete: masking text that EXECUTES would change what
+// runs, and masking a URL would fetch something else — so on those fields a
+// `redact` cannot be performed at all. Antigravity is the extreme, since its
+// hook contract offers no way to rewrite any argument.
+export const REDACT_FALLBACK_SECTION_LABEL = 'When masking is not possible';
+
+// A host applies this choice only once it DECLARES which of its fields it
+// cannot rewrite. Until it does, it refuses those calls on its own — every
+// redact on Antigravity, an executable field on the other two — whatever is
+// chosen here. That sentence is in the copy rather than in this comment for the
+// reason the section above records: a choice the machine does not honour yet,
+// presented as one it does, is the defect that removed the last control from
+// this page. It moves as each host is wired, alongside that host's Known
+// limitations, which is the authority on where it stands.
+export const REDACT_FALLBACK_SECTION_DESCRIPTION =
+  'Some fields cannot be masked in place: rewriting a shell command would change what runs, and ' +
+  'rewriting a URL would fetch something else. A detection set to Redact cannot be carried out ' +
+  'there, and this chooses what happens instead. It does not change what any detection is set ' +
+  'to — only what happens where that answer cannot be applied. A plugin applies this once it ' +
+  'reports which of its fields cannot be rewritten; until then it refuses those calls outright, ' +
+  'and its Known limitations says where it stands.';
+
+export const REDACT_FALLBACK_CHOICES: Choice<WorkspaceSettings['redactFallback']>[] = [
+  {
+    value: 'monitor',
+    label: 'Let it through',
+    description: 'The call runs with the value unmasked and the finding is recorded.',
+  },
+  {
+    value: 'warn',
+    label: 'Let it through, with a warning',
+    description:
+      'The call runs with the value unmasked, and the session is told what was found (default). ' +
+      'A host with no channel to print on records the finding and shows nothing.',
+  },
+  {
+    value: 'block',
+    label: 'Block the call',
+    description:
+      'The call is refused and the message says what to remove. The stricter answer, and the one ' +
+      'to pick if a request that has already left cannot be recalled.',
+  },
+];
+
 // This is the same grant the /aka:setup wizard collects, and it is what gates the
 // wizard's history sweep — READING local surfaces, nothing more. Sending what that
 // sweep finds to the model API is gated by the separate Model-judge consent below,
@@ -435,20 +485,36 @@ function SettingGroup({ title, children }: { title: string; children: ReactNode 
   );
 }
 
+/** `1 setting` / `3 settings`, so the sentence below reads in either case. */
+const settings = (count: number): string =>
+  count === 1 ? '1 setting' : `${String(count)} settings`;
+
 /**
- * The line rendered when an administrator's file locks keys this build does
- * not know. Such a lock is dropped from the locked set rather than failing the
- * whole file (which would run the machine unmanaged), and this is the one
- * place that says a lock exists which is not being applied. A count rather
- * than the names: the names are the administrator's to fix, in the file.
+ * The line rendered when an administrator's file names settings this build does
+ * not know — pinned, locked, or both. Such a name is dropped rather than
+ * failing the whole file (which would run the machine unmanaged), and this is
+ * the one place that says an administrative decision exists which is not being
+ * applied. Counts rather than the names: the names are the administrator's to
+ * fix, in the file.
+ *
+ * PINS AND LOCKS ARE COUNTED SEPARATELY inside one sentence. Two sentences read
+ * worse and a single merged count reads wrong: an unapplied lock leaves a
+ * control the administrator meant to freeze still editable, while an unapplied
+ * pin leaves a default they meant to set unset. Those send an administrator to
+ * different lines of their own file, so the sentence has to keep them apart
+ * even though the remedy — update AKA — is the same one.
  */
-export function managedUnknownLocksNotice(context: ManagedContext): string | undefined {
-  const count = context.unknownLockedFields?.length ?? 0;
-  if (!context.present || count === 0) return undefined;
+export function managedUnrecognizedNotice(context: ManagedContext): string | undefined {
+  const locks = context.unknownLockedFields?.length ?? 0;
+  const pins = context.unknownValueFields?.length ?? 0;
+  if (!context.present || locks + pins === 0) return undefined;
   const who = context.organization ?? 'Your organization';
-  return count === 1
-    ? `${who} locks 1 setting this version of AKA does not recognize. Update AKA to apply it.`
-    : `${who} locks ${String(count)} settings this version of AKA does not recognize. Update AKA to apply them.`;
+  const clauses = [
+    ...(pins > 0 ? [`pins ${settings(pins)}`] : []),
+    ...(locks > 0 ? [`locks ${settings(locks)}`] : []),
+  ];
+  const what = locks + pins === 1 ? 'it' : 'them';
+  return `${who} ${clauses.join(' and ')} this version of AKA does not recognize. Update AKA to apply ${what}.`;
 }
 
 export interface WorkspaceSettingsFormViewProps {
@@ -464,7 +530,10 @@ export interface WorkspaceSettingsFormViewProps {
   // `policy` is deliberately absent. Enforcement is per detection now; see
   // HANDLING_SECTION_DESCRIPTION.
   onSave: (
-    changes: Pick<WorkspaceSettings, 'historicalAccess' | 'vaultInlineReveal'> & {
+    changes: Pick<
+      WorkspaceSettings,
+      'historicalAccess' | 'vaultInlineReveal' | 'redactFallback'
+    > & {
       modelJudgeConsent: ModelJudgeConsentChoice;
       // THREE answers, not two — see HistorySyncConsentChoice. 'unchanged' is
       // what an unrelated save sends, so it asserts nothing about this grant.
@@ -576,13 +645,14 @@ export function WorkspaceSettingsFormView({
   );
   const [vaultConsent, setVaultConsent] = useState(vaultChoiceOf(settings.vaultConsent));
   const [inlineReveal, setInlineReveal] = useState(settings.vaultInlineReveal);
+  const [redactFallback, setRedactFallback] = useState(settings.redactFallback);
 
   // One helper rather than a check per row: a locked field must render the same
   // way everywhere, and an inline conditional per section is how one of them
   // ends up editable.
   const lockOn = (key: ManagedSettingKey): string | undefined =>
     isFieldManaged(managed, key) ? managedByLabel(managed) : undefined;
-  const unknownLocks = managedUnknownLocksNotice(managed);
+  const unrecognized = managedUnrecognizedNotice(managed);
 
   const dirty =
     historicalAccess !== settings.historicalAccess ||
@@ -590,6 +660,7 @@ export function WorkspaceSettingsFormView({
     historySync !== initialHistorySync ||
     vaultConsent !== vaultChoiceOf(settings.vaultConsent) ||
     inlineReveal !== settings.vaultInlineReveal ||
+    redactFallback !== settings.redactFallback ||
     // A stale grant renders as 'on' but authorizes nothing; keeping 'on'
     // selected and saving is the documented one-save re-consent, so staleness
     // itself must enable Save.
@@ -606,9 +677,9 @@ export function WorkspaceSettingsFormView({
 
   return (
     <div className="flex max-w-4xl flex-col gap-7">
-      {unknownLocks !== undefined && (
+      {unrecognized !== undefined && (
         <p className="text-xs text-text-3" data-slot="managed-unknown-locks">
-          {unknownLocks}
+          {unrecognized}
         </p>
       )}
       <SettingGroup title="Connection">
@@ -632,6 +703,15 @@ export function WorkspaceSettingsFormView({
             {HANDLING_SECTION_LINK_LABEL}
           </a>
         </div>
+        <SettingRow
+          label={REDACT_FALLBACK_SECTION_LABEL}
+          description={REDACT_FALLBACK_SECTION_DESCRIPTION}
+          name="redactFallback"
+          choices={REDACT_FALLBACK_CHOICES}
+          value={redactFallback}
+          onChange={setRedactFallback}
+          managed={lockOn('redactFallback')}
+        />
       </SettingGroup>
 
       <SettingGroup title="Data access">
@@ -730,6 +810,7 @@ export function WorkspaceSettingsFormView({
           onClick={() => {
             onSave({
               historicalAccess,
+              redactFallback,
               // Just the answers — the server stamps the acknowledgement times
               // and the versions the grants are recorded against.
               // Same three answers as the history-sync row, and for the same
@@ -798,14 +879,21 @@ export const CONNECTION_ATTACHED_DESCRIPTION =
 // transport landed. It renders on `attached &&` with no capability check, so
 // nothing about the build could ever have corrected it.
 //
-// What it must NOT do is describe a live exchange it cannot observe. Forwarding
-// is the plugin's, not this dashboard's: the page reads the local store, so it
-// knows a registration is recorded and knows nothing about whether the other end
-// answered. The copy is scoped to exactly that.
+// What it must NOT do is describe a live exchange it cannot observe. THIS page
+// reads the local store, so it knows a registration is recorded and knows
+// nothing about whether the other end answered. The copy is scoped to exactly
+// that.
+//
+// An attached machine has three senders — the plugin, `aka scan`, and a scan
+// started from this dashboard's own Scan page — and this notice names the two
+// this surface can speak for: what the plugin sends, and what a scan run here
+// sends. Naming only the plugin would leave a user reading this surface
+// believing a scan they run here stays on the machine.
 export const CONNECTION_FORWARDING_NOTICE =
   'While this machine is attached, the plugin forwards the activity that deployment is entitled ' +
-  'to see and pulls the policy it sets. This page reads only your local store, so it cannot ' +
-  'report what the deployment received. Detach to stop sending.';
+  'to see and pulls the policy it sets. A scan you run from the Scan page also sends the Data ' +
+  'Shares register it records — destinations and call sites, never source text. This page reads ' +
+  'only your local store, so it cannot report what the deployment received. Detach to stop sending.';
 
 // Shown where attaching is offered but the surface supplies no attach handler.
 //

@@ -39,6 +39,28 @@ export interface UpdateStatusCardViewProps {
   busy?: boolean;
 }
 
+/**
+ * The line explaining a row that reads "up to date" at a version the reader can
+ * see is not the newest published.
+ *
+ * `latest` is the version the HOST will install, which for a plugin resolved
+ * through a marketplace manifest is that manifest's pin rather than npm's
+ * latest. Without this the page shows the installed version, a green badge and
+ * nothing else — indistinguishable from a report that is simply stale, which is
+ * the ambiguity the pin was carried here to remove. The CLI prints the same
+ * fact; a surface that has the data and does not say it is the worse half of
+ * the pair.
+ *
+ * Only when the pin is strictly BEHIND npm. A pin that equals it explains
+ * nothing, and on the happy path the two agree — so a note on every pinned row
+ * would be noise everywhere and signal nowhere.
+ */
+function pinNote(s: ComponentStatus): string | undefined {
+  const pin = s.marketplacePin;
+  if (!pin || !pin.npmAhead || s.latest === null || pin.npmLatest === null) return undefined;
+  return `${pin.marketplace} pins v${s.latest} — npm has v${pin.npmLatest}, which this machine cannot install until that marketplace moves.`;
+}
+
 function statusBadge(s: ComponentStatus) {
   if (s.installed === null || s.latest === null) return <Badge variant="default">unknown</Badge>;
   if (s.updateAvailable) return <Badge variant="high">update available</Badge>;
@@ -82,6 +104,9 @@ export function UpdateStatusCardView({
         <div className="flex flex-col">
           {statuses.map((s, i) => {
             const outcome = outcomes[s.id];
+            // Bound once: the presence check and the render must not be free to
+            // disagree if this grows a branch.
+            const note = pinNote(s);
             return (
               <div key={s.id} className={cn('py-3', i > 0 && 'border-t border-hairline')}>
                 <div className="flex items-center gap-3">
@@ -91,6 +116,11 @@ export function UpdateStatusCardView({
                       {s.installed ?? '—'}
                       {s.latest && s.updateAvailable && ` → ${s.latest}`}
                     </div>
+                    {note !== undefined && (
+                      <div className="mt-1 text-xs text-text-3" data-slot="marketplace-pin-note">
+                        {note}
+                      </div>
+                    )}
                   </div>
                   {statusBadge(s)}
                   {s.updateAvailable && (

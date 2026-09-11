@@ -270,17 +270,33 @@ const DRIZZLE_IMPORT_MESSAGE =
  * `allow` drops a network module from base's bans, exactly as `noNetworkImports`
  * takes it. The Drizzle half deliberately takes NO allow list: `@akasecurity/schema`
  * is the one package that may import Drizzle, and it carries no wall to relax.
- * @param {{ allow?: string[] }} [opts]
+ *
+ * `paths` and `patterns` are MERGED with the Drizzle entries rather than
+ * replacing them, which is what `noNetworkImports` already does with its own.
+ * The two have to agree: this function's whole job is to carry a ban forward
+ * that flat config would otherwise replace, so a caller adding one restriction
+ * to the wall and silently losing every other is this module's own failure
+ * mode reached from the inside. A caller's entries go LAST, matching
+ * `noNetworkImports`, so the wall's own message is the one a reader sees for a
+ * specifier both halves name.
+ * @param {{ allow?: string[], paths?: object[], patterns?: object[] }} [opts]
  */
 export function drizzleWallRules(opts = {}) {
+  const { paths = [], patterns = [], ...rest } = opts;
   return {
     'no-restricted-imports': noNetworkImports({
-      ...opts,
-      paths: DRIZZLE_MODULES.map((name) => ({ name, message: DRIZZLE_IMPORT_MESSAGE })),
-      patterns: DRIZZLE_MODULES.map((name) => ({
-        group: [`${name}/*`],
-        message: DRIZZLE_IMPORT_MESSAGE,
-      })),
+      ...rest,
+      paths: [
+        ...DRIZZLE_MODULES.map((name) => ({ name, message: DRIZZLE_IMPORT_MESSAGE })),
+        ...paths,
+      ],
+      patterns: [
+        ...DRIZZLE_MODULES.map((name) => ({
+          group: [`${name}/*`],
+          message: DRIZZLE_IMPORT_MESSAGE,
+        })),
+        ...patterns,
+      ],
     }),
     // The dynamic half. `no-restricted-imports` sees only a written specifier,
     // so without this a code-split `await import('drizzle-orm/pg-core')` reaches

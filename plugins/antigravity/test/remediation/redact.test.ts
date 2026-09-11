@@ -358,6 +358,31 @@ describe('redactLeakedKeys', () => {
       expect(readFileSync(live, 'utf8')).toBe('in flight');
     });
 
+    it('never removes a sibling it did not name', () => {
+      const file = join(rolloutRoot, 'bystanders.jsonl');
+      writeFileSync(file, `leaked ${ROLLOUT_KEY} here`);
+      // Everything the sweep must walk past. Without this case the two checks
+      // that make it narrow — the artifact prefix and the digits-only pid — are
+      // prose: deleting either leaves every other case in this file green, so
+      // the sweep would widen to any `*.aka-redact.tmp` in the directory and
+      // take a neighbour's bytes with it.
+      const bystanders = [
+        // The pid-free shape: nothing this module mints.
+        `${file}.aka-redact.tmp`,
+        `${file}.notapid.aka-redact.tmp`,
+        `${file}. 7.aka-redact.tmp`,
+        // A temp belonging to a DIFFERENT artifact in the same directory.
+        tempName(join(rolloutRoot, 'other.jsonl'), DEAD_PID),
+        // The suffix has to end the name, not merely appear in it.
+        `${tempName(file, DEAD_PID)}.bak`,
+      ];
+      for (const path of bystanders) writeFileSync(path, 'not ours');
+
+      redactLeakedKeys([{ where: { filePath: file }, rawValue: ROLLOUT_KEY }], scope);
+
+      for (const path of bystanders) expect(existsSync(path)).toBe(true);
+    });
+
     it('refuses to publish through a symlink planted at its temp path', (ctx) => {
       if (process.platform === 'win32') {
         ctx.skip('unprivileged symlink creation is not available on Windows');

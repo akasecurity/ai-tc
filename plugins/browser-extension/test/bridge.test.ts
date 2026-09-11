@@ -4,8 +4,11 @@ import {
   attachTap,
   BLIND_STRIKES,
   BLIND_WINDOW_MS,
+  classifyCompiled,
+  compileEndpoints,
   createBridge,
   cutToBytes,
+  matchCompiled,
   installBridge,
   REQUEST_BODY_MAX_BYTES,
   RESPONSE_TEXT_MAX_BYTES,
@@ -14,6 +17,7 @@ import {
 import type { BackgroundRequest } from '../src/messaging.ts';
 import type {
   ExchangeAssembler,
+  MatchedExchange,
   ParsedRequest,
   ProviderAdapter,
   WebExchangeSummary,
@@ -45,6 +49,9 @@ function summaryOf(overrides: Partial<WebExchangeSummary> = {}): WebExchangeSumm
 }
 
 interface FakeAdapterOptions {
+  // What parseStream was handed for this exchange, so a case can assert the
+  // bridge passes the MATCHED endpoint rather than merely some endpoint.
+  onExchange?: (exchange: MatchedExchange) => void;
   summary?: WebExchangeSummary | null;
   onEnd?: () => void;
   onPush?: (chunk: string) => void;
@@ -69,8 +76,9 @@ function fakeAdapter(options: FakeAdapterOptions = {}): ProviderAdapter {
     requiredPaths: options.requiredPaths ?? { request: [], response: [] },
     protocolTokens: [],
     parseRequest: options.parseRequest ?? (() => ({ requiredPathsSeen: true })),
-    parseStream: (): ExchangeAssembler => ({
+    parseStream: (exchange): ExchangeAssembler => ({
       push: (chunk) => {
+        options.onExchange?.(exchange);
         options.onPush?.(chunk);
       },
       end: () => {
@@ -1045,5 +1053,53 @@ describe('reporting capture status', () => {
     // the pre-patched suppression would otherwise hold this back too.
     win.firePagehide();
     expect(statuses(relayed)).toHaveLength(1);
+  });
+});
+
+describe('the exchange parseStream is handed', () => {
+  it("names the endpoint that matched, by reference to the adapter's own declaration", () => {
+    // Identity, not equality. An adapter serving several routes of the same
+    // KIND has nothing else to branch on — two `conversation` endpoints are
+    // indistinguishable by kind — so handing back a re-anchored copy would
+    // leave it exactly as stuck as passing nothing did.
+    const seen: MatchedExchange[] = [];
+    const adapter = fakeAdapter({
+      onExchange: (exchange) => {
+        seen.push(exchange);
+      },
+    });
+    const h = harness(adapter);
+    h.feed(
+      { type: 'patched', fetch: true, xhr: true },
+      {
+        type: 'request',
+        id: 1,
+        url: 'https://site.test/api/conversation/abc',
+        method: 'POST',
+        body: '{}',
+      },
+      { type: 'chunk', id: 1, text: 'x' },
+    );
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe('https://site.test/api/conversation/abc');
+    // The conversation endpoint, not the account one declared beside it.
+    expect(seen[0]?.endpoint).toBe(adapter.endpoints[0]);
+    expect(seen[0]?.endpoint).not.toBe(adapter.endpoints[1]);
+  });
+
+  it('classifyCompiled agrees with matchCompiled, because it is derived from it', () => {
+    // Two matchers over one table are free to disagree about what a URL is,
+    // and that disagreement is invisible until a site moves.
+    const compiled = compileEndpoints(fakeAdapter());
+    for (const url of [
+      'https://site.test/api/conversation/abc',
+      'https://site.test/api/account/me',
+      'https://site.test/api/other',
+      'https://other.test/api/conversation/abc',
+      'not a url',
+    ]) {
+      expect(classifyCompiled(compiled, url), url).toBe(matchCompiled(compiled, url)?.kind ?? null);
+    }
   });
 });

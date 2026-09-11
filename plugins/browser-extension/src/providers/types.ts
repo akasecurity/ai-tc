@@ -21,6 +21,26 @@ export interface ProviderEndpoint {
   readonly kind: EndpointKind;
 }
 
+/**
+ * Which of an adapter's own endpoints claimed this exchange, and the URL that
+ * matched it.
+ *
+ * `endpoint` is the adapter's OWN declaration BY REFERENCE, not a copy: a site
+ * served over several routes branches on identity rather than re-matching a
+ * pattern it already wrote, and two routes of the same `kind` are otherwise
+ * indistinguishable. chatgpt.com is the worked example — its anonymous and
+ * authenticated turn routes are both `conversation` and share no parser, one
+ * streaming HTML frames and the other Server-Sent Events.
+ *
+ * `url` is the absolute request URL as the tap forwarded it. Some sites carry
+ * ids only there: claude.ai's conversation uuid is a path segment and appears
+ * nowhere in the request body.
+ */
+export interface MatchedExchange {
+  readonly url: string;
+  readonly endpoint: ProviderEndpoint;
+}
+
 // What an adapter recovered from an outbound request body. Partial by design:
 // a field the adapter did not recognise is absent rather than guessed, and
 // `requiredPathsSeen` is the adapter's own verdict on whether the body still
@@ -132,5 +152,9 @@ export interface ProviderAdapter {
   // A fresh assembler per exchange. Streams arrive in pieces that do not
   // respect event boundaries, so framing is the assembler's business rather
   // than the bridge's.
-  parseStream(): ExchangeAssembler;
+  //
+  // `exchange` names which endpoint matched and at what URL. An adapter with
+  // one route may ignore it; one with several cannot work without it, since
+  // nothing else distinguishes them once the bytes start arriving.
+  parseStream(exchange: MatchedExchange): ExchangeAssembler;
 }

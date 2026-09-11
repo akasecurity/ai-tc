@@ -306,6 +306,37 @@ describe('runScan', () => {
     }
   }
 
+  describe('a protected target is refused, not reported as a clean scan', () => {
+    // The walker's refusal has to reach a surface, or it is worse than no
+    // exclusion at all: `aka scan --home <dir> <dir>` used to print
+    // `Scanned 0 file(s) … 0 finding(s)` and exit 0 — a successful report of a
+    // directory it never opened. `scan()` appends `--home home`, so naming
+    // `home` as the target is exactly that invocation.
+    //
+    // A file the walk WOULD have yielded is seeded first, so an empty result
+    // cannot be read as an empty directory.
+    beforeEach(() => {
+      writeFileSync(join(home, 'notes.txt'), 'hello\n');
+    });
+
+    it('names the refusal on stderr and exits non-zero', async () => {
+      await scan([home]);
+      expect(exitCode()).toBe(1);
+      expect(err).toContain('aka scan:');
+      expect(err).toContain(home);
+      // Nothing on stdout: the summary line IS the false report.
+      expect(out).toBe('');
+    });
+
+    it('emits no payload in --format json either', async () => {
+      // A machine consumer parses stdout, so a zero-file payload here is the
+      // same false negative in a form something else branches on.
+      await scan([home, '--format', 'json']);
+      expect(exitCode()).toBe(1);
+      expect(out).toBe('');
+    });
+  });
+
   describe('--format json', () => {
     it('emits the documented payload, with every finding field present and no others', async () => {
       writeSecretFile();
@@ -1191,7 +1222,13 @@ describe('runScan', () => {
       await scan([join(root, 'nope')]);
       const missing = { code: exitCode(), stderr: err, stdout: out };
 
-      expect([findings.code, badFlag.code, missing.code]).toEqual([1, 1, 1]);
+      // The fourth early return, and the one whose target DOES exist — so it
+      // collides with the other three on the exit code while being a different
+      // kind of answer.
+      await scan([home]);
+      const refused = { code: exitCode(), stderr: err, stdout: out };
+
+      expect([findings.code, badFlag.code, missing.code, refused.code]).toEqual([1, 1, 1, 1]);
 
       // The one thing that does separate them today.
       expect(findings.stderr).toBe('');
@@ -1200,6 +1237,8 @@ describe('runScan', () => {
       expect(badFlag.stdout).toBe('');
       expect(missing.stderr).not.toBe('');
       expect(missing.stdout).toBe('');
+      expect(refused.stderr).not.toBe('');
+      expect(refused.stdout).toBe('');
     });
 
     // The case above pins the BEHAVIOUR, and a behaviour nobody wrote down is a
@@ -1241,10 +1280,18 @@ describe('runScan', () => {
       // assertion above passed on that wrong text, because each one only checks
       // that the comment is ABOUT exit codes. Naming the count is what makes a
       // regression to it fail here.
-      expect(header).toMatch(/\bFOUR\b/);
+      expect(header).toMatch(/\bFIVE\b/);
+      // Both earlier undercounts, each kept as the regression it was: the
+      // comment said "three error paths" before parseArgs was counted, and
+      // "FOUR paths" before the protected-target refusal became the fourth
+      // early return.
       expect(header).not.toMatch(/\bthree error paths\b/);
+      expect(header).not.toMatch(/\bFOUR paths\b/);
       expect(header).toMatch(/parseArgs/);
       expect(header).toMatch(/main\(\)\.catch/);
+      // The newest of the five, and the one a reader is least likely to guess:
+      // a target can be refused for what it HOLDS rather than for being absent.
+      expect(header).toMatch(/refuses to read/i);
     });
   });
 });

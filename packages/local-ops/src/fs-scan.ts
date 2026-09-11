@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { type Dirent, readdirSync, readFileSync, statSync } from 'node:fs';
-import { basename, extname, join, resolve } from 'node:path';
+import { type Dirent, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, extname, join, resolve, sep } from 'node:path';
 
 import type { FileEgressHits, MatchResult } from '@akasecurity/detections';
 import {
@@ -19,6 +20,7 @@ import {
 import type { FingerprintKey, LocalDatabase } from '@akasecurity/persistence';
 import {
   computeFindingKey,
+  defaultDataDir,
   fingerprintValue,
   loadOrCreateFingerprintKey,
 } from '@akasecurity/persistence';
@@ -58,9 +60,170 @@ import { DEFAULT_ACTIONS, isActionAtLeast, SOURCE_TOOL } from '@akasecurity/sche
 //   .akaignore  → SKIP: explicit user intent aimed at this scanner. Same
 //                 gitignore syntax, hard skip — no read, no stored event, no
 //                 finding. A negation (`!vendor/`) also re-includes a directory
-//                 from the default SKIP_DIRS/dot-directory floor.
+//                 from the default SKIP_DIRS/dot-directory floor — but NOT from
+//                 the protected-path list below, which no ignore file can
+//                 override.
 
 const AKAIGNORE_FILENAME = '.akaignore';
+
+// Paths this scanner must never read, whatever it is pointed at.
+//
+// These are not "files that contain secrets" — finding those is the whole job.
+// They are LIVE CREDENTIALS that AKA or its host wrote for itself, which the
+// user did not author and which a finding cannot help them fix. Reading one
+// copies it into `audit_events.content`, and at the default policy that copy
+// is BYTE-FOR-BYTE: `scanPathIntoStore` only masks spans whose action reaches
+// `redact`, and a pack ships on `monitor`. So scanning them is not a detection,
+// it is an exfiltration into AKA's own store.
+//
+// TWO bases, because they move independently. `home` is the OS home the hosts
+// write under; `akaHome` is AKA's own home, which `--home` relocates on its own
+// (`homeBase` in cli/src/lib/args.ts returns the AKA home, not an OS home). A
+// single base would leave `aka scan --home ~/work-aka ~` protecting a `~/.aka`
+// that holds nothing while walking the vault key and the control-plane
+// credential in the home actually in use.
+//
+//   <home>/.claude/ide/<port>.lock   the host writes one per attached IDE, mode
+//                                    0600, carrying a live auth token
+//   <home>/.claude/.credentials.json the host's own stored credential
+//   <home>/.codex/auth.json          the Codex CLI's stored credential, mode 0600
+//   <home>/.aka, <akaHome>           AKA's own homes: the vault key, the control-plane
+//                                    credential, and the store this scan writes into
+//
+// BOTH AKA homes, never one instead of the other. `--home` relocates the store
+// an invocation USES; it does not move the one already on the machine, which
+// goes on holding `keys/vault.key` and `settings/control-plane-credential.json`
+// — and none of `settings`, `data` or `keys` carries a leading dot, so the
+// dot-directory floor does not reach them either. Protecting only the home in
+// use would trade this list's original gap for its mirror image.
+//
+// Both host homes are read from `homedir()` and neither honours the host's own
+// relocation variable (`CODEX_HOME`, `GEMINI_HOME`). That matches the readers
+// this repo already ships — the transcript adapters resolve `homedir()` too —
+// and `n/no-process-env` makes reading one a deliberate, file-scoped decision
+// rather than a detail. The consequence is worth stating rather than implying:
+// on a machine that sets one, the host writes its credential outside the path
+// this list names, and the exclusion does not reach it.
+//
+// Two neighbouring paths are deliberately NOT here, because neither is
+// credential material a host wrote for itself:
+//   ~/.gemini      Antigravity's home. What this tree names under it is the
+//                  conversation store (`antigravity/brain/<conversationId>/`),
+//                  which is transcript material AKA reads on purpose — excluding
+//                  the home would suppress the scanning, not a leak.
+//   ~/.claude.json the `claude mcp add` target. Its `mcpServers` entries are
+//                  user-authored, so a secret in one is a finding the user can
+//                  act on — which is the job, not an exfiltration.
+//
+// Absolute, CANONICAL paths (see `canonicalize`) and a PREFIX match, so a
+// directory covers what is under it. Deliberately NOT overridable by an
+// `.akaignore` negation — see the precedence note at the directory branch.
+function protectedPaths(home: string, akaHome: string): readonly string[] {
+  // `.aka`, taken from the layout helper that owns that literal rather than
+  // spelled again. Read HERE rather than once at module scope: this module is
+  // bundled into the CLI and into the dashboard's Server Action route, and
+  // `homedir()` throws on a Windows host carrying neither USERPROFILE nor
+  // HOMEDRIVE/HOMEPATH — at module scope that failure takes the whole import
+  // down instead of the one scan, and neither entry point read the host
+  // environment at import time before. The call is already made below, so this
+  // costs a `basename` per scan and nothing else.
+  const akaHomeDirname = basename(defaultDataDir());
+  // Deduplicated because the three AKA entries collapse to one for every caller
+  // on the default home, and `isProtected` would otherwise test the same root
+  // three times per dirent.
+  return [
+    ...new Set(
+      [
+        resolve(home, '.claude', 'ide'),
+        resolve(home, '.claude', '.credentials.json'),
+        resolve(home, '.codex', 'auth.json'),
+        // The home this invocation was pointed at, the machine's own default,
+        // and the default under whichever OS home this call was given — a
+        // caller that redirects `home` gets that home's AKA directory covered
+        // with it. All three are the same path for a caller on the real home.
+        resolve(akaHome),
+        defaultDataDir(),
+        resolve(home, akaHomeDirname),
+      ].map(canonicalize),
+    ),
+  ];
+}
+
+// A path's ON-DISK identity, which `resolve` alone cannot give: `resolve` is
+// purely lexical, while `statSync` and every read below FOLLOW symlinks and a
+// case-insensitive volume folds case. Both gaps are bypasses of a lexical
+// match, and both have an ordinary shape — a `~/.claude` a dotfiles manager
+// points at `~/dotfiles/claude`, or `~/.claude/IDE/54321.lock` typed on APFS —
+// so both sides of the comparison come through here.
+//
+// `realpathSync.native` rather than `realpathSync`: only the OS call returns
+// the volume's own casing. Measured on APFS, `realpathSync` hands back a typed
+// `…/.claude/IDE/1.lock` unchanged where `.native` returns `…/.claude/ide/1.lock`.
+//
+// A path that does not exist — a protected file this machine never wrote —
+// falls back to the lexical form. That is safe rather than lax, and the reason
+// is what also settles the Windows question: the two forms can disagree on more
+// than case there, because `.native` may answer with an extended-length
+// `\\?\C:\…` prefix the lexical form never carries. A mixed pair would fail
+// the prefix match — but a mixed pair cannot arise where it would matter, since
+// the fallback is reached only for a path that is ABSENT, and an absent root
+// has no file under it to compare and an absent target is refused by `statSync`
+// first. Every comparison that can decide anything has both sides through the
+// same call.
+function canonicalize(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+// Both arguments are already canonical: the roots come from `protectedPaths`,
+// and every walked path is built by `join` from a canonicalized root. Nothing
+// is resolved per entry, because this runs once per dirent over a tree that can
+// hold half a million of them.
+function isProtected(canonical: string, roots: readonly string[]): boolean {
+  return roots.some((root) => canonical === root || canonical.startsWith(root + sep));
+}
+
+const PROTECTED_TARGET_ERROR_CODE = 'AKA_PROTECTED_SCAN_TARGET';
+
+/**
+ * A scan target that resolves inside the protected set.
+ *
+ * Thrown rather than answered with an empty walk, because both callers render
+ * an empty walk as a completed scan — the CLI prints `Scanned 0 file(s) … 0
+ * finding(s)` and exits 0, the Scan page renders a successful empty result.
+ * That is the false negative `visit` already refuses for an unreadable root: a
+ * target the user named and this scanner did not open must say so.
+ *
+ * `path` is the target as the caller spelled it, not its canonical form, so the
+ * message names what the user typed.
+ */
+export class ProtectedTargetError extends Error {
+  readonly code = PROTECTED_TARGET_ERROR_CODE;
+  readonly path: string;
+
+  constructor(path: string) {
+    super(`refusing to scan ${path}: it holds credentials this scanner must never read`);
+    this.name = 'ProtectedTargetError';
+    this.path = path;
+  }
+}
+
+/**
+ * Whether `err` is this module's protected-target refusal, narrowed so `path`
+ * can be read. A `code` check rather than `instanceof`: every shipped artifact
+ * inlines this package (`noExternal`), so a caller and this module can hold two
+ * copies of the class.
+ */
+export function isProtectedTarget(err: unknown): err is ProtectedTargetError {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { code?: unknown }).code === PROTECTED_TARGET_ERROR_CODE
+  );
+}
 
 // Directories never worth scanning (vendored / build output / VCS). Not an
 // absolute invariant: an `!` negation in .akaignore re-includes one.
@@ -96,21 +259,52 @@ export interface CollectedFile {
   gitignored: boolean;
 }
 
-export function* collectFiles(target: string): Generator<CollectedFile> {
+export interface CollectFilesOptions {
+  // The OS home the coding-agent hosts write their own credentials under.
+  home?: string | undefined;
+  // AKA's own home (`~/.aka` by default). A SECOND base rather than a subpath of
+  // `home`, because `--home` relocates this one alone.
+  akaHome?: string | undefined;
+}
+
+export function* collectFiles(
+  target: string,
+  // Defaults resolved here rather than per entry: the roots are canonicalized
+  // ONCE and threaded down, because this walk runs over the adversarial corpus
+  // and a per-entry syscall would be charged to every file. Optional so the
+  // bench and the existing callers keep their one-argument form.
+  opts: CollectFilesOptions = {},
+): Generator<CollectedFile> {
+  const protectedRoots = protectedPaths(opts.home ?? homedir(), opts.akaHome ?? defaultDataDir());
+  // The target's on-disk identity, taken once. Every path below is built from
+  // it by `join`, so no walked entry pays a second `realpath` — an in-walk
+  // symlink cannot reintroduce an alias, because a link is neither
+  // `isDirectory()` nor `isFile()` on an lstat-based `Dirent` and is skipped.
+  //
+  // The canonical form is used for the protected comparison ONLY. What is
+  // YIELDED stays the path the caller named, because `scanPathIntoStore` feeds
+  // it to `computeFindingKey` and `metadata.filePath`, which the plugin's
+  // worktree scanner keys against — resolving `/var` to `/private/var` there
+  // would mint a second finding_key for the same file and never reconcile.
+  const canonicalTarget = canonicalize(target);
   let st;
   try {
     st = statSync(target);
   } catch {
     return;
   }
+  // Before the isFile/isDirectory split, so naming one of these paths directly
+  // is refused as firmly as walking into it.
+  if (isProtected(canonicalTarget, protectedRoots)) throw new ProtectedTargetError(target);
   if (st.isFile()) {
     // A directly-named file is explicit user intent: scan it unconditionally,
-    // no ignore-file consultation.
+    // no ignore-file consultation — the protected list above being the one
+    // thing that outranks that intent.
     if (st.size <= MAX_BYTES) yield { path: target, gitignored: false };
     return;
   }
   if (!st.isDirectory()) return;
-  yield* visit(target, '', [], [], false);
+  yield* visit(target, canonicalTarget, '', [], [], false, protectedRoots);
 }
 
 // inIgnoredDir: git semantics — once a directory is gitignored, nothing
@@ -122,10 +316,16 @@ export function* collectFiles(target: string): Generator<CollectedFile> {
 // layer stacks are addressed through, so it is threaded rather than recomputed.
 function* visit(
   dir: string,
+  // `dir`'s canonical twin, threaded so the protected comparison is made
+  // against on-disk identity while everything yielded keeps the caller's
+  // spelling. The two are the SAME STRING on an unaliased tree, which is what
+  // the per-entry branch below tests for.
+  dirCanonical: string,
   dirRel: string,
   markLayers: readonly IgnoreLayer[],
   skipLayers: readonly IgnoreLayer[],
   inIgnoredDir: boolean,
+  protectedRoots: readonly string[],
 ): Generator<CollectedFile> {
   // The listing comes FIRST, before either ignore file is read. Two reasons,
   // and the second is why this is not merely tidier: `@akasecurity/scanner`'s
@@ -172,7 +372,23 @@ function* visit(
 
   for (const entry of dirents) {
     const path = join(dir, entry.name);
+    // One extra `join` only where the walk root was an alias. On every other
+    // tree the two are the same reference, so this is a pointer comparison per
+    // entry rather than a second path build over half a million of them.
+    const canonical = dirCanonical === dir ? path : join(dirCanonical, entry.name);
     if (entry.isDirectory()) {
+      // Defence in depth, not the guarantee: the FILE branch below is a prefix
+      // match, so every file under a protected directory is refused whether or
+      // not this line exists. What this buys is that a directory of live auth
+      // tokens is never even listed.
+      //
+      // Placed before the ignore evaluation rather than folded into it, because
+      // that condition short-circuits on an `.akaignore` negation — and that
+      // file is written by whoever wrote the tree being scanned. Verified by
+      // mutation: folding it in leaves the suite green (the file branch still
+      // covers it), so the placement is a reasoned choice rather than something
+      // a test pins.
+      if (isProtected(canonical, protectedRoots)) continue;
       const skipState = evaluateIgnore(dirSkipLayers, dirRel, entry.name, true);
       // Precedence: an explicit .akaignore re-include beats the default floor
       // (SKIP_DIRS + dot-directories); otherwise the floor and .akaignore
@@ -185,8 +401,21 @@ function* visit(
       }
       const dirIgnored =
         inIgnoredDir || evaluateIgnore(dirMarkLayers, dirRel, entry.name, true) === 'ignored';
-      yield* visit(path, childRel(dirRel, entry.name), dirMarkLayers, dirSkipLayers, dirIgnored);
+      yield* visit(
+        path,
+        canonical,
+        childRel(dirRel, entry.name),
+        dirMarkLayers,
+        dirSkipLayers,
+        dirIgnored,
+        protectedRoots,
+      );
     } else if (entry.isFile()) {
+      // THE guarantee for a walked tree: a prefix match, so it covers a
+      // protected file named directly and everything under a protected
+      // directory, whatever the ignore files say. Before the stat, so an
+      // excluded file costs nothing.
+      if (isProtected(canonical, protectedRoots)) continue;
       // .akaignore skip — before stat/read, so an excluded file costs nothing.
       if (evaluateIgnore(dirSkipLayers, dirRel, entry.name, false) === 'ignored') continue;
       // Apply the MAX_BYTES cap here too: without it, directory traversal reads
@@ -243,6 +472,13 @@ export interface ScanPathOptions {
   // row. Omitted (or an unreadable/corrupt key file) falls back to the masked
   // match — a finding_key is still produced, just keyed on a weaker identity.
   dataDir?: string | undefined;
+  // AKA's own home — the BASE of the layout, `~/.aka` by default, of which
+  // `dataDir` above is the `data/` subdirectory. It is what the protected-path
+  // exclusion refuses to read, and it is passed separately rather than derived
+  // from `dataDir` because a caller may point the store somewhere the layout
+  // helpers did not build. `--home` moves it (`homeBase`), so the CLI passes its
+  // own; a caller on the default home may omit it.
+  akaHome?: string | undefined;
 }
 
 // Per-file detail for machine consumers (`aka scan --format json`, CI gates).
@@ -345,7 +581,9 @@ export async function scanPathIntoStore(
   // (ON CONFLICT (finding_key)) across the two tools. resolve() is relative to
   // process.cwd() — the same base the callers' statSync(target) already uses —
   // and is a no-op on the already-absolute paths the web-ui folder picker passes.
-  for (const { path: file, gitignored } of collectFiles(resolve(target))) {
+  for (const { path: file, gitignored } of collectFiles(resolve(target), {
+    akaHome: opts.akaHome,
+  })) {
     let text: string;
     try {
       text = readFileSync(file, 'utf8');

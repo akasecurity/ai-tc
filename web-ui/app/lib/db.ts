@@ -25,3 +25,29 @@ export function db(): LocalDatabase {
   store.__akaDb = database;
   return database;
 }
+
+/**
+ * Release the store this module holds, if it holds one.
+ *
+ * Exported for the one caller that needs it: a test suite REMOVING the directory
+ * the store lives in. Windows refuses to delete a file another handle holds open
+ * (EPERM) where POSIX unlinks it and carries on, so a suite that redirects the
+ * home, renders a page and then removes that home again cannot do so while this
+ * module still holds the store it opened there. See test/helpers/temp-home.ts.
+ *
+ * Nothing in the request path calls this: the singleton above is deliberate and
+ * production never moves its home.
+ */
+export function closeStore(): void {
+  const held = store.__akaDb;
+  if (!held) return;
+  // Cleared BEFORE the close, so a close that throws cannot leave a handle
+  // nobody can reach still recorded as the live one.
+  store.__akaDb = undefined;
+  try {
+    held.close();
+  } catch {
+    // Cleanup: already closed, or a close that failed. Neither leaves the caller
+    // anything useful to do.
+  }
+}

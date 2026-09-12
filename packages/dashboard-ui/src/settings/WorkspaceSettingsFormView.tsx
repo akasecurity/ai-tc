@@ -521,7 +521,8 @@ const settings = (count: number): string =>
  * failing the whole file (which would run the machine unmanaged), and this is
  * the one place that says an administrative decision exists which is not being
  * applied. Counts rather than the names: the names are the administrator's to
- * fix, in the file.
+ * fix, in the file, and this component is a client component, so `ManagedContext`
+ * carries only the counts and the names never cross to the browser.
  *
  * PINS AND LOCKS ARE COUNTED SEPARATELY inside one sentence. Two sentences read
  * worse and a single merged count reads wrong: an unapplied lock leaves a
@@ -531,8 +532,8 @@ const settings = (count: number): string =>
  * even though the remedy — update AKA — is the same one.
  */
 export function managedUnrecognizedNotice(context: ManagedContext): string | undefined {
-  const locks = context.unknownLockedFields?.length ?? 0;
-  const pins = context.unknownValueFields?.length ?? 0;
+  const locks = context.unknownLockedCount ?? 0;
+  const pins = context.unknownValueCount ?? 0;
   if (!context.present || locks + pins === 0) return undefined;
   const who = context.organization ?? 'Your organization';
   const clauses = [

@@ -176,16 +176,23 @@ export interface ManagedContext {
   present: boolean;
   organization?: string;
   lockedFields: readonly ManagedSettingKey[];
-  // Names the administrator locked that this build does not know, so a
-  // surface can say a lock exists that it is not applying. Absent when there
-  // are none.
-  unknownLockedFields?: readonly string[];
-  // The same for PINNED VALUES, and kept separate rather than folded in
-  // because the two have different consequences: an unapplied lock leaves a
-  // control the administrator meant to freeze still editable, while an
-  // unapplied pin leaves a default they meant to set unset. A surface may say
-  // both in one sentence; it may not infer one from the other.
-  unknownValueFields?: readonly string[];
+  // HOW MANY locks and HOW MANY pinned values this build does not know, so a
+  // surface can say an administrator set something it is not applying.
+  //
+  // COUNTS rather than the names, because this context is handed to a client
+  // component and is therefore serialized to the browser on every settings
+  // render: `lockedFields` is bounded by the enum, while the names are whatever
+  // the administrator's file happens to contain. Nothing is lost by counting —
+  // every consumer reads `.length` — and the names stay on the parsed
+  // `ManagedSettings` for a reader that wants them.
+  //
+  // Two numbers rather than one, and neither inferred from the other, because
+  // the consequences differ: an unapplied LOCK leaves a control the
+  // administrator meant to freeze still editable, while an unapplied PIN leaves
+  // a default they meant to set unset. A surface may say both in one sentence;
+  // it may not derive one from the other. Each is absent when it is zero.
+  unknownLockedCount?: number;
+  unknownValueCount?: number;
 }
 
 export const NO_MANAGED_CONTEXT: ManagedContext = { present: false, lockedFields: [] };

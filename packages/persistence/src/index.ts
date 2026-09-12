@@ -40,9 +40,25 @@ export {
   readFingerprintKey,
   rotateFingerprintKey,
 } from './fingerprint.ts';
+export type { ControlPlaneFailure, ForwardHealth } from './forward-health.ts';
+export {
+  BREAKER_COOLDOWN_MS,
+  isForwardPaused,
+  parseForwardHealth,
+  readForwardHealth,
+} from './forward-health.ts';
 export { seedCaptureBacklogOwed } from './history-backfill.ts';
 export type { LocalHistoryPreview } from './history-preview.ts';
 export { readLocalHistoryPreview } from './history-preview.ts';
+export {
+  HISTORY_SYNC_STATE_FILENAME,
+  type HistorySyncOutcome,
+  type HistorySyncPhase,
+  type HistorySyncState,
+  historySyncStatePath,
+  readHistorySyncState,
+  writeHistorySyncState,
+} from './history-sync-state.ts';
 export {
   captureId,
   captureWireId,
@@ -132,12 +148,17 @@ export {
 } from './repositories/exceptions.ts';
 export { SqliteFindingsRepository } from './repositories/findings.ts';
 export type {
+  CountedEventType,
   HistorySyncCounts,
   HistorySyncInspectionRow,
+  HistorySyncKindPartition,
   HistorySyncLease,
   HistorySyncPartition,
 } from './repositories/history-sync.ts';
 export {
+  COUNTED_EVENT_TYPES,
+  HISTORY_SYNC_LEASE_STALE_MS,
+  isHistorySyncLeaseLive,
   SqliteHistorySyncRepository,
   STRUCTURAL_EVENT_TYPES,
 } from './repositories/history-sync.ts';

@@ -230,6 +230,13 @@ async function main(): Promise<void> {
           // Grants this call's pointer crossing already spent: suppression
           // applies without charging a second use.
           ...(spentGrantIds.length > 0 ? { preAuthorizedGrantIds: spentGrantIds } : {}),
+          // Per FIELD: a field that EXECUTES cannot be masked in place, since
+          // rewriting a command changes what runs. Data fields can be, and keep
+          // true redaction — including the reversible vault rewrite below. A
+          // redact on an executable field degrades to the configured
+          // `redactFallback` inside the runtime, the one place the emitted
+          // decision, the recorded action and the ledger all read.
+          rewritable: !spec.executable,
         },
       );
       scanned.push({ spec, text, result });

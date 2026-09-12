@@ -945,7 +945,7 @@ describe('administratively locked rows', () => {
           present: true,
           organization: 'Acme',
           lockedFields: ['historicalAccess'],
-          unknownLockedFields: ['lockFromANewerBuild'],
+          unknownLockedCount: 1,
         },
       }),
     );
@@ -962,7 +962,7 @@ describe('administratively locked rows', () => {
     const one = managedUnrecognizedNotice({
       present: true,
       lockedFields: [],
-      unknownLockedFields: ['a'],
+      unknownLockedCount: 1,
     });
     expect(one).toContain('Your organization locks 1 setting');
     expect(one).toContain('apply it.');
@@ -970,14 +970,14 @@ describe('administratively locked rows', () => {
       present: true,
       organization: 'Acme',
       lockedFields: [],
-      unknownLockedFields: ['a', 'b'],
+      unknownLockedCount: 2,
     });
     expect(several).toContain('Acme locks 2 settings');
     expect(several).toContain('apply them.');
     // Gated on `present` like isFieldManaged: a stale context must not
     // announce locks from an administrator who is not there.
     expect(
-      managedUnrecognizedNotice({ present: false, lockedFields: [], unknownLockedFields: ['a'] }),
+      managedUnrecognizedNotice({ present: false, lockedFields: [], unknownLockedCount: 1 }),
     ).toBeUndefined();
     expect(managedUnrecognizedNotice({ present: true, lockedFields: [] })).toBeUndefined();
   });
@@ -990,7 +990,7 @@ describe('administratively locked rows', () => {
     const one = managedUnrecognizedNotice({
       present: true,
       lockedFields: [],
-      unknownValueFields: ['a'],
+      unknownValueCount: 1,
     });
     expect(one).toContain('Your organization pins 1 setting');
     expect(one).toContain('apply it.');
@@ -998,12 +998,12 @@ describe('administratively locked rows', () => {
       present: true,
       organization: 'Acme',
       lockedFields: [],
-      unknownValueFields: ['a', 'b'],
+      unknownValueCount: 2,
     });
     expect(several).toContain('Acme pins 2 settings');
     expect(several).toContain('apply them.');
     expect(
-      managedUnrecognizedNotice({ present: false, lockedFields: [], unknownValueFields: ['a'] }),
+      managedUnrecognizedNotice({ present: false, lockedFields: [], unknownValueCount: 1 }),
     ).toBeUndefined();
   });
 
@@ -1016,8 +1016,8 @@ describe('administratively locked rows', () => {
       present: true,
       organization: 'Acme',
       lockedFields: [],
-      unknownLockedFields: ['a'],
-      unknownValueFields: ['b', 'c'],
+      unknownLockedCount: 1,
+      unknownValueCount: 2,
     });
 
     expect(both).toBe(
@@ -1034,8 +1034,8 @@ describe('administratively locked rows', () => {
       managedUnrecognizedNotice({
         present: true,
         lockedFields: [],
-        unknownLockedFields: ['a'],
-        unknownValueFields: ['b'],
+        unknownLockedCount: 1,
+        unknownValueCount: 1,
       }),
     ).toContain('apply them.');
   });

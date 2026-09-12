@@ -773,7 +773,12 @@ jobs:
           # microsecond clock reads zero on a coarse one for ever — and "no delta"
           # would then be printed by exactly the clock this line exists to size. The
           # accumulator is read so V8 cannot drop the loop and report the same thing.
-          "smallest non-zero threadCpuUsage deltas, ms: $(node -e "const read = () => { const t = process.threadCpuUsage(); return (t.user + t.system) / 1000; }; let out = 'no non-zero delta up to 134217728 adds per try'; for (let work = 1000; work <= 134217728; work *= 8) { const seen = new Set(); let sink = 0; for (let i = 0; i < 64 && seen.size < 8; i += 1) { const a = read(); for (let j = 0; j < work; j += 1) sink += j; const d = read() - a; if (d > 0 && sink >= 0) seen.add(d); } if (seen.size > 0) { const v = [...seen].sort((p, q) => p - q); out = v.slice(0, 4).map((m) => m.toFixed(4)).join(', ') + ' (at ' + work + ' adds per try)'; break; } } process.stdout.write(out)")"
+          #
+          # Both branches name the widest loop actually ENTERED. The levels are
+          # 1000 * 8^k, so the ceiling is not itself one of them — the walk stops
+          # at 32,768,000 — and a fallback naming the ceiling would claim a loop
+          # 4x wider than any that ran.
+          "smallest non-zero threadCpuUsage deltas, ms: $(node -e "const read = () => { const t = process.threadCpuUsage(); return (t.user + t.system) / 1000; }; let out = ''; let widest = 0; for (let work = 1000; work <= 134217728; work *= 8) { widest = work; const seen = new Set(); let sink = 0; for (let i = 0; i < 64 && seen.size < 8; i += 1) { const a = read(); for (let j = 0; j < work; j += 1) sink += j; const d = read() - a; if (d > 0 && sink >= 0) seen.add(d); } if (seen.size > 0) { const v = [...seen].sort((p, q) => p - q); out = v.slice(0, 4).map((m) => m.toFixed(4)).join(', ') + ' (at ' + work + ' adds per try)'; break; } } if (out === '') out = 'no non-zero delta up to ' + widest + ' adds per try'; process.stdout.write(out)")"
           "total RAM MB: $([math]::Round($os.TotalVisibleMemorySize / 1KB))"
           "free RAM MB:  $([math]::Round($os.FreePhysicalMemory / 1KB))"
           Get-PSDrive -PSProvider FileSystem |

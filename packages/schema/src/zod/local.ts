@@ -500,6 +500,9 @@ export function toCaptureAttributes(event: IngestEvent): CaptureAttributes {
     ...(metadata?.traceId !== undefined ? { trace_id: metadata.traceId } : {}),
     ...(metadata?.exceptionIds !== undefined ? { exception_ids: metadata.exceptionIds } : {}),
     ...(metadata?.inspectionMs !== undefined ? { inspection_ms: metadata.inspectionMs } : {}),
+    ...(metadata?.redactDegradedTo !== undefined
+      ? { redact_degraded_to: metadata.redactDegradedTo }
+      : {}),
     // `model`/`turnIndex` have no dedicated CaptureAttributes field (no writer
     // has ever populated either), but every legacy metadata key still rides
     // the bag rather than being silently dropped — CaptureAttributes'

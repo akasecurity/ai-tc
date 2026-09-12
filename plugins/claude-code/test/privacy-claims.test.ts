@@ -347,6 +347,30 @@ function countWord(n: number): string {
   return word;
 }
 
+/**
+ * Spelled ORDINALS, for the same reason and with the same throw.
+ *
+ * A count is not the only numeral this footnote carries. It also names the
+ * non-spawn path by its POSITION in the enumeration — "The fourth is opt-in and
+ * off unless you turn it on" — and a position moves whenever a row lands ahead
+ * of it, which a count of the whole list does not. That is not a hypothetical
+ * either: removing the supply-chain row took the list from five to four, every
+ * count sentence moved with it because every count sentence is derived, and this
+ * ordinal stayed at "fifth" while all 57 cases here stayed green.
+ */
+const ORDINAL_WORDS = ['zeroth', 'first', 'second', 'third', 'fourth', 'fifth', 'sixth'] as const;
+
+function ordinalWord(n: number): string {
+  const word = ORDINAL_WORDS[n];
+  if (word === undefined) {
+    throw new Error(
+      `no spelled ordinal for ${String(n)} — extend ORDINAL_WORDS. The footnote names one of its ` +
+        'egress paths by position, so this table has to reach as far as EGRESS_PATHS does.',
+    );
+  }
+  return word;
+}
+
 describe('README.md aka-<name> dispatch disclosure', () => {
   const root = READMES.find((r) => r.name === 'README.md');
   const footnote = footnoteOf(root?.text ?? '');
@@ -425,6 +449,49 @@ describe('README.md aka-<name> dispatch disclosure', () => {
       `the footnote must say ${countWord(spawned)} of the paths are child processes — the rows ` +
         'in EGRESS_PATHS marked childProcess. The remainder reach the network from the source.',
     ).toMatch(new RegExp(`${countWord(spawned)} of them are child processes`, 'i'));
+
+    // The same count, RESTATED further down the same footnote, where `aka detach`
+    // is described as leaving the spawns alone. A number written twice is a
+    // number that can move once: the opening sentence is derived and this one was
+    // not, so dropping a row left the page saying "Three of them are child
+    // processes" in one clause and "the four child-process paths above" in
+    // another. Derived from the same `spawned`, in the case that already owns it.
+    expect(
+      footnote,
+      `the footnote restates the child-process count where it says detaching leaves them ` +
+        `unaffected; that restatement must also say ${countWord(spawned)}.`,
+    ).toMatch(new RegExp(`the ${countWord(spawned)} child-process paths above`, 'i'));
+  });
+
+  /**
+   * The one numeral here that is a POSITION rather than a count.
+   *
+   * The footnote introduces the non-spawn path as "The Nth is opt-in and off
+   * unless you turn it on", and N is its index in the enumeration — so it moves
+   * when a row lands or leaves AHEAD of it, which no count of the whole list
+   * reports. Removing the supply-chain row did exactly that and this ordinal did
+   * not follow, because nothing read it.
+   *
+   * The singular is asserted first, and it is not decoration: "The Nth" names one
+   * row, so the sentence only has a meaning while exactly one row is not a spawn.
+   * With two, `findIndex` would go on naming the first and the prose would be
+   * quietly wrong again in a file whose whole purpose is to deny that.
+   */
+  it('names the non-spawn path by its position in the enumeration', () => {
+    const nonSpawn = EGRESS_PATHS.filter((p) => !p.childProcess);
+    expect(
+      nonSpawn.length,
+      'the footnote introduces the non-spawn path in the singular, by position. A second ' +
+        'non-spawn row makes that sentence unstatable — rewrite it before adding one.',
+    ).toBe(1);
+
+    const index = EGRESS_PATHS.findIndex((p) => !p.childProcess);
+    expect(
+      footnote,
+      `the non-spawn path is row ${String(index + 1)} of EGRESS_PATHS, so the footnote must ` +
+        `introduce it as "The ${ordinalWord(index + 1)} is". If a row was added or removed ` +
+        'ahead of it, move the ordinal with it.',
+    ).toMatch(new RegExp(`the ${ordinalWord(index + 1)} is`, 'i'));
   });
 
   /**

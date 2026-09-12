@@ -3,8 +3,9 @@
 import type { FindingFacets, FindingProvider } from '@akasecurity/schema';
 import { cn, Popover, PopoverContent, PopoverTrigger } from '@akasecurity/ui-kit';
 
-import { CheckIcon, ChevronDownIcon, SearchIcon } from '../shared/icons.tsx';
+import { CheckIcon, ChevronDownIcon } from '../shared/icons.tsx';
 import { PROVIDERS } from '../shared/Provider.tsx';
+import { SearchField } from '../shared/SearchField.tsx';
 import { FINDING_STATUS_META, FINDING_STATUSES, type FindingsFilters, SEVERITIES } from './meta.ts';
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -159,19 +160,16 @@ export function FindingsToolbarView({
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <div className="relative w-64">
-        <SearchIcon className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-3" />
-        <input
-          type="text"
-          aria-label="Search findings"
-          placeholder="Search findings…"
-          value={query}
-          onChange={(e) => {
-            onQueryChange(e.target.value);
-          }}
-          className="h-9 w-full rounded-lg border border-border-field bg-surface pl-9 pr-3 text-sm text-text placeholder:text-text-3 focus:border-primary focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40"
-        />
-      </div>
+      <SearchField
+        value={query}
+        onValueChange={onQueryChange}
+        label="Search findings"
+        placeholder="Search findings…"
+        // See FindingTypesListView — same page, same reason.
+        clearLabel="Clear findings search"
+        surface="canvas"
+        className="h-9 w-64"
+      />
       <MultiSelectFilter
         label="Severity"
         options={severityOptions}

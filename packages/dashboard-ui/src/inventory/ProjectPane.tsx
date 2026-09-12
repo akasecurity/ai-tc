@@ -26,6 +26,7 @@ import {
 } from '@akasecurity/ui-kit';
 import { Fragment } from 'react';
 
+import { SearchField } from '../shared/SearchField.tsx';
 import { AccessBar, AccessControl, AccessLabel, OriginTag, VisBadge } from './chips.tsx';
 import { ACCESS, ACCESS_ORDER, fmtDateTime, rationale } from './data.ts';
 import { Ico } from './Ico.tsx';
@@ -162,29 +163,17 @@ export function ProjectPane(props: ProjectPaneProps) {
 
 function SearchBox({ proj, query, onQueryChange }: ProjectPaneProps) {
   return (
-    <div className="relative w-70 shrink-0">
-      <Ico name="search" className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-3" />
-      <input
-        value={query}
-        onChange={(e) => {
-          onQueryChange(e.target.value);
-        }}
-        placeholder={`Search files in ${proj.name}…`}
-        className="h-9 w-full rounded-lg border border-border-field bg-surface-2 pl-9 pr-8 text-sm text-text placeholder:text-text-3 focus:border-primary focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40"
-      />
-      {query && (
-        <button
-          type="button"
-          aria-label="Clear search"
-          onClick={() => {
-            onQueryChange('');
-          }}
-          className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-text-3 hover:text-text"
-        >
-          <Ico name="x" className="size-3.5" />
-        </button>
-      )}
-    </div>
+    <SearchField
+      value={query}
+      onValueChange={onQueryChange}
+      label={`Search files in ${proj.name}`}
+      placeholder={`Search files in ${proj.name}…`}
+      // Named for the same reason InventoryNav's is — the two render side by
+      // side, so the default would name both identically.
+      clearLabel={`Clear file search in ${proj.name}`}
+      surface="card"
+      className="h-9 w-70 shrink-0"
+    />
   );
 }
 

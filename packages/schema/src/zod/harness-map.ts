@@ -124,5 +124,9 @@ export const TOOL_TO_HARNESS: Record<string, Harness & FindingProvider> = {
 // mapping. Unknown tools pass through unchanged (the read side validates
 // against the enum and defaults to 'claudecode' on a miss).
 export function harnessFromTool(tool: string): string {
-  return TOOL_TO_HARNESS[tool] ?? tool;
+  // Object.hasOwn guards against a tool id equal to an inherited
+  // Object.prototype key (e.g. 'constructor'), which a bare
+  // `TOOL_TO_HARNESS[tool]` lookup would resolve to that key's function
+  // value instead of passing the id through unchanged.
+  return (Object.hasOwn(TOOL_TO_HARNESS, tool) ? TOOL_TO_HARNESS[tool] : undefined) ?? tool;
 }

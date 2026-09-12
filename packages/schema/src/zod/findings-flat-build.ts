@@ -9,11 +9,12 @@
 // DB→API translation still goes through the shared mappers, so no enum rule is
 // restated.
 
-import type {
-  FindingFacetItem,
-  FindingFacets,
-  FindingInstanceDetail,
-  FindingStatus,
+import {
+  type FindingFacetItem,
+  type FindingFacets,
+  type FindingInstanceDetail,
+  type FindingStatus,
+  Severity,
 } from './finding.ts';
 import {
   type GroupableFindingRow,
@@ -21,6 +22,55 @@ import {
   toApiCategory,
   toApiProvider,
 } from './findings-group-build.ts';
+
+// ─── Ordering primitives (severity rank, code-point comparison) ──────────────
+
+/**
+ * Build a `{ [member]: index }` lookup mapping each element of an ordered
+ * list to its position — used to derive a rank table from an enum's own
+ * declared option order without restating the member names as literals.
+ */
+function rankByOrder<T extends readonly PropertyKey[]>(members: T): Record<T[number], number> {
+  return Object.fromEntries(members.map((member, index) => [member, index])) as Record<
+    T[number],
+    number
+  >;
+}
+
+/**
+ * Severity rank for sorting: index into Severity.options (critical=0, the
+ * highest urgency, through low=3). Derived from the enum's own declared
+ * order, so a member added to Severity is ranked here without a second edit.
+ */
+export const SEVERITY_RANK = rankByOrder(Severity.options) satisfies Record<Severity, number>;
+
+/**
+ * Compares two strings by Unicode CODE POINT — the order SQLite's BINARY
+ * collation produces when comparing UTF-8 text, so a comparison done here on
+ * a scanned row and the identical comparison done in SQL on a stored one
+ * agree.
+ *
+ * This is NOT what JavaScript's `<` does: `<` compares UTF-16 CODE UNITS, and
+ * a character outside the Basic Multilingual Plane is represented in UTF-16
+ * by a surrogate pair whose leading unit (U+D800–U+DBFF) is numerically BELOW
+ * every code unit in U+E000–U+FFFF. So `<` orders such an astral character
+ * before those characters, while code-point order — and a UTF-8 byte
+ * comparison — orders it after.
+ */
+export function compareCodePoints(a: string, b: string): number {
+  const aIter = a[Symbol.iterator]();
+  const bIter = b[Symbol.iterator]();
+  for (;;) {
+    const aNext = aIter.next();
+    const bNext = bIter.next();
+    if (aNext.done && bNext.done) return 0;
+    if (aNext.done) return -1;
+    if (bNext.done) return 1;
+    const aPoint = aNext.value.codePointAt(0) ?? 0;
+    const bPoint = bNext.value.codePointAt(0) ?? 0;
+    if (aPoint !== bPoint) return aPoint - bPoint;
+  }
+}
 
 /**
  * A GroupableFindingRow that also carries its event linkage. The flat list
@@ -148,11 +198,21 @@ export function matchesInstanceFilters(
 function toItems(counts: Map<string, number>): FindingFacetItem[] {
   return [...counts.entries()]
     .map(([value, count]) => ({ value, count }))
-    .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+    .sort(
+      (a, b) =>
+        b.count - a.count ||
+        a.value.localeCompare(b.value) ||
+        // localeCompare reports canonically-equivalent strings (an NFC and an
+        // NFD spelling of the same text) as equal, so a count tie between
+        // them would otherwise have no defined order — one that could differ
+        // between this streaming scan and an equivalent grouped SQL query.
+        // compareCodePoints breaks that tie deterministically.
+        compareCodePoints(a.value, b.value),
+    );
 }
 
-function bump(counts: Map<string, number>, value: string): void {
-  counts.set(value, (counts.get(value) ?? 0) + 1);
+function bump(counts: Map<string, number>, value: string, by = 1): void {
+  counts.set(value, (counts.get(value) ?? 0) + by);
 }
 
 /**
@@ -200,6 +260,117 @@ export function createInstanceFacetAccumulator(opts: InstanceFilterOptions): {
       status: toItems(status),
       tool: toItems(tool),
     }),
+  };
+}
+
+/**
+ * One distinct combination of the six faceted dimensions, with how many
+ * findings carry it. A store that can group in its own query language returns
+ * these instead of every row, so the facet counts cost the number of distinct
+ * combinations rather than the number of findings.
+ */
+export interface FacetTuple {
+  severity: string;
+  ruleId: string;
+  sourceTool: string;
+  actionTaken: string;
+  status: FindingStatus;
+  toolName?: string;
+  count: number;
+}
+
+/**
+ * One tuple as the row shape the filters read. Every field no faceted
+ * dimension touches carries a placeholder: the fold below never reads them,
+ * and giving them real-looking values would invite a future filter to match on
+ * something the tuple does not actually carry. `toolName` is spread rather
+ * than defaulted, because "no tool" and "a tool named empty" are different to
+ * the tool facet.
+ */
+export function rowFromTuple(tuple: FacetTuple): FlatFindingRow {
+  return {
+    id: '',
+    ruleId: tuple.ruleId,
+    category: '',
+    severity: tuple.severity,
+    maskedMatch: '',
+    actionTaken: tuple.actionTaken,
+    confidence: 0,
+    occurredAt: '',
+    sourceTool: tuple.sourceTool,
+    repo: '',
+    file: '',
+    eventId: '',
+    status: tuple.status,
+    ...(tuple.toolName === undefined ? {} : { toolName: tuple.toolName }),
+  };
+}
+
+/**
+ * The instance total and the six per-filter-excluded facets, folded from
+ * grouped tuples instead of from rows — the counterpart of
+ * createInstanceFacetAccumulator for a caller that grouped before it counted.
+ *
+ * It reuses matchesInstanceFilters rather than re-deciding any dimension, so
+ * the two paths cannot drift on what a filter means. The raw source tool and
+ * action are mapped through the shared mappers before counting, because
+ * several raw values collapse into one API bucket and the facet counts that
+ * bucket.
+ *
+ * `repo`, `file` and `q` have no facet of their own, so a grouping caller
+ * applies them before grouping and the tuples it returns are already narrowed
+ * by them. Passing them to the matcher here would reject every tuple, since a
+ * tuple carries none of those fields — hence they are blanked out.
+ */
+export function foldFacetTuples(
+  tuples: readonly FacetTuple[],
+  opts: InstanceFilterOptions,
+): { total: number; facets: FindingFacets } {
+  const scoped: InstanceFilterOptions = {
+    ...opts,
+    repo: undefined,
+    file: undefined,
+    q: undefined,
+  };
+  const severity = new Map<string, number>();
+  const subtype = new Map<string, number>();
+  const provider = new Map<string, number>();
+  const action = new Map<string, number>();
+  const status = new Map<string, number>();
+  const tool = new Map<string, number>();
+
+  let total = 0;
+  for (const tuple of tuples) {
+    const row = rowFromTuple(tuple);
+    if (matchesInstanceFilters(row, scoped)) total += tuple.count;
+    if (matchesInstanceFilters(row, scoped, 'severity')) {
+      bump(severity, row.severity, tuple.count);
+    }
+    if (matchesInstanceFilters(row, scoped, 'subtype')) bump(subtype, row.ruleId, tuple.count);
+    if (matchesInstanceFilters(row, scoped, 'providers')) {
+      bump(provider, toApiProvider(row.sourceTool), tuple.count);
+    }
+    if (matchesInstanceFilters(row, scoped, 'actions')) {
+      bump(action, toApiAction(row.actionTaken), tuple.count);
+    }
+    if (row.status !== undefined && matchesInstanceFilters(row, scoped, 'statuses')) {
+      bump(status, row.status, tuple.count);
+    }
+    if (row.toolName !== undefined && matchesInstanceFilters(row, scoped, 'tools')) {
+      bump(tool, row.toolName, tuple.count);
+    }
+  }
+
+  return {
+    total,
+    facets: {
+      severity: toItems(severity),
+      subtype: toItems(subtype),
+      provider: toItems(provider),
+      action: toItems(action),
+      status: toItems(status),
+      tool: toItems(tool),
+    },
   };
 }
 
@@ -304,12 +475,21 @@ export interface LocationOrderKey {
  * third location is unreachable behind a Next button that was enabled. The pair
  * is unique per location, so ordering on it removes ties outright.
  *
- * The two string keys are compared with `<` rather than `localeCompare`, which
- * is NOT interchangeable here: ICU collation reports canonically-equivalent
- * strings as equal, so a precomposed and a decomposed 'café.ts' compare 0 — and
- * macOS stores NFD where event metadata arrives NFC, which reintroduces exactly
- * the tie this key exists to remove. `<` is UTF-16 code-unit order: total,
- * locale-free, and the same in every runtime.
+ * The two string keys are compared with compareCodePoints rather than
+ * `localeCompare`, which is NOT interchangeable here: ICU collation reports
+ * canonically-equivalent strings as equal, so a precomposed and a decomposed
+ * 'café.ts' compare 0 — and macOS stores NFD where event metadata arrives
+ * NFC, which reintroduces exactly the tie this key exists to remove.
+ *
+ * compareCodePoints, rather than JavaScript's `<`, is what the order now IS,
+ * and it has to be: this list is produced by a SQL query as well as by this
+ * in-memory fold, and SQLite's BINARY collation compares UTF-8 bytes, which
+ * for well-formed text is Unicode CODE POINT order — not the UTF-16
+ * CODE-UNIT order `<` uses. The two diverge exactly on astral characters
+ * (outside the Basic Multilingual Plane), whose UTF-16 surrogate pair sorts
+ * below U+E000–U+FFFF under `<` while its code point sorts above them. A
+ * comparator that used `<` here would agree with a streaming, in-memory scan
+ * and disagree with the equivalent SQL `ORDER BY`.
  *
  * They are also two SEPARATE keys rather than one joined string. Joining needs a
  * separator provably absent from arbitrary repo names and file paths, and there
@@ -329,9 +509,9 @@ export function compareLocationOrder(a: LocationOrderKey, b: LocationOrderKey): 
   if (a.latestDetectedAt !== b.latestDetectedAt) {
     return a.latestDetectedAt < b.latestDetectedAt ? 1 : -1;
   }
-  if (a.repo !== b.repo) return a.repo < b.repo ? -1 : 1;
-  if (a.file !== b.file) return a.file < b.file ? -1 : 1;
-  return 0;
+  const repoDiff = compareCodePoints(a.repo, b.repo);
+  if (repoDiff !== 0) return repoDiff;
+  return compareCodePoints(a.file, b.file);
 }
 
 /**

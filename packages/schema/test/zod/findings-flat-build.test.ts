@@ -3,14 +3,20 @@ import { describe, expect, it } from 'vitest';
 import type { FindingTypeSummary } from '../../src/zod/index.ts';
 import {
   addToLocation,
+  compareCodePoints,
   compareFindingGroupOrder,
   compareLocationOrder,
   createInstanceFacetAccumulator,
   encodeLocationId,
+  type FacetTuple,
   type FlatFindingRow,
+  foldFacetTuples,
   foldGroupStatus,
   matchesInstanceFilters,
   newLocationAccumulator,
+  rowFromTuple,
+  Severity,
+  SEVERITY_RANK,
   sortFindingTypes,
   toInstanceDetail,
 } from '../../src/zod/index.ts';
@@ -33,6 +39,38 @@ function row(over: Partial<FlatFindingRow> = {}): FlatFindingRow {
     ...over,
   };
 }
+
+describe('SEVERITY_RANK', () => {
+  it('derives rank from Severity.options order', () => {
+    expect(Severity.options.map((s) => SEVERITY_RANK[s])).toEqual([0, 1, 2, 3]);
+  });
+});
+
+// SQLite's BINARY collation compares UTF-8 bytes, which for a well-formed
+// string is the same order as comparing Unicode CODE POINTS — not the same as
+// comparing UTF-16 code units, which is what JavaScript's `<` does.
+describe('compareCodePoints', () => {
+  // JavaScript's own comparison, behind a function so the contrast below is a
+  // runtime check rather than something the compiler folds away.
+  const utf16Less = (a: string, b: string): boolean => a < b;
+
+  it('compares by Unicode code point rather than UTF-16 code unit', () => {
+    // JavaScript's `<` compares UTF-16 code units: the astral character's
+    // leading surrogate (U+D83D) is numerically BELOW the fullwidth
+    // exclamation mark (U+FF01), so `<` puts the astral string first — the
+    // opposite of code-point order, where U+1F600 > U+FF01.
+    const astral = 'a\u{1F600}';
+    const bmp = 'a！';
+    expect(utf16Less(astral, bmp)).toBe(true); // the UTF-16 answer, for contrast
+    expect(compareCodePoints(astral, bmp)).toBeGreaterThan(0);
+  });
+
+  it('returns 0 for identical strings and is antisymmetric', () => {
+    expect(compareCodePoints('abc', 'abc')).toBe(0);
+    expect(compareCodePoints('abc', 'abd')).toBeLessThan(0);
+    expect(compareCodePoints('abd', 'abc')).toBeGreaterThan(0);
+  });
+});
 
 describe('matchesInstanceFilters', () => {
   it('passes a row when no filter is set', () => {
@@ -173,6 +211,124 @@ describe('createInstanceFacetAccumulator', () => {
       { value: 'a-rule', count: 2 },
       { value: 'b-rule', count: 1 },
     ]);
+  });
+
+  // localeCompare reports canonically-equivalent strings as equal, so a
+  // count-tied pair of an NFC and an NFD spelling has no defined order under
+  // it — which would differ between a streaming scan and a grouped SQL query.
+  // compareCodePoints is a required fallback for a deterministic order.
+  it('breaks a count tie between canonically-equivalent values by code point', () => {
+    const nfc = 'café-rule'; // precomposed é
+    const nfd = 'café-rule'; // decomposed e + combining acute accent
+    // The control: they ARE different strings, and localeCompare alone
+    // reports them equal — without compareCodePoints as a fallback, the tie
+    // is unresolved and the order depends on Map iteration/insertion order.
+    expect(nfc).not.toBe(nfd);
+    expect(nfc.localeCompare(nfd)).toBe(0);
+
+    const acc = createInstanceFacetAccumulator({});
+    acc.add(row({ id: 'a', ruleId: nfc }));
+    acc.add(row({ id: 'b', ruleId: nfd }));
+    expect(acc.facets().subtype.map((f) => f.value)).toEqual([nfd, nfc]);
+  });
+});
+
+describe('foldFacetTuples', () => {
+  // Grouped tuples and the rows they stand for must produce identical numbers.
+  // The oracle is the real row accumulator: expand every tuple back into its
+  // rows, feed those through createInstanceFacetAccumulator, and count the
+  // matching ones by hand. If the two ever disagree, a store that groups before
+  // it counts would report different facets from one that counts row by row.
+  const TUPLES: FacetTuple[] = [
+    {
+      severity: 'critical',
+      ruleId: 'aws-key',
+      sourceTool: 'claude-code',
+      actionTaken: 'block',
+      status: 'open',
+      toolName: 'Bash',
+      count: 3,
+    },
+    {
+      severity: 'critical',
+      ruleId: 'aws-key',
+      sourceTool: 'cli',
+      actionTaken: 'log',
+      status: 'handled',
+      count: 2,
+    },
+    {
+      severity: 'low',
+      ruleId: 'pii-email',
+      sourceTool: 'codex',
+      actionTaken: 'warn',
+      status: 'open',
+      toolName: 'Read',
+      count: 5,
+    },
+    {
+      severity: 'high',
+      ruleId: 'pii-email',
+      sourceTool: 'unknown-tool',
+      actionTaken: 'redact',
+      status: 'resolved',
+      count: 1,
+    },
+  ];
+
+  function oracle(tuples: readonly FacetTuple[], opts: Parameters<typeof foldFacetTuples>[1]) {
+    const accumulator = createInstanceFacetAccumulator(opts);
+    let total = 0;
+    for (const tuple of tuples) {
+      for (let i = 0; i < tuple.count; i += 1) {
+        const expanded = rowFromTuple(tuple);
+        accumulator.add(expanded);
+        if (matchesInstanceFilters(expanded, opts)) total += 1;
+      }
+    }
+    return { total, facets: accumulator.facets() };
+  }
+
+  it.each([
+    ['no filters', {}],
+    ['severity', { severity: ['critical'] }],
+    ['provider, including the unmapped-tool bucket', { providers: ['api'] }],
+    ['status', { statuses: ['open'] }],
+    ['tool', { tools: ['Bash'] }],
+    ['subtype', { subtype: ['pii-email'] }],
+    [
+      'three dimensions at once, so every facet excludes a live filter',
+      { severity: ['critical'], providers: ['claudecode'], statuses: ['open'] },
+    ],
+    ['a filter nothing matches', { severity: ['medium'] }],
+  ])('equals the row accumulator: %s', (_label, opts) => {
+    expect(foldFacetTuples(TUPLES, opts)).toEqual(oracle(TUPLES, opts));
+  });
+
+  it('counts no tool bucket for a tuple carrying none', () => {
+    const { facets } = foldFacetTuples(TUPLES, {});
+    // 'unknown-tool' and 'cli' rows carry no toolName, so only Bash and Read
+    // are counted — 3 and 5 — and the absent ones contribute to nothing.
+    expect(facets.tool).toEqual([
+      { value: 'Read', count: 5 },
+      { value: 'Bash', count: 3 },
+    ]);
+  });
+
+  it('maps raw source tools through the shared provider mapper before counting', () => {
+    const { facets } = foldFacetTuples(TUPLES, {});
+    // 'cli' and 'unknown-tool' are both unmapped, so they collapse into the one
+    // miss bucket rather than appearing as two raw values.
+    const api = facets.provider.find((f) => f.value === 'api');
+    expect(api).toEqual({ value: 'api', count: 3 });
+    expect(facets.provider.map((f) => f.value)).not.toContain('cli');
+  });
+
+  it('ignores repo, file and q, which a grouping caller applies before grouping', () => {
+    // A tuple carries none of those fields, so a matcher that honoured them
+    // would reject every tuple and report zero.
+    const scoped = foldFacetTuples(TUPLES, { repo: 'acme/api', file: 'a.ts', q: 'nothing' });
+    expect(scoped.total).toBe(11);
   });
 });
 
@@ -345,6 +501,31 @@ describe('compareLocationOrder', () => {
 
     expect(compareLocationOrder(loc({ file: precomposed }), loc({ file: decomposed }))).not.toBe(0);
     expect(compareLocationOrder(loc({ repo: precomposed }), loc({ repo: decomposed }))).not.toBe(0);
+  });
+
+  // compareLocationOrder orders repo/file by compareCodePoints (matching
+  // SQLite's BINARY collation over UTF-8), not by UTF-16 code-unit `<`. An
+  // astral character's surrogate pair sorts BELOW U+E000–U+FFFF under `<`,
+  // which is the wrong order for a store that will produce this ordering in
+  // SQL.
+  it('orders an astral file AFTER a BMP one tied on severity and instant, matching code-point order', () => {
+    const tied = { maxSeverity: 'high', latestDetectedAt: '2026-01-01T00:00:00.000Z' };
+    const astral = loc({ ...tied, repo: 'acme/api', file: 'a\u{1F600}' });
+    const bmp = loc({ ...tied, repo: 'acme/api', file: 'a！' });
+    // The UTF-16 code-unit comparison this replaces gets it backwards.
+    expect(astral.file < bmp.file).toBe(true);
+    expect(compareLocationOrder(astral, bmp)).toBeGreaterThan(0);
+  });
+
+  // The same property on the REPO half. It needs its own case: the pair above
+  // shares a repo, so it exercises only the file comparison and a repo half
+  // left on `<` would keep passing it.
+  it('orders an astral repo AFTER a BMP one, matching code-point order', () => {
+    const tied = { maxSeverity: 'high', latestDetectedAt: '2026-01-01T00:00:00.000Z' };
+    const astral = loc({ ...tied, repo: 'acme/a\u{1F600}', file: 'a.ts' });
+    const bmp = loc({ ...tied, repo: 'acme/a！', file: 'a.ts' });
+    expect(astral.repo < bmp.repo).toBe(true);
+    expect(compareLocationOrder(astral, bmp)).toBeGreaterThan(0);
   });
 
   // What makes an undecodable or hand-edited cursor degrade to a restart from

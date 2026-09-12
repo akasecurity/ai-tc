@@ -29,6 +29,16 @@ import { HARNESS, TOOL_TO_HARNESS } from './harness-map.ts';
 // ─── Enum translation (DB storage values ↔ API-facing enums) ─────────────────
 
 /**
+ * A plain-object lookup that returns undefined for a key the object does not
+ * OWN — including a key equal to an inherited Object.prototype member (e.g.
+ * 'constructor', 'toString'), which a bare `map[key]` would resolve to that
+ * member's function value instead of a miss.
+ */
+function lookupOwn<T>(map: Record<string, T>, key: string): T | undefined {
+  return Object.hasOwn(map, key) ? map[key] : undefined;
+}
+
+/**
  * DB ActionTaken → API FindingAction.
  *   log → monitored · block → blocked · redact → redacted · warn → warned · allow → allowed
  * Unknown values fall back to 'allowed' (safe, non-destructive).
@@ -41,7 +51,7 @@ export function toApiAction(dbVal: string): FindingAction {
     warn: 'warned',
     allow: 'allowed',
   };
-  return map[dbVal] ?? 'allowed';
+  return lookupOwn(map, dbVal) ?? 'allowed';
 }
 
 /**
@@ -109,7 +119,7 @@ export function toApiProvider(sourceTool: string): FindingProvider {
   // `harnessFromTool`. The table's value type is `Harness & FindingProvider`,
   // so every mapped value is a FindingProvider by construction — no cast. An
   // unknown tool falls back to 'api' (whereas harnessFromTool passes it through).
-  return TOOL_TO_HARNESS[sourceTool] ?? HARNESS.Api;
+  return lookupOwn(TOOL_TO_HARNESS, sourceTool) ?? HARNESS.Api;
 }
 
 /**
@@ -189,11 +199,16 @@ export interface GroupableFindingRow {
 // "done" badge) and disappear from a "handled" status filter even though it
 // still contains a live enforcement action worth surfacing. Enforcement in
 // progress is more informative than a human's risk acceptance, so it wins.
-const STATUS_PRECEDENCE: readonly FindingStatus[] = ['open', 'handled', 'dismissed', 'resolved'];
+export const FINDING_STATUS_PRECEDENCE: readonly FindingStatus[] = [
+  'open',
+  'handled',
+  'dismissed',
+  'resolved',
+];
 
 /**
  * Fold a group's instance statuses into a single group-level status using
- * open-dominates precedence (see STATUS_PRECEDENCE). Statuses that are absent
+ * open-dominates precedence (see FINDING_STATUS_PRECEDENCE). Statuses that are absent
  * are ignored; if NO instance carries a status, returns undefined (never
  * fabricates a status for legacy rows).
  */
@@ -202,7 +217,7 @@ export function foldGroupStatus(
 ): FindingStatus | undefined {
   const statuses = new Set(instanceStatuses.filter((s): s is FindingStatus => s !== undefined));
   if (statuses.size === 0) return undefined;
-  for (const candidate of STATUS_PRECEDENCE) {
+  for (const candidate of FINDING_STATUS_PRECEDENCE) {
     if (statuses.has(candidate)) return candidate;
   }
   return undefined;

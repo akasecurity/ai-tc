@@ -527,6 +527,18 @@ export const ListFindingInstancesResponse = z
   .meta({ id: 'ListFindingInstancesResponse' });
 export type ListFindingInstancesResponse = z.infer<typeof ListFindingInstancesResponse>;
 
+// A continuation page: the rows and the cursor that follows them, and nothing
+// else. Totals and facets describe the whole filtered scope rather than a page,
+// so a continuation would repeat the numbers its first page already reported —
+// and pay for them again. A caller appending pages reads only these two fields.
+export const ListFindingInstancesPage = z
+  .object({
+    items: z.array(FindingInstanceDetail),
+    nextCursor: z.string().nullable(),
+  })
+  .meta({ id: 'ListFindingInstancesPage' });
+export type ListFindingInstancesPage = z.infer<typeof ListFindingInstancesPage>;
+
 // ─── Location findings list (the "By location" master/detail pair) ──────────
 
 // Findings folded by WHERE they live — one row per (repo, file) pair. The

@@ -133,7 +133,7 @@ export {
 } from './rule-packs.ts';
 export type { RuleProbeGateway, RuleProber } from './rule-quarantine.ts';
 export { filterUnsafeRules, quarantineRule, ruleProbeKey } from './rule-quarantine.ts';
-export type { CaptureOptions, PluginRuntime } from './runtime.ts';
+export type { CaptureOptions, DecisionOptions, PluginRuntime } from './runtime.ts';
 export { createPluginRuntime } from './runtime.ts';
 export type { ExceptionWriter, SuppressionEntry } from './suppressions.ts';
 export { applySetupTriageSuppressions, THIRTY_DAYS_MS } from './suppressions.ts';

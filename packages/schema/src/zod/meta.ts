@@ -308,6 +308,18 @@ export const CaptureAttributes = z
     // ABSENT on replayed captures (backfill / worktree scan) and on rows written
     // before the measurement shipped — never present as a placeholder 0.
     inspection_ms: z.number().int().nonnegative().optional(),
+    // What a `redact` this capture could not carry out became instead (see
+    // EventMetadata.redactDegradedTo, whose value this is). Present only when a
+    // degrade actually happened, so absence is the ordinary case rather than a
+    // reader having to distinguish it from a zero.
+    //
+    // PER CAPTURE, while `inspection_findings.action_taken` is per finding —
+    // so on a multi-finding row this does not say which finding degraded, and
+    // its presence does not mean the fallback decided the capture's action. A
+    // capture denied by another finding's own Block policy carries `block`
+    // here too. The full statement is on EventMetadata.redactDegradedTo; it is
+    // repeated rather than referenced because a store reader opens this file.
+    redact_degraded_to: ActionTaken.optional(),
   })
   .catchall(z.unknown());
 export type CaptureAttributes = z.infer<typeof CaptureAttributes>;

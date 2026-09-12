@@ -142,6 +142,11 @@ export function InventoryNav(props: InventoryNavProps) {
           onValueChange={onQuery}
           label="Search assets"
           placeholder="Search assets…"
+          // Named, not defaulted: ProjectPane renders a second search field
+          // beside this one whenever a project is selected, and two buttons
+          // both called "Clear search" say nothing about which field each
+          // empties. web-ui/test/search-field-labels.test.ts holds the pair.
+          clearLabel="Clear asset search"
           surface="card"
           className="h-8.5"
         />

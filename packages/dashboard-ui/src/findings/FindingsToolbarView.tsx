@@ -165,6 +165,8 @@ export function FindingsToolbarView({
         onValueChange={onQueryChange}
         label="Search findings"
         placeholder="Search findings…"
+        // See FindingTypesListView — same page, same reason.
+        clearLabel="Clear findings search"
         surface="canvas"
         className="h-9 w-64"
       />

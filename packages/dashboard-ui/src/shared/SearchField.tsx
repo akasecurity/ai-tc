@@ -59,15 +59,26 @@ export function SearchField({
   surface: FieldSurface;
   /**
    * This field's own GEOMETRY, and only that — `h-9`, `w-64`, `flex-1`,
-   * `shrink-0`, a margin. The edge and the fill come from `surface`, so a call
-   * site cannot put one of them back on `border-border` by hand.
+   * `shrink-0`, a margin.
+   *
+   * A `border-*` or `bg-*` token passed here does NOT take effect: the merge
+   * below puts `surface` last and tailwind-merge is last-wins, so the edge and
+   * the fill are not reachable from a call site. That is a property of the
+   * merge ORDER rather than of this sentence — see the comment on the `cn`
+   * call, which is where it is decided and where it can be undone.
    */
   className?: string;
   /** Sizes the leading glyph where a denser control wants a smaller one. */
   iconClassName?: string;
   /**
-   * Overridden where "search" is not what the box is called — the accessible
-   * name of a control that appears and disappears should say what it clears.
+   * The clear button's accessible name.
+   *
+   * It defaults, and the default is safe only while ONE search field is on the
+   * page: two fields both taking it leaves a screen-reader user hearing "Clear
+   * search, button" twice with nothing saying which field each one empties.
+   * That is the same ambiguity `label` is required to prevent, one control
+   * over, so a page rendering two fields must pass this on both.
+   * web-ui/test/search-field-labels.test.ts derives which pages those are.
    */
   clearLabel?: string;
 }) {
@@ -91,8 +102,19 @@ export function SearchField({
     <div
       className={cn(
         'flex items-center gap-2 px-3 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/40',
-        SURFACE_CLASS[surface],
+        // `className` sits BEFORE the surface, and the order is the whole of
+        // what makes the `className` docblock true. `cn` is tailwind-merge,
+        // which resolves a conflict LAST-WINS — so with the surface last, a
+        // call site passing `border-border` or `bg-surface` loses to it rather
+        // than replacing it. Geometry is unaffected either way, because it
+        // conflicts with nothing in either of the other two strings.
+        //
+        // Reordering these two lines silently puts the edge back in the call
+        // site's hands, and no rendered assertion in this repo would notice:
+        // `surface="card"` stays intact, so the call-site table still passes.
+        // theme/field-boundary.test.ts pins the order for that reason.
         className,
+        SURFACE_CLASS[surface],
       )}
     >
       <SearchIcon

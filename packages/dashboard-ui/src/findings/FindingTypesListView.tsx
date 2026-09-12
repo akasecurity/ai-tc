@@ -187,6 +187,11 @@ export function FindingTypesListView({
           onValueChange={onQueryChange}
           label="Search finding types"
           placeholder="Search types…"
+          // Named because the Findings page reaches this and FindingsToolbarView.
+          // The two are mutually exclusive today — this renders on the grouped
+          // view, that one on flat/files — so this is insurance rather than a
+          // fix; web-ui/test/search-field-labels.test.ts errs toward naming.
+          clearLabel="Clear type search"
           surface="card"
           className="h-9"
         />

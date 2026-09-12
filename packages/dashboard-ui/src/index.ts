@@ -38,7 +38,7 @@ export {
 export { PageHead } from './shared/PageHead.tsx';
 export { Provider, type ProviderId, type ProviderMeta, PROVIDERS } from './shared/Provider.tsx';
 export { ScrubbedValue } from './shared/ScrubbedValue.tsx';
-export { SearchField } from './shared/SearchField.tsx';
+export { type FieldSurface, SearchField } from './shared/SearchField.tsx';
 export {
   type StatTone,
   type SummaryStatItem,

@@ -168,6 +168,9 @@ function SearchBox({ proj, query, onQueryChange }: ProjectPaneProps) {
       onValueChange={onQueryChange}
       label={`Search files in ${proj.name}`}
       placeholder={`Search files in ${proj.name}…`}
+      // Named for the same reason InventoryNav's is — the two render side by
+      // side, so the default would name both identically.
+      clearLabel={`Clear file search in ${proj.name}`}
       surface="card"
       className="h-9 w-70 shrink-0"
     />

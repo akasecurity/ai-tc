@@ -27,8 +27,18 @@ import { describe, expect, it } from 'vitest';
 // The SEARCH fields are no longer hand-rolled — all six render `SearchField`
 // (shared/SearchField.tsx), and BOTH halves live there: the focus rule, and the
 // edge/fill pair, which `SURFACE_CLASS` resolves from a `surface` prop naming
-// what the field sits on. A call site can no longer put either back on
-// `border-border` by hand, because it never spells them.
+// what the field sits on.
+//
+// A call site cannot put either back on `border-border`, and the reason is the
+// MERGE ORDER rather than the absence of a spelling — `className` is a prop, so
+// a call site can always spell a `border-*` token; what stops it taking effect
+// is that `cn` (tailwind-merge) is last-wins and the surface goes in last. That
+// distinction is not pedantic: the two lines were the other way round when this
+// suite was written, under which `className="border-border"` DID replace the
+// edge, and every assertion in this file passed anyway — the call-site table
+// reads `surface="card"`, which a hostile className leaves untouched, and the
+// edge/fill cases read the component, which it never changes. So the order is
+// pinned below, as the one fact the rest of this file's design rests on.
 //
 // So the six are pinned in ONE place now, and the call-site table below asserts
 // a different thing: which surface each one declares. That is still a per-site
@@ -243,6 +253,18 @@ describe('the field boundary this package draws by hand', () => {
   // theme.css's closing paragraph.
   it('every search field: keeps a focus indicator', () => {
     expect(read(SHARED_FIELD)).toMatch(focusPattern(SHARED_FOCUS));
+  });
+
+  // The order the paragraph above rests on, asserted rather than described.
+  //
+  // Matched as ONE regex spanning both arguments rather than as two `indexOf`
+  // comparisons, so it also fails if something is inserted between them. What
+  // it must catch is the swap: `SURFACE_CLASS[surface]` appearing BEFORE
+  // `className` in the same `cn(...)` call, which is a one-line edit that
+  // reopens the hole with every other assertion here green.
+  it('every search field: merges the surface AFTER className, so the edge wins', () => {
+    expect(read(SHARED_FIELD)).toMatch(/className,\s*SURFACE_CLASS\[surface\],/);
+    expect(read(SHARED_FIELD)).not.toMatch(/SURFACE_CLASS\[surface\],\s*className,/);
   });
 
   // The edge and fill halves, now asserted where they are spelled rather than at

@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { overlayManagedSettings } from '@akasecurity/persistence';
 import type { PolicyBundle, Rule, WorkspaceSettings } from '@akasecurity/schema';
+import { MANAGED_SETTINGS_SPEC_VERSION } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { CaptureRecord, DataGateway } from '../src/data-gateway.ts';
@@ -1007,6 +1009,53 @@ describe('capture() — CaptureResult.findingKeys (scanner re-scan resolver hook
   });
 });
 
+// The fixtures both `rewritable` suites below drive. Shared rather than copied
+// so the processText suite cannot quietly diverge from the capture suite it
+// claims parity with: a policy or marker changed here moves both at once.
+function redactBundle(): PolicyBundle {
+  const b = bundle();
+  b.policies = [
+    {
+      id: randomUUID(),
+      scope: 'global',
+      target: { ruleId: 'test/secret-marker' },
+      action: 'redact',
+      enabled: true,
+    },
+  ];
+  return b;
+}
+
+// A capture whose worst action and whose lost redact DIFFER: the Block comes
+// from the secret marker's own policy, never from the fallback.
+function mixedBundle(): PolicyBundle {
+  const b = bundle();
+  b.policies = [
+    {
+      id: randomUUID(),
+      scope: 'global',
+      target: { ruleId: 'test/secret-marker' },
+      action: 'block',
+      enabled: true,
+    },
+    {
+      id: randomUUID(),
+      scope: 'global',
+      target: { ruleId: 'test/pii-marker' },
+      action: 'redact',
+      enabled: true,
+    },
+  ];
+  return b;
+}
+
+const MIXED = 'SECRET_MARKER and PII_MARKER together';
+
+const settingsWith = (fallback: 'monitor' | 'warn' | 'block'): WorkspaceSettings => ({
+  ...settings('redact'),
+  redactFallback: fallback,
+});
+
 // A redact the caller cannot carry out (CaptureOptions.rewritable: false).
 //
 // Antigravity's PreToolUse has no `updatedInput` at all, and Codex and Claude
@@ -1017,25 +1066,6 @@ describe('capture() — CaptureResult.findingKeys (scanner re-scan resolver hook
 // blocked-detections ledger — so the audit trail cannot claim a masking that
 // never happened.
 describe('a redact the caller cannot carry out', () => {
-  function redactBundle(): PolicyBundle {
-    const b = bundle();
-    b.policies = [
-      {
-        id: randomUUID(),
-        scope: 'global',
-        target: { ruleId: 'test/secret-marker' },
-        action: 'redact',
-        enabled: true,
-      },
-    ];
-    return b;
-  }
-
-  const settingsWith = (fallback: 'monitor' | 'warn' | 'block'): WorkspaceSettings => ({
-    ...settings('redact'),
-    redactFallback: fallback,
-  });
-
   it('still redacts in place when the caller CAN rewrite (the control)', async () => {
     // Without this the cases below would pass on a runtime that had simply
     // stopped redacting anything.
@@ -1063,6 +1093,117 @@ describe('a redact the caller cannot carry out', () => {
       { rewritable: false },
     );
     expect(out.action).toBe(expected);
+    await runtime.close();
+  });
+
+  it('takes the ORGANIZATION’s fallback when it is stronger than the device’s', async () => {
+    // An attached machine's bundle can carry the organization's answer. It
+    // merges raise-only against the device's own setting, so this warn becomes
+    // a block.
+    const b = redactBundle();
+    b.redactFallback = 'block';
+    const runtime = createPluginRuntime(fakeGateway(b), settingsWith('warn'));
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+    expect(out.action).toBe('block');
+    await runtime.close();
+  });
+
+  it('IGNORES a weaker organizational fallback — raise-only, never a relaxation', async () => {
+    // The direction that matters, and the reason this is a merge rather than an
+    // override: anything able to write the policy cache could otherwise turn a
+    // device's Block into a Monitor and let the value through on a field that
+    // cannot be masked.
+    const b = redactBundle();
+    b.redactFallback = 'monitor';
+    const runtime = createPluginRuntime(fakeGateway(b), settingsWith('block'));
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+    expect(out.action).toBe('block');
+    await runtime.close();
+  });
+
+  it('leaves the device’s setting in force when the bundle carries none', async () => {
+    // The control for both cases above: absent must change nothing, or a
+    // standalone machine would be quietly re-decided by a field nobody set.
+    const runtime = createPluginRuntime(fakeGateway(redactBundle()), settingsWith('block'));
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+    expect(out.action).toBe('block');
+    await runtime.close();
+  });
+
+  // `redactFallback` is the first field an ADMINISTRATOR and the control plane
+  // can both decide — the only member of both `ManagedSettingKey` and
+  // `PolicyBundle`. The two cases above drive settings-vs-bundle; this pair
+  // drives managed-pin-vs-bundle, which is the direction the field created and
+  // the one nothing asserted. Driven through the REAL `overlayManagedSettings`
+  // rather than a hand-written settings object, so it is the actual chain a
+  // managed machine takes: pin -> overlay -> `settings.redactFallback` -> merge.
+  const managedPin = (fallback: 'monitor' | 'warn' | 'block'): WorkspaceSettings =>
+    overlayManagedSettings(settingsWith('monitor'), {
+      specVersion: MANAGED_SETTINGS_SPEC_VERSION,
+      values: { redactFallback: fallback },
+      lockedFields: ['redactFallback'],
+    });
+
+  it('raises an administrator’s LOCKED pin when the organization is stricter', async () => {
+    // The operator-visible consequence, on the record as a decision rather than
+    // discovered in the field: a lock says which fields the USER may not
+    // change, and the control plane is not the user. Both belong to the same
+    // organization and the merge only tightens, so the pin is a floor the
+    // deployment may raise — never a ceiling it may lower.
+    const b = redactBundle();
+    b.redactFallback = 'block';
+    const settings = managedPin('warn');
+
+    // The pin LANDED, asserted before the merge consumes it — and this line is
+    // the whole of this case's coverage of the overlay.
+    //
+    // The merge is a max, so wherever the BUNDLE wins it returns the same action
+    // whether the pin arrived or `managedPin`'s `monitor` base did: max(warn,
+    // block) and max(monitor, block) are both `block`. Nothing downstream of
+    // `overlayManagedSettings` can see that it ran, so without this the case is
+    // outcome-identical to the settings-vs-bundle case above and its name would
+    // promise evidence it does not hold.
+    //
+    // Picking different values does not rescue it. Raise-only means a pin is
+    // observable through `out.action` only where the PIN wins — which is the
+    // sibling below, and is why that one is where the overlay mutation lands.
+    expect(settings.redactFallback).toBe('warn');
+
+    const runtime = createPluginRuntime(fakeGateway(b), settings);
+
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+
+    expect(out.action).toBe('block');
+    await runtime.close();
+  });
+
+  it('holds an administrator’s pin against a WEAKER organizational fallback', async () => {
+    // The other direction, and the control on the case above: raise-only has to
+    // protect the administrator too, or a bundle could undo the pin that a lock
+    // exists to defend. Without this, an implementation that simply preferred
+    // the bundle would satisfy the case above.
+    const b = redactBundle();
+    b.redactFallback = 'monitor';
+    const runtime = createPluginRuntime(fakeGateway(b), managedPin('block'));
+
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: 'here is SECRET_MARKER' },
+      { rewritable: false },
+    );
+
+    expect(out.action).toBe('block');
     await runtime.close();
   });
 
@@ -1112,6 +1253,143 @@ describe('a redact the caller cannot carry out', () => {
     );
     expect(gateway.records[0]?.event.content).not.toContain('SECRET_MARKER');
     expect(gateway.records[0]?.findings.map((f) => f.actionTaken)).toEqual(['block']);
+    await runtime.close();
+  });
+
+  // `redactDegradedTo` is the ACTION the lost redact became, and the only thing
+  // that can tell that from "the capture's worst action" is a capture where the
+  // two DIFFER. Every other case in the tree is single-finding, where the fold
+  // and the worst action coincide and `redactDegradedTo === action` holds
+  // whichever way it is computed; the host suites that assert a mismatch build
+  // their `CaptureResult` by hand and never reach `decide()`.
+  //
+  // So this pair is the whole guard on the producing layer. Replacing the fold
+  // with the capture's `worst` — the boolean semantics this field replaced —
+  // leaves the other 633 cases green and fails only the first of these.
+  it('names what the LOST redact became, not what the capture did', async () => {
+    // A deny that reports `redactDegradedTo: 'block'` explains itself by naming
+    // a fallback the workspace never set — here the workspace set `warn`, and
+    // the deny came from the other finding's own Block policy.
+    const gateway = fakeGateway(mixedBundle());
+    const runtime = createPluginRuntime(gateway, settingsWith('warn'));
+
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: MIXED },
+      { rewritable: false },
+    );
+
+    expect(out.action).toBe('block');
+    expect(out.redactDegradedTo).toBe('warn');
+    await runtime.close();
+  });
+
+  it('still reports the fallback when it happens to equal the capture action', async () => {
+    // The positive control on the case above: without it, a runtime that had
+    // stopped producing the field at all would satisfy a lone `not.toBe`.
+    // Here the fold and the worst action genuinely coincide, so this one is
+    // expected to read the same either way — it proves the field is emitted.
+    const gateway = fakeGateway(mixedBundle());
+    const runtime = createPluginRuntime(gateway, settingsWith('block'));
+
+    const out = await runtime.capture(
+      { kind: 'tool_use', sourceTool: 'claude-code', text: MIXED },
+      { rewritable: false },
+    );
+
+    expect(out.action).toBe('block');
+    expect(out.redactDegradedTo).toBe('block');
+    await runtime.close();
+  });
+});
+
+// The same flag, on the path that writes nothing.
+//
+// `capture` resolves the action and then persists a row; `processText` resolves
+// it and returns. A caller that inspects a field it cannot rewrite while
+// keeping its own audit trail reaches the degrade only through here, and before
+// this option it could not reach it at all: it received the undegraded `redact`
+// and had to apply `redactFallback` itself — a second implementation of the one
+// enforcement rule, which is exactly what resolving it inside the runtime
+// exists to prevent.
+//
+// Note what the caller can read back on this path. `actionTaken` lives on the
+// PERSISTED finding rows, which this path never builds, so `action` and
+// `redactDegradedTo` are the whole record of what happened — which is why the
+// pair at the bottom matters more here than it does on capture.
+describe('processText carries the rewritable flag', () => {
+  it('redacts in place when the option is OMITTED (the neutral-plumbing control)', async () => {
+    // The whole claim that this option changes nothing for the callers that
+    // already exist. The three `surfaced-redact` sites pass no options; a
+    // default of false here would silently degrade every one of them.
+    const runtime = createPluginRuntime(fakeGateway(redactBundle()), settingsWith('warn'));
+    const out = await runtime.processText('here is SECRET_MARKER');
+    expect(out.action).toBe('redact');
+    expect(out.text).not.toContain('SECRET_MARKER');
+    await runtime.close();
+  });
+
+  it.each([
+    ['warn', 'warn'],
+    ['monitor', 'log'],
+    ['block', 'block'],
+  ] as const)('degrades to the configured fallback: %s', async (fallback, expected) => {
+    // Parity with capture's arms, through the same fixtures: the resolution
+    // belongs to the runtime, so which entry point reached it must not matter.
+    const runtime = createPluginRuntime(fakeGateway(redactBundle()), settingsWith(fallback));
+    const out = await runtime.processText('here is SECRET_MARKER', undefined, {
+      rewritable: false,
+    });
+    expect(out.action).toBe(expected);
+    await runtime.close();
+  });
+
+  it('returns the value UNMASKED when the fallback lands below redact', async () => {
+    // The honest half of a degrade: nothing was stripped, so the text handed
+    // back is the text that came in. A caller that forwarded `out.text`
+    // believing it masked would ship the raw value while its own log said warn.
+    const runtime = createPluginRuntime(fakeGateway(redactBundle()), settingsWith('warn'));
+    const out = await runtime.processText('here is SECRET_MARKER', undefined, {
+      rewritable: false,
+    });
+    expect(out.text).toContain('SECRET_MARKER');
+    await runtime.close();
+  });
+
+  it('resolves per CALL, not per runtime', async () => {
+    // The mutation this seam invites: `redactFallback` is a closure variable on
+    // the runtime, so parking `rewritable` beside it reads as a simplification
+    // and passes every case above. Two calls on ONE runtime, either order, is
+    // what separates a forwarded argument from a hoisted one.
+    const runtime = createPluginRuntime(fakeGateway(redactBundle()), settingsWith('block'));
+    const degraded = await runtime.processText('here is SECRET_MARKER', undefined, {
+      rewritable: false,
+    });
+    const rewritten = await runtime.processText('here is SECRET_MARKER');
+    expect(degraded.action).toBe('block');
+    expect(rewritten.action).toBe('redact');
+    await runtime.close();
+  });
+
+  it('names what the LOST redact became, not what the call did', async () => {
+    // The field that tells "policy said warn" from "policy said redact and I
+    // could not carry it out". Here the deny comes from the secret marker's own
+    // Block policy while the workspace set warn, so the two genuinely differ
+    // and only a fold over the degraded findings answers.
+    const runtime = createPluginRuntime(fakeGateway(mixedBundle()), settingsWith('warn'));
+    const out = await runtime.processText(MIXED, undefined, { rewritable: false });
+    expect(out.action).toBe('block');
+    expect(out.redactDegradedTo).toBe('warn');
+    await runtime.close();
+  });
+
+  it('leaves redactDegradedTo ABSENT when the caller can rewrite', async () => {
+    // The control on the case above: a runtime that stamped the field
+    // unconditionally would satisfy it while telling every ordinary caller that
+    // a redact it actually carried out was really a degrade.
+    const runtime = createPluginRuntime(fakeGateway(mixedBundle()), settingsWith('warn'));
+    const out = await runtime.processText(MIXED);
+    expect(out.action).toBe('block');
+    expect(out.redactDegradedTo).toBeUndefined();
     await runtime.close();
   });
 });

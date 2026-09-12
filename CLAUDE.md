@@ -801,8 +801,14 @@ changes. The gaps that exist today:
   no `SessionStart` and no `UserPromptSubmit` — so the once-per-session inventory pass hangs
   off the first `PreInvocation`. That event carries **no prompt text**, so prompts can be
   neither blocked nor redacted. `PreToolUse` has **no `updatedInput` equivalent**, so a
-  `redact` policy escalates to a deny for every field (not just executable ones, the way
-  Codex escalates), and a `warn` has no channel to print on. `PostToolUse` receives **no tool
+  `redact` policy cannot be carried out on any field — not just the executable ones the
+  other two decline — and what happens instead is `WorkspaceSettings.redactFallback`,
+  resolved inside `actionForFinding` rather than by the hook. That location is what keeps
+  the emitted decision, `findings.actionTaken` and the ledger reading one answer; a hook
+  that escalated for itself recorded a deny as `redact`. The fallback ships as `warn`, so
+  a redact on this host lets the call through by default, and a `warn` has no channel to
+  print on — which makes it indistinguishable from `monitor` on screen here.
+  `PostToolUse` receives **no tool
   result at all**, so there is no live response scanning and no `tool-response.ts` /
   `scan-response.ts` counterpart in that package.
 - **Antigravity also fails CLOSED**, which inverts this repo's §1 rule at the boundary: a

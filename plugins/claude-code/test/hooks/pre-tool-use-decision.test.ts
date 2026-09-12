@@ -26,6 +26,7 @@ import { join } from 'node:path';
 import type { CaptureResult, DataGateway } from '@akasecurity/plugin-sdk';
 import { createPluginRuntime } from '@akasecurity/plugin-sdk';
 import type { PolicyBundle, WorkspaceSettings } from '@akasecurity/schema';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { PreToolUseOutput } from '../../src/hooks/pre-tool-use-decision.ts';
@@ -75,6 +76,34 @@ function redactResult(
 
 // The decision is async now (it may tokenize); these tests exercise the
 // pre-vault paths, so unwrap the payload and default the scanned text.
+// What the runtime hands this module for an EXECUTABLE field, which the hook
+// captures with `rewritable: false`: the policy resolved to `redact`, no
+// masking was possible, and the action is the workspace's `redactFallback`.
+// `redactDegradedTo` says what it became — without it this is indistinguishable from
+// a policy that genuinely said `warn`.
+//
+// `redactResult` above stays the shape for a DATA field, which is rewritable
+// and keeps true redaction (including the reversible vault rewrite). The two
+// helpers are the per-field split.
+// `action` is what the fallback POLICY resolves to, not the policy id: the
+// `monitor` fallback's action is `log` (BUILTIN_POLICY_SPECS), and ActionTaken
+// carries no `monitor` member at all.
+function degradedRedact(
+  action: 'log' | 'warn' | 'block',
+  text: string,
+  ruleId: string,
+  rawMatch: string,
+  reference?: string,
+): CaptureResult {
+  return {
+    action,
+    text: action === 'block' ? null : text,
+    findings: [finding(ruleId, rawMatch, text)],
+    redactDegradedTo: action,
+    ...(reference ? { blockedReferences: [{ reference, ruleId, maskedValue: '4******6' }] } : {}),
+  };
+}
+
 async function decide(
   toolName: string,
   toolInput: Record<string, unknown>,
@@ -105,8 +134,8 @@ function denyReason(output: PreToolUseOutput | null): string {
 describe('decidePreToolUse — redact on executable text escalates to deny', () => {
   const COMMAND = `psql -c "DELETE FROM share_destination WHERE host = '${IP}';"`;
 
-  it('denies the Bash call instead of rewriting the command', async () => {
-    const result = redactResult(COMMAND, 'core-pii/ip-address', IP, '3f2a91');
+  it('denies the Bash call under a block fallback, and says masking was not possible', async () => {
+    const result = degradedRedact('block', COMMAND, 'core-pii/ip-address', IP, '3f2a91');
     const output = await decide('Bash', { command: COMMAND }, [{ spec: BASH_COMMAND, result }]);
 
     const reason = denyReason(output);
@@ -133,7 +162,10 @@ describe('decidePreToolUse — redact on executable text escalates to deny', () 
     };
     const output = await decide('Bash', { command: COMMAND }, [
       { spec: { path: ['other'], executable: true }, result: blocked },
-      { spec: BASH_COMMAND, result: redactResult(COMMAND, 'core-pii/ip-address', IP) },
+      {
+        spec: BASH_COMMAND,
+        result: degradedRedact('block', COMMAND, 'core-pii/ip-address', IP),
+      },
     ]);
 
     const reason = denyReason(output);
@@ -141,6 +173,33 @@ describe('decidePreToolUse — redact on executable text escalates to deny', () 
     expect(reason).toContain(EXECUTABLE_REDACT_NOTE);
     expect(reason).toContain('aka exception approve aa11bb');
     expect(JSON.stringify(output)).not.toContain('updatedInput');
+  });
+
+  it('does NOT explain a deny that a SEPARATE field produced', () => {
+    // One payload, two fields: a `Bash.command` degrading to `warn` and another
+    // field whose own policy blocks — the MCP-leaf shape, where a single call
+    // really does carry several scanned leaves. `escalated` is read once at the
+    // deny and is scoped to neither field, so a presence check would explain
+    // that deny with the executable-redact note and name a `block` fallback
+    // this workspace never set.
+    return decide('Bash', { command: COMMAND }, [
+      {
+        spec: BASH_COMMAND,
+        result: degradedRedact('warn', COMMAND, 'core-pii/ip-address', IP),
+      },
+      {
+        spec: { path: ['other'], executable: true },
+        result: {
+          action: 'block',
+          text: null,
+          findings: [finding('secrets-infra/db-connection-string', 'SECRET', COMMAND)],
+        },
+      },
+    ]).then((output) => {
+      const reason = denyReason(output);
+      expect(reason).toContain('secrets-infra/db-connection-string');
+      expect(reason).not.toContain(EXECUTABLE_REDACT_NOTE);
+    });
   });
 
   it('a plain block (no escalation) carries no escalation note', async () => {
@@ -234,13 +293,15 @@ describe('decidePreToolUse — stored text keeps true redaction', () => {
 });
 
 describe('decidePreToolUse — WebFetch, the pre-execution exfil channel', () => {
-  it('a redact on the url escalates to deny: the request must not leave with OR without the value', async () => {
+  it('a redact on the url denies under a block fallback: the request leaves with neither the value nor a mask', async () => {
     // A secret spliced into the fetched URL is gone the moment the request is
     // made — post-hooks are too late — and a masked URL silently requests a
     // different resource. Deny is the only decision that is both visible and
-    // at least as strong as the policy.
+    // at least as strong as the policy, which is why `block` is the fallback to
+    // choose for this surface. Under the shipped `warn` it goes out; the case
+    // below pins that, because it is the setting's whole consequence.
     const url = `https://${IP}/collect?src=aka`;
-    const result = redactResult(url, 'core-pii/ip-address', IP, '7b20c4');
+    const result = degradedRedact('block', url, 'core-pii/ip-address', IP, '7b20c4');
     const output = await decide('WebFetch', { url, prompt: 'summarize' }, [
       { spec: WEBFETCH_URL, result },
     ]);
@@ -273,15 +334,22 @@ describe('decidePreToolUse — WebFetch, the pre-execution exfil channel', () =>
     );
   });
 
-  it('end to end through the real runtime: a URL carrying a detected value is denied, never fetched masked', async () => {
-    const rt = createPluginRuntime(fakeGateway(bundle()), settings());
+  it('end to end through the real runtime under a block fallback: denied, never fetched masked', async () => {
+    // Driven through `capture` with `rewritable: false` — the call the hook
+    // really makes for a url — rather than `processText`, which takes no such
+    // option and so cannot exercise the degrade at all.
+    const rt = createPluginRuntime(fakeGateway(bundle()), settings('block'));
     const url = `https://${IP}/ingest?d=payload`;
-    const result = await rt.processText(url);
+    const result = await rt.capture(
+      { kind: 'tool_use', sourceTool: SOURCE_TOOL.ClaudeCode, text: url },
+      { rewritable: false },
+    );
     await rt.close();
 
-    // Precondition: the real bundled rule matches inside the URL and the
-    // default pii action splices it.
-    expect(result.action).toBe('redact');
+    // The runtime refused: the real bundled rule matches inside the URL, the
+    // default pii action asks for a redact, and a url cannot carry one.
+    expect(result.action).toBe('block');
+    expect(result.redactDegradedTo).toBe(result.action);
     expect(result.findings.map((f) => f.ruleId)).toContain('core-pii/ip-address');
 
     const output = await decide('WebFetch', { url, prompt: 'summarize' }, [
@@ -291,6 +359,31 @@ describe('decidePreToolUse — WebFetch, the pre-execution exfil channel', () =>
     expect(reason).toContain('core-pii/ip-address');
     expect(reason).toContain(EXECUTABLE_REDACT_NOTE);
     expect(JSON.stringify(output)).not.toContain('updatedInput');
+  });
+
+  it('THE REQUEST GOES OUT, value intact, under the shipped warn fallback', async () => {
+    // The sharpest consequence of the shipped default, pinned so it cannot be
+    // discovered in the field: a url carrying a detected value used to be
+    // denied unconditionally, and now leaves the machine unless the workspace
+    // sets `redactFallback: 'block'`. Post-hooks are too late for a fetch, so
+    // nothing downstream recovers this.
+    const rt = createPluginRuntime(fakeGateway(bundle()), settings());
+    const url = `https://${IP}/ingest?d=payload`;
+    const result = await rt.capture(
+      { kind: 'tool_use', sourceTool: SOURCE_TOOL.ClaudeCode, text: url },
+      { rewritable: false },
+    );
+    await rt.close();
+
+    expect(result.action).toBe('warn');
+    expect(result.redactDegradedTo).toBe(result.action);
+
+    const output = await decide('WebFetch', { url, prompt: 'summarize' }, [
+      { spec: WEBFETCH_URL, result },
+    ]);
+    const emitted = JSON.stringify(output);
+    expect(emitted).toContain('AKA flagged sensitive content in WebFetch input');
+    expect(emitted).not.toContain('updatedInput');
   });
 });
 
@@ -303,7 +396,7 @@ describe('decidePreToolUse — WebFetch, the pre-execution exfil channel', () =>
 // changes out from under this, the precondition assertions say which half
 // moved.
 
-function settings(): WorkspaceSettings {
+function settings(redactFallback: WorkspaceSettings['redactFallback'] = 'warn'): WorkspaceSettings {
   return {
     specVersion: 1,
     runMode: 'standalone',
@@ -312,7 +405,7 @@ function settings(): WorkspaceSettings {
     dataSharesInPlace: true,
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
-    redactFallback: 'warn',
+    redactFallback,
   };
 }
 
@@ -396,20 +489,23 @@ describe('incident regression — the seed-cleanup DELETE, end to end', () => {
     `('acme-partner.com'),('${IP}'); ` +
     'DELETE FROM share_destination sd USING seed_hosts sh WHERE sd.host = sh.host;"';
 
-  it('runtime redacts the IP out of the SQL; the hook decision denies instead of executing it', async () => {
-    const rt = createPluginRuntime(fakeGateway(bundle()), settings());
-    const result = await rt.processText(INCIDENT_COMMAND);
+  const command = (text: string) =>
+    ({ kind: 'tool_use', sourceTool: SOURCE_TOOL.ClaudeCode, text }) as const;
+
+  it('resolves the redact to a deny INSIDE the runtime under a block fallback', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle()), settings('block'));
+    const result = await rt.capture(command(INCIDENT_COMMAND), { rewritable: false });
     await rt.close();
 
-    // Precondition — the incident's first half: core-pii/ip-address matches
-    // the lone IP literal and the default pii action splices the SQL.
-    expect(result.action).toBe('redact');
+    // The incident's first half: core-pii/ip-address matches the lone IP
+    // literal and the default pii action asks for a redact. Its second half is
+    // impossible because the RUNTIME refused — one value for the emitted
+    // decision and the recorded action, where the hook used to deny while the
+    // row said `redact`.
+    expect(result.action).toBe('block');
+    expect(result.redactDegradedTo).toBe(result.action);
     expect(result.findings.map((f) => f.ruleId)).toContain('core-pii/ip-address');
-    expect(result.text).not.toContain(IP);
-    expect(result.text).toContain('[REDACTED:PII]');
 
-    // The fix — the incident's second half must be impossible: the decision
-    // is a deny, and the spliced command never leaves the hook.
     const output = await decide('Bash', { command: INCIDENT_COMMAND }, [
       { spec: BASH_COMMAND, result },
     ]);
@@ -418,6 +514,26 @@ describe('incident regression — the seed-cleanup DELETE, end to end', () => {
     expect(reason).toContain(EXECUTABLE_REDACT_NOTE);
     expect(JSON.stringify(output)).not.toContain('updatedInput');
     expect(JSON.stringify(output)).not.toContain('[REDACTED');
+  });
+
+  it('LETS THE SPLICED COMMAND RUN under the shipped warn fallback', async () => {
+    // The incident this suite is named for, under the shipped default. The
+    // command runs with the IP intact and the user sees a systemMessage. That
+    // is the setting working as decided, not a regression — and it is why this
+    // case exists rather than the behaviour being left to be discovered.
+    const rt = createPluginRuntime(fakeGateway(bundle()), settings());
+    const result = await rt.capture(command(INCIDENT_COMMAND), { rewritable: false });
+    await rt.close();
+
+    expect(result.action).toBe('warn');
+    expect(result.redactDegradedTo).toBe(result.action);
+    expect(result.text).toContain(IP);
+
+    const emitted = JSON.stringify(
+      await decide('Bash', { command: INCIDENT_COMMAND }, [{ spec: BASH_COMMAND, result }]),
+    );
+    expect(emitted).toContain('AKA flagged sensitive content in Bash input');
+    expect(emitted).not.toContain('updatedInput');
   });
 
   it('drives the real ledger: the escalated deny surfaces a concrete approve ref', async () => {
@@ -429,11 +545,11 @@ describe('incident regression — the seed-cleanup DELETE, end to end', () => {
     // THAT concrete ledger reference — closing the loop end to end.
     const dir = mkdtempSync(join(tmpdir(), 'aka-pre-tool-use-'));
     try {
-      const rt = createPluginRuntime(fakeGateway(bundle()), settings(), { dataDir: dir });
-      const result = await rt.processText(INCIDENT_COMMAND);
+      const rt = createPluginRuntime(fakeGateway(bundle()), settings('block'), { dataDir: dir });
+      const result = await rt.capture(command(INCIDENT_COMMAND), { rewritable: false });
       await rt.close();
 
-      expect(result.action).toBe('redact');
+      expect(result.action).toBe('block');
       // Default to '' so the type narrows to string; the 6-hex regex below still
       // fails loudly if the runtime produced no ledger reference.
       const ref = result.blockedReferences?.[0]?.reference ?? '';

@@ -59,3 +59,27 @@ describe('SKILL.md known-limitation disclosure', () => {
     expect(skillMd).toMatch(/reversible secret vault is\s+not yet wired for Codex/);
   });
 });
+
+// The redact-fallback disclosure this plugin adds. Pinned for the reason the
+// Antigravity sibling's is: the wording states what a DEFAULT install does with
+// a value a policy wanted masked, and nothing else here would go red if it
+// drifted.
+describe('SKILL.md redact-fallback disclosure', () => {
+  const flat = skillMd.replace(/\s+/g, ' ');
+
+  it('names the class, the default and the way back', () => {
+    expect(flat).toMatch(/redact policy cannot mask a \*\*shell command\*\*/i);
+    expect(flat).toMatch(/redact fallback/i);
+    expect(flat).toMatch(/ships as \*\*warn\*\*/i);
+    expect(flat).toMatch(/runs with the value unmasked/i);
+    expect(flat).toMatch(/Set it to \*\*block\*\*/i);
+  });
+
+  it('keeps apply_patch on the masked side, where the field classification puts it', () => {
+    // `apply_patch.input` is classified `executable: false`, so the hook
+    // captures it rewritable and a redact really is carried out there. This is
+    // the half of the disclosure that is a CAPABILITY claim rather than a
+    // limitation, so it is the half that must not drift optimistically.
+    expect(flat).toMatch(/apply_patch[^.]*masked in place/i);
+  });
+});

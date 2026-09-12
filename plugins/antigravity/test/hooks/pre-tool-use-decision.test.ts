@@ -2,13 +2,19 @@
 // entry file (src/hooks/*.ts run main() on import and hang vitest collection).
 //
 // Adapted from plugins/codex/test/hooks/pre-tool-use-decision.test.ts, but the
-// DECISION RULE ITSELF differs here, not just the field table. Claude Code and
-// Codex can rewrite a tool argument in place (`updatedInput`), so a redact
-// policy escalates to a deny only on text that EXECUTES. Antigravity's
-// PreToolUse output is `{ decision, reason, permissionOverrides }` with no
-// argument-rewrite channel at all, so EVERY redact escalates — including on
-// durable file content, which the siblings would have masked and let through.
-// That is what the "stored text also denies" case below pins.
+// SCOPE differs here, not just the field table. Claude Code and Codex can
+// rewrite a tool argument in place (`updatedInput`), so only text that EXECUTES
+// is unrewritable there. Antigravity's PreToolUse output is
+// `{ decision, reason, permissionOverrides }` with no argument-rewrite channel
+// at all, so EVERY field is unrewritable — including durable file content,
+// which the siblings mask and let through. That is what the "stored text" case
+// below pins.
+//
+// What a redact policy then DOES is a workspace setting (`redactFallback`), not
+// a rule of this module: the runtime resolves it before the decision module
+// sees anything, and says what it became on `redactDegradedTo`. Both settings are driven
+// below, because the shipped default (`warn`) lets a call through that the
+// strict setting (`block`) denies, and neither is inferable from the other.
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,6 +23,7 @@ import { join } from 'node:path';
 import type { CaptureResult, DataGateway } from '@akasecurity/plugin-sdk';
 import { createPluginRuntime } from '@akasecurity/plugin-sdk';
 import type { PolicyBundle, WorkspaceSettings } from '@akasecurity/schema';
+import { SOURCE_TOOL } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { PreToolUseOutput, ScannableField } from '../../src/hooks/pre-tool-use-decision.ts';
@@ -48,16 +55,29 @@ function finding(ruleId: string, rawMatch: string, text: string): Finding {
   };
 }
 
-function redactResult(
+// What the runtime hands this module for a field this host cannot rewrite: the
+// policy resolved to `redact`, the capture declared the field unrewritable, and
+// the action is therefore the workspace's `redactFallback`. `redactDegradedTo`
+// carries that fact — the ACTION the lost redact became — and it is the only
+// thing separating this from a policy that genuinely said `warn`.
+//
+// The text is the ORIGINAL, unmasked — nothing was rewritten, which is the
+// point. A block carries null, as decide() returns for one.
+// `action` is what the fallback POLICY resolves to, not the policy id: the
+// `monitor` fallback's action is `log` (BUILTIN_POLICY_SPECS), and ActionTaken
+// carries no `monitor` member at all.
+function degradedRedact(
+  action: 'log' | 'warn' | 'block',
   text: string,
   ruleId: string,
   rawMatch: string,
   reference?: string,
 ): CaptureResult {
   return {
-    action: 'redact',
-    text: text.replace(rawMatch, '[REDACTED:PII]'),
+    action,
+    text: action === 'block' ? null : text,
     findings: [finding(ruleId, rawMatch, text)],
+    redactDegradedTo: action,
     ...(reference ? { blockedReferences: [{ reference, ruleId, maskedValue: '4******6' }] } : {}),
   };
 }
@@ -89,11 +109,11 @@ describe('SCANNABLE_FIELDS', () => {
   });
 });
 
-describe('decidePreToolUse — redact escalates to deny on executable text', () => {
+describe('decidePreToolUse — a redact this host cannot perform follows the fallback', () => {
   const COMMAND = `psql -c "DELETE FROM share_destination WHERE host = '${IP}';"`;
 
-  it('denies the run_command call instead of rewriting the command', () => {
-    const result = redactResult(COMMAND, 'core-pii/ip-address', IP, '3f2a91');
+  it('denies the run_command call under a block fallback, and says masking was not possible', () => {
+    const result = degradedRedact('block', COMMAND, 'core-pii/ip-address', IP, '3f2a91');
     const output = decidePreToolUse('run_command', [{ spec: RUN_COMMAND, result }]);
 
     const reason = denyReason(output);
@@ -103,6 +123,61 @@ describe('decidePreToolUse — redact escalates to deny on executable text', () 
     // No masked text may ride along: there is no field that would apply it, so
     // emitting one would leak a preview into a payload nothing consumes.
     expect(JSON.stringify(output)).not.toContain('[REDACTED');
+  });
+
+  it('LETS THE CALL THROUGH under the shipped warn fallback', () => {
+    // The consequence of the shipped default, pinned rather than left implicit:
+    // this host denied every redact before the fallback existed, and under
+    // `warn` the same command now runs with the value unmasked. Antigravity's
+    // PreToolUse has no message channel either, so `warn` is invisible on
+    // screen — it differs from `monitor` only in the recorded action.
+    const result = degradedRedact('warn', COMMAND, 'core-pii/ip-address', IP, '3f2a91');
+    const output = decidePreToolUse('run_command', [{ spec: RUN_COMMAND, result }]);
+
+    expect(output.decision).toBe('allow');
+    expect(output.reason).toBeUndefined();
+  });
+
+  it('lets it through under a monitor fallback too, with nothing said', () => {
+    // The `monitor` fallback resolves to the `log` ACTION — there is no
+    // `monitor` member on ActionTaken.
+    const result = degradedRedact('log', COMMAND, 'core-pii/ip-address', IP);
+    expect(decidePreToolUse('run_command', [{ spec: RUN_COMMAND, result }]).decision).toBe('allow');
+  });
+
+  it('does NOT explain a deny that some OTHER finding produced', () => {
+    // The mixed shape: one capture carrying a degraded redact AND a finding
+    // whose own policy is `block`. `action` is `block` because that is the
+    // worst of the two, but the fallback resolved to `warn` — so the deny is
+    // the credential's doing and a note naming a `block` fallback would state
+    // a setting this workspace does not have.
+    //
+    // Both findings DO reach the deny here, and that is worth saying because
+    // the opposite is easy to assume: the rule-id filter keys on the RESULT's
+    // action, not each finding's, so a blocking result contributes every rule
+    // id it carries — `core-pii/ip-address` included, asserted below. The
+    // starvation case where a degraded finding contributes nothing needs it in
+    // a SEPARATE scanned field whose own action is `warn`, which is the shape
+    // the Claude Code sibling builds rather than this one.
+    const mixed: CaptureResult = {
+      action: 'block',
+      text: null,
+      findings: [
+        finding('secrets-infra/db-connection-string', 'SECRET', COMMAND),
+        finding('core-pii/ip-address', IP, COMMAND),
+      ],
+      redactDegradedTo: 'warn',
+      blockedReferences: [
+        { reference: 'aa11bb', ruleId: 'secrets-infra/db-connection-string', maskedValue: 'S***T' },
+      ],
+    };
+    const reason = denyReason(
+      decidePreToolUse('run_command', [{ spec: RUN_COMMAND, result: mixed }]),
+    );
+    expect(reason).toContain('secrets-infra/db-connection-string');
+    // The comment above, asserted rather than claimed.
+    expect(reason).toContain('core-pii/ip-address');
+    expect(reason).not.toContain(NO_REWRITE_REDACT_NOTE);
   });
 
   it('a plain block (no escalation) carries no escalation note', () => {
@@ -118,13 +193,15 @@ describe('decidePreToolUse — redact escalates to deny on executable text', () 
   });
 });
 
-describe('decidePreToolUse — redact on STORED text also denies', () => {
-  it('write_to_file content denies rather than masking in place', () => {
+describe('decidePreToolUse — STORED text is unrewritable here too', () => {
+  it('write_to_file content denies under a block fallback rather than masking in place', () => {
     // This is the case that diverges from Claude Code and Codex, which would
     // both allow the call with a masked `updatedInput`. Antigravity has no such
-    // field, so allowing here would write the RAW value to disk.
+    // field, so the capture declares even file content unrewritable — and
+    // under a `warn` fallback the RAW value reaches disk, which is exactly what
+    // the setting is choosing between.
     const content = `support = ${EMAIL}\n`;
-    const result = redactResult(content, 'core-pii/email', EMAIL, '9c04d7');
+    const result = degradedRedact('block', content, 'core-pii/email', EMAIL, '9c04d7');
     const output = decidePreToolUse('write_to_file', [{ spec: WRITE_CONTENT, result }]);
 
     const reason = denyReason(output);
@@ -179,7 +256,7 @@ describe('decidePreToolUse — warn and clean both allow', () => {
 // The sensitive-looking literals are ASSEMBLED AT RUNTIME (see the IP/EMAIL
 // consts above) so this repo's own scanning never rewrites the fixtures.
 
-function settings(): WorkspaceSettings {
+function settings(redactFallback: WorkspaceSettings['redactFallback'] = 'warn'): WorkspaceSettings {
   return {
     specVersion: 1,
     runMode: 'standalone',
@@ -188,7 +265,7 @@ function settings(): WorkspaceSettings {
     dataSharesInPlace: true,
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
-    redactFallback: 'warn',
+    redactFallback,
   };
 }
 
@@ -272,15 +349,24 @@ describe('incident regression — the seed-cleanup DELETE, end to end', () => {
     `('acme-partner.com'),('${IP}'); ` +
     'DELETE FROM share_destination sd USING seed_hosts sh WHERE sd.host = sh.host;"';
 
-  it('runtime redacts the IP out of the SQL; the hook decision denies instead of executing it', async () => {
-    const rt = createPluginRuntime(fakeGateway(bundle()), settings());
-    const result = await rt.processText(INCIDENT_COMMAND);
+  // Driven through `capture` with `rewritable: false` — the call the hook
+  // really makes — rather than through `processText`, which has no such option
+  // and so could never exercise the degrade. That distinction is the point of
+  // the change these cases cover: the resolution moved INTO the runtime, so a
+  // test that never passes the flag proves nothing about it.
+  const command = (text: string) =>
+    ({ kind: 'tool_use', sourceTool: SOURCE_TOOL.Antigravity, text }) as const;
+
+  it('resolves the redact to a deny INSIDE the runtime under a block fallback', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle()), settings('block'));
+    const result = await rt.capture(command(INCIDENT_COMMAND), { rewritable: false });
     await rt.close();
 
-    expect(result.action).toBe('redact');
+    // The runtime, not the hook, is what refused: the emitted decision and the
+    // recorded action are one value, which is what the old escalation broke.
+    expect(result.action).toBe('block');
+    expect(result.redactDegradedTo).toBe(result.action);
     expect(result.findings.map((f) => f.ruleId)).toContain('core-pii/ip-address');
-    expect(result.text).not.toContain(IP);
-    expect(result.text).toContain('[REDACTED:PII]');
 
     const output = decidePreToolUse('run_command', [{ spec: RUN_COMMAND, result }]);
     const reason = denyReason(output);
@@ -289,14 +375,30 @@ describe('incident regression — the seed-cleanup DELETE, end to end', () => {
     expect(JSON.stringify(output)).not.toContain('[REDACTED');
   });
 
-  it('drives the real ledger: the escalated deny surfaces a concrete approve ref', async () => {
+  it('lets the same command run under the shipped warn fallback, recorded as warn', async () => {
+    const rt = createPluginRuntime(fakeGateway(bundle()), settings());
+    const result = await rt.capture(command(INCIDENT_COMMAND), { rewritable: false });
+    await rt.close();
+
+    // The incident this module exists for, under the shipped default: the
+    // policy asked for a redact, the host cannot mask an argument, and the
+    // fallback lets the command through. The row says `warn` — never `redact`,
+    // which would claim a masking that did not happen.
+    expect(result.action).toBe('warn');
+    expect(result.redactDegradedTo).toBe(result.action);
+    expect(result.text).toContain(IP);
+
+    expect(decidePreToolUse('run_command', [{ spec: RUN_COMMAND, result }]).decision).toBe('allow');
+  });
+
+  it('drives the real ledger: the deny surfaces a concrete approve ref', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'aka-antigravity-pre-tool-use-'));
     try {
-      const rt = createPluginRuntime(fakeGateway(bundle()), settings(), { dataDir: dir });
-      const result = await rt.processText(INCIDENT_COMMAND);
+      const rt = createPluginRuntime(fakeGateway(bundle()), settings('block'), { dataDir: dir });
+      const result = await rt.capture(command(INCIDENT_COMMAND), { rewritable: false });
       await rt.close();
 
-      expect(result.action).toBe('redact');
+      expect(result.action).toBe('block');
       const ref = result.blockedReferences?.[0]?.reference ?? '';
       expect(ref).toMatch(/^[0-9a-f]{6}$/);
 

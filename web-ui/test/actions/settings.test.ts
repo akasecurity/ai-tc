@@ -1,14 +1,14 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { readWorkspaceSettings } from '@akasecurity/persistence';
 import type { SaveSettingsInput } from '@akasecurity/schema';
 import { HISTORY_SYNC_PAYLOAD_VERSION, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import { saveSettings } from '../../app/(app)/settings/actions.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // `saveSettings` is the web surface that records and revokes the vault-consent
 // grant. The grant must always be stamped server-side ('on' has no input path
@@ -28,6 +28,11 @@ vi.mock('node:os', async (importActual) => {
 });
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 
+// Homes are removed when this FILE finishes, not after each test: the store
+// app/lib/db.ts opens under them stays open, and Windows will not delete a
+// directory a handle still holds. See the helper.
+const newHome = tempHomes('aka-web-settings-');
+
 let home: string;
 
 function settingsFile(): string {
@@ -39,12 +44,8 @@ function rawSettings(): string {
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-web-settings-'));
+  home = newHome();
   osHome.dir = home;
-});
-
-afterEach(() => {
-  rmSync(home, { recursive: true, force: true });
 });
 
 const ENDPOINT = 'https://plane.example.com';

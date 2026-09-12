@@ -9,6 +9,8 @@ import type { ComponentProps, ReactElement, ReactNode } from 'react';
 import { Children, isValidElement } from 'react';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { releaseLocalStore } from '../helpers/temp-home.ts';
+
 // The Updates route derives ONE line per component and hands it to a confirm
 // dialog that introduces it with "This runs the following command on this
 // machine". For the CLI that line depends on how this copy was installed, and
@@ -75,7 +77,11 @@ beforeEach(() => {
   osHome.dir = tempDir('aka-web-updates-home-');
 });
 
-afterAll(() => {
+afterAll(async () => {
+  // The store app/lib/db.ts opened under one of these homes is still held, and
+  // Windows will not remove a directory a handle has open. Removing at afterAll
+  // was already right; releasing first is what makes it work there too.
+  await releaseLocalStore();
   for (const dir of temps) rmSync(dir, { recursive: true, force: true });
 });
 

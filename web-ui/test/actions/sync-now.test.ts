@@ -1,6 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type * as LocalOps from '@akasecurity/local-ops';
@@ -13,7 +12,7 @@ import {
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { syncNow } from '../../app/(app)/settings/actions.ts';
 import {
@@ -24,6 +23,7 @@ import {
   SYNC_PAUSED,
   SYNC_SPAWN_FAILED,
 } from '../../app/lib/action-refusals.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // `syncNow` is the only action on this surface that starts a PROCESS, and the
 // three things worth asserting about it all follow from that: it must not start
@@ -56,6 +56,11 @@ vi.mock('@akasecurity/local-ops', async (importActual) => {
     },
   };
 });
+
+// Homes are removed when this FILE finishes, not after each test: the store
+// app/lib/db.ts opens under them stays open, and Windows will not delete a
+// directory a handle still holds. See the helper.
+const newHome = tempHomes('aka-web-sync-now-');
 
 let home: string;
 
@@ -100,14 +105,10 @@ function openBreaker(openedAtMs: number): void {
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-web-sync-now-'));
+  home = newHome();
   osHome.dir = home;
   spawn.bases = [];
   spawn.result = { started: true };
-});
-
-afterEach(() => {
-  rmSync(home, { recursive: true, force: true });
 });
 
 describe('syncNow', () => {

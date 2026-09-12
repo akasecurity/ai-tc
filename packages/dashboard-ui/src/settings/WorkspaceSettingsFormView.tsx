@@ -255,6 +255,32 @@ export const INLINE_REVEAL_SECTION_DESCRIPTION =
   "How a vault pointer renders inside Claude's on-screen replies. Display-only — the " +
   'transcript and what the model sees always keep the pointer.';
 
+/** The horizon's legal range — `BodyRetention`'s own, restated nowhere else. */
+export const RETAIN_DAYS_MIN = 1;
+export const RETAIN_DAYS_MAX = 3650;
+
+export type BodyExpiryChoice = 'on' | 'off';
+
+export const RETAIN_DAYS_ERROR = `Enter a whole number of days, ${String(RETAIN_DAYS_MIN)}\u2013${String(RETAIN_DAYS_MAX)}.`;
+
+export const BODY_EXPIRY_LABEL = 'Expire captured bodies';
+export const BODY_EXPIRY_DESCRIPTION =
+  'Clear the stored text of old captures, keeping the events and their findings.';
+
+export const BODY_EXPIRY_CHOICES: Choice<BodyExpiryChoice>[] = [
+  {
+    value: 'off',
+    label: 'Keep everything',
+    description: 'Bodies are kept for as long as the store lives.',
+  },
+  {
+    value: 'on',
+    label: 'Expire after a horizon',
+    description:
+      'Clear bodies past the horizon below. The events, their severities and every finding stay.',
+  },
+];
+
 export const INLINE_REVEAL_CHOICES: Choice<WorkspaceSettings['vaultInlineReveal']>[] = [
   {
     value: 'masked',
@@ -533,7 +559,7 @@ export interface WorkspaceSettingsFormViewProps {
   onSave: (
     changes: Pick<
       WorkspaceSettings,
-      'historicalAccess' | 'vaultInlineReveal' | 'redactFallback'
+      'historicalAccess' | 'vaultInlineReveal' | 'redactFallback' | 'bodyRetention'
     > & {
       modelJudgeConsent: ModelJudgeConsentChoice;
       // THREE answers, not two — see HistorySyncConsentChoice. 'unchanged' is
@@ -647,6 +673,20 @@ export function WorkspaceSettingsFormView({
   const [vaultConsent, setVaultConsent] = useState(vaultChoiceOf(settings.vaultConsent));
   const [inlineReveal, setInlineReveal] = useState(settings.vaultInlineReveal);
   const [redactFallback, setRedactFallback] = useState(settings.redactFallback);
+  const [bodyExpiry, setBodyExpiry] = useState<BodyExpiryChoice>(
+    settings.bodyRetention.enabled ? 'on' : 'off',
+  );
+  // Held as the RAW string the user is typing, not as a number. Parsing on every
+  // keystroke cannot represent a half-typed or emptied field, so it either
+  // fights the caret or silently substitutes a horizon nobody asked for — on a
+  // control that decides what gets destroyed.
+  const [retainDaysText, setRetainDaysText] = useState(String(settings.bodyRetention.retainDays));
+  const retainDays = Number(retainDaysText);
+  const retainDaysValid =
+    retainDaysText.trim() !== '' &&
+    Number.isInteger(retainDays) &&
+    retainDays >= RETAIN_DAYS_MIN &&
+    retainDays <= RETAIN_DAYS_MAX;
 
   // One helper rather than a check per row: a locked field must render the same
   // way everywhere, and an inline conditional per section is how one of them
@@ -657,6 +697,8 @@ export function WorkspaceSettingsFormView({
 
   const dirty =
     historicalAccess !== settings.historicalAccess ||
+    bodyExpiry !== (settings.bodyRetention.enabled ? 'on' : 'off') ||
+    (retainDaysValid && retainDays !== settings.bodyRetention.retainDays) ||
     modelJudge !== initialModelJudge ||
     historySync !== initialHistorySync ||
     vaultConsent !== vaultChoiceOf(settings.vaultConsent) ||
@@ -802,12 +844,57 @@ export function WorkspaceSettingsFormView({
         />
       </SettingGroup>
 
+      <SettingGroup title="Storage">
+        <SettingRow
+          label={BODY_EXPIRY_LABEL}
+          description={BODY_EXPIRY_DESCRIPTION}
+          name="bodyRetention"
+          choices={BODY_EXPIRY_CHOICES}
+          value={bodyExpiry}
+          onChange={setBodyExpiry}
+          managed={lockOn('bodyRetention')}
+        >
+          {/* The horizon sits inside the row rather than beside it, and only
+              once expiry is on: a day count offered next to "Keep everything"
+              is a control with no effect, which reads as broken. */}
+          {bodyExpiry === 'on' && (
+            <div className="mt-3 flex items-center gap-2" data-slot="retain-days">
+              <label htmlFor="retainDays" className="text-xs text-text-2">
+                Keep bodies for
+              </label>
+              <input
+                id="retainDays"
+                name="retainDays"
+                type="number"
+                inputMode="numeric"
+                min={RETAIN_DAYS_MIN}
+                max={RETAIN_DAYS_MAX}
+                value={retainDaysText}
+                disabled={lockOn('bodyRetention') !== undefined}
+                onChange={(e) => {
+                  setRetainDaysText(e.target.value);
+                }}
+                className="w-20 rounded-md border border-border bg-surface px-2 py-1 text-sm text-text disabled:opacity-50"
+                aria-invalid={!retainDaysValid}
+                aria-describedby={retainDaysValid ? undefined : 'retainDays-error'}
+              />
+              <span className="text-xs text-text-2">days</span>
+              {!retainDaysValid && (
+                <span id="retainDays-error" className="text-xs text-sev-critical-ink">
+                  {RETAIN_DAYS_ERROR}
+                </span>
+              )}
+            </div>
+          )}
+        </SettingRow>
+      </SettingGroup>
+
       <div className="flex items-center gap-3">
         <Button
           variant="solid"
           tone="primary"
           size="sm"
-          disabled={!dirty || busy}
+          disabled={!dirty || busy === true || (bodyExpiry === 'on' && !retainDaysValid)}
           onClick={() => {
             onSave({
               historicalAccess,
@@ -835,6 +922,15 @@ export function WorkspaceSettingsFormView({
                 : 'unchanged',
               vaultConsent,
               vaultInlineReveal: inlineReveal,
+              // The horizon is only sent as a number once it parses as one. An
+              // invalid field cannot reach here anyway — Save is disabled while
+              // it is — but falling back to the SAVED value rather than to a
+              // constant means a malformed entry can never quietly rewrite a
+              // horizon the user already chose.
+              bodyRetention: {
+                enabled: bodyExpiry === 'on',
+                retainDays: retainDaysValid ? retainDays : settings.bodyRetention.retainDays,
+              },
             });
           }}
         >

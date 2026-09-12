@@ -143,4 +143,12 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0028_activity_session_probe_indexes',
     sql: "CREATE INDEX `idx_audit_session_prompt` ON `audit_events` (`root_session_id`) WHERE event_type = 'prompt';--> statement-breakpoint\nCREATE INDEX `idx_audit_session_share` ON `audit_events` (`root_session_id`) WHERE event_type = 'share';--> statement-breakpoint\nCREATE INDEX `idx_audit_ended_at` ON `audit_events` (`ended_at`,`root_session_id`) WHERE ended_at IS NOT NULL;--> statement-breakpoint\nCREATE INDEX `idx_audit_session_ended` ON `audit_events` (`root_session_id`,`ended_at`) WHERE ended_at IS NOT NULL;--> statement-breakpoint\n-- Expression index for the activity list's turns rollup: a live-captured\n-- session's turns are the DISTINCT `run_key` across its `llm_call` leaves, and\n-- carrying the extracted key in the index answers that count from the index\n-- alone instead of parsing every leaf's attribute bag. Written by hand, as\n-- 0013's `idx_audit_code_change_path` was: drizzle-kit cannot emit an\n-- expression containing a comma, so this index is not declared in sqlite.ts.\nCREATE INDEX `idx_audit_session_run_key` ON `audit_events` (`root_session_id`, json_extract(`attributes`, '$.run_key')) WHERE `event_type` = 'llm_call';\n",
   },
+  {
+    tag: '0029_audit_capture_rollup_index',
+    sql: "CREATE INDEX `idx_audit_capture_rollup` ON `audit_events` (`event_type`,`started_at`,`repo`,`id`) WHERE event_type IN ('prompt','response','code_change','tool_use');",
+  },
+  {
+    tag: '0030_audit_content_expiry',
+    sql: 'ALTER TABLE `audit_events` ADD `content_expired_at` integer;--> statement-breakpoint\nCREATE INDEX `idx_audit_expirable_body` ON `audit_events` (`started_at`) WHERE content IS NOT NULL;',
+  },
 ];

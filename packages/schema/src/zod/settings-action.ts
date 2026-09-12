@@ -90,6 +90,10 @@ export const SaveSettingsInput = z.object({
   // on the action's shared refusal, which names NO field, where a shape
   // rejection reaches `malformedInput` and names the schema key.
   redactFallback: z.string(),
+  // Shape only, the way the enum fields above are strings only: the RANGE is
+  // `BodyRetention`'s and the action checks it there, so there is one place
+  // that decides what a legal horizon is rather than two that can drift.
+  bodyRetention: z.object({ enabled: z.boolean(), retainDays: z.number() }),
 });
 export type SaveSettingsInput = z.infer<typeof SaveSettingsInput>;
 

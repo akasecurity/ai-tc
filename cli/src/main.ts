@@ -10,6 +10,7 @@ import { runException } from './commands/exception.ts';
 import { runExtension } from './commands/extension.ts';
 import { runInit } from './commands/init.ts';
 import { runPlugins } from './commands/plugins.ts';
+import { runPrune } from './commands/prune.ts';
 import { runScan } from './commands/scan.ts';
 import { runStats } from './commands/stats.ts';
 import { runSyncHistory } from './commands/sync-history.ts';
@@ -43,6 +44,9 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
     runDetach(argv);
   },
   status: (argv) => runStatus(argv),
+  prune: (argv) => {
+    runPrune(argv);
+  },
   'sync-history': (argv) => runSyncHistory(argv),
   tui: runTui,
   update: runUpdate,

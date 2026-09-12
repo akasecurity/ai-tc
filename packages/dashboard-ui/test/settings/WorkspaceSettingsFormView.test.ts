@@ -1,4 +1,4 @@
-import type { CredentialState, WorkspaceSettings } from '@akasecurity/schema';
+import type { CredentialState, ManagedContext, WorkspaceSettings } from '@akasecurity/schema';
 import {
   BUILTIN_POLICIES,
   HISTORY_SYNC_PAYLOAD_VERSION,
@@ -44,6 +44,8 @@ import {
   REDACT_FALLBACK_CHOICES,
   REDACT_FALLBACK_SECTION_DESCRIPTION,
   REDACT_FALLBACK_SECTION_LABEL,
+  RETAIN_DAYS_MAX,
+  RETAIN_DAYS_MIN,
   submitAttach,
   VAULT_CHOICES,
   VAULT_SECTION_DESCRIPTION,
@@ -465,6 +467,7 @@ describe('stale grant enables the one-save re-consent', () => {
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
     redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
     vaultConsent: {
       acknowledgedAt: '2020-01-01T00:00:00.000Z',
       version: VAULT_CONSENT_VERSION + 1,
@@ -577,6 +580,7 @@ describe('stale history-sync grant', () => {
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
     redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
     historySyncConsent: consent,
   });
 
@@ -672,6 +676,7 @@ describe('the connection section', () => {
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
     redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
   };
 
   const attached: WorkspaceSettings = {
@@ -862,6 +867,7 @@ describe('administratively locked rows', () => {
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
     redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
   };
 
   const lockedHtml = (): string =>
@@ -1045,6 +1051,7 @@ describe('the enforcement pointer', () => {
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
     redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
   };
 
   it('links to the Detections page and offers no control of its own', () => {
@@ -1091,6 +1098,7 @@ describe('the connection section, credential state', () => {
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
     redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
   };
 
   const attached: WorkspaceSettings = {
@@ -1178,5 +1186,69 @@ describe('the connection section, credential state', () => {
     const html = render({ settings: base, credentialState: { usable: false, reason: 'absent' } });
     expect(html).not.toContain('data-slot="connection-credential-notice"');
     expect(html).not.toContain(CONNECTION_INACTIVE_BADGE);
+  });
+});
+
+describe('body-expiry section', () => {
+  const base: WorkspaceSettings = {
+    specVersion: 8,
+    runMode: 'standalone',
+    policy: 'redact',
+    historicalAccess: 'session-only',
+    dataSharesInPlace: true,
+    vaultKeyCustody: 'file',
+    vaultInlineReveal: 'masked',
+    redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
+  };
+
+  const render = (settings: WorkspaceSettings, managed?: ManagedContext): string =>
+    renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, {
+        settings,
+        onSave: () => undefined,
+        busy: false,
+        ...(managed === undefined ? {} : { managed }),
+      }),
+    );
+
+  it('offers no horizon field while expiry is off', () => {
+    // A day count beside "Keep everything" is a control with no effect, which
+    // reads as broken rather than as off.
+    expect(render(base)).not.toContain('data-slot="retain-days"');
+  });
+
+  it('offers the horizon, seeded from the setting, once expiry is on', () => {
+    const html = render({ ...base, bodyRetention: { enabled: true, retainDays: 7 } });
+    expect(html).toContain('data-slot="retain-days"');
+    expect(html).toContain('value="7"');
+  });
+
+  it('renders 30 as the shipped default', () => {
+    // The number a machine carries before anyone opens this page.
+    const html = render({ ...base, bodyRetention: { enabled: true, retainDays: 30 } });
+    expect(html).toContain('value="30"');
+  });
+
+  it('bounds the input at the range the schema enforces', () => {
+    const html = render({ ...base, bodyRetention: { enabled: true, retainDays: 30 } });
+    expect(html).toContain(`min="${String(RETAIN_DAYS_MIN)}"`);
+    expect(html).toContain(`max="${String(RETAIN_DAYS_MAX)}"`);
+  });
+
+  it('disables the horizon when an administrator has pinned it', () => {
+    const html = render(
+      { ...base, bodyRetention: { enabled: true, retainDays: 14 } },
+      { present: true, lockedFields: ['bodyRetention'] },
+    );
+    // The choice group is disabled by the row's fieldset; the number input sits
+    // outside it and has to carry its own.
+    //
+    // Matched as the ATTRIBUTE, never as the bare word: the input's own
+    // className carries `disabled:opacity-50`, so `toContain('disabled')` is
+    // satisfied by the styling whether or not the control is actually locked —
+    // which is how this assertion first went green with the lock deleted.
+    const field = html.slice(html.indexOf('data-slot="retain-days"'));
+    expect(field.slice(0, field.indexOf('</div>'))).toContain('disabled=""');
   });
 });

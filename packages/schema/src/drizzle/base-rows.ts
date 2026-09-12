@@ -140,6 +140,10 @@ export interface BaseAuditEventRow<TTime = number> {
   priority: string | null;
   content: string | null;
   contentHash: string | null;
+  // When local body expiry cleared `content`, if it did — the difference
+  // between "expired" and "never carried a body", which `content IS NULL`
+  // alone cannot express.
+  contentExpiredAt: number | null;
   attributes: string | null;
   inputTokens: number | null;
   outputTokens: number | null;

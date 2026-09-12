@@ -69,6 +69,7 @@ const settings = (): WorkspaceSettings => ({
   vaultKeyCustody: 'file',
   vaultInlineReveal: 'masked',
   redactFallback: 'warn',
+  bodyRetention: { enabled: false, retainDays: 30 },
 });
 
 const policy = (target: Policy['target'], action: Policy['action']): Policy => ({

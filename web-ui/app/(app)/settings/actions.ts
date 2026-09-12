@@ -27,6 +27,7 @@ import type {
 } from '@akasecurity/schema';
 import {
   AttachInput,
+  BodyRetention,
   HistoricalAccess,
   HISTORY_SYNC_PAYLOAD_VERSION,
   isAttached,
@@ -146,11 +147,18 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
   const historicalAccess = HistoricalAccess.safeParse(data.historicalAccess);
   const inlineReveal = VaultInlineReveal.safeParse(data.vaultInlineReveal);
   const redactFallback = RedactFallback.safeParse(data.redactFallback);
+  // The horizon's RANGE is checked here rather than at the input boundary, so
+  // the one definition of a legal window is `BodyRetention`'s own. A day count
+  // outside it is refused rather than clamped: a silently-rounded horizon
+  // expires a different set of bodies than the one the user asked for, and
+  // expiry is not undoable.
+  const bodyRetention = BodyRetention.safeParse(data.bodyRetention);
   const vaultChoice = data.vaultConsent;
   if (
     !historicalAccess.success ||
     !inlineReveal.success ||
     !redactFallback.success ||
+    !bodyRetention.success ||
     (vaultChoice !== 'on' && vaultChoice !== 'off')
   ) {
     return { ok: false, error: 'Invalid settings value.' };
@@ -173,6 +181,7 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
       historySyncBackfillAsOf = backfillAsOf;
       return {
         historicalAccess: historicalAccess.data,
+        bodyRetention: bodyRetention.data,
         // Grant records fresh consent at the current payload version; revoke
         // clears it (undefined ⇒ dropped by the schema on the merged write).
         // REQUIRED on the input, so an omitted field can no longer read as a

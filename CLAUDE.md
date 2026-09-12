@@ -1489,7 +1489,7 @@ The numbers, measured on arm64 macOS / Node 24 against corpora from
 
 | Property                                    | Measured                           | Gate                   |
 | ------------------------------------------- | ---------------------------------- | ---------------------- |
-| Store growth, 5k → 10k                      | **902.8 B/event** marginal         | ±15% band ✅           |
+| Store growth, 5k → 10k                      | **1,048.6 B/event** marginal       | ±15% band ✅           |
 | `recordCapture` 2k → 20k                    | ratio **1.02** (fastest of 200)    | ratio < 3 ✅           |
 | `openLocalDatabase` 2k → 20k                | ratio **0.99** (fastest of 20)     | ratio < 3 ✅           |
 | `recordCapture` at 1M rows                  | 0.076 ms median, 0.116 p95 (n=200) | backstop ≤ 1,000 ms ✅ |
@@ -1510,6 +1510,12 @@ paid: the ratio's sensitivity floor moved by 2.5x (below), and the growth band's
 had to be retaken, because the marginal creeps with size — 902.8 B/event across 2.5k→5k,
 902.8 across 5k→10k, 923.2 across 10k→20k, all measured, all byte-identical run to run.
 **Do not carry a centre across a size change**; a stale one still reads green.
+
+**Nor across a SCHEMA change**, which is what moved it last: migration 0029's
+`idx_audit_capture_rollup` is bytes per row like any other index, and the 5k→10k marginal
+went 902.8 → 1,048.6 — past the old ceiling of 1,038.2, which is how it announced itself.
+That is the index being paid for rather than a regression, and the figures above describe
+the corpus before it.
 
 **Nor across a CORPUS change, which is the harder one to remember because the test's own
 size did not move.** That centre was 797.9 until the generator's finding rate went from
@@ -1575,6 +1581,35 @@ none of the win — 23.6 ms against 0.9 ms with both, from 35.0 ms.
 The page's `Promise.all` still buys nothing: every repository method here runs its SQL
 **synchronously** and returns an already-resolved promise, so the page costs the SUM of the
 eight.
+
+**The dominant cost on a REAL store was none of the above — it was the ROW FETCH**, and the
+analysis above could not see it because a generated corpus does not reproduce it. `content`
+is declared before `attributes` in the record and holds whole file bodies on a
+`code_change` (42 KB average, 1.79 MB at the top end), so on a field store ~91% of
+`audit_events`' bytes are overflow pages, and reaching either `e.id` — this is a rowid
+table with a TEXT primary key, so a secondary index entry carries the rowid and never
+`id` — or any VIRTUAL column over the bag means walking that chain past the body, once per
+row. Measured on one 6 GB store: the same 53,383 rows cost 14 ms read through a covering
+index over two VIRTUAL columns and 5,020 ms read from the rows. Migration 0029's
+`idx_audit_capture_rollup` carries `(event_type, started_at, repo, id)` for the four
+capture kinds so the four broad rollups answer from the index, and the four reads carry
+`INDEXED BY`; the page went ~15 s to ~2 s warm, with `topSources` — which needs `repo` for
+every capture event in its window — going 8,278 ms to 72 ms WARM, and 8,922 ms to 74 ms
+COLD. The pairs are like-for-like on purpose: a before-figure and an after-figure measured
+in different cache states describe no speedup at all, and `security-probe-plans.test.ts`
+quotes the warm pair against this same warm page total. Two traps come with it.
+`EXPLAIN QUERY PLAN` will NOT say COVERING for a read naming `repo`, because SQLite counts
+a generated column's dependency on `attributes` as a reference to the row even while
+reading the value from the index, so the timing is the evidence and the label is not —
+`security-probe-plans.test.ts` pins the index by name and requires COVERING only of the
+reads that can reach it. And `LENGTH()` on a TEXT value **stops at the first NUL**, which
+real bodies carry (134,576 rows on that store), so any size query over `content` must be
+`LENGTH(CAST(content AS BLOB))` — the text form under-reported a 1.79 MB body as 9.
+
+What the index does NOT fix is `findingsInRange`, which feeds `findingsTimeseries` and
+`enforcementActions` and so runs twice per render: its cost is ~740k index probes across
+369k findings, and folding the JS rollup into SQL was measured at 1.0x — no gain. That one
+needs a rollup or a window, not tuning.
 
 **What remains is `severitySummary`, the budget is still missed at 1M, and closing it is a
 product decision.** Measured at three points — 159 ms at 50k, 350 ms at 150k, 729 ms at 300k
@@ -1656,16 +1691,46 @@ corpus helper says why it does not analyze. Two things to know when reproducing:
 seed without ever analyzing — and a single-id `IN (?)` may plan differently from a hundred-id
 one, so probe the page's real page size.
 
-**Two tables have a retention policy; six do not.**
+**Two tables have a ROW retention policy; six do not.**
 `BLOCKED_DETECTIONS_RETENTION_MS` (24 h) sweeps `blocked_detections`, and
 `EXCEPTION_RETENTION_MS` (90 days) sweeps terminal `exceptions`. `audit_events`,
 `inspection_findings`, `inspection_definitions` and the three `secret_vault*` tables have
-none — and `audit_events.content` is a full prompt corpus, so that is 818 B for every
-prompt, response and tool-call body the machine has ever produced. The vault tables raise
+none — and `audit_events.content` is a full prompt corpus. The vault tables raise
 a second concern beyond size: an entry nobody will reveal again is a ciphertext that
 stays decryptable for as long as its key epoch survives. `retention-surface.test.ts` pins
 the split behaviourally, with a positive control on the swept pair, so adding retention
 for one of the unbounded tables is a deliberate edit rather than a silent one.
+
+**A THIRD sweep expires BODIES, and it is on neither list because the lists are about
+ROWS.** Local body expiry (`bodyRetention` in settings, OFF by default, 30 days when
+switched on) clears `audit_events.content` past a horizon and stamps `content_expired_at`;
+the row, its timestamps and severity, and every finding derived from it are untouched, so
+`audit_events` stays among the tables nothing sweeps. That is where the bytes are — one
+measured 6 GB store carried 5.27 GB of body text, 4.85 GB of it `code_change` at 42 KB a
+row — so this is the difference between a store that settles and one that grows at
+~165 MB/day for ever. Three things about it are load-bearing. **The sync lane is gated**:
+a `prompt`/`response`/`tool_use` body with `synced_at IS NULL` is never expired while an
+attach or a history-sync grant could still claim it retroactively, which `canSweepSyncLane`
+is the single place that decides. **It deletes no row**, and `retention-surface.test.ts`
+now runs it in the same pass as the other two so that membership is a live assertion
+rather than a claim. **It frees no disk by itself**: SQLite returns the pages to its
+freelist, so new captures reuse them and the file stops growing, but the file does not
+shrink without a `VACUUM` — and an in-place one on a live store is unsafe here, because a
+held handle blocks the rename on Windows and loses writes to the unlinked inode on POSIX.
+`aka prune` runs a pass by hand; `triggerContentRetention` runs one hourly from
+SessionStart, in a detached child, never on the hook thread.
+
+**The horizon is configurable, and its RANGE has one definition.** `bodyRetention`
+(`{ enabled, retainDays }`, default `{ false, 30 }`) is editable under Settings → Storage
+and pinnable by an administrator as ONE unit, the way `runMode` + `controlPlane` are — a
+lock that froze the toggle while leaving the day count editable would not be a retention
+policy. `BodyRetention`'s own `min(1).max(3650)` is the only place a legal window is
+defined: `SaveSettingsInput` checks the SHAPE and the action checks the RANGE against that
+schema, so the two cannot drift. An out-of-range horizon is **refused, never clamped** —
+silently rounding one expires a different set of bodies than the user asked for, and
+expiry is not undoable. The Settings control holds the field as raw TEXT and disables Save
+while it does not parse, because parsing per keystroke cannot represent a half-typed or
+emptied field without substituting a horizon nobody chose.
 
 **`wal_autocheckpoint` is not set, and that does NOT mean the WAL is unbounded.**
 `openWithPragmas` leaves it alone, so SQLite's own default of 1000 pages applies: at the

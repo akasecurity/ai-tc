@@ -80,6 +80,7 @@ function settings(policy: 'redact' | 'warn' = 'redact'): WorkspaceSettings {
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
     redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
   };
 }
 

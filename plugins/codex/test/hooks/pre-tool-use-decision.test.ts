@@ -298,6 +298,7 @@ function settings(redactFallback: WorkspaceSettings['redactFallback'] = 'warn'):
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
     redactFallback,
+    bodyRetention: { enabled: false, retainDays: 30 },
   };
 }
 

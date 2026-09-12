@@ -934,6 +934,18 @@ const KEY_SAMPLES = {
     underPin: true,
     underUser: false,
   },
+  // The toggle and the day count pin as ONE unit, so the sample varies BOTH:
+  // a user answer differing only in `retainDays` has to be refused under the
+  // lock exactly as one differing in `enabled` does, and a sample that held the
+  // count equal on both sides could not tell those two apart.
+  bodyRetention: {
+    pin: { bodyRetention: { enabled: true, retainDays: 30 } },
+    userAnswer: { bodyRetention: { enabled: false, retainDays: 365 } },
+    echoAnswer: { bodyRetention: { enabled: true, retainDays: 30 } },
+    read: (s) => `${String(s.bodyRetention.enabled)}:${String(s.bodyRetention.retainDays)}`,
+    underPin: 'true:30',
+    underUser: 'false:365',
+  },
 } satisfies Record<ManagedSettingKey, KeySample>;
 
 describe('every lockable key is handled by all four per-key lists', () => {

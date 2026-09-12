@@ -37,6 +37,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'SecretVault',
   'SqliteActivityRepository',
   'SqliteAuditEventsRepository',
+  'SqliteBodyRetentionRepository',
   'SqliteClassifiedDataRepository',
   'SqliteConfigInventoryRepository',
   'SqliteDetectionsRepository',

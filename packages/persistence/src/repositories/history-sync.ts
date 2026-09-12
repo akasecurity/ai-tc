@@ -2,6 +2,7 @@ import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
 import type { AuditEventRow } from '@akasecurity/schema';
 
+import { OUTBOX_CAPTURE_EVENT_TYPES, OUTBOX_CAPTURE_TYPE_LIST } from '../internal/outbox-lane.ts';
 import { allRows, getRow } from '../internal/rows.ts';
 import { withTransaction } from '../internal/transactions.ts';
 import { type SyncFailureReason } from '../sync-failure.ts';
@@ -59,16 +60,11 @@ const TYPE_LIST = STRUCTURAL_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
  * Adding it is one word here — and it is a product decision that owes its own
  * disclosure, not a completeness fix.
  */
-// MODULE-PRIVATE, and named for the lane rather than for the grain, because
-// `@akasecurity/schema` already exports a `CAPTURE_EVENT_TYPES_SQL` derived from
-// `EventKind` — FOUR kinds, `code_change` included, with the opposite drift
-// policy — and several reads in this very package interpolate it. Exporting a
-// three-kind constant under the neighbouring name would put both on the
-// package's public surface, where a later findings read reaching for the wrong
-// one silently loses `code_change` and under-reports with nothing failing.
-const OUTBOX_CAPTURE_EVENT_TYPES = ['prompt', 'response', 'tool_use'] as const;
-
-const CAPTURE_TYPE_LIST = OUTBOX_CAPTURE_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
+// Shared with the body-expiry gate through `internal/outbox-lane.ts` rather
+// than written out here: that gate decides what may NOT be expired until this
+// lane has sent it, so the one-word edit the paragraph above anticipates has to
+// move both in the same commit. See that module for why it is internal.
+const CAPTURE_TYPE_LIST = OUTBOX_CAPTURE_TYPE_LIST;
 
 /**
  * The kinds a DELIVERY-STATE READ may count. Read-only: nothing that sends or

@@ -128,6 +128,8 @@ export type {
 } from './ports.ts';
 export { SqliteActivityRepository } from './repositories/activity.ts';
 export { SqliteAuditEventsRepository } from './repositories/audit-events.ts';
+export type { BodyExpiryOptions, BodyExpiryOutcome } from './repositories/body-retention.ts';
+export { SqliteBodyRetentionRepository } from './repositories/body-retention.ts';
 export { SqliteClassifiedDataRepository } from './repositories/classified-data.ts';
 export { SqliteConfigInventoryRepository } from './repositories/config-inventory.ts';
 export { SqliteDetectionsRepository } from './repositories/detections.ts';

@@ -678,8 +678,17 @@ export function createPluginRuntime(
   // `context` scopes appliesTo-tagged rules to the text's language when a file
   // path is known (the worktree scan); hook-path prompts pass none and run the
   // full ruleset.
-  async function processText(text: string, context?: ScanContext): Promise<CaptureResult> {
-    return (await evaluate(text, context, {})).decision;
+  //
+  // `opts.rewritable` is the same per-field flag `capture` takes, forwarded to
+  // the same resolution — a caller that inspects a field it cannot rewrite gets
+  // the degraded action whether or not it goes on to persist an event. Omitted,
+  // it is `true`, so every existing caller is unchanged.
+  async function processText(
+    text: string,
+    context?: ScanContext,
+    opts: DecisionOptions = {},
+  ): Promise<CaptureResult> {
+    return (await evaluate(text, context, {}, opts.rewritable)).decision;
   }
 
   async function capture(input: CaptureInput, opts: CaptureOptions = {}): Promise<CaptureResult> {
@@ -878,18 +887,12 @@ export function createPluginRuntime(
   return { processText, capture, rulesetFingerprint, scanIsolationDegraded, close };
 }
 
-// Persistence policy for capture(): 'always' records an event for every call
-// (the live hook path, so the activity timeline is complete); 'with-findings'
-// records only when something was detected (the historical backfill).
-// `dedupe: 'content-hash'` marks the capture as re-runnable bulk ingest so the
-// gateway drops content it has already recorded (fresh event ids on a re-run
-// would otherwise duplicate rows). Never set it on the live hook path.
-export interface CaptureOptions {
-  persist?: 'always' | 'with-findings';
-  dedupe?: 'content-hash';
-  // Grant ids already spent by this capture's own pointer crossing (see
-  // ExceptionEvalContext.preAuthorizedGrantIds).
-  preAuthorizedGrantIds?: readonly string[];
+// What the CALLER can do about the decision, as opposed to what the runtime
+// does with it. Held apart from `CaptureOptions` because it shapes the ACTION
+// rather than the write, so both decision paths take it: `capture` takes these
+// plus its persistence options, and `processText` — which writes no event —
+// takes only these.
+export interface DecisionOptions {
   // Whether the CALLER can carry out a redaction on this text. Default true.
   //
   // Set false for a field the host offers no way to rewrite — Antigravity's
@@ -906,11 +909,25 @@ export interface CaptureOptions {
   rewritable?: boolean;
 }
 
+// Persistence policy for capture(): 'always' records an event for every call
+// (the live hook path, so the activity timeline is complete); 'with-findings'
+// records only when something was detected (the historical backfill).
+// `dedupe: 'content-hash'` marks the capture as re-runnable bulk ingest so the
+// gateway drops content it has already recorded (fresh event ids on a re-run
+// would otherwise duplicate rows). Never set it on the live hook path.
+export interface CaptureOptions extends DecisionOptions {
+  persist?: 'always' | 'with-findings';
+  dedupe?: 'content-hash';
+  // Grant ids already spent by this capture's own pointer crossing (see
+  // ExceptionEvalContext.preAuthorizedGrantIds).
+  preAuthorizedGrantIds?: readonly string[];
+}
+
 export interface PluginRuntime {
   // Enforcement decision + best-effort blocked-detection bookkeeping (the
   // short-lived approve-flow ledger, when a fingerprint key is available);
   // no event write.
-  processText(text: string, context?: ScanContext): Promise<CaptureResult>;
+  processText(text: string, context?: ScanContext, opts?: DecisionOptions): Promise<CaptureResult>;
   // Decision + persist (event with masked content + N masked findings).
   capture(input: CaptureInput, opts?: CaptureOptions): Promise<CaptureResult>;
   // Fingerprint of the effective ruleset, for scan-ledger invalidation.

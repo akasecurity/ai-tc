@@ -11,12 +11,16 @@
 //   - SqliteSecurityRepository.mttrTrend (latest status/method/resolved_at)
 //   - SqliteSecurityRepository.recentlyResolved (latest status/method/resolved_at)
 //   - SqliteFindingsRepository.listGroupedFindings (per-finding status column)
+//   - SqliteFindingsRepository.listFindingTypes (grouped per-rule status)
+//   - SqliteFindingsRepository.listFindingInstances (per-finding status column)
+//   - SqliteFindingsRepository.listFindingLocations (per-finding status column)
 //   - SqliteResolutionsRepository.openAtRestKeysForPath /
 //     resolvedAtRestKeysForPath (latest status)
 //
 // All build on these fragments so the dashboard's severity card, its MTTR
 // trend, its recently-resolved feed, and its findings list can never disagree
 // about which resolution row "wins".
+import { EventKind, FindingStatus } from '@akasecurity/schema';
 
 // The finding_resolution columns a correlated latest-row lookup may select —
 // constrained to a union so the column name can never become an interpolated,
@@ -61,3 +65,51 @@ export const LATEST_RESOLUTION_BY_KEY_SQL = `(
       FROM finding_resolution fr
   ) WHERE rn = 1
 )`;
+
+/**
+ * SQL mirror of `deriveFindingStatus` (`@akasecurity/schema`) — the ONE
+ * per-finding lifecycle classifier every read path uses — expressed as a CASE
+ * expression instead of a JS function, so a grouped aggregate can facet and
+ * filter on status without materializing every finding row. Same five arms,
+ * same order:
+ *
+ *   1. `${eventsAlias}.event_type` is not the at-rest kind (`'code_change'`)
+ *      → 'handled' — an in-flight capture is born handled: enforcement
+ *      already ran at the boundary.
+ *   2. `${findingsAlias}.finding_key` IS NULL → 'open' — a legacy at-rest row
+ *      the resolution lifecycle (keyed by finding_key) can never classify.
+ *   3. `latestStatusExpr` = 'resolved' → 'resolved'.
+ *   4. `latestStatusExpr` = 'dismissed' → 'dismissed'.
+ *   5. otherwise → 'open'.
+ *
+ * `latestStatusExpr` is whatever the caller wants consulted for the latest
+ * resolution status — a joined alias (e.g. `latest.status`, from
+ * {@link LATEST_RESOLUTION_BY_KEY_SQL}) or an inlined correlated subquery
+ * (e.g. {@link latestResolutionStatusSql}) — so this fragment works in both
+ * shapes the file already supports.
+ *
+ * TOTAL: `event_type` is NOT NULL and the final arm is unconditional, so the
+ * expression can never evaluate to NULL — which is what makes a later
+ * `CASE ... IN (...)` filter over it null-safe.
+ *
+ * NOT the same CASE as SqliteSecurityRepository.severitySummary's, on
+ * purpose: that one buckets a dismissed finding as still needing remediation
+ * (dismissing is a judgment, not a fix, and the severity card must never
+ * understate exposure) and drops key-less rows from both of its buckets
+ * entirely (they count only in its total). Copying severitySummary's CASE
+ * here would misclassify both cases — this fragment answers "what status does
+ * this finding show", not "does this finding still need attention".
+ */
+export function derivedFindingStatusSql(
+  eventsAlias: string,
+  findingsAlias: string,
+  latestStatusExpr: string,
+): string {
+  return `CASE
+    WHEN ${eventsAlias}.event_type != '${EventKind.enum.code_change}' THEN '${FindingStatus.enum.handled}'
+    WHEN ${findingsAlias}.finding_key IS NULL THEN '${FindingStatus.enum.open}'
+    WHEN ${latestStatusExpr} = '${FindingStatus.enum.resolved}' THEN '${FindingStatus.enum.resolved}'
+    WHEN ${latestStatusExpr} = '${FindingStatus.enum.dismissed}' THEN '${FindingStatus.enum.dismissed}'
+    ELSE '${FindingStatus.enum.open}'
+  END`;
+}

@@ -7,7 +7,8 @@
 import type { DetectionListItem } from '@akasecurity/schema';
 import { Card } from '@akasecurity/ui-kit';
 
-import { ArrowUpIcon, SearchIcon } from '../shared/icons.tsx';
+import { ArrowUpIcon } from '../shared/icons.tsx';
+import { SearchField } from '../shared/SearchField.tsx';
 import { OriginBadge, PolicyTag, UpdateBadge } from './atoms.tsx';
 import { PLACEHOLDER_POLICY } from './meta.ts';
 import type { DetectionPolicyFloor } from './policy-floor.ts';
@@ -114,22 +115,14 @@ export function DetectionsListView({
   return (
     <Card className="flex flex-col overflow-hidden shadow-sm">
       <div className="border-b border-border p-3">
-        <div className="relative">
-          <SearchIcon
-            aria-hidden
-            focusable={false}
-            className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-3"
-          />
-          <input
-            value={query}
-            onChange={(ev) => {
-              onQueryChange(ev.target.value);
-            }}
-            spellCheck={false}
-            placeholder="Search detections…"
-            className="h-9 w-full rounded-lg border border-border-field bg-surface-2 pl-9 pr-3 text-sm text-text placeholder:text-text-3 focus:border-primary focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40"
-          />
-        </div>
+        <SearchField
+          value={query}
+          onValueChange={onQueryChange}
+          label="Search detections"
+          placeholder="Search detections…"
+          surface="card"
+          className="h-9"
+        />
         <div className="mt-2.5 flex flex-wrap gap-1.5">
           {filterTabs.map(([k, lbl]) => {
             const on = filter === k;

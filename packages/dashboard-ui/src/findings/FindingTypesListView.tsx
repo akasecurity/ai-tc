@@ -29,7 +29,8 @@ import {
 } from '@akasecurity/ui-kit';
 import type { ReactNode } from 'react';
 
-import { KeyIcon, SearchIcon } from '../shared/icons.tsx';
+import { KeyIcon } from '../shared/icons.tsx';
+import { SearchField } from '../shared/SearchField.tsx';
 import { CATEGORY_ICON_FALLBACK, categoryLabel, categoryStyle, SEVERITIES } from './meta.ts';
 
 /**
@@ -181,24 +182,14 @@ export function FindingTypesListView({
   return (
     <Card className="flex h-full flex-col overflow-hidden shadow-sm">
       <div className="border-b border-border p-3">
-        <div className="relative">
-          <SearchIcon
-            aria-hidden
-            focusable={false}
-            className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-3"
-          />
-          <input
-            type="text"
-            aria-label="Search finding types"
-            value={query}
-            onChange={(ev) => {
-              onQueryChange(ev.target.value);
-            }}
-            spellCheck={false}
-            placeholder="Search types…"
-            className="h-9 w-full rounded-lg border border-border-field bg-surface-2 pl-9 pr-3 text-sm text-text placeholder:text-text-3 focus:border-primary focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40"
-          />
-        </div>
+        <SearchField
+          value={query}
+          onValueChange={onQueryChange}
+          label="Search finding types"
+          placeholder="Search types…"
+          surface="card"
+          className="h-9"
+        />
         <SeverityFilter
           counts={severityCounts}
           selected={selectedSeverities}

@@ -17,6 +17,7 @@ import { Badge, Card, cn, SegmentedControl, SegmentedControlItem } from '@akasec
 import { useMemo } from 'react';
 
 import { Provider } from '../shared/Provider.tsx';
+import { SearchField } from '../shared/SearchField.tsx';
 import { AccessBar, EmptyState, FlagChips, TrustPill, VisBadge } from './chips.tsx';
 import {
   ASSET_META,
@@ -136,20 +137,14 @@ export function InventoryNav(props: InventoryNavProps) {
           )}
         </div>
 
-        <div className="relative">
-          <Ico
-            name="search"
-            className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-3"
-          />
-          <input
-            value={query}
-            onChange={(e) => {
-              onQuery(e.target.value);
-            }}
-            placeholder="Search assets…"
-            className="h-8.5 w-full rounded-lg border border-border-field bg-surface-2 pl-9 pr-3 text-sm text-text placeholder:text-text-3 focus:border-primary focus:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/40"
-          />
-        </div>
+        <SearchField
+          value={query}
+          onValueChange={onQuery}
+          label="Search assets"
+          placeholder="Search assets…"
+          surface="card"
+          className="h-8.5"
+        />
 
         <SegmentedControl
           className="mt-3 flex w-full"

@@ -6,6 +6,7 @@ import {
   DataSharesTableView,
   NeedsReviewListView,
   NeedsReviewStripView,
+  SearchField,
   type ShareSelection,
 } from '@akasecurity/dashboard-ui';
 import type {
@@ -187,18 +188,14 @@ export function DataSharesClient({
             {/* Shrinks before it wraps: flex-1 grows it to fill the row up to
                 max-w-80, and it shrinks to min-w-48 as the kind tabs beside it
                 (which don't shrink — see DataSharesKindTabsView) take more. */}
-            <div className="flex h-9 min-w-48 max-w-80 flex-1 items-center gap-2 rounded-lg border border-border bg-surface-2 px-3">
-              <SearchIcon aria-hidden focusable={false} className="size-4 shrink-0 text-text-3" />
-              <input
-                value={query}
-                onChange={(e) => {
-                  setQuery(e.target.value);
-                }}
-                placeholder="Search destinations, URLs & call sites…"
-                aria-label="Search data shares"
-                className="min-w-0 flex-1 bg-transparent text-sm text-text placeholder:text-text-3 focus:outline-none"
-              />
-            </div>
+            <SearchField
+              value={query}
+              onValueChange={setQuery}
+              label="Search data shares"
+              placeholder="Search destinations, URLs & call sites…"
+              surface="canvas"
+              className="h-9 min-w-48 max-w-80 flex-1"
+            />
           </div>
           <Card className="flex min-h-112 flex-1 flex-col overflow-hidden">
             {activeGroup ? (

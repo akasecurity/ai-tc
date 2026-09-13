@@ -143,7 +143,11 @@ export interface BaseAuditEventRow<TTime = number> {
   // When local body expiry cleared `content`, if it did — the difference
   // between "expired" and "never carried a body", which `content IS NULL`
   // alone cannot express.
-  contentExpiredAt: number | null;
+  //
+  // A time column, so `TTime | null` like `endedAt` above, never `number | null`.
+  // Pinned by test/drizzle/time-columns-generic.test.ts, which instantiates
+  // another dialect; adherence.test.ts cannot see the difference.
+  contentExpiredAt: TTime | null;
   attributes: string | null;
   inputTokens: number | null;
   outputTokens: number | null;

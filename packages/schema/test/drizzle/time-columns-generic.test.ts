@@ -9,14 +9,30 @@ import type {
   BaseSourceProjectRow,
 } from '../../src/drizzle/base-rows.ts';
 
-// Every time column in a base row must be spelled `TTime`, never `number`.
+// Every time column on a `TTime`-PARAMETERIZED base row must be spelled
+// `TTime`, never `number`.
 //
-// The base interfaces are generic so each dialect can carry its own
-// representation of an instant: SQLite stores epoch-millis and instantiates
-// `TTime = number`, while the Postgres mirror stores `timestamptz` and
-// instantiates `TTime = Date`. A time column pinned to `number` is unmirrorable
-// — the mirror must either store an instant as a bare integer, alone among its
-// time columns, or fail to adhere.
+// The scope matters and is not pedantic. `BaseFindingRow` and
+// `BaseInspectionFindingRow` take no `TTime` at all, and their
+// `firstDetectedAt` is deliberately `number | null` — base-rows.ts says so at
+// the first of them ("NOT a TTime-parameterized column, so it stays `number`").
+// An earlier draft of this header said "every time column in a base row", which
+// is false and would send a reader to "fix" those two.
+//
+// A parameterized row is generic so each storage dialect can carry its own
+// representation of an instant: this package's SQLite store keeps epoch-millis
+// and instantiates `TTime = number`, while a dialect holding a real timestamp
+// type instantiates `TTime = Date`. A time column pinned to `number` cannot
+// follow — such a consumer must either store an instant as a bare integer,
+// alone among its time columns, or fail to adhere.
+//
+// THE KEY LIST BELOW IS HAND-MAINTAINED, BY NECESSITY. Nothing derived can find
+// a pinned column: the obvious derivation — "which keys change under `<Date>`" —
+// returns exactly the correctly-generic ones and by construction misses the one
+// that does not move, which is the whole defect. So a new instant added as
+// `number` to one of these interfaces is invisible here until someone lists it.
+// That is the right trade for a guard that can otherwise catch nothing, but it
+// is the trade: adding a time column means adding it here.
 //
 // WHY THIS IS A SEPARATE FILE FROM adherence.test.ts, AND NOT REDUNDANT WITH IT.
 // That suite compares the SQLite tables against these interfaces at the DEFAULT

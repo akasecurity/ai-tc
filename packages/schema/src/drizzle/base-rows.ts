@@ -144,17 +144,9 @@ export interface BaseAuditEventRow<TTime = number> {
   // between "expired" and "never carried a body", which `content IS NULL`
   // alone cannot express.
   //
-  // `TTime | null`, like `endedAt` four lines up, NOT `number | null`. It is a
-  // time column, and every other one in this interface is generic so a dialect
-  // can carry its own representation — SQLite epoch-millis here, `timestamptz`
-  // in the Postgres mirror. Pinned to `number` it is unmirrorable: the mirror
-  // must either store a time as a bare integer, alone among its time columns,
-  // or fail to adhere.
-  //
-  // This file's own adherence guard cannot catch that, which is why it is worth
-  // a comment: `TTime` DEFAULTS to `number` here, so `number | null` and
-  // `TTime | null` are the same type for SQLite and the guard passes either way.
-  // Only a consumer instantiating `TTime = Date` can tell them apart.
+  // A time column, so `TTime | null` like `endedAt` above, never `number | null`.
+  // Pinned by test/drizzle/time-columns-generic.test.ts, which instantiates
+  // another dialect; adherence.test.ts cannot see the difference.
   contentExpiredAt: TTime | null;
   attributes: string | null;
   inputTokens: number | null;

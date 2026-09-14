@@ -2,7 +2,12 @@ import { parseArgs } from 'node:util';
 
 import { dataDir, openLocalDatabase, readEffectiveSettings } from '@akasecurity/persistence';
 import type { ManagedSettings } from '@akasecurity/schema';
-import { canSweepSyncLane, isFieldManaged, managedByLabel } from '@akasecurity/schema';
+import {
+  BodyRetention,
+  canSweepSyncLane,
+  isFieldManaged,
+  managedByLabel,
+} from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 import type { Prompter } from '../lib/prompter.ts';
@@ -31,6 +36,10 @@ every finding — only the raw prompt/reply/tool/file text is cleared.
 `;
 
 const DAY_MS = 86_400_000;
+
+// The legal horizon is `BodyRetention`'s own field, so `--days` accepts exactly
+// the windows the settings write accepts and the refusal names that range.
+const RETAIN_DAYS = BodyRetention.shape.retainDays.unwrap();
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${String(n)} B`;
@@ -81,8 +90,10 @@ export function runPrune(
     // Refused rather than clamped: a mistyped horizon silently rounded to
     // something valid would expire a different set of bodies than the one the
     // user asked for, and expiry is not undoable.
-    if (!Number.isInteger(parsed) || parsed < 1) {
-      io.err('aka prune: --days needs a whole number of days, 1 or more\n');
+    if (!RETAIN_DAYS.safeParse(parsed).success) {
+      io.err(
+        `aka prune: --days needs a whole number of days, from ${String(RETAIN_DAYS.minValue)} to ${String(RETAIN_DAYS.maxValue)}\n`,
+      );
       return;
     }
     overrideDays = parsed;
@@ -137,9 +148,13 @@ export function runPrune(
     if (!out.done) io.out('More remain — run again to continue.\n');
   }
 
+  // Worded to hold in every state that keeps these rows: attached, carrying
+  // half an attachment, or holding a history-sync grant. Only the first is an
+  // attachment, so the line claims no connection — only that the rows are
+  // unsent and a deployment could still claim them.
   if (plan.rowsHeldBySync > 0) {
     io.out(
-      `${String(plan.rowsHeldBySync)} kept: not yet sent to the control plane this machine is attached to.\n`,
+      `${String(plan.rowsHeldBySync)} kept: not yet sent, and could still be owed to a deployment.\n`,
     );
   }
 

@@ -44,7 +44,7 @@ const OWN_TEARDOWN: Readonly<Record<string, OwnTeardown>> = {
   'lib/close-store.test.ts': {
     reason:
       'the subject is closeStore() itself — the release every other suite relies on — so it has to release and remove by hand, in that order, to test it',
-    removals: ['afterEach → rmSync'],
+    removals: ['afterEach → removeTrees'],
   },
 };
 

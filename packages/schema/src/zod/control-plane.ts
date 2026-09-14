@@ -88,6 +88,38 @@ export const AttachedCredential = z.object({
 });
 export type AttachedCredential = z.infer<typeof AttachedCredential>;
 
+// ─── Whether an endpoint is safe to send a credential to ─────────────────────
+
+// Moved here from @akasecurity/persistence's control-plane-credential.ts, which
+// re-exports it, so a second consumer that cannot depend on persistence — the
+// control-plane transport itself — can enforce the same rule rather than
+// trusting a caller to have checked it first.
+
+/**
+ * The endpoints a credential may be presented to.
+ *
+ * The credential rides on every request, so a plaintext hop lets anyone on the
+ * network path read it. `https:` is always fine. `http:` is tolerated only for
+ * loopback, which is how a deployment is exercised locally — anything else is
+ * refused, and the caller stays standalone rather than send a bearer token in
+ * the clear over a real network.
+ *
+ * The bracketed `'[::1]'` spelling is listed because `URL.hostname` preserves
+ * the brackets for an IPv6 literal, so both forms occur.
+ */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+export function isSafeEndpoint(endpoint: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol === 'https:') return true;
+  return parsed.protocol === 'http:' && LOOPBACK_HOSTS.has(parsed.hostname);
+}
+
 // ─── Whether that credential can actually be used ────────────────────────────
 
 // The two types below are PLAIN TYPESCRIPT, not Zod, and they describe a
@@ -525,6 +557,33 @@ export const RemoteFailureKind = z.enum([
   'unreachable',
 ]);
 export type RemoteFailureKind = z.infer<typeof RemoteFailureKind>;
+
+// Moved here from @akasecurity/persistence's forward-health.ts, which re-exports
+// it, so a second consumer that cannot depend on persistence can still name this
+// vocabulary. `classifyFailure` itself — the one function that produces a
+// value of this type — stays in @akasecurity/plugin-runtime: it classifies by
+// delegating to the control-plane transport's own `classifyRemoteFailure`, and
+// that package depends on this one, not the other way around, so the CLASSIFIER
+// cannot move here without a dependency this package must not take.
+//
+/**
+ * How a control-plane call failed, as coarsely as anything is willing to say.
+ *
+ * ONE SOURCE, for the reason @akasecurity/persistence's `sync-failure.ts` gives
+ * about its own list: the writer and the readers must agree, and they live on
+ * opposite sides of @akasecurity/persistence. The forward path classifies a
+ * failure and writes this value; the status command and the dashboard render
+ * it; and a second spelling would be a value that silently reads as "no cause
+ * recorded" rather than a type error.
+ *
+ *   `unauthorized` — the deployment knows this machine and refuses its key.
+ *   `forbidden`    — the key is accepted and the call is not permitted.
+ *   `unreachable`  — no verdict was obtained at all. The DEFAULT, and the
+ *                    bucket for "no verdict we are willing to name", which is
+ *                    why the surfaces that render it say what they observed
+ *                    rather than guessing at a cause.
+ */
+export type ControlPlaneFailure = 'unauthorized' | 'forbidden' | 'unreachable';
 
 // ─── Attaching a machine without ferrying a key by hand ──────────────────────
 //

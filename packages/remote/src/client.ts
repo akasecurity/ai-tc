@@ -23,6 +23,7 @@ import {
   DeviceCommandPollResponse,
   EgressIngestRequest,
   IngestAck,
+  isSafeEndpoint,
   PluginWhoami,
   PolicyBundle,
   RecordAuditEventBatch,
@@ -87,7 +88,7 @@ function ackRoute(id: string): string {
 }
 
 export interface RemoteClientOptions {
-  /** Where the deployment lives, already checked with `isSafeEndpoint`. */
+  /** Where the deployment lives. `createRemoteClient` refuses one `isSafeEndpoint` rejects. */
   endpoint: string;
   apiKey: string;
   timeoutMs?: number | undefined;
@@ -210,7 +211,26 @@ function withoutTrailingSlashes(endpoint: string): string {
 
 const SLASH = '/'.charCodeAt(0);
 
+/**
+ * Refuse an endpoint neither factory below may dial: anything but `https:`, or
+ * `http:` to something other than loopback.
+ *
+ * Mirrors the refusal `@akasecurity/persistence`'s `writeControlPlaneCredential`
+ * already makes before a credential is ever written to disk — this is the same
+ * check at this package's own door, now that `isSafeEndpoint` lives in
+ * `@akasecurity/schema` and this package no longer has to depend on persistence
+ * to reach it. Thrown rather than reported through a result, because both
+ * callers are synchronous factories with no request in flight yet to attach a
+ * verdict to.
+ */
+function refuseUnsafeEndpoint(endpoint: string): void {
+  if (!isSafeEndpoint(endpoint)) {
+    throw new Error(`refusing to talk to an unsafe control-plane endpoint: ${endpoint}`);
+  }
+}
+
 export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
+  refuseUnsafeEndpoint(options.endpoint);
   const base = withoutTrailingSlashes(options.endpoint);
   const url = (route: string): string => `${base}${route}`;
   const common = { apiKey: options.apiKey, timeoutMs: options.timeoutMs };
@@ -425,8 +445,8 @@ const ATTACH_ROUTES = {
  *
  * The same guarantees `send` holds for the attached client hold here: no
  * redirects, a deadline on every request, a body cap, a protocol upgrade
- * refused, and plain `http` only for a loopback endpoint the caller has already
- * checked with `isSafeEndpoint`.
+ * refused, and plain `http` only for a loopback endpoint — refused otherwise by
+ * `createAttachClient` itself, with `isSafeEndpoint`.
  */
 export interface AttachClient {
   /** POST /v1/attach/device — start a grant and get the codes to display. */
@@ -445,10 +465,11 @@ export interface AttachClient {
 }
 
 export function createAttachClient(options: {
-  /** Where the deployment lives, already checked with `isSafeEndpoint`. */
+  /** Where the deployment lives. `createAttachClient` refuses one `isSafeEndpoint` rejects. */
   endpoint: string;
   timeoutMs?: number | undefined;
 }): AttachClient {
+  refuseUnsafeEndpoint(options.endpoint);
   const base = withoutTrailingSlashes(options.endpoint);
   const common = { timeoutMs: options.timeoutMs };
 

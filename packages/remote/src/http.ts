@@ -186,10 +186,11 @@ export interface SendOptions {
 export async function send(options: SendOptions): Promise<RemoteResponse> {
   const url = new URL(options.url);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  // http is reachable here only for a loopback endpoint; `isSafeEndpoint` in
-  // @akasecurity/persistence is what establishes that, and this switch trusts
-  // that check rather than repeating it — repeating it here in a weaker form is
-  // how the two would drift.
+  // http is reachable here only for a loopback endpoint; `isSafeEndpoint`
+  // (@akasecurity/schema) is what establishes that, enforced at this package's
+  // own door by `createRemoteClient`/`createAttachClient` in client.ts, and
+  // this switch trusts that check rather than repeating it — repeating it here
+  // in a weaker form is how the two would drift.
   const send_ = url.protocol === 'http:' ? httpRequest : httpsRequest;
 
   const requestOptions: RequestOptions = {

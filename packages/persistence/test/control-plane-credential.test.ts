@@ -10,7 +10,10 @@ import {
 import { join } from 'node:path';
 
 import type { AttachedCredential, ControlPlaneConnection } from '@akasecurity/schema';
-import { ATTACHED_CREDENTIAL_FILENAME } from '@akasecurity/schema';
+import {
+  ATTACHED_CREDENTIAL_FILENAME,
+  isSafeEndpoint as schemaIsSafeEndpoint,
+} from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -46,25 +49,11 @@ const connection: ControlPlaneConnection = {
 // every case here is about a way it could be read when it should not be, or
 // dropped when it should not be.
 
-describe('isSafeEndpoint', () => {
-  it('accepts https anywhere', () => {
-    expect(isSafeEndpoint('https://aka.example-org.internal')).toBe(true);
-    expect(isSafeEndpoint('https://localhost:8443')).toBe(true);
-  });
-
-  it('accepts http only on loopback, including the bracketed IPv6 form', () => {
-    expect(isSafeEndpoint('http://localhost:3000')).toBe(true);
-    expect(isSafeEndpoint('http://127.0.0.1:3000')).toBe(true);
-    expect(isSafeEndpoint('http://[::1]:3000')).toBe(true);
-  });
-
-  it('refuses plaintext to a real network, and anything that is not a URL', () => {
-    expect(isSafeEndpoint('http://aka.example-org.internal')).toBe(false);
-    // A host merely SPELLED like loopback is a different host.
-    expect(isSafeEndpoint('http://localhost.example.com')).toBe(false);
-    expect(isSafeEndpoint('ftp://example.com')).toBe(false);
-    expect(isSafeEndpoint('not a url')).toBe(false);
-  });
+// `isSafeEndpoint`'s own behaviour is now tested in @akasecurity/schema, beside
+// its definition — this only pins that the re-export still resolves to the
+// same function.
+it('re-exports the schema package isSafeEndpoint unchanged', () => {
+  expect(isSafeEndpoint).toBe(schemaIsSafeEndpoint);
 });
 
 describe('write then read', () => {

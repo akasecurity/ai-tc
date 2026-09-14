@@ -1,25 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import type { ControlPlaneFailure } from '@akasecurity/schema';
+
 import { ATTACHED_FORWARD_STATE_FILENAME } from './attached-derived.ts';
 
-/**
- * How a control-plane call failed, as coarsely as anything is willing to say.
- *
- * ONE SOURCE, for the reason `sync-failure.ts` gives about its own list: the
- * writer and the readers must agree, and they live on opposite sides of this
- * package. The forward path classifies a failure and writes this value; the
- * status command and the dashboard render it; and a second spelling would be a
- * value that silently reads as "no cause recorded" rather than a type error.
- *
- *   `unauthorized` — the deployment knows this machine and refuses its key.
- *   `forbidden`    — the key is accepted and the call is not permitted.
- *   `unreachable`  — no verdict was obtained at all. The DEFAULT, and the
- *                    bucket for "no verdict we are willing to name", which is
- *                    why the surfaces that render it say what they observed
- *                    rather than guessing at a cause.
- */
-export type ControlPlaneFailure = 'unauthorized' | 'forbidden' | 'unreachable';
+// `ControlPlaneFailure` now lives in @akasecurity/schema, beside
+// `RemoteFailureKind`, so a second consumer that cannot depend on this package
+// can still name it. Re-exported here so every existing importer of this
+// module keeps working.
+export type { ControlPlaneFailure };
 
 /**
  * Validated on the way in, exactly as the sync outcome is: `lastFailure` is

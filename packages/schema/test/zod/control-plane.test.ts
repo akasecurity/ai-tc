@@ -15,6 +15,7 @@ import {
   DeviceCommandAckBody,
   DeviceCommandPollResponse,
   IngestAck,
+  isSafeEndpoint,
   PluginWhoami,
   RecordAuditEventRequest,
   RemoteFailureKind,
@@ -90,6 +91,30 @@ describe('AttachedCredential', () => {
 
   it('pins the on-disk filename', () => {
     expect(ATTACHED_CREDENTIAL_FILENAME).toBe('control-plane-credential.json');
+  });
+});
+
+// ─── isSafeEndpoint ──────────────────────────────────────────────────────────
+// Moved verbatim from @akasecurity/persistence's control-plane-credential.test.ts.
+
+describe('isSafeEndpoint', () => {
+  it('accepts https anywhere', () => {
+    expect(isSafeEndpoint('https://aka.example-org.internal')).toBe(true);
+    expect(isSafeEndpoint('https://localhost:8443')).toBe(true);
+  });
+
+  it('accepts http only on loopback, including the bracketed IPv6 form', () => {
+    expect(isSafeEndpoint('http://localhost:3000')).toBe(true);
+    expect(isSafeEndpoint('http://127.0.0.1:3000')).toBe(true);
+    expect(isSafeEndpoint('http://[::1]:3000')).toBe(true);
+  });
+
+  it('refuses plaintext to a real network, and anything that is not a URL', () => {
+    expect(isSafeEndpoint('http://aka.example-org.internal')).toBe(false);
+    // A host merely SPELLED like loopback is a different host.
+    expect(isSafeEndpoint('http://localhost.example.com')).toBe(false);
+    expect(isSafeEndpoint('ftp://example.com')).toBe(false);
+    expect(isSafeEndpoint('not a url')).toBe(false);
   });
 });
 

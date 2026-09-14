@@ -10,6 +10,7 @@ import type {
 import {
   ATTACHED_CREDENTIAL_FILENAME,
   AttachedCredential as CredentialSchema,
+  isSafeEndpoint,
 } from '@akasecurity/schema';
 
 import { DATA_FILE_MODE, ensureDataDirSync, writeOwnerOnlyFileSync } from './paths.ts';
@@ -35,30 +36,11 @@ export function controlPlaneCredentialPath(settingsDir: string): string {
   return join(settingsDir, ATTACHED_CREDENTIAL_FILENAME);
 }
 
-/**
- * The endpoints a credential may be presented to.
- *
- * The credential rides on every request, so a plaintext hop lets anyone on the
- * network path read it. `https:` is always fine. `http:` is tolerated only for
- * loopback, which is how a deployment is exercised locally — anything else is
- * refused, and the caller stays standalone rather than send a bearer token in
- * the clear over a real network.
- *
- * The bracketed `'[::1]'` spelling is listed because `URL.hostname` preserves
- * the brackets for an IPv6 literal, so both forms occur.
- */
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
-
-export function isSafeEndpoint(endpoint: string): boolean {
-  let parsed: URL;
-  try {
-    parsed = new URL(endpoint);
-  } catch {
-    return false;
-  }
-  if (parsed.protocol === 'https:') return true;
-  return parsed.protocol === 'http:' && LOOPBACK_HOSTS.has(parsed.hostname);
-}
+// `isSafeEndpoint` now lives in @akasecurity/schema, beside `AttachedCredential`,
+// so a second consumer that cannot depend on this package (the control-plane
+// transport) can enforce the same rule. Re-exported here so every existing
+// importer of this module keeps working.
+export { isSafeEndpoint };
 
 // `CredentialUnusableReason` and `CredentialState` now live in
 // @akasecurity/schema, beside the `AttachedCredential` they describe, and are

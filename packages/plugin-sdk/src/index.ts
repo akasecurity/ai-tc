@@ -208,7 +208,6 @@ export {
   DRIFT_MIN_PARSE_FAILURES,
   WEB_CAPTURE_DRIFT_STATES,
   WEB_CAPTURE_POSTURE_RULES,
-  webCaptureDriftFires,
 } from '@akasecurity/detections';
 // Egress extraction re-exported so the scanner can consume the pure
 // extraction API without importing @akasecurity/detections directly — the

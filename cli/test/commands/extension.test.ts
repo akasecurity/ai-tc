@@ -360,9 +360,12 @@ describe('runStatus — the network-capture block', () => {
     expect(out).toContain('chrome://extensions');
   });
 
-  it('prints the turn count for a site whose capture is working', () => {
-    // The one state whose headline is built rather than looked up, so it is
-    // the one nothing else in the tree renders.
+  it('prints the working state for a site whose capture is working', () => {
+    // `active` used to be the one state whose headline was built rather than
+    // looked up, because it quoted the turn count. It no longer does: the
+    // stored count is only as current as the report that carried it, and the
+    // bridge relays on a transition rather than per turn, so the number went
+    // stale the moment a tab settled.
     writeSettings(consentedSettings());
     seedStatus('chatgpt', {
       ...BASE_STATUS,
@@ -373,7 +376,9 @@ describe('runStatus — the network-capture block', () => {
     });
     const out = run();
     expect(out).toContain('active');
-    expect(out).toContain('1 turn observed');
+    expect(out).toContain('observed');
+    // No count: it would be the count as of the last report, not the session's.
+    expect(out).not.toContain('1 turn observed');
     expect(out).not.toContain('web-capture-drift');
   });
 

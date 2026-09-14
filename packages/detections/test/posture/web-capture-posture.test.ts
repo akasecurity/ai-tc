@@ -187,7 +187,7 @@ const ALL_STATES = Object.keys({
 describe('state copy', () => {
   it('every drift state has remediation copy and no other state does', () => {
     for (const state of ALL_STATES) {
-      const hasRemediation = webCaptureStateCopy(state, undefined).remediation !== undefined;
+      const hasRemediation = webCaptureStateCopy(state).remediation !== undefined;
       expect(hasRemediation).toBe(WEB_CAPTURE_DRIFT_STATES.has(state));
     }
   });
@@ -197,7 +197,7 @@ describe('state copy', () => {
     // whole of what a state means, so two states sharing one, or a blank one,
     // is a state the user cannot act on. Distinctness rather than exact
     // strings, so rewording copy stays a copy edit.
-    const headlines = ALL_STATES.map((state) => webCaptureStateCopy(state, undefined).headline);
+    const headlines = ALL_STATES.map((state) => webCaptureStateCopy(state).headline);
     for (const headline of headlines) expect(headline.length).toBeGreaterThan(0);
     expect(new Set(headlines).size).toBe(ALL_STATES.length);
   });
@@ -206,25 +206,20 @@ describe('state copy', () => {
     // `patched` is false for a tap that installed and hooked neither transport
     // AND for one that never ran; the report is identical, so the copy must
     // not claim the first.
-    expect(webCaptureStateCopy('unpatched', undefined).headline).not.toContain('tap installed');
+    expect(webCaptureStateCopy('unpatched').headline).not.toContain('tap installed');
   });
 
-  it('counts the turns an active site reported, singular and plural', () => {
-    const active: WebCaptureStatus = {
-      conversationEndpoints: 1,
-      patched: true,
-      live: true,
-      blind: false,
-      sendsSeenDom: 1,
-      exchangesSeenNet: 1,
-      parseFailures: 0,
-      unparsedBodies: 0,
-      shapeMisses: [],
-    };
-    expect(webCaptureStateCopy('active', active).headline).toBe('1 turn observed');
-    expect(webCaptureStateCopy('active', { ...active, exchangesSeenNet: 2 }).headline).toBe(
-      '2 turns observed',
-    );
-    expect(webCaptureStateCopy('active', undefined).headline).toBe('0 turns observed');
+  it('does not quote a turn count it cannot keep current', () => {
+    // The stored count is only as current as the report that carried it, and
+    // the bridge relays on a TRANSITION rather than per turn — so once a tab
+    // is live nothing moves the signature again and this headline used to
+    // print "1 turn observed" for a session of fifty. `exchangesSeenNet` is
+    // still on the stored status for a surface that wants it as of that
+    // report; the headline no longer states it as a total.
+    const headline = webCaptureStateCopy('active').headline;
+    expect(headline).not.toMatch(/[0-9]/);
+    expect(headline).not.toContain('turn observed');
+    // And it still says the thing a reader needs: capture is working here.
+    expect(headline).toContain('observed');
   });
 });

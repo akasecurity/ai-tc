@@ -426,13 +426,19 @@ export async function handleRequest(
       const config = configForTool(undefined);
       const webChat = webChatCaptureOf(config.settings);
       let stored: StoredCaptureStatus[] = [];
-      const gateway = resolveDataGateway(config);
+      // Resolved INSIDE the try for the reason the exchange case gives:
+      // opening the store runs the migrations, so an unopenable home throws
+      // here rather than on the read, and outside the try that escaped into
+      // runHost's generic error — turning the popup's whole reply into a
+      // failure when this process's own in-memory map could have answered it.
+      let gateway: ReturnType<typeof resolveDataGateway> | undefined;
       try {
+        gateway = resolveDataGateway(config);
         if (offersCaptureStatusReader(gateway)) stored = await gateway.readCaptureStatuses();
       } catch {
         stored = [];
       } finally {
-        await gateway.close();
+        await gateway?.close();
       }
       const sites = WEB_SOURCE_TOOLS.map((tool) => {
         // Both sources in one preference order, newest first, then the same

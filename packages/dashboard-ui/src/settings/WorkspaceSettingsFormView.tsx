@@ -721,7 +721,7 @@ export function WorkspaceSettingsFormView({
   return (
     <div className="flex max-w-4xl flex-col gap-7">
       {unrecognized !== undefined && (
-        <p className="text-xs text-text-3" data-slot="managed-unknown-locks">
+        <p className="text-xs text-text-3" data-slot="managed-unrecognized">
           {unrecognized}
         </p>
       )}

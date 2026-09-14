@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 import type { AvailablePlugin, ComponentStatus, UpdateReport } from '@akasecurity/schema';
 
 import { runCapture } from './exec.ts';
-import { AGENT_PLUGINS, pluginRef } from './registry.ts';
+import { marketplacePinnedVersion } from './marketplace-manifest.ts';
+import { AGENT_PLUGINS, type AgentPlugin, pluginRef } from './registry.ts';
 import { compareSemver, isNewer, isSemver } from './semver.ts';
 
 // Pure update-report gathering: version discovery over npm + the local Claude Code
@@ -26,6 +27,16 @@ export interface ReportDeps {
   viewVersion: (pkg: string) => string | null;
   installed: Map<string, string>;
   cliInstalled: string | null;
+  // What the HOST would install for this agent, from the marketplace manifest
+  // it resolved — null when no pin applies and npm's latest is the right
+  // answer. See marketplace-manifest.ts for why the two can differ.
+  //
+  // REQUIRED, not optional. An optional seam reads as safe at every call site
+  // that omits it, which is every call site until somebody remembers — and the
+  // one that omitted it would go back to reporting an update the host cannot
+  // deliver, silently. Required, the compiler names each caller that has to
+  // decide; a caller with no marketplace to read says so with `() => null`.
+  marketplacePin: (agent: AgentPlugin) => string | null;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -75,12 +86,30 @@ function installedPluginsPath(claudeHome: string): string {
   return join(claudeHome, 'plugins', 'installed_plugins.json');
 }
 
+/** One installed record, as the two readers below project it. */
+export interface InstalledPlugin {
+  version: string;
+  // The scope the version above was read from, when the ledger names one. It
+  // is what an update has to target: the reader below falls back past `user`,
+  // so the record a comparison used is not necessarily the one a host CLI
+  // would pick on its own.
+  scope?: string;
+}
+
 // Parse ~/.claude/plugins/installed_plugins.json (v2) into a map of
-// `<plugin>@<marketplace>` → installed version. Missing/garbage file → empty map.
-export function installedPluginVersions(
+// `<plugin>@<marketplace>` → the record the comparison should use. Missing or
+// garbage file → empty map.
+//
+// The SCOPE is carried beside the version rather than dropped, and that is the
+// whole point of this shape: the fallback below reads a record at any scope,
+// while `claude plugin update` defaults to `user`. Returning only the version
+// made the two halves talk about different installs with nothing to reconcile
+// them, so a plugin an enterprise drop-in had put at `managed` was reported
+// out of date and could never be updated.
+export function installedPlugins(
   claudeHome: string = join(homedir(), '.claude'),
-): Map<string, string> {
-  const out = new Map<string, string>();
+): Map<string, InstalledPlugin> {
+  const out = new Map<string, InstalledPlugin>();
   const path = installedPluginsPath(claudeHome);
   if (!existsSync(path)) return out;
   let raw: unknown;
@@ -96,9 +125,24 @@ export function installedPluginVersions(
     const record =
       records.find((r): r is Record<string, unknown> => isRecord(r) && r.scope === 'user') ??
       records.find((r): r is Record<string, unknown> => isRecord(r));
-    if (record && typeof record.version === 'string') out.set(ref, record.version);
+    if (record && typeof record.version === 'string') {
+      out.set(ref, {
+        version: record.version,
+        ...(typeof record.scope === 'string' ? { scope: record.scope } : {}),
+      });
+    }
   }
   return out;
+}
+
+/** The scope a ref is installed at, or undefined when the ledger names none. */
+export function installedPluginScope(ref: string, claudeHome?: string): string | undefined {
+  return installedPlugins(claudeHome).get(ref)?.scope;
+}
+
+// The version-only projection every version comparison takes.
+export function installedPluginVersions(claudeHome?: string): Map<string, string> {
+  return new Map([...installedPlugins(claudeHome)].map(([ref, { version }]) => [ref, version]));
 }
 
 // Codex CLI caches an installed plugin's contents under
@@ -202,7 +246,23 @@ export function gatherReport(deps: ReportDeps): UpdateReport {
   for (const agent of AGENT_PLUGINS) {
     const ref = pluginRef(agent);
     if (!ref || !agent.npmPackage) continue;
-    const latest = deps.viewVersion(agent.npmPackage);
+    const npmLatest = deps.viewVersion(agent.npmPackage);
+    // The pin WINS where there is one, because it is what the host resolves an
+    // install through. npm's answer is kept beside it rather than discarded:
+    // it is the only thing that can explain a machine reading "up to date" at a
+    // version the user can see is behind.
+    const pin = deps.marketplacePin(agent);
+    const latest = pin ?? npmLatest;
+    const pinned =
+      pin !== null && agent.marketplace !== undefined
+        ? {
+            marketplacePin: {
+              marketplace: agent.marketplace,
+              npmLatest,
+              npmAhead: npmLatest !== null && isNewer(npmLatest, pin),
+            },
+          }
+        : {};
     const installed = deps.installed.get(ref) ?? null;
     if (installed === null) {
       availablePlugins.push({ id: agent.id, name: agent.name, latest });
@@ -215,6 +275,7 @@ export function gatherReport(deps: ReportDeps): UpdateReport {
       installed,
       latest,
       updateAvailable: latest !== null && isNewer(latest, installed),
+      ...pinned,
     });
   }
   return { statuses, availablePlugins };
@@ -227,5 +288,10 @@ export function gatherReportLive(): UpdateReport {
     viewVersion: npmViewVersion,
     installed: installedAgentPluginVersions(),
     cliInstalled: cliVersion(),
+    // No coordinate guard here: `marketplacePinnedVersion` owns both that and
+    // the HOST check, because a guard written at the call site admits Codex —
+    // its registry entry carries a marketplace and a plugin name like any
+    // other — into a reader that only understands Claude Code's layout.
+    marketplacePin: (agent) => marketplacePinnedVersion(agent),
   });
 }

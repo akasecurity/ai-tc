@@ -3,6 +3,7 @@ import { hostname } from 'node:os';
 
 import type { HistorySyncCounts, LocalDatabase } from '@akasecurity/persistence';
 import {
+  HISTORY_SYNC_LEASE_STALE_MS,
   openLocalDatabase,
   readControlPlaneCredentialFile,
   readWorkspaceSettings,
@@ -18,7 +19,7 @@ import {
 } from '@akasecurity/schema';
 
 import { rebuildCapture } from './capture-rebuild.ts';
-import { BREAKER_COOLDOWN_MS, readForwardHealth } from './forward-policy.ts';
+import { isForwardPaused, readForwardHealth } from './forward-policy.ts';
 import { rebuildAuditEvent } from './history-rebuild.ts';
 import type { HistorySyncOutcome } from './history-state.ts';
 
@@ -41,9 +42,6 @@ export const HISTORY_REQUEST_TIMEOUT_MS = 15_000;
  * deadline and keeps only a tally.
  */
 export const HISTORY_PASS_BUDGET_MS = 120_000;
-
-/** A claim whose holder has not checked in for this long is takeable. */
-export const HISTORY_LEASE_STALE_MS = 60_000;
 
 /** How often the holder says it is still alive. */
 const HEARTBEAT_EVERY_MS = 10_000;
@@ -80,6 +78,63 @@ const CAPTURE_GRACE_MS = 30_000;
 
 /** Captures per request, taken from the wire shape's own bound (see BATCH_SIZE). */
 const CAPTURE_BATCH_SIZE = INGEST_BATCH_MAX;
+
+/**
+ * The most captured text one request may carry, measured before it is encoded.
+ *
+ * A ROW COUNT IS NOT A SIZE, and on this lane that gap is the whole problem.
+ * `IngestEvent.content` carries a prompt, a reply or a tool result and is bounded
+ * by nothing, so a hundred rows is anywhere from a few kilobytes to several
+ * megabytes. Measured on a real store: the mean capture is 2.0 KiB, so a full
+ * hundred is ~0.19 MiB and nothing notices — while the hundred LARGEST sum to
+ * 6.10 MiB. A drain that happens to page a run of long tool results therefore
+ * builds a body many times the size of a typical one, with nothing on either
+ * side watching.
+ *
+ * Why bound it here rather than leave it to the deployment: a body the far side
+ * refuses comes back 413, and a 413 is one deployment's verdict on one body, so
+ * those rows stop being offered on this lane until the machine points somewhere
+ * else. Splitting is free; a refusal is not.
+ *
+ * SUMMED `content`, not the encoded body. That is the quantity this loop already
+ * holds before it serialises anything, and the approximation is safe because of
+ * the gap it sits in rather than its precision: escaping and the envelope add a
+ * fraction, while the ceiling the far side applies is several times this. A
+ * deployment whose own limit sits near this number is one this constant cannot
+ * help with, and the 413 path is what covers that.
+ */
+const CAPTURE_BATCH_BYTES = 1024 * 1024;
+
+/**
+ * Split a page into what one request may carry, and what cannot be carried at all.
+ *
+ * A row is never split, so a single capture larger than the whole budget cannot
+ * be made to fit by any batching. It is separated out rather than left to head
+ * every subsequent page for ever — the same reasoning `rebuildCapture`'s refusal
+ * already follows, and the reason this returns two lists instead of truncating.
+ *
+ * Rows that simply do not fit ALONGSIDE what was taken are left where they are:
+ * the next read is the new head of the unstamped set, so they come back on the
+ * next turn of the loop with no cursor to keep.
+ */
+function underByteCeiling<T extends { id: string; event: IngestEvent }>(
+  ready: readonly T[],
+): { fitting: T[]; oversized: string[] } {
+  const fitting: T[] = [];
+  const oversized: string[] = [];
+  let bytes = 0;
+  for (const item of ready) {
+    const size = Buffer.byteLength(item.event.content, 'utf8');
+    if (size > CAPTURE_BATCH_BYTES) {
+      oversized.push(item.id);
+      continue;
+    }
+    if (bytes + size > CAPTURE_BATCH_BYTES) break;
+    bytes += size;
+    fitting.push(item);
+  }
+  return { fitting, oversized };
+}
 
 /**
  * The share of one pass the structural lane may spend before it yields.
@@ -241,9 +296,12 @@ export async function runHistorySync(
     if (!isAttached(settings)) return didNotRun('not-attached');
     const connection = settings.controlPlane;
     if (connection === undefined) return didNotRun('not-attached');
-    if (!isHistorySyncConsentValid(settings.historySyncConsent, connection.endpoint)) {
+    const consent = settings.historySyncConsent;
+    if (!isHistorySyncConsentValid(consent, connection.endpoint) || consent === undefined) {
       return didNotRun('no-consent');
     }
+    const consentAcknowledgedAtMs = Date.parse(consent.acknowledgedAt);
+    if (!Number.isFinite(consentAcknowledgedAtMs)) return didNotRun('attachment-unreadable');
 
     // The WIDE read: the client below needs the key itself, and this runs in
     // the plugin's own process rather than anywhere a browser can see.
@@ -263,8 +321,7 @@ export async function runHistorySync(
     // needs to make progress during a partial outage would be the one held off
     // indefinitely by a breaker refusing nothing.
     const nowMs = now();
-    const openedAtMs = readForwardHealth(deps.dataDir, nowMs)?.openedAtMs ?? null;
-    if (openedAtMs !== null && nowMs - openedAtMs < BREAKER_COOLDOWN_MS) {
+    if (isForwardPaused(readForwardHealth(deps.dataDir, nowMs), nowMs)) {
       return didNotRun('breaker-open');
     }
 
@@ -290,8 +347,25 @@ export async function runHistorySync(
     let backlogBefore: number;
     if (recorded.fingerprint !== fingerprint) {
       // A different deployment. Nothing sent to the last one counts here, so
-      // the stamps go and a fresh boundary is frozen.
-      ledger.rearmFor(fingerprint, attachedAtMs);
+      // the stamps go and a fresh boundary is frozen. The consent check above
+      // has already confirmed `consent` is valid for THIS endpoint, so it is
+      // safe to re-apply its own backfill in the same transaction as the wipe
+      // — the grant this consent describes is for the deployment being armed,
+      // not the one being left, and the CLI's own earlier call to
+      // `seedCaptureBacklogOwed` (at attach time) is exactly what this
+      // repeats: this method's disown above cannot tell that grant's markers
+      // apart from the previous deployment's leftover ones, so both go, and
+      // this puts B's own back.
+      //
+      // The re-mark boundary is `consentAcknowledgedAtMs`, the GRANT instant,
+      // not `attachedAtMs`, the ATTACH instant — the two can be far apart,
+      // because a `no-consent` return above means a machine can attach to a
+      // deployment on one pass and only reach this method (and thus record
+      // consent's own effect) on a later one, once a human has granted it.
+      // Bounding the re-mark at the attach instant instead would silently
+      // drop every live-path marker the machine wrote for B in that gap,
+      // despite an explicit fresh grant covering it.
+      ledger.rearmFor(fingerprint, attachedAtMs, consentAcknowledgedAtMs);
       backlogBefore = attachedAtMs;
     } else if (recorded.backlogBefore === undefined) {
       // The same deployment, with the boundary RELEASED — a detach happened and
@@ -308,7 +382,7 @@ export async function runHistorySync(
     }
 
     const pid = process.pid;
-    if (!ledger.claim(pid, hostname(), now(), HISTORY_LEASE_STALE_MS)) {
+    if (!ledger.claim(pid, hostname(), now(), HISTORY_SYNC_LEASE_STALE_MS)) {
       return didNotRun('already-running');
     }
 
@@ -450,12 +524,33 @@ interface DrainDeps {
   backlogBefore: number;
 }
 
-/** Why one row's send stopped: the pass continues, skips it, or ends. */
-type RowVerdict = 'sent' | 'skip' | 'unreachable' | 'refused';
+/**
+ * Why one row's send stopped: the pass continues, gives up on the row, or ends.
+ *
+ * Two ways to give up on a row rather than one, mirroring `classify` — see there
+ * for why they must not be collapsed. Both end this row; only `payload-invalid`
+ * is terminal against every deployment.
+ */
+type RowVerdict = 'sent' | 'payload-invalid' | 'deployment-refused' | 'unreachable' | 'refused';
 
 async function drain(d: DrainDeps): Promise<HistorySyncResult> {
   const startedAt = d.now();
   const deadline = startedAt + d.budgetMs;
+  // BEFORE anything is claimed, and this is half of one change rather than a
+  // tidy-up. A claim marks a row as being sent so a surface can say so; a pass
+  // that is killed between claiming and settling leaves that mark behind, and
+  // nothing else ever clears it. For a structural row that costs a wrong label.
+  // For a CAPTURE it is starvation: the capture read filters on the claim being
+  // absent, so an abandoned mark removes that row from every future page for
+  // good. Wiring the claim without this sweep would introduce exactly the defect
+  // the claim column exists to describe.
+  //
+  // Safe to run here because this function is reached only inside the lease —
+  // `runHistorySync` takes it first and gives up if another pass holds it — so
+  // the claims being swept belong to passes that are gone, not to a live
+  // sibling. The same staleness window as the lease, for the same reason: a mark
+  // younger than that may belong to a pass still heartbeating.
+  d.ledger.releaseStaleClaims(startedAt - HISTORY_SYNC_LEASE_STALE_MS);
   // A RESERVED SLICE, not an ordering. Running captures after the structural
   // loop is right within a pass — a capture whose session root has not arrived is
   // a stub until it does — but that loop exits only when the whole backlog is
@@ -515,7 +610,7 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
           if (event === undefined) {
             // A local defect, not an outage: this row will never be expressible,
             // so retrying it for ever would stall the drain behind it.
-            d.ledger.markSkipped([row.id]);
+            d.ledger.markSkipped([row.id], d.now());
             skipped += 1;
             continue;
           }
@@ -531,7 +626,19 @@ async function drain(d: DrainDeps): Promise<HistorySyncResult> {
             break outer;
           }
           const chunk = ready.slice(i, i + BATCH_SIZE);
-          const result = await sendChunk(d, chunk, beat);
+          // Released in a `finally`, never after the await. `markSynced` runs
+          // inside an IMMEDIATE transaction that rethrows on a busy database, so
+          // a plain statement after the send is skipped on exactly the failure
+          // that leaves rows claimed — and `sendChunk` returns from five places,
+          // so a release on the success branch alone strands every other one.
+          const chunkIds = chunk.map((c) => c.id);
+          d.ledger.claimRows(chunkIds, d.now());
+          let result: ChunkResult;
+          try {
+            result = await sendChunk(d, chunk, beat);
+          } finally {
+            releaseClaim(d, chunkIds);
+          }
           sent += result.sent;
           skipped += result.skipped;
           if (result.stopped !== undefined) {
@@ -652,12 +759,16 @@ async function drainCaptures(
     // iteration stamped or skipped everything it took, so the unstamped set has
     // shrunk and the next page is simply the new head of it. An offset over a
     // set being mutated underneath would step past rows.
-    // `backlogBefore` is the attachment boundary, and this lane reads the side of
-    // it the structural lane does not: captures recorded FROM the attachment
-    // onwards, which the live path owed and did not deliver. Older captures are
-    // pre-attach history and belong to the structural lane, which sends them
-    // without their text — draining them here would put a machine's whole local
-    // history of prompts on the wire under copy that promises the opposite.
+    // This lane has no boundary of its own: `pendingCaptureRows` reads
+    // whatever carries `outbox_owed = 1`, whichever of the two writers set it.
+    // The live forward path sets it only for a capture recorded FROM the
+    // attachment onwards, which it owed and did not deliver — that half is
+    // bounded by `backlogBefore` implicitly, because nothing before it was
+    // ever live-forwarded. The other writer, `markCaptureBacklogOwed`, sets it
+    // for whatever pre-attach backlog was on disk at the instant a human
+    // granted existing-history consent, WITH its text — that is the grant's
+    // own design, not a leak this lane needs to guard against. A row reaching
+    // here is owed for one of those two reasons; this loop enforces neither.
     const rows = d.ledger.pendingCaptureRows(CAPTURE_BATCH_SIZE, d.now() - CAPTURE_GRACE_MS);
     if (rows.length === 0) return { sent, skipped };
 
@@ -678,7 +789,7 @@ async function drainCaptures(
     // and each call is its own IMMEDIATE transaction competing for the store's
     // write lock with the live capture path.
     if (unbuildable.length > 0) {
-      d.ledger.markSkipped(unbuildable);
+      d.ledger.markSkipped(unbuildable, d.now());
       skipped += unbuildable.length;
     }
     if (ready.length === 0) {
@@ -687,7 +798,7 @@ async function drainCaptures(
       // run of unbuildable rows would otherwise be a loop that never yields and
       // never checks in. Twenty thousand rows carrying an attribute the wire
       // rejects is one uninterrupted synchronous stretch: no heartbeat past
-      // HISTORY_LEASE_STALE_MS, so a second child takes the claim from a drain
+      // HISTORY_SYNC_LEASE_STALE_MS, so a second child takes the claim from a drain
       // that is alive, and no yield at all, so the event loop is held for the
       // whole pass budget.
       beat();
@@ -695,7 +806,34 @@ async function drainCaptures(
       continue;
     }
 
-    const result = await sendCaptureChunk(d, ready, beat);
+    // BY BYTES AS WELL AS ROWS. A capture too large to ride with anything else
+    // is left for the next turn; one too large to ride at all is terminal here,
+    // because no batching can make it fit and the read has no cursor to step
+    // past it with.
+    const { fitting, oversized } = underByteCeiling(ready);
+    if (oversized.length > 0) {
+      d.ledger.markSkipped(oversized, d.now());
+      skipped += oversized.length;
+    }
+    if (fitting.length === 0) {
+      // Only reachable when the whole page was oversized. Yield for the same
+      // reason the unbuildable branch above does.
+      beat();
+      await d.sleep(PACE_INTERVAL_MS);
+      continue;
+    }
+
+    // Same shape as the structural lane's claim, and this is the lane where an
+    // abandoned mark actually costs rows: `pendingCaptureRows` filters on
+    // `sync_claimed_at IS NULL`.
+    const readyIds = fitting.map((r) => r.id);
+    d.ledger.claimRows(readyIds, d.now());
+    let result: ChunkResult;
+    try {
+      result = await sendCaptureChunk(d, fitting, beat);
+    } finally {
+      releaseClaim(d, readyIds);
+    }
     sent += result.sent;
     skipped += result.skipped;
     if (result.stopped !== undefined) return { sent, skipped, stopped: result.stopped };
@@ -783,7 +921,7 @@ async function sendCaptureChunk(
     // send). One row is at fault and the answer does not say which.
     const only = chunk.length === 1 ? chunk[0] : undefined;
     if (only !== undefined) {
-      d.ledger.markSkipped([only.id]);
+      recordGaveUp(d, [only.id], outcome.verdict);
       return { sent: 0, skipped: 1 };
     }
     return await isolate(d, chunk, beat);
@@ -840,7 +978,8 @@ async function sendCapturesWithRetries(
     } catch (err) {
       const kind = classify(err);
       if (kind === 'refused') return { verdict: 'refused' };
-      if (kind === 'skip') return { verdict: 'skip' };
+      if (kind === 'payload-invalid') return { verdict: 'payload-invalid' };
+      if (kind === 'deployment-refused') return { verdict: 'deployment-refused' };
       if (attempt === MAX_ATTEMPTS - 1) return { verdict: 'unreachable' };
       const ceiling = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** attempt);
       // Before the sleep, for the reason the structural ladder gives: the gap
@@ -954,7 +1093,7 @@ async function sendSingleRow(
     return { sent: 0, skipped: 0, stopped: outcome.verdict };
   }
   // Rejected on its merits — exactly one row is at fault, and it is this one.
-  d.ledger.markSkipped([one.id]);
+  recordGaveUp(d, [one.id], outcome.verdict);
   return { sent: 0, skipped: 1 };
 }
 
@@ -1020,7 +1159,8 @@ async function sendWithRetries(
     } catch (err) {
       const kind = classify(err);
       if (kind === 'refused') return { verdict: 'refused' };
-      if (kind === 'skip') return { verdict: 'skip' };
+      if (kind === 'payload-invalid') return { verdict: 'payload-invalid' };
+      if (kind === 'deployment-refused') return { verdict: 'deployment-refused' };
       if (i === MAX_ATTEMPTS - 1) return { verdict: 'unreachable' };
       // Full jitter: several machines that failed together must not retry
       // together. The deployment's own retry-after is not available — the
@@ -1034,6 +1174,50 @@ async function sendWithRetries(
     }
   }
   return { verdict: 'unreachable' };
+}
+
+/**
+ * Drop a claim, without letting that failure replace the one being reported.
+ *
+ * `releaseRows` opens its own IMMEDIATE transaction, so on the very path this
+ * runs in a `finally` FOR — a settle that rethrew because the store was busy —
+ * the release can meet the same busy store and throw over the original. The
+ * error a reader has to diagnose is the first one.
+ *
+ * Swallowing costs nothing durable: the next pass sweeps stale claims before it
+ * reads anything, so an undropped claim is healed within one lease window.
+ */
+function releaseClaim(d: Pick<DrainDeps, 'ledger'>, ids: readonly string[]): void {
+  try {
+    d.ledger.releaseRows(ids);
+  } catch {
+    // Deliberately silent: see above. The sweep is what puts it right.
+  }
+}
+
+/**
+ * Write one row off, for the reason the failure actually gave.
+ *
+ * ONE site rather than a choice made at each call, because the two lanes give up
+ * on a row in two different functions and a drift between them would be a row
+ * recorded as permanently undeliverable on a deployment's say-so — the exact
+ * conflation the split verdicts exist to end. Written as an exhaustive switch so
+ * a third terminal verdict fails to compile here rather than defaulting into
+ * whichever branch happens to be last.
+ */
+function recordGaveUp(
+  d: Pick<DrainDeps, 'ledger' | 'now'>,
+  ids: readonly string[],
+  verdict: 'payload-invalid' | 'deployment-refused',
+): void {
+  switch (verdict) {
+    case 'deployment-refused':
+      d.ledger.markRefused(ids, d.now());
+      return;
+    case 'payload-invalid':
+      d.ledger.markSkipped(ids, d.now());
+      return;
+  }
 }
 
 /**
@@ -1055,11 +1239,27 @@ function statusOf(err: unknown): number | null {
   return status >= 100 && status <= 599 ? status : null;
 }
 
-/** What a failure means for the pass. */
-function classify(err: unknown): 'refused' | 'skip' | 'retry' {
-  // A body this client refused to SEND is a defect on this machine, not an
-  // outage — it fails identically on every attempt and against every deployment.
-  if ((err as { name?: string }).name === 'RemoteRequestInvalid') return 'skip';
+/**
+ * What a failure means for the pass.
+ *
+ * The two terminal-for-this-row answers are kept APART, and that separation is
+ * the point rather than a detail. Both stop the row being offered again on this
+ * lane, so both used to be one word — but they are terminal over different
+ * scopes, and the store can now record which:
+ *
+ *   - `payload-invalid` is a defect on THIS MACHINE. It fails identically on
+ *     every attempt and against every deployment, so nothing frees it.
+ *   - `deployment-refused` is THIS DEPLOYMENT's verdict on one body. A body
+ *     limit is a deployment's own setting, so the same bytes may be perfectly
+ *     acceptable elsewhere, and re-attaching frees the row.
+ *
+ * Collapsed into one word, the second was recorded as the first — permanently
+ * undeliverable, on evidence that only ever described one deployment.
+ */
+function classify(err: unknown): 'refused' | 'payload-invalid' | 'deployment-refused' | 'retry' {
+  // A body this client refused to SEND never reached a deployment, so no
+  // deployment has given a verdict on it.
+  if ((err as { name?: string }).name === 'RemoteRequestInvalid') return 'payload-invalid';
   switch (statusOf(err)) {
     // Terminal in a way a timeout is not: the credential may have died with an
     // offboarded member, and every later row would fail the same way.
@@ -1067,11 +1267,11 @@ function classify(err: unknown): 'refused' | 'skip' | 'retry' {
     case 403:
       return 'refused';
     // The deployment understood the request and rejected it. Re-sending an
-    // identical body cannot change that.
+    // identical body TO THIS DEPLOYMENT cannot change that.
     case 400:
     case 413:
     case 422:
-      return 'skip';
+      return 'deployment-refused';
     default:
       return 'retry';
   }

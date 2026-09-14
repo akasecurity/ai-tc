@@ -18,9 +18,18 @@ export interface TopSourcesView {
   items: TopSource[];
   isLoading: boolean;
   error: string | null;
+  /**
+   * Per-source deep link, keyed by `TopSource.id`. Host-supplied so this package
+   * stays router-agnostic; a source with no entry renders as plain text.
+   *
+   * A `user` source is expected to have none: the findings page has no author
+   * dimension, only a free-text search, so a link from one could not honour the
+   * count the row shows.
+   */
+  sourceHrefs?: Readonly<Record<string, string>> | undefined;
 }
 
-export function TopSourcesCardView({ items, isLoading, error }: TopSourcesView) {
+export function TopSourcesCardView({ items, isLoading, error, sourceHrefs }: TopSourcesView) {
   return (
     <Card className="flex flex-col shadow-sm min-w-0">
       <CardHeader>
@@ -40,18 +49,29 @@ export function TopSourcesCardView({ items, isLoading, error }: TopSourcesView) 
         ) : items.length === 0 ? (
           <div className="py-6 text-center text-xs text-text-3">No sources yet.</div>
         ) : (
-          items.map((s) => <SourceRow key={s.id} source={s} />)
+          items.map((s) => {
+            const href = sourceHrefs?.[s.id];
+            return <SourceRow key={s.id} source={s} {...(href ? { href } : {})} />;
+          })
         )}
       </CardContent>
     </Card>
   );
 }
 
-function SourceRow({ source }: { source: TopSource }) {
+function SourceRow({ source, href }: { source: TopSource; href?: string }) {
   const isUser = source.kind === 'user';
   const Icon = isUser ? UserIcon : BranchIcon;
+  const Row = href ? 'a' : 'div';
   return (
-    <div className="flex items-center gap-3">
+    <Row
+      {...(href ? { href, title: `View findings from ${source.name}` } : {})}
+      className={cn(
+        'flex items-center gap-3',
+        href &&
+          '-mx-1 rounded-sm px-1 transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40',
+      )}
+    >
       <span
         className={cn(
           'flex size-7 shrink-0 items-center justify-center bg-surface-2 text-text-2',
@@ -73,6 +93,6 @@ function SourceRow({ source }: { source: TopSource }) {
           {numberFormat.format(source.findingsCount)}
         </span>
       </div>
-    </div>
+    </Row>
   );
 }

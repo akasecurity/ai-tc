@@ -23,6 +23,9 @@ export const PROVIDERS = {
   [HARNESS.ChatGpt]: { label: 'ChatGPT', short: 'GP', color: '#0d8f6f' },
   [HARNESS.ClaudeAi]: { label: 'Claude.ai', short: 'Ca', color: '#D97757' },
   [HARNESS.Api]: { label: 'Anthropic API', short: 'AP', color: '#6058E9' },
+  // No vendor brand of its own — an in-process SDK embedded in an
+  // application, so it gets a neutral tile rather than a borrowed color.
+  [HARNESS.AiTcSdk]: { label: 'Application SDK', short: 'SD', color: '#64748B' },
 } satisfies Record<Harness, ProviderMeta>;
 
 export type ProviderId = Harness;

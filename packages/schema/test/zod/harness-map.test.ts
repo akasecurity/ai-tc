@@ -15,6 +15,16 @@ describe('SourceTool enum', () => {
   it('accepts claude-ai as a first-class source', () => {
     expect(SourceTool.safeParse('claude-ai').success).toBe(true);
   });
+
+  it('accepts ai-tc-sdk as a first-class source', () => {
+    expect(SourceTool.safeParse('ai-tc-sdk').success).toBe(true);
+  });
+});
+
+describe('Harness enum', () => {
+  it('accepts ai-tc-sdk as a first-class harness', () => {
+    expect(Harness.safeParse('ai-tc-sdk').success).toBe(true);
+  });
 });
 
 // TOOL_TO_HARNESS is typed `Record<string, Harness & FindingProvider>`, so a row
@@ -51,6 +61,15 @@ describe('TOOL_TO_HARNESS', () => {
 
   it('routes claude-ai onto the claudeai harness', () => {
     expect(harnessFromTool('claude-ai')).toBe('claudeai');
+  });
+
+  // ai-tc-sdk is the odd member out: wire id and display id are the same
+  // string, so it round-trips through both harnessFromTool and toApiProvider
+  // onto ITS OWN bucket rather than the generic 'api' miss path — unlike an
+  // unmapped tool, which the next test shows landing on 'api'.
+  it('routes ai-tc-sdk onto its own harness and finding provider', () => {
+    expect(harnessFromTool('ai-tc-sdk')).toBe('ai-tc-sdk');
+    expect(toApiProvider('ai-tc-sdk')).toBe('ai-tc-sdk');
   });
 
   // The miss path is not shared: harnessFromTool passes an unmapped id through

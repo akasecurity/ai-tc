@@ -363,19 +363,26 @@ export function modelFromTranscript(transcriptPath: string | undefined): string 
  * claim the call was intercepted: nothing here sits in the network path, and
  * saying otherwise would overstate the control.
  */
-export function prohibitedModelMessage(model: string, action: 'switch' | 'turn' | 'spawn'): string {
+export function prohibitedModelMessage(model: string, action: RefusalSeam): string {
   const subject =
     action === 'switch'
       ? `Cannot switch to ${model}`
       : action === 'spawn'
         ? `Cannot start a subagent on ${model}`
-        : `This session is running on ${model}, which cannot be used`;
+        : action === 'request'
+          ? `Cannot use ${model} for this request`
+          : `This session is running on ${model}, which cannot be used`;
   // The remedy differs by seam: a spawn is refused on an argument the caller
-  // chose, so pointing it at /model would name the wrong control.
+  // chose, so pointing it at /model would name the wrong control. A request
+  // is refused from inside the application process, which has no /model and
+  // no subagent argument to point at — the remedy is to change the model the
+  // application asks for, or have it allowed in the policy.
   const remedy =
     action === 'spawn'
       ? 'Name an approved model on the subagent'
-      : 'Switch to an approved model with /model';
+      : action === 'request'
+        ? 'Change the model this application requests'
+        : 'Switch to an approved model with /model';
   return (
     `${subject} — your organization has prohibited this model. ` +
     `${remedy}, or ask an administrator to change ` +
@@ -412,10 +419,11 @@ export function decideProhibitedModelTurn(
 }
 
 /**
- * Which seam refused: a model switch, a turn already running on one, or a
- * subagent spawn asking for one.
+ * Which seam refused: a model switch, a turn already running on one, a
+ * subagent spawn asking for one, or a request-path decision made before the
+ * call left the process.
  */
-export type RefusalSeam = 'switch' | 'turn' | 'spawn';
+export type RefusalSeam = 'switch' | 'turn' | 'spawn' | 'request';
 
 /**
  * The audit row for one refusal.

@@ -17,6 +17,7 @@ import {
   prohibitedModelMessage,
   readSessionModel,
   recordSessionModel,
+  type RefusalSeam,
 } from '../src/model-governance.ts';
 
 // ONE temp root for the file, with a cheap subdirectory per test, rather than a
@@ -455,5 +456,71 @@ describe('prohibitedModelMessage names the right remedy per seam', () => {
   it('still sends switch and turn refusals to /model', () => {
     expect(prohibitedModelMessage('claude-sonnet-5', 'switch')).toContain('/model');
     expect(prohibitedModelMessage('claude-sonnet-5', 'turn')).toContain('/model');
+  });
+
+  // A request is refused from inside the application process, which has no
+  // /model command and no subagent argument — naming either would point at a
+  // control that does not exist on this seam.
+  it('sends a request refusal to the model the application requests, naming no CLI', () => {
+    const message = prohibitedModelMessage('claude-opus-5', 'request');
+    expect(message).toContain('claude-opus-5');
+    expect(message).toContain('Change the model this application requests');
+    expect(message).not.toContain('/model');
+    expect(message).not.toContain('subagent');
+  });
+});
+
+// The existing three arms, pinned byte-for-byte: adding the fourth arm above
+// must not perturb any of them.
+describe('prohibitedModelMessage: the pre-existing three arms are unchanged', () => {
+  it('switch', () => {
+    expect(prohibitedModelMessage('claude-sonnet-5', 'switch')).toBe(
+      'Cannot switch to claude-sonnet-5 — your organization has prohibited this model. ' +
+        'Switch to an approved model with /model, or ask an administrator to change ' +
+        'its status in AKA under Govern → LLM Providers.',
+    );
+  });
+
+  it('turn', () => {
+    expect(prohibitedModelMessage('claude-sonnet-5', 'turn')).toBe(
+      'This session is running on claude-sonnet-5, which cannot be used — your organization ' +
+        'has prohibited this model. Switch to an approved model with /model, or ask an ' +
+        'administrator to change its status in AKA under Govern → LLM Providers.',
+    );
+  });
+
+  it('spawn', () => {
+    expect(prohibitedModelMessage('sonnet', 'spawn')).toBe(
+      'Cannot start a subagent on sonnet — your organization has prohibited this model. ' +
+        'Name an approved model on the subagent, or ask an administrator to change ' +
+        'its status in AKA under Govern → LLM Providers.',
+    );
+  });
+});
+
+describe('RefusalSeam', () => {
+  // A `default` branch that calls this only compiles while every case above it
+  // is exhaustive, so adding a fifth member without a case here fails `tsc`
+  // rather than silently returning the wrong label.
+  function assertNever(seam: never): never {
+    throw new Error(`unhandled RefusalSeam: ${seam as string}`);
+  }
+
+  function label(seam: RefusalSeam): RefusalSeam {
+    switch (seam) {
+      case 'switch':
+      case 'turn':
+      case 'spawn':
+      case 'request':
+        return seam;
+      default:
+        return assertNever(seam);
+    }
+  }
+
+  it('pins the type to exactly these four members', () => {
+    for (const seam of ['switch', 'turn', 'spawn', 'request'] as const) {
+      expect(label(seam)).toBe(seam);
+    }
   });
 });

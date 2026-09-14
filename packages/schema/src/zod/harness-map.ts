@@ -64,6 +64,11 @@ export const HARNESS = {
   ChatGpt: 'chatgpt',
   ClaudeAi: 'claudeai',
   Api: 'api',
+  // Not a coding assistant a person drives — an in-process SDK embedded in an
+  // application, so it has no IDE/CLI/desktop/web surface of its own. Carries
+  // the same id as its SOURCE_TOOL counterpart, unlike every capture-side tool
+  // whose wire spelling differs from its display spelling.
+  AiTcSdk: 'ai-tc-sdk',
 } as const;
 
 export const Harness = z.enum(HARNESS).meta({ id: 'Harness' });
@@ -92,6 +97,11 @@ export const SOURCE_TOOL = {
   // miss path rather than as a harness of their own.
   Cli: 'cli',
   Unknown: 'unknown',
+  // The wire id an in-process, request-path SDK stamps on its own structural
+  // rows (`request_decision`) — never a capture of prompt/response/tool text,
+  // since the SDK sits in front of a model call rather than inside a coding
+  // assistant's own hook contract.
+  AiTcSdk: 'ai-tc-sdk',
 } as const;
 
 export const SourceTool = z.enum(SOURCE_TOOL).meta({ id: 'SourceTool' });
@@ -115,6 +125,11 @@ export const TOOL_TO_HARNESS: Record<string, Harness & FindingProvider> = {
   [SOURCE_TOOL.Codex]: HARNESS.Codex,
   [SOURCE_TOOL.Antigravity]: HARNESS.Antigravity,
   [SOURCE_TOOL.ClaudeAi]: HARNESS.ClaudeAi,
+  // Wire and display id are the same string here, but the row still belongs:
+  // both vocabularies carry the `AiTcSdk` member, and the join is exactly
+  // their intersection — leaving a shared member out would read as an
+  // uninstrumented tool on both surfaces, which this one is not.
+  [SOURCE_TOOL.AiTcSdk]: HARNESS.AiTcSdk,
 };
 
 // Map a harness inventory *tool* id — the value the plugin hashes its harness

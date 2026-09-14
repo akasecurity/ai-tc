@@ -76,6 +76,10 @@ describe('FindingProvider enum', () => {
     expect(FindingProvider.safeParse('claude-code').success).toBe(false);
     expect(FindingProvider.safeParse('claude-desktop').success).toBe(false);
   });
+
+  it('accepts ai-tc-sdk as its own provider, distinct from api', () => {
+    expect(FindingProvider.safeParse('ai-tc-sdk').success).toBe(true);
+  });
 });
 
 describe('FindingCategory enum', () => {

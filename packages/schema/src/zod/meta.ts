@@ -57,6 +57,14 @@ export const AuditEventType = z
     // worth recording about a governance decision is the decision, and prompt
     // text is the thing this product exists to keep from travelling.
     'model_refusal',
+    // One row per request-path DECISION: a policy check an embedded request-path
+    // SDK performs in-process before a model call leaves the application, or
+    // against that call's non-streamed response. A structural row like
+    // 'model_refusal' rather than a capture — content-free in the same way:
+    // which side, which seam, what action and which field are decided rides
+    // `attributes`, never this member name, and the matched text itself never
+    // travels.
+    'request_decision',
     // One row per config-inventory scan, hung off the session root. It is the
     // fact the posture inspection findings reference (findings require an
     // audit_event_id), and its started_at is the "scanned Nm ago" the read

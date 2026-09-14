@@ -106,8 +106,14 @@ export interface Bridge {
   onTapMessage(message: TapToPage): void;
   status(): WebCaptureStatus;
   noteDomSend(): void;
-  /** Relay the current status now, whatever the signature says. */
-  reportStatus(): void;
+  /**
+   * Relay the current status now, whatever the signature says.
+   *
+   * `closed` is required rather than defaulted: it says this document is going
+   * away and so stops it voting on the site's state, which is not a thing to
+   * get by forgetting an argument.
+   */
+  reportStatus(options: { closed: boolean }): void;
 }
 
 /** Whether `text` is longer than `max` bytes, without encoding when it need not. */
@@ -444,6 +450,8 @@ export function createBridge(options: BridgeOptions): Bridge {
       unparsedBodies,
       shapeMisses: [...shapeMisses],
       conversationEndpoints,
+      // Only `reportStatus` ever sets this, and only for the unload report.
+      closed: false,
     };
   }
 
@@ -451,8 +459,24 @@ export function createBridge(options: BridgeOptions): Bridge {
   // STATUS_COUNTER_CAP — so a busy tab reports on a TRANSITION (patched, live,
   // blind, a new shape miss, crossing the cap) rather than once per message,
   // while the reported status itself always carries the real counts.
+  //
+  // `closed` is deliberately absent: it is a property of the report and not of
+  // capture health, and including it would make the unload report differ from
+  // its predecessor by that alone — which is true, but the point of the
+  // signature is to suppress reports that say nothing NEW about capture, and
+  // `reportStatus` bypasses it anyway.
+  //
+  // `blindStrikes` IS included, and uncapped, which is the one counter that
+  // is. Once `blind` has latched, every other term stops moving, so a tab that
+  // goes on swallowing the user's sends would report once and then look
+  // indistinguishable from a settled one — and the read side retires a
+  // document that has been quiet for CAPTURE_STATUS_DOCUMENT_QUIET_MS, which
+  // would retire exactly the tab the user is still typing into. The cost is
+  // one row per unanswered send, so it is bounded by what a person types
+  // rather than by traffic.
   function reportSignature(s: WebCaptureStatus): string {
     return [
+      blindStrikes,
       s.patched,
       s.live,
       s.blind,
@@ -526,8 +550,8 @@ export function createBridge(options: BridgeOptions): Bridge {
       maybeReport();
     },
 
-    reportStatus(): void {
-      const status = currentStatus();
+    reportStatus({ closed }: { closed: boolean }): void {
+      const status = { ...currentStatus(), closed };
       reported = reportSignature(status);
       try {
         // The outcome is ignored on purpose: there is nothing left to retry on
@@ -639,7 +663,7 @@ export function installBridge(options: InstallOptions): Bridge | null {
   // timer: a timer in a content script is one more thing to leak on
   // navigation (see sweepBlind's own comment), and this reporter adds none.
   win.addEventListener('pagehide', () => {
-    bridge.reportStatus();
+    bridge.reportStatus({ closed: true });
   });
   return bridge;
 }

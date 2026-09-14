@@ -331,6 +331,7 @@ describe('runStatus — the network-capture block', () => {
     unparsedBodies: 0,
     shapeMisses: [],
     conversationEndpoints: 0,
+    closed: false,
   };
 
   function run(): string {
@@ -355,6 +356,7 @@ describe('runStatus — the network-capture block', () => {
     seedStatus('claude-ai', {
       ...BASE_STATUS,
       conversationEndpoints: 1,
+      closed: false,
       live: true,
       shapeMisses: ['message.id'],
     });
@@ -374,6 +376,7 @@ describe('runStatus — the network-capture block', () => {
     seedStatus('chatgpt', {
       ...BASE_STATUS,
       conversationEndpoints: 1,
+      closed: false,
       live: true,
       exchangesSeenNet: 1,
       sendsSeenDom: 1,
@@ -393,6 +396,7 @@ describe('runStatus — the network-capture block', () => {
     seedStatus('claude-ai', {
       ...BASE_STATUS,
       conversationEndpoints: 1,
+      closed: false,
       blind: true,
       sendsSeenDom: 3,
     });
@@ -408,6 +412,7 @@ describe('runStatus — the network-capture block', () => {
     seedStatus('claude-ai', {
       ...BASE_STATUS,
       conversationEndpoints: 1,
+      closed: false,
       live: true,
       shapeMisses: ['message.id'],
     });

@@ -114,6 +114,19 @@ describe('WebCaptureStatus', () => {
     expect(parsed.conversationEndpoints).toBe(0);
   });
 
+  it('defaults closed to false for a status from a build that predates it', () => {
+    const parsed = WebCaptureStatus.parse({
+      patched: true,
+      live: false,
+      blind: false,
+      sendsSeenDom: 0,
+      exchangesSeenNet: 0,
+      parseFailures: 0,
+      unparsedBodies: 0,
+    });
+    expect(parsed.closed).toBe(false);
+  });
+
   it('carries a declared endpoint count over the wire', () => {
     const parsed = WebCaptureStatus.parse({
       patched: true,
@@ -142,6 +155,7 @@ describe('webCaptureStatusObservedTurnPath', () => {
     unparsedBodies: 0,
     shapeMisses: [],
     conversationEndpoints: 1,
+    closed: false,
   };
 
   it('is false for a tab that is watching and has seen nothing', () => {
@@ -152,6 +166,14 @@ describe('webCaptureStatusObservedTurnPath', () => {
     // Between the first DOM send and the strike count that trips `blind`, a
     // tab has no verdict — it has not yet given up on those sends.
     expect(webCaptureStatusObservedTurnPath({ ...WATCHING, sendsSeenDom: 2 })).toBe(false);
+  });
+
+  it('is false for a closing tab that observed nothing', () => {
+    // `closed` is a property of the report, not evidence about the site: a
+    // page that is unloading having seen nothing has still tested nothing,
+    // and a report that qualified on it would let every navigation clear a
+    // live verdict.
+    expect(webCaptureStatusObservedTurnPath({ ...WATCHING, closed: true })).toBe(false);
   });
 
   it.each([
@@ -178,6 +200,7 @@ describe('pickReportedCaptureStatus', () => {
     unparsedBodies: 0,
     shapeMisses: [],
     conversationEndpoints: 1,
+    closed: false,
   };
   const BLIND: WebCaptureStatus = { ...WATCHING, blind: true, sendsSeenDom: 3 };
   const ACTIVE: WebCaptureStatus = { ...WATCHING, live: true, exchangesSeenNet: 1 };
@@ -227,6 +250,7 @@ describe('CaptureStatusAttributes round trip', () => {
     unparsedBodies: 1,
     shapeMisses: ['message.id', 'usage.output_tokens'],
     conversationEndpoints: 3,
+    closed: true,
   };
 
   it('round-trips a status with every field non-default', () => {

@@ -1074,6 +1074,58 @@ describe('reporting capture status', () => {
     expect(statuses(h.relayed).length).toBeLessThanOrEqual(baseline + STATUS_COUNTER_CAP);
   });
 
+  it('marks the pagehide report as the document closing, and no earlier one', () => {
+    const win = fakeWindow();
+    const relayed: BackgroundRequest[] = [];
+    const clock = fakeClock();
+    const bridge = installBridge({
+      win: win.win,
+      hostname: 'claude.ai',
+      relay: (request) => {
+        relayed.push(request);
+        return Promise.resolve(true);
+      },
+      now: clock.now,
+    });
+    // Also the positive control on the hostname: an adapter that stopped
+    // claiming claude.ai would install nothing and make every assertion below
+    // hold over an empty relay.
+    if (bridge === null) throw new Error('claude.ai is expected to be a claimed hostname');
+    // A live report before the unload one, so this reads the two APART rather
+    // than holding on a single-element array — `closed` is what stops a
+    // document voting on the site's state, so a report that carried it early
+    // would silence a tab that is still open.
+    bridge.onTapMessage({ type: 'patched', fetch: true, xhr: false });
+    win.firePagehide();
+    expect(statuses(relayed).map((r) => r.status.closed)).toEqual([false, true]);
+  });
+
+  it('reports again on each send a blind tab still swallows', () => {
+    const h = harness();
+    h.feed({ type: 'patched', fetch: true, xhr: false });
+    // Drive `blind` all the way to latched, the final sweep included, so every
+    // other term in the signature has stopped moving before the loop below.
+    for (let strike = 0; strike <= BLIND_STRIKES; strike += 1) {
+      h.bridge.noteDomSend();
+      h.clock.advance(BLIND_WINDOW_MS + 1);
+    }
+    h.bridge.noteDomSend();
+    expect(h.bridge.status().blind).toBe(true);
+
+    const settled = statuses(h.relayed).length;
+    const swallowed = 3;
+    for (let more = 0; more < swallowed; more += 1) {
+      h.clock.advance(BLIND_WINDOW_MS + 1);
+      h.bridge.noteDomSend();
+    }
+    // One row per send into a tab that is still swallowing them. The read side
+    // retires a document that has gone quiet for CAPTURE_STATUS_DOCUMENT_QUIET_MS,
+    // and with `blindStrikes` out of the signature every term here is latched
+    // — so the tab the user is actively hitting the bug in would report once
+    // and then be retired while the bug is still happening.
+    expect(statuses(h.relayed).length).toBe(settled + swallowed);
+  });
+
   it('reports the final status unconditionally on pagehide', () => {
     const win = fakeWindow();
     const relayed: BackgroundRequest[] = [];

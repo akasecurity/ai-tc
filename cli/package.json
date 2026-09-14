@@ -60,7 +60,7 @@
     "@akasecurity/remote": "workspace:*",
     "@akasecurity/schema": "workspace:*",
     "@akasecurity/web-ui": "workspace:*",
-    "@types/node": "^24.13.3",
+    "@types/node": "^25.9.6",
     "@types/react": "^19.2.18",
     "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9.39.5",

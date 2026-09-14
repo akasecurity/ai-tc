@@ -10,10 +10,22 @@
 // loop never ends. `bypassNextSubmit` is armed immediately before each
 // programmatic submit and consumed by the very next handleSubmit invocation,
 // which returns BEFORE preventDefault so the site's own handler finally runs.
+import { blockGuidance, exceptionPointer } from './exception-guidance.ts';
 import type { BackgroundRequest, BackgroundResponse } from './messaging.ts';
 import type { ProviderAdapter } from './providers/types.ts';
 
 export type BannerTone = 'block' | 'warn' | 'redact';
+
+// What one banner renders. `exception` rides as its own field rather than
+// inside `message` for two reasons: the command has to be a selectable element
+// (a reference nobody can copy is a reference nobody can use), and its presence
+// is what tells the banner to stay on screen — a block whose approve command
+// scrolls away after six seconds offers a route the user cannot take.
+export interface BannerRequest {
+  tone: BannerTone;
+  message: string;
+  exception?: { intro: string; command: string; help: string };
+}
 
 export interface SubmitInterceptor {
   // Wired as the adapter's watchSubmit callback. Synchronous on the event
@@ -26,7 +38,7 @@ export function createSubmitInterceptor(opts: {
   adapter: ProviderAdapter;
   sessionId: string;
   relay: (request: BackgroundRequest) => Promise<BackgroundResponse>;
-  showBanner: (message: string, tone: BannerTone) => void;
+  showBanner: (banner: BannerRequest) => void;
   // Called once per message that actually left the composer, and never for one
   // this interceptor stopped. The network path counts each of these as a turn
   // it must see an exchange for, so a decision that blocks — or a redact it
@@ -71,10 +83,11 @@ export function createSubmitInterceptor(opts: {
     // vanish and reads it as sent. Clear the bypass immediately (nothing
     // consumed it) rather than leaving it armed until the timer.
     bypassNextSubmit = false;
-    showBanner(
-      'AKA could not send this message — the send button was not found, so the site may have changed. Your text is still in the composer and was NOT sent.',
-      'block',
-    );
+    showBanner({
+      tone: 'block',
+      message:
+        'AKA could not send this message — the send button was not found, so the site may have changed. Your text is still in the composer and was NOT sent.',
+    });
     return false;
   }
 
@@ -99,10 +112,19 @@ export function createSubmitInterceptor(opts: {
     }
 
     if (response.action === 'block') {
-      showBanner(
-        `AKA blocked this message — flagged ${response.ruleIds.join(', ')}. Remove it and resend.`,
-        'block',
-      );
+      const guidance = blockGuidance({
+        ruleIds: response.ruleIds.join(', '),
+        blockedRef: response.blockedReferences?.[0],
+      });
+      showBanner({
+        tone: 'block',
+        message: `${guidance.headline} ${guidance.advice}`,
+        exception: {
+          intro: guidance.approveIntro,
+          command: guidance.command,
+          help: guidance.help,
+        },
+      });
       return;
     }
     if (response.action === 'redact') {
@@ -112,10 +134,10 @@ export function createSubmitInterceptor(opts: {
       // the secret — sent, and with no banner at all, so the user's read was
       // "nothing was flagged". A redact the client cannot carry out blocks.
       if (typeof response.text !== 'string') {
-        showBanner(
-          `AKA could not redact this message (${response.ruleIds.join(', ')}) — remove the flagged content and resend.`,
-          'block',
-        );
+        showBanner({
+          tone: 'block',
+          message: `AKA could not redact this message (${response.ruleIds.join(', ')}) — remove the flagged content and resend.${exceptionPointer(response.blockedReferences)}`,
+        });
         return;
       }
       adapter.setText(composer, response.text);
@@ -125,10 +147,10 @@ export function createSubmitInterceptor(opts: {
       // otherwise still show "AKA redacted …" and then send the original — a
       // false assurance about the one action the product exists to perform.
       if (adapter.extractText(composer).trim() !== response.text.trim()) {
-        showBanner(
-          'AKA could not redact this message — remove the flagged content and resend.',
-          'block',
-        );
+        showBanner({
+          tone: 'block',
+          message: `AKA could not redact this message — remove the flagged content and resend.${exceptionPointer(response.blockedReferences)}`,
+        });
         return;
       }
       // Banner AFTER the send, and only if it happened: both of these name a
@@ -136,18 +158,18 @@ export function createSubmitInterceptor(opts: {
       // first would state an outcome that passThrough may be about to fail to
       // produce — the same false assurance the read-back above guards against.
       if (!passThrough(composer)) return;
-      showBanner(
-        `AKA redacted sensitive content (${response.ruleIds.join(', ')}) before sending.`,
-        'redact',
-      );
+      showBanner({
+        tone: 'redact',
+        message: `AKA redacted sensitive content (${response.ruleIds.join(', ')}) before sending.${exceptionPointer(response.blockedReferences)}`,
+      });
       return;
     }
     if (response.action === 'warn') {
       if (!passThrough(composer)) return;
-      showBanner(
-        `AKA flagged sensitive content (${response.ruleIds.join(', ')}) — sent unchanged.`,
-        'warn',
-      );
+      showBanner({
+        tone: 'warn',
+        message: `AKA flagged sensitive content (${response.ruleIds.join(', ')}) — sent unchanged.${exceptionPointer(response.blockedReferences)}`,
+      });
       return;
     }
     passThrough(composer);

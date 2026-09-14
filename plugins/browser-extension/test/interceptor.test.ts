@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 
-import type { BannerTone } from '../src/interceptor.ts';
+import type { BannerRequest } from '../src/interceptor.ts';
 import { createSubmitInterceptor } from '../src/interceptor.ts';
 import type { BackgroundRequest, BackgroundResponse } from '../src/messaging.ts';
 import type { ProviderAdapter } from '../src/providers/types.ts';
@@ -27,7 +27,7 @@ function harness(
   document.body.append(composer);
 
   const relayCalls: BackgroundRequest[] = [];
-  const banners: { message: string; tone: BannerTone }[] = [];
+  const banners: BannerRequest[] = [];
   const setTextCalls: string[] = [];
   let submitCount = 0;
   let reentrantPrevented = 0;
@@ -81,8 +81,8 @@ function harness(
       if (!next) return Promise.reject(new Error('relay exhausted'));
       return Promise.resolve(next as BackgroundResponse);
     },
-    showBanner: (message, tone) => {
-      banners.push({ message, tone });
+    showBanner: (banner) => {
+      banners.push(banner);
     },
     noteSend: () => {
       if (overrides.noteSendThrows) throw new Error('health reporting broke');
@@ -354,5 +354,61 @@ describe('the DOM-send signal the network path counts against', () => {
     expect(h.submitted()).toBe(1);
     // And the send is still treated as having happened.
     expect(h.banners).toEqual([]);
+  });
+});
+
+
+describe('the block banner carries the exception route', () => {
+  it('hands the ledger reference through as its own command', async () => {
+    // The reference is the whole point: without it the user is told a message
+    // was blocked and given no way to allow it. It rides as a separate field
+    // rather than inside the prose so the banner can render it selectably.
+    const h = harness([
+      {
+        type: 'capture',
+        action: 'block',
+        text: null,
+        ruleIds: ['secrets/aws-access-key'],
+        blockedReferences: [
+          { reference: '3f2a91', ruleId: 'secrets/aws-access-key', maskedValue: 'A******E' },
+        ],
+      },
+    ]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+
+    expect(h.submitted()).toBe(0);
+    expect(h.banners[0]?.tone).toBe('block');
+    expect(h.banners[0]?.exception?.command).toBe('aka exception approve 3f2a91');
+    expect(h.banners[0]?.message).toContain('A******E');
+  });
+
+  it('omits the command when the host ledgered nothing', async () => {
+    const h = harness([
+      { type: 'capture', action: 'block', text: null, ruleIds: ['secrets/aws-access-key'] },
+    ]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+
+    expect(h.banners[0]?.tone).toBe('block');
+    expect(h.banners[0]?.exception?.command).toBe('aka exception approve');
+  });
+
+  it('points a WARN at the same flow, since a warned value is ledgered too', async () => {
+    const h = harness([
+      {
+        type: 'capture',
+        action: 'warn',
+        ruleIds: ['secrets/aws-access-key'],
+        blockedReferences: [
+          { reference: '55aa', ruleId: 'secrets/aws-access-key', maskedValue: 'A******E' },
+        ],
+      },
+    ]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+
+    expect(h.submitted()).toBe(1);
+    expect(h.banners[0]?.message).toContain('aka exception approve 55aa');
   });
 });

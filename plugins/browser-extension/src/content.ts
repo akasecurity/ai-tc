@@ -15,6 +15,7 @@
  * MutationObserver keeps re-resolving both rather than caching stale nodes.
  * The decision loop itself lives in interceptor.ts (unit-tested there).
  */
+import type { BannerRequest } from './interceptor.ts';
 import { createSubmitInterceptor } from './interceptor.ts';
 import type { BackgroundRequest, BackgroundResponse } from './messaging.ts';
 import { resolveAdapter } from './providers/registry.ts';
@@ -193,7 +194,13 @@ let bannerHideTimer: ReturnType<typeof setTimeout> | null = null;
 // breakpoints, …) that a fixed bottom-center placement stays visible and
 // unclipped everywhere. Rendered in a shadow root so the host page's CSS
 // can neither hide it nor be affected by it.
-function showBanner(message: string, tone: 'block' | 'warn' | 'redact'): void {
+export function showBanner(banner: BannerRequest): void {
+  // Re-created when the cached host is no longer in the document. These sites
+  // re-render heavily, and a host that has been detached renders every later
+  // banner into a node nobody can see — including a BLOCK banner, which would
+  // leave the user with a message that silently never sent and no explanation
+  // on screen.
+  if (bannerHost && !bannerHost.isConnected) bannerHost = null;
   if (!bannerHost) {
     bannerHost = document.createElement('div');
     bannerHost.style.all = 'initial';
@@ -205,7 +212,8 @@ function showBanner(message: string, tone: 'block' | 'warn' | 'redact'): void {
     document.body.append(bannerHost);
   }
   const shadow = bannerHost.shadowRoot ?? bannerHost.attachShadow({ mode: 'open' });
-  const color = tone === 'block' ? '#dc2626' : tone === 'redact' ? '#d97706' : '#2563eb';
+  const color =
+    banner.tone === 'block' ? '#dc2626' : banner.tone === 'redact' ? '#d97706' : '#2563eb';
   const box = document.createElement('div');
   box.style.font = '13px/1.4 system-ui, sans-serif';
   box.style.background = color;
@@ -214,12 +222,54 @@ function showBanner(message: string, tone: 'block' | 'warn' | 'redact'): void {
   box.style.borderRadius = '8px';
   box.style.boxShadow = '0 4px 12px rgba(0,0,0,0.25)';
   box.style.maxWidth = '480px';
-  box.textContent = message;
+
+  const text = document.createElement('div');
+  text.textContent = banner.message;
+  box.append(text);
+
+  if (banner.exception) {
+    const intro = document.createElement('div');
+    intro.style.marginTop = '6px';
+    intro.textContent = banner.exception.intro;
+    // Its OWN element, monospaced and selectable: a double-click picks out
+    // exactly the command, which is the only way a reference reaches the
+    // terminal the user has to run it in.
+    const command = document.createElement('code');
+    command.style.display = 'block';
+    command.style.marginTop = '4px';
+    command.style.padding = '4px 6px';
+    command.style.background = 'rgba(0,0,0,0.25)';
+    command.style.borderRadius = '4px';
+    command.style.font = '12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace';
+    command.style.userSelect = 'all';
+    command.textContent = banner.exception.command;
+    const help = document.createElement('div');
+    help.style.marginTop = '6px';
+    help.style.opacity = '0.85';
+    help.textContent = banner.exception.help;
+    const dismiss = document.createElement('button');
+    dismiss.style.all = 'unset';
+    dismiss.style.cursor = 'pointer';
+    dismiss.style.marginTop = '8px';
+    dismiss.style.textDecoration = 'underline';
+    dismiss.textContent = 'Dismiss';
+    dismiss.addEventListener('click', () => {
+      bannerHost?.remove();
+      bannerHost = null;
+    });
+    box.append(intro, command, help, dismiss);
+  }
   shadow.replaceChildren(box);
 
   if (bannerHideTimer) clearTimeout(bannerHideTimer);
-  bannerHideTimer = setTimeout(() => {
-    bannerHost?.remove();
-    bannerHost = null;
-  }, 6000);
+  bannerHideTimer = null;
+  // A banner carrying an approve command does NOT auto-hide: the command is
+  // the whole reason it exists, and six seconds is not long enough to read a
+  // reference, switch to a terminal and type it. It is dismissed instead.
+  if (!banner.exception) {
+    bannerHideTimer = setTimeout(() => {
+      bannerHost?.remove();
+      bannerHost = null;
+    }, 6000);
+  }
 }

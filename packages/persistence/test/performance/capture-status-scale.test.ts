@@ -148,6 +148,7 @@ function seedCorpus(rows: number): Corpus {
         shapeMisses: [],
         conversationEndpoints: 1,
         closed: false,
+        enforcement: 'watching',
       },
       'chatgpt',
     ),

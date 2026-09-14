@@ -22,7 +22,7 @@ import type {
   ProviderAdapter,
   WebExchangeSummary,
 } from '../src/providers/types.ts';
-import type { SharedScope } from '../src/tab-session.ts';
+import type { EnforcementState, SharedScope } from '../src/tab-session.ts';
 import { notifyDomSend, resolveSessionId } from '../src/tab-session.ts';
 import type { TapToPage } from '../src/tap-protocol.ts';
 import { TAP_CHANNEL } from '../src/tap-protocol.ts';
@@ -112,6 +112,10 @@ function fakeClock(start = 1_700_000_000_000) {
 function harness(adapter: ProviderAdapter = fakeAdapter()) {
   const relayed: BackgroundRequest[] = [];
   const clock = fakeClock();
+  // Injected the way `now` is: the DOM half publishes this into a shared global
+  // the bridge cannot reach from a test, and reading the real one would make
+  // every case here depend on content.ts having run.
+  let enforcement: EnforcementState = 'watching';
   const bridge = createBridge({
     adapter,
     sessionId: 'sess_1',
@@ -120,6 +124,7 @@ function harness(adapter: ProviderAdapter = fakeAdapter()) {
       return Promise.resolve(true);
     },
     now: clock.now,
+    readEnforcement: () => enforcement,
   });
   const exchanges = (): Extract<BackgroundRequest, { type: 'exchange' }>[] =>
     relayed.filter(
@@ -128,7 +133,16 @@ function harness(adapter: ProviderAdapter = fakeAdapter()) {
   const feed = (...messages: TapToPage[]): void => {
     for (const message of messages) bridge.onTapMessage(message);
   };
-  return { bridge, relayed, exchanges, feed, clock };
+  return {
+    bridge,
+    relayed,
+    exchanges,
+    feed,
+    clock,
+    setEnforcement: (next: EnforcementState) => {
+      enforcement = next;
+    },
+  };
 }
 
 const request = (id = 1, url = CONVERSATION_URL): TapToPage => ({
@@ -524,6 +538,7 @@ describe('faults cost one exchange, never the relay', () => {
         throw new Error('the extension context went away');
       },
       now: clock.now,
+      readEnforcement: () => 'watching',
     });
     bridge.onTapMessage(request());
     expect(() => {
@@ -1184,6 +1199,71 @@ describe('reporting capture status', () => {
     // the pre-patched suppression would otherwise hold this back too.
     win.firePagehide();
     expect(statuses(relayed)).toHaveLength(1);
+  });
+});
+
+describe("the DOM path's state travels on the status the network half reports", () => {
+  const statuses = (h: ReturnType<typeof harness>) =>
+    h.relayed.filter(
+      (r): r is Extract<BackgroundRequest, { type: 'capture_status' }> =>
+        r.type === 'capture_status',
+    );
+
+  it('carries whatever the DOM half last published', () => {
+    const h = harness();
+    h.setEnforcement('composer-only');
+    expect(h.bridge.status().enforcement).toBe('composer-only');
+  });
+
+  it('reports a transition to unattached rather than computing it and sitting on it', () => {
+    // reportSignature is what decides whether a recomputed status is worth
+    // relaying. A field left out of it is a field whose changes are silent —
+    // which is how `sendsSeenDom` already behaves, and the exact failure this
+    // whole signal exists to end.
+    const h = harness();
+    h.feed({ type: 'patched', fetch: true, xhr: true });
+    const before = statuses(h).length;
+
+    h.setEnforcement('unattached');
+    h.bridge.noteDomSend();
+
+    const after = statuses(h);
+    expect(after.length).toBeGreaterThan(before);
+    expect(after[after.length - 1]?.status.enforcement).toBe('unattached');
+  });
+});
+
+describe('the network half re-reports when only the DOM half moved', () => {
+  const statuses = (h: ReturnType<typeof harness>) =>
+    h.relayed.filter(
+      (r): r is Extract<BackgroundRequest, { type: 'capture_status' }> =>
+        r.type === 'capture_status',
+    );
+
+  it('emits a status on an enforcement change with no network traffic at all', () => {
+    // maybeReport() previously ran only from onTapMessage and noteDomSend, so
+    // a tab whose watcher died reported nothing until some unrelated network
+    // event happened to fire. On a quiet tab, never.
+    const h = harness();
+    h.feed({ type: 'patched', fetch: true, xhr: true });
+    const before = statuses(h).length;
+
+    h.setEnforcement('unattached');
+    h.bridge.noteEnforcementChange();
+
+    const after = statuses(h);
+    expect(after.length).toBeGreaterThan(before);
+    expect(after[after.length - 1]?.status.enforcement).toBe('unattached');
+  });
+
+  it('says nothing when the state has not actually moved', () => {
+    const h = harness();
+    h.feed({ type: 'patched', fetch: true, xhr: true });
+    const before = statuses(h).length;
+
+    h.bridge.noteEnforcementChange();
+
+    expect(statuses(h).length).toBe(before);
   });
 });
 

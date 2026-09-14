@@ -77,6 +77,25 @@ export const WebExchange = z.object({
 });
 export type WebExchange = z.infer<typeof WebExchange>;
 
+// What the DOM enforcement path is doing in the reporting tab.
+//
+// The DOM path binds only when BOTH a composer and a send button resolve: an
+// intercepted send is completed by clicking the site's own button, so a
+// composer without one would swallow every message rather than fail open. The
+// two half-resolved states are named separately because each points at a
+// different selector list, and both have been seen live on one site.
+//
+// 'unknown' is a report carrying no opinion — a build predating this field, or
+// a tab whose DOM half has not run.
+export const WebEnforcementState = z.enum([
+  'watching',
+  'composer-only',
+  'button-only',
+  'unattached',
+  'unknown',
+]);
+export type WebEnforcementState = z.infer<typeof WebEnforcementState>;
+
 // Ceiling on the assistant text one exchange may carry to the host. Beyond it
 // the text is cut and `truncated` set — the scan then runs on what was kept.
 export const RESPONSE_TEXT_MAX_BYTES = 2 * 1024 * 1024;
@@ -121,6 +140,12 @@ export const WebCaptureStatus = z.object({
   // said it was closing — which keeps it voting, the same as every report that
   // is not a final one.
   closed: z.boolean().default(false),
+  // What the DOM enforcement path is doing, which none of the counters above
+  // can say: `sendsSeenDom` rises only once a send has COMPLETED, so a tab
+  // whose watcher never bound reports zero exactly like a tab nobody typed in.
+  // Defaulted to 'unknown' rather than 'watching' so a status from a build
+  // predating the field is not read as reporting a healthy one.
+  enforcement: WebEnforcementState.default('unknown'),
 });
 export type WebCaptureStatus = z.infer<typeof WebCaptureStatus>;
 
@@ -283,6 +308,7 @@ export function toCaptureStatusAttributes(
     shape_misses: status.shapeMisses,
     conversation_endpoints: status.conversationEndpoints,
     closed: status.closed,
+    enforcement: status.enforcement,
   };
 }
 
@@ -302,6 +328,7 @@ export function fromCaptureStatusAttributes(bag: unknown): WebCaptureStatus | nu
     shapeMisses: b.shape_misses,
     conversationEndpoints: b.conversation_endpoints,
     closed: b.closed,
+    enforcement: b.enforcement,
   });
   return parsedStatus.success ? parsedStatus.data : null;
 }

@@ -1062,6 +1062,7 @@ const VALID_STATUS: WebCaptureStatus = {
   shapeMisses: [],
   conversationEndpoints: 1,
   closed: false,
+  enforcement: 'watching',
 };
 
 describe('capture_status', () => {
@@ -1077,6 +1078,9 @@ describe('capture_status', () => {
       shapeMisses: ['adapter.model'],
       conversationEndpoints: 1,
       closed: false,
+      // A real state rather than the default, so the round trip below proves
+      // the DOM half's report survives the host as well as reaching it.
+      enforcement: 'composer-only',
     };
     const response = await handleRequest(
       {
@@ -1214,6 +1218,7 @@ describe('capture_status durable write', () => {
       shapeMisses: ['message.id'],
       conversationEndpoints: 2,
       closed: false,
+      enforcement: 'watching',
     };
     const cfgForTool: ConfigForTool = (tool) => ({
       ...config(tool, webChatSettings()),

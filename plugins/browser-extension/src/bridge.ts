@@ -33,8 +33,13 @@ import type {
   ProviderEndpoint,
   WebExchangeSummary,
 } from './providers/types.ts';
-import type { SharedScope } from './tab-session.ts';
-import { resolveSessionId, setDomSendListener } from './tab-session.ts';
+import type { EnforcementState, SharedScope } from './tab-session.ts';
+import {
+  readEnforcementState,
+  resolveSessionId,
+  setDomSendListener,
+  setEnforcementListener,
+} from './tab-session.ts';
 import type { TapToPage } from './tap-protocol.ts';
 import { TAP_CHANNEL } from './tap-protocol.ts';
 
@@ -101,12 +106,21 @@ export interface BridgeOptions {
   // Injected so the blind window is a property of the test rather than a race
   // against the runner.
   now: () => number;
+  // What the DOM enforcement half last published about itself. Injected rather
+  // than read off the shared global here, for the same reason `now` is: the
+  // network half runs at document_start and the DOM half at document_idle, so
+  // in a test there is nothing to have published anything.
+  readEnforcement: () => EnforcementState;
 }
 
 export interface Bridge {
   onTapMessage(message: TapToPage): void;
   status(): WebCaptureStatus;
   noteDomSend(): void;
+  // Called when the DOM half publishes a new enforcement state. Status is
+  // recomputed from the bridge's own events otherwise, so without this a
+  // watcher that died is never reported on a tab with no network traffic.
+  noteEnforcementChange(): void;
   /**
    * Relay the current status now, whatever the signature says.
    *
@@ -246,7 +260,7 @@ interface InFlight {
 }
 
 export function createBridge(options: BridgeOptions): Bridge {
-  const { adapter, sessionId, relay, now } = options;
+  const { adapter, sessionId, relay, now, readEnforcement } = options;
   const endpoints = compileEndpoints(adapter);
   // Counted off the COMPILED list, not the declared one: an endpoint whose
   // pattern failed to compile (see compileEndpoints' own catch) classifies
@@ -482,6 +496,7 @@ export function createBridge(options: BridgeOptions): Bridge {
       conversationEndpoints,
       // Only `reportStatus` ever sets this, and only for the unload report.
       closed: false,
+      enforcement: readEnforcement(),
     };
   }
 
@@ -511,6 +526,9 @@ export function createBridge(options: BridgeOptions): Bridge {
       s.live,
       s.blind,
       s.conversationEndpoints,
+      // In the signature, not merely in the status: a field left out of it is a
+      // field whose transitions are computed and never relayed.
+      s.enforcement,
       s.shapeMisses.length,
       Math.min(s.parseFailures, STATUS_COUNTER_CAP),
       Math.min(s.unparsedBodies, STATUS_COUNTER_CAP),
@@ -571,6 +589,10 @@ export function createBridge(options: BridgeOptions): Bridge {
 
     status(): WebCaptureStatus {
       return currentStatus();
+    },
+
+    noteEnforcementChange(): void {
+      maybeReport();
     },
 
     noteDomSend(): void {
@@ -682,9 +704,13 @@ export function installBridge(options: InstallOptions): Bridge | null {
     sessionId: resolveSessionId(win),
     relay,
     now,
+    readEnforcement: () => readEnforcementState(win),
   });
   setDomSendListener(win, () => {
     bridge.noteDomSend();
+  });
+  setEnforcementListener(win, () => {
+    bridge.noteEnforcementChange();
   });
   attachTap(win, (message) => {
     bridge.onTapMessage(message);

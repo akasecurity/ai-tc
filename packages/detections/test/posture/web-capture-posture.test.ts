@@ -66,6 +66,10 @@ describe('deriveWebCaptureState — the false-signal proof', () => {
       unparsedBodies: 0,
       shapeMisses: ['a', 'b'],
       closed: false,
+      // Orthogonal to every signal this suite measures: the drift rule is
+      // defined over the NETWORK path, and the DOM half's state is carried
+      // beside it rather than folded into it.
+      enforcement: 'watching',
     };
     expect(deriveWebCaptureState(status)).toBe('standby');
     expect(webCaptureDriftFires(status)).toBe(false);
@@ -84,6 +88,10 @@ describe('deriveWebCaptureState — exhaustive state table', () => {
     unparsedBodies: 0,
     shapeMisses: [],
     closed: false,
+    // Orthogonal to every signal this suite measures: the drift rule is
+    // defined over the NETWORK path, and the DOM half's state is carried
+    // beside it rather than folded into it.
+    enforcement: 'watching',
   };
 
   // Annotated Record<WebCaptureState, ...> so a state added to the vocabulary
@@ -116,6 +124,10 @@ describe('deriveWebCaptureState — precedence', () => {
     unparsedBodies: 0,
     shapeMisses: [],
     closed: false,
+    // Orthogonal to every signal this suite measures: the drift rule is
+    // defined over the NETWORK path, and the DOM half's state is carried
+    // beside it rather than folded into it.
+    enforcement: 'watching',
   };
 
   it('blind beats a non-empty shapeMisses', () => {
@@ -149,6 +161,10 @@ describe('the parse-failure threshold', () => {
     unparsedBodies: 0,
     shapeMisses: [],
     closed: false,
+    // Orthogonal to every signal this suite measures: the drift rule is
+    // defined over the NETWORK path, and the DOM half's state is carried
+    // beside it rather than folded into it.
+    enforcement: 'watching',
   };
 
   it('one parse failure is not drift', () => {

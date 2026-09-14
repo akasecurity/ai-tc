@@ -345,6 +345,7 @@ describe('runStatus — the network-capture block', () => {
     shapeMisses: [],
     conversationEndpoints: 0,
     closed: false,
+    enforcement: 'watching',
   };
 
   function run(): string {

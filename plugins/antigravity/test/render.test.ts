@@ -814,12 +814,14 @@ describe('runQuery findings — web-capture drift', () => {
     shapeMisses: [],
     conversationEndpoints: 0,
     closed: false,
+    enforcement: 'watching',
   };
 
   const DRIFTING: WebCaptureStatus = {
     ...BASE_STATUS,
     conversationEndpoints: 1,
     closed: false,
+    enforcement: 'watching',
     blind: true,
     sendsSeenDom: 3,
   };

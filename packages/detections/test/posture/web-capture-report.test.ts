@@ -27,6 +27,7 @@ function status(over: Partial<WebCaptureStatus> = {}): WebCaptureStatus {
     shapeMisses: [],
     conversationEndpoints: 1,
     closed: false,
+    enforcement: 'watching',
     ...over,
   });
 }

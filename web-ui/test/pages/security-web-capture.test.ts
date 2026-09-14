@@ -54,6 +54,7 @@ const BASE_STATUS: WebCaptureStatus = {
   shapeMisses: [],
   conversationEndpoints: 0,
   closed: false,
+  enforcement: 'watching',
 };
 
 let seedCounter = 0;

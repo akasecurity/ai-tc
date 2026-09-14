@@ -29,6 +29,7 @@ const STATUS: WebCaptureStatus = {
   shapeMisses: [],
   conversationEndpoints: 1,
   closed: false,
+  enforcement: 'watching',
 };
 
 // `rootSessionId` is what groups a site's rows into DOCUMENTS, so a case about
@@ -152,6 +153,7 @@ describe('SqliteCaptureStatusRepository.latest — a watching-only report', () =
     shapeMisses: [],
     conversationEndpoints: 1,
     closed: false,
+    enforcement: 'watching',
   };
   const BLIND: WebCaptureStatus = { ...WATCHING, blind: true, sendsSeenDom: 3 };
 

@@ -760,6 +760,7 @@ describe('readCaptureStatuses', () => {
       shapeMisses: [],
       conversationEndpoints: 1,
       closed: false,
+      enforcement: 'watching',
     };
     await gateway.recordAuditEvent({
       id: randomUUID(),

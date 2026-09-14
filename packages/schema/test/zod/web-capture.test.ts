@@ -10,6 +10,7 @@ import {
   toCaptureStatusAttributes,
   WebCaptureStatus,
   webCaptureStatusObservedTurnPath,
+  WebEnforcementState,
   WebExchange,
   WebToolCall,
   WebUsage,
@@ -140,6 +141,66 @@ describe('WebCaptureStatus', () => {
     });
     expect(parsed.conversationEndpoints).toBe(2);
   });
+
+  it("defaults enforcement to 'unknown' for a status from a build that predates it", () => {
+    // Not 'watching'. A build that cannot report what the DOM path is doing
+    // must not be read as reporting that it is doing it — that is the failure
+    // this field exists to end, restated one layer up.
+    const parsed = WebCaptureStatus.parse({
+      patched: true,
+      live: false,
+      blind: false,
+      sendsSeenDom: 0,
+      exchangesSeenNet: 0,
+      parseFailures: 0,
+      unparsedBodies: 0,
+    });
+    expect(parsed.enforcement).toBe('unknown');
+  });
+
+  it('carries every declared enforcement state over the wire', () => {
+    // Iterated inside the body rather than through `it.each`: widening the
+    // vocabulary to a bare string leaves `.options` undefined, which fails
+    // COLLECTION and reports "no tests" instead of naming what broke.
+    const states = WebEnforcementState.options;
+    expect(states.length).toBeGreaterThan(0);
+    for (const state of states) {
+      const parsed = WebCaptureStatus.parse({
+        patched: true,
+        live: false,
+        blind: false,
+        sendsSeenDom: 0,
+        exchangesSeenNet: 0,
+        parseFailures: 0,
+        unparsedBodies: 0,
+        enforcement: state,
+      });
+      expect(parsed.enforcement).toBe(state);
+    }
+  });
+
+  it('refuses an enforcement state outside the vocabulary', () => {
+    const parsed = WebCaptureStatus.safeParse({
+      patched: true,
+      live: false,
+      blind: false,
+      sendsSeenDom: 0,
+      exchangesSeenNet: 0,
+      parseFailures: 0,
+      unparsedBodies: 0,
+      enforcement: 'healthy',
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('names both half-resolved composers, which are the two states seen live', () => {
+    // chatgpt.com resolves a composer and no send button; its anonymous build
+    // resolves a send button and no composer. Collapsing the pair into one
+    // 'unattached' would report both as the same fault and name neither
+    // selector.
+    expect(WebEnforcementState.options).toContain('composer-only');
+    expect(WebEnforcementState.options).toContain('button-only');
+  });
 });
 
 describe('webCaptureStatusObservedTurnPath', () => {
@@ -156,6 +217,9 @@ describe('webCaptureStatusObservedTurnPath', () => {
     shapeMisses: [],
     conversationEndpoints: 1,
     closed: false,
+    enforcement: 'watching',
+    // The DOM half is orthogonal to everything these two suites measure; a
+    // fixed healthy value keeps it from being read as a variable here.
   };
 
   it('is false for a tab that is watching and has seen nothing', () => {
@@ -201,6 +265,9 @@ describe('pickReportedCaptureStatus', () => {
     shapeMisses: [],
     conversationEndpoints: 1,
     closed: false,
+    enforcement: 'watching',
+    // The DOM half is orthogonal to everything these two suites measure; a
+    // fixed healthy value keeps it from being read as a variable here.
   };
   const BLIND: WebCaptureStatus = { ...WATCHING, blind: true, sendsSeenDom: 3 };
   const ACTIVE: WebCaptureStatus = { ...WATCHING, live: true, exchangesSeenNet: 1 };
@@ -251,6 +318,7 @@ describe('CaptureStatusAttributes round trip', () => {
     shapeMisses: ['message.id', 'usage.output_tokens'],
     conversationEndpoints: 3,
     closed: true,
+    enforcement: 'composer-only',
   };
 
   it('round-trips a status with every field non-default', () => {

@@ -262,3 +262,71 @@ describe('watchEnterToSend: winning the Enter race', () => {
     unwatch();
   });
 });
+
+describe('watchEnterToSend: Enter that is not a send', () => {
+  // A document-capture listener runs before EVERY listener on or below the
+  // composer, including the site's own handling of Enter as "accept the
+  // highlighted item". Intercepting that one routes half-typed text through
+  // the decision path and, on pass-through, sends it — a message the user
+  // never asked to send. The composer's own ARIA is what says a popup is open.
+  function composerWithPopup(attrs: Record<string, string>): HTMLElement {
+    const el = document.createElement('div');
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    document.body.append(el);
+    return el;
+  }
+
+  it('ignores Enter while the composer reports an expanded popup', () => {
+    const composer = composerWithPopup({ 'aria-expanded': 'true' });
+    const onSubmit = vi.fn();
+    const unwatch = watchEnterToSend(composer, onSubmit);
+    composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    unwatch();
+  });
+
+  it('ignores Enter while an active descendant is highlighted', () => {
+    const composer = composerWithPopup({ 'aria-activedescendant': 'opt-3' });
+    const onSubmit = vi.fn();
+    const unwatch = watchEnterToSend(composer, onSubmit);
+    composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    unwatch();
+  });
+
+  it('still sends when the popup is closed again', () => {
+    // aria-expanded="false" is the CLOSED state and must not suppress a send —
+    // the attribute being present is not the signal, its value is.
+    const composer = composerWithPopup({ 'aria-expanded': 'false' });
+    const onSubmit = vi.fn();
+    const unwatch = watchEnterToSend(composer, onSubmit);
+    composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    unwatch();
+  });
+
+  it('ignores Enter while a listbox the composer controls is present', () => {
+    const listbox = document.createElement('div');
+    listbox.id = 'lb-1';
+    listbox.setAttribute('role', 'listbox');
+    document.body.append(listbox);
+    const composer = composerWithPopup({ 'aria-controls': 'lb-1' });
+    const onSubmit = vi.fn();
+    const unwatch = watchEnterToSend(composer, onSubmit);
+    composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    unwatch();
+  });
+
+  it('sends when aria-controls names something that is not a listbox', () => {
+    const panel = document.createElement('div');
+    panel.id = 'p-1';
+    document.body.append(panel);
+    const composer = composerWithPopup({ 'aria-controls': 'p-1' });
+    const onSubmit = vi.fn();
+    const unwatch = watchEnterToSend(composer, onSubmit);
+    composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    unwatch();
+  });
+});

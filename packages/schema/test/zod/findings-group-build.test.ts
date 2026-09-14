@@ -7,7 +7,9 @@ import {
   buildFindingTypes,
   computeFindingFacets,
   countInstancesByStatus,
+  FINDING_STATUS_PRECEDENCE,
   type FindingGroupAggregate,
+  foldGroupStatus,
   type GroupableFindingRow,
   sortFindingTypes,
   toApiAction,
@@ -20,6 +22,20 @@ import {
 
 // ─── enum mappers (normative from the spec enum tables) ──────────────────────
 
+describe('FINDING_STATUS_PRECEDENCE', () => {
+  it('is open-dominates, least-urgent last', () => {
+    expect(FINDING_STATUS_PRECEDENCE).toEqual(['open', 'handled', 'dismissed', 'resolved']);
+  });
+
+  it('is the order foldGroupStatus resolves a mixed group by', () => {
+    // handled outranks dismissed: an in-flight enforcement still worth
+    // surfacing must not be hidden behind a human's risk acceptance.
+    expect(foldGroupStatus(['resolved', 'handled'])).toBe('handled');
+    expect(foldGroupStatus(['resolved', 'dismissed', 'handled', 'open'])).toBe('open');
+    expect(foldGroupStatus(['resolved', 'dismissed'])).toBe('dismissed');
+  });
+});
+
 describe('toApiAction', () => {
   it('maps every DB action to its API value', () => {
     expect(toApiAction('log')).toBe('monitored');
@@ -30,6 +46,14 @@ describe('toApiAction', () => {
   });
   it('falls back to allowed for unknown values', () => {
     expect(toApiAction('whatever')).toBe('allowed');
+  });
+
+  // The map is a plain object, so a DB value equal to an Object.prototype key
+  // must still fall back to the miss bucket rather than resolving to that
+  // key's inherited function value.
+  it('falls back to allowed for a value shadowing Object.prototype', () => {
+    expect(toApiAction('constructor')).toBe('allowed');
+    expect(toApiAction('toString')).toBe('allowed');
   });
 });
 
@@ -92,6 +116,16 @@ describe('provider mappers', () => {
     expect(toApiProvider('claude-ai')).toBe('claudeai');
     expect(toApiProvider('antigravity')).toBe('antigravity');
     expect(toApiProvider('mystery-tool')).toBe('api');
+  });
+
+  // TOOL_TO_HARNESS is a plain object, so a sourceTool equal to an
+  // Object.prototype key must still fall back to the miss bucket ('api')
+  // rather than resolving to that key's inherited function value.
+  it('falls back to api for a sourceTool shadowing Object.prototype', () => {
+    expect(toApiProvider('constructor')).toBe('api');
+    expect(toApiProvider('toString')).toBe('api');
+    expect(toApiProvider('__proto__')).toBe('api');
+    expect(toApiProvider('hasOwnProperty')).toBe('api');
   });
   it('maps API provider → DB filter values', () => {
     expect(toDbProviderFilter('claudecode')).toEqual(['claude-code']);

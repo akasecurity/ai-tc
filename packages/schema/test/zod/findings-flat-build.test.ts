@@ -3,17 +3,27 @@ import { describe, expect, it } from 'vitest';
 import type { FindingTypeSummary } from '../../src/zod/index.ts';
 import {
   addToLocation,
+  compareCodePoints,
   compareFindingGroupOrder,
   compareLocationOrder,
   createInstanceFacetAccumulator,
   encodeLocationId,
+  type FacetTuple,
   type FlatFindingRow,
+  foldFacetTuples,
   foldGroupStatus,
   matchesInstanceFilters,
   newLocationAccumulator,
+  rowFromTuple,
+  SEVERITY_RANK,
+  severityRank,
   sortFindingTypes,
   toInstanceDetail,
 } from '../../src/zod/index.ts';
+
+// Severity strings that name an inherited Object.prototype member, which a bare
+// `table[value]` lookup resolves to a function instead of a miss.
+const PROTOTYPE_KEYS = ['constructor', 'toString', '__proto__', 'hasOwnProperty'];
 
 function row(over: Partial<FlatFindingRow> = {}): FlatFindingRow {
   return {
@@ -33,6 +43,58 @@ function row(over: Partial<FlatFindingRow> = {}): FlatFindingRow {
     ...over,
   };
 }
+
+describe('SEVERITY_RANK', () => {
+  // A literal, not a read-back of Severity.options: the table is derived from
+  // the enum's declared order, so a comparison against that same order holds
+  // whatever it is. Reordering the enum would silently invert the findings
+  // list, and this is what goes red.
+  it('ranks critical first and low last', () => {
+    expect(SEVERITY_RANK).toEqual({ critical: 0, high: 1, medium: 2, low: 3 });
+  });
+});
+
+// A severity arrives as an arbitrary string — from a stored row or from a
+// caller-supplied cursor — so a value naming an Object.prototype member must
+// miss the rank table exactly as 'not-a-severity' does, not resolve to the
+// inherited function and turn every comparison against it into NaN.
+describe('severityRank', () => {
+  it('ranks every known severity', () => {
+    for (const [severity, rank] of Object.entries(SEVERITY_RANK)) {
+      expect(severityRank(severity)).toBe(rank);
+    }
+  });
+
+  it.each(['not-a-severity', ...PROTOTYPE_KEYS])('misses on %s', (value) => {
+    expect(severityRank(value)).toBeUndefined();
+  });
+});
+
+// SQLite's BINARY collation compares UTF-8 bytes, which for a well-formed
+// string is the same order as comparing Unicode CODE POINTS — not the same as
+// comparing UTF-16 code units, which is what JavaScript's `<` does.
+describe('compareCodePoints', () => {
+  // JavaScript's own comparison, behind a function so the contrast below is a
+  // runtime check rather than something the compiler folds away.
+  const utf16Less = (a: string, b: string): boolean => a < b;
+
+  it('compares by Unicode code point rather than UTF-16 code unit', () => {
+    // JavaScript's `<` compares UTF-16 code units: the astral character's
+    // leading surrogate (U+D83D) is numerically BELOW the fullwidth
+    // exclamation mark (U+FF01), so `<` puts the astral string first — the
+    // opposite of code-point order, where U+1F600 > U+FF01.
+    const astral = 'a\u{1F600}';
+    const bmp = 'a！';
+    expect(utf16Less(astral, bmp)).toBe(true); // the UTF-16 answer, for contrast
+    expect(compareCodePoints(astral, bmp)).toBeGreaterThan(0);
+  });
+
+  it('returns 0 for identical strings and is antisymmetric', () => {
+    expect(compareCodePoints('abc', 'abc')).toBe(0);
+    expect(compareCodePoints('abc', 'abd')).toBeLessThan(0);
+    expect(compareCodePoints('abd', 'abc')).toBeGreaterThan(0);
+  });
+});
 
 describe('matchesInstanceFilters', () => {
   it('passes a row when no filter is set', () => {
@@ -174,6 +236,147 @@ describe('createInstanceFacetAccumulator', () => {
       { value: 'b-rule', count: 1 },
     ]);
   });
+
+  // localeCompare reports canonically-equivalent strings as equal, so a
+  // count-tied pair of an NFC and an NFD spelling has no defined order under
+  // it, and the order falls to Map insertion. compareCodePoints is the
+  // fallback that makes the order total. It need not match SQL collation:
+  // foldFacetTuples runs this same sort over grouped tuples.
+  it('breaks a count tie between canonically-equivalent values by code point', () => {
+    const nfc = 'café-rule'; // precomposed é
+    const nfd = 'café-rule'; // decomposed e + combining acute accent
+    // The control: they ARE different strings, and localeCompare alone
+    // reports them equal — without compareCodePoints as a fallback, the tie
+    // is unresolved and the order depends on Map iteration/insertion order.
+    expect(nfc).not.toBe(nfd);
+    expect(nfc.localeCompare(nfd)).toBe(0);
+
+    const acc = createInstanceFacetAccumulator({});
+    acc.add(row({ id: 'a', ruleId: nfc }));
+    acc.add(row({ id: 'b', ruleId: nfd }));
+    expect(acc.facets().subtype.map((f) => f.value)).toEqual([nfd, nfc]);
+  });
+});
+
+describe('foldFacetTuples', () => {
+  // Grouped tuples and the rows they stand for must produce identical numbers.
+  // The oracle is the real row accumulator: expand every tuple back into its
+  // rows, feed those through createInstanceFacetAccumulator, and count the
+  // matching ones by hand. If the two ever disagree, a store that groups before
+  // it counts would report different facets from one that counts row by row.
+  const TUPLES: FacetTuple[] = [
+    {
+      severity: 'critical',
+      ruleId: 'aws-key',
+      sourceTool: 'claude-code',
+      actionTaken: 'block',
+      status: 'open',
+      toolName: 'Bash',
+      count: 3,
+    },
+    {
+      severity: 'critical',
+      ruleId: 'aws-key',
+      sourceTool: 'cli',
+      actionTaken: 'log',
+      status: 'handled',
+      count: 2,
+    },
+    {
+      severity: 'low',
+      ruleId: 'pii-email',
+      sourceTool: 'codex',
+      actionTaken: 'warn',
+      status: 'open',
+      toolName: 'Read',
+      count: 5,
+    },
+    {
+      severity: 'high',
+      ruleId: 'pii-email',
+      sourceTool: 'unknown-tool',
+      actionTaken: 'redact',
+      status: 'resolved',
+      count: 1,
+    },
+    // No status: a row that predates the resolution feature still counts toward
+    // the total and five facets, and only the status facet skips it.
+    {
+      severity: 'high',
+      ruleId: 'aws-key',
+      sourceTool: 'codex',
+      actionTaken: 'log',
+      count: 4,
+    },
+  ];
+
+  function oracle(tuples: readonly FacetTuple[], opts: Parameters<typeof foldFacetTuples>[1]) {
+    const accumulator = createInstanceFacetAccumulator(opts);
+    let total = 0;
+    for (const tuple of tuples) {
+      for (let i = 0; i < tuple.count; i += 1) {
+        const expanded = rowFromTuple(tuple);
+        accumulator.add(expanded);
+        if (matchesInstanceFilters(expanded, opts)) total += 1;
+      }
+    }
+    return { total, facets: accumulator.facets() };
+  }
+
+  it.each([
+    ['no filters', {}],
+    ['severity', { severity: ['critical'] }],
+    ['provider, including the unmapped-tool bucket', { providers: ['api'] }],
+    ['status', { statuses: ['open'] }],
+    ['tool', { tools: ['Bash'] }],
+    ['subtype', { subtype: ['pii-email'] }],
+    [
+      'three dimensions at once, so every facet excludes a live filter',
+      { severity: ['critical'], providers: ['claudecode'], statuses: ['open'] },
+    ],
+    ['a filter nothing matches', { severity: ['medium'] }],
+  ])('equals the row accumulator: %s', (_label, opts) => {
+    expect(foldFacetTuples(TUPLES, opts)).toEqual(oracle(TUPLES, opts));
+  });
+
+  it('counts no tool bucket for a tuple carrying none', () => {
+    const { facets } = foldFacetTuples(TUPLES, {});
+    // 'unknown-tool' and 'cli' rows carry no toolName, so only Bash and Read
+    // are counted — 3 and 5 — and the absent ones contribute to nothing.
+    expect(facets.tool).toEqual([
+      { value: 'Read', count: 5 },
+      { value: 'Bash', count: 3 },
+    ]);
+  });
+
+  it('maps raw source tools through the shared provider mapper before counting', () => {
+    const { facets } = foldFacetTuples(TUPLES, {});
+    // 'cli' and 'unknown-tool' are both unmapped, so they collapse into the one
+    // miss bucket rather than appearing as two raw values.
+    const api = facets.provider.find((f) => f.value === 'api');
+    expect(api).toEqual({ value: 'api', count: 3 });
+    expect(facets.provider.map((f) => f.value)).not.toContain('cli');
+  });
+
+  it('ignores repo, file and q, which a grouping caller applies before grouping', () => {
+    // A tuple carries none of those fields, so a matcher that honoured them
+    // would reject every tuple and report zero.
+    const scoped = foldFacetTuples(TUPLES, { repo: 'acme/api', file: 'a.ts', q: 'nothing' });
+    expect(scoped.total).toBe(15);
+  });
+
+  it('counts a status-less tuple toward the total and every facet but status', () => {
+    const { total, facets } = foldFacetTuples(TUPLES, {});
+    expect(total).toBe(15);
+    // 11 of the 15 carry a status; the 4 without one are absent from that
+    // facet alone.
+    expect(facets.status.reduce((sum, item) => sum + item.count, 0)).toBe(11);
+    for (const dimension of ['severity', 'subtype', 'provider', 'action'] as const) {
+      expect(facets[dimension].reduce((sum, item) => sum + item.count, 0)).toBe(15);
+    }
+    // And a status filter excludes it from the total, as it would the row.
+    expect(foldFacetTuples(TUPLES, { statuses: ['open', 'handled', 'resolved'] }).total).toBe(11);
+  });
 });
 
 describe('toInstanceDetail', () => {
@@ -245,6 +448,20 @@ describe('compareFindingGroupOrder', () => {
     ).toBeLessThan(0);
   });
 
+  // The cursor decoder does not validate `sev` against the enum on the strength
+  // of the case above, so a value naming an Object.prototype member has to rank
+  // the same way — a finite comparison, before every known severity — rather
+  // than a NaN that `sort` reads as a tie and `> 0` reads as never after.
+  it.each(PROTOTYPE_KEYS)('ranks the prototype name %s below every known severity', (value) => {
+    for (const known of Object.keys(SEVERITY_RANK)) {
+      const cmp = compareFindingGroupOrder(
+        group({ severity: value as FindingTypeSummary['severity'] }),
+        group({ severity: known as FindingTypeSummary['severity'] }),
+      );
+      expect(cmp).toBeLessThan(0);
+    }
+  });
+
   it('is the comparator sortFindingTypes uses', () => {
     const groups = [
       { severity: 'low', latestDetectedAt: '2026-01-03T00:00:00.000Z', id: 'x' },
@@ -283,6 +500,23 @@ describe('location accumulator', () => {
     addToLocation(acc, row({ severity: 'not-a-severity' }));
     addToLocation(acc, row({ severity: 'high' }));
     expect(acc.maxSeverity).toBe('high');
+  });
+
+  // A single row is the discriminating shape: a prototype name that resolved to
+  // an inherited function would compare NaN against the starting rank, lose,
+  // and leave the location reading 'low' at the starting rank — where a real
+  // unknown value takes the slot one below it.
+  it.each(PROTOTYPE_KEYS)('ranks the prototype name %s as an unknown severity', (value) => {
+    const unknown = newLocationAccumulator();
+    addToLocation(unknown, row({ severity: 'not-a-severity' }));
+
+    const acc = newLocationAccumulator();
+    addToLocation(acc, row({ severity: value }));
+    expect(acc.maxSeverityRank).toBe(unknown.maxSeverityRank);
+    expect(acc.maxSeverity).toBe(value);
+
+    addToLocation(acc, row({ severity: 'low' }));
+    expect(acc.maxSeverity).toBe('low');
   });
 });
 
@@ -347,6 +581,31 @@ describe('compareLocationOrder', () => {
     expect(compareLocationOrder(loc({ repo: precomposed }), loc({ repo: decomposed }))).not.toBe(0);
   });
 
+  // compareLocationOrder orders repo/file by compareCodePoints (matching
+  // SQLite's BINARY collation over UTF-8), not by UTF-16 code-unit `<`. An
+  // astral character's surrogate pair sorts BELOW U+E000–U+FFFF under `<`,
+  // which is the wrong order for a store that will produce this ordering in
+  // SQL.
+  it('orders an astral file AFTER a BMP one tied on severity and instant, matching code-point order', () => {
+    const tied = { maxSeverity: 'high', latestDetectedAt: '2026-01-01T00:00:00.000Z' };
+    const astral = loc({ ...tied, repo: 'acme/api', file: 'a\u{1F600}' });
+    const bmp = loc({ ...tied, repo: 'acme/api', file: 'a！' });
+    // The UTF-16 code-unit comparison this replaces gets it backwards.
+    expect(astral.file < bmp.file).toBe(true);
+    expect(compareLocationOrder(astral, bmp)).toBeGreaterThan(0);
+  });
+
+  // The same property on the REPO half. It needs its own case: the pair above
+  // shares a repo, so it exercises only the file comparison and a repo half
+  // left on `<` would keep passing it.
+  it('orders an astral repo AFTER a BMP one, matching code-point order', () => {
+    const tied = { maxSeverity: 'high', latestDetectedAt: '2026-01-01T00:00:00.000Z' };
+    const astral = loc({ ...tied, repo: 'acme/a\u{1F600}', file: 'a.ts' });
+    const bmp = loc({ ...tied, repo: 'acme/a！', file: 'a.ts' });
+    expect(astral.repo < bmp.repo).toBe(true);
+    expect(compareLocationOrder(astral, bmp)).toBeGreaterThan(0);
+  });
+
   // What makes an undecodable or hand-edited cursor degrade to a restart from
   // the top rather than to an empty page: every real row sorts AFTER a cursor
   // carrying an unknown severity, so the search for "the first row past it"
@@ -356,6 +615,21 @@ describe('compareLocationOrder', () => {
       expect(
         compareLocationOrder(loc({ maxSeverity: 'not-a-severity' }), loc({ maxSeverity: known })),
       ).toBeLessThan(0);
+    }
+  });
+
+  // The location cursor's `sev` is caller-supplied and unvalidated, so a value
+  // naming an Object.prototype member must take the same path. Resolved to the
+  // inherited function it would compare NaN, nothing would sort after the
+  // cursor, and the page would come back empty.
+  it.each(PROTOTYPE_KEYS)('ranks the prototype name %s before every known severity', (value) => {
+    for (const known of Object.keys(SEVERITY_RANK)) {
+      expect(
+        compareLocationOrder(loc({ maxSeverity: value }), loc({ maxSeverity: known })),
+      ).toBeLessThan(0);
+      expect(
+        compareLocationOrder(loc({ maxSeverity: known }), loc({ maxSeverity: value })),
+      ).toBeGreaterThan(0);
     }
   });
 });

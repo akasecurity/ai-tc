@@ -39,7 +39,7 @@ import {
 // down to the two strings, while a default import inlines the whole manifest —
 // scripts and dependency lists included — into the shipped bundle.
 import { name as pkgName, version as pkgVersion } from '../../package.json';
-import { capResponseText, toLlmCallInput, toToolCallInputs } from './exchange.ts';
+import { capResponseText, toLlmCallInput, toToolCallInputs, trimmed } from './exchange.ts';
 import type { HostRequest, HostResponse, WebSourceTool } from './protocol.ts';
 import { isHostRequest } from './protocol.ts';
 import { readMessages, writeMessage } from './wire.ts';
@@ -230,67 +230,80 @@ export async function handleRequest(
       const exchange = capResponseText(parsed.data);
 
       const llm = toLlmCallInput(exchange, request.sessionId, request.tool);
-      if (llm === null) {
-        return {
-          type: 'exchange',
-          requestId: request.requestId,
-          ok: true,
-          accepted: false,
-          skipped: 'unkeyable',
-          llmCalls: 0,
-          toolCalls: 0,
-          ruleIds: [],
-        };
-      }
 
       let llmCalls = 0;
       let toolCalls = 0;
-      const gateway = resolveDataGateway(config);
-      try {
-        // FK-safety: audit_events.parent_id/root_session_id are enforced FKs
-        // and INSERT OR IGNORE does not suppress a foreign-key violation, so a
-        // leaf written before the root raises and rolls its transaction back.
-        // An attribute-less stub: a real root arriving later heals it in
-        // place, and a stub never overwrites one that is already populated.
-        await gateway.recordAuditEvent({
-          id: request.sessionId,
-          eventType: 'session',
-          startedAt: exchange.startedAt,
-        });
-        await gateway.recordLlmCall(llm);
-        llmCalls = 1;
-        // Per-rule installed-pack versions, so a tool-call finding cites the
-        // pack version that actually fired instead of the rule file's format
-        // version. The definition row id hashes (ruleId, version), so without
-        // this the same rule firing on a CLI tool call and on a web one mints
-        // two rows. Best-effort: an unreadable bundle leaves the map undefined
-        // and scanText falls back to the less precise string — never a missed
-        // detection.
-        let ruleVersions: Record<string, string> | undefined;
+      // An exchange with no usable message id writes no LEAVES — the row id
+      // hashes on that id, so a blank one would collapse every turn of a
+      // conversation onto one row — but its REPLY is still scanned and
+      // audited below. The reply is where a secret would be, and `messageId`
+      // is only correlation metadata on that capture, so returning here cost
+      // the one thing that cannot be recovered afterwards: the record that a
+      // secret was sent. The response block needs no key.
+      if (llm !== null) {
+        // Resolved INSIDE the try, because opening the store is itself a way
+        // for it to be unavailable: `openLocalDatabase` runs the migrations, so
+        // an unopenable home throws here rather than on the first write.
+        // Outside the try that escaped the whole case and cost the response
+        // scan below with it — the one part of this that cannot be recovered
+        // afterwards.
+        let gateway: ReturnType<typeof resolveDataGateway> | undefined;
         try {
-          ruleVersions = (await gateway.getPolicyBundle()).ruleVersions;
+          gateway = resolveDataGateway(config);
+          // FK-safety: audit_events.parent_id/root_session_id are enforced FKs
+          // and INSERT OR IGNORE does not suppress a foreign-key violation, so a
+          // leaf written before the root raises and rolls its transaction back.
+          // An attribute-less stub: a real root arriving later heals it in
+          // place, and a stub never overwrites one that is already populated.
+          await gateway.recordAuditEvent({
+            id: request.sessionId,
+            eventType: 'session',
+            startedAt: exchange.startedAt,
+          });
+          await gateway.recordLlmCall(llm);
+          llmCalls = 1;
+          // Per-rule installed-pack versions, so a tool-call finding cites the
+          // pack version that actually fired instead of the rule file's format
+          // version. The definition row id hashes (ruleId, version), so without
+          // this the same rule firing on a CLI tool call and on a web one mints
+          // two rows. Best-effort: an unreadable bundle leaves the map undefined
+          // and scanText falls back to the less precise string — never a missed
+          // detection.
+          let ruleVersions: Record<string, string> | undefined;
+          try {
+            ruleVersions = (await gateway.getPolicyBundle()).ruleVersions;
+          } catch {
+            ruleVersions = undefined;
+          }
+          const tools = toToolCallInputs(exchange, request.sessionId, (text) =>
+            scanText(text, ruleVersions),
+          );
+          if (tools.length > 0) {
+            await gateway.recordToolCalls(tools);
+            toolCalls = tools.length;
+          }
         } catch {
-          ruleVersions = undefined;
+          // Fail-open: a contended or refused write costs this exchange's
+          // leaves and nothing else. The counts above say how many leaves this
+          // host submitted, which a deterministic id may collapse onto a row
+          // that is already there.
+        } finally {
+          await gateway?.close();
         }
-        const tools = toToolCallInputs(exchange, request.sessionId, (text) =>
-          scanText(text, ruleVersions),
-        );
-        if (tools.length > 0) {
-          await gateway.recordToolCalls(tools);
-          toolCalls = tools.length;
-        }
-      } catch {
-        // Fail-open: a contended or refused write costs this exchange's
-        // leaves and nothing else. The counts above say how many leaves this
-        // host submitted, which a deterministic id may collapse onto a row
-        // that is already there.
-      } finally {
-        await gateway.close();
       }
 
       const text = exchange.responseText;
       let responseAction: { responseAction?: ActionTaken } = {};
       let ruleIds: string[] = [];
+      // Read off the leaf's OWN attributes where there is one, which are
+      // already trimmed — deriving them again would let the capture and the
+      // leaf disagree about the trimmed form. With no leaf there is nothing to
+      // disagree with, so the projection's own `trimmed` is applied here.
+      const model = llm === null ? trimmed(exchange.model) : llm.attributes.model;
+      const conversationId =
+        llm === null
+          ? trimmed(exchange.conversationId)
+          : (llm.attributes.site_conversation_id as string | undefined);
       if (text !== undefined && text.length > 0 && webChat.responses !== 'never') {
         const result = await handleCapture(
           {
@@ -300,14 +313,12 @@ export async function handleRequest(
             occurredAt: exchange.startedAt,
             metadata: {
               sessionId: request.sessionId,
-              // Read off the leaf's OWN attributes, which are already
-              // trimmed — deriving them again here would let the capture and
-              // the leaf disagree about the trimmed form.
-              ...(llm.attributes.model !== undefined ? { model: llm.attributes.model } : {}),
-              messageId: llm.messageId,
-              ...(llm.attributes.site_conversation_id !== undefined
-                ? { conversationId: llm.attributes.site_conversation_id as string }
-                : {}),
+              ...(model !== undefined ? { model } : {}),
+              // Omitted for an unkeyable exchange rather than blanked: this is
+              // correlation metadata, and an empty id correlates to nothing
+              // while reading as an id that exists.
+              ...(llm !== null ? { messageId: llm.messageId } : {}),
+              ...(conversationId !== undefined ? { conversationId } : {}),
               ...(exchange.turnIndex !== undefined ? { turnIndex: exchange.turnIndex } : {}),
             },
           },
@@ -327,7 +338,11 @@ export async function handleRequest(
         type: 'exchange',
         requestId: request.requestId,
         ok: true,
-        accepted: true,
+        // `accepted` is about the LEAVES, which an unkeyable exchange writes
+        // none of — the response capture above may still have recorded a
+        // finding, which `ruleIds` and `responseAction` report either way.
+        accepted: llm !== null,
+        ...(llm === null ? { skipped: 'unkeyable' as const } : {}),
         llmCalls,
         toolCalls,
         ...responseAction,

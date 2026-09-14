@@ -889,6 +889,65 @@ describe('exchange refusals and fail-open', () => {
     expect(rows.n).toBe(0);
   });
 
+  it('an unkeyable exchange still scans and audits its reply', async () => {
+    // The reply is where a secret would be, and the row id hashes only on the
+    // message id — so returning early on an unkeyable exchange threw away the
+    // scan along with the join, and the one thing that cannot be recovered
+    // afterwards is the record that a secret was sent.
+    seedSecretPolicy('block');
+    const exchange = baseExchange({
+      messageId: '   ',
+      responseText: `the answer is ${SECRET_AT_REST} ok`,
+    });
+
+    const response = await handleRequest(
+      { type: 'exchange', requestId: 'uk2', sessionId: 'browser-uk2', tool: 'chatgpt', exchange },
+      consentedConfig(),
+    );
+
+    if (response.type !== 'exchange') throw new Error('expected an exchange response');
+    // The leaves are still refused, and `accepted` still says so.
+    expect(response.accepted).toBe(false);
+    expect(response.skipped).toBe('unkeyable');
+    expect(response.llmCalls).toBe(0);
+    expect(response.toolCalls).toBe(0);
+    // And the reply was read: the rule fired and is reported.
+    expect(response.ruleIds).toContain(RULE_ID);
+    expect(response.responseAction).toBe('block');
+  });
+
+  it('is fail-open on the leaf write, and still scans the reply', async () => {
+    // The `catch` around the leaf writes is the only thing keeping a contended
+    // store from turning this into runHost's generic error — and the response
+    // scan below it must survive the same fault, for the reason the case above
+    // gives. Point dataDir at a regular file so opening the store throws, the
+    // same setup the capture path's own fail-open case uses.
+    const filePath = join(dir, 'exchange-blocker');
+    writeFileSync(filePath, 'x');
+    const broken: ConfigForTool = (tool) => ({
+      ...config(tool, webChatSettings()),
+      dataDir: filePath,
+      dbPath: join(filePath, 'aka.db'),
+    });
+
+    const exchange = baseExchange({
+      messageId: 'msg_failopen',
+      responseText: `the answer is ${SECRET_AT_REST} ok`,
+    });
+
+    const response = await handleRequest(
+      { type: 'exchange', requestId: 'fo1', sessionId: 'browser-fo1', tool: 'chatgpt', exchange },
+      broken,
+    );
+
+    if (response.type !== 'exchange') throw new Error('expected an exchange response');
+    // Keyable, so `accepted` is true even though the write landed nowhere —
+    // the count below is what says how little was written.
+    expect(response.accepted).toBe(true);
+    expect(response.llmCalls).toBe(0);
+    expect(response.toolCalls).toBe(0);
+  });
+
   it('an exchange with no toolCalls key records the leaf and zero tool calls, without throwing', async () => {
     const exchange = {
       messageId: 'msg_notc',

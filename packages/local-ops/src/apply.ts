@@ -3,6 +3,7 @@ import { binExists, runCapture, runInherit } from './exec.ts';
 import type { InstallChannel } from './install-channel.ts';
 import { planCliUpdate } from './install-channel.ts';
 import { findAgent, pluginRef } from './registry.ts';
+import { installedPluginScope } from './updates.ts';
 
 // Apply-side of the update surface, shared by `aka update` / `aka plugins
 // install` and the web-ui's Updates page. One implementation of "validate id →
@@ -135,7 +136,11 @@ function resolveRef(agentId: string):
   if (!ref || !cliBin) {
     return { ok: false, output: `${agent.name} has no automated install path yet.` };
   }
-  const manager = createCliPluginManager(cliBin);
+  // Bound to the scope the plugin is really installed at, so the UPDATE recipe
+  // printed below targets the same install the version comparison read. Passed
+  // unconditionally: the lookup reads Claude Code's ledger, so a Codex ref is
+  // simply absent from it, and Codex's update verb ignores a scope anyway.
+  const manager = createCliPluginManager(cliBin, installedPluginScope(ref));
   if (!manager.available()) {
     // Both hint commands come from the host's own verb table — the hosts do not
     // share verbs, so a hardcoded `plugin install` here would hand the user a
@@ -204,7 +209,7 @@ export function applyPluginUpdate(agentId: string, mode: ApplyMode = 'capture'):
   const resolved = resolveRef(agentId);
   if ('ok' in resolved) return resolved;
   prepare(resolved, mode);
-  const manager = createCliPluginManager(resolved.cliBin);
+  const manager = createCliPluginManager(resolved.cliBin, installedPluginScope(resolved.ref));
   return runSteps(resolved.cliBin, manager.updateSteps(resolved.ref), mode);
 }
 

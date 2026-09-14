@@ -180,6 +180,74 @@ describe('runHistorySyncPass', () => {
     expect(readHistorySyncState(dataDirOf(home))?.skippedTotal).toBe(1);
   });
 
+  // EVERY term of skippedTotal, in one store. The sum is built from four
+  // buckets and each case above reaches at most one of them, so dropping a term
+  // from the sum leaves the suite green — which is the regression the sum exists
+  // to prevent, since splitting `skipped` into reasons had already shrunk this
+  // number twice without anything noticing.
+  it('reports every reason a row will not be sent, not just the first one', async () => {
+    attachWithGrant();
+    const attachedAtMs = Date.parse(AT);
+    const at = (offsetMs: number): string => new Date(attachedAtMs + offsetMs).toISOString();
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      // Inside the attached window, so closing it reaches what is left unsent.
+      db.auditEvents.ensureSessionRoot('s-1', at(60_000));
+      for (const [id, eventType] of [
+        ['s-1-llm', 'llm_call'],
+        ['s-1-tool', 'tool_call'],
+      ] as const) {
+        db.auditEvents.insertAuditEvent({
+          id,
+          eventType,
+          rootSessionId: 's-1',
+          parentId: 's-1',
+          startedAt: at(120_000),
+        });
+      }
+      db.auditEvents.insertAuditEvent({
+        id: 's-1-prompt',
+        eventType: 'prompt',
+        rootSessionId: 's-1',
+        parentId: 's-1',
+        startedAt: at(180_000),
+        content: 'a prompt',
+        contentHash: 'd'.repeat(64),
+        attributes: { source_tool: 'claude-code' },
+      });
+    } finally {
+      db.close();
+    }
+
+    // A pass FIRST, to record the deployment. Two of these reasons are freed by
+    // a change of deployment, and a machine reaching its first pass has none on
+    // file — so marking them before this ran would have them re-armed out from
+    // under the assertion, which is what the first draft of this case measured.
+    const send = {
+      sleep: () => Promise.resolve(),
+      sendBatch: (events: readonly unknown[]) => Promise.resolve({ settled: events.length }),
+      sendCaptures: (events: readonly unknown[]) => Promise.resolve({ settled: events.length }),
+    };
+    await runHistorySyncPass(home, send);
+
+    const marked = openLocalDatabase(dataDirOf(home));
+    try {
+      // One row into each bucket the sum is built from.
+      marked.historySync.markSkipped(['s-1-llm'], attachedAtMs); // cannot be expressed here
+      marked.historySync.markRefused(['s-1-tool'], attachedAtMs); // this deployment refused it
+      marked.historySync.markRefused(['s-1-prompt'], attachedAtMs); // the capture lane's total
+      // Leaves the session root — the only structural row still unsent.
+      marked.historySync.closeAttachedWindow(attachedAtMs, attachedAtMs);
+    } finally {
+      marked.close();
+    }
+
+    await runHistorySyncPass(home, send);
+
+    // Four buckets, one row each. Drop any term from the sum and this reads 3.
+    expect(readHistorySyncState(dataDirOf(home))?.skippedTotal).toBe(4);
+  });
+
   // completedAtMs is the FIRST moment this machine owed the deployment nothing,
   // and it has to survive `done` going false again. Under v1 that never happened
   // — the structural lane only ever drained — but the capture lane's subject

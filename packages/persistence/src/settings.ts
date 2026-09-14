@@ -214,6 +214,24 @@ function lockableKeysTouched(
   if (changed('dataSharesInPlace')) keys.push('dataSharesInPlace');
   if (changed('redactFallback')) keys.push('redactFallback');
 
+  // Compared FIELD BY FIELD, for the same reason the control-plane descriptor
+  // above is: `changed()` is a `!==`, which on an object is reference
+  // inequality — every write would read as a change, and an echo of the
+  // administrator's own value would be refused. Both fields count, because the
+  // two pin as one unit: a caller may not shorten the window while leaving the
+  // toggle alone.
+  //
+  // Bound once and compared against `undefined` rather than probed with `in`:
+  // the two toolchains that compile this file disagree about whether a present
+  // key narrows to a defined value, and an explicit `undefined` means "not
+  // changing it" here either way.
+  const appliedRetention = applied.bodyRetention;
+  const retentionChanged =
+    appliedRetention !== undefined &&
+    (appliedRetention.enabled !== current.bodyRetention.enabled ||
+      appliedRetention.retainDays !== current.bodyRetention.retainDays);
+  if (retentionChanged) keys.push('bodyRetention');
+
   // Grants compare on whether one is in force, not on the record's identity.
   if (
     'vaultConsent' in applied &&
@@ -246,6 +264,7 @@ function pinnedKeys(managed: ManagedSettings | null): ManagedSettingKey[] {
   if (values.modelJudgeConsent !== undefined) keys.push('modelJudgeConsent');
   if (values.dataSharesInPlace !== undefined) keys.push('dataSharesInPlace');
   if (values.redactFallback !== undefined) keys.push('redactFallback');
+  if (values.bodyRetention !== undefined) keys.push('bodyRetention');
   return keys;
 }
 
@@ -285,6 +304,7 @@ function withoutManagedKeys(
   if (strip('modelJudgeConsent')) delete out.modelJudgeConsent;
   if (strip('dataSharesInPlace')) delete out.dataSharesInPlace;
   if (strip('redactFallback')) delete out.redactFallback;
+  if (strip('bodyRetention')) delete out.bodyRetention;
   return out;
 }
 

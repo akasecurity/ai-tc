@@ -1,5 +1,5 @@
-import type { EnforcementAction } from '@akasecurity/schema';
-import { Card, CardContent, Skeleton } from '@akasecurity/ui-kit';
+import type { EnforcementAction, EnforcementActionKind } from '@akasecurity/schema';
+import { Card, CardContent, cn, Skeleton } from '@akasecurity/ui-kit';
 
 import { ArrowDownIcon, ArrowUpIcon } from '../shared/icons.tsx';
 import { ENFORCEMENT_META } from './meta.ts';
@@ -11,6 +11,12 @@ export interface EnforcementActionsView {
   actions: EnforcementAction[];
   isLoading: boolean;
   error: string | null;
+  /**
+   * Per-kind deep link (the findings page filtered to that action). Host-supplied
+   * so this package stays router-agnostic. A kind with no entry renders as plain
+   * text — the tile never becomes a link target it cannot navigate to.
+   */
+  actionHrefs?: Partial<Record<EnforcementActionKind, string>> | undefined;
 }
 
 export function EnforcementCardView({
@@ -19,6 +25,7 @@ export function EnforcementCardView({
   isLoading,
   error,
   rangeLabel,
+  actionHrefs,
 }: EnforcementActionsView & { rangeLabel: string }) {
   return (
     <Card className="flex flex-col shadow-sm">
@@ -55,10 +62,22 @@ export function EnforcementCardView({
               const meta = ENFORCEMENT_META[a.kind];
               const Icon = meta.icon;
               const up = a.delta > 0;
+              const href = actionHrefs?.[a.kind];
+              // The anchor REPLACES the tile rather than wrapping it: the tile is the
+              // flex item, so a wrapper would take that role and leave `flex-1` on an
+              // inner div with no flex parent, collapsing three equal columns to
+              // shrink-to-fit. `block` because an anchor is inline by default and this
+              // one holds block children.
+              const Tile = href ? 'a' : 'div';
               return (
-                <div
+                <Tile
                   key={a.kind}
-                  className="min-w-0 flex-1 border-l-[3px] pl-3"
+                  {...(href ? { href, title: `View ${meta.label.toLowerCase()} findings` } : {})}
+                  className={cn(
+                    'block min-w-0 flex-1 border-l-[3px] pl-3',
+                    href &&
+                      'transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40',
+                  )}
                   style={{ borderColor: meta.color }}
                 >
                   <div className="inline-flex items-center gap-1.5" style={{ color: meta.color }}>
@@ -71,6 +90,9 @@ export function EnforcementCardView({
                   {a.delta !== 0 && (
                     // Direction (arrow + sign) conveys the change; color stays neutral
                     // because a drop in enforcement counts isn't unambiguously "good".
+                    // The delta is period-over-period — the preceding window of equal
+                    // length — so the label names no fixed span. The window it compares
+                    // against is the range rendered in the subtitle above.
                     <div className="mt-1 inline-flex items-center gap-0.5 text-xs font-semibold text-text-3">
                       {up ? (
                         <ArrowUpIcon aria-hidden focusable={false} className="size-3" />
@@ -78,10 +100,10 @@ export function EnforcementCardView({
                         <ArrowDownIcon aria-hidden focusable={false} className="size-3" />
                       )}
                       {up ? '+' : '−'}
-                      {numberFormat.format(Math.abs(a.delta))} wk/wk
+                      {numberFormat.format(Math.abs(a.delta))} vs. prior
                     </div>
                   )}
-                </div>
+                </Tile>
               );
             })}
           </div>

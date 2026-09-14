@@ -59,6 +59,32 @@ export function indexExists(db: DatabaseSync, name: string): boolean {
 }
 
 /**
+ * The indexed column names of `name`, in index order. Empty for an index that
+ * does not exist.
+ *
+ * WHY A MIGRATION NEEDS THIS. `CREATE INDEX IF NOT EXISTS` matches on the NAME
+ * alone: against a store that already holds an index of that name it is a
+ * silent no-op, whatever columns the statement asks for. So widening an
+ * existing index's column list by editing its `CREATE` reaches only stores that
+ * have never seen it — every upgraded store keeps the narrow one, the read it
+ * was widened for falls back to a scan, and no test that builds a fresh store
+ * can tell. Widening therefore means DROP-then-CREATE, and DROP-then-CREATE
+ * inside a migration that runs on every database open means rebuilding the
+ * index on every open. Comparing against what is actually there is what makes
+ * the rebuild happen once.
+ *
+ * PRAGMA index_info, NOT index_xinfo: xinfo also lists the rowid the index
+ * carries internally, as a trailing entry whose name is null, so a caller
+ * comparing its output to a column list would never match. PRAGMA cannot be
+ * parameterized; the name comes from our own committed DDL constants.
+ */
+export function indexColumns(db: DatabaseSync, name: string): string[] {
+  if (!indexExists(db, name)) return [];
+  const columns = db.prepare(`PRAGMA index_info(${name})`).all() as { name: string | null }[];
+  return columns.map((c) => c.name).filter((c): c is string => c !== null);
+}
+
+/**
  * The column names of `table`. `includeGenerated` probes with PRAGMA
  * table_xinfo, which sees generated columns; the default PRAGMA table_info
  * omits them. PRAGMA can't be parameterized; the table name comes from our own

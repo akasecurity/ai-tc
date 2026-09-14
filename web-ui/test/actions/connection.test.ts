@@ -1,14 +1,5 @@
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type * as Persistence from '@akasecurity/persistence';
@@ -19,7 +10,7 @@ import {
   readWorkspaceSettings,
 } from '@akasecurity/persistence';
 import { isAttached, isHistorySyncConsentValid } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   attachToControlPlane,
@@ -27,6 +18,7 @@ import {
   saveSettings,
 } from '../../app/(app)/settings/actions.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // The attach/detach pair, and the input guard in front of all three settings
 // actions.
@@ -107,6 +99,11 @@ vi.mock('@akasecurity/persistence', async (importActual) => {
   };
 });
 
+// Homes are removed when this FILE finishes, not after each test: the store
+// app/lib/db.ts opens under them stays open, and Windows will not delete a
+// directory a handle still holds. See the helper.
+const newHome = tempHomes('aka-web-connection-');
+
 let home: string;
 
 const ENDPOINT = 'https://aka.acme.internal';
@@ -130,17 +127,13 @@ function credential(): { endpoint: string; apiKey: string; specVersion: number }
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-web-connection-'));
+  home = newHome();
   osHome.dir = home;
   whoami.reject = null;
   whoami.calls = [];
   writeFailure.error = null;
   writeFailure.onCall = null;
   backgroundSync.uninstallCalls = [];
-});
-
-afterEach(() => {
-  rmSync(home, { recursive: true, force: true });
 });
 
 describe('attachToControlPlane', () => {
@@ -341,6 +334,8 @@ describe('detachFromControlPlane', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(isHistorySyncConsentValid(readWorkspaceSettings().historySyncConsent, ENDPOINT)).toBe(
       true,
@@ -464,6 +459,8 @@ describe('detachFromControlPlane', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'off',
       webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     await attachToControlPlane({ endpoint: ENDPOINT, accessKey: KEY });
     await detachFromControlPlane();
@@ -509,6 +506,8 @@ describe('write failures are reported, never thrown', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         webChatCaptureConsent: 'unchanged',
+        redactFallback: 'warn',
+        bodyRetention: { enabled: false, retainDays: 30 },
       });
       expect(res.ok).toBe(false);
       expect(res.error).toContain('settings.json');
@@ -617,6 +616,8 @@ describe('untyped wire input', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         webChatCaptureConsent: 'unchanged',
+        redactFallback: 'warn',
+        bodyRetention: { enabled: false, retainDays: 30 },
       });
       expect(res.ok).toBe(false);
       expect(res.error).toContain('historicalAccess');
@@ -631,6 +632,8 @@ describe('untyped wire input', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         webChatCaptureConsent: 'unchanged',
+        redactFallback: 'warn',
+        bodyRetention: { enabled: false, retainDays: 30 },
       });
       expect(res.ok).toBe(false);
       expect(res.error).toContain('modelJudgeConsent');
@@ -646,6 +649,8 @@ describe('untyped wire input', () => {
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
         webChatCaptureConsent: 'unchanged',
+        redactFallback: 'warn',
+        bodyRetention: { enabled: false, retainDays: 30 },
       });
       expect(res).toEqual({ ok: true });
       expect(readWorkspaceSettings().historicalAccess).toBe('full');

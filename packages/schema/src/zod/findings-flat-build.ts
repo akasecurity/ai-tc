@@ -10,6 +10,7 @@
 // restated.
 
 import type {
+  FindingDelivery,
   FindingFacetItem,
   FindingFacets,
   FindingInstanceDetail,
@@ -32,6 +33,9 @@ export interface FlatFindingRow extends GroupableFindingRow {
   // projected from the findings⋈events join, so it always has its event.
   // `sessionId` stays optional — an event outside a session carries none.
   eventId: string;
+  // The delivery state of that event (see deriveFindingDelivery). Optional, like
+  // `status`: a producer that does not read the sync columns omits it.
+  delivery?: FindingDelivery;
 }
 
 export interface InstanceFilterOptions {
@@ -43,6 +47,7 @@ export interface InstanceFilterOptions {
   providers?: string[] | undefined;
   actions?: string[] | undefined;
   statuses?: string[] | undefined;
+  deliveries?: string[] | undefined;
   tools?: string[] | undefined;
   repo?: string | undefined;
   file?: string | undefined;
@@ -93,6 +98,11 @@ function matchesDimension(
       return (
         !opts.statuses?.length || (row.status !== undefined && opts.statuses.includes(row.status))
       );
+    case 'deliveries':
+      return (
+        !opts.deliveries?.length ||
+        (row.delivery !== undefined && opts.deliveries.includes(row.delivery.state))
+      );
     case 'tools':
       return (
         !opts.tools?.length || (row.toolName !== undefined && opts.tools.includes(row.toolName))
@@ -122,6 +132,7 @@ const DIMENSIONS: readonly InstanceFilterDimension[] = [
   'providers',
   'actions',
   'statuses',
+  'deliveries',
   'tools',
   'repo',
   'file',
@@ -174,6 +185,7 @@ export function createInstanceFacetAccumulator(opts: InstanceFilterOptions): {
   const action = new Map<string, number>();
   const status = new Map<string, number>();
   const tool = new Map<string, number>();
+  const deployment = new Map<string, number>();
 
   return {
     add(row) {
@@ -191,6 +203,10 @@ export function createInstanceFacetAccumulator(opts: InstanceFilterOptions): {
       if (row.toolName !== undefined && matchesInstanceFilters(row, opts, 'tools')) {
         bump(tool, row.toolName);
       }
+      // A row with no delivery contributes to no deployment facet.
+      if (row.delivery !== undefined && matchesInstanceFilters(row, opts, 'deliveries')) {
+        bump(deployment, row.delivery.state);
+      }
     },
     facets: () => ({
       severity: toItems(severity),
@@ -199,6 +215,7 @@ export function createInstanceFacetAccumulator(opts: InstanceFilterOptions): {
       action: toItems(action),
       status: toItems(status),
       tool: toItems(tool),
+      deployment: toItems(deployment),
     }),
   };
 }
@@ -219,6 +236,7 @@ export function toInstanceDetail(row: FlatFindingRow): FindingInstanceDetail {
     ...(row.toolName === undefined ? {} : { toolName: row.toolName }),
     eventId: row.eventId,
     ...(row.sessionId === undefined ? {} : { sessionId: row.sessionId }),
+    ...(row.delivery === undefined ? {} : { delivery: row.delivery }),
     ...(row.user === undefined ? {} : { user: row.user }),
     action: toApiAction(row.actionTaken),
     detectedAt: row.occurredAt,

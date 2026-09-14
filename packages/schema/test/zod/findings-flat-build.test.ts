@@ -407,3 +407,42 @@ describe('encodeLocationId', () => {
     expect(empty).not.toBe(encodeLocationId('acme/api', ''));
   });
 });
+
+describe('the deliveries dimension', () => {
+  const sent = row({
+    id: 'f-sent',
+    delivery: { state: 'sent', at: '2026-01-02T00:00:00.000Z' },
+  });
+  const queued = row({ id: 'f-queued', delivery: { state: 'queued' } });
+  const lowQueued = row({ id: 'f-low', severity: 'low', delivery: { state: 'queued' } });
+  const bare = row({ id: 'f-bare' });
+
+  it('matches the row’s own delivery state, and never a row without one', () => {
+    expect(matchesInstanceFilters(sent, { deliveries: ['sent'] })).toBe(true);
+    expect(matchesInstanceFilters(sent, { deliveries: ['queued'] })).toBe(false);
+    expect(matchesInstanceFilters(bare, { deliveries: ['sent'] })).toBe(false);
+    expect(matchesInstanceFilters(bare, {})).toBe(true);
+  });
+
+  it('counts states with its own filter excluded, while every other dimension honours it', () => {
+    const acc = createInstanceFacetAccumulator({ deliveries: ['sent'], severity: ['critical'] });
+    for (const r of [sent, queued, lowQueued, bare]) acc.add(r);
+    const facets = acc.facets();
+    // Its own filter is excluded: queued still counts. Severity still applies:
+    // the low queued row does not. A row with no delivery counts nowhere.
+    expect(facets.deployment).toEqual([
+      { value: 'queued', count: 1 },
+      { value: 'sent', count: 1 },
+    ]);
+    // The severity facet is narrowed BY the deliveries filter: only `sent` remains.
+    expect(facets.severity).toEqual([{ value: 'critical', count: 1 }]);
+  });
+
+  it('carries the delivery onto the instance detail, and omits an absent one', () => {
+    expect(toInstanceDetail(sent).delivery).toEqual({
+      state: 'sent',
+      at: '2026-01-02T00:00:00.000Z',
+    });
+    expect('delivery' in toInstanceDetail(bare)).toBe(false);
+  });
+});

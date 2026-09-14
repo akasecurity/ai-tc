@@ -77,13 +77,26 @@ export function watchEnterToSend(
   onSubmit: (event: Event) => void,
 ): () => void {
   const handler = (event: KeyboardEvent): void => {
-    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-      onSubmit(event);
-    }
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+    // This listener sees every keystroke on the page, so the composer it was
+    // given is what decides whether one is a send. `contains` rather than an
+    // identity check: a contenteditable's event target is often a descendant.
+    const target = event.target;
+    if (!(target instanceof Node) || !composer.contains(target)) return;
+    onSubmit(event);
   };
-  composer.addEventListener('keydown', handler, true);
+  // Bound on the DOCUMENT, in the capture phase, rather than on the composer.
+  //
+  // An event's capture descent reaches every ancestor before the target, so a
+  // site that handles Enter with a capture-phase listener ABOVE the composer
+  // has already sent the message by the time a listener on the composer runs —
+  // observed live, where sending with the button was intercepted and sending
+  // with Enter was not. `document` is above every such root, so a capture
+  // listener here is reached first whatever the site registered and in
+  // whatever order.
+  document.addEventListener('keydown', handler, true);
   return () => {
-    composer.removeEventListener('keydown', handler, true);
+    document.removeEventListener('keydown', handler, true);
   };
 }
 

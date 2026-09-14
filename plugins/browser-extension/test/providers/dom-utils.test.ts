@@ -194,3 +194,69 @@ describe('watchButtonClick', () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 });
+
+
+describe('watchEnterToSend: winning the Enter race', () => {
+  it('runs before an ANCESTOR capture listener, which is how the site sends', () => {
+    // The live claude.ai failure. A listener on the composer runs in the
+    // target phase; the capture descent reaches every ancestor first, so a
+    // site handling Enter with a capture-phase listener above the composer
+    // (React's onKeyDownCapture at its root container) has already sent the
+    // message by the time a target-phase listener is called. Sending with the
+    // BUTTON blocked correctly and Enter did not — that is this, exactly.
+    const root = document.createElement('div');
+    const composer = document.createElement('div');
+    root.append(composer);
+    document.body.append(root);
+
+    const order: string[] = [];
+    root.addEventListener(
+      'keydown',
+      () => {
+        order.push('site-ancestor-capture');
+      },
+      true,
+    );
+    const unwatch = watchEnterToSend(composer, () => {
+      order.push('aka');
+    });
+
+    composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    unwatch();
+
+    expect(order[0]).toBe('aka');
+  });
+
+  it('ignores Enter pressed outside the composer it was given', () => {
+    // The listener now sits on the document, so it sees every keystroke on the
+    // page. Anything outside this composer — a search box, another editor —
+    // must not be read as a send.
+    const composer = document.createElement('div');
+    const elsewhere = document.createElement('input');
+    document.body.append(composer, elsewhere);
+    const onSubmit = vi.fn();
+    const unwatch = watchEnterToSend(composer, onSubmit);
+
+    elsewhere.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    unwatch();
+  });
+
+  it('fires for a keystroke on a node INSIDE the composer', () => {
+    // A contenteditable's event target can be a descendant element rather than
+    // the composer itself.
+    const composer = document.createElement('div');
+    const inner = document.createElement('p');
+    composer.append(inner);
+    document.body.append(composer);
+    const onSubmit = vi.fn();
+    const unwatch = watchEnterToSend(composer, onSubmit);
+
+    inner.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    unwatch();
+  });
+});

@@ -5,14 +5,18 @@
 import type {
   FindingAction,
   FindingCategory,
+  FindingDelivery,
+  FindingDeliveryState,
   FindingGroup,
   FindingInstance,
   FindingStatus,
   Severity,
+  SyncFailureReason,
 } from '@akasecurity/schema';
 import { type Tone, TONE_SOFT } from '@akasecurity/ui-kit';
 
 import type { IconComponent } from '../lib/icons.ts';
+import { relativeTime } from '../lib/relativeTime.ts';
 import {
   AlertIcon,
   CheckIcon,
@@ -206,6 +210,82 @@ export const findingStatusMeta = (status: string): FindingStatusMeta => {
  * literal's key order IS the display order.
  */
 export const FINDING_STATUSES = Object.keys(FINDING_STATUS_META) as FindingStatus[];
+
+export interface FindingDeliveryMeta {
+  label: string;
+  badge: 'high' | 'primary' | 'success' | 'default';
+}
+
+/** What each delivery state is called on screen, and the badge it wears. */
+export const FINDING_DELIVERY_META: Record<FindingDeliveryState, FindingDeliveryMeta> = {
+  sent: { label: 'Sent', badge: 'success' },
+  queued: { label: 'Queued', badge: 'primary' },
+  not_sent: { label: 'Not sent', badge: 'high' },
+  never_offered: { label: 'Never offered', badge: 'default' },
+  local_scan: { label: 'Local scan', badge: 'default' },
+};
+
+// Same guard as findingStatusMeta: an off-enum value, or one colliding with an
+// Object.prototype member, resolves to the neutral badge rather than an
+// undefined variant.
+export const findingDeliveryMeta = (state: string): FindingDeliveryMeta => {
+  const table: Partial<Record<string, FindingDeliveryMeta>> = FINDING_DELIVERY_META;
+  const meta = Object.hasOwn(FINDING_DELIVERY_META, state) ? table[state] : undefined;
+  return meta ?? { label: state, badge: 'default' };
+};
+
+/**
+ * Delivery states in display order — drives the Deployment filter. Derived from
+ * FINDING_DELIVERY_META, so a state added to the schema is a compile error there
+ * and appears here automatically.
+ */
+export const FINDING_DELIVERY_STATES = Object.keys(FINDING_DELIVERY_META) as FindingDeliveryState[];
+
+/**
+ * What the Findings page knows about the deployment this machine sends to. A
+ * host passes `null` instead wherever the machine is not attached, which hides
+ * every Deployment control.
+ */
+export interface DeploymentDisplay {
+  /**
+   * History sharing is granted for this deployment and this machine's key is
+   * usable, so a queued finding will be retried.
+   */
+  canRetry: boolean;
+}
+
+const SYNC_FAILURE_SENTENCE: Record<SyncFailureReason, string> = {
+  deployment_refused: 'Your deployment refused it.',
+  payload_invalid: 'This machine couldn’t package it for sending.',
+  detached_undelivered: 'Still unsent when this machine detached.',
+};
+
+/** The detail drawer's sentence for a finding's delivery state. */
+export function deliveryDetail(
+  delivery: FindingDelivery,
+  deployment: DeploymentDisplay,
+  renderedAt: number,
+): string {
+  switch (delivery.state) {
+    case 'sent':
+      return delivery.at === undefined ? 'Sent.' : `Sent ${relativeTime(delivery.at, renderedAt)}.`;
+    case 'queued':
+      return deployment.canRetry
+        ? 'Waiting to be retried.'
+        : 'Waiting to be retried. It won’t be retried until history sharing and this machine’s key are working — Settings → Sync.';
+    case 'not_sent': {
+      const reason =
+        delivery.reason !== undefined && Object.hasOwn(SYNC_FAILURE_SENTENCE, delivery.reason)
+          ? SYNC_FAILURE_SENTENCE[delivery.reason]
+          : undefined;
+      return reason === undefined ? 'Not sent.' : `Not sent. ${reason}`;
+    }
+    case 'never_offered':
+      return 'Never queued: recorded while detached, before switching to this deployment, or its send wasn’t recorded.';
+    case 'local_scan':
+      return 'Found by a local scan (aka scan or the folder scan). Scanned files are never sent.';
+  }
+}
 
 /** The five multi-select filter dimensions of the findings toolbar. */
 export interface FindingsFilters {

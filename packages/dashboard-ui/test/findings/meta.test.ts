@@ -1,4 +1,5 @@
-import type { FindingAction } from '@akasecurity/schema';
+import type { FindingAction, SyncFailureReason } from '@akasecurity/schema';
+import { FindingDeliveryState } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { formatConfidence } from '../../src/findings/FindingDetailView.tsx';
@@ -9,12 +10,17 @@ import {
   CATEGORY_LABEL,
   categoryLabel,
   categoryStyle,
+  deliveryDetail,
+  FINDING_DELIVERY_META,
+  FINDING_DELIVERY_STATES,
   FINDING_STATUS_META,
   FINDING_STATUSES,
+  findingDeliveryMeta,
   findingStatusMeta,
   SEVERITIES,
   USER_COLUMN_TITLE,
 } from '../../src/findings/meta.ts';
+import { relativeTime } from '../../src/lib/relativeTime.ts';
 import { KeyIcon } from '../../src/shared/icons.tsx';
 
 // A bare "User" on a security dashboard is read as "the person who did this",
@@ -179,5 +185,87 @@ describe('formatConfidence', () => {
     expect(formatConfidence(0.7)).toEqual({ label: 'Medium · 0.70', tone: 'text-sev-high-ink' });
     expect(formatConfidence(0.69)).toEqual({ label: 'Low · 0.69', tone: 'text-text-2' });
     expect(formatConfidence(0)).toEqual({ label: 'Low · 0.00', tone: 'text-text-2' });
+  });
+});
+
+describe('FINDING_DELIVERY_META / findingDeliveryMeta / FINDING_DELIVERY_STATES', () => {
+  it('orders the states for the Deployment filter', () => {
+    expect(FINDING_DELIVERY_STATES).toEqual([
+      'sent',
+      'queued',
+      'not_sent',
+      'never_offered',
+      'local_scan',
+    ]);
+  });
+
+  it('labels every state the schema defines', () => {
+    expect([...FINDING_DELIVERY_STATES].sort()).toEqual([...FindingDeliveryState.options].sort());
+    expect(FINDING_DELIVERY_META.not_sent.label).toBe('Not sent');
+  });
+
+  it('resolves a known state through the table', () => {
+    for (const s of FINDING_DELIVERY_STATES) {
+      expect(findingDeliveryMeta(s)).toBe(FINDING_DELIVERY_META[s]);
+    }
+  });
+
+  it.each(['__proto__', 'constructor', 'toString'])(
+    'falls back to the neutral badge for the off-enum state %j',
+    (state) => {
+      expect(findingDeliveryMeta(state)).toEqual({ label: state, badge: 'default' });
+    },
+  );
+});
+
+describe('deliveryDetail', () => {
+  const RENDERED_AT = Date.parse('2026-09-14T12:00:00.000Z');
+  const canRetry = { canRetry: true };
+  const cannotRetry = { canRetry: false };
+
+  it('states when a finding was sent, without naming a deployment', () => {
+    const at = '2026-09-14T10:00:00.000Z';
+    expect(deliveryDetail({ state: 'sent', at }, canRetry, RENDERED_AT)).toBe(
+      `Sent ${relativeTime(at, RENDERED_AT)}.`,
+    );
+  });
+
+  it('adds the retry note only when retries cannot happen', () => {
+    expect(deliveryDetail({ state: 'queued' }, canRetry, RENDERED_AT)).toBe(
+      'Waiting to be retried.',
+    );
+    const stuck = deliveryDetail({ state: 'queued' }, cannotRetry, RENDERED_AT);
+    expect(stuck).toMatch(/^Waiting to be retried\. /);
+    expect(stuck).toContain('Settings → Sync');
+  });
+
+  it.each([
+    ['deployment_refused', 'Your deployment refused it.'],
+    ['payload_invalid', 'This machine couldn’t package it for sending.'],
+    ['detached_undelivered', 'Still unsent when this machine detached.'],
+  ] as const)('names the %s reason', (reason, sentence) => {
+    expect(deliveryDetail({ state: 'not_sent', reason }, canRetry, RENDERED_AT)).toBe(
+      `Not sent. ${sentence}`,
+    );
+  });
+
+  it('says only "Not sent." with no reason, or an off-enum one', () => {
+    expect(deliveryDetail({ state: 'not_sent' }, canRetry, RENDERED_AT)).toBe('Not sent.');
+    expect(
+      deliveryDetail(
+        { state: 'not_sent', reason: 'constructor' as SyncFailureReason },
+        canRetry,
+        RENDERED_AT,
+      ),
+    ).toBe('Not sent.');
+  });
+
+  it('explains never-offered and local-scan findings', () => {
+    expect(deliveryDetail({ state: 'never_offered' }, canRetry, RENDERED_AT)).toMatch(
+      /^Never queued: /,
+    );
+    expect(deliveryDetail({ state: 'local_scan' }, canRetry, RENDERED_AT)).toMatch(
+      /Scanned files are never sent\.$/,
+    );
   });
 });

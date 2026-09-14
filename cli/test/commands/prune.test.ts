@@ -114,6 +114,30 @@ describe('aka prune', () => {
     expect(io2.errors()).toContain('whole number of days');
   });
 
+  it.each(['1e3', '0x1e', ' 30', '+30', '30.0', ''])(
+    'refuses %j, which Number() would read as a whole number',
+    (days) => {
+      // Each of these parses to an in-range integer (or, for '', to 0), so the
+      // range check alone lets them through or refuses them for the wrong
+      // reason. The refusal promises "a whole number of days".
+      seedBody(60);
+      const io = recorder();
+      runPrune(['--home', base, '--days', days], io, null);
+      expect(io.errors()).toContain('whole number of days');
+      expect(io.output()).toBe('');
+    },
+  );
+
+  it('still takes a plain digit string', () => {
+    // The control for the case above: a digits-only gate that refused
+    // everything would satisfy it too.
+    seedBody(60);
+    const io = recorder();
+    runPrune(['--home', base, '--days', '30'], io, null);
+    expect(io.errors()).toBe('');
+    expect(io.output()).toContain('Expired 1 bodies');
+  });
+
   it('respects the configured horizon once expiry is on', () => {
     seedBody(60);
     applyOnboarding({ bodyRetention: { enabled: true, retainDays: 30 } }, base, null);

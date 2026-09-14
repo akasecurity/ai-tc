@@ -86,7 +86,10 @@ export function runPrune(
 
   let overrideDays: number | undefined;
   if (values.days !== undefined) {
-    const parsed = Number(values.days);
+    // Digits only, before `Number()`. `Number` also accepts `1e3`, `0x1e`,
+    // surrounding whitespace and `''` (as 0), so without this gate the refusal
+    // below would describe a stricter input than the command actually takes.
+    const parsed = /^\d+$/.test(values.days) ? Number(values.days) : Number.NaN;
     // Refused rather than clamped: a mistyped horizon silently rounded to
     // something valid would expire a different set of bodies than the one the
     // user asked for, and expiry is not undoable.

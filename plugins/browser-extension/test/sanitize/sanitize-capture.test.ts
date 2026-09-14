@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { SimpleValueClass } from '../../src/sanitize/classify.ts';
+import { classifyString } from '../../src/sanitize/classify.ts';
 import type { SanitizeInput, SanitizeResult } from '../../src/sanitize/sanitize-capture.ts';
 import {
   findResidueRun,
@@ -12,6 +14,15 @@ import { expectNoEchoOf } from '../helpers/no-echo.ts';
 // Random-looking, high-entropy, and matches no bundled detection rule.
 const RAW = 'qZ7hLm2XvB9tRw4sKcN6pJ1dGf3yUa8e';
 const RAW2 = 'wT5nHq0ZbC8xVm3rLd6kPj2gYs9fAu4i';
+// The one raw PII fixture in this file, hoisted so the payload that carries
+// it and the assertion that it is gone cannot drift apart.
+//
+// Its DOMAIN is chosen to share no ECHO_RUN-length run with the email
+// surrogate the sanitiser emits (`user-<n>@example.invalid`). With an
+// `@example.*` fixture the run window reports `example.` as surviving — the
+// sanitiser's own replacement, not a leak — and the assertion below fails
+// for a reason that has nothing to do with the property it checks.
+const RAW_EMAIL = 'ops@acme-corp.test';
 
 function baseInput(overrides: Partial<SanitizeInput> = {}): SanitizeInput {
   return {
@@ -338,12 +349,15 @@ describe('leak surfaces', () => {
     // walker emitted, and nothing else.
     const result = sanitizeCapture(
       baseInput({
-        raw: JSON.stringify({ author: 'someone@example.com' }),
+        raw: JSON.stringify({ author: RAW_EMAIL }),
         detect: (t) => (t.includes('@') ? ['core-pii/email'] : []),
       }),
     );
     assertOk(result);
-    expect(firstChunk(result)).not.toContain('someone@example.com');
+    // expectNoEchoOf, not a bare not.toContain: the whole-value form stays
+    // green if the email surrogate ever keeps a FRAGMENT of the original —
+    // its real local part, say — and the run window is what catches that.
+    expectNoEchoOf(firstChunk(result), RAW_EMAIL);
   });
 
   it('L10b: an approved token that also appears inside a separately-replaced prose leaf does NOT refuse', () => {
@@ -455,14 +469,64 @@ describe('contract', () => {
     expect(va).not.toBe(vc);
   });
 
+  // Content-independence, per value class. A surrogate may read an original's
+  // SHAPE and nothing else, so two originals of the same shape must sanitise
+  // to byte-identical output. This is the only check that can catch content
+  // folded into a surrogate: the shape checks and the per-input determinism
+  // cases all pass on a surrogate that leaks, and so does the fixture bar.
+  //
+  // Every SimpleValueClass is covered, because the surrogate for each is its
+  // own branch. Driving one class proved one branch and left eight free.
+  //
+  // The token- and address-shaped originals are ASSEMBLED from pieces rather
+  // than written whole. This repository is public, and a fixture that reads as
+  // a real credential does not belong in it; joining at runtime gives the
+  // classifier exactly the shape it needs while the source carries no
+  // contiguous one. Do not "tidy" these back into literals.
+  const CONTENT_INDEPENDENCE: readonly { class: SimpleValueClass; a: string; b: string }[] = [
+    {
+      class: 'uuid',
+      a: '123e4567-e89b-12d3-a456-426614174000',
+      b: '7f3b9c21-4d5e-4a6b-8c9d-0e1f2a3b4c5d',
+    },
+    {
+      class: 'jwt',
+      a: ['eyJ' + 'hbGciOiJIUzI1NiJ9', 'eyJ' + 'zdWIiOiIxMTExMSJ9', 'Q'.repeat(22)].join('.'),
+      b: ['eyJ' + 'hbGciOiJIUzI1NiJ9', 'eyJ' + 'zdWIiOiIyMjIyMiJ9', 'Z'.repeat(22)].join('.'),
+    },
+    { class: 'iso-datetime', a: '2026-01-02T03:04:05.000Z', b: '2019-11-12T13:14:15.000Z' },
+    { class: 'email', a: RAW_EMAIL, b: ['sre', '@', 'zeta-works.test'].join('') },
+    { class: 'hex', a: 'a1b2c3d4e5f60718293a4b5c6d7e8f90', b: '0f1e2d3c4b5a69788796a5b4c3d2e1f0' },
+    { class: 'base64ish', a: RAW, b: RAW2 },
+    { class: 'numeric-string', a: '8837462091', b: '1029384756' },
+    { class: 'vocabulary', a: 'conversation', b: 'organization' },
+    {
+      class: 'text',
+      a: 'the quick brown fox jumped over it',
+      b: 'a slower grey hound walked past it',
+    },
+  ];
+
+  it('S3: every row reaches the value class it names', () => {
+    // The anti-vacuity guard for the table below. Without it a fixture whose
+    // shape is wrong falls through to `text`, and its row claims to cover a
+    // class it never exercises — which is the defect this table replaces,
+    // reintroduced one row at a time.
+    for (const row of CONTENT_INDEPENDENCE) {
+      expect(classifyString(row.a), `row ${row.class}: first original`).toBe(row.class);
+      expect(classifyString(row.b), `row ${row.class}: second original`).toBe(row.class);
+      expect(row.a).not.toBe(row.b);
+    }
+  });
+
   it('S3: content-independence — identical shape, different values, identical output', () => {
-    const rawA = JSON.stringify({ a: RAW });
-    const rawB = JSON.stringify({ a: RAW2 });
-    const rA = sanitizeCapture(baseInput({ raw: rawA }));
-    const rB = sanitizeCapture(baseInput({ raw: rawB }));
-    assertOk(rA);
-    assertOk(rB);
-    expect(rA.text).toBe(rB.text);
+    for (const row of CONTENT_INDEPENDENCE) {
+      const rA = sanitizeCapture(baseInput({ raw: JSON.stringify({ a: row.a }) }));
+      const rB = sanitizeCapture(baseInput({ raw: JSON.stringify({ a: row.b }) }));
+      assertOk(rA);
+      assertOk(rB);
+      expect(rA.text, `class ${row.class} folds its original into the output`).toBe(rB.text);
+    }
   });
 
   it('S4: the envelope is well-formed and surrogates are sorted and distinct', () => {

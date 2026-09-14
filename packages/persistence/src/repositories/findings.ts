@@ -1095,7 +1095,12 @@ export class SqliteFindingsRepository
       ),
     );
     for (const row of sevRows) {
-      if (row.severity in bySeverity) bySeverity[row.severity as keyof typeof bySeverity] = row.c;
+      // `Object.hasOwn`, never `in`: the severity is a stored string, and `in`
+      // also accepts every Object.prototype name, so a definition stored with
+      // severity 'constructor' would add a key the tally does not have.
+      if (Object.hasOwn(bySeverity, row.severity)) {
+        bySeverity[row.severity as keyof typeof bySeverity] = row.c;
+      }
     }
 
     // Coverage counts ENFORCEABLE categories only: observe-only categories

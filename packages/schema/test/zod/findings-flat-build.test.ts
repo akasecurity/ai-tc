@@ -239,8 +239,9 @@ describe('createInstanceFacetAccumulator', () => {
 
   // localeCompare reports canonically-equivalent strings as equal, so a
   // count-tied pair of an NFC and an NFD spelling has no defined order under
-  // it — which would differ between a streaming scan and a grouped SQL query.
-  // compareCodePoints is a required fallback for a deterministic order.
+  // it, and the order falls to Map insertion. compareCodePoints is the
+  // fallback that makes the order total. It need not match SQL collation:
+  // foldFacetTuples runs this same sort over grouped tuples.
   it('breaks a count tie between canonically-equivalent values by code point', () => {
     const nfc = 'café-rule'; // precomposed é
     const nfd = 'café-rule'; // decomposed e + combining acute accent

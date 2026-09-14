@@ -893,6 +893,46 @@ describe('SqliteFindingsRepository.healthSummary — resolution lifecycle', () =
     const summary = await db.findings.healthSummary();
     expect(summary.bySeverity.critical).toBe(1);
   });
+
+  // `inspection_definitions.severity` is free text, so a pulled or custom pack
+  // can store any value, including an Object.prototype name. Such a finding
+  // must fall through like any unknown severity rather than add a key to the
+  // tally. `__proto__` is left out on purpose: assigning a number to it is a
+  // no-op, so that value cannot tell the guard from its absence.
+  it.each(['constructor', 'toString', 'hasOwnProperty'])(
+    'adds no key to bySeverity for a stored severity named %s',
+    async (severity) => {
+      const raw = store.openRaw();
+      raw
+        .prepare(
+          `INSERT INTO inspection_definitions
+             (id, rule_id, name, category, severity, definition, version)
+           VALUES ('def-proto', 'proto-rule', 'proto-rule', 'secret', ?, '{}', '1')`,
+        )
+        .run(severity);
+      raw
+        .prepare(
+          `INSERT INTO audit_events (id, event_type, started_at, content)
+           VALUES ('ev-proto', 'prompt', 1000, '')`,
+        )
+        .run();
+      raw
+        .prepare(
+          `INSERT INTO inspection_findings
+             (id, audit_event_id, inspection_definition_id, span_start, span_end,
+              masked_match, action_taken, confidence)
+           VALUES ('f-proto', 'ev-proto', 'def-proto', 0, 1, '••', 'log', 1)`,
+        )
+        .run();
+
+      const summary = await db.findings.healthSummary();
+      // The positive control: the finding was read, so an empty tally below is
+      // the guard at work rather than a query that found nothing.
+      expect(summary.findings).toBe(1);
+      expect(summary.bySeverity).toEqual({ critical: 0, high: 0, medium: 0, low: 0 });
+      expect(Object.hasOwn(summary.bySeverity, severity)).toBe(false);
+    },
+  );
 });
 
 // A store larger than any one group's instance PREVIEW. listFindingTypes

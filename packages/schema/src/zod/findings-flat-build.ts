@@ -252,10 +252,13 @@ export function createInstanceFacetAccumulator(opts: InstanceFilterOptions): {
  * these instead of every row, so the facet counts cost the number of distinct
  * combinations rather than the number of findings.
  *
- * `status` is optional for the same reason it is on GroupableFindingRow: a row
- * with no status still counts toward the total and the five other facets, and
- * only the status facet skips it. A store whose rows can lack a status groups
- * them into a tuple with none rather than dropping the group or inventing one.
+ * `status` is optional because it is on GroupableFindingRow, whose rows can
+ * predate the resolution lifecycle. A tuple with no status is filtered like any
+ * other row. With no status filter set it counts toward the total and the five
+ * other facets, and only the status facet skips it. Under a status filter it
+ * matches nothing, so it leaves the total and the other facets as well. A store
+ * grouping such rows gives them a tuple with no status rather than dropping the
+ * group or inventing one.
  */
 export interface FacetTuple {
   severity: string;

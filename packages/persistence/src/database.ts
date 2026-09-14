@@ -443,9 +443,12 @@ export interface OpenLocalDatabaseOptions {
    * Apply the migrations named in DEFERRED_MIGRATION_TAGS on this open. Off by
    * default: each builds an index over every capture row's attribute bag, which
    * on a large store outlasts a plugin hook's host timeout, and a hook killed
-   * mid-build rolls it back for the next hook to start again. A caller that can
-   * afford the wait opts in. A read that names one of those indexes has to work
-   * without it.
+   * mid-build rolls it back for the next hook to start again. The build also
+   * holds the write lock throughout, and a default open writes on its way in, so
+   * every other process that opens the store meanwhile waits out its busy
+   * timeout and fails to open it. Opt in only from a pass that runs with no
+   * session live, never on a request path. A read that names one of those
+   * indexes has to work without it.
    */
   applyDeferredMigrations?: boolean | undefined;
 }

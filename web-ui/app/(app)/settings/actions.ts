@@ -40,11 +40,11 @@ import {
   RedactFallback,
   SaveSettingsInput,
   VAULT_CONSENT_VERSION,
+  VaultInlineReveal,
   WEB_CHAT_CAPTURE_CONSENT_VERSION,
   type WebChatCapture,
   type WebChatCaptureConsentChoice,
   webChatCaptureOf,
-  VaultInlineReveal,
 } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
@@ -239,6 +239,15 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
         // is assigned — so it carries no consent record and is written like any
         // other plain preference.
         redactFallback: redactFallback.data,
+        // The web-chat capture block, rebuilt WHOLE from what is on file at
+        // merge time. applyOnboarding merges at the top level, so a block
+        // written with only the grant in it REPLACES the response mode and the
+        // account answer beside it — neither of which this page has a control
+        // for — and an unrelated save here would silently reset a choice made
+        // elsewhere. Deriving it from `current` INSIDE the lock keeps both true
+        // at once: the modes survive, and the grant is judged against the file
+        // this write is about to land on rather than the one the page rendered.
+        webChatCapture: nextWebChatCapture(current, data.webChatCaptureConsent),
       };
     });
   } catch (error) {

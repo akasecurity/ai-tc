@@ -204,20 +204,39 @@ function relay(request: BackgroundRequest): Promise<BackgroundResponse> {
 }
 
 let bannerHost: HTMLElement | null = null;
+let bannerShadow: ShadowRoot | null = null;
 let bannerHideTimer: ReturnType<typeof setTimeout> | null = null;
 
-// A fixed, viewport-anchored toast rather than one positioned relative to the
-// composer: every provider's layout differs enough (sidebar widths, mobile
-// breakpoints, …) that a fixed bottom-center placement stays visible and
-// unclipped everywhere. Rendered in a shadow root so the host page's CSS
-// can neither hide it nor be affected by it.
-export function showBanner(banner: BannerRequest): void {
+/**
+ * A fixed, viewport-anchored toast rather than one positioned relative to the
+ * composer: every provider's layout differs enough (sidebar widths, mobile
+ * breakpoints, …) that a fixed bottom-center placement stays visible and
+ * unclipped everywhere. Rendered in a shadow root so the host page's CSS can
+ * neither hide it nor be affected by it.
+ *
+ * The root is CLOSED, and that is a security property rather than tidiness.
+ * The host sits under `document.body`, so an open root let page script reach
+ * `host.shadowRoot` — via a MutationObserver watching for the host to arrive —
+ * and rewrite the approve command the user is being told to paste into a
+ * terminal. An official-looking security banner asking for a terminal paste is
+ * the most useful pretext a compromised page script could be handed, and this
+ * whole subsystem is built on the assumption that the page is hostile. A
+ * closed root is not reachable from the page in any world.
+ *
+ * What it does NOT stop, and what only moving the banner out of the page
+ * document would: page script can still remove the host, and it can still
+ * draw a lookalike banner of its own.
+ */
+export function showBanner(banner: BannerRequest): ShadowRoot {
   // Re-created when the cached host is no longer in the document. These sites
   // re-render heavily, and a host that has been detached renders every later
   // banner into a node nobody can see — including a BLOCK banner, which would
   // leave the user with a message that silently never sent and no explanation
   // on screen.
-  if (bannerHost && !bannerHost.isConnected) bannerHost = null;
+  if (bannerHost && !bannerHost.isConnected) {
+    bannerHost = null;
+    bannerShadow = null;
+  }
   if (!bannerHost) {
     bannerHost = document.createElement('div');
     bannerHost.style.all = 'initial';
@@ -228,7 +247,12 @@ export function showBanner(banner: BannerRequest): void {
     bannerHost.style.transform = 'translateX(-50%)';
     document.body.append(bannerHost);
   }
-  const shadow = bannerHost.shadowRoot ?? bannerHost.attachShadow({ mode: 'open' });
+  // Kept on the module rather than read back from `bannerHost.shadowRoot`,
+  // which a closed root leaves null for every caller including this one.
+  if (bannerShadow?.host !== bannerHost) {
+    bannerShadow = bannerHost.attachShadow({ mode: 'closed' });
+  }
+  const shadow = bannerShadow;
   const color =
     banner.tone === 'block' ? '#dc2626' : banner.tone === 'redact' ? '#d97706' : '#2563eb';
   const box = document.createElement('div');
@@ -248,9 +272,13 @@ export function showBanner(banner: BannerRequest): void {
     const intro = document.createElement('div');
     intro.style.marginTop = '6px';
     intro.textContent = banner.exception.intro;
-    // Its OWN element, monospaced and selectable: a double-click picks out
-    // exactly the command, which is the only way a reference reaches the
-    // terminal the user has to run it in.
+    // Its OWN element, monospaced — but a LABEL rather than the thing that
+    // gets copied. A `copy` event is composed, so it reaches the page's own
+    // document listener, where `clipboardData.setData` can replace a selection
+    // the user made here with anything at all: the text on screen would stay
+    // AKA's while the clipboard carried the page's. So selection is off and
+    // the button below is the copy path; it writes through the Clipboard API,
+    // which dispatches no `copy` event for the page to intercept.
     const command = document.createElement('code');
     command.style.display = 'block';
     command.style.marginTop = '4px';
@@ -258,8 +286,33 @@ export function showBanner(banner: BannerRequest): void {
     command.style.background = 'rgba(0,0,0,0.25)';
     command.style.borderRadius = '4px';
     command.style.font = '12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace';
-    command.style.userSelect = 'all';
+    command.style.userSelect = 'none';
     command.textContent = banner.exception.command;
+    const copy = document.createElement('button');
+    copy.style.all = 'unset';
+    copy.style.cursor = 'pointer';
+    copy.style.marginTop = '6px';
+    copy.style.marginRight = '12px';
+    copy.style.textDecoration = 'underline';
+    copy.textContent = 'Copy command';
+    // Written from the ledger value this banner was handed, never read back
+    // out of the element above — which is the point of the whole change: what
+    // reaches the clipboard cannot be something the page substituted.
+    const toCopy = banner.exception.command;
+    copy.addEventListener('click', () => {
+      void navigator.clipboard.writeText(toCopy).then(
+        () => {
+          copy.textContent = 'Copied';
+        },
+        () => {
+          // The API needs a secure context and can be refused outright. Say
+          // so and hand the selection affordance back rather than leaving a
+          // label that claims a copy nobody made.
+          copy.textContent = 'Copy failed — select it above';
+          command.style.userSelect = 'all';
+        },
+      );
+    });
     const help = document.createElement('div');
     help.style.marginTop = '6px';
     help.style.opacity = '0.85';
@@ -273,8 +326,9 @@ export function showBanner(banner: BannerRequest): void {
     dismiss.addEventListener('click', () => {
       bannerHost?.remove();
       bannerHost = null;
+      bannerShadow = null;
     });
-    box.append(intro, command, help, dismiss);
+    box.append(intro, command, help, copy, dismiss);
   }
   shadow.replaceChildren(box);
 
@@ -287,6 +341,11 @@ export function showBanner(banner: BannerRequest): void {
     bannerHideTimer = setTimeout(() => {
       bannerHost?.remove();
       bannerHost = null;
+      bannerShadow = null;
     }, 6000);
   }
+  // Returned because a closed root is reachable from nowhere else — not from
+  // page script, which is the point, and not from this module's own caller
+  // through `host.shadowRoot`, which a closed root leaves null.
+  return shadow;
 }

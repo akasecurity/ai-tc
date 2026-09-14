@@ -166,9 +166,18 @@ export function createSubmitInterceptor(opts: {
     }
     if (response.action === 'warn') {
       if (!passThrough(composer)) return;
+      // No approve pointer here, unlike the block and redact banners. A warn
+      // decision LEDGERS nothing: `recordBlockedDetections` in
+      // @akasecurity/plugin-sdk returns before writing unless the decision's
+      // action is block or redact, and it is that result `evaluate` sets
+      // `blockedReferences` from — so the pointer rendered as the empty string
+      // on every warn the native host can actually produce, and offering one
+      // would have named a reference `aka exception approve` cannot find.
+      // Ledgering warn decisions would change the exception flow for every
+      // plugin, so it belongs in its own change rather than in this banner.
       showBanner({
         tone: 'warn',
-        message: `AKA flagged sensitive content (${response.ruleIds.join(', ')}) — sent unchanged.${exceptionPointer(response.blockedReferences)}`,
+        message: `AKA flagged sensitive content (${response.ruleIds.join(', ')}) — sent unchanged.`,
       });
       return;
     }

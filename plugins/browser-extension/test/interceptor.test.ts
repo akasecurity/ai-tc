@@ -393,7 +393,28 @@ describe('the block banner carries the exception route', () => {
     expect(h.banners[0]?.exception?.command).toBe('aka exception approve');
   });
 
-  it('points a WARN at the same flow, since a warned value is ledgered too', async () => {
+  it('offers a WARN no approve command, because a warn ledgers nothing', async () => {
+    // The shape the native host really produces: `recordBlockedDetections` in
+    // @akasecurity/plugin-sdk returns before writing unless the decision's
+    // action is block or redact, and it is that result `evaluate` sets
+    // `blockedReferences` from — so a warn carries none. The case this
+    // replaced fed a warn WITH references, which the host cannot produce, and
+    // asserted a pointer that rendered as the empty string in production.
+    const h = harness([{ type: 'capture', action: 'warn', ruleIds: ['secrets/aws-access-key'] }]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+
+    expect(h.submitted()).toBe(1);
+    // The positive control: the banner is there and names the rule, so the
+    // absence below is about the pointer rather than about a missing banner.
+    expect(h.banners[0]?.message).toContain('secrets/aws-access-key');
+    expect(h.banners[0]?.message).not.toContain('aka exception approve');
+  });
+
+  it('offers no approve command even if a warn arrived carrying references', async () => {
+    // Defence in depth on a shape the host cannot produce today: if warn
+    // decisions are ever ledgered, THIS is the case that has to be revisited
+    // deliberately rather than a banner quietly starting to offer a pointer.
     const h = harness([
       {
         type: 'capture',
@@ -407,7 +428,6 @@ describe('the block banner carries the exception route', () => {
     h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
     await settle();
 
-    expect(h.submitted()).toBe(1);
-    expect(h.banners[0]?.message).toContain('aka exception approve 55aa');
+    expect(h.banners[0]?.message).not.toContain('aka exception approve');
   });
 });

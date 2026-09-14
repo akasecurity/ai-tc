@@ -52,11 +52,15 @@ export function blockGuidance(input: BlockGuidanceInput): BlockGuidance {
 }
 
 /**
- * One trailing sentence for the redact and warn banners.
+ * One trailing sentence for the redact banner.
  *
- * Redacted and warned values land in the same ledger as blocked ones, so the
- * same approve flow applies. Empty when nothing was ledgered — the sentence is
- * only added when the command would actually find the block.
+ * A redacted value lands in the same ledger as a blocked one, so the same
+ * approve flow applies. Empty when nothing was ledgered — the sentence is only
+ * added when the command would actually find the block.
+ *
+ * NOT for a warn banner. A warn decision ledgers nothing (see the interceptor's
+ * warn branch), so the reference this would name does not exist and the
+ * sentence would send the user to a command that cannot find it.
  */
 export function exceptionPointer(references: readonly BlockedDetectionRef[] | undefined): string {
   const ref = references?.[0];

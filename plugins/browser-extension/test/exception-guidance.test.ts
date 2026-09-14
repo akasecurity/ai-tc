@@ -58,7 +58,7 @@ describe('blockGuidance', () => {
 });
 
 describe('exceptionPointer', () => {
-  it('names the reference for a redact or warn that was ledgered', () => {
+  it('names the reference for a redact that was ledgered', () => {
     expect(exceptionPointer([ref('9b8a')])).toContain('aka exception approve 9b8a');
   });
 

@@ -341,6 +341,7 @@ export const CaptureStatusAttributes = z
     unparsed_bodies: z.number().int().nonnegative().optional(),
     shape_misses: z.array(z.string()).optional(),
     conversation_endpoints: z.number().int().nonnegative().optional(),
+    enforcement: z.string().optional(),
   })
   .catchall(z.unknown());
 export type CaptureStatusAttributes = z.infer<typeof CaptureStatusAttributes>;

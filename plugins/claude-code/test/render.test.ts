@@ -1398,11 +1398,13 @@ describe('runQuery — against a seeded standalone gateway', () => {
       unparsedBodies: 0,
       shapeMisses: [],
       conversationEndpoints: 0,
+      enforcement: 'watching',
     };
 
     const DRIFTING: WebCaptureStatus = {
       ...BASE_STATUS,
       conversationEndpoints: 1,
+      enforcement: 'watching',
       blind: true,
       sendsSeenDom: 3,
     };

@@ -65,6 +65,10 @@ describe('deriveWebCaptureState — the false-signal proof', () => {
       parseFailures: 7,
       unparsedBodies: 0,
       shapeMisses: ['a', 'b'],
+      // Orthogonal to every signal this suite measures: the drift rule is
+      // defined over the NETWORK path, and the DOM half's state is carried
+      // beside it rather than folded into it.
+      enforcement: 'watching',
     };
     expect(deriveWebCaptureState(status)).toBe('standby');
     expect(webCaptureDriftFires(status)).toBe(false);
@@ -82,6 +86,10 @@ describe('deriveWebCaptureState — exhaustive state table', () => {
     parseFailures: 0,
     unparsedBodies: 0,
     shapeMisses: [],
+    // Orthogonal to every signal this suite measures: the drift rule is
+    // defined over the NETWORK path, and the DOM half's state is carried
+    // beside it rather than folded into it.
+    enforcement: 'watching',
   };
 
   // Annotated Record<WebCaptureState, ...> so a state added to the vocabulary
@@ -113,6 +121,10 @@ describe('deriveWebCaptureState — precedence', () => {
     parseFailures: 0,
     unparsedBodies: 0,
     shapeMisses: [],
+    // Orthogonal to every signal this suite measures: the drift rule is
+    // defined over the NETWORK path, and the DOM half's state is carried
+    // beside it rather than folded into it.
+    enforcement: 'watching',
   };
 
   it('blind beats a non-empty shapeMisses', () => {
@@ -145,6 +157,10 @@ describe('the parse-failure threshold', () => {
     parseFailures: 0,
     unparsedBodies: 0,
     shapeMisses: [],
+    // Orthogonal to every signal this suite measures: the drift rule is
+    // defined over the NETWORK path, and the DOM half's state is carried
+    // beside it rather than folded into it.
+    enforcement: 'watching',
   };
 
   it('one parse failure is not drift', () => {
@@ -220,6 +236,10 @@ describe('state copy', () => {
       parseFailures: 0,
       unparsedBodies: 0,
       shapeMisses: [],
+      // Orthogonal to every signal this suite measures: the drift rule is
+      // defined over the NETWORK path, and the DOM half's state is carried
+      // beside it rather than folded into it.
+      enforcement: 'watching',
     };
     expect(webCaptureStateCopy('active', active).headline).toBe('1 turn observed');
     expect(webCaptureStateCopy('active', { ...active, exchangesSeenNet: 2 }).headline).toBe(

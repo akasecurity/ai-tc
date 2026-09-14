@@ -13,7 +13,26 @@
 export interface SharedScope {
   __akaWebSessionId?: string;
   __akaNoteDomSend?: () => void;
+  // Deliberately `string` rather than the union below: this crosses a shared
+  // global, so what a reader gets is whatever was last written there, and the
+  // read validates rather than trusting the declaration.
+  __akaEnforcement?: string;
+  __akaNoteEnforcement?: () => void;
 }
+
+// Mirrors WebEnforcementState's members in @akasecurity/schema. Carried rather
+// than imported because this module is bundled into the content scripts, which
+// take no runtime dependency on schema; test/tab-session.test.ts pins the two
+// lists equal, so a member added there fails here.
+const ENFORCEMENT_STATES = [
+  'watching',
+  'composer-only',
+  'button-only',
+  'unattached',
+  'unknown',
+] as const;
+
+export type EnforcementState = (typeof ENFORCEMENT_STATES)[number];
 
 /**
  * The session id both halves of the tab report under.
@@ -50,4 +69,39 @@ export function notifyDomSend(scope: SharedScope): void {
   } catch {
     // Health reporting never delays or breaks the send it is reporting on.
   }
+}
+
+/**
+ * Record what the DOM enforcement path is doing in this tab.
+ *
+ * Written on every reattach, not only when it succeeds. The network half is
+ * what reports status, and it cannot see the DOM half's own resolution — so
+ * without this a tab whose watcher never bound is indistinguishable from one
+ * nobody typed in, on every surface the product has.
+ */
+export function publishEnforcementState(scope: SharedScope, state: EnforcementState): void {
+  scope.__akaEnforcement = state;
+  // Notifying is part of publishing, not a second step the caller can forget.
+  // The network half is what relays status and recomputes only on its own
+  // events, so a publish nobody is told about sits here unreported — on a tab
+  // with no network traffic, permanently. That was a real gap, and a separate
+  // notify call is exactly the shape that produced it.
+  try {
+    scope.__akaNoteEnforcement?.();
+  } catch {
+    // Health reporting never breaks the half that is reporting.
+  }
+}
+
+/** Register what to call when the DOM half publishes a new enforcement state. */
+export function setEnforcementListener(scope: SharedScope, listener: () => void): void {
+  scope.__akaNoteEnforcement = listener;
+}
+
+/** The last published state, or 'unknown' when nothing valid has been. */
+export function readEnforcementState(scope: SharedScope): EnforcementState {
+  const raw = scope.__akaEnforcement;
+  return ENFORCEMENT_STATES.includes(raw as EnforcementState)
+    ? (raw as EnforcementState)
+    : 'unknown';
 }

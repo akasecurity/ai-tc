@@ -28,6 +28,7 @@ const STATUS: WebCaptureStatus = {
   unparsedBodies: 0,
   shapeMisses: [],
   conversationEndpoints: 1,
+ enforcement: 'watching',
 };
 
 // `parentId`/`rootSessionId` are left unset: they are nullable FK columns, and
@@ -134,6 +135,7 @@ describe('SqliteCaptureStatusRepository.latest — a watching-only report', () =
     unparsedBodies: 0,
     shapeMisses: [],
     conversationEndpoints: 1,
+   enforcement: 'watching',
   };
   const BLIND: WebCaptureStatus = { ...WATCHING, blind: true, sendsSeenDom: 3 };
 

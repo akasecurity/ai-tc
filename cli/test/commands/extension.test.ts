@@ -330,6 +330,7 @@ describe('runStatus — the network-capture block', () => {
     unparsedBodies: 0,
     shapeMisses: [],
     conversationEndpoints: 0,
+    enforcement: 'watching',
   };
 
   function run(): string {

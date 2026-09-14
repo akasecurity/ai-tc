@@ -20,6 +20,7 @@ function status(over: Partial<WebCaptureStatus> = {}): WebCaptureStatus {
     unparsedBodies: 0,
     shapeMisses: [],
     conversationEndpoints: 1,
+    enforcement: 'watching',
     ...over,
   });
 }

@@ -1014,8 +1014,15 @@ export function sanitizeCapture(input: SanitizeInput): SanitizeResult {
   try {
     sanitizedUrl = sanitizeUrl(input.url, ctx);
   } catch (err) {
-    if (err instanceof SanitizeAbort) return refuse(err.refusal, err.message, null);
-    return refuse('unparseable-url', 'url does not parse as an absolute URL', null);
+    // The report goes with the refusal, exactly as it does for an abort from
+    // the body below. `detector-unavailable` is reachable from here — a path
+    // segment goes through `detect()`, and the URL is walked FIRST — and
+    // `scripts/sanitize-capture.mjs` says a refused run is precisely when an
+    // operator needs the keys and values files. Passing `null` here wrote
+    // neither for a capture whose detector failed on its URL, while the same
+    // failure one line later wrote both.
+    if (err instanceof SanitizeAbort) return refuse(err.refusal, err.message, buildReport(ctx));
+    return refuse('unparseable-url', 'url does not parse as an absolute URL', buildReport(ctx));
   }
 
   let chunks: string[];

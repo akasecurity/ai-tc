@@ -1,11 +1,13 @@
 import { DatabaseSync } from 'node:sqlite';
 
-import { SQLITE_MIGRATIONS } from '@akasecurity/schema';
+import { DEFERRED_MIGRATION_TAGS, SQLITE_MIGRATIONS } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import { openLocalDatabase, UNSAFE_TEST_ONLY_RAW_HANDLE } from '../src/database.ts';
 import {
   columnNames,
   indexColumns,
+  indexExists,
   schemaObjectExists,
 } from '../src/db/migrations/introspection.ts';
 import { inspectionDefinitionId, sourceProjectId } from '../src/ids.ts';
@@ -18,6 +20,7 @@ import {
   TOKEN_USAGE_COLUMNS,
 } from '../src/migrations.ts';
 import { SYNC_FAILURE_REASONS } from '../src/sync-failure.ts';
+import { withTempStore } from './helpers/temp-store.ts';
 import { assertNoOpenTransaction } from './helpers/transactions.ts';
 
 // The six token-usage generated columns are defined in THREE places that must stay
@@ -257,6 +260,16 @@ describe('applyMigrations inspection_findings identity columns (0011)', () => {
     ).run(id, eventId, definitionId, findingKey);
   }
 
+  // A later migration that indexes a column 0012 introduces cannot run against
+  // a store that lacks 0012, and the applier runs it after 0012 anyway. So a
+  // store built to stand for "every migration except 0012" leaves those out
+  // too, rather than failing on a column that does not exist yet.
+  function dependsOnFindingIdentityColumns(sql: string): boolean {
+    return /CREATE (?:UNIQUE )?INDEX `[^`]+` ON `inspection_findings` \([^)]*`(?:finding_key|first_detected_at)`/.test(
+      sql,
+    );
+  }
+
   it('prepares an ON CONFLICT (finding_key) upsert against inspection_findings', () => {
     const db = new DatabaseSync(':memory:');
     try {
@@ -310,6 +323,7 @@ describe('applyMigrations inspection_findings identity columns (0011)', () => {
       for (const migration of SQLITE_MIGRATIONS) {
         if (migration.tag === '0012_handy_the_captain') continue;
         if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
+        if (dependsOnFindingIdentityColumns(migration.sql)) continue;
         db.exec(migration.sql);
       }
       // Out-of-band acquisition of 0011's evidence: the exact DDL it would run,
@@ -332,6 +346,7 @@ describe('applyMigrations inspection_findings identity columns (0011)', () => {
       for (const migration of SQLITE_MIGRATIONS) {
         if (migration.tag === '0012_handy_the_captain') continue;
         if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;
+        if (dependsOnFindingIdentityColumns(migration.sql)) continue;
         db.exec(migration.sql);
       }
 
@@ -1936,6 +1951,98 @@ describe('delivery-failure state', () => {
         expect(() => {
           db.prepare('UPDATE audit_events SET sync_failure = ? WHERE id = ?').run(reason, 'row');
         }).not.toThrow();
+      }
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('the store opener and deferred migrations', () => {
+  const DEFERRED = new Set<string>(DEFERRED_MIGRATION_TAGS);
+  const DEFERRED_INDEXES = [
+    'idx_audit_capture_by_time',
+    'idx_audit_capture_by_id',
+    'idx_audit_capture_location',
+    'idx_inspection_definitions_rule',
+    'idx_inspection_findings_def',
+    'idx_inspection_findings_event_cover',
+  ];
+
+  function userVersion(db: DatabaseSync): number {
+    return (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+  }
+
+  // What a plugin hook does: open the store with nothing but a directory. Each
+  // deferred migration builds an index over every capture row, so on a large
+  // store it outlasts the hook's timeout; the default must leave them for a
+  // caller that can afford the wait.
+  it('leaves every deferred migration unapplied on the product default', () => {
+    withTempStore((store) => {
+      const db = openLocalDatabase(store.dataDir);
+      try {
+        const raw = db[UNSAFE_TEST_ONLY_RAW_HANDLE];
+        const applied = new Set(appliedTags(raw));
+        for (const tag of DEFERRED_MIGRATION_TAGS) {
+          expect(applied.has(tag), `${tag} was applied on a default open`).toBe(false);
+        }
+        // The positive control: every other migration still lands. A skip that
+        // swallowed the whole ledger would pass the loop above on its own.
+        for (const migration of SQLITE_MIGRATIONS) {
+          if (DEFERRED.has(migration.tag)) continue;
+          expect(applied.has(migration.tag), `${migration.tag} was not applied`).toBe(true);
+        }
+        for (const name of DEFERRED_INDEXES) {
+          expect(indexExists(raw, name), `${name} exists after a default open`).toBe(false);
+        }
+      } finally {
+        db.close();
+      }
+    });
+  });
+
+  it('builds them on a store a hook opened first, once a caller opts in', () => {
+    withTempStore((store) => {
+      openLocalDatabase(store.dataDir).close();
+      const db = openLocalDatabase(store.dataDir, { applyDeferredMigrations: true });
+      try {
+        const raw = db[UNSAFE_TEST_ONLY_RAW_HANDLE];
+        const applied = new Set(appliedTags(raw));
+        for (const tag of DEFERRED_MIGRATION_TAGS) {
+          expect(applied.has(tag), `${tag} was not applied on an opt-in open`).toBe(true);
+        }
+        for (const name of DEFERRED_INDEXES) {
+          expect(indexExists(raw, name), `${name} is missing after an opt-in open`).toBe(true);
+        }
+      } finally {
+        db.close();
+      }
+    });
+  });
+
+  // user_version is written for a downgraded, count-based build. It must read a
+  // store as fully migrated either way: the deferred migrations add indexes
+  // only, so an older build loses nothing by not knowing them.
+  it('stamps user_version to the full ledger length even when it skipped some', () => {
+    withTempStore((store) => {
+      const db = openLocalDatabase(store.dataDir);
+      try {
+        expect(userVersion(db[UNSAFE_TEST_ONLY_RAW_HANDLE])).toBe(SQLITE_MIGRATIONS.length);
+      } finally {
+        db.close();
+      }
+    });
+  });
+
+  // applyMigrations is also called directly, by these suites among others, and
+  // those callers keep today's behaviour: skipping is the opener's decision.
+  it('still applies the deferred migrations when applyMigrations gets no options', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(db);
+      const applied = new Set(appliedTags(db));
+      for (const tag of DEFERRED_MIGRATION_TAGS) {
+        expect(applied.has(tag), `${tag} was skipped without a skip set`).toBe(true);
       }
     } finally {
       db.close();

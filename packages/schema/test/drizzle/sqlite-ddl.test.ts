@@ -108,8 +108,8 @@ describe('SQLITE_MIGRATIONS', () => {
 });
 
 /**
- * `idx_audit_capture_rollup` is PARTIAL, and the four `/security` reads that use
- * it carry `INDEXED BY`. That pairing is what makes this worth a test of its own
+ * Every index partial on the capture kinds — `event_type IN (…)` — is read with
+ * `INDEXED BY`, and that pairing is what makes this worth a test of its own
  * rather than a comment.
  *
  * SQLite refuses to prove a partial index applies unless the query's own
@@ -125,37 +125,55 @@ describe('SQLITE_MIGRATIONS', () => {
  * an ordinary edit — an alphabetize, a sort-keys rule, a kind inserted in
  * logical position rather than appended — and a set comparison cannot see it.
  * With `INDEXED BY` forcing the choice, a mismatch is not a slower plan:
- * `prepare()` raises "no query solution" and every one of those reads throws on
- * every page load.
+ * `prepare()` raises "no query solution" and every read pinning that index
+ * throws on every page load.
  *
  * The query side is DERIVED (`CAPTURE_EVENT_TYPES_SQL` is `EventKind.options`),
  * and a shipped migration is immutable. So the enum is the one thing that can
  * move them apart, and it moves only the half that tracks it automatically —
- * whoever adds a fifth kind gets the query updated for free, is told by nothing
- * to write a migration rebuilding the index, and finds out from a stack trace.
+ * whoever adds a fifth kind gets the queries updated for free, is told by
+ * nothing to write migrations rebuilding the indexes, and finds out from a
+ * stack trace.
  *
- * This is the thing that fails in that same commit.
+ * It covers every such index rather than naming each one's predicate, so an
+ * index added later is held by the same assertion the moment its migration
+ * lands. This is the thing that fails in that same commit.
  */
-describe('the capture-rollup index predicate', () => {
-  it('names exactly the capture kinds the reads filter on', () => {
-    const migration = SQLITE_MIGRATIONS.find((m) =>
-      m.sql.includes('CREATE INDEX `idx_audit_capture_rollup`'),
+describe('the capture-kind partial index predicates', () => {
+  const PARTIAL = /CREATE INDEX `([^`]+)`[^;]*?WHERE event_type IN \(([^)]*)\)/g;
+
+  function partialCaptureIndexes(): { name: string; inList: string[] }[] {
+    return SQLITE_MIGRATIONS.flatMap((migration) =>
+      [...migration.sql.matchAll(PARTIAL)].map((match) => ({
+        name: match[1] ?? '',
+        inList: (match[2] ?? '')
+          .split(',')
+          .map((v) => v.trim().replace(/^'|'$/g, ''))
+          .filter((v) => v !== ''),
+      })),
     );
-    expect(migration, 'idx_audit_capture_rollup is in no migration').toBeDefined();
+  }
 
-    const predicate = /idx_audit_capture_rollup`[^;]*?WHERE event_type IN \(([^)]*)\)/.exec(
-      migration?.sql ?? '',
-    );
-    expect(predicate, 'the index is no longer partial on event_type').not.toBeNull();
+  // The positive control. A predicate regex that stopped matching would report
+  // no index, and the per-index check below would then pass on an empty list.
+  it('finds every capture-kind partial index the reads pin', () => {
+    const names = partialCaptureIndexes().map((index) => index.name);
+    for (const expected of [
+      'idx_audit_capture_rollup',
+      'idx_audit_capture_by_time',
+      'idx_audit_capture_by_id',
+      'idx_audit_capture_location',
+    ]) {
+      expect(names, `${expected} is not partial on event_type`).toContain(expected);
+    }
+  });
 
-    const inList = (predicate?.[1] ?? '')
-      .split(',')
-      .map((v) => v.trim().replace(/^'|'$/g, ''))
-      .filter((v) => v !== '');
-
-    // SEQUENCE, not set: a reorder throws just as a narrowing or a widening
-    // does, and sorting both sides here would let exactly that edit through.
-    expect(inList).toEqual([...EventKind.options]);
+  it('names exactly the capture kinds, in order, on every one', () => {
+    for (const { name, inList } of partialCaptureIndexes()) {
+      // SEQUENCE, not set: a reorder throws just as a narrowing or a widening
+      // does, and sorting both sides here would let exactly that edit through.
+      expect(inList, name).toEqual([...EventKind.options]);
+    }
   });
 
   it('is the same list the reads interpolate', () => {

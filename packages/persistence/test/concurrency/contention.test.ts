@@ -378,7 +378,10 @@ describe('concurrent applyMigrations', () => {
 
   it('replaying applyMigrations on a migrated store writes no duplicate tags', () => {
     withTempStore((store) => {
-      store.open();
+      // Fully migrated, the deferred migrations included. A default open leaves
+      // those unapplied, and the unoptioned replay below would then apply them
+      // and read as new tags, which is not the property this test is about.
+      store.open({ applyDeferredMigrations: true });
       const raw = store.openRaw();
       const before = ledgerTags(raw);
       expect(before.length).toBeGreaterThan(0);

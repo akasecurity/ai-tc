@@ -5,7 +5,9 @@ import { classifyString } from '../../src/sanitize/classify.ts';
 import type { SanitizeInput, SanitizeResult } from '../../src/sanitize/sanitize-capture.ts';
 import {
   findResidueRun,
+  MAX_LEAVES,
   numberSurrogate,
+  RESIDUE_RUN,
   sanitizeCapture,
 } from '../../src/sanitize/sanitize-capture.ts';
 import { assertFixtureFullySanitised, assertValidFixture } from '../helpers/fixture-bar.ts';
@@ -789,6 +791,27 @@ describe('a detector that cannot answer refuses the run', () => {
     expect(result.refusal).toBe('detector-unavailable');
   });
 
+  it('D3: a refusal from the URL still carries the survey report', () => {
+    // The URL is walked FIRST and its path segments go through `detect()`, so
+    // `detector-unavailable` is reachable from there — and a refused run is
+    // exactly when an operator needs the keys and values files that report
+    // becomes. The same failure one line later, from the body, wrote both.
+    const result = sanitizeCapture(
+      baseInput({
+        raw: JSON.stringify({ a: RAW }),
+        url: 'https://chatgpt.com/backend-api/conversation',
+        detect: (text) => {
+          if (text === 'backend-api') throw new Error('engine unavailable');
+          return [];
+        },
+      }),
+    );
+    assertRefused(result);
+    expect(result.refusal).toBe('detector-unavailable');
+    // The point of the case: a report, not null.
+    expect(result.report).not.toBeNull();
+  });
+
   it('D2: refuses when the final whole-document scan cannot answer', () => {
     // Nothing in this body reaches a per-value scan (no key or value is
     // approvable), so the only detector call is the last backstop.
@@ -805,6 +828,66 @@ describe('a detector that cannot answer refuses the run', () => {
     assertRefused(result);
     expect(result.refusal).toBe('detector-unavailable');
     expect(calls).toBe(1);
+  });
+});
+
+describe('the document bounds', () => {
+  it('refuses a document with more scalar leaves than the cap', () => {
+    // The one refusal with no case of its own, which is what stops the
+    // sanitiser walking an unbounded document. Raising or deleting the check
+    // left every other bound's case green.
+    const result = sanitizeCapture(
+      baseInput({ raw: JSON.stringify(Array.from({ length: MAX_LEAVES + 1 }, (_, i) => i)) }),
+    );
+    assertRefused(result);
+    expect(result.refusal).toBe('too-many-leaves');
+  });
+
+  it('pins the cap, which the two cases below size themselves from', () => {
+    // Both cases derive their leaf count from MAX_LEAVES, which is right for
+    // the property — "past the cap refuses" holds at whatever the cap is — and
+    // means neither can notice the cap MOVING, since the fixture moves with
+    // it. Checked by mutation: raising it to 2,000,000 left both green. So the
+    // value is pinned here, where a deliberate change is one line away and an
+    // accidental one is not.
+    expect(MAX_LEAVES).toBe(200_000);
+  });
+
+  it('accepts a document at exactly the cap', () => {
+    // The boundary's other side, so the case above pins the cap rather than
+    // merely proving a big array refuses for some reason.
+    const result = sanitizeCapture(
+      baseInput({ raw: JSON.stringify(Array.from({ length: MAX_LEAVES }, (_, i) => i)) }),
+    );
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe('the residue backstop reaches exactly RESIDUE_RUN', () => {
+  // Every other residue case uses an original of 21-44 characters, and the one
+  // 8-character original is fully accounted for — so it expects `null` either
+  // way and `<` could become `<=` with the suite green. That would silently
+  // stop checking every 8-character replaced original, which is a plausible
+  // token or password-fragment length.
+  const scan = (original: string) =>
+    findResidueRun(
+      [{ where: 'chunk[0]', text: `prefix ${original} suffix` }],
+      new Map([[original, 'string#1']]),
+      [],
+    );
+
+  it('reports an unaccounted original of exactly RESIDUE_RUN characters', () => {
+    const original = 'Qx7Kp2Wm'.slice(0, RESIDUE_RUN);
+    expect(original).toHaveLength(RESIDUE_RUN);
+    expect(scan(original)).toEqual({ label: 'string#1', where: 'chunk[0]' });
+  });
+
+  it('skips an unaccounted original one character shorter', () => {
+    const original = 'Qx7Kp2Wm'.slice(0, RESIDUE_RUN - 1);
+    expect(original).toHaveLength(RESIDUE_RUN - 1);
+    // Not because it is absent from the text — it is right there — but because
+    // a run shorter than RESIDUE_RUN is not treated as a disclosure.
+    expect(scan(original)).toBeNull();
   });
 });
 

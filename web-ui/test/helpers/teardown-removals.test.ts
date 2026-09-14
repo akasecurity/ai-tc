@@ -296,3 +296,299 @@ describe('scanTeardowns — hook count', () => {
     expect(removal).toEqual({ hook: 'afterAll', line: 3, path: 'afterAll → removeTree' });
   });
 });
+
+// ─── Shapes found by trying to evade the first parser-based version ─────────
+//
+// Each case below was written to slip past the detector, ran against it, and
+// did. They are pinned here so that closing them is not a one-off.
+
+describe('scanTeardowns — teardowns that are not written as afterEach', () => {
+  // Vitest runs a function RETURNED from a setup hook as that hook's teardown.
+  it('sees a teardown returned from beforeEach', () => {
+    expect(
+      removals(`beforeEach(() => {
+        osHome.dir = home;
+        return () => { resetSingleton(); removeTree(home); };
+      });`),
+    ).toEqual(['beforeEach teardown → removeTree']);
+  });
+
+  it('sees a teardown returned from beforeAll as an arrow body', () => {
+    expect(removals(`beforeAll(() => () => removeTree(home));`)).toEqual([
+      'beforeAll teardown → removeTree',
+    ]);
+  });
+
+  it('sees a returned teardown handed back by name', () => {
+    expect(
+      removals(`
+        function cleanup(): void { removeTree(home); }
+        beforeEach(() => { return cleanup; });
+      `),
+    ).toEqual(['beforeEach teardown → cleanup → removeTree']);
+  });
+
+  it('ignores a setup hook that returns something that is not a function', () => {
+    const scan = scanTeardowns(SUITE, `beforeEach(() => (osHome.dir = newHome()));`, host());
+    expect(scan).toMatchObject({ hooks: 0, removals: [] });
+  });
+
+  it('sees onTestFinished, including from a destructured test context', () => {
+    expect(
+      removals(`
+        beforeEach(() => { onTestFinished(() => { removeTree(home); }); });
+        it('x', ({ onTestFailed }) => { onTestFailed(() => removeTree(home)); });
+      `),
+    ).toEqual(['onTestFinished → removeTree', 'onTestFailed → removeTree']);
+  });
+
+  it('sees a test.extend fixture that removes after use', () => {
+    expect(
+      removals(`const test = base.extend({
+        home: async ({}, use) => {
+          const dir = newDir();
+          await use(dir);
+          removeTree(dir);
+        },
+      });`),
+    ).toEqual(['fixture home → removeTree']);
+  });
+
+  it('sees an aliased hook imported from vitest', () => {
+    expect(
+      removals(
+        `import { afterEach as teardown } from 'vitest';\nteardown(() => { removeTree(home); });`,
+      ),
+    ).toEqual(['afterEach → removeTree']);
+  });
+
+  // Built like tempHomes(), but removing per test and without releasing first.
+  it('sees a teardown registered by a helper imported from a test directory', () => {
+    expect(
+      removals(
+        `import { tempHomeEach } from '../helpers/home.ts';\nconst newHome = tempHomeEach('aka-x-');`,
+        {
+          '/virtual/web-ui/test/helpers/home.ts': `export function tempHomeEach(prefix: string) {
+            let dir = '';
+            afterEach(() => { removeTree(dir); });
+            return () => (dir = make(prefix));
+          }`,
+        },
+      ),
+    ).toEqual(['tempHomeEach → afterEach → removeTree']);
+  });
+
+  // The exemption is by file AND name, so a lookalike elsewhere is still read.
+  it('exempts the real tempHomes, and only the real one', () => {
+    const helper = `export function tempHomes(prefix: string) {
+      afterAll(async () => { await releaseLocalStore(); removeTrees(made); });
+      return () => make(prefix);
+    }`;
+    expect(
+      removals(`import { tempHomes } from '../helpers/temp-home.ts';\nconst h = tempHomes('a-');`, {
+        '/virtual/web-ui/test/helpers/temp-home.ts': helper,
+      }),
+    ).toEqual([]);
+    expect(
+      removals(
+        `import { tempHomes } from '../helpers/other-home.ts';\nconst h = tempHomes('a-');`,
+        {
+          '/virtual/web-ui/test/helpers/other-home.ts': helper,
+        },
+      ),
+    ).toEqual(['tempHomes → afterAll → removeTrees']);
+  });
+});
+
+describe('scanTeardowns — removals the first parser-based version could not follow', () => {
+  it('follows a function assigned to a let later', () => {
+    expect(
+      removals(`
+        let cleanup: () => void = () => {};
+        beforeEach(() => { cleanup = () => { resetSingleton(); removeTree(home); }; });
+        afterEach(() => { cleanup(); });
+      `),
+    ).toEqual(['afterEach → cleanup → removeTree']);
+  });
+
+  it('sees removeTree handed over by reference', () => {
+    expect(removals(`afterEach(() => { [home, target].forEach(removeTree); });`)).toEqual([
+      'afterEach → removeTree',
+    ]);
+  });
+
+  it('follows a wrapper made with vi.fn', () => {
+    expect(
+      removals(`
+        const cleanup = vi.fn(() => { removeTree(home); });
+        afterEach(() => { cleanup(); });
+      `),
+    ).toEqual(['afterEach → cleanup → removeTree']);
+  });
+
+  it('sees an fs removal imported under an alias', () => {
+    expect(
+      removals(`import { rmSync as removeSync } from 'node:fs';
+        afterEach(() => { removeSync(home, { recursive: true, force: true }); });`),
+    ).toEqual(['afterEach → removeSync']);
+  });
+
+  it('sees an fs removal through a namespace import and through promises', () => {
+    expect(
+      removals(`import * as fsp from 'node:fs/promises';
+        import nodeFs from 'node:fs';
+        afterEach(async () => {
+          await fsp.rm(home, { recursive: true });
+          await nodeFs.promises.rm(other, { recursive: true });
+        });`),
+    ).toEqual(['afterEach → rm', 'afterEach → rm']);
+  });
+
+  it('follows a member of a namespace import from a relative path', () => {
+    expect(
+      removals(
+        `import * as helpers from '../helpers/cleanup.ts';\nafterEach(() => helpers.wipe());`,
+        {
+          '/virtual/web-ui/test/helpers/cleanup.ts': `export const wipe = () => removeTree(dir);`,
+        },
+      ),
+    ).toEqual(['afterEach → wipe → removeTree']);
+  });
+
+  it('follows a re-export', () => {
+    expect(
+      removals(`import { clean } from '../helpers/index.ts';\nafterAll(() => clean());`, {
+        '/virtual/web-ui/test/helpers/index.ts': `export { wipe as clean } from './wipe.ts';`,
+        '/virtual/web-ui/test/helpers/wipe.ts': `export function wipe(): void { removeTree(dir); }`,
+      }),
+    ).toEqual(['afterAll → clean → removeTree']);
+  });
+
+  it('reads a const options object that does say recursive', () => {
+    expect(
+      removals(
+        `const WIPE = { recursive: true, force: true };\nafterEach(() => { rmSync(home, WIPE); });`,
+      ),
+    ).toEqual(['afterEach → rmSync']);
+  });
+});
+
+describe('scanTeardowns — false alarms the first parser-based version raised', () => {
+  // Sidecar and credential FILES are removed with retry options held in a
+  // constant; reading the constant is what tells them from a tree.
+  it('reads a const options object that does not say recursive', () => {
+    expect(
+      removals(`const RM_FILE = { force: true, maxRetries: 10, retryDelay: 50 };
+        afterEach(() => { for (const f of sidecars) rmSync(f, RM_FILE); });`),
+    ).toEqual([]);
+  });
+
+  it('reads a spread of a const that does not say recursive', () => {
+    expect(
+      removals(`const retry = { maxRetries: 10, retryDelay: 50 };
+        afterEach(() => { rmSync(credentialFile(), { force: true, ...retry }); });`),
+    ).toEqual([]);
+  });
+
+  it('still counts a let options object, which could be anything by then', () => {
+    expect(
+      removals(`let opts = { force: true };\nafterEach(() => { rmSync(home, opts); });`),
+    ).toEqual(['afterEach → rmSync']);
+  });
+
+  // The index used to be file-wide, so any function sharing the name was followed.
+  it('respects scope when two describes declare the same name', () => {
+    expect(
+      removals(`
+        describe('scan', () => {
+          let target = '';
+          const reset = () => { removeTree(target); };
+          it('scans', () => { reset(); });
+        });
+        describe('settings', () => {
+          const reset = () => { resetSingleton(); };
+          afterEach(() => { reset(); });
+        });
+      `),
+    ).toEqual([]);
+  });
+
+  it('does not treat a method named rm on some other object as fs', () => {
+    expect(removals(`afterEach(async () => { await client.rm(pointer, reason); });`)).toEqual([]);
+  });
+
+  // A local `rm` is a function like any other: followed into, and not taken for
+  // node:fs just because of its name. This one removes nothing.
+  it('follows a local function named rm instead of assuming it is fs', () => {
+    expect(
+      removals(`
+        function rm(a: string, b: string): void { log(a, b); }
+        afterEach(() => { rm(home, reason); });
+      `),
+    ).toEqual([]);
+  });
+
+  it('does not run a callback handed to a mock installer', () => {
+    expect(
+      removals(`afterEach(() => {
+        resetSingleton();
+        vi.mocked(fsHelpers.purge).mockImplementation((d) => removeTree(d));
+      });`),
+    ).toEqual([]);
+  });
+
+  it('does not count a parameter that shadows a wrapper', () => {
+    expect(
+      removals(`
+        const cleanup = () => removeTree(home);
+        afterEach(() => { run((cleanup: () => void) => cleanup); });
+      `),
+    ).toEqual([]);
+  });
+});
+
+describe('scanTeardowns — redirect shapes the first parser-based version missed', () => {
+  const redirects = (text: string, files: Record<string, string> = {}): boolean =>
+    scanTeardowns(SUITE, text, host(files)).redirectsHome;
+
+  it('sees a mock factory that hands off to a helper naming homedir', () => {
+    expect(
+      redirects(
+        `import { osWithHome } from '../helpers/os.ts';
+        vi.mock('node:os', async (importActual) => osWithHome(await importActual(), osHome));`,
+        {
+          '/virtual/web-ui/test/helpers/os.ts': `export function osWithHome(actual, box) { return { ...actual, homedir: () => box.dir }; }`,
+        },
+      ),
+    ).toBe(true);
+  });
+
+  it('sees the typed import() form of the module argument', () => {
+    expect(
+      redirects(`vi.mock(import('node:os'), async (importOriginal) => {
+        const actual = await importOriginal();
+        return { ...actual, homedir: () => osHome.dir };
+      });`),
+    ).toBe(true);
+  });
+
+  it('sees an automock pointed somewhere through vi.mocked', () => {
+    expect(
+      redirects(`import * as os from 'node:os';
+        vi.mock('node:os', { spy: true });
+        beforeEach(() => { vi.mocked(os.homedir).mockReturnValue(home); });`),
+    ).toBe(true);
+  });
+
+  it('does not count a helper call in a factory that never names homedir', () => {
+    expect(
+      redirects(
+        `import { osWithTmp } from '../helpers/os.ts';
+        vi.mock('node:os', async (importActual) => osWithTmp(await importActual()));`,
+        {
+          '/virtual/web-ui/test/helpers/os.ts': `export function osWithTmp(actual) { return { ...actual, tmpdir: () => '/t' }; }`,
+        },
+      ),
+    ).toBe(false);
+  });
+});

@@ -38,15 +38,33 @@ export const DRIFT_STATES: ReadonlySet<WebCaptureState> = new Set<WebCaptureStat
   'degraded',
 ]);
 
+/**
+ * The enforcement states that are a FAULT — every member of the vocabulary
+ * except the two that are not one.
+ *
+ * Spelled as an exclusion rather than as its own list so the table below is a
+ * total map over it: a member added to `WebEnforcementState` lands in this
+ * type and fails to compile until someone writes its sentence.
+ */
+type EnforcementFault = Exclude<WebEnforcementState, 'watching' | 'unknown'>;
+
 // What a half-resolved composer means, in words a user can act on. 'watching'
-// and 'unknown' are deliberately absent: the first is healthy, and the second is
-// the absence of an opinion rather than a fault — rendering it would put a
-// warning on every tab whose DOM half has not run yet.
-const ENFORCEMENT_NOTES: Partial<Record<WebEnforcementState, string>> = {
+// and 'unknown' are excluded above rather than merely omitted here: the first
+// is healthy, and the second is the absence of an opinion rather than a fault —
+// rendering it would put a warning on every tab whose DOM half has not run
+// yet. A `Partial<Record<…>>` expressed that by allowing any key to be absent,
+// which also let a NEW fault state render no note with no compile error to say
+// so; annotated total over the exclusion, the compiler asks for the sentence.
+const ENFORCEMENT_NOTES: Record<EnforcementFault, string> = {
   'composer-only': 'not enforcing — send button not found',
   'button-only': 'not enforcing — composer not found',
   unattached: 'not enforcing — composer and send button not found',
 };
+
+// Read through a widened ALIAS rather than a cast at the lookup: the table is
+// total over the faults, and this is the one place a full-vocabulary state
+// indexes it. Assignment, not assertion — so the widening is checked.
+const NOTE_FOR: Readonly<Partial<Record<WebEnforcementState, string>>> = ENFORCEMENT_NOTES;
 
 /** Render the network-capture section from a `capture_state` reply. */
 export function renderCaptureSites(response: CaptureStateResponse): void {
@@ -65,7 +83,7 @@ export function renderCaptureSites(response: CaptureStateResponse): void {
     const row = document.createElement('div');
     row.className = `row ${DRIFT_STATES.has(site.state) ? 'tone-error' : 'muted'}`;
     row.textContent = `${SITE_LABELS[site.tool]}: ${site.state}`;
-    const note = site.enforcement === undefined ? undefined : ENFORCEMENT_NOTES[site.enforcement];
+    const note = site.enforcement === undefined ? undefined : NOTE_FOR[site.enforcement];
     if (note === undefined) return [row];
     // A second row rather than a word folded into the first: the two describe
     // different halves, and a tab can read the site perfectly while enforcing

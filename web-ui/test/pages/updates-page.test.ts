@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +9,7 @@ import type { ComponentProps, ReactElement, ReactNode } from 'react';
 import { Children, isValidElement } from 'react';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { releaseLocalStore } from '../helpers/temp-home.ts';
 
 // The Updates route derives ONE line per component and hands it to a confirm
@@ -82,7 +83,9 @@ afterAll(async () => {
   // Windows will not remove a directory a handle has open. Removing at afterAll
   // was already right; releasing first is what makes it work there too.
   await releaseLocalStore();
-  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+  // Through the helper even after the release: a closed store's sidecars can
+  // outlive the handle by a moment on Windows, which its retry covers.
+  removeTrees(temps);
 });
 
 type ClientProps = ComponentProps<typeof UpdatesClient>;

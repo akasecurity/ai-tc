@@ -1,8 +1,10 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterAll } from 'vitest';
+
+import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 
 /**
  * Temp directories for a suite that redirects `homedir()`, removed when the FILE
@@ -20,6 +22,11 @@ import { afterAll } from 'vitest';
  * them across two hooks does not work — vitest's `sequence.hooks` defaults to
  * `stack`, so a suite's own `afterEach` runs BEFORE one a setup file registered,
  * and the removal would still go first.
+ *
+ * Releasing is what lets the directories go, but it does not make the removal
+ * instantaneous on Windows: a closed store's `-wal`/`-shm` sidecars can outlive
+ * the handle by a moment. So the removal goes through `removeTrees`, whose retry
+ * covers that window.
  *
  * Every test still gets its own directory, so isolation is unchanged. All that
  * moves is when the bytes go away.
@@ -44,7 +51,7 @@ export function tempHomes(prefix: string): () => string {
   afterAll(async () => {
     // Released first, then removed — one hook, explicit order.
     await releaseLocalStore();
-    for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
+    removeTrees(made.splice(0));
   });
 
   return () => {

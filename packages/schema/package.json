@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
-    "zod": "^4.5.4"
+    "zod": "^4.6.2"
   },
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",

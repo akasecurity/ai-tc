@@ -57,7 +57,7 @@ function nextFrame(): void {
   for (const cb of queued) cb();
 }
 
-const { bootstrap } = await import('../src/content.ts');
+const { bootstrap, showBanner } = await import('../src/content.ts');
 
 interface Harness {
   adapter: ProviderAdapter;
@@ -177,6 +177,67 @@ describe('bootstrap: what the DOM path reports about itself', () => {
 
     expect(readEnforcementState(scope())).toBe('composer-only');
     expect(h.unbound()).toBe(1);
+  });
+});
+
+describe('showBanner: the block banner has to survive long enough to act on', () => {
+  beforeEach(() => {
+    document.body = document.createElement('body');
+    vi.useRealTimers();
+  });
+
+  const shadowText = (): string => document.body.firstElementChild?.shadowRoot?.textContent ?? '';
+
+  it('renders the approve command as its own element, not buried in the prose', () => {
+    // Its own node so a double-click selects exactly the command. Inside a
+    // sentence the user has to drag-select it out of surrounding text.
+    showBanner({
+      tone: 'block',
+      message: 'AKA blocked this message — flagged secrets/aws-access-key (A******E).',
+      exception: {
+        intro: 'If this is intentional and you accept the risk, grant an exception:',
+        command: 'aka exception approve 3f2a91',
+        help: 'More: aka exception --help',
+      },
+    });
+    const root = document.body.firstElementChild?.shadowRoot;
+    const nodes = [...(root?.querySelectorAll('*') ?? [])];
+    expect(nodes.some((n) => n.textContent === 'aka exception approve 3f2a91')).toBe(true);
+  });
+
+  it('keeps a block banner on screen past the auto-hide window', () => {
+    vi.useFakeTimers();
+    showBanner({
+      tone: 'block',
+      message: 'AKA blocked this message.',
+      exception: { intro: 'i', command: 'aka exception approve 3f2a91', help: 'h' },
+    });
+    vi.advanceTimersByTime(60_000);
+    expect(shadowText()).toContain('aka exception approve 3f2a91');
+  });
+
+  it('still auto-hides a warn banner, which carries nothing to act on', () => {
+    vi.useFakeTimers();
+    showBanner({ tone: 'warn', message: 'AKA flagged sensitive content — sent unchanged.' });
+    expect(shadowText()).toContain('flagged sensitive content');
+    vi.advanceTimersByTime(10_000);
+    expect(document.body.firstElementChild).toBeNull();
+  });
+
+  it('gives a persistent banner a way to be dismissed', () => {
+    // A banner that never leaves and cannot be closed is worse than one that
+    // fades: it covers the composer the user was told to go and edit.
+    vi.useFakeTimers();
+    showBanner({
+      tone: 'block',
+      message: 'AKA blocked this message.',
+      exception: { intro: 'i', command: 'aka exception approve 3f2a91', help: 'h' },
+    });
+    const root = document.body.firstElementChild?.shadowRoot;
+    const dismiss = [...(root?.querySelectorAll('button') ?? [])][0];
+    expect(dismiss).toBeDefined();
+    dismiss?.click();
+    expect(document.body.firstElementChild).toBeNull();
   });
 });
 

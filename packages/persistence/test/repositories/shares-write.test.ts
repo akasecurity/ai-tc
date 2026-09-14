@@ -18,6 +18,7 @@ import {
   MAX_EGRESS_CALL_SITES_PER_PROJECT,
   SqliteSharesRepository,
 } from '../../src/repositories/shares.ts';
+import { resolvedHit } from '../helpers/egress-hits.ts';
 
 let db: DatabaseSync;
 let shares: SqliteSharesRepository;
@@ -54,20 +55,30 @@ interface HitOptions {
   vendored?: boolean;
 }
 
-/** One resolved hit with recognized-provider defaults; every field is overridable. */
+/**
+ * One resolved hit on the package's shared builder, with this suite's own
+ * defaults for the fields its assertions read (a host-derived name and url, a
+ * PII data class, a short call-site) and only the fields a case supplies passed
+ * through otherwise.
+ */
 function hit(o: HitOptions = {}): ResolvedEgressHit {
   const host = o.host ?? 'api.stripe.com';
-  return {
+  const given = Object.fromEntries(
+    Object.entries({
+      kind: o.kind,
+      trust: o.trust,
+      network: o.network,
+      method: o.method,
+      transport: o.transport,
+      template: o.template,
+    }).filter(([, value]) => value !== undefined),
+  ) as Partial<ResolvedEgressHit>;
+  return resolvedHit({
+    ...given,
     host,
-    kind: o.kind ?? 'provider',
     name: o.name ?? host,
     category: o.category ?? 'Payments',
-    trust: o.trust ?? 'recognized',
-    network: o.network ?? null,
-    method: o.method ?? 'POST',
-    transport: o.transport ?? 'https',
     url: o.url ?? `https://${host}/v1/charges`,
-    template: o.template ?? false,
     dataClass: o.dataClass ?? 'pii',
     site: {
       file: o.file ?? 'src/pay.ts',
@@ -76,7 +87,7 @@ function hit(o: HitOptions = {}): ResolvedEgressHit {
       dynamic: o.dynamic ?? false,
       vendored: o.vendored ?? false,
     },
-  };
+  });
 }
 
 /** A walk-mode write for one project; `walkedPrefix` defaults to the whole project. */

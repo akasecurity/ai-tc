@@ -53,7 +53,8 @@
  * no argument: the generator mints those unconditionally for a `code_change`
  * capture.) Its finding rate is a measured 0.33 rather than 0.1, which IS a
  * default and so arrives without being asked for. `recentlyResolved`, `mttrTrend`
- * and `recentFindings` were rewritten to drive from the bounded side of their
+ * and `recentFindings` (since retired from this page) were rewritten to drive
+ * from the bounded side of their
  * joins, and `test/performance/security-page-scale.test.ts` pins all three as
  * ratios so a regression is a red test rather than a number in this comment.
  *
@@ -64,10 +65,10 @@
  * card, or retention on the corpus itself), not a tuning one.
  *
  * WHY THE CLOCK IS PINNED, and why it is the difference between a real number
- * and a comfortable one. Six of the eight filter on a window ending "now", and
+ * and a comfortable one. Seven of the eight filter on a window ending "now", and
  * the generator stamps its events from a fixed 2024 epoch so the corpus is
  * identical on every machine. Left on the wall clock the window sits years past
- * every row, six of the eight match NOTHING, and the same 1M store reported
+ * every row, seven of the eight match NOTHING, and the same 1M store reported
  * 3,831 ms — inside half the cost measured then, from a run that looks perfectly
  * valid. A benchmark whose input is empty is the failure mode to watch for here,
  * and the retracted `recentlyResolved` figure above is the same mistake reached by
@@ -194,7 +195,7 @@ async function securityPage(s: Surfaces): Promise<void> {
     s.security.scanCoverage('30d'),
     s.security.topSources('30d', { limit: 5 }),
     s.security.recentlyResolved(),
-    s.findings.recentFindings({ limit: 500 }),
+    s.security.recommendationInputs(),
   ]);
 }
 
@@ -224,6 +225,7 @@ describe(`/security — each aggregation on its own, at ${BREAKDOWN_SCALE.toLoca
   // one of them is under 5 ms and the sampling noise exceeds the signal.
   const PARTS: readonly [string, (s: Surfaces) => Promise<unknown>][] = [
     ['severitySummary', (s) => s.security.severitySummary()],
+    ['recommendationInputs', (s) => s.security.recommendationInputs()],
     ['enforcementActions', (s) => s.security.enforcementActions('30d')],
     ['findingsTimeseries', (s) => s.security.findingsTimeseries('30d')],
     ['mttrTrend', (s) => s.security.mttrTrend('30d')],

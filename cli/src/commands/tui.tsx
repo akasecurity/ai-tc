@@ -46,6 +46,11 @@ export async function runTui(argv: string[]): Promise<void> {
   // every `llm_call` leaf in the window, so an all-time read would grow unbounded
   // with store age on every `aka tui` launch. 90d is a recent-spend glance.
   const tokenFromMs = Date.now() - 90 * 86_400_000;
+  // Recommendations here are the newest 500 findings, ALL-TIME and whatever their
+  // status — deliberately not the dashboard's rule, which counts only what is still
+  // open. The dashboard scopes by status so a row's number equals what its link
+  // opens; this screen renders no link, so it has nothing to agree with, and a
+  // second definition of "recommended" would be a difference with no reader.
   const [summary, findings, activity, tokenReports] = await Promise.all([
     db.findings.healthSummary(),
     db.findings.recentFindings({ limit: 500 }),

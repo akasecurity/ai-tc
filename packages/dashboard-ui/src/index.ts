@@ -38,6 +38,7 @@ export {
 export { PageHead } from './shared/PageHead.tsx';
 export { Provider, type ProviderId, type ProviderMeta, PROVIDERS } from './shared/Provider.tsx';
 export { ScrubbedValue } from './shared/ScrubbedValue.tsx';
+export { type FieldSurface, SearchField } from './shared/SearchField.tsx';
 export {
   type StatTone,
   type SummaryStatItem,
@@ -91,10 +92,10 @@ export { SessionListView } from './activity/SessionListView.tsx';
 // sections without forking the body.
 export { ActionTag, AggregateActionTag } from './findings/ActionTag.tsx';
 export { FindingDetailView, formatConfidence } from './findings/FindingDetailView.tsx';
+export { FindingLocationsListView } from './findings/FindingLocationsListView.tsx';
 export { FindingsFlatTableView } from './findings/FindingsFlatTableView.tsx';
-export { FindingsLocationsView } from './findings/FindingsLocationsView.tsx';
-export { FindingsTableView } from './findings/FindingsTableView.tsx';
-export { ColumnsMenu, FindingsToolbarView } from './findings/FindingsToolbarView.tsx';
+export { FindingLevelFilters, FindingsToolbarView } from './findings/FindingsToolbarView.tsx';
+export { FindingTypesListView } from './findings/FindingTypesListView.tsx';
 export {
   ACTION_META,
   CATEGORY_ICON,
@@ -102,11 +103,8 @@ export {
   CATEGORY_LABEL,
   CATEGORY_TONE,
   categoryStyle,
-  type ColumnVisibility,
   DEFAULT_FINDINGS_VIEW,
   EMPTY_FILTERS,
-  type FindingColumn,
-  FINDINGS_COLUMNS,
   FINDINGS_VIEW_LABEL,
   FINDINGS_VIEWS,
   type FindingsFilters,
@@ -238,6 +236,8 @@ export {
   findingStatus,
   healthScore,
   type Recommendation,
+  type RecommendationInput,
+  type RecommendedActionOptions,
 } from './security/recommendations.ts';
 export {
   RecommendedActionsCardView,
@@ -323,6 +323,14 @@ export {
 } from './updates/UpdateStatusCardView.tsx';
 
 // Settings views — the web twin of the `/aka:setup` wizard's editable knobs.
+export {
+  type SyncKindRow,
+  type SyncLastOutcome,
+  type SyncLocalOnlyLine,
+  type SyncPanelState,
+  SyncPanelView,
+  type SyncPanelViewProps,
+} from './settings/SyncPanelView.tsx';
 export {
   WorkspaceSettingsFormView,
   type WorkspaceSettingsFormViewProps,

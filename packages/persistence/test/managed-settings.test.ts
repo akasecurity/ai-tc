@@ -20,6 +20,7 @@ import {
   managedSettingsPaths,
   overlayManagedSettings,
   readManagedSettings,
+  UNSAFE_TEST_ONLY_setManagedSettingsPaths,
 } from '../src/managed-settings.ts';
 import {
   applyOnboarding,
@@ -99,6 +100,69 @@ describe('readManagedSettings — fail-open on a damaged administrative file', (
     const managed = readManagedSettings([join(managedDir, MANAGED_SETTINGS_FILENAME)]);
     expect(managed?.organization).toBe('Acme');
     expect(managed?.lockedFields).toEqual(['runMode']);
+    // Every lock was known, so the context carries no key saying otherwise.
+    expect(managedContextOf(managed)).not.toHaveProperty('unknownLockedCount');
+  });
+
+  it('keeps every lock it knows beside one it does not, and reports the stranger', () => {
+    // An administrator locking a key a NEWER build added must not cost an
+    // older build the locks it understands. Refusing the file here ran the
+    // machine unmanaged — every pin and lock gone — on exactly the fleets most
+    // likely to carry a version skew.
+    writeManaged({ organization: 'Acme', lockedFields: ['runMode', 'lockFromANewerBuild'] });
+    const managed = readManagedSettings([managedFile()]);
+    expect(managed?.lockedFields).toEqual(['runMode']);
+    expect(managed?.unknownLockedFields).toEqual(['lockFromANewerBuild']);
+    const context = managedContextOf(managed);
+    expect(context.present).toBe(true);
+    expect(isFieldManaged(context, 'runMode')).toBe(true);
+    // The COUNT crosses, not the names: the context is serialized to the
+    // browser, and the names are unbounded where the enum is not.
+    expect(context.unknownLockedCount).toBe(1);
+    expect(context).not.toHaveProperty('unknownLockedFields');
+  });
+
+  it('keeps every pin it knows beside one it does not, and reports the stranger', () => {
+    // The mirror of the lock case, and the half that was silent: a pin with no
+    // lock is a supported shape — a default the user may still change — so an
+    // administrator writing one against a newer key had it dropped with
+    // nothing anywhere saying so.
+    writeManaged({
+      organization: 'Acme',
+      values: { runMode: 'attached', pinFromANewerBuild: true },
+    });
+
+    const managed = readManagedSettings([managedFile()]);
+
+    expect(managed?.values).toEqual({ runMode: 'attached' });
+    expect(managed?.unknownValueFields).toEqual(['pinFromANewerBuild']);
+    const context = managedContextOf(managed);
+    expect(context.present).toBe(true);
+    // The COUNT crosses, not the names — the same rule the lock half follows,
+    // and for the same reason: this context is serialized to a client
+    // component, and a pin name is whatever the administrator's file holds.
+    expect(context.unknownValueCount).toBe(1);
+    expect(context).not.toHaveProperty('unknownValueFields');
+  });
+
+  it('carries no unknown-pin key when every pin is known', () => {
+    // The control on the case above: a context that always carried the key
+    // would satisfy it whether or not anything was dropped.
+    writeManaged({ organization: 'Acme', values: { runMode: 'attached' } });
+
+    expect(managedContextOf(readManagedSettings([managedFile()]))).not.toHaveProperty(
+      'unknownValueCount',
+    );
+  });
+
+  it('runs unmanaged on a BAD value under a key it does know', () => {
+    // The line between tolerance and damage. The pin half is forgiving about a
+    // NAME from a newer build and must stay strict about a value it can read
+    // and reject — otherwise a typo'd enum reads as healthy while the
+    // administrator's decision is not applied.
+    writeManaged({ organization: 'Acme', values: { runMode: 'attachd' } });
+
+    expect(readManagedSettings([managedFile()])).toBeNull();
   });
 
   it('runs UNMANAGED rather than refusing when the file is malformed', () => {
@@ -110,7 +174,9 @@ describe('readManagedSettings — fail-open on a damaged administrative file', (
   });
 
   it('skips a file whose shape fails the schema', () => {
-    writeManaged({ lockedFields: ['notASetting'] });
+    // A shape the reader cannot read, not a name it does not know: the
+    // unknown-name case is tolerated on purpose, above.
+    writeManaged({ lockedFields: 'runMode' });
     expect(readManagedSettings([join(managedDir, MANAGED_SETTINGS_FILENAME)])).toBeNull();
   });
 
@@ -132,7 +198,7 @@ describe('readManagedSettings — fail-open on a damaged administrative file', (
   it('falls through a malformed first location to a valid second', () => {
     const second = mkdtempSync(join(tmpdir(), 'aka-managed-2-'));
     try {
-      writeManaged({ lockedFields: ['bogus'] });
+      writeManaged({ lockedFields: 'bogus' });
       writeManaged({ organization: 'Second' }, second);
       const managed = readManagedSettings([
         join(managedDir, MANAGED_SETTINGS_FILENAME),
@@ -868,6 +934,18 @@ const KEY_SAMPLES = {
     underPin: true,
     underUser: false,
   },
+  // The toggle and the day count pin as ONE unit, so the sample varies BOTH:
+  // a user answer differing only in `retainDays` has to be refused under the
+  // lock exactly as one differing in `enabled` does, and a sample that held the
+  // count equal on both sides could not tell those two apart.
+  bodyRetention: {
+    pin: { bodyRetention: { enabled: true, retainDays: 30 } },
+    userAnswer: { bodyRetention: { enabled: false, retainDays: 365 } },
+    echoAnswer: { bodyRetention: { enabled: true, retainDays: 30 } },
+    read: (s) => `${String(s.bodyRetention.enabled)}:${String(s.bodyRetention.retainDays)}`,
+    underPin: 'true:30',
+    underUser: 'false:365',
+  },
 } satisfies Record<ManagedSettingKey, KeySample>;
 
 describe('every lockable key is handled by all four per-key lists', () => {
@@ -915,4 +993,67 @@ describe('every lockable key is handled by all four per-key lists', () => {
       expect(sample.read(readWorkspaceSettings(base))).toEqual(sample.underUser);
     },
   );
+});
+
+// The seam that makes every suite in this workspace independent of whoever's
+// machine is running it — see its doc comment in src/managed-settings.ts, and
+// test/setup/no-managed-settings.ts, which is what installs it.
+//
+// Every OTHER case in this file hands `readManagedSettings` its paths, so none
+// of them touches the default at all and none of them would notice the seam
+// being deleted. These drive the default itself, which is the only thing the
+// product ever calls.
+describe('UNSAFE_TEST_ONLY_setManagedSettingsPaths', () => {
+  // Restore what test/setup/no-managed-settings.ts installed. Leaving a pin
+  // behind would hand the next case in this file an administrator it never
+  // asked for — the very failure this seam exists to remove.
+  afterEach(() => {
+    UNSAFE_TEST_ONLY_setManagedSettingsPaths([]);
+  });
+
+  it('redirects the read a caller makes with NO paths', () => {
+    writeManaged({
+      specVersion: 1,
+      organization: 'Example Org',
+      values: { runMode: 'attached' },
+    });
+    // The positive control, and it is doing real work: the assertion below is
+    // `toBeNull`, which is also what an unmanaged machine returns and what a
+    // seam that silently ignored its argument would return. Without a pin that
+    // demonstrably lands first, the case passes on a workspace where this seam
+    // does nothing whatsoever.
+    UNSAFE_TEST_ONLY_setManagedSettingsPaths([managedFile()]);
+    expect(readManagedSettings()?.organization).toBe('Example Org');
+
+    UNSAFE_TEST_ONLY_setManagedSettingsPaths([]);
+    expect(readManagedSettings()).toBeNull();
+  });
+
+  it('reaches readWorkspaceSettings, which takes no override at all', () => {
+    // The property the seam exists for, and the reason a per-call parameter was
+    // not enough. `readWorkspaceSettings` has no override argument, and neither
+    // do the frames that reach it in the product — openControlPlaneFloors from
+    // `db.installedPacks.setPolicy()`, the attached-mode pass from `aka
+    // sync-history`. A process-scoped pin is the only thing that reaches them.
+    writeManaged({ specVersion: 1, values: { runMode: 'attached' } });
+
+    expect(readWorkspaceSettings(base).runMode).toBe('standalone');
+    UNSAFE_TEST_ONLY_setManagedSettingsPaths([managedFile()]);
+    expect(readWorkspaceSettings(base).runMode).toBe('attached');
+  });
+
+  it('leaves an explicit caller alone', () => {
+    // What keeps this file's other ninety-odd cases meaningful: they pass their
+    // own paths, so the process-wide pin must not override an argument. If it
+    // did, the setup guard's `[]` would blank every managed case in the
+    // workspace and they would assert an unmanaged machine while reading as
+    // tests of the managed layer.
+    const file = writeManaged({
+      specVersion: 1,
+      organization: 'Example Org',
+      values: { runMode: 'attached' },
+    });
+    UNSAFE_TEST_ONLY_setManagedSettingsPaths([]);
+    expect(readManagedSettings([file])?.organization).toBe('Example Org');
+  });
 });

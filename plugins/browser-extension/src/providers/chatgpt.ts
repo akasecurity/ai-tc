@@ -66,16 +66,12 @@ function decodeEntities(text: string): string {
  * markup contributes its text rather than its markup.
  */
 function textOfBlock(inner: string): string {
-  return decodeEntities(
-    inner
-      // Processing instructions. These do NOT begin with a tag name, so the
-      // element pattern below does not reach them.
-      .replace(/<\?[^>]*>/g, '')
-      // Elements, opening and closing. Deliberately narrower than `<[^>]*>`:
-      // a bare `<` that begins no tag is text, and eating to the next `>`
-      // would swallow the reply between them.
-      .replace(/<\/?[a-zA-Z][^>]*>/g, ''),
-  );
+  // Parse as HTML in a detached container and read textContent so element
+  // markup (including script tags) cannot survive as HTML-like text through
+  // incomplete multi-character regex stripping.
+  const template = document.createElement('template');
+  template.innerHTML = inner;
+  return decodeEntities(template.content.textContent ?? '');
 }
 
 function attributeOf(html: string, name: string): string | undefined {

@@ -1266,6 +1266,38 @@ describe('the network half re-reports when only the DOM half moved', () => {
 
     expect(statuses(h).length).toBe(before);
   });
+
+  it('reports a settled enforcement fault with no patched message at all', () => {
+    // No `patched` is fed here, deliberately. The DOM watcher is independent
+    // of the tap, so on a page where the tap never posts one — a CSP block, a
+    // script error, a lost handshake — every enforcement transition used to be
+    // dropped for the life of the tab, `unattached` included. That is the
+    // both-halves-failing case this signal most needs to carry, and only the
+    // `pagehide` report got through.
+    const h = harness();
+    h.setEnforcement('unattached');
+    h.bridge.noteEnforcementChange();
+
+    const reports = statuses(h);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]?.status.enforcement).toBe('unattached');
+    // And it says what it is: the tap really has not patched.
+    expect(reports[0]?.status.patched).toBe(false);
+  });
+
+  it('still says nothing about a bound watcher before the tap has patched', () => {
+    // The gate is narrowed to a SETTLED FAULT rather than to any known state,
+    // and that is not a smaller version of the fix above — it is the defect
+    // the gate exists to prevent. `watching` is published the instant the
+    // watcher binds, so admitting it would put a `patched: false` row on every
+    // tab on every load, read as `unpatched` — a fault state — in the popup
+    // and on /security. The harness's own default is `watching`, which is what
+    // makes this case the control on the one above.
+    const h = harness();
+    h.bridge.noteEnforcementChange();
+
+    expect(statuses(h)).toHaveLength(0);
+  });
 });
 
 describe('the exchange parseStream is handed', () => {

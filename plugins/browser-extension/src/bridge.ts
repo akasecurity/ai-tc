@@ -541,7 +541,25 @@ export function createBridge(options: BridgeOptions): Bridge {
     // writes a transient "unpatched" row into every tab on every load, which
     // is worse than the one honest limit this leaves (see bridge.ts's module
     // doc and the status-surface design).
-    if (!patchedFetch && !patchedXhr && reported === null) return;
+    //
+    // A SETTLED enforcement fault passes anyway, because the DOM watcher is
+    // independent of the tap. On a page where the tap never posts `patched` —
+    // a CSP block, a script error, a lost handshake — every enforcement
+    // transition was otherwise dropped for the life of the tab, including a
+    // settled `unattached`, which is the both-halves-failing case this report
+    // most needs to carry. Only the `pagehide` report got through.
+    //
+    // `watching` and `unknown` are excluded, and admitting them is not a
+    // smaller version of this fix but the defect this gate exists to prevent:
+    // `unknown` is the absence of an opinion, and `watching` is published the
+    // INSTANT the watcher binds (content.ts is asymmetric on purpose), so
+    // either one would put a `patched: false` row on every tab on every load
+    // — read as `unpatched`, which is a fault state, on the popup and on
+    // /security. Every other state waits out ENFORCEMENT_SETTLE_MS before it
+    // is published, so by the time one arrives here the tap has either
+    // patched or genuinely failed to.
+    const settledFault = status.enforcement !== 'unknown' && status.enforcement !== 'watching';
+    if (!patchedFetch && !patchedXhr && reported === null && !settledFault) return;
     const signature = reportSignature(status);
     if (signature === reported) return;
     // Marked reported BEFORE the relay, then rolled back if delivery failed.

@@ -109,17 +109,18 @@ describe('the carried enforcement vocabulary', () => {
     // is under no such rule, so it is what holds the two in step: a member
     // added to WebEnforcementState and not here would be published by the DOM
     // half and read back as 'unknown'.
-    const carried = new Set<string>();
-    for (const state of WebEnforcementState.options) {
-      publishEnforcementState({}, state);
-      carried.add(state);
-    }
+    // One loop, and it reads back what was written. The loop this replaced
+    // filled a Set from `WebEnforcementState.options` itself and then asserted
+    // its size against that same array's length — which proves the enum has no
+    // duplicate members and holds with `publishEnforcementState` as a no-op.
     for (const state of WebEnforcementState.options) {
       const scope: SharedScope = {};
       publishEnforcementState(scope, state);
-      expect(readEnforcementState(scope)).toBe(state);
+      expect(readEnforcementState(scope), `carried state ${state}`).toBe(state);
     }
-    expect(carried.size).toBe(WebEnforcementState.options.length);
+    // The vocabulary is non-empty, so the loop above ran: a member list that
+    // came back empty would satisfy every assertion in it vacuously.
+    expect(WebEnforcementState.options.length).toBeGreaterThan(0);
   });
 });
 

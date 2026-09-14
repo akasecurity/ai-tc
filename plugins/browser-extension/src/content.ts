@@ -100,7 +100,24 @@ export function bootstrap(activeAdapter: ProviderAdapter): void {
       }
       return;
     }
-    if (state === publishedEnforcement || state === pendingEnforcement) return;
+    if (state === publishedEnforcement) {
+      // Back where it settled, so whatever was pending is no longer true. The
+      // combined early return this replaced left the timer running: settled at
+      // `button-only`, one re-render reading `unattached` starts the wait, the
+      // next pass reads `button-only` again and returns here — and
+      // ENFORCEMENT_SETTLE_MS later the timer publishes `unattached` for a tab
+      // that was back to `button-only` for the whole window. Nothing
+      // re-reports until the DOM mutates again, so the popup can show that
+      // reason indefinitely. It also let two alternating degraded states keep
+      // restarting each other's timer.
+      if (enforcementTimer) clearTimeout(enforcementTimer);
+      enforcementTimer = null;
+      pendingEnforcement = null;
+      return;
+    }
+    // An identical repeat still does not restart the wait, which is what stops
+    // a busy SPA deferring a genuinely broken page for ever.
+    if (state === pendingEnforcement) return;
     if (enforcementTimer) clearTimeout(enforcementTimer);
     pendingEnforcement = state;
     enforcementTimer = setTimeout(() => {

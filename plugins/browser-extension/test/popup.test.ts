@@ -102,7 +102,12 @@ describe('renderCaptureSites: the DOM enforcement half', () => {
       response({ sites: [{ tool: 'chatgpt', state: 'idle', enforcement: 'watching' }] }),
     );
     expect(sitesText()).not.toContain('send button');
-    expect(sitesText()).not.toContain('not watching');
+    // 'not enforcing', not 'not watching': every note ENFORCEMENT_NOTES can
+    // produce opens with the former, and the latter is a string this popup
+    // never renders — so asserting its absence could not fail whatever the
+    // notes said. Verified by mutation: adding a note for `watching` reds
+    // this case and left the old assertion green.
+    expect(sitesText()).not.toContain('not enforcing');
   });
 
   it('stays quiet when the site has never reported an enforcement state', () => {
@@ -110,7 +115,7 @@ describe('renderCaptureSites: the DOM enforcement half', () => {
     // would put a warning on every tab whose DOM half has not run yet.
     renderCaptureSites(response({ sites: [{ tool: 'chatgpt', state: 'idle' }] }));
     expect(sitesText()).not.toContain('send button');
-    expect(sitesText()).not.toContain('not watching');
+    expect(sitesText()).not.toContain('not enforcing');
   });
 });
 

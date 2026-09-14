@@ -269,6 +269,37 @@ describe('a degraded enforcement state has to settle before it is believed', () 
     expect(readEnforcementState(scope())).toBe('composer-only');
   });
 
+  it('cancels a pending state when the page returns to the one already published', () => {
+    // Settled at `composer-only`, one pass reads `unattached` and starts the
+    // wait, and the next pass reads `composer-only` again. The combined early
+    // return this replaced left that timer running, so the window later
+    // published `unattached` for a tab that had been back at `composer-only`
+    // throughout — and nothing re-reports until the DOM mutates again, so the
+    // popup could show that reason indefinitely.
+    document.body.innerHTML = '<div id="composer"></div>';
+    const h = fakeAdapter();
+    bootstrap(h.adapter);
+    nextFrame();
+    vi.advanceTimersByTime(30_000);
+    expect(readEnforcementState(scope())).toBe('composer-only');
+
+    // The flicker: for one pass neither half resolves.
+    document.body.innerHTML = '';
+    mutate();
+    nextFrame();
+    // Half the window, so the pending publish is still ahead of us — without
+    // it this case would pass on a fix that merely made the timer fire sooner.
+    vi.advanceTimersByTime(1_000);
+
+    // And back to the state that was already published.
+    document.body.innerHTML = '<div id="composer"></div>';
+    mutate();
+    nextFrame();
+    vi.advanceTimersByTime(30_000);
+
+    expect(readEnforcementState(scope())).toBe('composer-only');
+  });
+
   it('a repeating degraded state is not deferred for ever by the churn that repeats it', () => {
     // reattach runs on every DOM mutation, and these sites mutate constantly.
     // Resetting the timer on each identical report would mean a genuinely

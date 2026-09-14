@@ -90,27 +90,31 @@ export const LATEST_RESOLUTION_BY_KEY_SQL = `(
  *   4. `latestStatusExpr` = 'dismissed' → 'dismissed'.
  *   5. otherwise → 'open'.
  *
- * `latestStatusExpr` is what the caller consults for the latest resolution
- * status, and it is interpolated into TWO arms (3 and 4), so whatever it costs
- * is paid up to twice per row. The intended argument is a JOINED column —
- * `latest.status` from a LEFT JOIN of {@link LATEST_RESOLUTION_BY_KEY_SQL},
- * which is the shape a grouped aggregate over many findings wants anyway — and
- * repeating a column reference costs nothing.
+ * `latestStatusExpr` is what the CASE consults for the latest resolution
+ * status. Two shapes fit, and they suit different reads:
  *
- * The correlated {@link latestResolutionStatusSql} is accepted too, but SQLite
- * does not share a repeated subquery: arm 3's test runs it, and every row it
- * rejects runs it again in arm 4. Arm 3 rejects every finding whose latest
- * resolution is not 'resolved' — every open finding and every key with no
- * resolution row, which on an ordinary store is most of them. Measured over
- * 20,000 keyed findings with three resolution rows each: about 1.8x a single
- * lookup with nothing resolved, falling to 1.0x only when everything is, where
- * the joined form stays at 1.0x throughout. Folding arms 3 and 4 into one `IN`
- * test does not remove the second evaluation, it moves it onto the resolved
- * rows. So pass the correlated form only from a read that touches a handful of
- * rows, never from an aggregate.
+ *   - A joined alias (e.g. `latest.status`, from
+ *     {@link LATEST_RESOLUTION_BY_KEY_SQL}) is the shape for a grouped
+ *     aggregate. The latest row per key is computed once for the whole query,
+ *     but that window is materialized and sorted before the first row is
+ *     produced.
+ *   - An inlined correlated subquery (e.g. {@link latestResolutionStatusSql})
+ *     is the shape for a per-row read or a streamed or paged scan. Each row
+ *     costs one probe of `idx_finding_resolution_key_created` and nothing is
+ *     built up front, but across a whole grouped aggregate those probes cost
+ *     more than the one window.
  *
- * TOTAL: `event_type` is NOT NULL and the final arm is unconditional, so the
- * expression can never evaluate to NULL — which is what makes a later
+ * Either way, one copy of this fragment evaluates `latestStatusExpr` at most
+ * ONCE per row. Arms 3-5 are a simple CASE whose base expression is
+ * `latestStatusExpr`, and SQLite evaluates a base expression once before
+ * comparing it against each WHEN. Two searched `WHEN expr = ...` arms would
+ * evaluate it once per arm reached: twice for every keyed at-rest finding whose
+ * latest status is not 'resolved'. A row that ends at arm 1 or 2 never
+ * evaluates it.
+ *
+ * TOTAL: `event_type` is NOT NULL and both CASEs end in an unconditional ELSE.
+ * A NULL `latestStatusExpr` matches no WHEN and falls through to 'open'. So the
+ * expression can never evaluate to NULL, which makes a later
  * `CASE ... IN (...)` filter over it null-safe.
  *
  * NOT the same CASE as SqliteSecurityRepository.severitySummary's, on
@@ -129,8 +133,10 @@ export function derivedFindingStatusSql(
   return `CASE
     WHEN ${eventsAlias}.event_type != '${EventKind.enum.code_change}' THEN '${FindingStatus.enum.handled}'
     WHEN ${findingsAlias}.finding_key IS NULL THEN '${FindingStatus.enum.open}'
-    WHEN ${latestStatusExpr} = '${FindingStatus.enum.resolved}' THEN '${FindingStatus.enum.resolved}'
-    WHEN ${latestStatusExpr} = '${FindingStatus.enum.dismissed}' THEN '${FindingStatus.enum.dismissed}'
-    ELSE '${FindingStatus.enum.open}'
+    ELSE CASE ${latestStatusExpr}
+      WHEN '${FindingStatus.enum.resolved}' THEN '${FindingStatus.enum.resolved}'
+      WHEN '${FindingStatus.enum.dismissed}' THEN '${FindingStatus.enum.dismissed}'
+      ELSE '${FindingStatus.enum.open}'
+    END
   END`;
 }

@@ -11,20 +11,58 @@ export function firstMatch(selectors: string[]): HTMLElement | null {
   return null;
 }
 
-// contenteditable composers store the prompt as rich-text DOM (paragraphs,
-// line breaks), not a `value` property — innerText is the closest analogue
-// to "what the user sees they've typed".
-export function extractContentEditableText(el: HTMLElement): string {
-  return el.innerText;
+// Whether a composer holds its text in a `value` property rather than as child
+// nodes. Both spellings are live: a contenteditable composer stores the prompt
+// as rich-text DOM, while a `<textarea>` stores it in `value` and exposes its
+// DEFAULT content — usually empty — through innerText and textContent. Reading
+// the wrong one returns '' for a composer the user has typed into, and writing
+// the wrong one leaves the original text in place.
+function isValueBacked(el: HTMLElement): el is HTMLTextAreaElement | HTMLInputElement {
+  return el.tagName === 'TEXTAREA' || el.tagName === 'INPUT';
 }
 
-// Overwrites a contenteditable composer's content with plain text and fires
-// an `input` event so the site's own React/ProseMirror state picks up the
-// change — a raw DOM mutation alone leaves the framework's internal model
-// out of sync, and the next keystroke (or the send itself) could revert it.
-export function setContentEditableText(el: HTMLElement, text: string): void {
+// The `value` setter from the element's own prototype. Selected by tagName
+// rather than `instanceof`, which compares against a realm's constructors.
+function nativeValueSetter(
+  el: HTMLTextAreaElement | HTMLInputElement,
+): ((this: HTMLElement, value: string) => void) | undefined {
+  const proto =
+    el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  // Typed with an explicit receiver: the descriptor's own `set` carries none,
+  // and every call below supplies one, which is the whole point of reaching for
+  // the prototype's setter rather than the instance's.
+  const descriptor = Object.getOwnPropertyDescriptor(proto, 'value') as
+    { set?: (this: HTMLElement, value: string) => void } | undefined;
+  return descriptor?.set;
+}
+
+// What the user sees they have typed, whichever kind of composer holds it.
+export function extractComposerText(el: HTMLElement): string {
+  return isValueBacked(el) ? el.value : el.innerText;
+}
+
+// Overwrites a composer's content with plain text and fires an `input` event so
+// the site's own React/ProseMirror state picks up the change — a raw DOM
+// mutation alone leaves the framework's internal model out of sync, and the
+// next keystroke (or the send itself) could revert it.
+//
+// A value-backed composer is written through the PROTOTYPE's setter rather than
+// by assigning to `el.value`. A framework may redefine `value` as an own
+// accessor that caches what it last saw written, and compare that cache against
+// the live value to decide whether an input event represents a real change;
+// assigning updates the cache, so the framework concludes nothing changed and
+// keeps its model of the original text. Going through the prototype leaves the
+// cache stale, which is what makes the change observable. Falls back to
+// assignment where no such descriptor exists.
+export function setComposerText(el: HTMLElement, text: string): void {
   el.focus();
-  el.textContent = text;
+  if (isValueBacked(el)) {
+    const setter = nativeValueSetter(el);
+    if (setter) setter.call(el, text);
+    else el.value = text;
+  } else {
+    el.textContent = text;
+  }
   el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }));
 }
 
@@ -33,18 +71,63 @@ export function setContentEditableText(el: HTMLElement, text: string): void {
 // is excluded so an IME candidate confirmation (Japanese/Chinese input) isn't
 // mistaken for a send. A site-specific Send-button click is layered on top
 // by each adapter.
+// Whether the composer says a popup owns the next Enter.
+//
+// A site that uses Enter to accept a highlighted @-mention, /-command or
+// autocomplete item publishes that state in ARIA. The listener below runs
+// before every listener on or below the composer, so without this check it
+// would take that keystroke too — routing half-typed text through the decision
+// path and, on pass-through, sending a message the user never asked to send.
+//
+// Reading the CLOSED state correctly matters as much as the open one:
+// `aria-expanded="false"` is a composer advertising that it has a popup and
+// that the popup is shut, so the attribute's presence is not the signal.
+function popupOwnsEnter(composer: HTMLElement): boolean {
+  if (composer.getAttribute('aria-expanded') === 'true') return true;
+  const active = composer.getAttribute('aria-activedescendant');
+  if (active !== null && active !== '') return true;
+  const controls = composer.getAttribute('aria-controls');
+  if (controls === null) return false;
+  for (const id of controls.split(/\s+/)) {
+    if (id === '') continue;
+    if (document.getElementById(id)?.getAttribute('role') === 'listbox') return true;
+  }
+  return false;
+}
+
 export function watchEnterToSend(
   composer: HTMLElement,
   onSubmit: (event: Event) => void,
 ): () => void {
   const handler = (event: KeyboardEvent): void => {
-    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-      onSubmit(event);
-    }
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+    // This listener sees every keystroke on the page, so the composer it was
+    // given is what decides whether one is a send. `contains` rather than an
+    // identity check: a contenteditable's event target is often a descendant.
+    const target = event.target;
+    if (!(target instanceof Node) || !composer.contains(target)) return;
+    if (popupOwnsEnter(composer)) return;
+    onSubmit(event);
   };
-  composer.addEventListener('keydown', handler, true);
+  // Bound on the DOCUMENT, in the capture phase, rather than on the composer.
+  //
+  // An event's capture descent reaches every ancestor before the target, so a
+  // site that handles Enter with a capture-phase listener ABOVE the composer
+  // has already sent the message by the time a listener on the composer runs —
+  // observed live, where sending with the button was intercepted and sending
+  // with Enter was not.
+  //
+  // `document` is reached before any listener BELOW it, which covers every
+  // root a site mounts into. It is not unconditionally first: another capture
+  // listener on `document` itself fires in registration order, and this
+  // attaches at document_idle, so a site binding its own document-capture
+  // handler earlier would still run first. `window` is the one node above
+  // this, and moving here would buy that case — not taken, because no site is
+  // known to do it and the isolated world's `window` is a different object
+  // from the page's.
+  document.addEventListener('keydown', handler, true);
   return () => {
-    composer.removeEventListener('keydown', handler, true);
+    document.removeEventListener('keydown', handler, true);
   };
 }
 

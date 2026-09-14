@@ -647,3 +647,251 @@ describe('stale-grant re-consent and inline reveal', () => {
     expect(bad.ok).toBe(false);
   });
 });
+
+describe('saveSettings — the web-chat capture grant', () => {
+  // The full payload with one field varied, so no case can pass because it
+  // quietly omitted something.
+  const payload = (
+    webChatCaptureConsent: WebChatCaptureConsentChoice,
+    overrides: Partial<Record<string, unknown>> = {},
+  ): Record<string, unknown> => ({
+    historicalAccess: 'session-only',
+    modelJudgeConsent: 'unchanged',
+    historySyncConsent: 'unchanged',
+    vaultConsent: 'off',
+    vaultInlineReveal: 'masked',
+    webChatCaptureConsent,
+    redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
+    ...overrides,
+  });
+
+  const seed = async (block: unknown): Promise<void> => {
+    const { applyOnboarding } = await import('@akasecurity/persistence');
+    applyOnboarding({ webChatCapture: block as never }, join(home, '.aka'));
+  };
+
+  it("records a server-stamped grant at the current version on 'granted'", async () => {
+    const before = Date.now();
+    const res = await saveSettings(payload('granted'));
+    expect(res).toEqual({ ok: true });
+
+    const block = readWorkspaceSettings().webChatCapture;
+    expect(block?.consent?.version).toBe(WEB_CHAT_CAPTURE_CONSENT_VERSION);
+    // Minted by the action itself, so it lands inside this test's own window —
+    // there is no input path for a caller to supply one.
+    const acknowledged = Date.parse(block?.consent?.acknowledgedAt ?? '');
+    expect(acknowledged).toBeGreaterThanOrEqual(before);
+    expect(acknowledged).toBeLessThanOrEqual(Date.now());
+    // And the two modes come out at the schema's own defaults rather than being
+    // invented here: reply text only where a scan found something, no account
+    // data.
+    expect(block?.responses).toBe('with-findings');
+    expect(block?.account).toBe(false);
+  });
+
+  it("keeps the original acknowledgedAt when 'granted' is saved again", async () => {
+    await saveSettings(payload('granted'));
+    const first = readWorkspaceSettings().webChatCapture?.consent;
+    expect(first).toBeDefined();
+
+    // Let the clock move, so a re-stamp could not coincide with the first.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const res = await saveSettings(payload('granted', { vaultInlineReveal: 'off' }));
+    expect(res).toEqual({ ok: true });
+
+    const again = readWorkspaceSettings();
+    expect(again.vaultInlineReveal).toBe('off'); // the unrelated edit landed
+    expect(again.webChatCapture?.consent).toEqual(first);
+  });
+
+  it("drops the grant from the persisted file on 'revoked', keeping the modes", async () => {
+    await saveSettings(payload('granted'));
+    expect(rawSettings()).toContain('webChatCapture');
+
+    const res = await saveSettings(payload('revoked'));
+    expect(res).toEqual({ ok: true });
+
+    // Gone from the raw JSON, not merely parsed away: the absence of the key is
+    // what "not granted" means to every reader of this file.
+    const stored = (JSON.parse(rawSettings()) as { webChatCapture?: Record<string, unknown> })
+      .webChatCapture;
+    expect(stored).toBeDefined();
+    expect('consent' in (stored ?? {})).toBe(false);
+    expect(readWorkspaceSettings().webChatCapture?.consent).toBeUndefined();
+    // Revoking stops future recording; it says nothing about what is already
+    // stored, and it must not reset the answers beside it either.
+    expect(stored?.responses).toBe('with-findings');
+  });
+
+  it("leaves the grant and its acknowledgedAt alone on 'unchanged'", async () => {
+    const granted = {
+      responses: 'with-findings',
+      account: false,
+      consent: { acknowledgedAt: '2020-01-01T00:00:00.000Z', version: 1 },
+    };
+    await seed(granted);
+
+    // A real unrelated edit, or this save had no cause to touch anything.
+    const res = await saveSettings(payload('unchanged', { vaultInlineReveal: 'full' }));
+
+    // THE POSITIVE CONTROL. Without it every assertion below is satisfied by a
+    // save that was REFUSED, which leaves the seeded block untouched too.
+    expect(res.ok).toBe(true);
+    expect(readWorkspaceSettings().vaultInlineReveal).toBe('full');
+    expect(readWorkspaceSettings().webChatCapture).toEqual(granted);
+  });
+
+  // The response mode and the account answer have no control on this page yet.
+  // The action still has to write the whole block, because applyOnboarding
+  // merges at the TOP level — so a block written without them REPLACES what was
+  // there, and a machine set from anywhere else loses its answer to an unrelated
+  // save here.
+  it('carries the response mode and the account answer forward', async () => {
+    await seed({
+      responses: 'always',
+      account: true,
+      consent: { acknowledgedAt: '2020-01-01T00:00:00.000Z', version: 1 },
+    });
+
+    const res = await saveSettings(payload('unchanged', { historicalAccess: 'full' }));
+    expect(res.ok).toBe(true);
+    expect(readWorkspaceSettings().historicalAccess).toBe('full'); // positive control
+
+    const block = readWorkspaceSettings().webChatCapture;
+    expect(block?.responses).toBe('always');
+    expect(block?.account).toBe(true);
+  });
+
+  it('refuses a payload that omits the answer, rather than reading it as a revocation', async () => {
+    // The defect this field's requiredness exists to prevent: modelJudgeConsent
+    // was optional and an absent field was read as `false`, so any caller that
+    // simply did not mention it silently revoked a live grant.
+    const granted = {
+      responses: 'with-findings',
+      account: false,
+      consent: { acknowledgedAt: '2020-01-01T00:00:00.000Z', version: 1 },
+    };
+    await seed(granted);
+    const before = rawSettings();
+
+    const withoutTheAnswer = { ...payload('granted') };
+    delete withoutTheAnswer.webChatCaptureConsent;
+    const res = await saveSettings(withoutTheAnswer);
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('webChatCaptureConsent');
+    // The grant is still there, byte for byte — an omitting caller revoked
+    // nothing.
+    expect(readWorkspaceSettings().webChatCapture).toEqual(granted);
+    expect(rawSettings()).toBe(before);
+  });
+
+  it('rejects a client-supplied grant object — there is no input path for a timestamp', async () => {
+    const forged = {
+      acknowledgedAt: '2001-01-01T00:00:00.000Z',
+      version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+    };
+    const res = await saveSettings(payload('granted', { webChatCaptureConsent: forged }));
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('webChatCaptureConsent');
+    expect(() => rawSettings()).toThrow(); // nothing was ever written
+
+    // And the contract itself admits only the three answers — no object shape
+    // exists for a caller to smuggle a back-dated acknowledgement through. Read
+    // off the SCHEMA type, not the action's parameter, which is `unknown` by
+    // design so a non-object payload is refused rather than throwing.
+    expectTypeOf<SaveSettingsInput['webChatCaptureConsent']>().toEqualTypeOf<
+      'granted' | 'revoked' | 'unchanged'
+    >();
+  });
+
+  it("saving 'granted' over a STALE grant re-stamps at the current version", async () => {
+    await seed({
+      responses: 'with-findings',
+      account: false,
+      // Any parseable version that is not the current one is stale; versions
+      // below 1 fail the schema, so this simulates the other epoch upward.
+      consent: {
+        acknowledgedAt: '2020-01-01T00:00:00.000Z',
+        version: WEB_CHAT_CAPTURE_CONSENT_VERSION + 1,
+      },
+    });
+
+    const res = await saveSettings(payload('granted'));
+    expect(res.ok).toBe(true);
+    const consent = readWorkspaceSettings().webChatCapture?.consent;
+    expect(consent?.version).toBe(WEB_CHAT_CAPTURE_CONSENT_VERSION);
+    expect(consent?.acknowledgedAt).not.toBe('2020-01-01T00:00:00.000Z');
+  });
+});
+
+describe('saveSettings derives the web-chat grant inside the write lock', () => {
+  const payload = (
+    webChatCaptureConsent: WebChatCaptureConsentChoice,
+  ): Record<string, unknown> => ({
+    historicalAccess: 'session-only',
+    modelJudgeConsent: 'unchanged',
+    historySyncConsent: 'unchanged',
+    vaultConsent: 'off',
+    vaultInlineReveal: 'masked',
+    webChatCaptureConsent,
+    redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
+  });
+
+  it('does not resurrect a grant a concurrent revoke removed', async () => {
+    const { applyOnboarding } = await import('@akasecurity/persistence');
+    // A live grant, which is what the page rendered and what an 'unchanged'
+    // save is about to preserve.
+    applyOnboarding(
+      {
+        webChatCapture: {
+          responses: 'with-findings',
+          account: false,
+          consent: {
+            acknowledgedAt: '2020-01-01T00:00:00.000Z',
+            version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+          },
+        },
+      },
+      join(home, '.aka'),
+    );
+
+    // The second writer, committing between the request being built and the
+    // merge. A grant derived before the lock is the one above; a grant derived
+    // inside it is this one — absent.
+    beforeMerge.run = () => {
+      applyOnboarding(
+        { webChatCapture: { responses: 'with-findings', account: false } },
+        join(home, '.aka'),
+      );
+    };
+
+    const res = await saveSettings(payload('unchanged'));
+    expect(res.ok).toBe(true);
+
+    // The revocation stands. Reading the grant out before the call would carry
+    // it across this write and reinstate consent the user had just withdrawn,
+    // with the save reporting success either way.
+    expect(readWorkspaceSettings().webChatCapture?.consent).toBeUndefined();
+  });
+
+  it('the same save DOES keep a grant nothing revoked', async () => {
+    // The positive control: without it the case above is satisfied by an action
+    // that drops the grant on every 'unchanged' save.
+    const { applyOnboarding } = await import('@akasecurity/persistence');
+    const consent = {
+      acknowledgedAt: '2020-01-01T00:00:00.000Z',
+      version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+    };
+    applyOnboarding(
+      { webChatCapture: { responses: 'with-findings', account: false, consent } },
+      join(home, '.aka'),
+    );
+
+    const res = await saveSettings(payload('unchanged'));
+    expect(res.ok).toBe(true);
+    expect(readWorkspaceSettings().webChatCapture?.consent).toEqual(consent);
+  });
+});

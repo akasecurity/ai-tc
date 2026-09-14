@@ -228,8 +228,7 @@ const urlHref = accessorOf(URL.prototype, 'href');
 const Decoder = TextDecoder;
 const decodeText = methodOf(TextDecoder.prototype, 'decode');
 const U8 = Uint8Array;
-const Decompressor =
-  typeof DecompressionStream === 'function' ? DecompressionStream : undefined;
+const Decompressor = typeof DecompressionStream === 'function' ? DecompressionStream : undefined;
 
 /**
  * Patch `win`'s two transports and forward matched traffic over `port`.

@@ -18,7 +18,10 @@ import {
 // what makes the framework notice.
 function installValueTracker(el: HTMLTextAreaElement): { cached: () => string } {
   const native = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value') as
-    | { get?: (this: HTMLTextAreaElement) => string; set?: (this: HTMLTextAreaElement, v: string) => void }
+    | {
+        get?: (this: HTMLTextAreaElement) => string;
+        set?: (this: HTMLTextAreaElement, v: string) => void;
+      }
     | undefined;
   const get = native?.get;
   const set = native?.set;
@@ -194,7 +197,6 @@ describe('watchButtonClick', () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 });
-
 
 describe('watchEnterToSend: winning the Enter race', () => {
   it('runs before an ANCESTOR capture listener, which is how the site sends', () => {

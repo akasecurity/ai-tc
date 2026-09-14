@@ -13,9 +13,7 @@ import { readEnforcementState } from '../src/tab-session.ts';
 //
 // The stub has to exist before the import, because the module body runs on
 // import and `relay` reaches for `chrome`.
-const sendMessage = vi.hoisted(() =>
-  vi.fn(() => Promise.resolve({ type: 'error', ok: false })),
-);
+const sendMessage = vi.hoisted(() => vi.fn(() => Promise.resolve({ type: 'error', ok: false })));
 vi.stubGlobal('chrome', { runtime: { sendMessage } });
 
 // bootstrap() attaches a MutationObserver and never disconnects it — benign in
@@ -182,15 +180,13 @@ describe('bootstrap: what the DOM path reports about itself', () => {
   });
 });
 
-
 describe('showBanner: the block banner has to survive long enough to act on', () => {
   beforeEach(() => {
     document.body = document.createElement('body');
     vi.useRealTimers();
   });
 
-  const shadowText = (): string =>
-    document.body.firstElementChild?.shadowRoot?.textContent ?? '';
+  const shadowText = (): string => document.body.firstElementChild?.shadowRoot?.textContent ?? '';
 
   it('renders the approve command as its own element, not buried in the prose', () => {
     // Its own node so a double-click selects exactly the command. Inside a
@@ -244,7 +240,6 @@ describe('showBanner: the block banner has to survive long enough to act on', ()
     expect(document.body.firstElementChild).toBeNull();
   });
 });
-
 
 describe('a degraded enforcement state has to settle before it is believed', () => {
   beforeEach(() => {

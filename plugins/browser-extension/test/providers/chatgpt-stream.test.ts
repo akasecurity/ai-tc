@@ -83,7 +83,9 @@ describe('chatgpt anonymous stream', () => {
     // reply if read the other way: frames re-send the whole block so far, so
     // appending repeats the reply's own opening.
     const stream =
-      PRELUDE + blockFrame(block('Hi! How can I help'), true) + blockFrame(block('Hi! How can I help you today?'));
+      PRELUDE +
+      blockFrame(block('Hi! How can I help'), true) +
+      blockFrame(block('Hi! How can I help you today?'));
     expect(run(stream)?.responseText).toBe('Hi! How can I help you today?');
   });
 
@@ -100,7 +102,8 @@ describe('chatgpt anonymous stream', () => {
     // Assistant text arrives as markup content, so a reply containing these
     // characters is on the wire escaped and would otherwise be stored that way.
     const summary = run(
-      PRELUDE + blockFrame(block('a &lt; b &amp;&amp; c &gt; d &quot;q&quot; &#39;s&#39; &#x2713;'), true),
+      PRELUDE +
+        blockFrame(block('a &lt; b &amp;&amp; c &gt; d &quot;q&quot; &#39;s&#39; &#x2713;'), true),
     );
     expect(summary?.responseText).toBe(`a < b && c > d "q" 's' ✓`);
   });
@@ -141,7 +144,9 @@ describe('chatgpt anonymous stream', () => {
 
   it('assembles identically however the chunks fall', () => {
     const stream =
-      PRELUDE + blockFrame(block('Hi! How can I help'), true) + blockFrame(block('Hi! How can I help you today?'));
+      PRELUDE +
+      blockFrame(block('Hi! How can I help'), true) +
+      blockFrame(block('Hi! How can I help you today?'));
     const expected = run(stream, stream.length);
     for (const size of [1, 2, 5, 31, 256]) {
       expect(run(stream, size), `chunk size ${String(size)}`).toEqual(expected);
@@ -149,11 +154,19 @@ describe('chatgpt anonymous stream', () => {
   });
 
   it('survives garbage, empty and non-frame streams without throwing', () => {
-    for (const stream of ['', 'not this protocol', '<template>', '<template data-web-mobile-dpu-frame="x">']) {
+    for (const stream of [
+      '',
+      'not this protocol',
+      '<template>',
+      '<template data-web-mobile-dpu-frame="x">',
+    ]) {
       let summary: WebExchangeSummary | null | undefined;
-      expect(() => {
-        summary = run(stream);
-      }, JSON.stringify(stream).slice(0, 40)).not.toThrow();
+      expect(
+        () => {
+          summary = run(stream);
+        },
+        JSON.stringify(stream).slice(0, 40),
+      ).not.toThrow();
       expect(summary ?? null).toBeNull();
     }
   });

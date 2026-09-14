@@ -171,7 +171,6 @@ function xhrWindow() {
   return { win: { XMLHttpRequest: Xhr } as unknown as Window, create: () => new Xhr() };
 }
 
-
 /**
  * Gzip `text` the way a page would: through CompressionStream, so the bytes
  * under test are a real gzip member rather than a hand-built header.

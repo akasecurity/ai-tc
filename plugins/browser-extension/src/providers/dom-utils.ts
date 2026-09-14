@@ -32,8 +32,7 @@ function nativeValueSetter(
   // and every call below supplies one, which is the whole point of reaching for
   // the prototype's setter rather than the instance's.
   const descriptor = Object.getOwnPropertyDescriptor(proto, 'value') as
-    | { set?: (this: HTMLElement, value: string) => void }
-    | undefined;
+    { set?: (this: HTMLElement, value: string) => void } | undefined;
   return descriptor?.set;
 }
 

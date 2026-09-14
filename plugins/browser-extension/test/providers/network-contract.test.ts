@@ -320,7 +320,11 @@ describe('classifyCompiled (non-vacuous today: a synthetic adapter, not a regist
       host: 'chatgpt.com',
       path: /^\/backend-api\/conversation(?:\/|$)/,
       kind: 'conversation',
-      source: { host: 'chatgpt.com', path: /^\/backend-api\/conversation(?:\/|$)/, kind: 'conversation' },
+      source: {
+        host: 'chatgpt.com',
+        path: /^\/backend-api\/conversation(?:\/|$)/,
+        kind: 'conversation',
+      },
     },
     {
       host: 'chatgpt.com',

@@ -357,7 +357,6 @@ describe('the DOM-send signal the network path counts against', () => {
   });
 });
 
-
 describe('the block banner carries the exception route', () => {
   it('hands the ledger reference through as its own command', async () => {
     // The reference is the whole point: without it the user is told a message

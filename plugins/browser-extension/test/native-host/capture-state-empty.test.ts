@@ -107,7 +107,7 @@ describe('capture_state on a host that has heard nothing yet', () => {
             unparsedBodies: 0,
             shapeMisses: [],
             conversationEndpoints: 1,
-           enforcement: 'watching',
+            enforcement: 'watching',
           },
           'claude-ai',
         ),

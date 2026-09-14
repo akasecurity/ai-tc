@@ -1108,7 +1108,6 @@ describe("the DOM path's state travels on the status the network half reports", 
   });
 });
 
-
 describe('the network half re-reports when only the DOM half moved', () => {
   const statuses = (h: ReturnType<typeof harness>) =>
     h.relayed.filter(

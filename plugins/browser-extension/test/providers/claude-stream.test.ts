@@ -506,9 +506,12 @@ describe('E — the declared network contract', () => {
     ];
     for (const input of unmet) {
       let parsed: ParsedRequest | undefined;
-      expect(() => {
-        parsed = claudeAdapter.parseRequest(input, EXCHANGE);
-      }, input.slice(0, 40)).not.toThrow();
+      expect(
+        () => {
+          parsed = claudeAdapter.parseRequest(input, EXCHANGE);
+        },
+        input.slice(0, 40),
+      ).not.toThrow();
       expect(parsed?.requiredPathsSeen, input.slice(0, 40)).toBe(false);
     }
   });

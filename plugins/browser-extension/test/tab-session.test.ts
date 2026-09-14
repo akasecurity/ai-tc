@@ -72,7 +72,6 @@ describe('the DOM-send signal', () => {
   });
 });
 
-
 describe('enforcement state', () => {
   it("reads 'unknown' before the DOM half has published anything", () => {
     // Not 'unattached'. The network half can report before the DOM half has
@@ -123,7 +122,6 @@ describe('the carried enforcement vocabulary', () => {
     expect(carried.size).toBe(WebEnforcementState.options.length);
   });
 });
-
 
 describe('publishing an enforcement state tells the network half at once', () => {
   it('notifies a registered listener, so a change is never left unreported', () => {

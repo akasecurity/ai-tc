@@ -29,8 +29,6 @@ import ts from 'typescript';
  *   by a helper the setup calls.
  * - A `test.extend` fixture — inline, by name, shorthand, in a tuple, or in an
  *   object held in a `const`.
- * - A callback handed to a function that registers a teardown hook, since that
- *   is how a "release, then run my cleanup" wrapper gets written.
  * - Any of the above anywhere in a helper module the suite imports from a test
  *   directory, transitively and through `export *` barrels — except inside
  *   `tempHomes()` itself, which is the sanctioned path and is exempted by its
@@ -49,16 +47,22 @@ import ts from 'typescript';
  * handed to a call, except to a mock installer (`vi.fn`, `mockImplementation`,
  * `vi.mock`) or an inspector (`expect`, `vi.mocked`, `vi.spyOn`).
  *
- * IT FAILS CLOSED. A call chain too deep to follow, or a file it cannot parse,
- * is reported as a finding rather than passed.
+ * IT FAILS CLOSED. A call chain too deep to follow, a file it cannot parse, and
+ * a teardown that runs a callback handed in from the code around it — the shape
+ * of a "release, then run my cleanup" wrapper, whose callbacks are decided at
+ * call sites this scan does not connect to the hook — are reported as findings
+ * rather than passed.
  *
  * WHAT IT DOES NOT SEE, stated so nobody reads more into a green result: a
- * removal stored as data and called later (a list of disposers), a function
- * handed over through `.bind` or `.call`, a method called on a plain object or a
- * class instance, a default import, a dynamic import or `vi.importActual`,
- * anything computed at run time, and hooks registered by a module outside a
- * test directory. It also reports a hook registered inside a function nobody
- * calls, which fails loud rather than open.
+ * removal stored as data and called later (a list of disposers), a disposer
+ * taken off an object a factory returned (`const { cleanup } = tempDirs()`), a
+ * removal captured inside a higher-order function (`withRetry(fn)`), a function
+ * handed over through `.bind` or `.call`, a hook passed in as a value
+ * (`released(afterEach, fn)`), a method called on a plain object or a class
+ * instance, a default import, a dynamic import or `vi.importActual`, anything
+ * computed at run time, and hooks registered by a module outside a test
+ * directory. It also reports a hook registered inside a function nobody calls,
+ * which fails loud rather than open.
  */
 
 export interface TreeRemoval {
@@ -178,7 +182,7 @@ type Resolution =
   | { kind: 'destructured'; from: ts.Expression; property: string }
   | { kind: 'import'; binding: ImportBinding }
   /** A parameter, a class, a non-function value: known, and nothing to follow. */
-  | { kind: 'bound' }
+  | { kind: 'bound'; parameterOf?: FunctionNode }
   | { kind: 'unresolved' };
 
 type Recursion = 'yes' | 'no' | 'unknown';
@@ -454,7 +458,7 @@ function assignmentsTo(
 function declarationsIn(scope: ts.Node, name: string): Resolution | undefined {
   if (isFunctionNode(scope)) {
     if (scope.parameters.some((parameter) => bindsName(parameter.name, name))) {
-      return { kind: 'bound' };
+      return { kind: 'bound', parameterOf: scope };
     }
     if (
       (ts.isFunctionDeclaration(scope) || ts.isFunctionExpression(scope)) &&
@@ -614,7 +618,6 @@ function functionName(fn: FunctionNode): string | undefined {
 
 class Scanner {
   private readonly modules = new Map<string, Module | null>();
-  private readonly registers = new Map<ts.Node, boolean>();
   private readonly host: SourceHost;
   private readonly sanctioned: { file: string; name: string };
 
@@ -860,7 +863,7 @@ class Scanner {
       const key = `${module.path}:${String(fn.pos)}`;
       if (seen.has(key) || fn.body === undefined) continue;
       seen.add(key);
-      found.push(...this.removals(fn.body, module, [...trail, label], seen));
+      found.push(...this.removals(fn, module, [...trail, label], seen));
     }
     return found;
   }
@@ -924,12 +927,41 @@ class Scanner {
               }
             }
           }
+          const handedIn = this.handedInCallback(node, root, module);
+          if (handedIn !== undefined) found.push([...trail, handedIn].join(' → '));
         }
       }
       ts.forEachChild(node, visit);
     };
     visit(root);
     return found;
+  }
+
+  /**
+   * A call, inside a teardown, to a function the code AROUND the teardown was
+   * handed — `afterEachReleased(fn) { afterEach(() => fn()) }`. What `fn` removes
+   * is decided at every call site of the wrapper, which this scan does not
+   * connect to the hook inside it, so the hook is reported rather than passed.
+   *
+   * Only a parameter of a function OUTSIDE the walk counts. The teardown's own
+   * parameters (`aroundEach`'s `runTest`, a fixture's `use`), those of callbacks
+   * inside it, and those of a helper it calls are ordinary — a callback handed to
+   * that helper is read where it is written.
+   */
+  private handedInCallback(
+    call: ts.CallExpression,
+    root: ts.Node,
+    module: Module,
+  ): string | undefined {
+    const callee = unwrap(call.expression);
+    if (!ts.isIdentifier(callee)) return undefined;
+    const resolved = resolveName(callee.text, callee, module);
+    if (resolved.kind !== 'bound' || resolved.parameterOf === undefined) return undefined;
+    for (let node: ts.Node | undefined = resolved.parameterOf; node !== undefined;) {
+      if (node === root) return undefined;
+      node = ts.isSourceFile(node) ? undefined : node.parent;
+    }
+    return `${callee.text}() — a callback handed in from outside, which this scan cannot see into`;
   }
 
   /** The removals a teardown reaches: a callback written in place, a name, or a call's result. */
@@ -1015,54 +1047,6 @@ class Scanner {
     return body;
   }
 
-  /** Whether a function registers a teardown hook anywhere in its body. */
-  private registersTeardown(fn: FunctionNode, module: Module): boolean {
-    const cached = this.registers.get(fn);
-    if (cached !== undefined) return cached;
-    let found = false;
-    const visit = (node: ts.Node): void => {
-      if (found) return;
-      if (ts.isCallExpression(node)) {
-        const hook = hookName(node, module);
-        if (hook !== undefined && TEARDOWN_HOOKS.has(hook)) {
-          found = true;
-          return;
-        }
-      }
-      ts.forEachChild(node, visit);
-    };
-    if (fn.body !== undefined) visit(fn.body);
-    this.registers.set(fn, found);
-    return found;
-  }
-
-  /**
-   * A call to a function that registers a teardown hook: the callbacks handed to
-   * it are that teardown's body, which is how `afterEachReleased(() => …)` is written.
-   */
-  private wrapperCallbacks(
-    call: ts.CallExpression,
-    module: Module,
-    prefix: string[],
-    line: number,
-    sink: Sink,
-  ): void {
-    const label = calleeLabel(call.expression);
-    const registers = this.calleeTargets(call.expression, module).some(
-      ([fn, within]) => !this.isSanctioned(fn, within) && this.registersTeardown(fn, within),
-    );
-    if (!registers) return;
-    const trail = [...prefix, `${label} teardown`];
-    const seen = new Set<string>();
-    const paths: string[] = [];
-    for (const argument of call.arguments) {
-      const e = unwrap(argument);
-      if (isFunctionNode(e)) paths.push(...this.removals(e, module, trail, seen));
-      else if (ts.isIdentifier(e)) paths.push(...this.reference(e, module, trail, seen));
-    }
-    sink.add(`${label} teardown`, line, paths);
-  }
-
   /** Find every teardown under `root` and what it removes. */
   discover(
     root: ts.Node,
@@ -1098,7 +1082,6 @@ class Scanner {
             sink.hook();
             sink.add(label, line, this.removals(fn, within, [...prefix, label], new Set()));
           }
-          this.wrapperCallbacks(node, module, prefix, line, sink);
         }
       }
       ts.forEachChild(node, visit);

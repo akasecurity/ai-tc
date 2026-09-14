@@ -4,30 +4,76 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import vitestConfig from '../../vitest.config.ts';
 import { scanTeardowns, type TeardownScan } from './teardown-removals.ts';
 
 const TEST_ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+interface OwnTeardown {
+  /** Why no store handle can be inside the tree this suite removes. */
+  reason: string;
+  /** Exactly the removals the reason covers, as the scan reports their paths. */
+  removals: readonly string[];
+}
 
 /**
  * The suites allowed to remove a directory tree from a teardown WITHOUT
  * `tempHomes()`, each with the reason no store handle can be inside that tree.
  *
- * Pinned as an EXACT set rather than an allowlist the scan merely consults, for
- * two reasons. A new entry is a review-visible diff that has to state its
- * reason. And the set doubles as a positive control on real files: if the scan
- * went blind, these four would drop out of what it finds and the guard would go
- * red, which a "no offenders" check alone can never do.
+ * Pinned per REMOVAL, not per file. An exception is granted for one stated
+ * reason about one removal; exempting the whole file would let a second removal
+ * added there later — one that does sit over an open store — pass under a reason
+ * that does not cover it. Both a new removal and a missing one fail below, so
+ * any change to what an exempt suite removes is a review-visible diff.
  */
-const OWN_TEARDOWN: Readonly<Record<string, string>> = {
-  'e2e/scan-worker-bundle.e2e.test.ts':
-    'copies the built scan worker into temp trees and runs it on a worker thread; nothing in this process opens the store',
-  'helpers/store-bytes.test.ts':
-    'writes store-shaped bytes into a bare directory and deliberately never opens a store, so no handle can be inside it',
-  'install-origin.test.ts':
-    'builds fake install layouts to classify, and imports nothing that opens the store',
-  'lib/close-store.test.ts':
-    'the subject is closeStore() itself — the release every other suite relies on — so it has to release and remove by hand, in that order, to test it',
+const OWN_TEARDOWN: Readonly<Record<string, OwnTeardown>> = {
+  'e2e/scan-worker-bundle.e2e.test.ts': {
+    reason:
+      'copies the built scan worker into temp trees and runs it on a worker thread; nothing in this process opens the store',
+    removals: ['afterAll → rmSync'],
+  },
+  'helpers/store-bytes.test.ts': {
+    reason:
+      'writes store-shaped bytes into a bare directory and deliberately never opens a store, so no handle can be inside it',
+    removals: ['afterEach → rmSync'],
+  },
+  'install-origin.test.ts': {
+    reason: 'builds fake install layouts to classify, and imports nothing that opens the store',
+    removals: ['afterAll → rmSync'],
+  },
+  'lib/close-store.test.ts': {
+    reason:
+      'the subject is closeStore() itself — the release every other suite relies on — so it has to release and remove by hand, in that order, to test it',
+    removals: ['afterEach → rmSync'],
+  },
 };
+
+type SuiteScan = TeardownScan & { file: string };
+
+/**
+ * What the scans report that no pinned exception covers (`offenders`), and what
+ * is pinned but no longer found (`stale`). Each pinned removal covers exactly
+ * one reported removal of that path in that file — never the file as a whole.
+ */
+function checkExceptions(
+  scans: readonly SuiteScan[],
+  pinned: Readonly<Record<string, OwnTeardown>>,
+): { offenders: string[]; stale: string[] } {
+  const remaining = new Map(Object.entries(pinned).map(([file, own]) => [file, [...own.removals]]));
+  const offenders = scans.flatMap((scan) => {
+    const left = remaining.get(scan.file) ?? [];
+    return scan.removals.flatMap((removal) => {
+      const index = left.indexOf(removal.path);
+      if (index !== -1) {
+        left.splice(index, 1);
+        return [];
+      }
+      return [`${scan.file}:${String(removal.line)}  ${removal.path}`];
+    });
+  });
+  const stale = [...remaining].flatMap(([file, left]) => left.map((path) => `${file}  ${path}`));
+  return { offenders, stale };
+}
 
 /** Every `*.test.ts`/`*.test.tsx` under `dir`, recursively. */
 function testFiles(dir: string): string[] {
@@ -39,8 +85,6 @@ function testFiles(dir: string): string[] {
   }
   return out;
 }
-
-type SuiteScan = TeardownScan & { file: string };
 
 let cached: SuiteScan[] | undefined;
 /** Every suite in the package, scanned once for the whole file. */
@@ -76,41 +120,104 @@ describe('a suite that removes a directory tree from a teardown', () => {
   // open-ended as recognising a removal, so each spelling it missed took a
   // whole suite out of the guard. What the scan can and cannot see is written
   // down in teardown-removals.ts.
-  it('does so only through tempHomes(), or where the exception is pinned', () => {
-    const offenders = suites()
-      .filter((scan) => !(scan.file in OWN_TEARDOWN))
-      .flatMap((scan) =>
-        scan.removals.map((removal) => `${scan.file}:${String(removal.line)}  ${removal.path}`),
-      );
-
+  it('does so only through tempHomes(), or exactly where the exception is pinned', () => {
     // The exit, named in the failure rather than left for the reader to find.
     expect(
-      offenders,
+      checkExceptions(suites(), OWN_TEARDOWN).offenders,
       'Remove the tree when the FILE finishes instead, via tempHomes() in ' +
         'test/helpers/temp-home.ts — it releases the store first, in the same hook. ' +
         'See akasecurity/ai-tc#486.',
     ).toEqual([]);
   });
 
-  it('still finds a removal in every pinned exception', () => {
-    // The positive control. An exception that no longer removes anything is
-    // either a suite that moved onto tempHomes() — take it off the list — or a
-    // scan that stopped seeing removals on real files, which is the failure
-    // this exists to catch.
-    const removing = new Set(
-      suites()
-        .filter((scan) => scan.removals.length > 0)
-        .map((scan) => scan.file),
+  it('still finds every pinned removal', () => {
+    // A pinned removal that is gone is either a suite that moved onto
+    // tempHomes() — take it off the list — or a scan that stopped seeing
+    // removals on real files, which is the failure this exists to catch.
+    expect(
+      checkExceptions(suites(), OWN_TEARDOWN).stale,
+      'A pinned removal is no longer there — see the comment above.',
+    ).toEqual([]);
+  });
+
+  // The positive control for the path most suites depend on. Every pinned
+  // exception is a removal written in the suite itself, so they prove nothing
+  // about reading a HELPER from disk: a scan whose on-disk import resolution had
+  // gone blind would still find all four of them, and every helper-mediated
+  // removal would slip past. This fixture reaches its removal only through a
+  // real import of a real file, and it is never run or collected.
+  it('reads a teardown a helper module registers, through a real import on disk', () => {
+    const fixture = fileURLToPath(new URL('./guard-control/suite.ts', import.meta.url));
+    const scan = scanTeardowns(fixture, readFileSync(fixture, 'utf-8'));
+    expect(scan.removals.map((removal) => removal.path)).toEqual([
+      'guard-control/helper.ts → afterEach → removeTree',
+    ]);
+  });
+
+  // A setup file runs its hooks in every suite and is imported by none, so the
+  // walk above never reaches it. A removal there would be the widest possible
+  // instance of the bug, and this repo already registers hooks in setup files.
+  it('also holds in every setup file the package runs', () => {
+    const setupFiles = [vitestConfig.test?.setupFiles ?? []].flat();
+    expect(setupFiles.length).toBeGreaterThan(0);
+    const offenders = setupFiles.flatMap((file) =>
+      scanTeardowns(file, readFileSync(file, 'utf-8')).removals.map(
+        (removal) => `${file}:${String(removal.line)}  ${removal.path}`,
+      ),
     );
-    const stale = Object.keys(OWN_TEARDOWN).filter((file) => !removing.has(file));
-    expect(stale, 'A pinned exception no longer removes a tree — see the comment above.').toEqual(
-      [],
-    );
+    expect(offenders).toEqual([]);
   });
 
   it('walks the whole package and finds teardowns in it, so an empty result is not a blind one', () => {
     expect(suites().length).toBeGreaterThan(40);
     const hooks = suites().reduce((total, scan) => total + scan.hooks, 0);
     expect(hooks).toBeGreaterThan(20);
+  });
+});
+
+// The matcher, on scans the real tree does not happen to contain. The tree is
+// clean, so the tests above cannot tell an exception pinned per removal from one
+// that exempts its whole file — the difference only shows once an exempt file
+// grows a second removal, which is exactly when it matters.
+describe('checkExceptions', () => {
+  const scan = (file: string, ...paths: string[]): SuiteScan => ({
+    file,
+    hooks: paths.length,
+    removals: paths.map((path, index) => ({ hook: 'afterEach', line: index + 1, path })),
+  });
+  const pinned = { 'a.test.ts': { reason: 'r', removals: ['afterEach → rmSync'] } };
+
+  it('accepts exactly the pinned removal', () => {
+    expect(checkExceptions([scan('a.test.ts', 'afterEach → rmSync')], pinned)).toEqual({
+      offenders: [],
+      stale: [],
+    });
+  });
+
+  it('reports a second removal in an exempt file, which the exception does not cover', () => {
+    expect(
+      checkExceptions([scan('a.test.ts', 'afterEach → rmSync', 'afterAll → removeTree')], pinned)
+        .offenders,
+    ).toEqual(['a.test.ts:2  afterAll → removeTree']);
+  });
+
+  it('reports the same removal twice when it is pinned once', () => {
+    expect(
+      checkExceptions([scan('a.test.ts', 'afterEach → rmSync', 'afterEach → rmSync')], pinned)
+        .offenders,
+    ).toEqual(['a.test.ts:2  afterEach → rmSync']);
+  });
+
+  it('reports a pinned removal that is no longer found', () => {
+    expect(checkExceptions([scan('a.test.ts')], pinned).stale).toEqual([
+      'a.test.ts  afterEach → rmSync',
+    ]);
+  });
+
+  it('reports a removal in a file that has no exception at all', () => {
+    expect(checkExceptions([scan('b.test.ts', 'afterEach → removeTree')], pinned)).toEqual({
+      offenders: ['b.test.ts:1  afterEach → removeTree'],
+      stale: ['a.test.ts  afterEach → rmSync'],
+    });
   });
 });

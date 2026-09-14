@@ -288,22 +288,56 @@ describe('scanTeardowns — what counts as a teardown', () => {
   });
 
   // A "release, then run my cleanup" wrapper is the obvious thing to factor out
-  // of the suites this guard moved, so its callback is read as the teardown.
-  it('reads the callback handed to a function that registers a teardown hook', () => {
+  // of the suites this guard moved. What its callback removes is decided at each
+  // call site, which the scan does not connect to the hook inside the wrapper, so
+  // the hook is reported as running a callback it cannot see — at the wrapper,
+  // whether local or in a helper, and however deep the registration sits.
+  it('reports a teardown that runs a callback handed in from outside', () => {
+    const found = removals(
+      `import { afterEachReleased } from '../helpers/hooks.ts';
+      function afterAllReleased(fn: () => void) { afterAll(async () => { await release(); fn(); }); }
+      afterEachReleased(() => removeTree(home));
+      afterAllReleased(() => removeTree(root));`,
+      {
+        '/virtual/web-ui/test/helpers/hooks.ts': `function register(fn: () => void) { afterEach(async () => { await release(); fn(); }); }
+          export function afterEachReleased(fn: () => void) { register(fn); }`,
+      },
+    );
+    expect(found).toHaveLength(2);
+    expect(found[0]).toMatch(/^afterAll → fn\(\) — a callback handed in from outside/);
+    expect(found[1]).toMatch(
+      /^helpers\/hooks\.ts → afterEach → fn\(\) — a callback handed in from outside/,
+    );
+  });
+
+  // The shape the old wrapper rule got wrong the other way: a describe-level
+  // wrapper that adds its own release and then runs the body it was given. The
+  // body's removal is inside a test, not a teardown, and the release runs no
+  // callback it was handed.
+  it('does not read a wrapped describe body as a teardown', () => {
+    const scan = scanTeardowns(
+      SUITE,
+      `function describeWithStore(name: string, body: () => void) {
+        afterEach(() => { dropMemoisedDb(); });
+        describe(name, body);
+      }
+      describeWithStore('x', () => { it('removes in a test', () => { removeTree(scratch); }); });`,
+      options(),
+    );
+    expect(scan).toMatchObject({ hooks: 1, removals: [] });
+  });
+
+  // A teardown's own parameters, and a helper's own callback, are not handed in
+  // from outside: the callback a helper runs is read where it is written.
+  it('does not report a teardown calling its own parameter, or a helper its own callback', () => {
     expect(
-      removals(
-        `import { afterEachReleased } from '../helpers/hooks.ts';
-        function afterAllReleased(fn: () => void) { afterAll(async () => { await release(); fn(); }); }
-        afterEachReleased(() => removeTree(home));
-        afterAllReleased(() => removeTree(root));`,
-        {
-          '/virtual/web-ui/test/helpers/hooks.ts': `export function afterEachReleased(fn: () => void) { afterEach(async () => { await release(); fn(); }); }`,
-        },
-      ),
-    ).toEqual([
-      'afterEachReleased teardown → removeTree',
-      'afterAllReleased teardown → removeTree',
-    ]);
+      removals(`
+        function run(cb: () => void): void { cb(); }
+        aroundEach(async (runTest) => { await runTest(); });
+        afterEach(() => { run(() => resetSingleton()); });
+        afterAll(() => { run(() => removeTree(root)); });
+      `),
+    ).toEqual(['afterAll → removeTree']);
   });
 });
 

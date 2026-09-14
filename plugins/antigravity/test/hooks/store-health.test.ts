@@ -29,6 +29,7 @@ function configFor(dataDir: string): PluginConfig {
       vaultKeyCustody: 'file',
       vaultInlineReveal: 'masked',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     },
     dataDir,
     dbPath: join(dataDir, 'aka.db'),

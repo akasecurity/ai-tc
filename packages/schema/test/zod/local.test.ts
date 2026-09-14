@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  canSweepSyncLane,
   controlPlaneName,
   defaultWorkspaceSettings,
   HISTORY_SYNC_PAYLOAD_VERSION,
@@ -335,13 +336,27 @@ describe('isHistorySyncConsentValid', () => {
 //                                     historyLines — what `aka status` prints,
 //                                     including the paused-grant branch
 //   README.md                         the [^egress] footnote
+//   SECURITY.md                       the "Data in transit" section's
+//                                     sync-history paragraph — pinned by no
+//                                     other test; at-rest-docs.test.ts scopes
+//                                     to "## Data at rest" and
+//                                     privacy-claims.test.ts reads only the
+//                                     three READMEs
 //
 // v2 widened the subject from the pre-attach backlog to everything the machine
 // still owes its deployment, which brought CAPTURE rows — and their prompt,
 // reply and tool-result TEXT — inside the grant for the first time.
+//
+// v3 widens it again, inside that same scope: through v2 a pre-attach capture
+// could never be marked owed at all, because `outbox_owed` was set only by a
+// live forward that ran while attached. v3 adds the other writer of that
+// marker — a one-time backfill, run once from each grant site at the instant
+// consent is given, over what is already on disk — so the pre-attach backlog
+// is no longer structural-only: it now carries the same prompt/reply/tool-
+// result TEXT as an undelivered live send, masked by the same rule.
 describe('the payload version and its disclosure move together', () => {
   it('fails on a bump so the copy gets re-read', () => {
-    expect(HISTORY_SYNC_PAYLOAD_VERSION).toBe(2);
+    expect(HISTORY_SYNC_PAYLOAD_VERSION).toBe(3);
   });
 });
 
@@ -398,5 +413,57 @@ describe('isHistorySyncConsentStale', () => {
         ).toBe(false);
       }
     }
+  });
+});
+
+/**
+ * The predicate standing between an attached machine and permanent loss of
+ * undelivered bodies.
+ *
+ * Every caller supplies its answer as a boolean, so nothing else in the tree
+ * executes the clauses that return FALSE — and false is the safe answer here.
+ * Turning a `!==` into `===` or dropping the consent clause leaves the rest of
+ * the suite green while an hourly detached pass starts clearing `prompt`,
+ * `response` and `tool_use` bodies that a deployment is still owed.
+ */
+describe('canSweepSyncLane', () => {
+  const base = defaultWorkspaceSettings();
+  const connection = { endpoint: 'https://cp.example', attachedAt: '2026-01-01T00:00:00.000Z' };
+
+  it('is true on a machine that has never attached and never granted', () => {
+    expect(canSweepSyncLane(base)).toBe(true);
+  });
+
+  it('is false while attached', () => {
+    expect(canSweepSyncLane({ ...base, runMode: 'attached', controlPlane: connection })).toBe(
+      false,
+    );
+  });
+
+  it('is false on a bare runMode with no descriptor', () => {
+    // Half an attachment is not "not attached": `isAttached` needs both, and
+    // this predicate is deliberately wider than `isAttached`.
+    expect(canSweepSyncLane({ ...base, runMode: 'attached' })).toBe(false);
+  });
+
+  it('is false on a bare descriptor with no runMode', () => {
+    expect(canSweepSyncLane({ ...base, controlPlane: connection })).toBe(false);
+  });
+
+  it('is false on a DETACHED machine that still holds a history-sync grant', () => {
+    // The clause with no `isAttached` analogue, and the reason this predicate
+    // exists rather than a call to that one. `aka sync-history --on` claims the
+    // backlog retroactively with no age bound, so a grant outliving a detach
+    // still owes those bodies.
+    expect(
+      canSweepSyncLane({
+        ...base,
+        historySyncConsent: {
+          acknowledgedAt: '2026-01-01T00:00:00.000Z',
+          payloadVersion: 3,
+          endpoint: 'https://cp.example',
+        },
+      }),
+    ).toBe(false);
   });
 });

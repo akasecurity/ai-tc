@@ -415,6 +415,32 @@ describe('listSessions', () => {
     expect(res.items.map((s) => s.id)).toEqual(['A']);
   });
 
+  // REGRESSION. The descendant arm searched `$.detail` alone, and a `tool_call`
+  // carries none — its searchable text is `$.target`, and it has no `content`
+  // either — so a search for a Bash command or a fetched url matched nothing,
+  // on rows the timeline was rendering that very text for (TIMELINE_COLUMNS
+  // coalesces the same two fields). The case above cannot see this: it searches
+  // a `detection` row, which DOES carry `$.detail`.
+  it('matches q against a tool_call target, which the timeline shows as its detail', async () => {
+    // A REALISTIC tool_call: no `content`, no `$.detail`, its searchable text in
+    // `$.target` — the masked Bash command / WebFetch url the reconciler writes.
+    insertEvent({
+      id: 'B9',
+      sessionId: 'B',
+      type: 'tool_call',
+      startedAt: NOW - HOUR_MS + 3000,
+      attributes: { tool_name: 'Bash', target: 'rg --files-with-matches needle-token' },
+    });
+
+    const res = await activity().listSessions({ limit: 50, q: 'needle-token' });
+    expect(res.items.map((s) => s.id)).toEqual(['B']);
+
+    // The same row through the read that RENDERS it, so the search and the view
+    // are pinned to each other rather than each to a literal of its own.
+    const session = await activity().getSession('B');
+    expect(session?.events.find((e) => e.id === 'B9')?.detail).toContain('needle-token');
+  });
+
   it('filters by from lower bound', async () => {
     const res = await activity().listSessions({
       limit: 50,
@@ -509,6 +535,34 @@ describe('getSession', () => {
     if (!timeline) throw new Error('unreachable: asserted above');
     const fetched = raw.prepare(timeline.sql).all(...(timeline.args as SQLInputValue[]));
     expect(fetched).toHaveLength(session?.events.length ?? -1);
+  });
+
+  it('marks a prompt whose body was expired, rather than titling it blank', async () => {
+    // The timeline titles a prompt/response from `content`, so local body
+    // expiry leaves it with nothing to show. A blank line reads as a bug; the
+    // flag is what lets the view say the body is gone while the event, its
+    // badges and its links all stay.
+    seedSessionA();
+    raw.exec(
+      `UPDATE audit_events SET content = NULL, content_expired_at = 1
+         WHERE root_session_id = 'A' AND event_type = 'prompt'`,
+    );
+
+    const session = await activity().getSession('A');
+    const prompts = session?.events.filter((e) => e.kind === 'prompt') ?? [];
+    expect(prompts.length, 'no prompt on the timeline to assert about').toBeGreaterThan(0);
+    for (const p of prompts) {
+      expect(p.title).toBe('');
+      expect(p.bodyExpired).toBe(true);
+    }
+  });
+
+  it('does not mark an event that never had a body', async () => {
+    // The control. `bodyExpired` keys on the STAMP, so a row that simply never
+    // carried a title must not claim something was taken from it.
+    seedSessionA();
+    const session = await activity().getSession('A');
+    for (const e of session?.events ?? []) expect(e.bodyExpired).toBe(false);
   });
 
   it('assembles detail: tokens, tools, rollups, and drops structural rows', async () => {

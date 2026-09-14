@@ -212,13 +212,32 @@ function methodOf(start: object, key: string): Method | undefined {
 // below goes through these rather than through the live global, so replacing
 // one afterwards changes neither what the tap matches nor what it reports.
 //
-// The boundary is real but NOT total, and the two things outside it are worth
-// naming. `win.location.href` is read live as the base for a relative request
-// URL — a relative URL resolves to this document's own origin either way, so a
-// poisoned base can cost the tap a match but cannot hand it a foreign one. And
-// the reader taken from a response clone has its own methods read live; the
-// clone itself comes from a captured native, so only a replacement of
-// ReadableStream's own prototype reaches it.
+// The boundary is real but NOT total, and everything outside it is named here
+// — a reader who takes the invariant above at its word has to be able to find
+// the exceptions, so this list is the whole of them:
+//
+//   * `win.location.href`, read live as the base for a relative request URL. A
+//     relative URL resolves to this document's own origin either way, so a
+//     poisoned base can cost the tap a match but cannot hand it a foreign one.
+//   * The reader taken from a response clone has its own methods read live. The
+//     clone itself comes from a captured native, so only a replacement of
+//     ReadableStream's own prototype reaches it.
+//   * `Promise.prototype.then`, on every chain in this file — the deferred
+//     body, the response promise, and the started/loadend sequencing. A
+//     replaced `then` can delay or drop a report, which is a denial of the
+//     tap's own visibility; it is handed no page-controlled value it would not
+//     otherwise receive, and the bridge treats a missing report as a blind
+//     spot rather than as health.
+//   * The request-side gzip inflate path reads its stream members live —
+//     `writable`/`readable`, `getWriter`/`getReader`, `write`/`close`/`read`/
+//     `cancel`. Only the DecompressionStream constructor is captured. What a
+//     page decides by replacing those is the text recorded for ITS OWN gzip
+//     request body, which it composed and could have sent in any form to begin
+//     with.
+//
+// Everything else below goes through a capture rather than the live global, so
+// replacing one afterwards changes neither what the tap matches nor what it
+// reports.
 const regexpTest = methodOf(RegExp.prototype, 'test');
 const UrlCtor = URL;
 const urlHost = accessorOf(URL.prototype, 'host');
@@ -228,7 +247,35 @@ const urlHref = accessorOf(URL.prototype, 'href');
 const Decoder = TextDecoder;
 const decodeText = methodOf(TextDecoder.prototype, 'decode');
 const U8 = Uint8Array;
+// The two size accessors the decode ceiling is charged against. Both are
+// configurable, so reading `.byteLength` live let a page report 0 for an
+// arbitrarily large buffer and take its own bound off — a self-inflicted hang
+// rather than a leak, but the ceiling is claimed and has to hold. The
+// typed-array one lives on the shared %TypedArray% prototype, which is
+// reachable only as Uint8Array's own prototype's prototype.
+const bufferSize = accessorOf(ArrayBuffer.prototype, 'byteLength');
+const viewSize = accessorOf(Object.getPrototypeOf(Uint8Array.prototype) as object, 'byteLength');
 const Decompressor = typeof DecompressionStream === 'function' ? DecompressionStream : undefined;
+
+/**
+ * The byte length of a buffer or a view over one, through the captured
+ * accessors, or `undefined` when neither applies.
+ *
+ * `undefined` rather than 0: a size nothing could measure must not read as an
+ * empty body that clears every ceiling.
+ */
+function sizeOf(bytes: unknown): number | undefined {
+  for (const read of [viewSize, bufferSize]) {
+    if (read === undefined) continue;
+    try {
+      const size: unknown = read.call(bytes);
+      if (typeof size === 'number' && Number.isFinite(size)) return size;
+    } catch {
+      // Not that kind of object; try the other accessor.
+    }
+  }
+  return undefined;
+}
 
 /**
  * Patch `win`'s two transports and forward matched traffic over `port`.
@@ -324,8 +371,11 @@ export function installTap(win: Window, port: MessagePort, endpoints: readonly T
   // decode itself discriminate rather than substituting replacement characters.
   function decodeTextBody(bytes: unknown): string | null {
     if (decodeText === undefined) return null;
-    const size = (bytes as { byteLength: number }).byteLength;
-    if (size > REQUEST_BODY_DECODE_MAX_BYTES) return null;
+    const size = sizeOf(bytes);
+    // An unmeasurable size is refused rather than decoded: the ceiling exists
+    // to bound a synchronous fatal-mode decode on the page's own call stack,
+    // and a body nothing can size is exactly the shape that would slip it.
+    if (size === undefined || size > REQUEST_BODY_DECODE_MAX_BYTES) return null;
     let text: string;
     try {
       text = String(decodeText.call(new Decoder('utf-8', { fatal: true }), bytes));

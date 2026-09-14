@@ -373,6 +373,52 @@ describe('installTap: the fetch half', () => {
     expect(h.of('request')[0]).toMatchObject({ method: 'POST', body: '{"prompt":"hi"}' });
   });
 
+  it('forwards a typed-array body carrying tab, newline and carriage return', () => {
+    // The C0 scan carves those three out, because a text body does carry them:
+    // an NDJSON or pretty-printed body is nothing but. Without a case holding
+    // it, deleting that line keeps every other body test green and drops a
+    // real completion body as `unparsed_body`.
+    const { fn } = fakeFetch('ok');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+    const body = '{\n\t"prompt": "hi"\r\n}';
+
+    installTap(win, h.port, [CONVERSATION]);
+    return fetchOn(win)('https://site.test/api/conversation', {
+      method: 'POST',
+      body: new TextEncoder().encode(body),
+    })
+      .then(() => h.settle())
+      .then(() => {
+        expect(h.of('request')[0]).toMatchObject({ body });
+        expect(h.of('error')).toHaveLength(0);
+      });
+  });
+
+  it('refuses a typed-array body over the decode ceiling', () => {
+    // The ceiling bounds a synchronous fatal-mode decode on the page's own
+    // call stack, and it is charged against the CAPTURED size accessors — a
+    // live `.byteLength` read let a page redefine that getter to 0 and take
+    // its own bound off. One byte over, so the case sits on the boundary
+    // rather than somewhere past it.
+    const { fn } = fakeFetch('ok');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+
+    installTap(win, h.port, [CONVERSATION]);
+    return fetchOn(win)('https://site.test/api/conversation', {
+      method: 'POST',
+      // Valid, control-free text: an all-zero buffer would be refused by the
+      // C0 scan instead, and the case would then pass with no ceiling at all.
+      body: new TextEncoder().encode('a'.repeat(1024 * 1024 + 1)),
+    })
+      .then(() => h.settle())
+      .then(() => {
+        expect(h.of('error')[0]).toMatchObject({ reason: 'unparsed_body' });
+        expect(h.of('request')).toHaveLength(0);
+      });
+  });
+
   it('refuses a binary body that is not valid UTF-8', async () => {
     // The control for the case above: decoding is gated on the bytes actually
     // being text, so an image or an archive is still nothing the tap reads.
@@ -389,6 +435,28 @@ describe('installTap: the fetch half', () => {
 
     expect(h.of('error')[0]).toMatchObject({ reason: 'unparsed_body' });
     expect(h.of('request')).toHaveLength(0);
+  });
+
+  it('ends an exchange whose response carries no body at all', async () => {
+    // A 204 is the case the null-body drain exists for: `new Response(null,
+    // { status: 204 }).body` is null, so nothing streams and nothing would
+    // close the exchange. Dropping the `end` post here leaves the bridge
+    // holding the id for the life of the page — an exchange that never
+    // completes, which is indistinguishable from one still in flight.
+    const win = { fetch: () => Promise.resolve(new Response(null, { status: 204 })) };
+    const h = harness();
+
+    installTap(win as unknown as Window, h.port, [CONVERSATION]);
+    await fetchOn(win as unknown as Window)('https://site.test/api/conversation', {
+      method: 'POST',
+      body: '{"prompt":"hi"}',
+    });
+    await h.waitFor(() => h.of('end').length > 0);
+
+    expect(h.of('request')).toHaveLength(1);
+    expect(h.of('end')[0]).toMatchObject({ status: 204, ok: true });
+    // No chunk was invented for a body that does not exist.
+    expect(h.of('chunk')).toHaveLength(0);
   });
 
   it('inflates a gzip-compressed request body', async () => {

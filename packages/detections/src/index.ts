@@ -33,6 +33,7 @@ export type { WebCaptureSiteReport, WebCaptureState } from './posture/web-captur
 export {
   deriveWebCaptureState,
   DRIFT_MIN_PARSE_FAILURES,
+  reportedCaptureDocumentForSite,
   WEB_CAPTURE_DRIFT_RULE,
   WEB_CAPTURE_DRIFT_STATES,
   webCaptureDriftFires,

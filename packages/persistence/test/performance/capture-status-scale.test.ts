@@ -11,9 +11,21 @@
  * plan text and linear in the store in practice, and a single web chat is the
  * common shape: a user of one of the two sites pays the miss on every render.
  *
- * Measured on the unbounded read: 0.331 ms at 2,000 rows against 4.389 ms at
- * 20,000 — 13.3x for 10x the rows — and unbounded in the long run because
- * `audit_events` carries no retention policy.
+ * Measured on the unbounded read: 0.958 ms at 2,000 rows against 3.826 ms at
+ * 20,000 — 4.0x for 10x the rows — and unbounded in the long run because
+ * `audit_events` carries no retention policy. The windowed read at the same two
+ * sizes is 0.796 ms and 0.714 ms, i.e. flat.
+ *
+ * Those four are re-taken (arm64 macOS / Node 24) because the read's `LIMIT`
+ * moved 32 -> 128 when it started returning one record per DOCUMENT rather than
+ * one per site: every concurrently-reporting document has to be inside the
+ * window, or a chatty tab's own reports push a quiet drifting one out of it.
+ * The control, same machine and same run, with the limit put back to 32: 0.242
+ * ms and 0.248 ms windowed, 0.449 ms and 3.331 ms unbounded. So the constant
+ * cost went up about 3x, in line with the extra rows fetched, and the RATIO —
+ * which is what this file gates — did not move (0.90 against 1.02). A ratio is
+ * blind to a constant factor by construction, which is why the figure is
+ * recorded here rather than left for the gate to catch.
  *
  * What holds it is the read's recency window (`CAPTURE_STATUS_RECENCY_MS`): the
  * `started_at >= ?` predicate turns the range into an index range, so the seek

@@ -61,14 +61,29 @@ let seedCounter = 0;
  * literal 2026-01-01 would silently age out of the window as the wall clock
  * moved past it and every case below would then pass for the wrong reason.
  */
-function seedStatus(tool: WebSourceTool, status: WebCaptureStatus, agoMs = 0): void {
+function seedStatus(
+  tool: WebSourceTool,
+  status: WebCaptureStatus,
+  agoMs = 0,
+  rootSessionId?: string,
+): void {
   seedCounter += 1;
   const db = openLocalDatabase(dir);
   try {
+    // `root_session_id` is what groups a site's rows into documents, so a case
+    // about two tabs has to name it. Unset otherwise, which reads as one
+    // document — the shape every single-tab case here means.
+    if (rootSessionId !== undefined) {
+      // A self-FK, so the root row has to exist first. Its `session` row
+      // carries no attributes and so no `source_tool`, which keeps it
+      // invisible to the capture-status read.
+      db.auditEvents.ensureSessionRoot(rootSessionId, new Date(Date.now() - agoMs).toISOString());
+    }
     db.auditEvents.insertAuditEvent({
       id: `${tool}-status-${String(seedCounter)}`,
       eventType: 'capture_status',
       startedAt: new Date(Date.now() - agoMs).toISOString(),
+      ...(rootSessionId === undefined ? {} : { rootSessionId }),
       attributes: toCaptureStatusAttributes(status, tool),
     });
   } finally {
@@ -183,6 +198,27 @@ describe('the security page derives web-capture posture at read time', () => {
     });
 
     expect(captureCard(await renderSecurityPage())).toBeUndefined();
+  });
+
+  it('fires on one tab-s drift while another tab is capturing fine', async () => {
+    // Two documents on one site, which is an ordinary browser: a second tab
+    // open on claude.ai, capturing normally, used to report the site healthy
+    // and take the card off this page entirely while the first tab was
+    // swallowing the user's messages.
+    grantConsent();
+    seedStatus('claude-ai', DRIFTING, 60_000, 'doc-blind');
+    seedStatus(
+      'claude-ai',
+      { ...BASE_STATUS, conversationEndpoints: 1, closed: false, live: true, exchangesSeenNet: 4 },
+      0,
+      'doc-healthy',
+    );
+
+    const card = captureCard(await renderSecurityPage());
+    expect(card).toBeDefined();
+    const claudeAi = card?.props.sites.find((s) => s.tool === 'claude-ai');
+    expect(claudeAi?.drift).toBe(true);
+    expect(claudeAi?.stateLabel).toBe('blind');
   });
 
   it('fires on drift and reaches the page through the real store read', async () => {

@@ -32,11 +32,11 @@ import type {
   PolicyBundle,
   ProjectFilesScan,
   RecordProjectEgressInput,
+  ReportedCaptureDocument,
   ResolvedInventory,
   RuleProbeVerdict,
   SessionTokenReport,
   SimpleDetectionPolicy,
-  StoredCaptureStatus,
   StorePostureSnapshot,
   ToolCallInput,
   ToolCallInspection,
@@ -967,7 +967,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     return this.deps.local.readSessionProvider(sessionId);
   }
 
-  async readCaptureStatuses(): Promise<StoredCaptureStatus[]> {
+  async readCaptureStatuses(): Promise<ReportedCaptureDocument[]> {
     return this.deps.local.readCaptureStatuses();
   }
 

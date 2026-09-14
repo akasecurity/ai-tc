@@ -15,11 +15,11 @@ import type {
   PolicyBundle,
   ProjectFilesScan,
   RecordProjectEgressInput,
+  ReportedCaptureDocument,
   ResolvedInventory,
   RuleProbeVerdict,
   SessionTokenReport,
   SimpleDetectionPolicy,
-  StoredCaptureStatus,
   ToolCallInput,
 } from '@akasecurity/schema';
 
@@ -341,7 +341,7 @@ export function hasLocalStoreMaintenance(
  * offer it — the caller then falls back to whatever it holds in memory.
  */
 export interface CaptureStatusReader {
-  readCaptureStatuses(): Promise<StoredCaptureStatus[]>;
+  readCaptureStatuses(): Promise<ReportedCaptureDocument[]>;
 }
 
 export function offersCaptureStatusReader(

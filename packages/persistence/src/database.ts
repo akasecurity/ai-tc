@@ -39,6 +39,7 @@ import {
   reapStalePartials,
   snapshotStore,
 } from './internal/snapshot.ts';
+import { registerSqlFunctions } from './internal/sql-functions.ts';
 import { escapeLikePattern } from './internal/sql-text.ts';
 import { failOpenTransaction, withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
@@ -270,13 +271,16 @@ function closeQuietly(db: DatabaseSync): void {
 
 // Open the store with the shared PRAGMAs: WAL lets the plugin (events/findings)
 // and an optional local reader share the file; busy_timeout absorbs brief
-// contention; foreign keys enforce the event→finding reference.
+// contention; foreign keys enforce the event→finding reference. The package's
+// SQL functions (sql-functions.ts) are registered on the same connection, so a
+// statement prepared on it can call them.
 function openWithPragmas(file: string): DatabaseSync {
   const db = new DatabaseSync(file);
   try {
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA busy_timeout = 2000');
     db.exec('PRAGMA foreign_keys = ON');
+    registerSqlFunctions(db);
   } catch (err) {
     // The OS handle exists the moment the constructor returns, but SQLite does
     // not read the file until a statement runs — so a corrupt store opens fine

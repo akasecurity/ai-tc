@@ -65,8 +65,10 @@
  *     below with why swallowing a win32 EPERM there would be wrong.
  *
  * The detector is regex-and-brace-counting, not a parser, so it inherits the
- * usual blind spots: a brace or paren inside a string or template literal is
- * counted as real; a path built by anything but `join` is not followed; a
+ * usual blind spots: a regex literal is recognised only after punctuation and
+ * only when it closes on its own line, so a quote in one that follows a keyword
+ * such as `return` can still read as opening a string; a path built by anything
+ * but `join` is not followed; a
  * declaration is matched as text, not by scope; and a spawn behind a wrapper
  * FUNCTION is not read as a spawn at its call site unless that function is
  * imported from a spawning test helper — a same-file `spawnWriter(dir, …)` that
@@ -130,9 +132,9 @@ function escapeIdent(ident) {
 
 /**
  * The start index of the innermost `{ … }` enclosing `pos`, or 0 for module
- * scope. A plain brace-depth scan — it does not tokenize strings or template
- * literals, so a literal brace in either is counted as a real one; the known
- * limit `harness-adoption.test.ts` already accepts for the same technique.
+ * scope. A plain brace-depth scan that tokenizes nothing itself; the detector
+ * hands it code whose literals `blankLiterals` has already emptied, so a brace
+ * written inside a string is not counted.
  * @param {string} code
  * @param {number} pos
  */
@@ -288,8 +290,7 @@ function withListMembers(window, list) {
 
 /**
  * The index just past the `)` closing the `(` at `open`, or the end of the file.
- * Paren counting only, with the same string-literal blind spot as
- * `enclosingBlockStart`.
+ * Paren counting only, over code whose literals are already blanked.
  * @param {string} code
  * @param {number} open
  */
@@ -381,6 +382,101 @@ function loopListRoot(code, ident, pos) {
 }
 
 /**
+ * The index of the `/` closing a regex literal opened at `open`, or -1 when none
+ * closes on that line — which makes it a division, not a literal.
+ * @param {string} code
+ * @param {number} open
+ */
+function regexLiteralEnd(code, open) {
+  let inClass = false;
+  for (let i = open + 1; i < code.length; i++) {
+    const ch = code[i];
+    if (ch === '\n') return -1;
+    if (ch === '\\') i++;
+    else if (ch === '[') inClass = true;
+    else if (ch === ']') inClass = false;
+    else if (ch === '/' && !inClass) return i;
+  }
+  return -1;
+}
+
+/**
+ * `code` with the text inside string, template and regex literals replaced by
+ * spaces, so a call, brace or paren written INSIDE one is never read as code — a
+ * detector's own fixtures quote the very removals and releases it looks for.
+ * Delimiters, newlines and every `${…}` expression are kept, so each index still
+ * points where it did. Comments must already be stripped. A regex literal is
+ * recognised only where an operand can start (after punctuation) and only when
+ * it closes on its own line, so a division is left alone.
+ * @param {string} code
+ */
+function blankLiterals(code) {
+  const out = code.split('');
+  /** @param {number} at */
+  const blank = (at) => {
+    if (out[at] !== '\n') out[at] = ' ';
+  };
+  /** @type {number[]} */
+  const expressionDepths = [];
+  let depth = 0;
+  let inTemplate = false;
+  let previous = '';
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i] ?? '';
+    if (inTemplate) {
+      if (ch === '`') {
+        inTemplate = false;
+        previous = ch;
+      } else if (ch === '$' && code[i + 1] === '{') {
+        expressionDepths.push(depth);
+        depth++;
+        inTemplate = false;
+        previous = '{';
+        i++;
+      } else {
+        if (ch === '\\') blank(i++);
+        blank(i);
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      let j = i + 1;
+      while (j < code.length && code[j] !== ch && code[j] !== '\n') {
+        if (code[j] === '\\') blank(j++);
+        blank(j++);
+      }
+      i = j;
+      previous = ch;
+      continue;
+    }
+    if (ch === '`') {
+      inTemplate = true;
+      continue;
+    }
+    if (ch === '/' && /^$|[-(,=:[!&|?{};+*%<>~^]$/.test(previous)) {
+      const end = regexLiteralEnd(code, i);
+      if (end !== -1) {
+        for (let k = i + 1; k < end; k++) blank(k);
+        i = end;
+        previous = '/';
+        continue;
+      }
+    }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (expressionDepths[expressionDepths.length - 1] === depth) {
+        expressionDepths.pop();
+        inTemplate = true;
+        continue;
+      }
+    }
+    if (!/\s/.test(ch)) previous = ch;
+  }
+  return out.join('');
+}
+
+/**
  * Whether `pos` sits directly inside a function named `removeTree`/`removeTrees`.
  * @param {string} code
  * @param {number} pos
@@ -454,12 +550,13 @@ function touchesTree(code, ident, isList, pos, spawningImports) {
  * touched. Excludes a call sitting inside `removeTree`/`removeTrees`'s own
  * body. A removal inside a for-of is reported under the list when the list
  * correlates, and under its own name otherwise.
- * @param {string} code comments already stripped
+ * @param {string} source comments already stripped
  * @param {Set<string>} [spawningImports] names this file imports from a test
  *   helper that spawns on its caller's behalf
  * @returns {{ ident: string, pos: number }[]}
  */
-function riskyBareRemovals(code, spawningImports = new Set()) {
+function riskyBareRemovals(source, spawningImports = new Set()) {
+  const code = blankLiterals(source);
   const found = [];
   // Either a bare/dotted identifier, or a drain of an array of trees
   // (`dirs.pop() ?? ''`) — which is a CALL, so the identifier form alone never
@@ -969,6 +1066,49 @@ describe('bare rmSync teardown of a store- or spawn-touched temp tree', () => {
         'afterEach(() => { while (dirs.length > 0) rmSync(dirs.pop()!.trim(), { recursive: true, force: true }); });',
       ].join('\n');
       expect(riskyBareRemovals(source)).toEqual([{ ident: 'dirs', pos: expect.any(Number) }]);
+    });
+
+    it('does not read a call written inside a string or template literal as code', () => {
+      // A detector's own fixtures are source text: a removal and a store release
+      // quoted in literals are what such a file is ABOUT, not what it does.
+      const source = [
+        "it('x', () => {",
+        '  removals(`afterEach(() => { rmSync(home, { recursive: true, force: true }); });`);',
+        "  log('releaseLocalStore(); rmSync(home, { recursive: true })');",
+        '});',
+      ].join('\n');
+      expect(riskyBareRemovals(source)).toEqual([]);
+    });
+
+    it('still reads the code inside a template literal’s ${…} expression', () => {
+      const source = [
+        'let home;',
+        'beforeEach(() => { home = mkdtempSync(x); });',
+        "it('x', () => { execFileSync(cmd, [`--home=${home}`]); });",
+        'afterEach(() => { rmSync(home, { recursive: true, force: true }); });',
+      ].join('\n');
+      expect(riskyBareRemovals(source)).toEqual([{ ident: 'home', pos: expect.any(Number) }]);
+    });
+
+    it('is not thrown off by a quote or backtick inside a regex literal', () => {
+      // Read as a template, that backtick would empty the rest of the file.
+      const source = [
+        'const FENCE = /[`\'"]/;',
+        'let base;',
+        'beforeEach(() => { base = mkdtempSync(x); openLocalDatabase(join(base, "data")).close(); });',
+        'afterEach(() => { rmSync(base, { recursive: true, force: true }); });',
+      ].join('\n');
+      expect(riskyBareRemovals(source)).toEqual([{ ident: 'base', pos: expect.any(Number) }]);
+    });
+
+    it('reads a slash after an operand as division, not as a regex literal', () => {
+      // Read as a regex, `/ 2; … size /` would empty the removal between them.
+      const source = [
+        'let base;',
+        'beforeEach(() => { base = mkdtempSync(x); openLocalDatabase(join(base, "data")).close(); });',
+        'afterEach(() => { const half = total / 2; rmSync(base, { recursive: true, force: true }); const q = size / 4; });',
+      ].join('\n');
+      expect(riskyBareRemovals(source)).toEqual([{ ident: 'base', pos: expect.any(Number) }]);
     });
 
     it('sees a removal whose argument DRAINS the list rather than naming it', () => {

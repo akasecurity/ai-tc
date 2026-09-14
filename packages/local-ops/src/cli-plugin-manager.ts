@@ -1,4 +1,5 @@
-import { binExists, runInherit } from './exec.ts';
+import { binExists, runCapture, runInherit } from './exec.ts';
+import { isSemver } from './semver.ts';
 
 // Generic delegator onto a host CLI's own plugin manager — the supported way
 // to install and update its plugins. The AKA CLI is a hub over these, never a
@@ -31,13 +32,86 @@ import { binExists, runInherit } from './exec.ts';
 //     would have succeeded against the cached snapshot.
 export type CliPluginBin = 'claude' | 'codex';
 
+/**
+ * The version a host CLI reports for itself, or undefined when it cannot be
+ * read (not on PATH, a non-zero exit, no version-shaped token in the output).
+ *
+ * SOUND AT INSTALL TIME, AND ONLY THERE. `aka plugins install` delegates to the
+ * host binary resolved from PATH, so the version that binary reports is the one
+ * being installed into. Inside a session it would NOT be sound: the host running
+ * the session can be a different install from the one on PATH — measured, 2.1.258
+ * on PATH against 2.1.260 actually running — so the hook path reads the version
+ * off the transcript instead of asking here.
+ *
+ * Fail-silent by construction: every caller treats undefined as "do not warn".
+ */
+// Wrapping punctuation a version is commonly printed inside, and nothing more.
+// Both are bounded so neither can backtrack; see `versionTokenFrom` for why an
+// unbounded or open-ended strip was wrong in two different directions.
+const LEADING_WRAP = /^[([{"'`]{0,2}[vV]?/;
+const TRAILING_WRAP = /[)\]}"'`,;]{0,4}$/;
+
+/**
+ * The first token in a `--version` output that parses as a version.
+ *
+ * Separated from the spawn so it can be tested directly: the shape of this scan
+ * is the whole of what the install gate depends on, and driving it through a
+ * child process would test the child instead. `hostCliVersion` is then only the
+ * spawn.
+ *
+ * Validated with `isSemver` from this package rather than a private regex, so
+ * one grammar serves the parse and the comparison. A local copy would sit
+ * outside the mirroring convention both `semver.ts` headers already name, and a
+ * grammar widened under that convention (accepting `+build`, say) would leave
+ * this behind — the gate would then reject versions the comparator accepts and
+ * go silent.
+ *
+ * The two strips are an ENUMERATED, BOUNDED set of wrapping punctuation, not
+ * "everything up to the first digit". Both properties are load-bearing:
+ *
+ * - Bounded, because an unbounded trailing `[^\w.-]+$` is polynomial on a token
+ *   the host CLI controls — measured 281/1089/4276 ms at 25k/50k/100k commas,
+ *   clean n². (Reproducing it needs a LEADING DIGIT: without one the leading
+ *   strip eats the commas first and it measures 0 ms.)
+ * - Enumerated, because `^[^\d]*` accepts any prefix, so
+ *   `@anthropic-ai/claude-code@3.0.0` resolved to `3.0.0` — an npm notice on the
+ *   first line then outranked the real version, which is a MISSED warning on a
+ *   security gate. `foo-2.1.258` and a URL path went the same way.
+ *
+ * The PRERELEASE is deliberately kept: `2.1.251-rc.1` must not collapse to
+ * `2.1.251`, which compares EQUAL to a floor that build predates, letting it
+ * clear a gate it should trip.
+ *
+ * The first line wins over the rest, because that is where a `--version` prints.
+ * That narrows, but does not eliminate, a version-shaped token appearing before
+ * the real one: a notice on a LATER line now loses, while one on the first line
+ * still wins. It fails toward silence — a spurious higher version clears every
+ * floor — so it costs a missed warning, never a wrong one.
+ */
+export function versionTokenFrom(stdout: string): string | undefined {
+  const [firstLine = ''] = stdout.split('\n');
+  for (const token of [...firstLine.trim().split(/\s+/), ...stdout.split(/\s+/)]) {
+    const candidate = token.replace(LEADING_WRAP, '').replace(TRAILING_WRAP, '');
+    if (isSemver(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+export function hostCliVersion(bin: CliPluginBin): string | undefined {
+  const { ok, stdout } = runCapture(bin, ['--version'], 5_000);
+  return ok ? versionTokenFrom(stdout) : undefined;
+}
+
 // One command's argv, minus the binary. A step list rather than a single argv
 // because Codex's marketplace prep is two commands.
 type Step = readonly string[];
 
 interface HostVerbs {
   install: (ref: string) => Step[];
-  update: (ref: string) => Step[];
+  // The scope is the one the plugin is ALREADY INSTALLED AT, read from the
+  // host's own ledger — not a preference. A host whose update verb takes no
+  // scope ignores it.
+  update: (ref: string, scope?: string) => Step[];
   // Registering the marketplace. REQUIRED before the op — without it the op
   // fails on an unknown marketplace — so a failure here genuinely should stop
   // whatever follows.
@@ -58,17 +132,48 @@ interface HostVerbs {
 const HOST_VERBS: Record<CliPluginBin, HostVerbs> = {
   claude: {
     install: (ref) => [['plugin', 'install', ref]],
-    update: (ref) => [['plugin', 'update', ref]],
+    // `claude plugin update` defaults to `--scope user`, so a bare ref targets
+    // the user scope whatever the read side looked at. `installedPluginVersions`
+    // prefers a user record and FALLS BACK to the first one with a version, so
+    // on a machine where an enterprise drop-in put the plugin at `managed` the
+    // two halves talked about different installs: the comparison read the
+    // managed record and reported an update, and the apply then failed with
+    // `Plugin "ai-tc" is not installed at scope user`.
+    //
+    // Stated rather than defaulted, and stated whenever the ledger names one —
+    // including `user`. An implicit agreement between the two halves is exactly
+    // what broke, so the reading the comparison used is the one spelled here.
+    // Whether a given scope may be updated at all is the host's call: `managed`
+    // is an administrator's install, and a refusal from `claude` naming that is
+    // a true answer, unlike the one this replaces.
+    update: (ref, scope) => [['plugin', 'update', ref, ...(scope ? ['--scope', scope] : [])]],
     register: (source) => [['plugin', 'marketplace', 'add', source]],
     refresh: (marketplace) => [['plugin', 'marketplace', 'update', marketplace]],
   },
   codex: {
     install: (ref) => [['plugin', 'add', ref]],
     // No `update` verb — `add` is the whole operation. It resolves the plugin
-    // from the marketplace manifest, which for this repo's entries names an npm
-    // package with no version pin, so `add` picks up a published bump on its
-    // own. Refreshing the git snapshot is about the MANIFEST (a renamed package,
-    // a newly listed plugin), which is why it is a separate, optional step.
+    // from the marketplace manifest, and refreshing the git snapshot is about
+    // the MANIFEST (a renamed package, a newly listed plugin), which is why it
+    // is a separate, optional step.
+    //
+    // It takes no scope either: Codex keeps one plugin cache per home, so there
+    // is nothing to target. The parameter is ignored here rather than absent,
+    // so the two hosts share one signature and a caller cannot pass a scope to
+    // only one of them.
+    //
+    // This used to add "which for this repo's entries names an npm package with
+    // NO VERSION PIN, so `add` picks up a published bump on its own", and that
+    // premise is false for Claude Code's marketplace: the resolved manifest's
+    // `ai-tc` entry reads `{ source: 'npm', package: …, version: '0.9.10' }` on
+    // a real install, on the default branch. An entry with no pin does exist —
+    // a `github` or `git-subdir` source — so the shape varies per entry rather
+    // than per repository.
+    //
+    // Whether it holds for the CODEX marketplace is UNVERIFIED: Codex keeps no
+    // marketplaces directory to read a resolved manifest from, so nothing here
+    // has seen one. It is stated as unknown rather than corrected to a second
+    // guess, because what rests on it is this host's whole update path.
     update: (ref) => [['plugin', 'add', ref]],
     register: (source) => [['plugin', 'marketplace', 'add', source]],
     refresh: (marketplace) => [['plugin', 'marketplace', 'upgrade', marketplace]],
@@ -128,8 +233,26 @@ export interface CliPluginManager {
   update: (ref: string) => boolean;
 }
 
-export function createCliPluginManager(bin: CliPluginBin): CliPluginManager {
+/**
+ * A manager for one host CLI, optionally bound to the scope a plugin is
+ * already installed at.
+ *
+ * The scope is supplied HERE rather than at each update entry point, and that
+ * is structural rather than tidy: there are four ways to reach the update verb
+ * (`updateSteps`, `updateRecipe`, `updateSpawnPlan`, `update`), and a
+ * per-call parameter is one a caller can thread into the spawn and forget in
+ * the hint — which would print a command that does not do what the spawn did.
+ * Bound here, every one of them agrees by construction.
+ *
+ * Absent means "whatever the host defaults to", which is what every caller got
+ * before a scope could be read at all.
+ */
+export function createCliPluginManager(
+  bin: CliPluginBin,
+  installedScope?: string,
+): CliPluginManager {
   const verbs = HOST_VERBS[bin];
+  const update = (ref: string): Step[] => verbs.update(ref, installedScope);
   const runAll = (steps: Step[]): boolean => steps.every((args) => runInherit(bin, [...args]));
   const render = (steps: Step[]): string[] => steps.map((args) => `${bin} ${args.join(' ')}`);
   const marketplaceSteps = (source: string, marketplace?: string): Step[] => [
@@ -150,14 +273,13 @@ export function createCliPluginManager(bin: CliPluginBin): CliPluginManager {
     available: () => binExists(bin),
     marketplaceSteps,
     installSteps: (ref) => verbs.install(ref),
-    updateSteps: (ref) => verbs.update(ref),
+    updateSteps: (ref) => update(ref),
     installRecipe: (ref, source) => recipe(verbs.install(ref), source),
-    updateRecipe: (ref, source) => recipe(verbs.update(ref), source),
+    updateRecipe: (ref, source) => recipe(update(ref), source),
     installSpawnPlan: (ref, source, marketplace) =>
       spawnPlan(verbs.install(ref), source, marketplace),
-    updateSpawnPlan: (ref, source, marketplace) =>
-      spawnPlan(verbs.update(ref), source, marketplace),
+    updateSpawnPlan: (ref, source, marketplace) => spawnPlan(update(ref), source, marketplace),
     install: (ref) => runAll(verbs.install(ref)),
-    update: (ref) => runAll(verbs.update(ref)),
+    update: (ref) => runAll(update(ref)),
   };
 }

@@ -23,6 +23,7 @@ export {
 } from './control-plane-credential.ts';
 export type { InventoryContext, LocalDatabase, ResolvedInventory } from './database.ts';
 export { openLocalDatabase } from './database.ts';
+export { hashProjectKey, toEgressIngestRequest } from './egress-wire.ts';
 export type { ExceptionPolicyProvider, RevealDecision } from './exception-policy.ts';
 export { UserGrantPolicyProvider } from './exception-policy.ts';
 export type { FileLockFailure, FileLockOptions } from './file-lock.ts';
@@ -39,8 +40,25 @@ export {
   readFingerprintKey,
   rotateFingerprintKey,
 } from './fingerprint.ts';
+export type { ControlPlaneFailure, ForwardHealth } from './forward-health.ts';
+export {
+  BREAKER_COOLDOWN_MS,
+  isForwardPaused,
+  parseForwardHealth,
+  readForwardHealth,
+} from './forward-health.ts';
+export { seedCaptureBacklogOwed } from './history-backfill.ts';
 export type { LocalHistoryPreview } from './history-preview.ts';
 export { readLocalHistoryPreview } from './history-preview.ts';
+export {
+  HISTORY_SYNC_STATE_FILENAME,
+  type HistorySyncOutcome,
+  type HistorySyncPhase,
+  type HistorySyncState,
+  historySyncStatePath,
+  readHistorySyncState,
+  writeHistorySyncState,
+} from './history-sync-state.ts';
 export {
   captureId,
   captureWireId,
@@ -104,11 +122,14 @@ export type {
   InventoryReadPort,
   PoliciesReadPort,
   PolicyCatalogReadPort,
+  RecommendationInputRow,
   SecurityViews,
   SharesReadPort,
 } from './ports.ts';
 export { SqliteActivityRepository } from './repositories/activity.ts';
 export { SqliteAuditEventsRepository } from './repositories/audit-events.ts';
+export type { BodyExpiryOptions, BodyExpiryOutcome } from './repositories/body-retention.ts';
+export { SqliteBodyRetentionRepository } from './repositories/body-retention.ts';
 export { SqliteCaptureStatusRepository } from './repositories/capture-status.ts';
 export { SqliteClassifiedDataRepository } from './repositories/classified-data.ts';
 export { SqliteConfigInventoryRepository } from './repositories/config-inventory.ts';
@@ -128,11 +149,17 @@ export {
 } from './repositories/exceptions.ts';
 export { SqliteFindingsRepository } from './repositories/findings.ts';
 export type {
+  CountedEventType,
   HistorySyncCounts,
   HistorySyncInspectionRow,
+  HistorySyncKindPartition,
   HistorySyncLease,
+  HistorySyncPartition,
 } from './repositories/history-sync.ts';
 export {
+  COUNTED_EVENT_TYPES,
+  HISTORY_SYNC_LEASE_STALE_MS,
+  isHistorySyncLeaseLive,
   SqliteHistorySyncRepository,
   STRUCTURAL_EVENT_TYPES,
 } from './repositories/history-sync.ts';
@@ -164,7 +191,7 @@ export {
   withoutDroppedFiles,
 } from './repositories/shares.ts';
 export { SqliteSourceProjectRepository } from './repositories/source-project.ts';
-export { compareBinaryVersions } from './semver.ts';
+export { compareBinaryVersions, isParseableBinaryVersion } from './semver.ts';
 export type { OnboardingAnswers } from './settings.ts';
 export type { EffectiveSettings } from './settings.ts';
 export {

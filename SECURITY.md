@@ -136,8 +136,10 @@ store stays there; the narrow outbound paths a standalone install still has are
 enumerated in the egress footnote in [README.md](README.md), and none of them
 carry stored event content. `aka attach` is what sends it: it registers one
 machine against a control plane **your organization runs**, never a service AKA
-operates, and from then on the plugin forwards each captured event to that
-deployment as it stored it.
+operates, and from then on this machine forwards each captured event to that
+deployment as it stored it, and a scan you run on it (`aka scan`, or the dashboard's
+Scan page) sends the Data Shares register it just recorded over the same
+connection — destinations and call sites, never source text.
 
 That is the same content [Data at rest](#data-at-rest) describes, so the masking
 rule is the same one: a flagged span is masked before the event is sent only
@@ -151,14 +153,15 @@ together, from then on — it does not reach what has already been sent, and wha
 has been sent cannot be recalled.
 
 The separate `aka sync-history` grant covers two things, and the rule reaches
-one of them. The backfill of activity recorded before you attached sends the
-record of that activity rather than event content, so the rule does not apply
-to it. The other is the drain of anything a live send could not deliver, which
-sends the capture as the store holds it — for a prompt, an assistant reply or a
-tool result, its text. There the rule applies exactly as it does to a live
-forward: **under monitor or warn the matched value is drained as it was seen**,
-and every detection ships on monitor, so on a default install that is what a
-drain sends.
+both of them. The backfill of activity recorded before you attached marks that
+activity for delivery the same way a live send would have; for a prompt, an
+assistant reply or a tool result, what it sends is that text, not just the
+record that the activity happened. The other is the drain of anything a live
+send could not deliver, which sends the capture as the store holds it. Both
+send the same content a live forward would have, so the rule applies exactly
+as it does there: **under monitor or warn the matched value is drained as it
+was seen**, and every detection ships on monitor, so on a default install that
+is what a backfill or a drain sends.
 
 Attaching is opt-in and inert until both an endpoint and an access key are on
 disk; `aka status` says what a machine is attached to and `aka detach` ends the

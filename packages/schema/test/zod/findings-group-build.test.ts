@@ -4,12 +4,12 @@ import type { FindingStatus } from '../../src/zod/finding.ts';
 import { DetectionCategory, FindingCategory } from '../../src/zod/finding.ts';
 import {
   applyFindingFilters,
-  buildFindingGroups,
+  buildFindingTypes,
   computeFindingFacets,
   countInstancesByStatus,
   type FindingGroupAggregate,
   type GroupableFindingRow,
-  sortFindingGroups,
+  sortFindingTypes,
   toApiAction,
   toApiCategory,
   toApiProvider,
@@ -105,6 +105,75 @@ describe('provider mappers', () => {
 
 // ─── grouping ────────────────────────────────────────────────────────────────
 
+/**
+ * Row fixtures → the whole-type aggregate a store folds in SQL.
+ *
+ * The rows stay because they are the readable way to state a fixture; this
+ * turns them into the shape `buildFindingTypes` actually consumes, doing the
+ * same distinct/count/max folds the `GROUP BY rule_id` does. It is fixture
+ * ASSEMBLY, not a second implementation of the fold under test — everything
+ * asserted below (the enum mapping, the status precedence, the dedup order,
+ * the haystack) happens on the far side of this.
+ */
+function aggregatesFrom(rows: GroupableFindingRow[]): Map<string, FindingGroupAggregate> {
+  const byRule = new Map<string, GroupableFindingRow[]>();
+  for (const r of rows) {
+    const existing = byRule.get(r.ruleId);
+    if (existing) existing.push(r);
+    else byRule.set(r.ruleId, [r]);
+  }
+  return new Map(
+    [...byRule].map(([ruleId, rs]) => [
+      ruleId,
+      {
+        instanceCount: rs.length,
+        severity: rs[0]?.severity,
+        category: rs[0]?.category,
+        sourceTools: [...new Set(rs.map((r) => r.sourceTool))],
+        actionsTaken: [...new Set(rs.map((r) => r.actionTaken))],
+        // A row with no status contributes NO input — that is what "carries no
+        // status" means to the fold, and mapping it to a default would make
+        // every legacy fixture read as open.
+        statusInputs: rs.flatMap((r) =>
+          r.status === undefined ? [] : [{ ...statusInput(r.status), count: 1 }],
+        ),
+        latestDetectedAt: rs.reduce((max, r) => (r.occurredAt > max ? r.occurredAt : max), ''),
+        ...(rs.some((r) => r.user)
+          ? {
+              users: [
+                ...new Map(rs.flatMap((r) => (r.user ? [[r.user.id, r.user]] : []))).values(),
+              ],
+            }
+          : {}),
+        // The store fetches this only for a request carrying `q`; the fixtures
+        // always supply it so the haystack cases have whole-type text to match.
+        searchText: [
+          ...new Set(rs.map((r) => r.repo)),
+          ...new Set(rs.map((r) => r.file)),
+          ...new Set(rs.map((r) => (r.toolName ? `via ${r.toolName}` : ''))),
+        ]
+          .filter((t) => t !== '')
+          .join(' '),
+      } satisfies FindingGroupAggregate,
+    ]),
+  );
+}
+
+/** The deriveFindingStatus inputs that produce a given status. */
+function statusInput(status: FindingStatus): {
+  kind: string;
+  findingKey: string | null;
+  latestResolutionStatus: string | null;
+} {
+  // in-flight (any kind but code_change) is born handled; at-rest with no
+  // finding_key is open; at-rest and tracked reads its latest resolution.
+  if (status === 'handled')
+    return { kind: 'prompt', findingKey: null, latestResolutionStatus: null };
+  if (status === 'open')
+    return { kind: 'code_change', findingKey: null, latestResolutionStatus: null };
+  return { kind: 'code_change', findingKey: 'k', latestResolutionStatus: status };
+}
+
 // Rows are newest-first (as the repos return them).
 const rows: GroupableFindingRow[] = [
   {
@@ -192,25 +261,17 @@ const toolAttributedRows: GroupableFindingRow[] = [
   },
 ];
 
-describe('buildFindingGroups tool attribution', () => {
-  it('carries toolName onto the instance', () => {
-    const groups = buildFindingGroups(toolAttributedRows);
-    expect(groups[0]?.instances[0]?.toolName).toBe('Bash');
-  });
-
-  it('leaves toolName undefined when the row has none', () => {
-    const groups = buildFindingGroups(rows);
-    expect(groups[0]?.instances[0]?.toolName).toBeUndefined();
-  });
-
-  it('matches q against an instance tool label ("via Bash")', () => {
-    const groups = buildFindingGroups(toolAttributedRows);
-    expect(applyFindingFilters(groups, { q: 'via bash' })).toHaveLength(1);
-    expect(applyFindingFilters(groups, { q: 'via webfetch' })).toHaveLength(0);
+describe('buildFindingTypes tool attribution', () => {
+  // A type carries no instances, so tool attribution reaches it only through the
+  // aggregate's search text — which is the whole point of that column.
+  it('matches q against a tool label ("via Bash") from the aggregate', () => {
+    const types = buildFindingTypes(aggregatesFrom(toolAttributedRows));
+    expect(applyFindingFilters(types, { q: 'via bash' })).toHaveLength(1);
+    expect(applyFindingFilters(types, { q: 'via webfetch' })).toHaveLength(0);
   });
 });
 
-describe('buildFindingGroups user attribution', () => {
+describe('buildFindingTypes user attribution', () => {
   const alice = { id: 'u-alice', name: 'alice@example.com' };
   const bob = { id: 'u-bob', name: 'bob@example.com' };
   const attributed: GroupableFindingRow[] = [
@@ -219,69 +280,50 @@ describe('buildFindingGroups user attribution', () => {
     { ...statusRow('a3', 'aws-key'), user: alice },
   ];
 
-  it('carries user onto the instance and folds the distinct users onto the group', () => {
-    const groups = buildFindingGroups(attributed);
-    expect(groups[0]?.instances.map((i) => i.user)).toEqual([alice, bob, alice]);
-    // Dedup by id, first occurrence first.
-    expect(groups[0]?.users).toEqual([alice, bob]);
-  });
-
-  it('omits user and users when no row carries one', () => {
-    const groups = buildFindingGroups(rows);
-    expect(groups[0]?.instances[0]).not.toHaveProperty('user');
-    expect(groups[0]).not.toHaveProperty('users');
-  });
-
   const aggregate: FindingGroupAggregate = {
     instanceCount: 40,
+    severity: 'critical',
+    category: 'secret',
     sourceTools: ['claude-code'],
     actionsTaken: ['block'],
     statusInputs: [],
     latestDetectedAt: '2026-01-03T00:00:00.000Z',
   };
 
-  it('reads users from the aggregate, sorted, when one is supplied', () => {
-    // The preview rows are all Alice's; the aggregate knows the whole group.
-    const carol = { id: 'u-carol', name: 'carol@example.com' };
-    const preview: GroupableFindingRow[] = [
-      { ...statusRow('a1', 'aws-key'), user: alice },
-      { ...statusRow('a3', 'aws-key'), user: alice },
-    ];
-    const groups = buildFindingGroups(preview, {
-      aggregates: new Map([['aws-key', { ...aggregate, users: [carol, bob, alice] }]]),
-    });
-    expect(groups[0]?.users).toEqual([alice, bob, carol]);
+  it('omits users when the aggregate carries none', () => {
+    const types = buildFindingTypes(aggregatesFrom(rows));
+    expect(types[0]).not.toHaveProperty('users');
+    expect(buildFindingTypes(new Map([['aws-key', aggregate]]))[0]).not.toHaveProperty('users');
   });
 
-  it('matches q against the people, from the preview and from the aggregate', () => {
-    // Preview rows are Alice's; only the aggregate knows Carol is in the group.
+  it('reads users from the aggregate, sorted by label then id', () => {
     const carol = { id: 'u-carol', name: 'carol@example.com' };
-    const preview: GroupableFindingRow[] = [{ ...statusRow('a1', 'aws-key'), user: alice }];
-    const groups = buildFindingGroups(preview, {
-      aggregates: new Map([['aws-key', { ...aggregate, users: [carol, alice] }]]),
-    });
-    expect(applyFindingFilters(groups, { q: 'ALICE@' })).toHaveLength(1);
-    expect(applyFindingFilters(groups, { q: 'carol@' })).toHaveLength(1);
-    expect(applyFindingFilters(groups, { q: 'bob@' })).toHaveLength(0);
-    // And with no aggregate the rows are the whole group.
-    expect(applyFindingFilters(buildFindingGroups(attributed), { q: 'bob@' })).toHaveLength(1);
+    const types = buildFindingTypes(
+      new Map([['aws-key', { ...aggregate, users: [carol, bob, alice] }]]),
+    );
+    expect(types[0]?.users).toEqual([alice, bob, carol]);
   });
 
-  it('carries no users when the aggregate supplies none, rather than folding the preview', () => {
-    const groups = buildFindingGroups(attributed, {
-      aggregates: new Map([['aws-key', aggregate]]),
-    });
-    expect(groups[0]?.instances[0]?.user).toEqual(alice);
-    expect(groups[0]).not.toHaveProperty('users');
+  it('matches q against the whole type’s people, not a sample of them', () => {
+    const carol = { id: 'u-carol', name: 'carol@example.com' };
+    const types = buildFindingTypes(
+      new Map([['aws-key', { ...aggregate, users: [carol, alice] }]]),
+    );
+    expect(applyFindingFilters(types, { q: 'ALICE@' })).toHaveLength(1);
+    expect(applyFindingFilters(types, { q: 'carol@' })).toHaveLength(1);
+    expect(applyFindingFilters(types, { q: 'bob@' })).toHaveLength(0);
+    expect(
+      applyFindingFilters(buildFindingTypes(aggregatesFrom(attributed)), { q: 'bob@' }),
+    ).toHaveLength(1);
   });
 });
 
-describe('buildFindingGroups', () => {
-  const groups = buildFindingGroups(rows);
+describe('buildFindingTypes', () => {
+  const groups = buildFindingTypes(aggregatesFrom(rows));
   const awsKey = groups.find((g) => g.id === 'aws-key');
   const email = groups.find((g) => g.id === 'email');
 
-  it('groups rows by ruleId with an instance per row', () => {
+  it('yields one type per ruleId, counting every finding', () => {
     expect(groups).toHaveLength(2);
     expect(awsKey?.instanceCount).toBe(2);
     expect(email?.instanceCount).toBe(1);
@@ -292,7 +334,7 @@ describe('buildFindingGroups', () => {
     expect(awsKey?.latestDetectedAt).toBe('2026-01-03T00:00:00.000Z');
   });
 
-  it('sets aggregateAction to null when instances disagree, else the shared action', () => {
+  it('sets aggregateAction to null when findings disagree, else the shared action', () => {
     expect(awsKey?.aggregateAction).toBeNull(); // blocked + warned
     expect(email?.aggregateAction).toBe('redacted');
   });
@@ -308,19 +350,21 @@ describe('buildFindingGroups', () => {
   });
 
   it('honors a packNames map when provided', () => {
-    const named = buildFindingGroups(rows, { packNames: new Map([['aws-key', 'AWS Secrets']]) });
+    const named = buildFindingTypes(aggregatesFrom(rows), {
+      packNames: new Map([['aws-key', 'AWS Secrets']]),
+    });
     expect(named.find((g) => g.id === 'aws-key')?.detection.name).toBe('AWS Secrets');
   });
 
-  it('applies overrides ahead of the row action', () => {
-    const overridden = buildFindingGroups(rows, { overrides: new Map([['i3', 'block']]) });
-    expect(overridden.find((g) => g.id === 'email')?.aggregateAction).toBe('blocked');
+  it('carries no instances and no masked value — the two the type shape omits', () => {
+    expect(awsKey).not.toHaveProperty('instances');
+    expect(awsKey).not.toHaveProperty('match');
   });
 });
 
 // ─── status derivation (open-dominates precedence) ────────────────────────────
 
-describe('buildFindingGroups status derivation', () => {
+describe('buildFindingTypes status derivation', () => {
   const statusRows = (statuses: (FindingStatus | undefined)[]): GroupableFindingRow[] =>
     statuses.map((status, i) => ({
       id: `s${String(i)}`,
@@ -337,45 +381,40 @@ describe('buildFindingGroups status derivation', () => {
       ...(status !== undefined ? { status } : {}),
     }));
 
-  it('derives open when any instance is open (open dominates)', () => {
-    const groups = buildFindingGroups(statusRows(['resolved', 'open', 'handled']));
+  it('derives open when any finding is open (open dominates)', () => {
+    const groups = buildFindingTypes(aggregatesFrom(statusRows(['resolved', 'open', 'handled'])));
     expect(groups[0]?.status).toBe('open');
   });
 
-  it('derives resolved when all instances are resolved', () => {
-    const groups = buildFindingGroups(statusRows(['resolved', 'resolved']));
+  it('derives resolved when all findings are resolved', () => {
+    const groups = buildFindingTypes(aggregatesFrom(statusRows(['resolved', 'resolved'])));
     expect(groups[0]?.status).toBe('resolved');
   });
 
   it('derives handled when mixed handled + resolved (handled beats resolved)', () => {
-    const groups = buildFindingGroups(statusRows(['handled', 'resolved']));
+    const groups = buildFindingTypes(aggregatesFrom(statusRows(['handled', 'resolved'])));
     expect(groups[0]?.status).toBe('handled');
   });
 
   it('derives handled when mixed dismissed + handled (handled beats dismissed — an active enforcement must not be hidden behind a human dismissal elsewhere in the group)', () => {
-    const groups = buildFindingGroups(statusRows(['dismissed', 'handled']));
+    const groups = buildFindingTypes(aggregatesFrom(statusRows(['dismissed', 'handled'])));
     expect(groups[0]?.status).toBe('handled');
   });
 
   it('derives dismissed when mixed dismissed + resolved (dismissed beats resolved)', () => {
-    const groups = buildFindingGroups(statusRows(['dismissed', 'resolved']));
+    const groups = buildFindingTypes(aggregatesFrom(statusRows(['dismissed', 'resolved'])));
     expect(groups[0]?.status).toBe('dismissed');
   });
 
-  it('leaves group status undefined when no instance carries a status', () => {
-    const groups = buildFindingGroups(statusRows([undefined, undefined]));
+  it('leaves type status undefined when no finding carries a status', () => {
+    const groups = buildFindingTypes(aggregatesFrom(statusRows([undefined, undefined])));
     expect(groups[0]?.status).toBeUndefined();
-  });
-
-  it('propagates status onto each instance', () => {
-    const groups = buildFindingGroups(statusRows(['open', 'resolved']));
-    expect(groups[0]?.instances.map((i) => i.status)).toEqual(['open', 'resolved']);
   });
 });
 
 describe('applyFindingFilters', () => {
-  const groups = buildFindingGroups(rows);
-  const ids = (gs: ReturnType<typeof buildFindingGroups>) => gs.map((g) => g.id).sort();
+  const groups = buildFindingTypes(aggregatesFrom(rows));
+  const ids = (gs: ReturnType<typeof buildFindingTypes>) => gs.map((g) => g.id).sort();
 
   it('filters by severity', () => {
     expect(ids(applyFindingFilters(groups, { severity: ['low'] }))).toEqual(['email']);
@@ -395,7 +434,7 @@ describe('applyFindingFilters', () => {
   });
 
   describe('status (the group’s own folded status, not any instance)', () => {
-    const statusGroups = buildFindingGroups(statusFilterRows);
+    const statusGroups = buildFindingTypes(aggregatesFrom(statusFilterRows));
 
     it('keeps only groups whose folded status is selected', () => {
       expect(ids(applyFindingFilters(statusGroups, { statuses: ['open'] }))).toEqual(['open-rule']);
@@ -430,7 +469,7 @@ describe('applyFindingFilters', () => {
 });
 
 describe('computeFindingFacets', () => {
-  const groups = buildFindingGroups(rows);
+  const groups = buildFindingTypes(aggregatesFrom(rows));
 
   it('counts every dimension when no filters are applied', () => {
     const f = computeFindingFacets(groups, {});
@@ -458,7 +497,7 @@ describe('computeFindingFacets', () => {
   });
 
   describe('status facet', () => {
-    const statusGroups = buildFindingGroups(statusFilterRows);
+    const statusGroups = buildFindingTypes(aggregatesFrom(statusFilterRows));
 
     it('counts groups by their folded status, ignoring status-less groups', () => {
       const f = computeFindingFacets(statusGroups, {});
@@ -510,9 +549,9 @@ describe('countInstancesByStatus', () => {
   });
 });
 
-describe('sortFindingGroups', () => {
+describe('sortFindingTypes', () => {
   it('orders by severity (critical first) then recency', () => {
-    const sorted = sortFindingGroups(buildFindingGroups(rows));
+    const sorted = sortFindingTypes(buildFindingTypes(aggregatesFrom(rows)));
     expect(sorted.map((g) => g.id)).toEqual(['aws-key', 'email']);
   });
 });

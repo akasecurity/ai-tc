@@ -914,6 +914,24 @@ describe('exchange refusals and fail-open', () => {
     // And the reply was read: the rule fired and is reported.
     expect(response.ruleIds).toContain(RULE_ID);
     expect(response.responseAction).toBe('block');
+
+    // AUDITED, not merely scanned — the title claims the record, so the row is
+    // what proves it. Without this, a mutation that keeps the scan and never
+    // persists the reply (`persist: 'never'` here) stays green on the two
+    // assertions above.
+    const db = open();
+    const rows = db
+      .prepare(
+        "SELECT content FROM audit_events WHERE event_type = 'response' AND root_session_id = 'browser-uk2'",
+      )
+      .all() as { content: string | null }[];
+    db.close();
+    expect(rows).toHaveLength(1);
+    // Masked at rest, with the surrounding reply intact — so this is the
+    // reply that was stored rather than some other row.
+    expect(rows[0]?.content).toContain('[REDACTED:SECRET]');
+    expect(rows[0]?.content).toContain('the answer is');
+    expectNoEchoOf(storeBytes(dir), SECRET_AT_REST);
   });
 
   it('is fail-open on the leaf write, and still scans the reply', async () => {

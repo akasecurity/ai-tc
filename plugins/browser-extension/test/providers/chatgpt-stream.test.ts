@@ -58,6 +58,21 @@ const PRELUDE = [
   ),
 ].join('');
 
+/**
+ * The same block under a caller-chosen wrapper tag.
+ *
+ * Every other case here wraps in `<p>`, which is what the two captures
+ * carried — and a `<p>` block cannot collide with the elements a rendered
+ * reply puts inside it. A `<div>` block can, which is the whole point of the
+ * cases that use this.
+ */
+function blockTagged(tag: string, inner: string, index = 0): string {
+  return (
+    `<${tag} data-assistant-stream-block="" data-assistant-stream-block-index="${String(index)}">` +
+    `${inner}</${tag}>`
+  );
+}
+
 function blockFrame(inner: string, withMessageId = false): string {
   const attrs = withMessageId ? ` data-message-id="${MESSAGE_ID}"` : '';
   return frame(`<div${attrs} data-operation-id="op-1">${inner}</div>`);
@@ -68,6 +83,69 @@ function run(stream: string, chunk = 17): WebExchangeSummary | null {
   for (let i = 0; i < stream.length; i += chunk) assembler.push(stream.slice(i, i + chunk));
   return assembler.end();
 }
+
+// A block's own rendered content carries same-named elements routinely, and
+// the close tag that ends the block is then not the first one after it. Taking
+// the first cut the snapshot short and reported the result as complete: no
+// shape miss, no parse failure, just a shorter reply than the user saw.
+describe('chatgpt anonymous stream — a same-named element inside the block', () => {
+  it('keeps the text after a nested element with the wrapper-s tag name', () => {
+    const summary = run(
+      PRELUDE +
+        blockFrame(
+          blockTagged(
+            'div',
+            'Here is the code: <div class="code-block"><pre>console.log(1)</pre></div> and that is it.',
+          ),
+          true,
+        ),
+    );
+    expect(summary?.responseText).toBe('Here is the code: console.log(1) and that is it.');
+  });
+
+  it('keeps the text after a table whose cells nest the same tag again', () => {
+    // Two levels deep, so a fix that merely skipped ONE nested pair would
+    // still cut this one short.
+    const summary = run(
+      PRELUDE +
+        blockFrame(
+          blockTagged(
+            'div',
+            'Before' +
+              '<table><tr><td><div>one</div></td><td><div>two</div></td></tr></table>' +
+              'After',
+          ),
+          true,
+        ),
+    );
+    expect(summary?.responseText).toBe('Beforeonetwo' + 'After');
+  });
+
+  it('does not treat a longer tag name as the same element', () => {
+    // A VOID element sharing the wrapper's prefix, which is the shape that
+    // cannot cancel itself: `<br>` has no close tag, so a depth count matching
+    // on a prefix goes up and never comes back down, and the block is dropped
+    // whole. A paired longer-named element (`<divider></divider>` inside a
+    // `<div>`) balances by accident and proves nothing here — checked by
+    // mutation, which is why this case is written with `<br>` instead.
+    const summary = run(PRELUDE + blockFrame(blockTagged('b', 'a<br>b'), true));
+    expect(summary?.responseText).toBe('ab');
+  });
+
+  it('contributes nothing for a block whose own close tag has not arrived', () => {
+    // Unchanged behaviour, kept here beside the depth count: a half-arrived
+    // block is dropped rather than swallowing the rest of the frame.
+    const summary = run(
+      PRELUDE +
+        frame(
+          `<div data-message-id="${MESSAGE_ID}" data-operation-id="op-1">` +
+            '<div data-assistant-stream-block="" data-assistant-stream-block-index="0">' +
+            'half a reply<div>and a nested open',
+        ),
+    );
+    expect(summary?.responseText).toBeUndefined();
+  });
+});
 
 describe('chatgpt anonymous stream', () => {
   it('recovers the message id, the conversation id and the assistant text', () => {

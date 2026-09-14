@@ -11,20 +11,58 @@ export function firstMatch(selectors: string[]): HTMLElement | null {
   return null;
 }
 
-// contenteditable composers store the prompt as rich-text DOM (paragraphs,
-// line breaks), not a `value` property — innerText is the closest analogue
-// to "what the user sees they've typed".
-export function extractContentEditableText(el: HTMLElement): string {
-  return el.innerText;
+// Whether a composer holds its text in a `value` property rather than as child
+// nodes. Both spellings are live: a contenteditable composer stores the prompt
+// as rich-text DOM, while a `<textarea>` stores it in `value` and exposes its
+// DEFAULT content — usually empty — through innerText and textContent. Reading
+// the wrong one returns '' for a composer the user has typed into, and writing
+// the wrong one leaves the original text in place.
+function isValueBacked(el: HTMLElement): el is HTMLTextAreaElement | HTMLInputElement {
+  return el.tagName === 'TEXTAREA' || el.tagName === 'INPUT';
 }
 
-// Overwrites a contenteditable composer's content with plain text and fires
-// an `input` event so the site's own React/ProseMirror state picks up the
-// change — a raw DOM mutation alone leaves the framework's internal model
-// out of sync, and the next keystroke (or the send itself) could revert it.
-export function setContentEditableText(el: HTMLElement, text: string): void {
+// The `value` setter from the element's own prototype. Selected by tagName
+// rather than `instanceof`, which compares against a realm's constructors.
+function nativeValueSetter(
+  el: HTMLTextAreaElement | HTMLInputElement,
+): ((this: HTMLElement, value: string) => void) | undefined {
+  const proto =
+    el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  // Typed with an explicit receiver: the descriptor's own `set` carries none,
+  // and every call below supplies one, which is the whole point of reaching for
+  // the prototype's setter rather than the instance's.
+  const descriptor = Object.getOwnPropertyDescriptor(proto, 'value') as
+    { set?: (this: HTMLElement, value: string) => void } | undefined;
+  return descriptor?.set;
+}
+
+// What the user sees they have typed, whichever kind of composer holds it.
+export function extractComposerText(el: HTMLElement): string {
+  return isValueBacked(el) ? el.value : el.innerText;
+}
+
+// Overwrites a composer's content with plain text and fires an `input` event so
+// the site's own React/ProseMirror state picks up the change — a raw DOM
+// mutation alone leaves the framework's internal model out of sync, and the
+// next keystroke (or the send itself) could revert it.
+//
+// A value-backed composer is written through the PROTOTYPE's setter rather than
+// by assigning to `el.value`. A framework may redefine `value` as an own
+// accessor that caches what it last saw written, and compare that cache against
+// the live value to decide whether an input event represents a real change;
+// assigning updates the cache, so the framework concludes nothing changed and
+// keeps its model of the original text. Going through the prototype leaves the
+// cache stale, which is what makes the change observable. Falls back to
+// assignment where no such descriptor exists.
+export function setComposerText(el: HTMLElement, text: string): void {
   el.focus();
-  el.textContent = text;
+  if (isValueBacked(el)) {
+    const setter = nativeValueSetter(el);
+    if (setter) setter.call(el, text);
+    else el.value = text;
+  } else {
+    el.textContent = text;
+  }
   el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }));
 }
 

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type * as NodeOs from 'node:os';
+import { join } from 'node:path';
 
 import {
   applyOnboarding,

@@ -1,5 +1,5 @@
 import { createHash, createPublicKey } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -77,6 +77,47 @@ describe('manifest.json stays in sync with the provider registry', () => {
     expect(main).toHaveLength(1);
     expect(main[0]?.js).toEqual(['tap.js']);
     expect(main[0]?.run_at).toBe('document_start');
+  });
+
+  it('runs the bridge in the isolated world, at document_start, before the tap', () => {
+    // The bridge takes the tap's port off a single window.postMessage the tap
+    // sends as it installs. A listener registered after that handshake has gone
+    // by never hears it, and the tap — which reads nothing from the port — has
+    // no way to be asked again: the tab then reports a healthy patch and
+    // forwards every exchange into a port nobody drains.
+    //
+    // Isolated is stated by the ABSENCE of a world key, not by naming the
+    // default: the MAIN-world guard above counts entries carrying one, and a
+    // "world": "ISOLATED" here would read as a second page-context script to
+    // anything scanning for the key.
+    const bridgeAt = manifest.content_scripts.findIndex((entry) => entry.js.includes('bridge.js'));
+    const tapAt = manifest.content_scripts.findIndex((entry) => entry.js.includes('tap.js'));
+    expect(bridgeAt).toBeGreaterThanOrEqual(0);
+    expect(tapAt).toBeGreaterThanOrEqual(0);
+    expect(bridgeAt).toBeLessThan(tapAt);
+    const bridge = manifest.content_scripts[bridgeAt];
+    expect(bridge?.world).toBeUndefined();
+    expect(bridge?.run_at).toBe('document_start');
+    // Its own file: bundling it with the tap would put the whole bridge into
+    // the page's own context, and with the DOM script it would load too late.
+    expect(bridge?.js).toEqual(['bridge.js']);
+  });
+
+  it('ships a real bundle for every content script it declares', () => {
+    // Derived from the manifest rather than listed, so a fourth entry is
+    // covered without an edit here. The manifest is the only thing naming
+    // these files: an entry dropped from BROWSER_ENTRIES leaves the manifest
+    // pointing at a file the build no longer emits, and the shape assertions
+    // above — which read the manifest alone — all stay green.
+    const declared = manifest.content_scripts.flatMap((entry) => entry.js);
+    expect(declared.length).toBeGreaterThan(0);
+    for (const file of declared) {
+      const built = join(PACKAGE_ROOT, 'dist', file);
+      expect(existsSync(built), `${file} is declared but dist/${file} was not built`).toBe(true);
+      // Not merely present: an emit that produced an empty file loads as a
+      // content script that does nothing, which is the same invisible failure.
+      expect(statSync(built).size, `dist/${file} is empty`).toBeGreaterThan(0);
+    }
   });
 
   it('keeps every other content script in the isolated world', () => {

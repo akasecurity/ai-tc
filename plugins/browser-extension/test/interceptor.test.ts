@@ -18,6 +18,8 @@ function harness(
     // Models send-button selector drift: submit() finds nothing to click and
     // reports the send did not happen.
     sendButtonMissing?: boolean;
+    // Models a health-reporting fault: the network path's counter throws.
+    noteSendThrows?: boolean;
   } = {},
 ) {
   const composer = document.createElement('div');
@@ -29,6 +31,9 @@ function harness(
   const setTextCalls: string[] = [];
   let submitCount = 0;
   let reentrantPrevented = 0;
+  // The signal the network path counts turns against. Recorded in the order it
+  // arrives relative to submit(), because the pairing depends on it.
+  const sendSignals: number[] = [];
 
   const adapter: ProviderAdapter = {
     id: 'chatgpt',
@@ -44,6 +49,14 @@ function harness(
       }
       el.textContent = text;
     },
+    // The network half, unused here: the interceptor is the DOM path, and it
+    // reaches none of these. Declared so this adapter is a whole one — a
+    // partial cast would let the interface grow a member nothing in this file
+    // notices.
+    endpoints: [],
+    requiredPaths: { request: [], response: [] },
+    parseRequest: () => ({ requiredPathsSeen: false }),
+    parseStream: () => ({ push: () => undefined, end: () => null }),
     watchSubmit: () => () => undefined,
     submit: () => {
       if (overrides.sendButtonMissing) return false;
@@ -70,6 +83,10 @@ function harness(
     showBanner: (message, tone) => {
       banners.push({ message, tone });
     },
+    noteSend: () => {
+      if (overrides.noteSendThrows) throw new Error('health reporting broke');
+      sendSignals.push(submitCount);
+    },
   });
 
   return {
@@ -78,6 +95,7 @@ function harness(
     relayCalls,
     banners,
     setTextCalls,
+    sendSignals,
     submitted: () => submitCount,
     reentrantPrevented: () => reentrantPrevented,
   };
@@ -269,5 +287,71 @@ describe('createSubmitInterceptor', () => {
     expect(second.defaultPrevented).toBe(true); // intercepted again, not bypassed
     await settle();
     expect(h.relayCalls).toHaveLength(2);
+  });
+});
+
+// The network path counts a DOM-observed send as a turn it must see a network
+// exchange for, and reports the tab BLIND after a run of sends nothing
+// answered. So the signal has to name a send that actually happened: charged
+// at the relay instead, every message AKA itself stopped would count against a
+// tap that is working correctly, and a session that blocked three secrets
+// would report the interception as broken.
+describe('the DOM-send signal the network path counts against', () => {
+  it('fires once per message that actually went out, after the send', async () => {
+    const h = harness([capture({ action: 'log' })]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+    expect(h.submitted()).toBe(1);
+    // The value recorded is submitCount at the moment of the signal: the send
+    // is already on its way, so the request it started can answer it.
+    expect(h.sendSignals).toEqual([1]);
+  });
+
+  it('does not fire for a message the decision blocked', async () => {
+    // The case the counter got wrong. Nothing was sent, so no network turn can
+    // answer it, and charging it to the tap reports enforcement as drift.
+    const h = harness([capture({ action: 'block', ruleIds: ['aws-key'] })]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+    expect(h.submitted()).toBe(0);
+    expect(h.sendSignals).toEqual([]);
+  });
+
+  it('does not fire for a redact the composer would not take', async () => {
+    const h = harness([capture({ action: 'redact', text: 'masked', ruleIds: ['r1'] })], {
+      setText: () => undefined,
+    });
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+    expect(h.submitted()).toBe(0);
+    expect(h.sendSignals).toEqual([]);
+  });
+
+  it('does not fire when the send button drifted away', async () => {
+    // submit() reported the message did not go out. handleSubmit has already
+    // preventDefault()ed the user's own send, so nothing sent it and nothing
+    // will — a DOM-adapter fault, which must not be reported as a network one.
+    const h = harness([capture({ action: 'log' })], { sendButtonMissing: true });
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+    expect(h.sendSignals).toEqual([]);
+  });
+
+  it('fires for a send the host never answered, which still left the composer', async () => {
+    // Fail-open: the message went out, so a network turn is owed for it.
+    const h = harness([]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+    expect(h.submitted()).toBe(1);
+    expect(h.sendSignals).toEqual([1]);
+  });
+
+  it('never lets a reporting fault reach the message it is reporting on', async () => {
+    const h = harness([capture({ action: 'log' })], { noteSendThrows: true });
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+    expect(h.submitted()).toBe(1);
+    // And the send is still treated as having happened.
+    expect(h.banners).toEqual([]);
   });
 });

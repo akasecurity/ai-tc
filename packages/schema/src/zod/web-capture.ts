@@ -61,9 +61,15 @@ export const WebExchange = z.object({
   turnIndex: z.number().int().nonnegative().optional(),
   toolCalls: z.array(WebToolCall).default([]),
   // Absent when the adapter recovered no text. Capped by the caller at
-  // RESPONSE_TEXT_MAX_BYTES; `truncated` records that the cap was reached, so a
-  // short capture is never mistaken for a short reply.
+  // RESPONSE_TEXT_MAX_BYTES, so a short capture is never mistaken for a short
+  // reply.
   responseText: z.string().optional(),
+  // The stored text is short of the reply. It does NOT say which of the two
+  // ceilings on this path cut it: the caller applies its own cap on the raw
+  // bytes it reads off the wire, which can be reached by a stream whose
+  // recovered text stays well under RESPONSE_TEXT_MAX_BYTES, and applies that
+  // one to the text. A reader cannot tell them apart, and nothing downstream
+  // should branch as though it could.
   truncated: z.boolean().default(false),
 });
 export type WebExchange = z.infer<typeof WebExchange>;

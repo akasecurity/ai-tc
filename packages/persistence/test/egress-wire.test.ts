@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 
 import type { RecordProjectEgressInput } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
@@ -175,27 +176,27 @@ describe('hashProjectKey — cross-device convergence', () => {
     // construction rather than inferred from two calls agreeing.
     const untouched = (key: string): string =>
       createHash('sha256').update(`v2:${key}`, 'utf8').digest('hex');
+    // The empty-authority form, built the way the platform spells it: a drive
+    // lands after the third slash on Windows, and the URL is still `file://`.
+    const LOCAL = pathToFileURL('/srv/repos/demo').href;
 
     it('does not read an empty authority as a host named "file"', () => {
-      // Scp form matches `file:///srv/repos/demo` with host `file` and path
-      // `///srv/repos/demo`, and the digest was taken over `file/srv/repos/demo`.
-      expect(hashProjectKey('git:file:///srv/repos/demo')).not.toBe(
-        hashProjectKey('git:file/srv/repos/demo'),
-      );
-      expect(hashProjectKey('git:file:///srv/repos/demo')).toBe(
-        untouched('git:file:///srv/repos/demo'),
-      );
+      // Scp form matches the empty-authority URL with host `file` and a path of
+      // slashes then the directory, and the digest was taken over `file/<path>`.
+      const scpMisread = LOCAL.replace(/^file:\/+/, 'file/');
+      expect(scpMisread.startsWith('file/')).toBe(true);
+      expect(hashProjectKey(`git:${LOCAL}`)).not.toBe(hashProjectKey(`git:${scpMisread}`));
+      expect(hashProjectKey(`git:${LOCAL}`)).toBe(untouched(`git:${LOCAL}`));
     });
 
-    it.each([
-      'file:///srv/repos/demo',
-      'file://localhost/srv/repos/demo',
-      'FILE:///srv/repos/demo',
-    ])('digests %s over its text as given', (url) => {
-      expect(hashProjectKey(`git:${url}`)).toBe(untouched(`git:${url}`));
-    });
+    it.each([LOCAL, 'file://localhost/srv/repos/demo', LOCAL.replace(/^file:/, 'FILE:')])(
+      'digests %s over its text as given',
+      (url) => {
+        expect(hashProjectKey(`git:${url}`)).toBe(untouched(`git:${url}`));
+      },
+    );
 
-    it.each(['file:///srv/repos/demo', 'file://localhost/srv/repos/demo'])(
+    it.each([LOCAL, 'file://localhost/srv/repos/demo'])(
       'keeps %s apart from the same path ending in .git',
       (url) => {
         // A bare repository beside a working one is an ordinary layout, and the

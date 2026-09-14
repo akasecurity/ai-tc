@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,11 +14,7 @@ import type {
   WebChatResponseCapture,
   WebExchange,
 } from '@akasecurity/schema';
-import {
-  RESPONSE_TEXT_MAX_BYTES,
-  toCaptureStatusAttributes,
-  WEB_CHAT_CAPTURE_CONSENT_VERSION,
-} from '@akasecurity/schema';
+import { RESPONSE_TEXT_MAX_BYTES, WEB_CHAT_CAPTURE_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree, removeTrees } from '../../../../test/helpers/remove-tree.ts';
@@ -1352,152 +1347,11 @@ describe('capture_status durable write', () => {
 });
 
 describe('capture_state', () => {
-  it('derives standby from a stored zero-endpoint status', async () => {
-    const dataDir = join(scratchRoot('aka-capture-state-standby-'), 'aka');
-    const cfgForTool: ConfigForTool = (tool) => ({
-      ...config(tool, webChatSettings()),
-      dataDir,
-      dbPath: join(dataDir, 'aka.db'),
-    });
-    await handleRequest(
-      {
-        type: 'capture_status',
-        requestId: 'state-standby-1',
-        sessionId: 'state-standby-session',
-        tool: 'chatgpt',
-        status: { ...VALID_STATUS, conversationEndpoints: 0 },
-      },
-      cfgForTool,
-    );
-    const response = await handleRequest(
-      { type: 'capture_state', requestId: 'state-2' },
-      cfgForTool,
-    );
-    if (response.type !== 'capture_state') throw new Error('expected capture_state');
-    const chatgpt = response.sites.find((s) => s.tool === 'chatgpt');
-    expect(chatgpt?.state).toBe('standby');
-  });
-
-  it('falls back to this process own map when the store answers nothing', async () => {
-    const dataDir1 = join(scratchRoot('aka-capture-state-fallback-1-'), 'aka');
-    const dataDir2 = join(scratchRoot('aka-capture-state-fallback-2-'), 'aka');
-    await handleRequest(
-      {
-        type: 'capture_status',
-        requestId: 'state-fb-1',
-        sessionId: 'state-fallback-session',
-        tool: 'claude-ai',
-        // `live` only becomes true when an exchange parses, so the count goes
-        // with it — a status carrying one without the other is a shape the
-        // bridge cannot produce.
-        status: { ...VALID_STATUS, conversationEndpoints: 1, live: true, exchangesSeenNet: 1 },
-      },
-      (tool) => ({
-        ...config(tool, webChatSettings()),
-        dataDir: dataDir1,
-        dbPath: join(dataDir1, 'aka.db'),
-      }),
-    );
-    // A DIFFERENT (empty) dataDir for the capture_state read — the store
-    // answers nothing for this site, so the in-memory map is what's left.
-    const response = await handleRequest(
-      { type: 'capture_state', requestId: 'state-fb-2' },
-      (tool) => ({
-        ...config(tool, webChatSettings()),
-        dataDir: dataDir2,
-        dbPath: join(dataDir2, 'aka.db'),
-      }),
-    );
-    if (response.type !== 'capture_state') throw new Error('expected capture_state');
-    const claudeAi = response.sites.find((s) => s.tool === 'claude-ai');
-    expect(claudeAi?.state).toBe('active');
-  });
-
-  it('prefers this process own newer report over an older stored row', async () => {
-    // The durable write is fail-open, so a store that still READS while
-    // refusing WRITES loses every later report — and a stored row preferred
-    // for being stored then reports a state this process has been told is out
-    // of date. Stood in for by writing the newer report into a different
-    // dataDir, which is what a refused write leaves behind.
-    const readDir = join(scratchRoot('aka-capture-state-stale-read-'), 'aka');
-    const lostDir = join(scratchRoot('aka-capture-state-stale-lost-'), 'aka');
-    const db = openLocalDatabase(readDir);
-    try {
-      db.auditEvents.insertAuditEvent({
-        id: randomUUID(),
-        eventType: 'capture_status',
-        startedAt: '2020-01-01T00:00:00.000Z',
-        attributes: toCaptureStatusAttributes(
-          { ...VALID_STATUS, blind: true, sendsSeenDom: 3 },
-          'chatgpt',
-        ),
-      });
-    } finally {
-      db.close();
-    }
-
-    await handleRequest(
-      {
-        type: 'capture_status',
-        requestId: 'state-stale-1',
-        sessionId: 'state-stale-session',
-        tool: 'chatgpt',
-        status: { ...VALID_STATUS, live: true, exchangesSeenNet: 1 },
-      },
-      (tool) => ({
-        ...config(tool, webChatSettings()),
-        dataDir: lostDir,
-        dbPath: join(lostDir, 'aka.db'),
-      }),
-    );
-
-    const response = await handleRequest(
-      { type: 'capture_state', requestId: 'state-stale-2' },
-      (tool) => ({
-        ...config(tool, webChatSettings()),
-        dataDir: readDir,
-        dbPath: join(readDir, 'aka.db'),
-      }),
-    );
-    if (response.type !== 'capture_state') throw new Error('expected capture_state');
-    expect(response.sites.find((s) => s.tool === 'chatgpt')?.state).toBe('active');
-  });
-
-  it('answers from this process own map when the store read throws', async () => {
-    // The inner catch is the only thing keeping a contended store from turning
-    // the popup's whole reply into runHost's generic error — and the popup is
-    // the first surface a user checks, so a reply it cannot render is the
-    // worst of the three outcomes. Point dataDir at a regular file so opening
-    // the store throws while resolving.
-    const reportDir = join(scratchRoot('aka-capture-state-readfail-'), 'aka');
-    await handleRequest(
-      {
-        type: 'capture_status',
-        requestId: 'rf-1',
-        sessionId: 'browser-readfail',
-        tool: 'chatgpt',
-        status: { ...VALID_STATUS, live: true, exchangesSeenNet: 1 },
-      },
-      (tool) => ({
-        ...config(tool, webChatSettings()),
-        dataDir: reportDir,
-        dbPath: join(reportDir, 'aka.db'),
-      }),
-    );
-
-    const filePath = join(dir, 'state-blocker');
-    writeFileSync(filePath, 'x');
-    const response = await handleRequest({ type: 'capture_state', requestId: 'rf-2' }, (tool) => ({
-      ...config(tool, webChatSettings()),
-      dataDir: filePath,
-      dbPath: join(filePath, 'aka.db'),
-    }));
-
-    // Not an error, and not empty: the in-memory report answers.
-    if (response.type !== 'capture_state') throw new Error('expected capture_state');
-    expect(response.sites.find((s) => s.tool === 'chatgpt')?.state).toBe('active');
-  });
-
+  // Every case about WHICH documents a site's state is folded from lives in
+  // capture-state-documents.test.ts: the in-memory map is module-global, so a
+  // document an earlier case left open goes on voting here, and only a file
+  // boundary gives a case the single-tab browser it means to describe. What is
+  // left here is the two answers that depend on no document at all.
   it('reports consented: false with no valid consent', async () => {
     const response = await handleRequest({ type: 'capture_state', requestId: 'state-3' }, config);
     expect(response).toMatchObject({ type: 'capture_state', consented: false });

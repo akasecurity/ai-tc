@@ -30,9 +30,10 @@ import {
   deriveWebCaptureState,
   loadConfig,
   offersCaptureStatusReader,
+  reportedCaptureDocumentForSite,
   scanText,
 } from '@akasecurity/plugin-sdk';
-import type { ActionTaken, SourceTool, StoredCaptureStatus } from '@akasecurity/schema';
+import type { ActionTaken, ReportedCaptureDocument, SourceTool } from '@akasecurity/schema';
 import {
   isWebChatCaptureConsentValid,
   pickReportedCaptureStatus,
@@ -104,13 +105,76 @@ function recordCaptureStatus(sessionId: string, record: TrackedCaptureStatus): v
 }
 
 // The fail-open fallback `capture_state` reaches for: this process's own
-// reports for a site, newest first. Not gated on consent — it reads back what
-// was already recorded, and the response's own `consented` field is what says
-// whether anything new is being recorded at all.
-function trackedFor(tool: WebSourceTool): TrackedCaptureStatus[] {
-  return [...captureStatuses.values()]
-    .filter((record) => record.tool === tool)
-    .sort((a, b) => (a.observedAt < b.observedAt ? 1 : a.observedAt > b.observedAt ? -1 : 0));
+// reports for a site, one per document. Not gated on consent — it reads back
+// what was already recorded, and the response's own `consented` field is what
+// says whether anything new is being recorded at all.
+//
+// The map's KEY is the document's grouping id: the host writes each
+// `capture_status` row with `rootSessionId === sessionId`, so these line up
+// with the stored half of the merge below on the same id. Unsorted, because
+// the fold this feeds is order-independent by construction.
+function trackedFor(tool: WebSourceTool): ReportedCaptureDocument[] {
+  return [...captureStatuses.entries()]
+    .filter(([, record]) => record.tool === tool)
+    .map(([sessionId, record]) => ({
+      tool: record.tool,
+      observedAt: record.observedAt,
+      status: record.status,
+      rootSessionId: sessionId,
+      // One entry per session and every report overwrites it, so this IS the
+      // document's last word — there is no older row here to pick between.
+      lastReportAt: record.observedAt,
+      closed: record.status.closed,
+    }));
+}
+
+/**
+ * The two halves of `capture_state`'s answer as one document list.
+ *
+ * Grouped by document rather than concatenated, because the fold downstream
+ * takes the worst of a site's documents and a document appearing twice would
+ * vote twice — harmless for the worst-of itself, but it moves the tiebreaks.
+ * The two halves overlap by construction: the durable row and the in-memory
+ * copy are written from the same report.
+ *
+ * Within a document the same within-document pick the store's own read makes,
+ * so a watching-only report does not replace a verdict merely for being newer.
+ * A stored row is not preferred for BEING stored: under a fault that permits
+ * reads but refuses writes it is the older answer, and preferring it
+ * positionally would report a state this process has already been told is out
+ * of date. On an exact `observedAt` tie the stored row leads, being the system
+ * of record — it comes first below and the sort is stable.
+ */
+function mergeCaptureDocuments(
+  stored: readonly ReportedCaptureDocument[],
+  tracked: readonly ReportedCaptureDocument[],
+): ReportedCaptureDocument[] {
+  const byDocument = new Map<string | undefined, ReportedCaptureDocument[]>();
+  for (const document of [...stored, ...tracked]) {
+    const group = byDocument.get(document.rootSessionId);
+    if (group === undefined) byDocument.set(document.rootSessionId, [document]);
+    else group.push(document);
+  }
+  const merged: ReportedCaptureDocument[] = [];
+  for (const group of byDocument.values()) {
+    const ordered = [...group].sort((a, b) =>
+      a.observedAt < b.observedAt ? 1 : a.observedAt > b.observedAt ? -1 : 0,
+    );
+    const picked = pickReportedCaptureStatus(ordered);
+    if (picked === undefined) continue;
+    // Whether the document is still around comes from its newest report in
+    // EITHER half, not from the row the pick landed on.
+    let lastReportAt = picked.lastReportAt;
+    let closed = picked.closed;
+    for (const document of group) {
+      if (document.lastReportAt > lastReportAt) {
+        lastReportAt = document.lastReportAt;
+        closed = document.closed;
+      }
+    }
+    merged.push({ ...picked, lastReportAt, closed });
+  }
+  return merged;
 }
 
 // chatgpt.com / claude.ai are each single-backend web apps — there's no local
@@ -425,7 +489,7 @@ export async function handleRequest(
     case 'capture_state': {
       const config = configForTool(undefined);
       const webChat = webChatCaptureOf(config.settings);
-      let stored: StoredCaptureStatus[] = [];
+      let stored: ReportedCaptureDocument[] = [];
       // Resolved INSIDE the try for the reason the exchange case gives:
       // opening the store runs the migrations, so an unopenable home throws
       // here rather than on the read, and outside the try that escaped into
@@ -441,18 +505,16 @@ export async function handleRequest(
         await gateway?.close();
       }
       const sites = WEB_SOURCE_TOOLS.map((tool) => {
-        // Both sources in one preference order, newest first, then the same
-        // pick the store's own read makes. A stored row is not preferred for
-        // being stored: under a fault that permits reads but refuses writes it
-        // is the older answer, and preferring it positionally would report a
-        // state this process has already been told is out of date. On an exact
-        // tie the stored row leads, being the system of record.
-        const storedRecord = stored.find((s) => s.tool === tool);
-        const candidates: (StoredCaptureStatus | TrackedCaptureStatus)[] = [
-          ...(storedRecord === undefined ? [] : [storedRecord]),
-          ...trackedFor(tool),
-        ].sort((a, b) => (a.observedAt < b.observedAt ? 1 : a.observedAt > b.observedAt ? -1 : 0));
-        const record = pickReportedCaptureStatus(candidates);
+        // Both halves merged per document, then the same per-site fold every
+        // other surface makes — the popup is where a user looks first, and
+        // taking the newest document's report here would hide a drifting tab
+        // behind a healthy one exactly as the store read used to.
+        const record = reportedCaptureDocumentForSite(
+          mergeCaptureDocuments(
+            stored.filter((s) => s.tool === tool),
+            trackedFor(tool),
+          ),
+        );
         return {
           tool,
           state: deriveWebCaptureState(record?.status),

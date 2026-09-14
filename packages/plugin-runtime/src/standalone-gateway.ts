@@ -42,12 +42,12 @@ import type {
   Policy,
   PolicyBundle,
   ProjectFilesScan,
+  ReportedCaptureDocument,
   ResolvedInventory,
   Rule,
   RuleProbeVerdict,
   SessionTokenReport,
   SimpleDetectionPolicy,
-  StoredCaptureStatus,
   ToolCallInput,
 } from '@akasecurity/schema';
 
@@ -215,7 +215,7 @@ export class StandaloneDataGateway
     return Promise.resolve(this.db.auditEvents.sessionProvider(sessionId));
   }
 
-  readCaptureStatuses(): Promise<StoredCaptureStatus[]> {
+  readCaptureStatuses(): Promise<ReportedCaptureDocument[]> {
     // The gateway is the I/O boundary, so it supplies the instant the read's
     // recency window is measured against. The port takes none: a caller of
     // `readCaptureStatuses` is asking what is reported NOW, and there is no

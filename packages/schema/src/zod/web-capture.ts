@@ -152,6 +152,13 @@ export function webCaptureStatusObservedTurnPath(status: WebCaptureStatus): bool
  * The report a surface should show, from candidates in preference order
  * (newest first).
  *
+ * It decides WITHIN ONE DOCUMENT. The read side groups a site's rows by the
+ * document that wrote them and applies this to each group, because the
+ * watching-only rule below is about a page that has reloaded and not yet
+ * re-tested — a statement about one document's own history, which says nothing
+ * about the other tab the same user has open. Folding several documents' picks
+ * into the site's one answer is `reportedCaptureDocumentForSite`'s job.
+ *
  * The first candidate that observed the turn path wins, so a run of
  * watching-only reports ahead of it does not replace it. Without that, the
  * newest report always wins and a page load — which relays a fresh
@@ -194,12 +201,65 @@ export const CAPTURE_STATUS_RECENCY_MS = 30 * 24 * 60 * 60 * 1000;
 /** `CAPTURE_STATUS_RECENCY_MS` in whole days, for copy that names the window. */
 export const CAPTURE_STATUS_RECENCY_DAYS = CAPTURE_STATUS_RECENCY_MS / (24 * 60 * 60 * 1000);
 
+/**
+ * How far behind a site's newest report a document may fall and still vote on
+ * that site's state.
+ *
+ * A document normally stops voting by SAYING so — the bridge's `pagehide`
+ * report carries `closed`. This is the bound for when that never arrives: a
+ * hard crash, an OS kill, Chrome's memory saver discarding the tab, a host
+ * that was not running at unload. Without it such a document's verdict votes
+ * for the whole of CAPTURE_STATUS_RECENCY_MS, which is the failure the picker
+ * exists to prevent one grain up — a user who reloaded the tab as the `blind`
+ * copy told them to would go on being shown the verdict they had just cleared.
+ *
+ * Twelve hours, and deliberately far above any settle time. These reports are
+ * change-triggered, so a tab that is being watched and is behaving reports
+ * once and then stays silent for as long as it is open; a window short enough
+ * to look tidy would retire exactly those quiet healthy documents, whose
+ * silence is the design. This is a backstop for a document that is GONE, not a
+ * liveness probe — there is no such signal in the store, and adding one would
+ * mean a timer in the content script (which the bridge refuses) writing rows
+ * into a table with no retention policy.
+ */
+export const CAPTURE_STATUS_DOCUMENT_QUIET_MS = 12 * 60 * 60 * 1000;
+
 /** One site's reported status, as the local store holds it. */
 export interface StoredCaptureStatus {
   tool: WebSourceTool;
   /** When the host received it, ISO-8601 — the row's own `started_at`. */
   observedAt: string;
   status: WebCaptureStatus;
+}
+
+/**
+ * One site's reported status from ONE document — one `root_session_id`, which
+ * for these rows is one page load of one tab.
+ *
+ * A site is one thing and a browser is many documents: two tabs on chatgpt.com
+ * and the page a third has just replaced all report for the same site, and the
+ * newest of them is not the one a user needs to see. So the read side returns
+ * every document that reported and the fold takes the worst of those still
+ * voting (`reportedCaptureDocumentForSite`).
+ *
+ * `StoredCaptureStatus` plus what deciding that needs. The extra two fields
+ * are NOT restatements of `observedAt` and `status.closed`: the picker chooses
+ * the newest row in the group that observed the turn path, which can be an
+ * older row than the group's newest, and whether the document is still around
+ * is a property of its LAST word rather than of the row that carried its
+ * verdict.
+ */
+export interface ReportedCaptureDocument extends StoredCaptureStatus {
+  /**
+   * The grouping key. Absent for a row written before the host stamped one;
+   * every such row is read as ONE document, which is the only safe reading —
+   * two unstamped rows cannot be told apart.
+   */
+  rootSessionId?: string;
+  /** When this document's NEWEST report was received, ISO-8601. */
+  lastReportAt: string;
+  /** That newest report said the document was going away. */
+  closed: boolean;
 }
 
 // WebCaptureStatus <-> the snake_case CaptureStatusAttributes bag an

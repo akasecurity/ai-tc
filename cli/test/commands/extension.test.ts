@@ -303,17 +303,30 @@ describe('runStatus — the network-capture block', () => {
     };
   }
 
-  function seedStatus(tool: 'chatgpt' | 'claude-ai', status: WebCaptureStatus): void {
+  function seedStatus(
+    tool: 'chatgpt' | 'claude-ai',
+    status: WebCaptureStatus,
+    agoMs = 0,
+    rootSessionId?: string,
+  ): void {
     const db = openLocalDatabase(dataDir(home));
+    // Stamped NOW rather than at a fixed date: `captureStatus.latest` bounds
+    // its read to the last CAPTURE_STATUS_RECENCY_MS, so a literal calendar
+    // date ages out of the window once the wall clock passes it and every
+    // case below would then assert against an empty read.
+    const startedAt = new Date(Date.now() - agoMs).toISOString();
     try {
+      // `root_session_id` groups a site's rows into documents, so a case about
+      // two tabs names it and every other case leaves it unset — which reads
+      // as the one document those cases mean. It is a self-FK, so the root row
+      // has to exist first; its `session` row carries no attributes and so no
+      // `source_tool`, which keeps it out of this read.
+      if (rootSessionId !== undefined) db.auditEvents.ensureSessionRoot(rootSessionId, startedAt);
       db.auditEvents.insertAuditEvent({
         id: `${tool}-status-${String(Math.random())}`,
         eventType: 'capture_status',
-        // Stamped NOW rather than at a fixed date: `captureStatus.latest`
-        // bounds its read to the last CAPTURE_STATUS_RECENCY_MS, so a literal
-        // calendar date ages out of the window once the wall clock passes it
-        // and every case below would then assert against an empty read.
-        startedAt: new Date().toISOString(),
+        startedAt,
+        ...(rootSessionId === undefined ? {} : { rootSessionId }),
         attributes: toCaptureStatusAttributes(status, tool),
       });
     } finally {
@@ -387,6 +400,28 @@ describe('runStatus — the network-capture block', () => {
     // No count: it would be the count as of the last report, not the session's.
     expect(out).not.toContain('1 turn observed');
     expect(out).not.toContain('web-capture-drift');
+  });
+
+  it('prints one tab-s drift while another tab is capturing fine', () => {
+    // Two documents on one site, which is an ordinary browser. The newest of
+    // them reporting healthy used to be the whole answer, so this surface said
+    // `active` while a tab was swallowing the user's messages.
+    writeSettings(consentedSettings());
+    seedStatus(
+      'claude-ai',
+      { ...BASE_STATUS, conversationEndpoints: 1, blind: true, sendsSeenDom: 3 },
+      60_000,
+      'doc-blind',
+    );
+    seedStatus(
+      'claude-ai',
+      { ...BASE_STATUS, conversationEndpoints: 1, live: true, exchangesSeenNet: 4 },
+      0,
+      'doc-healthy',
+    );
+    const out = run();
+    expect(out).toContain('blind');
+    expect(out).toContain('the network capture never saw');
   });
 
   it('prints the blind headline and its own remediation, not the degraded one', () => {

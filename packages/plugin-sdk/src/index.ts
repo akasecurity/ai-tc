@@ -206,6 +206,7 @@ export type { WebCaptureSiteReport, WebCaptureState } from '@akasecurity/detecti
 export {
   deriveWebCaptureState,
   DRIFT_MIN_PARSE_FAILURES,
+  reportedCaptureDocumentForSite,
   WEB_CAPTURE_DRIFT_RULE,
   WEB_CAPTURE_DRIFT_STATES,
   webCaptureReport,

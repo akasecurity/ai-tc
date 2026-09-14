@@ -21,9 +21,18 @@ import { lockStore, primaryCode, SQLITE_BUSY } from '../helpers/fault-injection.
 import { useTempStore } from '../helpers/temp-store.ts';
 import { assertNoOpenTransaction } from '../helpers/transactions.ts';
 
-const store = useTempStore('aka-fault-locked-');
+// One store PER DESCRIBE, because these cases do not all want the same setup.
+// Rebuilding the schema per test costs ~7x seeding the migrated template
+// (measured 11.4ms against 1.6ms), and the Windows leg charges roughly 30x that
+// again — which is what put this file at its per-test ceiling. A describe whose
+// SUBJECT is the open path or a migration cannot take the template: a
+// pre-migrated store would leave its assertions holding for a reason the case
+// is not about, and a vacuous pass is worse than the timeout it replaces.
 
 describe('a capture that loses the write lock', () => {
+  // Subject is a fault on a store that is already open.
+  const store = useTempStore('aka-fault-locked-capture-', { migrated: true });
+
   it('drops the event silently — no throw, no row, no signal', async () => {
     const db = store.open();
     const seeded = captureEvent();
@@ -84,6 +93,9 @@ describe('a capture that loses the write lock', () => {
 });
 
 describe('the SQLITE_BUSY fail-open branch', () => {
+  // Subject is the fail-open branch, reached through a raw handle.
+  const store = useTempStore('aka-fault-locked-branch-', { migrated: true });
+
   it('names the failure as contention when the caller does not swallow it', () => {
     store.open().close();
     // A raw handle carries no `busy_timeout`, so it is refused at once instead
@@ -129,6 +141,9 @@ describe('the SQLITE_BUSY fail-open branch', () => {
 });
 
 describe('opening a store whose write lock is held', () => {
+  // The OPEN PATH is this describe's subject, so it keeps the full open.
+  const store = useTempStore('aka-fault-locked-open-');
+
   it('fails rather than blocking forever, because the open itself writes', () => {
     store.open().close();
     const lock = lockStore(store.dbFile, { onCleanup: store.onCleanup });

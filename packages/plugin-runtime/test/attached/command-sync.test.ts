@@ -17,6 +17,7 @@ import {
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
+import type * as Remote from '@akasecurity/remote';
 import type { AttachedCredential, ControlPlaneConnection } from '@akasecurity/schema';
 import { SOURCE_TOOL } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -26,7 +27,11 @@ import type { WorktreeScan } from '../../src/attached/command-sync.ts';
 const pollCommand = vi.fn();
 const ackCommand = vi.fn();
 
-vi.mock('@akasecurity/remote', () => ({
+// Only the client is faked; the rest of the package — the failure classifier
+// the attached code reads verdicts through — stays real, so a fake that
+// throws a status is classified the way production classifies it.
+vi.mock('@akasecurity/remote', async (importActual) => ({
+  ...(await importActual<typeof Remote>()),
   createRemoteClient: () => ({ pollCommand, ackCommand }),
 }));
 

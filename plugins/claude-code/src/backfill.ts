@@ -221,7 +221,7 @@ export async function runBackfill(deps: BackfillDeps): Promise<void> {
       const scope = `Scanned ${String(summary.scanned)} messages from the last ${String(summary.windowDays)} days of Claude Code history.`;
       const result =
         summary.findings > 0
-          ? `Found ${String(summary.findings)} pre-install finding${summary.findings === 1 ? '' : 's'} — review them with /findings.`
+          ? `Found ${String(summary.findings)} pre-install finding${summary.findings === 1 ? '' : 's'} — review them with /aka:findings.`
           : 'No new pre-install secrets found in your history.';
       const lines = [heading, '', indent(scope), '', indent(result)];
       if (scrubbedFiles > 0) {

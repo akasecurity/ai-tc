@@ -1,6 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type * as Persistence from '@akasecurity/persistence';
@@ -11,9 +10,10 @@ import {
   VAULT_CONSENT_VERSION,
   WEB_CHAT_CAPTURE_CONSENT_VERSION,
 } from '@akasecurity/schema';
-import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import { saveSettings } from '../../app/(app)/settings/actions.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // `saveSettings` is the web surface that records and revokes the vault-consent
 // grant. The grant must always be stamped server-side ('on' has no input path
@@ -32,6 +32,11 @@ vi.mock('node:os', async (importActual) => {
   return { ...actual, homedir: () => osHome.dir };
 });
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
+
+// Homes are removed when this FILE finishes, not after each test: the store
+// app/lib/db.ts opens under them stays open, and Windows will not delete a
+// directory a handle still holds. See the helper.
+const newHome = tempHomes('aka-web-settings-');
 
 // The seam the lock proof at the bottom of this file needs, and nothing else
 // uses it: a hook that runs at the moment `saveSettings` CALLS applyOnboarding,
@@ -73,16 +78,89 @@ function rawSettings(): string {
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-web-settings-'));
+  home = newHome();
   osHome.dir = home;
 });
 
-afterEach(() => {
-  beforeMerge.run = undefined;
-  rmSync(home, { recursive: true, force: true });
-});
-
 const ENDPOINT = 'https://plane.example.com';
+
+describe('saveSettings — the redact fallback', () => {
+  // The setting that decides what happens on a field a detection's Redact
+  // cannot be applied to. It is a plain preference, not a consent grant: no
+  // acknowledgement is stamped and nothing about it is versioned.
+  it('persists each of the three values', async () => {
+    for (const value of ['monitor', 'warn', 'block'] as const) {
+      const res = await saveSettings({
+        historicalAccess: 'session-only',
+        modelJudgeConsent: 'unchanged',
+        historySyncConsent: 'unchanged',
+        vaultConsent: 'off',
+        vaultInlineReveal: 'masked',
+        webChatCaptureConsent: 'unchanged',
+        redactFallback: value,
+        bodyRetention: { enabled: false, retainDays: 30 },
+      });
+      expect(res).toEqual({ ok: true });
+      expect(readWorkspaceSettings().redactFallback).toBe(value);
+    }
+  });
+
+  it('refuses a value outside the vocabulary without throwing, and writes nothing', async () => {
+    // A Server Action's parameter types are a claim its runtime never checks:
+    // this arrives as JSON over a POST. A rejected promise here would be a
+    // framework error page instead of a recoverable result — and the refusal
+    // must not half-apply the rest of the payload either.
+    await saveSettings({
+      historicalAccess: 'session-only',
+      modelJudgeConsent: 'unchanged',
+      historySyncConsent: 'unchanged',
+      vaultConsent: 'off',
+      vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
+      redactFallback: 'block',
+      bodyRetention: { enabled: false, retainDays: 30 },
+    });
+
+    const res = await saveSettings({
+      historicalAccess: 'full',
+      modelJudgeConsent: 'unchanged',
+      historySyncConsent: 'unchanged',
+      vaultConsent: 'off',
+      vaultInlineReveal: 'full',
+      webChatCaptureConsent: 'unchanged',
+      redactFallback: 'redact',
+      bodyRetention: { enabled: false, retainDays: 30 },
+    });
+
+    expect(res.ok).toBe(false);
+    const after = readWorkspaceSettings();
+    expect(after.redactFallback).toBe('block');
+    // The neighbouring edits in the same refused payload were not applied.
+    expect(after.historicalAccess).toBe('session-only');
+    expect(after.vaultInlineReveal).toBe('masked');
+  });
+
+  it('refuses a non-string, the shape the signature cannot enforce', async () => {
+    const res = await saveSettings({
+      historicalAccess: 'session-only',
+      modelJudgeConsent: 'unchanged',
+      historySyncConsent: 'unchanged',
+      vaultConsent: 'off',
+      vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
+      redactFallback: 7,
+      bodyRetention: { enabled: false, retainDays: 30 },
+    });
+    expect(res.ok).toBe(false);
+    // WHICH guard refused it, not merely that something did. `ok: false` is
+    // reachable from two: this field's shape schema rejecting a number, which
+    // reaches `malformedInput` and names the key — or, if that schema were
+    // widened, the domain enum failing later and reaching the shared refusal,
+    // which names nothing. Asserting only `ok: false` holds under the mutation
+    // this case's own title describes, so it has to name the field.
+    expect(res.error).toContain('redactFallback');
+  });
+});
 
 describe('saveSettings — vault-consent grant and revocation', () => {
   it("records a server-stamped grant at the current consent version on 'on'", async () => {
@@ -94,6 +172,8 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(res).toEqual({ ok: true });
 
@@ -124,6 +204,8 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       // A real unrelated edit, so this is a save that had to do something.
       vaultInlineReveal: 'full',
       webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
 
     // THE POSITIVE CONTROL. Without it every assertion below is satisfied by a
@@ -167,6 +249,8 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       // A real unrelated edit, or the save proves nothing.
       vaultInlineReveal: 'full',
       webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(res.ok).toBe(true);
 
@@ -175,6 +259,115 @@ describe('saveSettings — vault-consent grant and revocation', () => {
     // WHY sharing is paused still has something to read.
     expect(readWorkspaceSettings().historySyncConsent).toEqual(stale);
     expect(readWorkspaceSettings().vaultInlineReveal).toBe('full');
+  });
+
+  // The mirror of the stale case above: a grant that is ALREADY valid for the
+  // current payload version and endpoint must survive a 'granted' re-save
+  // byte-for-byte — kept as-is rather than re-stamped, so its acknowledgedAt
+  // does not drift on every unrelated save. The backfill DOES still run,
+  // bounded to the EXISTING acknowledgedAt rather than "now" — see the sibling
+  // test below, which is what actually exercises it; this one is the record
+  // staying put, not the retry.
+  it("keeps an already-valid grant as-is when 'granted' is saved again", async () => {
+    const current = {
+      acknowledgedAt: '2020-01-01T00:00:00.000Z',
+      payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+      endpoint: ENDPOINT,
+    };
+    const { applyOnboarding } = await import('@akasecurity/persistence');
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: '2020-01-01T00:00:00.000Z' },
+        historySyncConsent: current,
+      },
+      join(home, '.aka'),
+    );
+
+    const res = await saveSettings({
+      historicalAccess: 'session-only',
+      modelJudgeConsent: 'revoked',
+      historySyncConsent: 'granted',
+      vaultConsent: 'off',
+      // A real unrelated edit, or the save proves nothing about a re-stamp it
+      // never had cause to make.
+      vaultInlineReveal: 'full',
+      webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
+    });
+    expect(res.ok).toBe(true);
+    expect(readWorkspaceSettings().historySyncConsent).toEqual(current);
+    expect(readWorkspaceSettings().vaultInlineReveal).toBe('full');
+  });
+
+  // THE RETRY ITSELF. seedCaptureBacklogOwed is best-effort and silent — a
+  // locked or unwritable store at grant time must not turn a successful
+  // consent into a reported failure — and `aka attach` / `aka sync-history
+  // --on` get a retry for free because a human can just run either again.
+  // This is the dashboard's only equivalent: choosing 'granted' again over an
+  // already-valid grant, which the previous test shows leaves the RECORD
+  // untouched but must still give the backfill another attempt, bounded to
+  // that record's own acknowledgedAt so it recovers exactly what the original
+  // grant promised.
+  it("retries the capture backfill when 'granted' is saved over an already-valid grant", async () => {
+    const acknowledgedAt = '2020-06-01T00:00:00.000Z';
+    const current = {
+      acknowledgedAt,
+      payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+      endpoint: ENDPOINT,
+    };
+    const { applyOnboarding, dataDir, openLocalDatabase } =
+      await import('@akasecurity/persistence');
+    const base = join(home, '.aka');
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: ENDPOINT, attachedAt: acknowledgedAt },
+        historySyncConsent: current,
+      },
+      base,
+    );
+
+    // A pre-attach capture, never marked owed — standing in for the row a
+    // locked store dropped the first time this grant's backfill ran.
+    const db1 = openLocalDatabase(dataDir(base));
+    try {
+      db1.auditEvents.ensureSessionRoot('s-1', '2020-05-01T00:00:00.000Z');
+      db1.auditEvents.insertAuditEvent({
+        id: 's-1-prompt',
+        eventType: 'prompt',
+        rootSessionId: 's-1',
+        parentId: 's-1',
+        startedAt: '2020-05-01T00:01:00.000Z',
+        content: 'text of a prompt the first backfill missed',
+        contentHash: 'c'.repeat(64),
+        attributes: { source_tool: 'claude-code' },
+      });
+    } finally {
+      db1.close();
+    }
+
+    const res = await saveSettings({
+      historicalAccess: 'session-only',
+      modelJudgeConsent: 'revoked',
+      historySyncConsent: 'granted',
+      vaultConsent: 'off',
+      vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
+    });
+    expect(res.ok).toBe(true);
+
+    const db2 = openLocalDatabase(dataDir(base));
+    try {
+      expect(
+        db2.historySync.pendingCaptureRows(10, Date.parse(acknowledgedAt) + 1).map((r) => r.id),
+      ).toEqual(['s-1-prompt']);
+    } finally {
+      db2.close();
+    }
   });
 
   it('still revokes on an explicit revoked, stale grant or not', async () => {
@@ -199,6 +392,8 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
 
     expect(readWorkspaceSettings().historySyncConsent).toBeUndefined();
@@ -212,6 +407,8 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     const first = readWorkspaceSettings().vaultConsent;
     expect(first).toBeDefined();
@@ -230,6 +427,8 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       // second save proves nothing about a re-stamp it never had cause to make.
       vaultInlineReveal: 'off',
       webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(res).toEqual({ ok: true });
 
@@ -246,6 +445,8 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(rawSettings()).toContain('vaultConsent');
 
@@ -256,6 +457,8 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(res).toEqual({ ok: true });
 
@@ -275,6 +478,8 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     const before = rawSettings();
 
@@ -285,6 +490,8 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: 'granted',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(res.ok).toBe(false);
     expect(rawSettings()).toBe(before);
@@ -302,6 +509,8 @@ describe('saveSettings — vault-consent grant and revocation', () => {
       vaultConsent: forged as unknown as string,
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(res.ok).toBe(false);
     expect(() => rawSettings()).toThrow(); // nothing was ever written
@@ -340,11 +549,76 @@ describe('stale-grant re-consent and inline reveal', () => {
       vaultConsent: 'on',
       vaultInlineReveal: 'masked',
       webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(result.ok).toBe(true);
     const persisted = readWorkspaceSettings(join(home, '.aka'));
     expect(persisted.vaultConsent?.version).toBe(VAULT_CONSENT_VERSION);
     expect(persisted.vaultConsent?.acknowledgedAt).not.toBe('2020-01-01T00:00:00.000Z');
+  });
+
+  it('persists the retention horizon the user chose', async () => {
+    const res = await saveSettings({
+      historicalAccess: 'session-only',
+      modelJudgeConsent: 'revoked',
+      historySyncConsent: 'revoked',
+      vaultConsent: 'off',
+      vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: true, retainDays: 7 },
+    });
+    expect(res.ok).toBe(true);
+
+    const saved = readWorkspaceSettings(join(home, '.aka')).bodyRetention;
+    expect(saved).toEqual({ enabled: true, retainDays: 7 });
+  });
+
+  it('defaults the horizon to 30 days on a store that never set one', () => {
+    // The default is the product's answer, not the form's — a machine that has
+    // never opened Settings must already carry it.
+    expect(readWorkspaceSettings(join(home, '.aka')).bodyRetention).toEqual({
+      enabled: false,
+      retainDays: 30,
+    });
+  });
+
+  it('refuses a horizon outside the legal range rather than clamping it', async () => {
+    // Clamping would expire a different set of bodies than the one asked for,
+    // and expiry is not undoable. Both ends, and the non-integer case.
+    for (const retainDays of [0, -1, 3651, 2.5]) {
+      const res = await saveSettings({
+        historicalAccess: 'session-only',
+        modelJudgeConsent: 'revoked',
+        historySyncConsent: 'revoked',
+        vaultConsent: 'off',
+        vaultInlineReveal: 'masked',
+        webChatCaptureConsent: 'unchanged',
+        redactFallback: 'warn',
+        bodyRetention: { enabled: true, retainDays },
+      });
+      expect(res.ok, `retainDays ${String(retainDays)} was accepted`).toBe(false);
+    }
+    // Nothing was written by any of the refusals.
+    expect(readWorkspaceSettings(join(home, '.aka')).bodyRetention.enabled).toBe(false);
+  });
+
+  it('refuses a malformed bodyRetention without throwing', async () => {
+    for (const bodyRetention of [null, 'always', 42, { enabled: 'yes', retainDays: 30 }]) {
+      const res = await saveSettings({
+        historicalAccess: 'session-only',
+        modelJudgeConsent: 'revoked',
+        historySyncConsent: 'revoked',
+        vaultConsent: 'off',
+        vaultInlineReveal: 'masked',
+        webChatCaptureConsent: 'unchanged',
+        redactFallback: 'warn',
+        bodyRetention,
+      });
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error).toBeTruthy();
+    }
   });
 
   it('persists a valid inline-reveal mode and rejects junk', async () => {
@@ -355,6 +629,8 @@ describe('stale-grant re-consent and inline reveal', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'full',
       webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(ok.ok).toBe(true);
     expect(readWorkspaceSettings(join(home, '.aka')).vaultInlineReveal).toBe('full');
@@ -366,20 +642,13 @@ describe('stale-grant re-consent and inline reveal', () => {
       vaultConsent: 'off',
       vaultInlineReveal: 'loud',
       webChatCaptureConsent: 'unchanged',
+      redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     });
     expect(bad.ok).toBe(false);
   });
 });
 
-// The browser extension's web-chat capture writes down a class of thing nothing
-// wrote down before — per-turn model and token metadata, the tool calls a reply
-// made, and the reply's own text — so it carries its own versioned grant. This
-// surface is where a person gives and withdraws it.
-//
-// Every case here uses a payload the ACTION was given, never a module constant
-// standing in for one, and every one that asserts an absence carries a positive
-// control beside it: a refused save leaves a seeded grant untouched too, which
-// is exactly what several of these assert.
 describe('saveSettings — the web-chat capture grant', () => {
   // The full payload with one field varied, so no case can pass because it
   // quietly omitted something.
@@ -393,6 +662,8 @@ describe('saveSettings — the web-chat capture grant', () => {
     vaultConsent: 'off',
     vaultInlineReveal: 'masked',
     webChatCaptureConsent,
+    redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
     ...overrides,
   });
 
@@ -556,12 +827,6 @@ describe('saveSettings — the web-chat capture grant', () => {
   });
 });
 
-// The grant is derived INSIDE applyOnboarding's write lock, over the settings
-// that lock is about to merge into — not read out beforehand and carried in.
-// The difference is invisible on a quiet machine and is the whole point on a
-// busy one: the plugin's wizard, the CLI and this dashboard are three processes
-// over one settings.json, so a value read before the lock can be written back
-// over an answer another writer committed in between.
 describe('saveSettings derives the web-chat grant inside the write lock', () => {
   const payload = (
     webChatCaptureConsent: WebChatCaptureConsentChoice,
@@ -572,6 +837,8 @@ describe('saveSettings derives the web-chat grant inside the write lock', () => 
     vaultConsent: 'off',
     vaultInlineReveal: 'masked',
     webChatCaptureConsent,
+    redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
   });
 
   it('does not resurrect a grant a concurrent revoke removed', async () => {

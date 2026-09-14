@@ -20,6 +20,7 @@ const SETTINGS: WorkspaceSettings = {
   vaultKeyCustody: 'file',
   vaultInlineReveal: 'masked',
   redactFallback: 'warn',
+  bodyRetention: { enabled: false, retainDays: 30 },
 };
 
 const EMPTY_BUNDLE: PolicyBundle = {

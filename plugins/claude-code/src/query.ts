@@ -15,7 +15,7 @@
  */
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
-import { loadConfig } from '@akasecurity/plugin-sdk';
+import { hostCompatibilityLines, loadConfig, readHostVersionCache } from '@akasecurity/plugin-sdk';
 import { isWebChatCaptureConsentValid, webChatCaptureOf } from '@akasecurity/schema';
 
 import { fenced } from './present.ts';
@@ -88,6 +88,11 @@ try {
             webCaptureConsent: isWebChatCaptureConsentValid(
               webChatCaptureOf(config.settings).consent,
             ),
+            // Resolved here rather than inside runQuery, which holds a gateway
+            // and not the data dir. Read from the cache a hook wrote: probing
+            // `claude --version` would answer for the install on PATH, which
+            // need not be the one running any session.
+            hostLines: hostCompatibilityLines(readHostVersionCache(config.dataDir)),
           }),
         )}\n`,
       );

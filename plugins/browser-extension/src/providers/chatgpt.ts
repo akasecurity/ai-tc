@@ -56,6 +56,16 @@ function decodeEntities(text: string): string {
   });
 }
 
+// How many strip passes a block's markup gets before it is treated as
+// unreadable. One pass is not enough: removing a matched span brings its
+// neighbours TOGETHER, so a pass can leave behind a tag it never saw — `<<b>b>`
+// strips to `<b>`. Repeating to a fixpoint closes that, and the cap keeps the
+// repetition bounded, because a block engineered to reassemble on every pass
+// would otherwise cost one pass per tag on the page's own main thread, for a
+// response as large as the tap's ceiling. Markup a site actually emits settles
+// on the first pass.
+const MAX_STRIP_PASSES = 16;
+
 /**
  * The text of one assistant block, from the markup between its tags.
  *
@@ -64,18 +74,39 @@ function decodeEntities(text: string): string {
  * where the stream will continue — left in, it lands in the middle of the
  * reply. Ordinary tags are stripped too, so a block that ever carries inline
  * markup contributes its text rather than its markup.
+ *
+ * Stripping runs to a FIXPOINT rather than once, for the reassembly reason on
+ * MAX_STRIP_PASSES. Entities are decoded only AFTER the markup is gone, and
+ * that order is deliberate: element content escapes the assistant's own text,
+ * so a reply that genuinely contains a tag arrives as `&lt;…&gt;` and must be
+ * recovered as the text the user saw. Decoding first would hand that text to
+ * the stripper, which would then delete the assistant's own answer.
  */
 function textOfBlock(inner: string): string {
-  return decodeEntities(
-    inner
+  let markup = inner;
+  for (let pass = 0; pass < MAX_STRIP_PASSES; pass += 1) {
+    // Both patterns are written INSIDE the loop rather than lifted out of it.
+    // Two reasons, and neither is style. A `/g` regex kept at module scope
+    // carries `lastIndex` between calls, so a shared one would make what a pass
+    // strips depend on what the pass before it stripped. And the repetition is
+    // the whole correctness argument here, so the passes belong where a reader
+    // — or an analyser — can see the replacement and the loop together.
+    const stripped = markup
       // Processing instructions. These do NOT begin with a tag name, so the
       // element pattern below does not reach them.
       .replace(/<\?[^>]*>/g, '')
       // Elements, opening and closing. Deliberately narrower than `<[^>]*>`:
       // a bare `<` that begins no tag is text, and eating to the next `>`
       // would swallow the reply between them.
-      .replace(/<\/?[a-zA-Z][^>]*>/g, ''),
-  );
+      .replace(/<\/?[a-zA-Z][^>]*>/g, '');
+    if (stripped === markup) return decodeEntities(markup);
+    markup = stripped;
+  }
+  // Still reassembling at the cap, so this block's markup is not something we
+  // can read. Drop every remaining `<`: that is the only way to guarantee no
+  // tag survives, and it costs a literal `<` in the recovered text — which a
+  // real reply carries as an entity, not as a raw character.
+  return decodeEntities(markup.replace(/</g, ''));
 }
 
 function attributeOf(html: string, name: string): string | undefined {

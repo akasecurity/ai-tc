@@ -189,4 +189,29 @@ describe('chatgpt anonymous stream', () => {
     expectNoEchoOf(summary?.responseText ?? '', 'data-assistant-stream-block');
     expectNoEchoOf(summary?.responseText ?? '', 'data-web-mobile-dpu-frame');
   });
+
+  it('strips markup that REASSEMBLES as one span is removed', () => {
+    // Removing a matched span brings its neighbours together, so a single pass
+    // can leave behind a tag it never saw: stripping the inner span of
+    // `<<b>b>` joins the leading `<` to the trailing `b>`. Stripping therefore
+    // runs to a fixpoint. Built from char codes so the source of this file
+    // carries no tag-shaped literal for a scanner to read as markup.
+    const lt = String.fromCharCode(60);
+    const gt = String.fromCharCode(62);
+    const reassembling = lt + lt + 'b' + gt + 'b' + gt + 'bold';
+    const summary = run(PRELUDE + blockFrame(block(reassembling), true));
+    expect(summary?.responseText).toBe('bold');
+    // The property, stated over the output rather than over this one input: no
+    // tag-opening survives, whatever the strip passes did on the way.
+    expect(summary?.responseText ?? '').not.toMatch(/<[a-zA-Z]/);
+  });
+
+  it('recovers a tag the assistant itself wrote, which arrives escaped', () => {
+    // The other side of the order above, and the reason decoding runs LAST: a
+    // reply about markup is escaped by the site because it is text, so it must
+    // come back as the text the user saw rather than being stripped as though
+    // the site had emitted it.
+    const summary = run(PRELUDE + blockFrame(block('use &lt;b&gt; for bold'), true));
+    expect(summary?.responseText).toBe('use <b> for bold');
+  });
 });

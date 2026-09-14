@@ -106,6 +106,7 @@ const WATCHING: WebCaptureStatus = {
   shapeMisses: [],
   conversationEndpoints: 1,
   closed: false,
+  enforcement: 'watching',
 };
 const ACTIVE: WebCaptureStatus = { ...WATCHING, live: true, exchangesSeenNet: 1 };
 const BLIND: WebCaptureStatus = { ...WATCHING, blind: true, sendsSeenDom: 3 };
@@ -161,10 +162,17 @@ function storeRow(
   }
 }
 
-async function stateOf(cfg: ConfigForTool, tool: WebSourceTool): Promise<string | undefined> {
+async function siteOf(
+  cfg: ConfigForTool,
+  tool: WebSourceTool,
+): Promise<{ state: string; enforcement?: string; observedAt?: string } | undefined> {
   const response = await handleRequest({ type: 'capture_state', requestId: 'state' }, cfg);
   if (response.type !== 'capture_state') throw new Error('expected capture_state');
-  return response.sites.find((s) => s.tool === tool)?.state;
+  return response.sites.find((s) => s.tool === tool);
+}
+
+async function stateOf(cfg: ConfigForTool, tool: WebSourceTool): Promise<string | undefined> {
+  return (await siteOf(cfg, tool))?.state;
 }
 
 describe('capture_state over several documents', () => {
@@ -255,6 +263,58 @@ describe('capture_state over several documents', () => {
 
     // Not an error, and not empty: this process's own report answers.
     expect(await stateOf(configIn(blocker), 'chatgpt')).toBe('active');
+  });
+
+  it('carries the DOM half enforcement state through to the popup reply', async () => {
+    // The whole point of the field: without it the reply says only what the
+    // NETWORK half is doing, and a tab whose enforcement watcher never bound
+    // reads exactly like a healthy one on every surface a user can see.
+    const dataDir = scratch('aka-capture-state-enforcement-');
+    const cfg = configIn(dataDir);
+    // `conversationEndpoints: 0` is what both shipped adapters declare today,
+    // and it is also what makes this record one the picker keeps — see the
+    // case below for why that matters.
+    await report(cfg, 'state-enf-session', 'chatgpt', {
+      ...WATCHING,
+      conversationEndpoints: 0,
+      enforcement: 'composer-only',
+    });
+
+    expect((await siteOf(cfg, 'chatgpt'))?.enforcement).toBe('composer-only');
+  });
+
+  it('KNOWN LIMIT: a newer enforcement state is passed over when only the network half is dull', async () => {
+    // `pickReportedCaptureStatus` keeps the newest candidate that "observed
+    // the turn path", and that predicate is defined entirely over NETWORK
+    // evidence — endpoints, exchanges, faults, blindness. Enforcement is
+    // orthogonal to all of it, so a fresh report saying the DOM watcher just
+    // died is skipped in favour of an older one whenever its network half has
+    // nothing to say.
+    //
+    // Within ONE document, deliberately: this is the picker's own rule, and
+    // the per-site fold does not change it. Pinned as the behaviour it is
+    // rather than left to be discovered — the surface then shows a stale
+    // enforcement state, which is a quieter version of the exact failure this
+    // field was added to end. Fixing it means deciding whether an enforcement
+    // CHANGE counts as observing something, which is a design call and not
+    // this change's.
+    const dataDir = scratch('aka-capture-state-enf-stale-');
+    const cfg = configIn(dataDir);
+    // An older report that DID observe the turn path, enforcement fine.
+    await report(cfg, 'state-enf-stale-session', 'claude-ai', {
+      ...WATCHING,
+      live: true,
+      exchangesSeenNet: 1,
+      enforcement: 'watching',
+    });
+    // A newer report saying the watcher is gone — but with a network half that
+    // has seen nothing, which is what makes it skippable.
+    await report(cfg, 'state-enf-stale-session', 'claude-ai', {
+      ...WATCHING,
+      enforcement: 'unattached',
+    });
+
+    expect((await siteOf(cfg, 'claude-ai'))?.enforcement).toBe('watching');
   });
 
   it('keeps one site documents out of another site answer', async () => {

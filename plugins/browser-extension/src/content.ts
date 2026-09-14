@@ -20,17 +20,46 @@ import type { BackgroundRequest, BackgroundResponse } from './messaging.ts';
 import { resolveAdapter } from './providers/registry.ts';
 import type { ProviderAdapter } from './providers/types.ts';
 import type { SharedScope } from './tab-session.ts';
-import { notifyDomSend, resolveSessionId } from './tab-session.ts';
+import type { EnforcementState } from './tab-session.ts';
+import { notifyDomSend, publishEnforcementState, resolveSessionId } from './tab-session.ts';
 
 const adapter = resolveAdapter(location.hostname);
 if (adapter) {
   bootstrap(adapter);
 }
 
+// What the two halves of the gate below add up to. Both misses are named
+// separately because each points at a different selector list, and one site has
+// shown both: its signed-in build resolves a composer and no send button, its
+// anonymous build a send button and no composer.
+function enforcementState(
+  composerEl: HTMLElement | null,
+  buttonEl: HTMLElement | null,
+): EnforcementState {
+  if (composerEl && buttonEl) return 'watching';
+  if (composerEl) return 'composer-only';
+  if (buttonEl) return 'button-only';
+  return 'unattached';
+}
+
+// How long a DEGRADED enforcement state must persist before it is believed.
+//
+// reattach runs on every DOM mutation, and a page load legitimately passes
+// through a half-resolved state on its way to a bound one — measured live as
+// unknown -> button-only -> watching within a few frames. Publishing each step
+// puts a "not enforcing" row in the store and a warning in the popup for a tab
+// that is perfectly healthy, on every load. Only a state that OUTLASTS the
+// mount is a fault worth reporting.
+const ENFORCEMENT_SETTLE_MS = 2000;
+
 // Synchronous: the watcher must be attached before anything can be sent, so
 // nothing here is allowed to await. session_start is fired and left to settle
 // on its own (see below).
-function bootstrap(activeAdapter: ProviderAdapter): void {
+//
+// Exported so it can be driven with a stand-in adapter. The call below runs it
+// for real only when `location.hostname` resolves to an adapter, so importing
+// this module anywhere else does nothing.
+export function bootstrap(activeAdapter: ProviderAdapter): void {
   // Shared with the network path rather than minted here: the two run as
   // separate content scripts in one isolated world, and a second id would put
   // this tab's prompts under a different session root than the exchanges that
@@ -51,6 +80,37 @@ function bootstrap(activeAdapter: ProviderAdapter): void {
     },
   });
 
+  // Asymmetric on purpose: `watching` is published at once, because a bound
+  // watcher is never provisional — it either bound or it did not. Everything
+  // else waits out ENFORCEMENT_SETTLE_MS, and is cancelled if the page reaches
+  // `watching` first. An identical repeat does NOT restart the wait, or the
+  // churn of a busy SPA would defer a genuinely broken page for ever.
+  let publishedEnforcement: EnforcementState = 'unknown';
+  let pendingEnforcement: EnforcementState | null = null;
+  let enforcementTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function reportEnforcement(state: EnforcementState): void {
+    if (state === 'watching') {
+      if (enforcementTimer) clearTimeout(enforcementTimer);
+      enforcementTimer = null;
+      pendingEnforcement = null;
+      if (publishedEnforcement !== 'watching') {
+        publishedEnforcement = 'watching';
+        publishEnforcementState(scope, 'watching');
+      }
+      return;
+    }
+    if (state === publishedEnforcement || state === pendingEnforcement) return;
+    if (enforcementTimer) clearTimeout(enforcementTimer);
+    pendingEnforcement = state;
+    enforcementTimer = setTimeout(() => {
+      enforcementTimer = null;
+      pendingEnforcement = null;
+      publishedEnforcement = state;
+      publishEnforcementState(scope, state);
+    }, ENFORCEMENT_SETTLE_MS);
+  }
+
   let composer: HTMLElement | null = null;
   let sendButton: HTMLElement | null = null;
   let unwatch: (() => void) | null = null;
@@ -64,6 +124,12 @@ function bootstrap(activeAdapter: ProviderAdapter): void {
     // remounted button would otherwise send unwatched (watchSubmit binds its
     // click listener to the node it saw at attach time).
     const nextButton = activeAdapter.findSendButton();
+    // Reported on every pass, and BEFORE the identity check below. On a page
+    // where neither half resolves, that check compares null against null on the
+    // very first pass and returns — so a tab that never attached would
+    // otherwise report nothing at all, for its whole life, which is
+    // indistinguishable from a tab nobody typed in.
+    reportEnforcement(enforcementState(nextComposer, nextButton));
     if (nextComposer === composer && nextButton === sendButton) return;
     unwatch?.();
     composer = nextComposer;

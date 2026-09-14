@@ -1058,6 +1058,7 @@ describe('reporting capture status', () => {
         return Promise.resolve(delivered);
       },
       now: clock.now,
+      readEnforcement: () => 'watching',
     });
     const settle = (): Promise<void> =>
       new Promise((resolve) => {

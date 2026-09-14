@@ -371,7 +371,7 @@ function captureBlock(home: string): string {
     const lines = WebSourceToolEnum.options.map((tool: WebSourceTool) => {
       const record = records.find((r) => r.tool === tool);
       const state = deriveWebCaptureState(record?.status);
-      const copy = webCaptureStateCopy(state, record?.status);
+      const copy = webCaptureStateCopy(state);
       let line = `  ${tool.padEnd(10)} ${state.padEnd(10)} ${copy.headline}\n`;
       if (
         rule !== undefined &&

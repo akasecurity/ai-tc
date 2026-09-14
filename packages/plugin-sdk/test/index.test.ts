@@ -198,7 +198,6 @@ const PUBLIC_VALUE_EXPORTS = [
   'tokenizeText',
   'tokenizeValue',
   'uniqueRuleIds',
-  'webCaptureDriftFires',
   'withLayer',
 ];
 

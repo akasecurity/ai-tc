@@ -1460,6 +1460,41 @@ describe('capture_state', () => {
     expect(response.sites.find((s) => s.tool === 'chatgpt')?.state).toBe('active');
   });
 
+  it('answers from this process own map when the store read throws', async () => {
+    // The inner catch is the only thing keeping a contended store from turning
+    // the popup's whole reply into runHost's generic error — and the popup is
+    // the first surface a user checks, so a reply it cannot render is the
+    // worst of the three outcomes. Point dataDir at a regular file so opening
+    // the store throws while resolving.
+    const reportDir = join(scratchRoot('aka-capture-state-readfail-'), 'aka');
+    await handleRequest(
+      {
+        type: 'capture_status',
+        requestId: 'rf-1',
+        sessionId: 'browser-readfail',
+        tool: 'chatgpt',
+        status: { ...VALID_STATUS, live: true, exchangesSeenNet: 1 },
+      },
+      (tool) => ({
+        ...config(tool, webChatSettings()),
+        dataDir: reportDir,
+        dbPath: join(reportDir, 'aka.db'),
+      }),
+    );
+
+    const filePath = join(dir, 'state-blocker');
+    writeFileSync(filePath, 'x');
+    const response = await handleRequest({ type: 'capture_state', requestId: 'rf-2' }, (tool) => ({
+      ...config(tool, webChatSettings()),
+      dataDir: filePath,
+      dbPath: join(filePath, 'aka.db'),
+    }));
+
+    // Not an error, and not empty: the in-memory report answers.
+    if (response.type !== 'capture_state') throw new Error('expected capture_state');
+    expect(response.sites.find((s) => s.tool === 'chatgpt')?.state).toBe('active');
+  });
+
   it('reports consented: false with no valid consent', async () => {
     const response = await handleRequest({ type: 'capture_state', requestId: 'state-3' }, config);
     expect(response).toMatchObject({ type: 'capture_state', consented: false });

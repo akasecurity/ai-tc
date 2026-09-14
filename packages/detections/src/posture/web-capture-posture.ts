@@ -81,16 +81,23 @@ export function webCaptureDriftFires(status: WebCaptureStatus | undefined): bool
  * fix, printed under the rule id). Held here so the CLI and any later surface
  * print the same words rather than each inventing its own.
  *
- * `active`'s headline is parameterized by the reported turn count, so this is
- * a function rather than a static map — a plain `Record` cannot hold a value
- * that depends on the status being described.
+ * A plain lookup, and `active` no longer quotes the turn count. The count on a
+ * stored status is only as current as the report that carried it, and the
+ * bridge relays on a TRANSITION rather than per turn — so once a tab has gone
+ * live nothing moves the signature again, and every surface went on printing
+ * "1 turn observed" for a session of fifty. Bucketing the count into the
+ * signature narrows that without closing it (a doubling bucket still says 31
+ * for a 62-turn session) and writes rows into a table with no retention
+ * policy, so the number is dropped instead. `exchangesSeenNet` is still on the
+ * stored status for a surface that wants to show it as of that report.
  */
 export interface WebCaptureStateCopy {
   headline: string;
   remediation?: string;
 }
 
-const STATIC_COPY: Record<Exclude<WebCaptureState, 'active'>, WebCaptureStateCopy> = {
+const STATIC_COPY: Record<WebCaptureState, WebCaptureStateCopy> = {
+  active: { headline: 'turns are being observed on this site' },
   unreported: {
     headline: 'no page has reported yet — open the site in Chrome with the extension loaded',
   },
@@ -118,14 +125,7 @@ const STATIC_COPY: Record<Exclude<WebCaptureState, 'active'>, WebCaptureStateCop
   },
 };
 
-/** The headline/remediation copy for `state`, given the status it derived from. */
-export function webCaptureStateCopy(
-  state: WebCaptureState,
-  status: WebCaptureStatus | undefined,
-): WebCaptureStateCopy {
-  if (state === 'active') {
-    const n = status?.exchangesSeenNet ?? 0;
-    return { headline: `${String(n)} turn${n === 1 ? '' : 's'} observed` };
-  }
+/** The headline/remediation copy for `state`. */
+export function webCaptureStateCopy(state: WebCaptureState): WebCaptureStateCopy {
   return STATIC_COPY[state];
 }

@@ -201,6 +201,20 @@ for (const adapter of declaring) {
         for (const path of adapter.requiredPaths.response) {
           expect(resolveField(summary, path), `response path "${path}"`).not.toBeUndefined();
         }
+
+        // `conversationId` is NOT a required response path — it comes off the
+        // URL rather than the stream — so the loop above cannot see it, and
+        // the only other assertion on it is against a hand-built URL. Making
+        // `conversationIdOf` return undefined left this whole file green.
+        const fromUrl = /\/chat_conversations\/([^/?#]+)/.exec(fixture.url)?.[1];
+        expect(fromUrl, 'the fixture url carries a conversation segment').not.toBeUndefined();
+        expect(summary?.conversationId).toBe(fromUrl);
+
+        // And `stopReason`, which the capture carries on message_delta. Also
+        // not a required path — a turn the user stops early has none — so
+        // reading it is asserted here, where a real capture is what says the
+        // key is populated at all.
+        expect(summary?.stopReason).not.toBeUndefined();
       });
 
       it('the parser survives every robustness shape', () => {

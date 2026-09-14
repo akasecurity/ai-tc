@@ -29,8 +29,8 @@ export const APPROVED_VALUES_FILE = 'approved-values.txt';
 export const MIN_STREAM_CHUNKS = 2;
 
 /**
- * The adapters that declare at least one endpoint, pinned EXACTLY — empty
- * today.
+ * The adapters that declare at least one endpoint, pinned EXACTLY — claude.ai
+ * today, and nothing else.
  *
  * A reported count changes nothing when it changes: it prints, CI stays
  * green, and the day somebody declares a guessed endpoint the reviewer sees

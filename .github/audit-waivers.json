@@ -4,15 +4,15 @@
       "advisory": "GHSA-6g55-p6wh-862q",
       "scope": "artifact",
       "module": "postcss",
-      "reason": "The fix ships in postcss 8.5.12, but next 15.5.x pins postcss at exactly 8.4.31 (re-checked at next 15.5.24, the newest stable; 15.6.0 is canary-only) and an end-user install resolves next's own pin, so neither a direct dependency nor a workspace override reaches it; postcss runs only at build time, and the shipped dashboard is pre-built. Bump next once it requires a patched postcss.",
-      "expires": "2026-09-28"
+      "reason": "The fix ships in postcss 8.5.12, but next 15.5.x pins postcss at exactly 8.4.31 (re-checked 2026-09-14 at next 15.5.25, the newest stable 15.x; 15.6.0 is canary-only) and an end-user install resolves next's own pin, so neither a direct dependency nor a workspace override reaches it; postcss runs only at build time, and the shipped dashboard is pre-built. Only next 16 carries a patched postcss (16.3.5 pins 8.5.23), so the remaining exit is a major bump of next.",
+      "expires": "2026-10-28"
     },
     {
       "advisory": "GHSA-r28c-9q8g-f849",
       "scope": "artifact",
       "module": "postcss",
-      "reason": "The fix ships in postcss 8.5.18, but next 15.5.x pins postcss at exactly 8.4.31 (re-checked at next 15.5.24, the newest stable; 15.6.0 is canary-only) and an end-user install resolves next's own pin, so neither a direct dependency nor a workspace override reaches it; postcss runs only at build time, and the shipped dashboard is pre-built. Bump next once it requires a patched postcss.",
-      "expires": "2026-09-28"
+      "reason": "The fix ships in postcss 8.5.18, but next 15.5.x pins postcss at exactly 8.4.31 (re-checked 2026-09-14 at next 15.5.25, the newest stable 15.x; 15.6.0 is canary-only) and an end-user install resolves next's own pin, so neither a direct dependency nor a workspace override reaches it; postcss runs only at build time, and the shipped dashboard is pre-built. Only next 16 carries a patched postcss (16.3.5 pins 8.5.23), so the remaining exit is a major bump of next.",
+      "expires": "2026-10-28"
     }
   ]
 }

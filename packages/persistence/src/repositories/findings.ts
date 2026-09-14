@@ -35,6 +35,7 @@ import {
   DEFAULT_FINDING_LOCATIONS_LIMIT,
   DEFAULT_FINDING_TYPES_LIMIT,
   DEFAULT_FLAT_FINDINGS_LIMIT,
+  deriveFindingDelivery,
   deriveFindingStatus,
   encodeLocationId,
   ENFORCEABLE_CATEGORIES,
@@ -109,6 +110,12 @@ interface FindingGroupRowJoined {
   kind: string;
   finding_key: string | null;
   latest_status: string | null;
+  // Delivery-state inputs (see deriveFindingDelivery in @akasecurity/schema).
+  synced_at: number | null;
+  sync_claimed_at: number | null;
+  sync_failed_at: number | null;
+  sync_failure: string | null;
+  outbox_owed: number | null;
 }
 
 // Per-row FindingStatus — a thin snake_case adapter over @akasecurity/schema's
@@ -155,6 +162,14 @@ function toFlatFindingRow(r: FindingGroupRowJoined): FlatFindingRow {
     eventId: r.event_id,
     ...(r.session_id === null ? {} : { sessionId: r.session_id }),
     status: deriveInstanceStatus(r),
+    delivery: deriveFindingDelivery({
+      kind: r.kind,
+      syncedAt: r.synced_at,
+      syncClaimedAt: r.sync_claimed_at,
+      syncFailedAt: r.sync_failed_at,
+      syncFailure: r.sync_failure,
+      outboxOwed: r.outbox_owed,
+    }),
   };
 }
 
@@ -306,7 +321,10 @@ const FINDING_ROW_COLUMNS_SQL = `f.id AS id, d.rule_id AS rule_id, d.category AS
               e.tool_name AS tool_name,
               f.audit_event_id AS event_id, e.root_session_id AS session_id,
               e.event_type AS kind, f.finding_key AS finding_key,
-              ${latestResolutionStatusSql('f')} AS latest_status`;
+              ${latestResolutionStatusSql('f')} AS latest_status,
+              e.synced_at AS synced_at, e.sync_claimed_at AS sync_claimed_at,
+              e.sync_failed_at AS sync_failed_at, e.sync_failure AS sync_failure,
+              e.outbox_owed AS outbox_owed`;
 
 const DAY_MS = 86_400_000;
 
@@ -644,6 +662,7 @@ export class SqliteFindingsRepository
       providers: query.provider,
       actions: query.action,
       statuses: query.status,
+      deliveries: query.deployment,
       tools: query.tool,
       repo: query.repo,
       file: query.file,
@@ -742,6 +761,7 @@ export class SqliteFindingsRepository
       providers: query.provider,
       actions: query.action,
       statuses: query.status,
+      deliveries: query.deployment,
       tools: query.tool,
       q: query.q,
     };

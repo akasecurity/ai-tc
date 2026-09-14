@@ -25,6 +25,7 @@ import { ActionTag } from './ActionTag.tsx';
 import {
   CATEGORY_ICON_FALLBACK,
   categoryStyle,
+  findingDeliveryMeta,
   findingStatusMeta,
   instanceLocationLabel,
   USER_COLUMN_TITLE,
@@ -33,7 +34,15 @@ import { ProviderTag } from './ProviderChips.tsx';
 import { UserCell } from './UserCell.tsx';
 
 type FlatColumnId =
-  'severity' | 'type' | 'sources' | 'user' | 'location' | 'action' | 'status' | 'latest';
+  | 'severity'
+  | 'type'
+  | 'sources'
+  | 'user'
+  | 'location'
+  | 'action'
+  | 'status'
+  | 'deployment'
+  | 'latest';
 
 const FINDING_COLUMN_CLASS: Record<FlatColumnId, string> = {
   severity: 'min-w-[110px] whitespace-nowrap',
@@ -41,6 +50,7 @@ const FINDING_COLUMN_CLASS: Record<FlatColumnId, string> = {
   user: 'min-w-[140px]',
   action: 'min-w-[130px] whitespace-nowrap',
   status: 'min-w-[110px] whitespace-nowrap',
+  deployment: 'min-w-[130px] whitespace-nowrap',
   latest: 'min-w-[100px] whitespace-nowrap',
   location: 'min-w-[200px]',
   type: 'min-w-[200px]',
@@ -73,6 +83,7 @@ export function FindingsFlatTableView({
   isLoading = false,
   emptyState,
   showUserColumn = false,
+  showDeploymentColumn = false,
   pinnedType = false,
   header,
   renderedAt,
@@ -86,6 +97,11 @@ export function FindingsFlatTableView({
    * single-user store would show a column of dashes.
    */
   showUserColumn?: boolean;
+  /**
+   * Render the Deployment column, which reads each row's `delivery`. Off by
+   * default: only a machine attached to a deployment has anything to say there.
+   */
+  showDeploymentColumn?: boolean;
   onSelect: (instance: FindingInstanceDetail) => void;
   /** Absent ⇒ no pagination footer, however the has*Page flags read. */
   onNextPage?: () => void;
@@ -161,6 +177,9 @@ export function FindingsFlatTableView({
                 <TableHead className={FINDING_COLUMN_CLASS.location}>Location</TableHead>
                 <TableHead className={FINDING_COLUMN_CLASS.action}>Action</TableHead>
                 <TableHead className={FINDING_COLUMN_CLASS.status}>Status</TableHead>
+                {showDeploymentColumn && (
+                  <TableHead className={FINDING_COLUMN_CLASS.deployment}>Deployment</TableHead>
+                )}
                 <TableHead className={FINDING_COLUMN_CLASS.latest}>Detected</TableHead>
               </TableRow>
             </TableHeader>
@@ -237,6 +256,20 @@ export function FindingsFlatTableView({
                         </Badge>
                       )}
                     </TableCell>
+                    {showDeploymentColumn && (
+                      <TableCell className={FINDING_COLUMN_CLASS.deployment}>
+                        {instance.delivery === undefined ? (
+                          <span className="text-text-3">—</span>
+                        ) : (
+                          <Badge
+                            variant={findingDeliveryMeta(instance.delivery.state).badge}
+                            className="h-6"
+                          >
+                            {findingDeliveryMeta(instance.delivery.state).label}
+                          </Badge>
+                        )}
+                      </TableCell>
+                    )}
                     <TableCell className={FINDING_COLUMN_CLASS.latest}>
                       <span className="text-text-3 text-xs">
                         {relativeTime(instance.detectedAt, renderedAt)}

@@ -9,10 +9,12 @@ import { MetaItem, SectionLabel } from '../shared/DetailFields.tsx';
 import { ChevronLeftIcon, ChevronRightIcon, EyeOffIcon, KeyIcon } from '../shared/icons.tsx';
 import { Provider } from '../shared/Provider.tsx';
 import { ActionTag } from './ActionTag.tsx';
+import { DeploymentMetaItem } from './DeploymentMetaItem.tsx';
 import {
   CATEGORY_ICON_FALLBACK,
   categoryLabel,
   categoryStyle,
+  type DeploymentDisplay,
   instanceLocationLabel,
   type Selection,
   USER_COLUMN_TITLE,
@@ -44,12 +46,18 @@ export function FindingDetailView({
   onSelectInstance,
   onBack,
   footer,
+  deployment,
   renderedAt,
 }: {
   selection: Selection;
   onSelectInstance: (instance: FindingInstance) => void;
   onBack: () => void;
   footer?: ReactNode;
+  /**
+   * The deployment this machine sends to, or null/absent where it is not
+   * attached — which renders no Deployment row.
+   */
+  deployment?: DeploymentDisplay | null;
   /**
    * The instant this render is measured against, in epoch milliseconds. The host
    * captures one and every relative label below reads it. Required: a view that
@@ -163,6 +171,13 @@ export function FindingDetailView({
                   <UserCell user={instance.user} />
                 </span>
               </MetaItem>
+            )}
+            {deployment !== undefined && deployment !== null && instance.delivery !== undefined && (
+              <DeploymentMetaItem
+                delivery={instance.delivery}
+                deployment={deployment}
+                renderedAt={renderedAt}
+              />
             )}
           </div>
         )}

@@ -272,8 +272,11 @@ describe('foldFacetTuples', () => {
       actionTaken: 'block',
       status: 'open',
       toolName: 'Bash',
+      deliveryState: 'sent',
       count: 3,
     },
+    // No delivery state: a producer that does not read the sync columns groups
+    // without one, and only the deployment facet skips it.
     {
       severity: 'critical',
       ruleId: 'aws-key',
@@ -289,6 +292,7 @@ describe('foldFacetTuples', () => {
       actionTaken: 'warn',
       status: 'open',
       toolName: 'Read',
+      deliveryState: 'queued',
       count: 5,
     },
     {
@@ -297,10 +301,11 @@ describe('foldFacetTuples', () => {
       sourceTool: 'unknown-tool',
       actionTaken: 'redact',
       status: 'resolved',
+      deliveryState: 'not_sent',
       count: 1,
     },
     // No status: a row that predates the resolution feature still counts toward
-    // the total and five facets, and only the status facet skips it.
+    // the total and six facets, and only the status facet skips it.
     {
       severity: 'high',
       ruleId: 'aws-key',
@@ -330,11 +335,17 @@ describe('foldFacetTuples', () => {
     ['status', { statuses: ['open'] }],
     ['tool', { tools: ['Bash'] }],
     ['subtype', { subtype: ['pii-email'] }],
+    ['deployment', { deliveries: ['queued'] }],
     [
       'three dimensions at once, so every facet excludes a live filter',
       { severity: ['critical'], providers: ['claudecode'], statuses: ['open'] },
     ],
+    [
+      'deployment among other dimensions',
+      { subtype: ['pii-email'], deliveries: ['queued', 'not_sent'], statuses: ['open'] },
+    ],
     ['a filter nothing matches', { severity: ['medium'] }],
+    ['a deployment filter nothing matches', { deliveries: ['local_scan'] }],
   ])('equals the row accumulator: %s', (_label, opts) => {
     expect(foldFacetTuples(TUPLES, opts)).toEqual(oracle(TUPLES, opts));
   });
@@ -347,6 +358,20 @@ describe('foldFacetTuples', () => {
       { value: 'Read', count: 5 },
       { value: 'Bash', count: 3 },
     ]);
+  });
+
+  it('counts no deployment bucket for a tuple carrying no delivery state', () => {
+    const { total, facets } = foldFacetTuples(TUPLES, {});
+    // The 'cli' and status-less tuples carry no delivery state, so 9 of the 15
+    // reach the deployment facet and the absent 6 contribute to nothing there.
+    expect(total).toBe(15);
+    expect(facets.deployment).toEqual([
+      { value: 'queued', count: 5 },
+      { value: 'sent', count: 3 },
+      { value: 'not_sent', count: 1 },
+    ]);
+    // And a delivery filter excludes them from the total, as it would the rows.
+    expect(foldFacetTuples(TUPLES, { deliveries: ['sent', 'queued', 'not_sent'] }).total).toBe(9);
   });
 
   it('maps raw source tools through the shared provider mapper before counting', () => {
@@ -374,6 +399,9 @@ describe('foldFacetTuples', () => {
     for (const dimension of ['severity', 'subtype', 'provider', 'action'] as const) {
       expect(facets[dimension].reduce((sum, item) => sum + item.count, 0)).toBe(15);
     }
+    // The status-less tuple carries no delivery state either, so the deployment
+    // facet is short by its 4 as well as the 'cli' tuple's 2.
+    expect(facets.deployment?.reduce((sum, item) => sum + item.count, 0)).toBe(9);
     // And a status filter excludes it from the total, as it would the row.
     expect(foldFacetTuples(TUPLES, { statuses: ['open', 'handled', 'resolved'] }).total).toBe(11);
   });
@@ -679,5 +707,44 @@ describe('encodeLocationId', () => {
     expect(empty).not.toBe('');
     expect(empty).not.toBe(encodeLocationId('', 'a.ts'));
     expect(empty).not.toBe(encodeLocationId('acme/api', ''));
+  });
+});
+
+describe('the deliveries dimension', () => {
+  const sent = row({
+    id: 'f-sent',
+    delivery: { state: 'sent', at: '2026-01-02T00:00:00.000Z' },
+  });
+  const queued = row({ id: 'f-queued', delivery: { state: 'queued' } });
+  const lowQueued = row({ id: 'f-low', severity: 'low', delivery: { state: 'queued' } });
+  const bare = row({ id: 'f-bare' });
+
+  it('matches the row’s own delivery state, and never a row without one', () => {
+    expect(matchesInstanceFilters(sent, { deliveries: ['sent'] })).toBe(true);
+    expect(matchesInstanceFilters(sent, { deliveries: ['queued'] })).toBe(false);
+    expect(matchesInstanceFilters(bare, { deliveries: ['sent'] })).toBe(false);
+    expect(matchesInstanceFilters(bare, {})).toBe(true);
+  });
+
+  it('counts states with its own filter excluded, while every other dimension honours it', () => {
+    const acc = createInstanceFacetAccumulator({ deliveries: ['sent'], severity: ['critical'] });
+    for (const r of [sent, queued, lowQueued, bare]) acc.add(r);
+    const facets = acc.facets();
+    // Its own filter is excluded: queued still counts. Severity still applies:
+    // the low queued row does not. A row with no delivery counts nowhere.
+    expect(facets.deployment).toEqual([
+      { value: 'queued', count: 1 },
+      { value: 'sent', count: 1 },
+    ]);
+    // The severity facet is narrowed BY the deliveries filter: only `sent` remains.
+    expect(facets.severity).toEqual([{ value: 'critical', count: 1 }]);
+  });
+
+  it('carries the delivery onto the instance detail, and omits an absent one', () => {
+    expect(toInstanceDetail(sent).delivery).toEqual({
+      state: 'sent',
+      at: '2026-01-02T00:00:00.000Z',
+    });
+    expect('delivery' in toInstanceDetail(bare)).toBe(false);
   });
 });

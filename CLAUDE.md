@@ -1969,11 +1969,12 @@ Five things about it are load-bearing:
   machine that motivated this section, whose file pins `runMode` and not
   `redactFallback`. `plugins/claude-code/test/e2e/content-retention-entry-bundle.e2e.test.ts`
   is a second suite on that side, and the sharper one: `bodyRetention` is
-  pinnable too, and it is the whole subject of that file's two SessionStart
-  cases, so a disagreeing pin would flip a case rather than perturb a wire
-  shape. Those two read the machine's managed file themselves — by explicit
-  path, since the pin moves only the default — and skip where it overrides
-  what they write. A worker thread sits on the same boundary and is out of reach
+  pinnable too, and it is the whole subject of three of that file's cases —
+  the two SessionStart cases and the one that runs the expiry child directly
+  with no settings file — so a disagreeing pin would flip a case rather than
+  perturb a wire shape. Those three read the machine's managed file
+  themselves — by explicit path, since the pin moves only the default — and
+  skip where it overrides what they write. A worker thread sits on the same boundary and is out of reach
   today only because `scan-worker.ts` takes no persistence dependency. It is
   documented rather than closed, because the no-network guard's own mechanism
   does not transfer: it reaches a worker by appending `--import <itself>` to its

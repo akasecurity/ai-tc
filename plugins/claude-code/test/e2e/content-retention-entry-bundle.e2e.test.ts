@@ -21,15 +21,17 @@
  * against the built hook, on a real temp home, with the setting read off disk
  * rather than handed in.
  *
- * Those two also sit on the far side of the managed-settings boundary.
- * `bodyRetention` is a key an administrator may pin, and the built hook applies
- * the machine's managed file inside ITS OWN process, from absolute system paths
- * a redirected home does not move. This suite's no-managed-settings setup file
- * lives in the vitest process and never reaches that child. So on a machine
- * whose administrator pins an `enabled` that disagrees with what a case writes,
- * the hook obeys the pin and the case would be reporting the machine rather than
- * the code. Each of the two reads that file itself and skips when it disagrees.
- * CI carries no managed file, so there both always run.
+ * Three cases sit on the far side of the managed-settings boundary: those two,
+ * and the one before them that runs the child directly with no settings file.
+ * `bodyRetention` is a key an administrator may pin, and every built script
+ * applies the machine's managed file inside ITS OWN process, from absolute
+ * system paths a redirected home does not move. This suite's
+ * no-managed-settings setup file lives in the vitest process and never reaches
+ * that child. So on a machine whose administrator pins an `enabled` that
+ * disagrees with what a case writes (no settings file reads as the default,
+ * off), the script obeys the pin and the case would be reporting the machine
+ * rather than the code. Each of the three reads that file itself and skips when
+ * it disagrees. CI carries no managed file, so there all three always run.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -123,12 +125,16 @@ describe('the built body-expiry child', () => {
     expect(dirname(built(CONTENT_RETENTION_SCRIPT_NAME))).toBe(dirname(built('session-start.js')));
   });
 
-  it('runs to a clean exit, and creates nothing, on a machine with expiry off', () => {
+  it('runs to a clean exit, and creates nothing, on a machine with expiry off', (ctx) => {
     // Off is the default and so the overwhelming case, and it is where a crash
     // would be worst: the child is spawned detached with stdio ignored, so a
     // non-zero exit or a stack trace reaches nobody. Creating NO store is part
     // of the property — a feature nobody switched on must not leave a database
     // behind as evidence it considered running.
+    //
+    // No settings file is written, so the child reads the default: off. A pin of
+    // `enabled: true` makes it open the store, which this case cannot observe.
+    skipIfPinnedOtherwise(ctx, false);
     withTempHome((home) => {
       const run = runHook(CONTENT_RETENTION_SCRIPT_NAME.replace(/\.js$/, ''), '', {
         env: tempHomeEnv(home),

@@ -6,6 +6,7 @@ import {
   backgroundSyncLabel,
   installBackgroundSync,
   renderPlist,
+  triggerHistorySyncRun,
   uninstallBackgroundSync,
 } from '../src/background-schedule.ts';
 
@@ -265,5 +266,105 @@ describe('backgroundSyncLabel', () => {
   it('is deterministic for the same base and distinct across bases', () => {
     expect(backgroundSyncLabel(BASE)).toBe(backgroundSyncLabel(BASE));
     expect(backgroundSyncLabel(BASE)).not.toBe(backgroundSyncLabel(OTHER_BASE));
+  });
+});
+
+// Starting a pass by hand NAMES the `aka` command rather than re-invoking this
+// executable, and that distinction is the whole of this function's correctness.
+// Its neighbour, the scheduler, is installed BY the CLI and so may re-run its
+// own entry; this one's only caller is a dashboard Server Action, which in a
+// development workspace is a Next process — where re-invoking "this executable"
+// spawns Next with a subcommand it has never heard of, successfully, and
+// reports that a pass started. Nothing in the old tests could see that: they
+// injected the argv builder, so they asserted the child got whatever the stub
+// returned.
+describe('triggerHistorySyncRun', () => {
+  const BASE = '/Users/x/.aka';
+  const PASS_ARGS = ['sync-history', '--run', '--home', BASE];
+
+  it('spawns the aka command with the pass argv', () => {
+    const spawned: { command: string; args: readonly string[] }[] = [];
+
+    const result = triggerHistorySyncRun(BASE, {
+      probeCli: () => true,
+      startDetached: (command, args) => {
+        spawned.push({ command, args });
+      },
+    });
+
+    expect(result.started).toBe(true);
+    // The CHILD's argv, and the command by name. `aka` is what a person types
+    // to run the same pass, and what the scheduler's own argv was built from.
+    expect(spawned).toEqual([{ command: 'aka', args: PASS_ARGS }]);
+  });
+
+  // The regression this function was rewritten for. A dashboard running under
+  // Next has an entry script — it is just not the CLI's — so any check that
+  // asks "is there something to re-invoke" answers yes and spawns the wrong
+  // program. Asking whether `aka` exists is a question with one right answer on
+  // every host.
+  it('never re-invokes the running process, whatever its entry script is', () => {
+    const spawned: string[] = [];
+    const reinvoke = vi.fn();
+
+    triggerHistorySyncRun(BASE, {
+      reinvoke: reinvoke as unknown as NonNullable<BackgroundScheduleDeps['reinvoke']>,
+      probeCli: () => true,
+      startDetached: (command) => {
+        spawned.push(command);
+      },
+    });
+
+    expect(reinvoke).not.toHaveBeenCalled();
+    expect(spawned).toEqual(['aka']);
+  });
+
+  // BEFORE the spawn, because a spawn that cannot find its command fails
+  // asynchronously — long after this has returned. Reporting success there is
+  // the failure this function exists to avoid.
+  it('reports a machine with no aka command, and starts nothing', () => {
+    const spawned: string[] = [];
+    const probed: string[] = [];
+
+    const result = triggerHistorySyncRun(BASE, {
+      probeCli: (command) => {
+        probed.push(command);
+        return false;
+      },
+      startDetached: (command) => {
+        spawned.push(command);
+      },
+    });
+
+    expect(result).toEqual({ started: false, reason: 'no-cli-entry' });
+    expect(probed).toEqual(['aka']);
+    // And nothing was started: the report is not a label on a child that ran.
+    expect(spawned).toEqual([]);
+  });
+
+  it('reports a spawn that throws rather than claiming it started', () => {
+    const result = triggerHistorySyncRun(BASE, {
+      probeCli: () => true,
+      startDetached: () => {
+        throw new Error('EACCES');
+      },
+    });
+    expect(result).toEqual({ started: false, reason: 'spawn-failed' });
+  });
+
+  // Its neighbour returns early off darwin because a LaunchAgent is a macOS
+  // object. A child process is not, and copying that gate would make the control
+  // do nothing at all on Linux and Windows while reporting success.
+  it('starts on a platform that has no LaunchAgent', () => {
+    const spawned: string[] = [];
+    const result = triggerHistorySyncRun(BASE, {
+      platform: 'linux',
+      probeCli: () => true,
+      startDetached: (command) => {
+        spawned.push(command);
+      },
+    });
+    expect(result.started).toBe(true);
+    expect(spawned).toEqual(['aka']);
   });
 });

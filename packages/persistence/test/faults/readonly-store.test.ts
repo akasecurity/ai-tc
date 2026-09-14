@@ -16,9 +16,18 @@ import { errorFrom } from '../helpers/errors.ts';
 import { primaryCode, readOnlyStore, SQLITE_READONLY } from '../helpers/fault-injection.ts';
 import { useTempStore } from '../helpers/temp-store.ts';
 
-const store = useTempStore('aka-fault-readonly-');
+// One store PER DESCRIBE, because these cases do not all want the same setup.
+// Rebuilding the schema per test costs ~7x seeding the migrated template
+// (measured 11.4ms against 1.6ms), and the Windows leg charges roughly 30x that
+// again — which is what put this file at its per-test ceiling. A describe whose
+// SUBJECT is the open path or a migration cannot take the template: a
+// pre-migrated store would leave its assertions holding for a reason the case
+// is not about, and a vacuous pass is worse than the timeout it replaces.
 
 describe('opening a read-only store', () => {
+  // The OPEN PATH is this describe's subject, so it keeps the full open.
+  const store = useTempStore('aka-fault-readonly-open-');
+
   it('refuses with SQLITE_READONLY rather than returning a half-open store', (ctx) => {
     store.open().close();
     const readOnly = readOnlyStore(store.dbFile, { onCleanup: store.onCleanup });
@@ -138,6 +147,9 @@ describe('opening a read-only store', () => {
 // swallowing a real store failure is pinned by the contended case in
 // `locked-store.test.ts`, which does reach it.
 describe('writing through a handle when the store turns read-only underneath it', () => {
+  // Subject is a handle that is already open when the mode changes.
+  const store = useTempStore('aka-fault-readonly-live-', { migrated: true });
+
   it('keeps writing through an already-open handle: the mode is checked at open, not at write', async (ctx) => {
     // Worth writing down because it is the opposite of what the fault's name
     // suggests. A descriptor carries the permission it was opened with, so
@@ -205,6 +217,9 @@ describe('writing through a handle when the store turns read-only underneath it'
 });
 
 describe('the SQLITE_READONLY fail-open branch', () => {
+  // Subject is the fail-open branch, not the open.
+  const store = useTempStore('aka-fault-readonly-branch-', { migrated: true });
+
   it('swallows the refusal and reports it as a failed write', (ctx) => {
     // The branch the product actually takes, reached over a raw handle because
     // `LocalDatabase` opens its own connection and the mode has to be in place

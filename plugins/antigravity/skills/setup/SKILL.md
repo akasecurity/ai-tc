@@ -811,10 +811,11 @@ what happened, show the one-liner so they can retry later, and continue the
 wizard normally. The plugin is already fully set up and works on its own; a
 failed CLI install changes nothing about that.
 
-**Close the wizard.** The first-run summary already confirmed the saved posture
-and pointed at the aka-health skill. Whichever way the CLI offer went —
-installed, declined, or a failed install you already reported — end with one
-warm close: "That's it — I'm watching out for Antigravity going forward."
+**Close the wizard.** The first-run summary already confirmed the saved posture,
+reported the health score, and pointed at the aka-dashboard and aka-scan
+skills. Whichever way the CLI offer went — installed, declined, or a failed
+install you already reported — end with one warm close: "That's it — I'm
+watching out for Antigravity going forward."
 
 Before you finish, confirm every AKA_SHOW region on the path you took was
 relayed to the user. If you summarized one instead of pasting it, paste it now.
@@ -844,12 +845,21 @@ reaches the model. AKA records it (so it appears in findings and the dashboard)
 but cannot stop it. This is the single biggest difference from the Claude Code
 plugin, where a flagged prompt is blocked outright.
 
-**A redact policy blocks instead of masking.** Claude Code's PreToolUse can hand
-back rewritten tool arguments; Antigravity's cannot — its output is
-`{ decision, reason, permissionOverrides }` with no field for modified args. So
-when a policy says "redact", AKA denies the tool call and explains what to
-remove, rather than masking the value and letting the call run. This applies to
-file writes too, not just shell commands.
+**A redact policy cannot mask, and what it does instead is a setting.** Claude
+Code's PreToolUse can hand back rewritten tool arguments; Antigravity's cannot —
+its output is `{ decision, reason, permissionOverrides }` with no field for
+modified args. So a policy that says "redact" cannot be carried out here at all,
+on file writes as much as on shell commands.
+
+What happens in its place is the workspace's **redact fallback** (`redactFallback` in
+`~/.aka/settings/settings.json`, or pinned for a machine by an administrator). It ships as **warn**, which on this host means the tool call
+**runs with the value unmasked** — and since PreToolUse has no message channel
+(below), the warning appears only in findings and the dashboard, not in the
+session. Set it to **block** to get the older behaviour, where AKA denies the
+call and explains what to remove. Either way the finding is recorded with the
+action that actually applied, never as a "redact" that did not happen. Say this
+plainly if a user asks why a flagged value went through: this host cannot mask,
+and their fallback is set to let it run.
 
 **A warn is recorded but not shown inline.** PreToolUse's output has no
 message channel (its `reason` accompanies a deny), so a `warn` policy captures

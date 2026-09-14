@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 
-import { deriveFindingStatus, EventKind } from '@akasecurity/schema';
+import { deriveFindingStatus, EventKind, FindingStatus } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { derivedFindingStatusSql } from '../../src/repositories/resolution-sql.ts';
@@ -15,13 +15,13 @@ import { derivedFindingStatusSql } from '../../src/repositories/resolution-sql.t
 
 const EVENT_KINDS: readonly string[] = [...EventKind.options, 'tool_call'];
 const FINDING_KEYS: readonly (string | null)[] = [null, '', 'k-1'];
-const LATEST_STATUSES: readonly (string | null)[] = [
-  null,
-  'resolved',
-  'dismissed',
-  'open',
-  'other',
-];
+// Every FindingStatus member, then null (a key with no resolution row) and one
+// off-enum value standing for the whole class the ELSE arm answers for — the
+// column is free text, so that class is real. Taken from the enum rather than
+// typed out, the way the fragment's own literals are: a member added to
+// FindingStatus, and an arm added for it, is driven here with no edit to this
+// file, where a hand-typed list would leave the new arm silently uncovered.
+const LATEST_STATUSES: readonly (string | null)[] = [...FindingStatus.options, null, 'other'];
 
 function runFragment(
   db: DatabaseSync,
@@ -61,10 +61,11 @@ describe('derivedFindingStatusSql', () => {
           }
         }
       }
-      // 4 EventKind members + 1 non-capture kind = 5, times 3 finding-key
-      // states, times 5 latest-status states.
+      // The whole cross product ran. This is what fails a loop that did not
+      // run, which would otherwise pass on zero assertions. No literal count
+      // beside it: the spaces are derived, so a correct enum addition grows
+      // the product, and a hardcoded total would red on that for no reason.
       expect(tupleCount).toBe(EVENT_KINDS.length * FINDING_KEYS.length * LATEST_STATUSES.length);
-      expect(tupleCount).toBe(75);
     } finally {
       db.close();
     }

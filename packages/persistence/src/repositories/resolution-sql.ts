@@ -10,12 +10,20 @@
 //   - SqliteSecurityRepository.severitySummary (caught / open-at-rest buckets)
 //   - SqliteSecurityRepository.mttrTrend (latest status/method/resolved_at)
 //   - SqliteSecurityRepository.recentlyResolved (latest status/method/resolved_at)
-//   - SqliteFindingsRepository.listGroupedFindings (per-finding status column)
-//   - SqliteFindingsRepository.listFindingTypes (grouped per-rule status)
-//   - SqliteFindingsRepository.listFindingInstances (per-finding status column)
-//   - SqliteFindingsRepository.listFindingLocations (per-finding status column)
+//   - SqliteSecurityRepository.recommendationInputs (latest status)
+//   - SqliteFindingsRepository.listFindingTypes (grouped per-rule status, via
+//     groupAggregates)
+//   - SqliteFindingsRepository.listFindingInstances (per-finding status column,
+//     via scanFindingRows -> findingScanSql -> FINDING_ROW_COLUMNS_SQL)
+//   - SqliteFindingsRepository.listFindingLocations (the same scan chain)
+//   - SqliteFindingsRepository.findingInstance (per-finding status column,
+//     via FINDING_ROW_COLUMNS_SQL)
+//   - SqliteFindingsRepository.healthSummary (latest status)
 //   - SqliteResolutionsRepository.openAtRestKeysForPath /
 //     resolvedAtRestKeysForPath (latest status)
+//
+// This list is maintained by hand and nothing checks it, so extend it in the
+// same commit as any new read of the exports below.
 //
 // All build on these fragments so the dashboard's severity card, its MTTR
 // trend, its recently-resolved feed, and its findings list can never disagree
@@ -82,11 +90,24 @@ export const LATEST_RESOLUTION_BY_KEY_SQL = `(
  *   4. `latestStatusExpr` = 'dismissed' → 'dismissed'.
  *   5. otherwise → 'open'.
  *
- * `latestStatusExpr` is whatever the caller wants consulted for the latest
- * resolution status — a joined alias (e.g. `latest.status`, from
- * {@link LATEST_RESOLUTION_BY_KEY_SQL}) or an inlined correlated subquery
- * (e.g. {@link latestResolutionStatusSql}) — so this fragment works in both
- * shapes the file already supports.
+ * `latestStatusExpr` is what the caller consults for the latest resolution
+ * status, and it is interpolated into TWO arms (3 and 4), so whatever it costs
+ * is paid up to twice per row. The intended argument is a JOINED column —
+ * `latest.status` from a LEFT JOIN of {@link LATEST_RESOLUTION_BY_KEY_SQL},
+ * which is the shape a grouped aggregate over many findings wants anyway — and
+ * repeating a column reference costs nothing.
+ *
+ * The correlated {@link latestResolutionStatusSql} is accepted too, but SQLite
+ * does not share a repeated subquery: arm 3's test runs it, and every row it
+ * rejects runs it again in arm 4. Arm 3 rejects every finding whose latest
+ * resolution is not 'resolved' — every open finding and every key with no
+ * resolution row, which on an ordinary store is most of them. Measured over
+ * 20,000 keyed findings with three resolution rows each: about 1.8x a single
+ * lookup with nothing resolved, falling to 1.0x only when everything is, where
+ * the joined form stays at 1.0x throughout. Folding arms 3 and 4 into one `IN`
+ * test does not remove the second evaluation, it moves it onto the resolved
+ * rows. So pass the correlated form only from a read that touches a handful of
+ * rows, never from an aggregate.
  *
  * TOTAL: `event_type` is NOT NULL and the final arm is unconditional, so the
  * expression can never evaluate to NULL — which is what makes a later

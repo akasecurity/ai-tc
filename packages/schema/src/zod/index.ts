@@ -21,6 +21,7 @@ export * from './finding.ts';
 export * from './findings-flat-build.ts';
 export * from './findings-group-build.ts';
 export * from './harness-map.ts';
+export * from './host-floor.ts';
 export * from './installed-pack.ts';
 export * from './inventory.ts';
 export * from './local.ts';

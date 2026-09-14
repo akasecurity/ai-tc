@@ -20,6 +20,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
 
+import { CAPTURE_EVENT_TYPES_SQL } from '../../zod/event.ts';
 import { COL } from '../columns.ts';
 
 export const events = sqliteTable(
@@ -361,6 +362,16 @@ export const auditEvents = sqliteTable(
     priority: text(COL.priority),
     content: text(COL.content),
     contentHash: text(COL.contentHash),
+    // When local body expiry cleared `content`, if it did. This is what
+    // separates "expired" from "never had a body" — a distinction bare
+    // `content IS NULL` cannot draw, since the structural kinds (`session`,
+    // `llm_call`, `tool_call`) never carry one and neither does a capture whose
+    // body was empty. Readers that render a body need that difference to say
+    // something truthful instead of nothing; `content_hash` is deliberately
+    // LEFT INTACT when a body expires, because it is small, it is what
+    // backfill idempotency is keyed on, and dropping it would make an expired
+    // row look re-ingestable.
+    contentExpiredAt: integer(COL.contentExpiredAt),
     attributes: text(COL.attributes),
     // Token usage (input/output/cache tokens, model, provider) is snapshotted into
     // `attributes` on llm_call rows and surfaced as generated columns so rollups can
@@ -524,6 +535,44 @@ export const auditEvents = sqliteTable(
     index('idx_audit_session_ended')
       .on(t.rootSessionId, t.endedAt)
       .where(sql`ended_at IS NOT NULL`),
+    // The /security page's rollups: one covering entry per CAPTURE event, so
+    // every read that joins inspection_findings to its parent event answers
+    // from the index instead of fetching the row. What that avoids is the
+    // dominant cost on a real store: `content` is declared BEFORE `attributes`
+    // in the record and holds whole file bodies on a `code_change` (42 KB
+    // average, 1.79 MB at the top end), so most rows spill to overflow pages —
+    // 91% of the table's bytes, measured — and reaching either `id` or a
+    // VIRTUAL column over the bag means walking that chain past the body.
+    // Carrying `id` is what makes the join itself index-only: this is a rowid
+    // table with a TEXT primary key, so a secondary index entry holds the
+    // rowid, never `id`, and without it every probe re-fetches the row.
+    // `repo` rides along for topSources' GROUP BY; it is the same trick
+    // idx_audit_llm_usage plays with the usage members, and it pays off the
+    // same way — a value the index stores once, at write, against a
+    // json_extract recomputed per row otherwise. Partial on the four capture
+    // kinds, so writes of the structural rows (`llm_call`, `tool_call`,
+    // `session`) do not maintain it.
+    //
+    // EXPLAIN QUERY PLAN will NOT say COVERING for a read that names `repo`:
+    // SQLite counts a generated column's dependency on `attributes` as a
+    // reference to the row even while it reads the value from the index, so
+    // the timing is the evidence and the label is not. The reads carry
+    // `INDEXED BY` because, with no ANALYZE statistics, the planner otherwise
+    // prefers the general event-type index; security-probe-plans.test.ts pins
+    // each one by name.
+    index('idx_audit_capture_rollup')
+      .on(t.eventType, t.startedAt, t.repo, t.id)
+      .where(sql`event_type IN (${sql.raw(CAPTURE_EVENT_TYPES_SQL)})`),
+    // The body-expiry sweep's candidate seek. Partial on `content IS NOT NULL`,
+    // so it holds only rows that still HAVE a body to expire and empties itself
+    // as the sweep catches up — the steady state is a near-empty index rather
+    // than one entry per event. Without it the sweep's "oldest rows still
+    // carrying a body" query is a scan of every row in the store on every pass,
+    // which is the shape a background sweep least wants: repeated, unbounded,
+    // and contending with the hook writers it must not starve.
+    index('idx_audit_expirable_body')
+      .on(t.startedAt)
+      .where(sql`content IS NOT NULL`),
   ],
 );
 

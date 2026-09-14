@@ -8,11 +8,15 @@ import {
   parseFindingsFilters,
   parseRange,
   parseRepo,
+  parseSelectedLocation,
+  parseSelectedRule,
   parseTools,
   parseView,
-  toGroupedQuery,
+  toFindingTypesQuery,
   toInstancesQuery,
+  toLocationInstancesQuery,
   toLocationsQuery,
+  toTypeInstancesQuery,
 } from '../../app/(app)/findings/filters';
 
 // The findings URL vocabulary. These are pure functions over search params, so
@@ -80,6 +84,22 @@ describe('buildFindingsParams', () => {
   it('writes the view param for the non-default views', () => {
     expect(buildFindingsParams(filters, '', '', { view: 'flat' }).get('view')).toBe('flat');
     expect(buildFindingsParams(filters, '', '', { view: 'files' }).get('view')).toBe('files');
+  });
+
+  // The subtype filter is in the same class as tool/repo/file: the By-type view
+  // hides the Type control (its left panel IS the type selector) and passes
+  // `subtype` to neither of its two reads. Carried over from the flat view it
+  // would sit in the URL narrowing nothing.
+  it('drops the type filter under the grouped view but keeps it elsewhere', () => {
+    const withType = { ...filters, type: ['aws-key', 'gh-pat'] };
+    expect(buildFindingsParams(withType, '', '', { view: 'grouped' }).has('type')).toBe(false);
+    // Absent `view` IS the grouped view — the default writes no param.
+    expect(buildFindingsParams(withType, '', '', {}).has('type')).toBe(false);
+    // The flat view offers the control and its read honors it.
+    expect(buildFindingsParams(withType, '', '', { view: 'flat' }).getAll('type')).toEqual([
+      'aws-key',
+      'gh-pat',
+    ]);
   });
 
   it('drops tool/repo/file under the grouped view', () => {
@@ -150,10 +170,26 @@ describe('buildFindingsParams', () => {
 });
 
 describe('query builders', () => {
-  const filters = { ...EMPTY_FILTERS, severity: ['critical'], status: ['open'] };
+  // EVERY dimension is populated, which is what makes the absence assertions
+  // below non-vacuous: with `provider`/`action` left empty the builders spread
+  // nothing for them either way, so `'provider' in q === false` would hold
+  // however the builder was written.
+  const filters = {
+    ...EMPTY_FILTERS,
+    severity: ['critical'],
+    status: ['open'],
+    provider: ['claudecode'],
+    action: ['blocked'],
+    type: ['aws-key'],
+  };
 
-  it('grouped carries the time bound but no per-instance filter', () => {
-    const q = toGroupedQuery(filters, 'leak', 'sess-1', {
+  // The level split, which is the whole shape of the By-type view: severity is
+  // a property of the RULE, so it selects TYPES; provider/action/status vary
+  // between one type's findings, so they narrow the FINDINGS panel. Sending a
+  // finding-level filter to the type read would drop the selected type out of
+  // the list the moment a reader toggled one.
+  it('the types query carries only the type-level dimensions', () => {
+    const q = toFindingTypesQuery(filters, 'leak', 'sess-1', {
       from: '2026-01-01T00:00:00.000Z',
       tools: ['Bash'],
       repo: 'acme/api',
@@ -162,10 +198,29 @@ describe('query builders', () => {
     expect(q.from).toBe('2026-01-01T00:00:00.000Z');
     expect(q.sessionId).toBe('sess-1');
     expect(q.severity).toEqual(['critical']);
-    // A group spans instances, so these have no meaning at this grain.
+    expect(q.q).toBe('leak');
+    // Finding-level: they belong to the panel, not the list.
+    expect('status' in q).toBe(false);
+    expect('provider' in q).toBe(false);
+    expect('action' in q).toBe(false);
+    // A type spans findings, so these have no meaning at this grain either.
     expect('tool' in q).toBe(false);
     expect('repo' in q).toBe(false);
     expect('file' in q).toBe(false);
+  });
+
+  it('the panel query pins the type and carries only the finding-level dimensions', () => {
+    const q = toTypeInstancesQuery(filters, 'aws-key', 'sess-1', {
+      from: '2026-01-01T00:00:00.000Z',
+    });
+    expect(q.subtype).toEqual(['aws-key']);
+    expect(q.status).toEqual(['open']);
+    expect(q.from).toBe('2026-01-01T00:00:00.000Z');
+    expect(q.sessionId).toBe('sess-1');
+    // Severity is constant within a type, so filtering by it here would keep
+    // every row or none; `q` selects types, so it belongs to the other read.
+    expect('severity' in q).toBe(false);
+    expect('q' in q).toBe(false);
   });
 
   it('instances carries every filter', () => {
@@ -196,8 +251,115 @@ describe('query builders', () => {
   it('omits every absent field rather than sending an empty one', () => {
     // exactOptionalPropertyTypes aside, an empty array reaching the store would
     // read as "filter to nothing" in a predicate built from `.length`.
-    expect(toGroupedQuery(EMPTY_FILTERS, '', '')).toEqual({});
+    expect(toFindingTypesQuery(EMPTY_FILTERS, '', '')).toEqual({});
     expect(toInstancesQuery(EMPTY_FILTERS, '', '')).toEqual({});
     expect(toLocationsQuery(EMPTY_FILTERS, '', '')).toEqual({});
+    // The panel query is the exception: the pinned type is not a filter that
+    // can be absent — it is what the panel IS.
+    expect(toTypeInstancesQuery(EMPTY_FILTERS, 'aws-key', '')).toEqual({ subtype: ['aws-key'] });
+  });
+});
+
+describe('parseSelectedRule', () => {
+  it('reads and trims ?rule=, and is empty when absent', () => {
+    expect(parseSelectedRule({ rule: '  aws-key ' })).toBe('aws-key');
+    expect(parseSelectedRule({})).toBe('');
+    // Repeated keys arrive as an array; a selection names exactly one type.
+    expect(parseSelectedRule({ rule: ['a', 'b'] })).toBe('');
+  });
+
+  it('is a different param from the subtype FILTER', () => {
+    // ?type= is the multi-valued filter; the two must not read each other, or
+    // selecting a type would silently filter the list to it.
+    expect(parseSelectedRule({ type: 'aws-key' })).toBe('');
+    expect(parseFindingsFilters({ rule: 'aws-key' }).type).toEqual([]);
+  });
+});
+
+describe('buildFindingsParams — the selected type', () => {
+  it('writes ?rule= under the grouped view so a filter click keeps the selection', () => {
+    const sp = buildFindingsParams(EMPTY_FILTERS, '', '', { rule: 'aws-key' });
+    expect(sp.get('rule')).toBe('aws-key');
+  });
+
+  it('writes it under no other view, where the page would ignore it', () => {
+    for (const view of ['flat', 'files'] as const) {
+      expect(
+        buildFindingsParams(EMPTY_FILTERS, '', '', { view, rule: 'aws-key' }).has('rule'),
+      ).toBe(false);
+    }
+  });
+});
+
+describe('parseSelectedLocation', () => {
+  it('reads and trims ?loc=, and is empty when absent', () => {
+    expect(parseSelectedLocation({ loc: '  acme%2Fapi/a.ts ' })).toBe('acme%2Fapi/a.ts');
+    expect(parseSelectedLocation({})).toBe('');
+    // Repeated keys arrive as an array; a selection names exactly one location.
+    expect(parseSelectedLocation({ loc: ['a', 'b'] })).toBe('');
+  });
+
+  // The reason this is its own param rather than the ?repo=/?file= pair: that
+  // pair is the FLAT view's scope FILTER, and a selection that narrowed the list
+  // it selects from would collapse that list to the single row just picked.
+  it('is a different param from the repo/file scope filter', () => {
+    expect(parseSelectedLocation({ repo: 'acme/api', file: 'a.ts' })).toBe('');
+    expect(parseRepo({ loc: 'acme%2Fapi/a.ts' })).toBe('');
+    expect(parseFile({ loc: 'acme%2Fapi/a.ts' })).toBe('');
+  });
+});
+
+describe('toLocationInstancesQuery', () => {
+  // The page's central invariant: a location row's count is what this read
+  // reports. It holds because this query IS the list query plus the pair, so a
+  // dimension cannot reach one and miss the other.
+  it('carries every dimension the list query carries', () => {
+    const filters = {
+      severity: ['critical'],
+      type: ['aws-key'],
+      provider: ['claudecode'],
+      action: ['blocked'],
+      status: ['open'],
+    };
+    const scope = { from: '2026-01-01T00:00:00.000Z', tools: ['Bash'] };
+    const list = toLocationsQuery(filters, 'leak', 'sess-1', scope);
+    const panel = toLocationInstancesQuery(
+      filters,
+      'leak',
+      { repo: 'acme/api', file: 'a.ts' },
+      'sess-1',
+      scope,
+    );
+    expect(panel).toEqual({ ...list, repo: 'acme/api', file: 'a.ts' });
+  });
+
+  // Every other builder here drops an empty value, correctly, because for a
+  // SCOPE param an empty string means "unset". The pinned location is not a
+  // filter that can be absent — it is what the panel IS — so its pair is sent
+  // whole. Omitted, the no-repo/no-file bucket's panel would ask for every
+  // finding in the store instead of that location's.
+  it('sends an EMPTY pair rather than omitting it', () => {
+    const panel = toLocationInstancesQuery(EMPTY_FILTERS, '', { repo: '', file: '' });
+    expect(panel).toEqual({ repo: '', file: '' });
+    expect('repo' in panel).toBe(true);
+    expect('file' in panel).toBe(true);
+  });
+});
+
+describe('buildFindingsParams — the selected location', () => {
+  it('writes ?loc= under the locations view so a filter click keeps the selection', () => {
+    const sp = buildFindingsParams(EMPTY_FILTERS, '', '', {
+      view: 'files',
+      loc: 'acme%2Fapi/a.ts',
+    });
+    expect(sp.get('loc')).toBe('acme%2Fapi/a.ts');
+  });
+
+  it('writes it under no other view, where the page would ignore it', () => {
+    for (const view of ['grouped', 'flat'] as const) {
+      expect(
+        buildFindingsParams(EMPTY_FILTERS, '', '', { view, loc: 'acme%2Fapi/a.ts' }).has('loc'),
+      ).toBe(false);
+    }
   });
 });

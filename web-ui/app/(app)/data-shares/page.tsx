@@ -41,7 +41,7 @@ export default async function DataSharesPage({
   const renderedAt = renderInstant();
 
   return (
-    <div className="flex h-full min-h-0 flex-col px-8 pb-8 pt-7">
+    <div className="flex h-full min-h-0 flex-col p-6">
       <PageHead
         title="Data Shares"
         sub="Outbound data egress detected in your software — grouped by destination"

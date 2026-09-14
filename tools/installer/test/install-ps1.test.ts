@@ -54,6 +54,7 @@ import {
   writeSums,
 } from './helpers/release-fixture.ts';
 import {
+  describeRun,
   powershellExe,
   readUserPath,
   realDistDir,
@@ -143,7 +144,7 @@ describe.skipIf(PS === undefined)('install.ps1', () => {
       const result = await run();
 
       expect(result.stderr).toBe('');
-      expect(result.status).toBe(0);
+      expect(result.status, describeRun(result)).toBe(0);
       // The script runs `aka.exe --version` itself and prints what it got, so
       // this asserts the extracted binary was reached and ran.
       expect(result.stdout).toContain(expectedVersionOutput(FIXTURE_VERSION));
@@ -175,7 +176,7 @@ describe.skipIf(PS === undefined)('install.ps1', () => {
 
     const result = await run();
 
-    expect(result.status).not.toBe(0);
+    expect(result.status, describeRun(result)).not.toBe(0);
     expect(flat(result.stderr)).toContain('checksum mismatch');
     // Nothing extracted, nothing linked. The happy path above is the positive
     // control for these reads — without it, a script that always refused would
@@ -197,7 +198,7 @@ describe.skipIf(PS === undefined)('install.ps1', () => {
 
     const result = await run();
 
-    expect(result.status).not.toBe(0);
+    expect(result.status, describeRun(result)).not.toBe(0);
     expect(flat(result.stderr)).toContain('not listed in SHA256SUMS');
     // The DISTINCT path, not the mismatch one. Without the `if (-not $line)`
     // guard the unlisted archive is compared against an empty expectation and
@@ -229,7 +230,7 @@ describe.skipIf(PS === undefined)('install.ps1', () => {
       const result = await run(real.version);
 
       expect(result.stderr).toBe('');
-      expect(result.status).toBe(0);
+      expect(result.status, describeRun(result)).toBe(0);
       // `aka --version` prints a bare X.Y.Z, and it has to be the version the
       // asset name claimed — the installer resolved the asset from that string.
       expect(result.stdout).toContain(real.version);

@@ -50,6 +50,22 @@
     "expect": [{ "ecosystem": "npm", "pkg": "stripe", "line": 6 }]
   },
   {
+    "label": "package.json — a dependency key written with an escaped slash resolves to its own line, not line 1",
+    "kind": "package.json",
+    "text": [
+      "{",
+      "  \"dependencies\": {",
+      "    \"@scope/plain\": \"^1.0.0\",",
+      "    \"@scope\\/escaped\": \"^2.0.0\"",
+      "  }",
+      "}"
+    ],
+    "expect": [
+      { "ecosystem": "npm", "pkg": "@scope/plain", "line": 3 },
+      { "ecosystem": "npm", "pkg": "@scope/escaped", "line": 4 }
+    ]
+  },
+  {
     "label": "requirements.txt — plain pinned lines",
     "kind": "requirements.txt",
     "text": ["sentry-sdk==1.40.0", "requests>=2.28,<3"],
@@ -320,6 +336,41 @@
       "    </dependency>",
       "    -->",
       "  </dependencies>",
+      "</project>"
+    ],
+    "expect": []
+  },
+  {
+    "label": "pom.xml — attribute-bearing container tags are still recognised as open tags, alongside a self-closing flag and a namespaced root",
+    "kind": "pom.xml",
+    "text": [
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+      "<project xmlns=\"http://maven.apache.org/POM/4.0.0\"",
+      "         xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">",
+      "  <modelVersion>4.0.0</modelVersion>",
+      "  <dependencies combine.self=\"override\">",
+      "    <dependency scope=\"compile\">",
+      "      <groupId>com.squareup.okhttp3</groupId>",
+      "      <artifactId>okhttp</artifactId>",
+      "      <optional/>",
+      "    </dependency>",
+      "  </dependencies>",
+      "</project>"
+    ],
+    "expect": [{ "ecosystem": "maven", "pkg": "com.squareup.okhttp3", "line": 7 }]
+  },
+  {
+    "label": "pom.xml — attributes on the container elements do not turn a dependencyManagement block into a dependency",
+    "kind": "pom.xml",
+    "text": [
+      "<project xmlns=\"http://maven.apache.org/POM/4.0.0\">",
+      "  <dependencyManagement>",
+      "    <dependencies combine.self=\"override\">",
+      "      <dependency scope=\"import\">",
+      "        <groupId>org.springframework</groupId>",
+      "      </dependency>",
+      "    </dependencies>",
+      "  </dependencyManagement>",
       "</project>"
     ],
     "expect": []

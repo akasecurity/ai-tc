@@ -422,6 +422,41 @@ describe('status', () => {
     expect(out.output()).toContain('none cached');
   });
 
+  it('reports the host version and the protections it is too old for', async () => {
+    // The POSITIVE half of the pair below, and the one that guards the FEATURE.
+    // The empty-cache case proves the guard is present; it passes identically
+    // when the whole block is deleted, so on its own it cannot tell "guarded"
+    // from "gone". This one seeds the cache a hook would have written and
+    // asserts the block actually renders.
+    mkdirSync(dataDirOf(base), { recursive: true });
+    writeFileSync(
+      join(dataDirOf(base), 'host-version.json'),
+      JSON.stringify({ version: '2.0.0', observedAt: Date.now() }),
+      'utf8',
+    );
+
+    const io = scriptedPrompter({ interactive: true });
+    await runStatus([], deps(io));
+    expect(io.output()).toContain('2.0.0');
+    expect(io.output()).toContain('model-switch protection');
+  });
+
+  it('ends without a trailing blank line when there is no host reading yet', async () => {
+    // `hostCompatibilityLines` returns [] on a machine no Claude Code hook has
+    // ever written a version for — a CLI-only install, a Codex-only install, or
+    // any Claude Code install before its first completed turn. Joining [] gives
+    // '', so an unguarded template emits a bare newline on all three.
+    //
+    // Asserted on the BYTES rather than with `not.toContain`: a blank line is
+    // the absence of content, so there is no substring to look for, and every
+    // other assertion in this block stays green while it is there.
+    const io = scriptedPrompter({ interactive: true });
+    await runStatus([], deps(io));
+    const out = io.output();
+    expect(out.endsWith('\n')).toBe(true);
+    expect(out.endsWith('\n\n')).toBe(false);
+  });
+
   it('says nothing about policy on a machine with no attachment', async () => {
     // A standalone machine has no policy to be current, so the line would be
     // answering a question nobody asked.
@@ -461,6 +496,62 @@ describe('existing-history consent', () => {
     }
   };
 
+  // A pre-attach CAPTURE — a prompt, unlike seedHistory's structural session.
+  // Nothing marks this owed on its own: it is exactly the row a live forward
+  // never touches, because it was recorded before the machine ever attached.
+  const seedCapture = (): void => {
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      db.auditEvents.ensureSessionRoot('s-1', '2026-08-01T00:00:00.000Z');
+      db.auditEvents.insertAuditEvent({
+        id: 's-1-prompt',
+        eventType: 'prompt',
+        rootSessionId: 's-1',
+        parentId: 's-1',
+        startedAt: '2026-08-01T00:01:00.000Z',
+        content: 'the text of a pre-attach prompt',
+      });
+    } finally {
+      db.close();
+    }
+  };
+
+  // v3: granting existing-history consent backfills the CAPTURE half too, not
+  // only the structural drain's own backlog boundary. Before this, a capture
+  // recorded while detached was structurally unreachable to any drain forever
+  // — see markCaptureBacklogOwed.
+  it('backfills a pre-existing capture as owed when the user grants consent', async () => {
+    seedCapture();
+    const io = scriptedPrompter({ interactive: true, answers: [KEY, 'y'] });
+    await runAttach(['--url', ENDPOINT], deps(io));
+    expect(consentOf()).toMatchObject({ endpoint: ENDPOINT });
+
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      expect(db.historySync.pendingCaptureRows(10, Date.now() + 1).map((r) => r.id)).toEqual([
+        's-1-prompt',
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  // Declining must never mark anything owed — the backfill is downstream of a
+  // real yes, not of the question having been asked.
+  it('does not backfill a pre-existing capture when the user declines', async () => {
+    seedCapture();
+    const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
+    await runAttach(['--url', ENDPOINT], deps(io));
+    expect(consentOf()).toBeUndefined();
+
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      expect(db.historySync.pendingCaptureRows(10, Date.now() + 1)).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
   // A machine that has never opened a store has recorded nothing. Asking there
   // offers to send a history that does not exist — and a yes records a grant
   // covering nothing.
@@ -478,6 +569,11 @@ describe('existing-history consent', () => {
     const shown = io.output();
     // Asked about the half that has a subject...
     expect(shown).toContain('Saying no does not stop live sending');
+    // The register a scan records crosses under this attachment whether or not
+    // there is a backlog, so it is named on the machine with no store too.
+    expect(shown).toContain(
+      'So is the Data Shares register a scan records — destinations and call sites, never source text.',
+    );
     // ...and not about a backlog it does not have.
     expect(shown).not.toContain('What that history sends:');
     expect(shown).not.toContain('days of activity already recorded');
@@ -558,6 +654,12 @@ describe('existing-history consent', () => {
     expect(shown).toContain('What that history sends:');
     // The v2 widening, stated where the user is deciding.
     expect(shown).toContain('INCLUDES ITS TEXT');
+    // And the register `aka scan` forwards, which is the half a reader would
+    // otherwise file under "local": named here with what it carries and what it
+    // does not, because this block is where consent to send it is given.
+    expect(shown).toContain(
+      'So is the Data Shares register a scan records — destinations and call sites, never source text.',
+    );
     // The masking is conditional, and the prompt has to say so: a span is
     // masked only where the policy assigned its detection is redact or block,
     // and every detection ships on monitor. A bare match on `masked` passed

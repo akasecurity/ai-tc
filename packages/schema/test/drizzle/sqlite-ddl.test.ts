@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { SQLITE_MIGRATIONS } from '../../src/drizzle/sqlite-ddl.ts';
+import { CAPTURE_EVENT_TYPES_SQL, EventKind } from '../../src/zod/event.ts';
 
 // Drift guard: SQLITE_MIGRATIONS is a committed, bundling-safe copy of the OSS
 // local store's drizzle-kit output (drizzle/local-sqlite, generated from the
@@ -103,5 +104,64 @@ describe('SQLITE_MIGRATIONS', () => {
     for (const table of ['tenants', 'users', 'account', 'session', 'verification']) {
       expect(all).not.toContain(`CREATE TABLE \`${table}\``);
     }
+  });
+});
+
+/**
+ * `idx_audit_capture_rollup` is PARTIAL, and the four `/security` reads that use
+ * it carry `INDEXED BY`. That pairing is what makes this worth a test of its own
+ * rather than a comment.
+ *
+ * SQLite refuses to prove a partial index applies unless the query's own
+ * predicate matches the index's, and its implication prover does not reason
+ * about `IN`-list containment — or about ORDER. The two lists must be the same
+ * SEQUENCE: narrowing, widening and REORDERING are all refused alike. Measured
+ * against `node:sqlite` on this workspace's own Node, same index and join
+ * shape — a canonical index against a reordered query list, and a reordered
+ * index against a canonical query list, both raise `no query solution` even
+ * though the two are the same set.
+ *
+ * That last one is why this compares sequences rather than sets. A reorder is
+ * an ordinary edit — an alphabetize, a sort-keys rule, a kind inserted in
+ * logical position rather than appended — and a set comparison cannot see it.
+ * With `INDEXED BY` forcing the choice, a mismatch is not a slower plan:
+ * `prepare()` raises "no query solution" and every one of those reads throws on
+ * every page load.
+ *
+ * The query side is DERIVED (`CAPTURE_EVENT_TYPES_SQL` is `EventKind.options`),
+ * and a shipped migration is immutable. So the enum is the one thing that can
+ * move them apart, and it moves only the half that tracks it automatically —
+ * whoever adds a fifth kind gets the query updated for free, is told by nothing
+ * to write a migration rebuilding the index, and finds out from a stack trace.
+ *
+ * This is the thing that fails in that same commit.
+ */
+describe('the capture-rollup index predicate', () => {
+  it('names exactly the capture kinds the reads filter on', () => {
+    const migration = SQLITE_MIGRATIONS.find((m) =>
+      m.sql.includes('CREATE INDEX `idx_audit_capture_rollup`'),
+    );
+    expect(migration, 'idx_audit_capture_rollup is in no migration').toBeDefined();
+
+    const predicate = /idx_audit_capture_rollup`[^;]*?WHERE event_type IN \(([^)]*)\)/.exec(
+      migration?.sql ?? '',
+    );
+    expect(predicate, 'the index is no longer partial on event_type').not.toBeNull();
+
+    const inList = (predicate?.[1] ?? '')
+      .split(',')
+      .map((v) => v.trim().replace(/^'|'$/g, ''))
+      .filter((v) => v !== '');
+
+    // SEQUENCE, not set: a reorder throws just as a narrowing or a widening
+    // does, and sorting both sides here would let exactly that edit through.
+    expect(inList).toEqual([...EventKind.options]);
+  });
+
+  it('is the same list the reads interpolate', () => {
+    // The other half: the query side could be changed without touching the enum.
+    const fromSql = CAPTURE_EVENT_TYPES_SQL.split(',').map((v) => v.trim().replace(/^'|'$/g, ''));
+    // Order-sensitive for the identical reason.
+    expect(fromSql).toEqual([...EventKind.options]);
   });
 });

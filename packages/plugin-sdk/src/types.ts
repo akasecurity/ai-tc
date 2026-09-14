@@ -76,6 +76,27 @@ export interface CaptureResult {
   // 'with-findings' early-return (findings.length === 0) — callers that need
   // "no findings produced" should treat an absent value as an empty list.
   findingKeys?: string[];
+  // What a redact this capture could NOT carry out resolved to instead: the
+  // configured `redactFallback`, because the caller declared the field
+  // unrewritable (CaptureOptions.rewritable). Absent when nothing degraded.
+  //
+  // It exists because that difference is invisible downstream otherwise: a
+  // degraded redact and a policy that genuinely said `warn` produce the same
+  // `action`, and an adapter that wants to say "masking was not possible here"
+  // has nothing else to key on.
+  //
+  // The ACTION rather than a boolean, and that is the whole of its usefulness.
+  // `action` above is the worst action across every finding, so on a capture
+  // that also carries a `block` policy it is `block` while the degrade resolved
+  // to something weaker — and a consumer told only THAT something degraded then
+  // attaches "the fallback for that case is to block" to a deny the fallback did
+  // not cause, naming a setting the workspace does not have. Gate on this value
+  // (`=== 'block'`), never on its presence.
+  //
+  // Per CAPTURE, not per finding: `rewritable` is a property of the capture, so
+  // every degraded finding in it took the same fallback. Where the ceiling caps
+  // them differently, this is the strongest of what they resolved to.
+  redactDegradedTo?: ActionTaken;
 }
 
 // AkaPluginAdapter signature

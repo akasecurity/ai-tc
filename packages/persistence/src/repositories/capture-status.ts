@@ -39,6 +39,18 @@ const STATUS_LOOKBACK_ROWS = 32;
  * asks for every site at once re-tests each row against the other site's
  * newest timestamp and degrades quadratically as history accumulates. This is
  * not a page read, so it is not added to `hot-read-query-plans.test.ts`.
+ *
+ * The index is not a BOUND, and the write side is why. Every report is a fresh
+ * row — two per tab load per site, the tap-patched one and the `pagehide` one,
+ * and one more per transition — nothing ever collapses them, and `audit_events`
+ * carries no row retention, so the `capture_status` range only grows. The plan
+ * is a clean `SEARCH USING INDEX idx_audit_type_t (event_type=?)`, but that
+ * index is keyed on (event_type, started_at) and NOT on `source_tool`: the seek
+ * for one site walks the newer rows of the OTHER site first, so this read's
+ * cost grows with a heavily used sibling site's history even though the answer
+ * is `LIMIT`-bounded. `retention-surface.test.ts` pins which tables are swept
+ * and which are not, so adding a sweep here later is a deliberate edit rather
+ * than a quiet one.
  */
 export class SqliteCaptureStatusRepository {
   private readonly recentStmt: StatementSync;

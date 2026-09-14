@@ -43,6 +43,7 @@ gatherReport({
     return null;
   },
   cliInstalled: null,
+  marketplacePin: () => null,
   installed: new Map(),
 });
 
@@ -130,9 +131,13 @@ const UPDATE_OPT_OUTS = GLOBAL_FLAGS.filter((flag) => flag.includes('update'));
 const CLI_EGRESS_PATHS = [
   { name: 'update notice', marker: /npm view/, childProcess: true },
   { name: 'package-manager shell-outs', marker: /aka plugins install/, childProcess: true },
-  // The one path where this CLI's own source opens a connection. Its
+  // One of the two paths where this CLI's own source opens a connection. Their
   // `childProcess: false` is what gives the sub-count below meaning.
   { name: 'attached control plane', marker: /aka attach/, childProcess: false },
+  // The other. It sends no findings and no source text, but it is this CLI's
+  // own socket and it opens on a command most people file under "local", which
+  // is precisely why it may not be left to the attach row to imply.
+  { name: 'scan forward', marker: /aka scan/, childProcess: false },
 ] as const;
 
 /**
@@ -336,6 +341,36 @@ describe('cli/README.md CLI-owned egress disclosure', () => {
     expect(footnote).not.toMatch(/both through child processes/i);
     expect(footnote).not.toMatch(/no built-in network client/i);
     expect(footnote).not.toMatch(/the source uses no `?fetch`?/i);
+  });
+
+  /**
+   * And no longer claims attach is ALONE in opening one. That sentence was true
+   * for as long as attach was the only socket this CLI's own source opened, and
+   * it is the shape that survives a merge untouched: it reads as settled
+   * background rather than as a count, so nothing about adding a second such
+   * path makes it look stale. The two count assertions above cannot see it —
+   * both are satisfied by a footnote that enumerates four paths and then
+   * contradicts itself in a sentence about one of them.
+   */
+  it('no longer claims attach is the only path that opens a connection from the source', () => {
+    expect(footnote).not.toMatch(/the only path where this CLI's own source opens a connection/i);
+  });
+
+  /**
+   * The scan forward is the one path here that is BOTH default-on once attached
+   * and skippable, so the footnote owes a reader the same two things the update
+   * notice owes them: what crosses, and what to type to stop it. Naming the path
+   * (the `it.each` above) is not enough — a sentence that mentions `aka scan`
+   * and stops there tells an auditor nothing they could act on.
+   */
+  it('says what the scan forward carries and how to skip it', () => {
+    expect(footnote).toMatch(/--no-forward/);
+    expect(footnote).toMatch(/no source text/i);
+    // The counterpart claim, which is what makes "no source text" a boundary
+    // rather than a reassurance: what DOES cross is named.
+    expect(footnote).toMatch(/call sites/i);
+    // And that an unattached machine is not on this path at all.
+    expect(footnote).toMatch(/unattached machine sends nothing/i);
   });
 
   it('disclaims knowledge of what the dispatched program does', () => {

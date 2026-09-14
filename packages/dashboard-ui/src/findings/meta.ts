@@ -179,10 +179,13 @@ export function instanceLocationLabel(instance: FindingInstance): string {
 export const USER_COLUMN_TITLE =
   'Ingested by — the session user, or the owner of the api key that posted the event. An org-level ingest key names the key’s owner, not whoever ran the job.';
 
-/** Lifecycle-status pill label + Badge variant (see @akasecurity/ui-kit's Badge). */
+/** The Badge variants a findings pill may wear (see @akasecurity/ui-kit's Badge). */
+type PillBadge = 'high' | 'primary' | 'success' | 'default';
+
+/** Lifecycle-status pill label + Badge variant. */
 export interface FindingStatusMeta {
   label: string;
-  badge: 'high' | 'primary' | 'success' | 'default';
+  badge: PillBadge;
 }
 
 export const FINDING_STATUS_META: Record<FindingStatus, FindingStatusMeta> = {
@@ -213,7 +216,7 @@ export const FINDING_STATUSES = Object.keys(FINDING_STATUS_META) as FindingStatu
 
 export interface FindingDeliveryMeta {
   label: string;
-  badge: 'high' | 'primary' | 'success' | 'default';
+  badge: PillBadge;
 }
 
 /** What each delivery state is called on screen, and the badge it wears. */

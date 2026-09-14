@@ -1,0 +1,1 @@
+CREATE INDEX `idx_audit_capture_rollup` ON `audit_events` (`event_type`,`started_at`,`repo`,`id`) WHERE event_type IN ('prompt','response','code_change','tool_use');

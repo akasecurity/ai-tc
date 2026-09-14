@@ -74,8 +74,8 @@ const BASE_EVENTS = 5_000;
 const DOUBLE_EVENTS = 10_000;
 
 /**
- * The band the marginal cost must land in: ±15% of a measured 902.8 B/event for
- * the generator's 240-character events.
+ * The band the marginal cost must land in: ±15% of a measured 1,048.6 B/event
+ * for the generator's 240-character events.
  *
  * TIGHT, and it can be, because this is not a timing measurement. The corpus is
  * deterministic and so is SQLite's page allocation, so the figure is
@@ -84,11 +84,22 @@ const DOUBLE_EVENTS = 10_000;
  * the way a wall-clock bound does, so the band is sized to catch a regression
  * rather than to survive one.
  *
- * **The centre is a property of the CORPUS, not of an event**, so it is retaken
- * whenever anything about the corpus moves — not only its size. Measured at
- * three consecutive decades: 902.8 B/event across 2.5k→5k, 902.8 across 5k→10k,
- * 923.2 across 10k→20k. The slope still creeps as the store grows, ~2.3% over
- * that range.
+ * **The centre is a property of the CORPUS AND THE SCHEMA, not of an event**, so
+ * it is retaken whenever either moves — not only when the corpus size does.
+ * Measured at three consecutive decades: 902.8 B/event across 2.5k→5k, 902.8
+ * across 5k→10k, 923.2 across 10k→20k. The slope still creeps as the store
+ * grows, ~2.3% over that range.
+ *
+ * **What moved it last was the SCHEMA**, which is why this paragraph now says
+ * "and the schema": migration 0029 adds `idx_audit_capture_rollup`, a partial
+ * covering index over (event_type, started_at, repo, id) for the four capture
+ * kinds, and an index is bytes per row like anything else. The marginal went
+ * 902.8 → 1,048.6 — about 146 B/event, or 16% — which is just past the OLD
+ * ceiling of 1,038.2, and that is how it announced itself. This is the index
+ * being paid for rather than a regression: it is what lets the /security page's
+ * rollups answer from the index instead of walking each row's overflow chain
+ * past a `code_change` body. Both figures are byte-identical across runs, as
+ * the paragraph above promises.
  *
  * **What moved it last was the generator's finding RATE, not its size**, and that
  * is the case this paragraph exists to stop being learned again. The rate went
@@ -112,12 +123,18 @@ const DOUBLE_EVENTS = 10_000;
  * absurd ones.
  *
  * That mutation is what re-earns the band at THIS centre, and it was replanted
- * when the centre moved rather than scaled forward from the old figure: it reads
- * 1,214.1 B/event (6,516,736 B at 5k against 12,587,008 B at 10k) and fails the
- * 1,038.2 ceiling above. Scaling the old 1,129.7 by the centre's own movement
- * would have predicted 1,282.0 and been wrong by 5%, which is the reason to
- * replant rather than extrapolate. Replant it, rather than trusting this
- * paragraph, the next time either the pair or the corpus changes.
+ * when the centre moved rather than scaled forward from the old figure. It is
+ * now planted as a SECOND BODY on every event — doubling what `content` is given
+ * — rather than as a second copy written into `attributes`, which is the form
+ * this paragraph used to describe and which no longer plants anything at all:
+ * `metadata` is parsed by `EventMetadata` before the row is written, so Zod
+ * strips the unknown key and the "mutated" corpus measures 1,046.1 B/event,
+ * within 0.3% of the unmutated centre. That is a control which silently tests
+ * nothing. Planted as a second body it reads 1,364.0 B/event and fails the
+ * 1,205.9 ceiling above with 13% to spare. Replant it, rather than trusting
+ * this paragraph, the next time the pair, the corpus or the schema changes —
+ * and check the planted form still survives validation, which is the trap that
+ * ate the last one.
  *
  * The 15% is for cross-platform slack, not for noise: a SQLite build with a
  * different default page size would shift the figure, and this should fail
@@ -126,7 +143,7 @@ const DOUBLE_EVENTS = 10_000;
  * the corpus stopped writing what it claims to, and a growth test over a store
  * that is not growing proves nothing.
  */
-const MEASURED_MARGINAL_BYTES_PER_EVENT = 902.8;
+const MEASURED_MARGINAL_BYTES_PER_EVENT = 1048.6;
 const MARGINAL_TOLERANCE = 0.15;
 const MIN_MARGINAL_BYTES_PER_EVENT = MEASURED_MARGINAL_BYTES_PER_EVENT * (1 - MARGINAL_TOLERANCE);
 const MAX_MARGINAL_BYTES_PER_EVENT = MEASURED_MARGINAL_BYTES_PER_EVENT * (1 + MARGINAL_TOLERANCE);

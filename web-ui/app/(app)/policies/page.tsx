@@ -38,7 +38,7 @@ export default async function PoliciesPage({
     // way Detections/Activity/Inventory behave. Below `lg` the grid stacks into
     // one column, and capping there would split the viewport between two
     // letterboxed panes — so the floor (and the page scroll it implies) stays.
-    <div className="flex min-h-full flex-col px-8 pb-8 pt-7 lg:h-full lg:min-h-0">
+    <div className="flex min-h-full flex-col p-6 lg:h-full lg:min-h-0">
       <PageHead title="Policies" sub="Enforcement actions detections take when they match" />
 
       <PolicyStatsView stats={stats} />

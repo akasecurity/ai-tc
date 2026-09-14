@@ -1505,6 +1505,40 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
     expect(merged.prohibitedModels).toBeUndefined();
   });
 
+  it('DOES carry redactFallback from the cache — the merge that applies it is elsewhere', async () => {
+    // Same defect class as prohibitedModels above: the explicit field list over
+    // `...local` drops anything it does not name, so a field the organization
+    // ships would reach the cache and never reach the runtime.
+    //
+    // Carrying it here is not the same as honouring it. The value is merged
+    // RAISE-ONLY against the device's own `WorkspaceSettings.redactFallback` by
+    // the runtime, where both are in hand — this seam has the bundle and not
+    // the setting, so a merge here could only ever be half of one.
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
+    });
+    const { gateway } = build({
+      local,
+      readCachedBundle: () => Promise.resolve(bundle([], { redactFallback: 'block' })),
+    });
+    const merged = await gateway.getPolicyBundle();
+    expect(merged.redactFallback).toBe('block');
+  });
+
+  it('leaves redactFallback absent when the organization ships none', async () => {
+    // The control: absent must stay absent, so the device's own setting is what
+    // the runtime merges against. An invented value here would read as an
+    // organizational decision nobody made.
+    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
+    const local = makeLocal(calls, {
+      getPolicyBundle: vi.fn(() => Promise.resolve(bundle([], { version: 'local' }))),
+    });
+    const { gateway } = build({ local, readCachedBundle: () => Promise.resolve(bundle([])) });
+    const merged = await gateway.getPolicyBundle();
+    expect(merged.redactFallback).toBeUndefined();
+  });
+
   it('never takes rulesComplete from the cache — that would be a detection kill-switch', async () => {
     const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {

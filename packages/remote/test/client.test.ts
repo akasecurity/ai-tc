@@ -507,6 +507,21 @@ describe('the shares-ingest submission', () => {
     expect(server.received).toHaveLength(before);
   });
 
+  it('names a deployment that predates the route, rather than a generic 404', async () => {
+    // The batch audit route does the same for its own 404. A caller can then
+    // tell "older deployment" from a wrong URL, which the classifier refuses to
+    // guess at from a bare status.
+    const client = createRemoteClient({ endpoint: server.origin, apiKey: API_KEY });
+    server.reply((_req, res) => {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(json({ error: { code: 'NOT_FOUND' } }));
+    });
+
+    await expect(client.recordProjectEgress(egressRequest)).rejects.toMatchObject({
+      name: 'RemoteRouteAbsent',
+    });
+  });
+
   it('rejects a malformed projectKey digest before it reaches the wire', async () => {
     // The digest is the one field on this request derived from the machine's own
     // filesystem: a non-git project keys on `path:<abs root>`, which embeds an OS

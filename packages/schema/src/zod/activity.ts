@@ -76,6 +76,16 @@ export const AuditEvent = z
     internal: z.boolean(),
     /** Event needs review (e.g. unverified egress). */
     flagged: z.boolean(),
+    /**
+     * The body this event's `title` is drawn from was cleared by local body
+     * expiry, so an EMPTY title here means "gone", not "never had one".
+     *
+     * A separate flag rather than a sentinel written into `title`: the title is
+     * rendered text, and a store-layer module that invented display copy for it
+     * would be choosing words the view is supposed to choose. Additive and
+     * defaulted, so an older producer still validates.
+     */
+    bodyExpired: z.boolean().default(false),
   })
   .meta({ id: 'ActivityAuditEvent' });
 export type AuditEvent = z.infer<typeof AuditEvent>;

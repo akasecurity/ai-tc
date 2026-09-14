@@ -5,13 +5,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { dataDir, type LocalDatabase, openLocalDatabase } from '@akasecurity/persistence';
-import type { DetectedFinding, IngestEvent } from '@akasecurity/schema';
+import {
+  type DetectedFinding,
+  type IngestEvent,
+  MAX_FINDING_LOCATIONS_LIMIT,
+} from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   loadMoreFindingInstances,
-  loadMoreGroupedFindings,
+  loadMoreFindingLocations,
+  loadMoreFindingTypes,
 } from '../../app/(app)/findings/actions.ts';
 import { emptyStore } from '../helpers/store-templates.ts';
 
@@ -129,22 +134,90 @@ describe('loadMoreFindingInstances', () => {
   });
 });
 
-describe('loadMoreGroupedFindings', () => {
-  it('returns the page after the cursor without repeating a group', async () => {
+describe('loadMoreFindingTypes', () => {
+  it('returns the page after the cursor without repeating a type', async () => {
     seed(12);
-    const first = await loadMoreGroupedFindings({ limit: 2 });
+    const first = await loadMoreFindingTypes({ limit: 2 });
     expect(first.items).toHaveLength(2);
     expect(first.nextCursor).not.toBeNull();
 
-    const second = await loadMoreGroupedFindings({ limit: 2, cursor: first.nextCursor });
+    const second = await loadMoreFindingTypes({ limit: 2, cursor: first.nextCursor });
     const ids = new Set([...first.items, ...second.items].map((g) => g.id));
     expect(ids.size).toBe(first.items.length + second.items.length);
   });
 
   it('rejects a malformed query at the boundary', async () => {
     seed(1);
-    await expect(loadMoreGroupedFindings({ status: ['nope'] })).rejects.toThrow();
-    await expect(loadMoreGroupedFindings({ limit: -1 })).rejects.toThrow();
-    await expect(loadMoreGroupedFindings('a string')).rejects.toThrow();
+    await expect(loadMoreFindingTypes({ status: ['nope'] })).rejects.toThrow();
+    await expect(loadMoreFindingTypes({ limit: -1 })).rejects.toThrow();
+    await expect(loadMoreFindingTypes('a string')).rejects.toThrow();
+  });
+
+  it('counts types across the whole scope, not just the page', async () => {
+    seed(12);
+    const page = await loadMoreFindingTypes({ limit: 2 });
+    expect(page.items).toHaveLength(2);
+    expect(page.totals.types).toBe(4);
+  });
+});
+
+// The detail panel's read: one type's findings, which is the half the old
+// grouped read folded in as a bounded preview. It is the same action the flat
+// view drives, scoped by `subtype`.
+describe('loadMoreFindingInstances scoped to one type', () => {
+  it('returns only that type’s findings, and pages them', async () => {
+    seed(12);
+    const page = await loadMoreFindingInstances({ subtype: ['rule-0'], limit: 5 });
+    expect(page.items.length).toBeGreaterThan(0);
+    expect(new Set(page.items.map((i) => i.subtype))).toEqual(new Set(['rule-0']));
+  });
+
+  it('rejects a malformed subtype at the boundary', async () => {
+    seed(1);
+    await expect(loadMoreFindingInstances({ subtype: 'rule-0' })).rejects.toThrow();
+    await expect(loadMoreFindingInstances({ subtype: [1] })).rejects.toThrow();
+  });
+});
+
+// The By-location list's own read. It pages LOCATIONS while counting findings,
+// which is not a contradiction: the filters narrow the findings and the
+// locations fall out of what survives.
+describe('loadMoreFindingLocations', () => {
+  it('pages locations and counts the whole scope', async () => {
+    seed(12);
+    const page = await loadMoreFindingLocations({ limit: 5 });
+    expect(page.items).toHaveLength(5);
+    // Twelve findings at twelve distinct files, so the units differ and the
+    // response has to say which is which.
+    expect(page.totals).toEqual({ findings: 12, locations: 12 });
+    expect(page.nextCursor).toBeTypeOf('string');
+  });
+
+  it('resumes from its own cursor without repeating a row', async () => {
+    seed(12);
+    const first = await loadMoreFindingLocations({ limit: 5 });
+    const second = await loadMoreFindingLocations({ limit: 5, cursor: first.nextCursor });
+    const ids = [...first.items, ...second.items].map((l) => l.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('rejects a malformed query at the boundary', async () => {
+    seed(1);
+    // A POST endpoint anything can reach: the values below would otherwise
+    // reach a SQL bind parameter or a slice bound.
+    await expect(loadMoreFindingLocations({ severity: 'critical' })).rejects.toThrow();
+    await expect(loadMoreFindingLocations({ limit: 0 })).rejects.toThrow();
+    await expect(loadMoreFindingLocations({ limit: 10_000 })).rejects.toThrow();
+    // The ceiling itself, both sides, against the LITERAL rather than the
+    // constant. Written as `{ limit: MAX }` accepted and `{ limit: MAX + 1 }`
+    // rejected it reads like a boundary test and is a tautology — true for
+    // whatever the constant happens to say, so it moves with it silently. This
+    // read used to accept 500; pinning the number is what makes narrowing it a
+    // decision in two places rather than a drift in one.
+    expect(MAX_FINDING_LOCATIONS_LIMIT).toBe(100);
+    await expect(loadMoreFindingLocations({ limit: 100 })).resolves.toBeDefined();
+    await expect(loadMoreFindingLocations({ limit: 101 })).rejects.toThrow();
+    await expect(loadMoreFindingLocations({ includeId: 7 })).rejects.toThrow();
+    await expect(loadMoreFindingLocations('not-an-object')).rejects.toThrow();
   });
 });

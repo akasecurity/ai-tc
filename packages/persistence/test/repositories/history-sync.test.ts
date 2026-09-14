@@ -1,7 +1,15 @@
+import { existsSync, writeFileSync } from 'node:fs';
+import type { DatabaseSync } from 'node:sqlite';
+
 import { describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
-import { SqliteHistorySyncRepository } from '../../src/repositories/history-sync.ts';
+import { seedCaptureBacklogOwed } from '../../src/history-backfill.ts';
+import {
+  HISTORY_SYNC_LEASE_STALE_MS,
+  isHistorySyncLeaseLive,
+  SqliteHistorySyncRepository,
+} from '../../src/repositories/history-sync.ts';
 import type { RecordedQuery } from '../helpers/query-plans.ts';
 import { explain, recordingConnection } from '../helpers/query-plans.ts';
 import { useTempStore } from '../helpers/temp-store.ts';
@@ -46,6 +54,17 @@ function seedSession(db: LocalDatabase, sessionId: string, offsetMs: number): vo
   // delivery. Without it the row is one nothing ever attempted, which the drain
   // deliberately does not offer.
   db.historySync.markCaptureOwed(`${sessionId}-prompt`);
+}
+
+// Reads `outbox_owed` straight off the row rather than through
+// `pendingCaptureRows`, whose own SQL already excludes every non-capture
+// event type — a test asserting a type exclusion by reading through that
+// reader would pass whether or not the writer under test carried the same
+// exclusion itself.
+function outboxOwed(raw: DatabaseSync, id: string): boolean {
+  const row = raw.prepare('SELECT outbox_owed FROM audit_events WHERE id = :id').get({ id }) as
+    { outbox_owed: number | null } | undefined;
+  return row?.outbox_owed === 1;
 }
 
 describe('SqliteHistorySyncRepository — what is pending', () => {
@@ -120,7 +139,7 @@ describe('SqliteHistorySyncRepository — counting', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
     db.historySync.markSynced(['s-1'], T0);
-    db.historySync.markSkipped(['s-1-llm']);
+    db.historySync.markSkipped(['s-1-llm'], T0);
 
     // The capture row is in none of the structural three — and `capturesSkipped`
     // is its own lifetime figure, zero here because nothing skipped a capture.
@@ -128,6 +147,8 @@ describe('SqliteHistorySyncRepository — counting', () => {
       pending: 1,
       sent: 1,
       skipped: 1,
+      refused: 0,
+      detached: 0,
       capturesSkipped: 0,
     });
   });
@@ -139,7 +160,7 @@ describe('SqliteHistorySyncRepository — counting', () => {
   it('counts a permanently skipped capture, and keeps counting it', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
-    db.historySync.markSkipped(['s-1-prompt']);
+    db.historySync.markSkipped(['s-1-prompt'], T0);
 
     expect(db.historySync.counts(ALL).capturesSkipped).toBe(1);
     // Still there on a later read, with nothing else having happened.
@@ -154,6 +175,8 @@ describe('SqliteHistorySyncRepository — counting', () => {
       pending: 0,
       sent: 0,
       skipped: 0,
+      refused: 0,
+      detached: 0,
       capturesSkipped: 0,
     });
   });
@@ -163,7 +186,7 @@ describe('SqliteHistorySyncRepository — counting', () => {
   it('does not offer a skipped row again', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
-    db.historySync.markSkipped(['s-1', 's-1-llm', 's-1-tool']);
+    db.historySync.markSkipped(['s-1', 's-1-llm', 's-1-tool'], T0);
 
     expect(db.historySync.pendingSessions(10, ALL)).toEqual([]);
   });
@@ -199,13 +222,12 @@ describe('SqliteHistorySyncRepository — which deployment the stamps are for', 
   });
 
   // The capture half does NOT re-arm, and that is the rule rather than an
-  // omission. A capture recorded under deployment A is pre-attach relative to B,
-  // and the grant says the pre-attach half sends the record of activity, not its
-  // text — so B is entitled to the structural rows (which do re-arm, above) and
-  // not to the prompts. Re-arming captures would also be inert: the capture lane
-  // reads `started_at >= :since`, so every row a deployment change clears sits
-  // on the wrong side of the new boundary and is never offered again. The only
-  // effect would be to un-stamp delivered rows for ever.
+  // omission. A DELIVERED capture was sent to A under A's own grant, and B has
+  // no claim on what A already received — re-arming it would resend A's text to
+  // a deployment A's grant never named. Re-arming would also be inert regardless:
+  // the capture lane reads `started_at >= :since`, so every row a deployment
+  // change clears sits on the wrong side of the new boundary and is never
+  // offered again. The only effect would be to un-stamp delivered rows for ever.
   it('leaves delivered CAPTURES stamped when the deployment changes', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
@@ -245,6 +267,107 @@ describe('SqliteHistorySyncRepository — which deployment the stamps are for', 
     expect(db.historySync.counts(ALL)).toMatchObject({ pending: 3 });
   });
 
+  // THE GAP BEFORE THE FIRST DRAIN PASS. B's own live path can mark a capture
+  // owed from the moment `aka attach` writes the descriptor — before the
+  // drain ever reaches `rearmFor` for this switch — so a marker it sets in
+  // that gap must survive the same disown that clears A's leftovers. The
+  // disown tells the two apart by which side of the switch the row's
+  // `started_at` falls on, never by an explicit backfill bound (there is
+  // none here — this is B's OWN live path, not a consent-time re-mark).
+  it('keeps a marker the NEW deployment already set through the same disown', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.rearmFor('fingerprint-a', ALL);
+
+    const switchToB = T0 + 20 * MINUTE;
+    db.auditEvents.ensureSessionRoot('s-2', at(25 * MINUTE));
+    db.auditEvents.insertAuditEvent({
+      id: 's-2-prompt',
+      eventType: 'prompt',
+      rootSessionId: 's-2',
+      parentId: 's-2',
+      startedAt: at(25 * MINUTE),
+      content: "text of B's own live-path capture",
+    });
+    // B's gateway, forwarding live and failing to deliver, in the gap between
+    // the attach and the drain's first pass under B.
+    db.historySync.markCaptureOwed('s-2-prompt');
+
+    db.historySync.rearmFor('fingerprint-b', switchToB);
+
+    // A's leftover is gone — nobody has re-marked it for B.
+    // B's own marker, on a row recorded after the switch, survives.
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-2-prompt']);
+  });
+
+  // THE OTHER HALF OF THE SAME LEAK, in the opposite direction: a caller that
+  // has ALREADY confirmed a valid grant for the deployment being armed passes
+  // its own bound as the third argument, and the disown above must not eat it.
+  // Without this, a machine that grants existing-history consent while
+  // attaching to B has that grant's own markers wiped the moment the drain
+  // notices the fingerprint changed — before it ever reads them — because the
+  // disown cannot tell "a marker A's forward left" from "a marker B's OWN
+  // grant just set" apart by looking at the column alone.
+  //
+  // Built by hand rather than through seedSession, which marks its own
+  // capture owed to simulate A's live forward — a different fact from the one
+  // this test is isolating, and one the sibling test above already covers.
+  it('keeps a fresh backfill for the NEW deployment through the same disown', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-prompt',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(MINUTE),
+      content: 'text of a pre-attach prompt',
+    });
+    // Attached to A first — the real order, and the one that matters: nothing
+    // has marked this row owed to anybody yet.
+    db.historySync.rearmFor('fingerprint-a', ALL);
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+
+    // The CLI's own seedCaptureBacklogOwed, at the instant a human grants
+    // existing-history consent for B — before the drain has run even once
+    // under B, exactly as `aka attach` orders it.
+    db.historySync.markCaptureBacklogOwed(T0 + 10 * MINUTE);
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+
+    // The drain's first pass under B. Consent was already confirmed valid for
+    // B before this call is reachable — see runHistorySync — so the caller
+    // passes the SAME bound as the third argument.
+    db.historySync.rearmFor('fingerprint-b', ALL, T0 + 10 * MINUTE);
+
+    // B's own grant survives the switch that just disowned A's leftovers (of
+    // which there were none here — the point is that the disown running at
+    // all does not also take B's marker with it).
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+  });
+
+  // The bound is still a bound: a capture recorded AFTER the grant it is
+  // reapplying is the live forward path's to mark, not this repair's — passing
+  // the third argument must not silently widen into that territory.
+  it('does not reapply the backfill to a capture recorded after its own bound', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-prompt',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(5 * MINUTE),
+      content: 'text of a prompt recorded after the grant',
+    });
+    db.historySync.rearmFor('fingerprint-a', ALL);
+    db.historySync.markCaptureBacklogOwed(T0 + 2 * MINUTE);
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+
+    db.historySync.rearmFor('fingerprint-b', ALL, T0 + 2 * MINUTE);
+
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+  });
+
   // The other side of that rule, and the one I only found by breaking it: this
   // method ALSO runs the first time a machine attaches at all (no fingerprint →
   // A), and the markers on disk then were written by A's own live path earlier
@@ -279,10 +402,76 @@ describe('SqliteHistorySyncRepository — which deployment the stamps are for', 
   it('leaves permanently skipped rows skipped across a change of deployment', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
-    db.historySync.markSkipped(['s-1-llm']);
+    db.historySync.markSkipped(['s-1-llm'], T0);
     db.historySync.rearmFor('fingerprint-b', ALL);
 
     expect(db.historySync.counts(ALL).skipped).toBe(1);
+  });
+
+  // The capture lane's half of the split, and the case that was missing: a
+  // capture a deployment refuses must still be counted SOMEWHERE. It is not in
+  // the structural `refused`, and nothing ever frees it — re-arming a capture
+  // would offer one deployment's prompts to another — so the lane's own
+  // lifetime total is where it has to land.
+  it('counts a refused capture in the capture lane, which never frees one', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.markRefused(['s-1-prompt'], T0);
+
+    expect(db.historySync.counts(ALL).capturesSkipped).toBe(1);
+
+    // And a change of deployment leaves it exactly where it is, unlike the
+    // structural refusal above.
+    db.historySync.rearmFor('fingerprint-b', ALL);
+    expect(db.historySync.counts(ALL).capturesSkipped).toBe(1);
+  });
+
+  // The inverse, and the reason the failure columns exist. A 400/413/422 is one
+  // deployment's verdict on one body, not a fact about the row, so pointing at a
+  // different deployment has to offer it again.
+  it('frees a deployment refusal across a change of deployment, and offers the row again', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.markRefused(['s-1-llm'], T0);
+
+    // Terminal while this machine points here: the lane must not re-offer a row
+    // this deployment has already rejected, or it stalls on it for ever.
+    expect(db.historySync.counts(ALL).refused).toBe(1);
+    expect(db.historySync.counts(ALL).skipped).toBe(0);
+    expect(db.historySync.pendingRows('s-1', 10, ALL).map((r) => r.id)).not.toContain('s-1-llm');
+
+    db.historySync.rearmFor('fingerprint-b', ALL);
+
+    expect(db.historySync.counts(ALL).refused).toBe(0);
+    expect(db.historySync.pendingRows('s-1', 10, ALL).map((r) => r.id)).toContain('s-1-llm');
+  });
+
+  // A delivered row carries no reason. Leaving one behind would let the store
+  // hold two contradictory answers about one row, with a surface free to render
+  // either.
+  it('clears a failure reason when the row is later delivered', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.markRefused(['s-1-llm'], T0);
+    db.historySync.markSynced(['s-1-llm'], T0 + 1_000);
+
+    const p = db.historySync.partition();
+    expect(p).toMatchObject({ synced: 1, refused: 0, failed: 0 });
+  });
+
+  // Every tracked row lands in exactly one bucket: a reader rendering them as a
+  // breakdown of `total` is entitled to have them sum to it.
+  it('partitions every tracked row exactly once', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    seedSession(db, 's-2', 1);
+    db.historySync.markSynced(['s-1'], T0);
+    db.historySync.markSkipped(['s-1-llm'], T0);
+    db.historySync.markRefused(['s-1-tool'], T0);
+
+    const p = db.historySync.partition();
+    expect(p.queued + p.inProgress + p.synced + p.failed + p.refused).toBe(p.total);
+    expect(p).toMatchObject({ synced: 1, failed: 1, refused: 1 });
   });
 });
 
@@ -355,6 +544,71 @@ describe('SqliteHistorySyncRepository — the claim', () => {
     db.historySync.release(101);
 
     expect(db.historySync.lease()?.ownerPid).toBe(202);
+  });
+});
+
+/**
+ * `isHistorySyncLeaseLive` is what a SURFACE asks instead of trying to take the
+ * claim, so the only thing worth asserting about it is that it gives the same
+ * answer the claim itself would. Every case below drives BOTH — the predicate,
+ * and a real `claim()` by another process on the same row at the same instant —
+ * and requires them to disagree in exactly the way they should: takeable is
+ * not-live, and live is not-takeable.
+ */
+describe('isHistorySyncLeaseLive', () => {
+  const STALE = HISTORY_SYNC_LEASE_STALE_MS;
+
+  /**
+   * The claim, read and then attempted, at one instant. Returns both answers so
+   * a case can assert they are opposites rather than assert one and trust the
+   * other.
+   */
+  const both = (offsetFromClaim: number): { live: boolean; takeable: boolean } => {
+    const db = store.open();
+    db.historySync.claim(101, 'host-a', T0, STALE);
+    const now = T0 + offsetFromClaim;
+    // READ FIRST: `claim` mutates the row it is asked about, so reading after
+    // it would describe whichever holder won rather than the one under test.
+    const live = isHistorySyncLeaseLive(db.historySync.lease(), now);
+    return { live, takeable: db.historySync.claim(202, 'host-b', now, STALE) };
+  };
+
+  it('calls a claim taken this instant live', () => {
+    expect(both(0)).toEqual({ live: true, takeable: false });
+  });
+
+  it('calls a claim live right up to the staleness window', () => {
+    expect(both(STALE)).toEqual({ live: true, takeable: false });
+  });
+
+  it('calls a claim dead one millisecond past it', () => {
+    expect(both(STALE + 1)).toEqual({ live: false, takeable: true });
+  });
+
+  // The clause that is easiest to leave out, and the one a surface feels: a
+  // backwards clock correction makes the claim takeable by anyone, so calling
+  // it live would show a pass as running while another process displaced it.
+  it('calls a heartbeat stamped in the future dead, exactly as the claim does', () => {
+    expect(both(-1)).toEqual({ live: false, takeable: true });
+  });
+
+  it('calls an untouched store dead', () => {
+    const db = store.open();
+    expect(isHistorySyncLeaseLive(db.historySync.lease(), T0)).toBe(false);
+  });
+
+  it('calls a released claim dead', () => {
+    const db = store.open();
+    db.historySync.claim(101, 'host-a', T0, STALE);
+    db.historySync.release(101);
+
+    expect(isHistorySyncLeaseLive(db.historySync.lease(), T0)).toBe(false);
+  });
+
+  // A store too old to have the singleton row at all, which `lease()` reports
+  // as undefined. A surface must read that as "nothing is running", never crash.
+  it('calls a missing row dead', () => {
+    expect(isHistorySyncLeaseLive(undefined, T0)).toBe(false);
   });
 });
 
@@ -471,6 +725,62 @@ describe('SqliteHistorySyncRepository — closing the attached period', () => {
 
     expect(db.historySync.pendingSessions(10, ALL)).toEqual(['s-before']);
   });
+
+  // THE POINT of recording a reason here. Closing the window makes those rows
+  // no longer outstanding, which is what lets the boundary move — but it says
+  // nothing about whether any of them arrived, and writing a delivery time said
+  // the opposite. Every case above asserts only that they stop being pending,
+  // which is why one detach could turn a window of undelivered rows into a
+  // window of delivered ones without reddening anything.
+  it('does not report the closed window as delivered', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.rearmFor('fp', T0);
+
+    db.historySync.closeAttachedWindow(T0, T0 + MINUTE);
+
+    // And it reaches the total a surface is built from, rather than leaving the
+    // number without being reported anywhere.
+    expect(db.historySync.counts(ALL).detached).toBe(3);
+
+    const p = db.historySync.partition();
+    expect(p.synced).toBe(0);
+    expect(p.detached).toBe(3);
+    // The owed CAPTURE is untouched: closing the window is a structural-lane
+    // act, and the capture lane carries no boundary to close.
+    expect(p.queued).toBe(1);
+    expect(db.historySync.counts(ALL).sent).toBe(0);
+  });
+
+  // A row that genuinely reached the deployment before the detach keeps saying
+  // so: the window covers what is still NULL, never what is already settled.
+  it('leaves a row delivered before the detach alone', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.rearmFor('fp', T0);
+    db.historySync.markSynced(['s-1'], T0);
+
+    db.historySync.closeAttachedWindow(T0, T0 + MINUTE);
+
+    expect(db.historySync.partition()).toMatchObject({ synced: 1, detached: 2, queued: 1 });
+  });
+
+  // And the half that would have been a silent LOSS. Before a reason could be
+  // recorded, this wrote a delivery time, so the re-arm freed the window like
+  // any other stamp and the rows reached the next deployment. A terminal marker
+  // that the re-arm did not name would have quietly stopped that.
+  it('offers the closed window to a NEW deployment, as a delivery time used to', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.historySync.rearmFor('fp-a', T0);
+    db.historySync.closeAttachedWindow(T0, T0 + MINUTE);
+    expect(db.historySync.pendingSessions(10, ALL)).toEqual([]);
+
+    db.historySync.rearmFor('fp-b', ALL);
+
+    expect(db.historySync.pendingSessions(10, ALL)).toEqual(['s-1']);
+    expect(db.historySync.partition().detached).toBe(0);
+  });
 });
 
 // The delivery-state partition backs a surface that reports what has been sent,
@@ -482,21 +792,21 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
     seedSession(db, 's-1', 0);
     // Three structural rows per session; the capture leaf is not tracked yet.
     const p = db.historySync.partition();
-    expect(p.total).toBe(3);
-    expect(p.queued + p.inProgress + p.synced + p.failed).toBe(p.total);
-    expect(p).toMatchObject({ queued: 3, inProgress: 0, synced: 0, failed: 0 });
+    expect(p.total).toBe(4); // three structural, plus the capture seedSession owes
+    expect(p.queued + p.inProgress + p.synced + p.failed + p.refused + p.detached).toBe(p.total);
+    expect(p).toMatchObject({ queued: 4, inProgress: 0, synced: 0, failed: 0 });
   });
 
   it('moves a row through claimed, then settled', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
     db.historySync.claimRows(['s-1'], T0 + MINUTE);
-    expect(db.historySync.partition()).toMatchObject({ queued: 2, inProgress: 1, synced: 0 });
+    expect(db.historySync.partition()).toMatchObject({ queued: 3, inProgress: 1, synced: 0 });
 
     db.historySync.markSynced(['s-1'], T0 + 2 * MINUTE);
     // Settling clears the claim in the same write, so the row cannot read as
     // both delivered and in flight.
-    expect(db.historySync.partition()).toMatchObject({ queued: 2, inProgress: 0, synced: 1 });
+    expect(db.historySync.partition()).toMatchObject({ queued: 3, inProgress: 0, synced: 1 });
   });
 
   it('returns a claim to the queue when a send fails', () => {
@@ -506,7 +816,7 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
     expect(db.historySync.partition().inProgress).toBe(2);
 
     db.historySync.releaseRows(['s-1', 's-1-llm']);
-    expect(db.historySync.partition()).toMatchObject({ queued: 3, inProgress: 0 });
+    expect(db.historySync.partition()).toMatchObject({ queued: 4, inProgress: 0 });
   });
 
   it('never claims a row that already settled', () => {
@@ -515,37 +825,29 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
     db.historySync.markSynced(['s-1'], T0 + MINUTE);
     // A claim racing a settle must not drag a delivered row back into flight.
     db.historySync.claimRows(['s-1'], T0 + 2 * MINUTE);
-    expect(db.historySync.partition()).toMatchObject({ synced: 1, inProgress: 0, queued: 2 });
+    expect(db.historySync.partition()).toMatchObject({ synced: 1, inProgress: 0, queued: 3 });
   });
 
-  // The SETTLED half of the scope claim. Its sibling below ('does not yet count
-  // captures') pins the static shape — a capture is absent from `total`. This
-  // one pins what happens when the live path STAMPS that capture through
-  // `markCaptureDelivered`: still nothing, because the row was never counted.
-  // Both are needed. Without this one, the docstring's load-bearing sentence —
-  // that a live stamp settles nothing visible here — has no test at all, and the
-  // stamp could start moving `synced` with the suite fully green.
-  it('does not count a capture, before or after the live path stamps it', () => {
+  // An OWED capture is part of what the machine still owes, so it is counted —
+  // and settling it moves it, which is the half a structural-only read could not
+  // express at all.
+  it('counts an owed capture, and moves it when the live path stamps it', () => {
     const db = store.open();
-    seedSession(db, 's-1', 0);
-    const before = db.historySync.partition();
-    expect(before).toMatchObject({ total: 3, queued: 3 });
+    seedSession(db, 's-1', 0); // 3 structural + 1 capture, marked owed
+    expect(db.historySync.partition()).toMatchObject({ total: 4, queued: 4, synced: 0 });
 
     db.historySync.markSynced(['s-1-prompt'], T0 + MINUTE);
 
-    // Same numbers: the capture row was never in `total`, so settling it is not
-    // a state change this query can see. `synced` staying 0 is the assertion
-    // that matters — it is what would break if the capture joined the lane.
-    expect(db.historySync.partition()).toMatchObject({ total: 3, queued: 3, synced: 0 });
+    expect(db.historySync.partition()).toMatchObject({ total: 4, queued: 3, synced: 1 });
   });
 
   it('counts a permanent skip as failed, not as queued', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
-    db.historySync.markSkipped(['s-1-llm']);
+    db.historySync.markSkipped(['s-1-llm'], T0);
     const p = db.historySync.partition();
-    expect(p).toMatchObject({ queued: 2, failed: 1 });
-    expect(p.queued + p.inProgress + p.synced + p.failed).toBe(p.total);
+    expect(p).toMatchObject({ queued: 3, failed: 1 });
+    expect(p.queued + p.inProgress + p.synced + p.failed + p.refused + p.detached).toBe(p.total);
   });
 
   it('sweeps a claim a dead drain left behind', () => {
@@ -556,7 +858,7 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
     expect(db.historySync.partition().inProgress).toBe(1);
 
     expect(db.historySync.releaseStaleClaims(T0 + MINUTE)).toBe(1);
-    expect(db.historySync.partition()).toMatchObject({ queued: 3, inProgress: 0 });
+    expect(db.historySync.partition()).toMatchObject({ queued: 4, inProgress: 0 });
     // A fresh claim is left alone.
     db.historySync.claimRows(['s-1'], T0 + 10 * MINUTE);
     expect(db.historySync.releaseStaleClaims(T0 + MINUTE)).toBe(0);
@@ -571,16 +873,145 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
       inProgress: 0,
       synced: 0,
       failed: 0,
+      refused: 0,
+      detached: 0,
       total: 0,
     });
   });
 
-  it('does not yet count captures — the lane has not been widened', () => {
+  // The other half of the lane rule, and the one that keeps the number honest on
+  // a real machine: a capture nothing marked owed was offered to nobody. Counted
+  // on type alone it would read as queued, and most capture rows in a working
+  // store are exactly that — recorded while detached, or before anyone
+  // consented. They belong in no bucket.
+  it('does not count a capture no forward ever owed', () => {
     const db = store.open();
     seedSession(db, 's-1', 0);
-    // seedSession writes a prompt row too. Until the drain can carry content
-    // safely, it is not part of the tracked set and must not appear here.
-    expect(db.historySync.partition().total).toBe(3);
+    db.auditEvents.insertAuditEvent({
+      id: 'never-offered',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(4 * MINUTE),
+      content: 'recorded while nobody was listening',
+    });
+
+    // 3 structural + the ONE capture seedSession marked owed.
+    expect(db.historySync.partition().total).toBe(4);
+  });
+
+  // `code_change` reaches no lane by construction, so it is absent whatever its
+  // markers say — and on a working machine it is the most numerous kind, so
+  // counting it would put a permanent majority in a bucket nothing can drain.
+  it('does not count a kind no lane carries, even when it is marked owed', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.auditEvents.insertAuditEvent({
+      id: 'a-file',
+      eventType: 'code_change',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(4 * MINUTE),
+      content: 'the whole file',
+    });
+    db.historySync.markCaptureOwed('a-file');
+
+    expect(db.historySync.partition().total).toBe(4);
+  });
+
+  // WHICH kinds this read is about, asserted as behaviour rather than by reading
+  // the constant back. The vocabulary is derived from the two lane lists, so a
+  // read cannot widen what leaves the machine — but nothing stops a later edit
+  // adding a kind that no lane carries, and every row of it would then sit in a
+  // bucket that can never drain. Each kind below is excluded for its own
+  // recorded reason; this is where that stops being prose.
+  // The aggregate hides what a reader most wants: the structural kinds and the
+  // two that carry TEXT settle at very different rates, because the live forward
+  // takes a small row and a large one waits for the drain. One bar averages them
+  // into a number describing neither.
+  it('breaks the partition down per kind, and reconciles with the aggregate', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    seedSession(db, 's-2', 1);
+    db.historySync.markSynced(['s-1-llm'], T0);
+    db.historySync.markRefused(['s-1-tool'], T0);
+    db.historySync.markSkipped(['s-1-prompt'], T0);
+
+    const byKind = db.historySync.partitionByKind();
+    const aggregate = db.historySync.partition();
+
+    // Every bucket reconciles: a surface shows both, so a per-kind number that
+    // did not add up to the aggregate would be two answers about one machine.
+    for (const bucket of [
+      'queued',
+      'inProgress',
+      'synced',
+      'failed',
+      'refused',
+      'detached',
+      'total',
+    ] as const) {
+      expect(byKind.reduce((sum, k) => sum + k[bucket], 0)).toBe(aggregate[bucket]);
+    }
+    expect(byKind.find((k) => k.kind === 'llm_call')).toMatchObject({ synced: 1, queued: 1 });
+    expect(byKind.find((k) => k.kind === 'tool_call')).toMatchObject({ refused: 1, queued: 1 });
+  });
+
+  // ABSENT, not a row of zeros. The two look identical in a bar and mean
+  // different things — "nothing to send" against "nothing recorded" — and the
+  // scope decides which rows exist at all, so a kind nobody ever owed produces
+  // no group rather than an empty one.
+  it('omits a kind with nothing to report rather than reporting zeros', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+
+    const kinds = db.historySync.partitionByKind().map((k) => k.kind);
+    // seedSession writes three structural kinds and one owed capture.
+    expect(kinds.sort()).toEqual(['llm_call', 'prompt', 'session', 'tool_call']);
+    expect(kinds).not.toContain('response');
+  });
+
+  // The lane rule holds PER KIND too: an unowed capture is outside the scope, so
+  // it cannot appear in its kind's row either.
+  it('does not count an unowed capture in its own kind', () => {
+    const db = store.open();
+    seedSession(db, 's-1', 0);
+    db.auditEvents.insertAuditEvent({
+      id: 'never-offered',
+      eventType: 'response',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(4 * MINUTE),
+      content: 'recorded while nobody was listening',
+    });
+
+    expect(db.historySync.partitionByKind().map((k) => k.kind)).not.toContain('response');
+  });
+
+  it('counts exactly the kinds a lane carries', () => {
+    const db = store.open();
+    const carried = ['session', 'llm_call', 'tool_call', 'prompt', 'response', 'tool_use'] as const;
+    const notCarried = ['code_change', 'config_scan', 'model_refusal'] as const;
+
+    db.auditEvents.ensureSessionRoot('root', at(0));
+    for (const [i, eventType] of [...carried.slice(1), ...notCarried].entries()) {
+      const id = `row-${eventType}`;
+      db.auditEvents.insertAuditEvent({
+        id,
+        eventType,
+        rootSessionId: 'root',
+        parentId: 'root',
+        startedAt: at((i + 1) * MINUTE),
+        content: 'text',
+      });
+      // Marked owed indiscriminately: a kind no lane carries must stay absent
+      // even when a marker says otherwise, which is the case a type filter
+      // alone would let through.
+      db.historySync.markCaptureOwed(id);
+    }
+
+    // The session root plus one row per carried kind; nothing else.
+    expect(db.historySync.partition().total).toBe(carried.length);
   });
 });
 
@@ -700,6 +1131,184 @@ describe('SqliteHistorySyncRepository — captures the outbox still owes', () =>
   });
 });
 
+// The consent-time backfill: the one OTHER writer of `outbox_owed`, and the
+// one that reaches a capture the live forward path never touched — a machine
+// that ran the whole thing detached has none of its captures marked by
+// anything else. Deliberately a separate describe block from the section
+// above: those tests are the drain's read, given a marker; these are about
+// what writes the marker in the first place.
+describe('SqliteHistorySyncRepository — the consent-time backfill', () => {
+  it('marks an unattempted capture owed, as of the bound', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-prompt',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(MINUTE),
+      content: 'text of a pre-attach prompt',
+    });
+    // No markCaptureOwed call — this row is exactly what the live forward path
+    // never reaches, because it was never attempted.
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+
+    db.historySync.markCaptureBacklogOwed(T0 + 2 * MINUTE);
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+  });
+
+  // `before` is the caller's OWN "now" at the moment consent was granted, never
+  // a boundary this call re-derives — so a capture recorded at or after it must
+  // not be swept in, even though it is unattempted in exactly the same way.
+  it('does not reach a capture recorded at or after the bound', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-prompt',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(5 * MINUTE),
+      content: 'text of a prompt recorded after the grant',
+    });
+
+    db.historySync.markCaptureBacklogOwed(T0 + 2 * MINUTE);
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+  });
+
+  // code_change is a capture kind and is deliberately excluded from every
+  // capture-lane read — see the sibling test above. The backfill shares
+  // CAPTURE_TYPE_LIST with the drain's own read, so this pins that the NEW
+  // writer respects the same exclusion rather than assuming it from the
+  // reader alone — reading `outbox_owed` directly, never through
+  // `pendingCaptureRows`, whose own type filter would hide a writer that lost
+  // its own.
+  it('never marks a code_change, whatever else is on disk', () => {
+    const db = store.open();
+    const raw = store.openRaw();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-scan',
+      eventType: 'code_change',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(MINUTE),
+      content: 'the entire contents of a source file',
+      contentHash: 'd'.repeat(64),
+    });
+
+    db.historySync.markCaptureBacklogOwed(ALL);
+    expect(outboxOwed(raw, 's-1-scan')).toBe(false);
+  });
+
+  // Structural rows are the other lane entirely and must never be pulled into
+  // this one — they already have their own re-arm on the structural drain.
+  // Read the same way as the case above, for the same reason: through
+  // `pendingCaptureRows` this would pass whether or not the writer excluded
+  // them, since that reader already does.
+  it('never marks a structural row', () => {
+    const db = store.open();
+    const raw = store.openRaw();
+    seedSession(db, 's-1', 0);
+
+    db.historySync.markCaptureBacklogOwed(ALL);
+    expect(outboxOwed(raw, 's-1-llm')).toBe(false);
+    expect(outboxOwed(raw, 's-1-tool')).toBe(false);
+    expect(outboxOwed(raw, 's-1-prompt')).toBe(true);
+  });
+
+  it('is idempotent: a repeat call over the same window changes nothing further', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-prompt',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(MINUTE),
+      content: 'text of a prompt',
+    });
+
+    db.historySync.markCaptureBacklogOwed(ALL);
+    db.historySync.markCaptureBacklogOwed(ALL);
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+  });
+
+  // A row the drain already settled must stay settled: `synced_at IS NULL` is
+  // part of the same WHERE clause the drain's own read uses, not an extra
+  // guard bolted on.
+  it('does not re-open a capture that already synced', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-prompt',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(MINUTE),
+      content: 'text of a prompt',
+    });
+    db.historySync.markSynced(['s-1-prompt'], T0);
+
+    db.historySync.markCaptureBacklogOwed(ALL);
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+  });
+});
+
+// `seedCaptureBacklogOwed` is the module-level wrapper the three consent-time
+// grant sites call — a separate open/mark/close on the SAME file, never a
+// method on an already-open handle. These pin its two properties: it really
+// does open the store and reach the repository method above, and a store it
+// cannot open does not turn a successful consent into a reported failure.
+describe('seedCaptureBacklogOwed — the shared consent-time backfill helper', () => {
+  it('opens the store, marks the backlog owed, and closes the handle', () => {
+    const db = store.open();
+    db.auditEvents.ensureSessionRoot('s-1', at(0));
+    db.auditEvents.insertAuditEvent({
+      id: 's-1-prompt',
+      eventType: 'prompt',
+      rootSessionId: 's-1',
+      parentId: 's-1',
+      startedAt: at(MINUTE),
+      content: 'text of a prompt',
+    });
+    expect(db.historySync.pendingCaptureRows(10, ALL)).toEqual([]);
+
+    seedCaptureBacklogOwed(store.dataDir, T0 + 2 * MINUTE);
+
+    expect(db.historySync.pendingCaptureRows(10, ALL).map((r) => r.id)).toEqual(['s-1-prompt']);
+  });
+
+  // The store must EXIST for this to exercise anything: the existsSync guard
+  // above returns before ever reaching openLocalDatabase for a path that does
+  // not exist, which is exactly what the sibling case below covers. "Cannot
+  // be opened" means the file is there and unreadable as a database — write
+  // the bytes SQLITE_NOTADB rejects, past the guard, and let the catch below
+  // absorb the real open failure. Without this, the fail-open catch at
+  // history-backfill.ts is covered by nothing: this helper runs AFTER the
+  // grant has already been recorded and reported successful, so the swallow
+  // is the whole safety argument for that path.
+  it('is silent, not thrown, when the store exists but cannot be opened', () => {
+    writeFileSync(store.dbFile, 'not a database');
+
+    expect(() => {
+      seedCaptureBacklogOwed(store.dataDir, Date.now());
+    }).not.toThrow();
+  });
+
+  // A machine that has never run `aka init` has no capture backlog to mark by
+  // definition. Without this, the call below would build the store and run
+  // every migration in the ledger to mark zero rows — mirrors the same guard
+  // on the same `aka attach` prompt path in `readLocalHistoryPreview`.
+  it('does not create a store on a machine that has never run init', () => {
+    expect(existsSync(store.dbFile)).toBe(false);
+
+    seedCaptureBacklogOwed(store.dataDir, Date.now());
+
+    expect(existsSync(store.dbFile)).toBe(false);
+  });
+});
+
 // The ledger's reads used to scan `audit_events` — the table captures land in.
 // The comments on idx_audit_events_sync and idx_audit_claimed claim the indexes
 // serve them; these pin that claim, because a comment cannot notice when a
@@ -727,13 +1336,42 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     return recorded.flatMap((q) => explain(raw, q).map((row) => row.detail)).join(' | ');
   };
 
-  it('answers the delivery-state partition from the index alone', () => {
-    const plan = planFor((ledger) => ledger.partition());
-    // COVERING is the property that matters: this read runs on every render of a
-    // surface that shows it, and without the index it is a full table scan.
+  it('answers the per-kind breakdown through the index, with no temp B-tree', () => {
+    const plan = planFor((ledger) => {
+      ledger.partitionByKind();
+    });
     expect(plan).toContain('idx_audit_events_sync');
-    expect(plan).toContain('COVERING INDEX');
     expect(plan).not.toContain('SCAN audit_events');
+    // REFUSED BY NAME. Adding the GROUP BY is enough to move the planner onto
+    // this index, which leads with the same column and carries none of the
+    // delivery state — so every group becomes a row fetch on the largest table
+    // in the store. That is what the INDEXED BY on the statement prevents, and
+    // this is what would go red if somebody removed it.
+    expect(plan).not.toContain('idx_audit_type_t');
+    // The index LEADS with event_type, so grouping on it is a walk in index
+    // order. A temp B-tree here would mean the grouping column stopped being the
+    // prefix — the same reorder the sibling case warns about, seen from the
+    // other side.
+    expect(plan).not.toContain('TEMP B-TREE');
+  });
+
+  it('answers the delivery-state partition through the index, not by scanning', () => {
+    const plan = planFor((ledger) => ledger.partition());
+    // SEEKING is the property that matters: this read runs on every render of a
+    // surface that shows it, and without the index it is a full table scan of
+    // the table captures land in.
+    expect(plan).toContain('idx_audit_events_sync');
+    expect(plan).not.toContain('SCAN audit_events');
+    // COVERING is DELIBERATELY NOT ASSERTED, and the reason is measured rather
+    // than a shrug. The read tests `outbox_owed` — a capture's state depends on
+    // whether a live forward marked it owed — so carrying that column in this
+    // index would make the read covering: 16 ms against 40 ms on a real 6 GB
+    // store. But a sixth column changes what the planner charges for this index,
+    // and with no ANALYZE statistics it plans from schema shape alone; measured,
+    // it then stops choosing the per-session index for the token rollup and
+    // walks every `llm_call` in the store instead. That read grows with the
+    // store and this one does not, so the narrower index wins. If this ever
+    // reads COVERING again, check the token rollup's plan before celebrating.
   });
 
   it('finds pending sessions on the index that bounds started_at, not the new one', () => {
@@ -760,6 +1398,22 @@ describe('SqliteHistorySyncRepository — the ledger reads use the index', () =>
     // partial index changes is WHAT is sorted. Its entries are owed rows only,
     // so both the seek and the sort are bounded by the outbox rather than by
     // every unsettled capture in a table with no retention policy.
+  });
+
+  // The consent-time backfill's own WHERE clause — unbounded below, like the
+  // read above, and run at every fresh or repeated grant rather than once.
+  // What it MARKS is a separate concern from what it SEEKS: this pins only
+  // that finding the rows to mark is an index SEARCH, never a table scan —
+  // idx_audit_outbox_owed itself is what the marked set then grows, which is
+  // a write-cost property the migration comment on that index states, not
+  // one an EXPLAIN QUERY PLAN of this statement can show.
+  it('finds the capture backlog to mark on the index, not by scanning', () => {
+    const plan = planFor((ledger) => {
+      ledger.markCaptureBacklogOwed(ALL);
+    });
+    expect(plan).toContain('idx_audit_type_t');
+    expect(plan).toContain('SEARCH');
+    expect(plan).not.toContain('SCAN audit_events');
   });
 
   // The one WRITE in this block, and the reason it needs its own index.

@@ -670,6 +670,7 @@ describe('per-detection policy drives enforcement (installed_packs.policy_id)', 
     vaultKeyCustody: 'file',
     vaultInlineReveal: 'masked',
     redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
   };
 
   // Seed the installed pack (so an installed_packs row exists), then optionally

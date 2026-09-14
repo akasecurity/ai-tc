@@ -10,7 +10,8 @@
  * So nothing here spells a query. `recordingConnection` wraps a `DatabaseSync`
  * and hands the repositories a stand-in whose `prepare` returns a statement
  * that remembers the SQL and the parameters each `all`/`get`/`run`/`iterate` was
- * actually called with. Drive the read surface, and what comes back is what ran.
+ * actually called with. Drive the read surface, and what comes back is what ran,
+ * except the two statements an index-presence probe issues (`PROBE_SQL`, below).
  *
  * Capturing the PARAMETERS matters as much as capturing the SQL. `EXPLAIN QUERY
  * PLAN` re-prepares the statement, and node:sqlite refuses to execute one whose
@@ -28,6 +29,11 @@
  * miss which parameters it ran with.
  */
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
+
+import { INDEX_PRESENCE_SQL, SCHEMA_VERSION_SQL } from '../../src/internal/index-presence.ts';
+
+/** The statements an index-presence probe runs, which the recorder leaves out. */
+const PROBE_SQL: ReadonlySet<string> = new Set([INDEX_PRESENCE_SQL, SCHEMA_VERSION_SQL]);
 
 /** One statement execution: the SQL, and the arguments it was called with. */
 export interface RecordedQuery {
@@ -80,6 +86,14 @@ export function recordingConnection(db: DatabaseSync, into: RecordedQuery[]): Da
       if (prop !== 'prepare') return passThrough(target, prop);
       return (sql: string): StatementSync => {
         const stmt = target.prepare(sql);
+        // A probe's statements are bookkeeping, not SQL the read under test
+        // issues, and recording them would misreport it twice over. The
+        // `sqlite_master` lookup explains as `SCAN sqlite_master`, which
+        // classifyPlanRow reads as the `full-table` step every plan suite fails
+        // on. And it runs only on the first call for a name while the schema
+        // holds, while `PRAGMA schema_version` runs on every call, so a
+        // statement count would depend on test order.
+        if (PROBE_SQL.has(sql)) return stmt;
         return new Proxy(stmt, {
           get(stmtTarget, stmtProp) {
             // `iterate` is recorded alongside the three materializing calls: the

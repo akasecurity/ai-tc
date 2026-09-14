@@ -39,6 +39,16 @@ describe('severityWeight', () => {
     expect(['critical', 'high', 'medium', 'low'].map(severityWeight)).toEqual([4, 3, 2, 1]);
     expect(severityWeight('bogus')).toBe(0);
   });
+
+  // The same miss for a value naming an Object.prototype member, which a bare
+  // index resolves to the inherited function rather than to `undefined` — so the
+  // `0` fallback never fires and the comparator's subtraction is NaN again.
+  it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty'])(
+    'weighs the prototype name %s 0',
+    (value) => {
+      expect(severityWeight(value)).toBe(0);
+    },
+  );
 });
 
 describe('buildRecommendations', () => {

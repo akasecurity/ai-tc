@@ -23,11 +23,6 @@ import { removeTrees } from '../../../test/helpers/remove-tree.ts';
  * `stack`, so a suite's own `afterEach` runs BEFORE one a setup file registered,
  * and the removal would still go first.
  *
- * Releasing is what lets the directories go, but it does not make the removal
- * instantaneous on Windows: a closed store's `-wal`/`-shm` sidecars can outlive
- * the handle by a moment. So the removal goes through `removeTrees`, whose retry
- * covers that window.
- *
  * Every test still gets its own directory, so isolation is unchanged. All that
  * moves is when the bytes go away.
  */
@@ -51,6 +46,12 @@ export function tempHomes(prefix: string): () => string {
   afterAll(async () => {
     // Released first, then removed — one hook, explicit order.
     await releaseLocalStore();
+    // Through `removeTrees`, not a bare `rmSync`. Releasing narrows the window in
+    // which Windows refuses the removal but does not close it: the `-wal`/`-shm`
+    // sidecars can outlive the connection for a moment, and a bare `rmSync` that
+    // meets that fails this hook naming a cleanup line and no test — the failure
+    // this helper exists to remove. `removeTrees` retries through that window,
+    // tolerates it on win32 only, and attempts every directory before reporting.
     removeTrees(made.splice(0));
   });
 

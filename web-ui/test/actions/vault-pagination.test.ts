@@ -1,8 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 import {
   dataDir,
@@ -14,7 +11,6 @@ import {
 import type { VaultDerefReason } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   loadMoreVaultInventory,
   loadMoreVaultReuse,
@@ -23,6 +19,7 @@ import {
   revealEntry,
 } from '../../app/(app)/vault/actions.ts';
 import { emptyStore } from '../helpers/store-templates.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 /**
  * The vault page's three paged READ actions.
@@ -60,11 +57,15 @@ function dropMemoisedDb(): void {
   delete store.__akaDb;
 }
 
+// Homes are removed when this FILE finishes, not after each test: Windows will
+// not delete a directory a store handle still holds. See the helper.
+const newHome = tempHomes('aka-vault-paging-');
+
 let home: string;
 let dir: string;
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-vault-paging-'));
+  home = newHome();
   osHome.dir = home;
   // dataDir()'s argument is the ~/.aka ROOT, not the home — with the mock in
   // place the no-argument form resolves to exactly what the action will open.
@@ -77,7 +78,6 @@ beforeEach(() => {
 
 afterEach(() => {
   dropMemoisedDb();
-  removeTree(home);
 });
 
 // Every case here drives a READ, so the fixture is written straight through the

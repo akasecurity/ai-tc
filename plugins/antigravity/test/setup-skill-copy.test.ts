@@ -159,8 +159,20 @@ describe('SKILL.md known-limitation disclosure', () => {
     expect(skillMd).toMatch(/carries no prompt text/i);
   });
 
-  it('discloses that a redact policy blocks instead of masking', () => {
-    expect(skillMd).toMatch(/redact policy blocks instead of masking/i);
+  it('discloses that a redact cannot mask here, and that the fallback decides what happens', () => {
+    // This disclosure changed rather than went away, and the direction matters:
+    // a redact used to deny unconditionally on this host, and now follows a
+    // workspace setting whose SHIPPED value lets the call run. Copy that still
+    // said "blocks instead of masking" would over-state what a default install
+    // does — the opposite of the error this suite usually guards against.
+    expect(skillMd).toMatch(/redact policy cannot mask/i);
+    expect(skillMd).toMatch(/redact fallback/i);
+    // The default and its consequence, both named: "warn" alone would leave a
+    // reader thinking something was withheld.
+    expect(skillMd).toMatch(/ships as \*\*warn\*\*/i);
+    expect(skillMd).toMatch(/runs with the value unmasked/i);
+    // And the way back, so the disclosure is actionable rather than only honest.
+    expect(skillMd).toMatch(/Set it to \*\*block\*\*/i);
   });
 
   it('discloses that tool results are not scanned live', () => {

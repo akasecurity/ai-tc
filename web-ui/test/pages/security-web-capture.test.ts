@@ -157,8 +157,10 @@ describe('the security page derives web-capture posture at read time', () => {
 
     // The guard renders `false` in place of the card block, so every OTHER
     // top-level child of the page is unaffected by its presence or absence.
+    // The card sits outside <WidgetNavigation>, so the root's rendered children
+    // are the page head and that wrapper, with the guard's `false` last.
     const topLevel = element.props.children;
-    expect(topLevel.filter(Boolean)).toHaveLength(6);
+    expect(topLevel.filter(Boolean)).toHaveLength(2);
     expect(topLevel.at(-1)).toBe(false);
   });
 

@@ -39,7 +39,7 @@ import { VaultConsent, VaultInlineReveal, VaultKeyCustody } from './vault.ts';
 // v2 added historicalAccess; v3 added dataSharesInPlace; v4 added
 // modelJudgeConsent; v5 added the secret-vault fields (vaultConsent,
 // vaultKeyCustody, vaultInlineReveal); v6 added historySyncConsent; v7 added
-// redactFallback; v8 added webChatCapture. Nothing
+// redactFallback; v8 added bodyRetention and webChatCapture. Nothing
 // reads it, and nothing re-stamps it — the `.default()` below only fills when
 // the key is absent, and applyOnboarding's merge preserves whatever an existing
 // settings.json already carries. So an already-onboarded machine keeps the
@@ -77,7 +77,22 @@ export const MODEL_JUDGE_PAYLOAD_VERSION = 1;
 // authorized by attaching and is unaffected. Declining only means an
 // undelivered capture is DROPPED rather than retained and retried — exactly the
 // behaviour of every release before the outbox existed.
-export const HISTORY_SYNC_PAYLOAD_VERSION = 2;
+//
+// v3 WIDENS THE SUBJECT AGAIN, inside the same "everything this machine still
+// owes" scope v2 opened — not a third lane, but the CAPTURE lane reaching
+// further back. Through v2, a capture recorded before this machine ever
+// attached could never be marked owed at all: `outbox_owed` was set only by a
+// live forward that ran while attached, and a pre-attach capture never passed
+// through that path. v3 adds ONE other writer of that marker —
+// `markCaptureBacklogOwed`, called once from `aka attach` at the instant a
+// human grants this consent, bounded to what is already on disk at that
+// moment. So as of v3 the pre-attach backlog is no longer structural-only: it
+// is marked owed and drains through the exact same capture lane, with the
+// same masking rule, as a capture the live path failed to deliver. Every v2
+// grant is invalidated and re-asked, for the same reason v1's was — declining
+// now changes what text can leave the machine for a set of rows it did not
+// before.
+export const HISTORY_SYNC_PAYLOAD_VERSION = 3;
 
 // How the plugin runs.
 //   'standalone' — everything against the local store under ~/.aka. No other
@@ -285,6 +300,44 @@ export function isWebChatCaptureConsentValid(consent: WebChatCaptureConsent | un
 // in Zod's global registry, and a consumer walking that registry publishes every
 // entry it finds under that name. This is on-disk plugin configuration, not a
 // shape anything refers to by name, so it stays unregistered.
+// How long a captured event's BODY is kept before this machine expires it.
+//
+// 30 days. Nothing decides this for the product — it is a default chosen against
+// what a machine actually accumulates: on a real 6 GB store, `content` older
+// than 90 days was 0 MB, older than 30 days 83 MB, and older than 7 days
+// 4,967 MB of a 5,274 MB total. So a month keeps a full forensic window while
+// still discarding the overwhelming bulk of what a store this shape grows.
+export const BODY_RETENTION_DEFAULT_DAYS = 30;
+
+// Expiring a body clears `content` and stamps `content_expired_at`. It does NOT
+// delete the row: the event, its timestamps, severity, action_taken and repo,
+// and every finding derived from it survive untouched, which is why
+// `audit_events` stays an unbounded table rather than becoming a swept one.
+//
+// OFF by default, and that is deliberate rather than cautious. Every other field
+// here that changes what this product keeps or discloses — historicalAccess,
+// vaultConsent, modelJudgeConsent, historySyncConsent — defaults to the
+// non-destructive stance and is an explicit opt-in. This is the same class of
+// decision pointing the other way (destroying data rather than disclosing it),
+// so it gets the same rule: never an assumed default on upgrade or fresh
+// install.
+//
+// `enabled` and `retainDays` lock as ONE unit, the way runMode + controlPlane
+// do. An administrator who mandates a retention window wants the day count
+// enforced alongside the toggle, not a count the user can widen while the
+// toggle stays pinned on.
+export const BodyRetention = z
+  .object({
+    enabled: z.boolean().default(false),
+    // Never 0, and the ceiling is a fat-finger guard rather than a policy
+    // limit — `enabled` is the real gate. A low value cannot reach a row the
+    // sync ledger still owes: the sweep's age filter only ever NARROWS a
+    // candidate set that is already bounded by "delivered, or never owed".
+    retainDays: z.number().int().min(1).max(3650).default(BODY_RETENTION_DEFAULT_DAYS),
+  })
+  .meta({ id: 'BodyRetention' });
+export type BodyRetention = z.infer<typeof BodyRetention>;
+
 export const WorkspaceSettings = z.object({
   specVersion: z.number().int().positive().default(WORKSPACE_SETTINGS_SPEC_VERSION),
   runMode: RunMode.default('standalone'),
@@ -328,11 +381,11 @@ export const WorkspaceSettings = z.object({
   // covers the current payload and must be re-granted.
   modelJudgeConsent: ModelJudgeConsent.optional(),
   // Records that the user consented to the DEFERRED send — the outbox — along
-  // with the payload shape and the endpoint they agreed to. Since payload v2
-  // that covers both the pre-attach backlog and undelivered captures (which
-  // carry prompt/reply text in `content`); the key name predates the widening.
-  // Absent until granted, and a grant for a different endpoint or an older
-  // payload no longer counts.
+  // with the payload shape and the endpoint they agreed to. Since payload v3
+  // that covers the pre-attach backlog AND undelivered captures alike, and both
+  // carry prompt/reply/tool-output text in `content`; the key name predates
+  // both widenings. Absent until granted, and a grant for a different endpoint
+  // or an older payload no longer counts.
   historySyncConsent: HistorySyncConsent.optional(),
   // What the browser extension may record from a web chat, and the grant that
   // authorizes it. Absent until the user answers: recording something that was
@@ -344,6 +397,12 @@ export const WorkspaceSettings = z.object({
   // blocks, redacts and warns on what a user sends; the grant covers what is
   // written down.
   webChatCapture: WebChatCapture.optional(),
+  // Local body expiry (see BodyRetention). Off until switched on; expiring a
+  // body never removes the row or its findings.
+  bodyRetention: BodyRetention.default({
+    enabled: false,
+    retainDays: BODY_RETENTION_DEFAULT_DAYS,
+  }),
 });
 export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
 
@@ -373,6 +432,32 @@ export function webChatCaptureOf(settings: WorkspaceSettings): WebChatCapture {
  */
 export function isAttached(settings: WorkspaceSettings): boolean {
   return settings.runMode === 'attached' && settings.controlPlane !== undefined;
+}
+
+/**
+ * Whether local body expiry may touch the SYNC LANE — the `prompt`, `response`
+ * and `tool_use` bodies an attached machine forwards.
+ *
+ * A row on that lane is owed until `synced_at` is stamped, and "nothing is
+ * claiming it right now" is not the same question: `aka sync-history --on`
+ * claims the whole backlog retroactively, with no age bound at all. So this is
+ * false whenever anything could still make those rows owed — attached, holding
+ * half an attachment, or carrying a history-sync grant — and expiring them then
+ * would drop data the organization is entitled to, silently and unrecoverably.
+ *
+ * `code_change` is outside this question entirely: it is structurally excluded
+ * from the backlog drain, so no sync state makes one of those bodies owed.
+ *
+ * ONE predicate, because the CLI's manual pass and the background sweep must
+ * never disagree about it — two copies would be two answers, and only one of
+ * them would be the safe one.
+ */
+export function canSweepSyncLane(settings: WorkspaceSettings): boolean {
+  return (
+    settings.runMode !== 'attached' &&
+    settings.controlPlane === undefined &&
+    settings.historySyncConsent === undefined
+  );
 }
 
 /**
@@ -567,6 +652,9 @@ export function toCaptureAttributes(event: IngestEvent): CaptureAttributes {
     ...(metadata?.traceId !== undefined ? { trace_id: metadata.traceId } : {}),
     ...(metadata?.exceptionIds !== undefined ? { exception_ids: metadata.exceptionIds } : {}),
     ...(metadata?.inspectionMs !== undefined ? { inspection_ms: metadata.inspectionMs } : {}),
+    ...(metadata?.redactDegradedTo !== undefined
+      ? { redact_degraded_to: metadata.redactDegradedTo }
+      : {}),
     // `model`/`turnIndex` have no dedicated CaptureAttributes field (no writer
     // has ever populated either), but every legacy metadata key still rides
     // the bag rather than being silently dropped — CaptureAttributes'

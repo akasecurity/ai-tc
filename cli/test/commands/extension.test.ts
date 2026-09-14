@@ -286,6 +286,7 @@ describe('runStatus — the network-capture block', () => {
         vaultKeyCustody: 'file',
         vaultInlineReveal: 'masked',
         redactFallback: 'warn',
+        bodyRetention: { enabled: false, retainDays: 30 },
         ...(webChatCapture !== undefined ? { webChatCapture } : {}),
       }),
     );
@@ -455,6 +456,7 @@ describe('runStatus — the network-capture block', () => {
         vaultKeyCustody: 'file',
         vaultInlineReveal: 'masked',
         redactFallback: 'warn',
+        bodyRetention: { enabled: false, retainDays: 30 },
         webChatCapture: consentedSettings(),
       }),
     );

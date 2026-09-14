@@ -66,6 +66,7 @@ function config(tool: WebSourceTool | undefined, webChat?: WebChatCapture): Plug
       vaultKeyCustody: 'file',
       vaultInlineReveal: 'masked',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
       ...(webChat !== undefined ? { webChatCapture: webChat } : {}),
     },
     dataDir: dir,

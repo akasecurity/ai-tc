@@ -797,10 +797,11 @@ what happened, show the one-liner so they can retry later, and continue the
 wizard normally. The plugin is already fully set up and works on its own; a
 failed CLI install changes nothing about that.
 
-**Close the wizard.** The first-run summary already confirmed the saved posture
-and pointed at the aka-health skill. Whichever way the CLI offer went —
-installed, declined, or a failed install you already reported — end with one
-warm close: "That's it — I'm watching out for Codex going forward."
+**Close the wizard.** The first-run summary already confirmed the saved posture,
+reported the health score, and pointed at the aka-dashboard and aka-scan
+skills. Whichever way the CLI offer went — installed, declined, or a failed
+install you already reported — end with one warm close: "That's it — I'm
+watching out for Codex going forward."
 
 Before you finish, confirm every AKA_SHOW region on the path you took was
 relayed to the user. If you summarized one instead of pasting it, paste it now.
@@ -817,6 +818,16 @@ bytes themselves. So a secret written into a file through `apply_patch` is
 neither redacted before it lands nor reported afterwards; only the path is
 recorded. If the user asks why a secret in a file edit wasn't caught, say so
 plainly rather than implying it is picked up somewhere else.
+
+A redact policy cannot mask a **shell command**, because rewriting one silently
+changes what runs. What happens in its place is the workspace's **redact fallback** (`redactFallback` in
+`~/.aka/settings/settings.json`, or pinned for a machine by an administrator). It ships as **warn**, which means the command
+**runs with the value unmasked** and AKA says so in the session. Set it to
+**block** to get the older behaviour, where the call is denied and the message
+explains what to remove. The `apply_patch` field is different: it is stored
+text rather than a command, so it is masked in place and keeps true redaction at
+either setting. Whichever applies, the finding records the action that actually
+happened, never a "redact" that did not.
 
 The reversible secret vault is not yet wired for Codex sessions, so this wizard
 does not offer the vault-consent step: everything AKA redacts here is one-way

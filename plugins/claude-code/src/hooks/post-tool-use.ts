@@ -23,6 +23,7 @@ import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
+import { warnIfHostBelowFloor } from './host-floor-notice.ts';
 import type { ResponseScanOutcome } from './scan-response.ts';
 import { responseEmitPayload, scanResponseFields } from './scan-response.ts';
 import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
@@ -70,6 +71,9 @@ async function main(): Promise<void> {
   // A symlinked store path redirects the corpus without failing anything;
   // say so once per session (stderr, so the stdout contract is untouched).
   warnIfStoreRedirected(config, getString(input, 'session_id'));
+  // See host-floor-notice.ts: PostToolUse is the other event whose newest
+  // transcript record is guaranteed to belong to the running host.
+  warnIfHostBelowFloor(config, getString(input, 'session_id'), getString(input, 'transcript_path'));
   const gateway = resolveDataGateway(config);
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
   // Vaulting (and everything narrated about it) is consent-gated; without the

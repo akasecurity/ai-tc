@@ -9,7 +9,7 @@ import {
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
-import { RemoteRequestError } from '@akasecurity/remote';
+import { RemoteRequestError, RemoteRequestInvalid } from '@akasecurity/remote';
 import type { IngestEvent, RecordAuditEventRequest } from '@akasecurity/schema';
 import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -355,14 +355,20 @@ describe('runHistorySync — failures', () => {
 
   // A body the deployment understood and rejected cannot be fixed by sending it
   // again, so it becomes a counted skip rather than an endless retry.
-  it('permanently skips a row the deployment refuses on its merits', async () => {
+  // A 400/413/422 is THIS deployment's verdict on this body, so the row stops
+  // being offered on this lane — but it is recorded as a refusal rather than as
+  // a defect of the row, because a body limit is a deployment's own setting and
+  // the same bytes may be acceptable elsewhere. `skipped` is reserved for a row
+  // no deployment could take.
+  it('records a row the deployment refuses on its merits as refused, not skipped', async () => {
     attach({ grantFor: ENDPOINT });
     seedRows(1);
 
     const result = await run({ sendBatch: () => Promise.reject(new RemoteRequestError(400)) });
 
     expect(attempted(result).skipped).toBe(2);
-    expect(ledger((db) => db.historySync.counts(ALL).skipped)).toBe(2);
+    expect(ledger((db) => db.historySync.counts(ALL).refused)).toBe(2);
+    expect(ledger((db) => db.historySync.counts(ALL).skipped)).toBe(0);
   });
 
   // A batch ack is an aggregate count, so a rejection names no row. Re-sending
@@ -381,7 +387,77 @@ describe('runHistorySync — failures', () => {
 
     expect(attempted(result).sent).toBe(1);
     expect(attempted(result).skipped).toBe(1);
-    expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({ sent: 1, skipped: 1 });
+    expect(ledger((db) => db.historySync.counts(ALL))).toMatchObject({
+      sent: 1,
+      refused: 1,
+      skipped: 0,
+    });
+  });
+
+  // The other half of the split. A body this client refused to SEND reached no
+  // deployment, so no deployment gave a verdict on it — it fails identically
+  // everywhere, and re-attaching must not resurrect it.
+  it('records a body this client would not send as skipped, not refused', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedRows(1);
+
+    const result = await run({
+      sendBatch: () => Promise.reject(new RemoteRequestInvalid('/v1/audit-events', undefined)),
+    });
+
+    expect(attempted(result).skipped).toBe(2);
+    expect(ledger((db) => db.historySync.counts(ALL).skipped)).toBe(2);
+    expect(ledger((db) => db.historySync.counts(ALL).refused)).toBe(0);
+
+    // And it survives a change of deployment, where a refusal would not.
+    ledger((db) => {
+      db.historySync.rearmFor('other-fingerprint', ALL);
+    });
+    expect(ledger((db) => db.historySync.counts(ALL).skipped)).toBe(2);
+  });
+
+  // A claim says a row is being sent right now. Nothing but this pass clears
+  // one, so a pass that ends — however it ends — must not leave any behind.
+  it('leaves no row claimed when the pass is over', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedRows(1);
+    seedCaptures([{ id: 'cap-1' }]);
+
+    // BOTH lanes' seams, or the unsupplied one builds a real client and the send
+    // never happens — which would leave nothing claimed for the wrong reason.
+    await run({
+      sendBatch: () => Promise.reject(new RemoteRequestError(400)),
+      sendCaptures: () => Promise.reject(new RemoteRequestError(400)),
+    });
+
+    expect(ledger((db) => db.historySync.partition().inProgress)).toBe(0);
+  });
+
+  // The sweep, and why it ships with the claim rather than after it. A pass
+  // killed mid-batch leaves its claim behind, and the capture read filters on
+  // the claim being absent — so without this, one abandoned pass removes those
+  // rows from every future page permanently.
+  it('sweeps a claim an abandoned pass left behind, and offers the capture again', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([{ id: 'cap-1' }]);
+    // Older than the staleness window, which is what marks it as belonging to a
+    // pass that is gone rather than to a live sibling.
+    ledger((db) => {
+      db.historySync.claimRows(['cap-1'], T0 - 10 * 60_000);
+    });
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
+
+    const sent: string[] = [];
+    await run({
+      sendBatch: (events) => Promise.resolve({ settled: events.length }),
+      sendCaptures: (events) => {
+        for (const e of events) sent.push(e.id);
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(ledger((db) => db.historySync.partition().inProgress)).toBe(0);
   });
 
   // A PARTIAL ack is not a delivery of the whole batch. `AuditEventBatchAck`'s
@@ -529,6 +605,86 @@ describe('runHistorySync — changing deployment', () => {
     });
 
     expect(sent).toEqual(['s-0', 's-0-llm']);
+  });
+
+  // The design collision this whole describe block exists to close: a human
+  // grants existing-history consent WHILE `aka attach` is pointing the
+  // machine at the new deployment, and `seedCaptureBacklogOwed` marks the
+  // pre-attach backlog owed at that instant — before the drain has run even
+  // once under the new deployment. The very first pass under it sees the
+  // fingerprint changed and, until this fix, wiped that grant's own markers
+  // before ever reading them: the CLI's printed "sent in the background"
+  // would have been false.
+  it('keeps a backlog grant made while attaching TO the new deployment', async () => {
+    attach({ grantFor: ENDPOINT });
+    await run({ sendBatch: sendBatchOk }); // one pass under A: records A's fingerprint
+
+    // A capture already on disk before either attach — genuinely pre-attach,
+    // and deliberately NOT marked owed by seeding it directly rather than
+    // through seedCaptures, which simulates a live forward instead.
+    const db1 = openLocalDatabase(dataDirOf(home));
+    try {
+      db1.auditEvents.ensureSessionRoot('cap-session', new Date(T0 - 172_800_000).toISOString());
+      db1.auditEvents.insertAuditEvent({
+        id: 'cap-pre',
+        eventType: 'prompt',
+        rootSessionId: 'cap-session',
+        parentId: 'cap-session',
+        startedAt: new Date(T0 - 86_400_000).toISOString(),
+        content: 'text of a pre-attach prompt',
+        contentHash: 'b'.repeat(64),
+        attributes: { source_tool: 'claude-code' },
+      });
+    } finally {
+      db1.close();
+    }
+
+    // `aka attach --url OTHER_ENDPOINT`: points the machine at B and grants
+    // existing-history consent for B, in that order — settings first, then
+    // the backfill, exactly as attach.ts orders the two calls.
+    const attachedToB = '2026-08-26T00:00:00.000Z';
+    applyOnboarding(
+      {
+        controlPlane: { endpoint: OTHER_ENDPOINT, attachedAt: attachedToB },
+        historySyncConsent: {
+          acknowledgedAt: attachedToB,
+          payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+          endpoint: OTHER_ENDPOINT,
+        },
+      },
+      home,
+    );
+    writeControlPlaneCredential(settingsDirOf(home), {
+      specVersion: 1,
+      endpoint: OTHER_ENDPOINT,
+      apiKey: FIXTURE,
+      mintedAt: attachedToB,
+    });
+    const db2 = openLocalDatabase(dataDirOf(home));
+    try {
+      db2.historySync.markCaptureBacklogOwed(Date.parse(attachedToB));
+    } finally {
+      db2.close();
+    }
+
+    // The drain's FIRST pass under B — the one that discovers the fingerprint
+    // changed and, before this fix, disowned the grant above before this
+    // point was ever reached. Both lanes need their own sink, or the capture
+    // lane falls through to the real transport and the pass reports
+    // 'unreachable' instead of exercising what this test is about.
+    const captured: IngestEvent[] = [];
+    await run({
+      sendBatch: sendBatchOk,
+      sendCaptures: (events: readonly IngestEvent[]) => {
+        captured.push(...events);
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+
+    // The wire id is a derived uuid, not the row's own — content is what
+    // proves it was THIS row, sent with the text a v3 grant promises.
+    expect(captured.map((c) => c.content)).toEqual(['text of a pre-attach prompt']);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
   });
 });
 
@@ -867,6 +1023,64 @@ describe('runHistorySync — the capture lane', () => {
       },
     };
   };
+
+  // A row COUNT is not a size on this lane: `content` is unbounded, so a page of
+  // a hundred is anywhere from a few kilobytes to several megabytes. A body the
+  // far side refuses comes back 413, which is terminal for those rows until the
+  // machine points at a different deployment — so the split has to happen here.
+  it('splits a page by BYTES, not just by row count', async () => {
+    attach({ grantFor: ENDPOINT });
+    const big = 'x'.repeat(600 * 1024);
+    seedCaptures([
+      { id: 'cap-1', content: big },
+      { id: 'cap-2', content: big },
+      { id: 'cap-3', content: big },
+    ]);
+
+    const requests: number[][] = [];
+    await run({
+      sendBatch: (events) => Promise.resolve({ settled: events.length }),
+      sendCaptures: (events) => {
+        requests.push(events.map((e) => e.content.length));
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+
+    // 1.8 MiB of text cannot ride in one request under a 1 MiB ceiling.
+    expect(requests.length).toBeGreaterThan(1);
+    for (const sizes of requests) {
+      expect(sizes.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(1024 * 1024);
+    }
+    // And every row still went.
+    expect(requests.flat()).toHaveLength(3);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
+  });
+
+  // A row larger than the whole budget cannot be made to fit by any batching,
+  // and this read has no cursor — so left alone it would head every future page
+  // for ever and the lane would stall behind it.
+  it('gives up on a capture too large to ride at all, and sends the rest', async () => {
+    attach({ grantFor: ENDPOINT });
+    seedCaptures([
+      { id: 'cap-huge', content: 'x'.repeat(2 * 1024 * 1024) },
+      { id: 'cap-small', content: 'a modest prompt' },
+    ]);
+
+    const sent: string[] = [];
+    await run({
+      sendBatch: (events) => Promise.resolve({ settled: events.length }),
+      sendCaptures: (events) => {
+        for (const e of events) sent.push(e.content);
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+
+    expect(sent).toEqual(['a modest prompt']);
+    // Terminal, and named: this machine cannot express the row, so no change of
+    // deployment frees it.
+    expect(ledger((db) => db.historySync.counts(ALL).capturesSkipped)).toBe(1);
+    expect(ledger((db) => db.historySync.pendingCaptureRows(10, ALL))).toEqual([]);
+  });
 
   it('sends a queued capture WITH its text, and settles it', async () => {
     attach({ grantFor: ENDPOINT });

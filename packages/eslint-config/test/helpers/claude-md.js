@@ -139,6 +139,7 @@ const CARDINALS = [
   'eight',
   'nine',
   'ten',
+  'eleven',
 ];
 const ORDINALS = [
   'zeroth',
@@ -152,6 +153,7 @@ const ORDINALS = [
   'eighth',
   'ninth',
   'tenth',
+  'eleventh',
 ];
 
 /** The English word for `n`. Throws past the list rather than returning undefined. */

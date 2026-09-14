@@ -270,17 +270,40 @@ const DRIZZLE_IMPORT_MESSAGE =
  * `allow` drops a network module from base's bans, exactly as `noNetworkImports`
  * takes it. The Drizzle half deliberately takes NO allow list: `@akasecurity/schema`
  * is the one package that may import Drizzle, and it carries no wall to relax.
- * @param {{ allow?: string[] }} [opts]
+ *
+ * `paths` and `patterns` are MERGED with the Drizzle entries rather than
+ * replacing them, which is what `noNetworkImports` already does with its own.
+ * The two have to agree: this function's whole job is to carry a ban forward
+ * that flat config would otherwise replace, so a caller adding one restriction
+ * to the wall and silently losing every other is this module's own failure
+ * mode reached from the inside. A caller's entries go LAST, matching
+ * `noNetworkImports`, so for a specifier both halves name the wall's message is
+ * REPORTED FIRST — not the only one reported. `no-restricted-imports` emits
+ * every matching entry rather than stopping at the first, verified against the
+ * workspace's own ESLint: two `paths` entries naming one specifier produce two
+ * messages, ordered as the array is.
+ * @param {{
+ *   allow?: string[],
+ *   paths?: { name: string, message: string }[],
+ *   patterns?: { group: string[], message: string }[],
+ * }} [opts]
  */
 export function drizzleWallRules(opts = {}) {
+  const { paths = [], patterns = [], ...rest } = opts;
   return {
     'no-restricted-imports': noNetworkImports({
-      ...opts,
-      paths: DRIZZLE_MODULES.map((name) => ({ name, message: DRIZZLE_IMPORT_MESSAGE })),
-      patterns: DRIZZLE_MODULES.map((name) => ({
-        group: [`${name}/*`],
-        message: DRIZZLE_IMPORT_MESSAGE,
-      })),
+      ...rest,
+      paths: [
+        ...DRIZZLE_MODULES.map((name) => ({ name, message: DRIZZLE_IMPORT_MESSAGE })),
+        ...paths,
+      ],
+      patterns: [
+        ...DRIZZLE_MODULES.map((name) => ({
+          group: [`${name}/*`],
+          message: DRIZZLE_IMPORT_MESSAGE,
+        })),
+        ...patterns,
+      ],
     }),
     // The dynamic half. `no-restricted-imports` sees only a written specifier,
     // so without this a code-split `await import('drizzle-orm/pg-core')` reaches
@@ -434,6 +457,13 @@ function ambientClockSelectors(opts = {}) {
  * The other three groups come along by construction, so an opt-out for one ban
  * cannot become an opt-out for four by omission.
  *
+ * `allowNetwork` is the same idea for the network group, and takes module names
+ * rather than a boolean: a file that legitimately binds a loopback socket needs
+ * `node:http` and must keep every other transport banned. Pair it with the
+ * matching `no-restricted-imports` value (`drizzleWallRules({ allow })`) so the
+ * static and dynamic halves of the ban drop together, the way CLAUDE.md
+ * "No network calls" requires.
+ *
  * `ambientClockEveryModule` is the other direction — WIDENING rather than
  * lifting the clock ban, to every module in the package regardless of
  * directive. See `ambientClockSelectors`'s own doc for why that is sound only
@@ -441,14 +471,15 @@ function ambientClockSelectors(opts = {}) {
  * `allowAmbientClock` wins if both are set, since a file that opted all the
  * way out has nothing left to widen.
  *
- * @param {{ allowAmbientClock?: boolean, ambientClockEveryModule?: boolean }} [opts]
+ * @param {{ allowAmbientClock?: boolean, allowNetwork?: readonly string[],
+ *   ambientClockEveryModule?: boolean }} [opts]
  * @returns {import('eslint').Linter.RuleEntry}
  */
 export function reactSyntaxBans(opts = {}) {
-  const { allowAmbientClock = false, ambientClockEveryModule = false } = opts;
+  const { allowAmbientClock = false, allowNetwork = [], ambientClockEveryModule = false } = opts;
   return /** @type {import('eslint').Linter.RuleEntry} */ ([
     'error',
-    ...networkSyntaxSelectors(),
+    ...networkSyntaxSelectors({ allow: allowNetwork }),
     ...drizzleSyntaxSelectors(),
     ...tonalInkSelectors(),
     ...(allowAmbientClock ? [] : ambientClockSelectors({ everyModule: ambientClockEveryModule })),

@@ -318,6 +318,24 @@ export function backtrackRatio(rule: Rule): { ratio: number; ms: number; benignM
 // a stall permanently disables a rule the user installed. Only the second is
 // unrecoverable without `aka detections unquarantine`, so a value that errs
 // toward "measure it again" is the safe one.
+//
+// Every number above was taken where the corroborating clock resolves to
+// 0.001ms. That is not universal, and the exception decides where this value
+// may go. Windows credits a whole scheduler tick to whichever thread was
+// running at the timer interrupt, measured at 16.0000ms on the CI runner (the
+// `Runner facts` step in ci.yml prints it), so there the reading is not how
+// much CPU a probe burned but how many interrupts it was running at — and the
+// 0.2-7.7ms-against-44.5ms separation above collapses onto a lattice of 0, 16,
+// 32.
+//
+// 20ms survives that by sitting between one tick and two: a benign rule can be
+// charged at most one tick and still not corroborate, while a genuine breach
+// crosses two. So the usable range on a coarse clock is ONE TICK < floor <= TWO
+// TICKS, which is narrower than the measured separation suggests and is not
+// visible in it. A share of 0.16 or less puts the floor at or under one tick,
+// at which point a benign rule whose probe merely straddles a timer interrupt
+// is corroborated and quarantined for ever. Both ends are held by cases in
+// test/security/redos-probe.test.ts rather than by this paragraph.
 const CPU_CORROBORATION_SHARE = 0.2;
 
 /** The corroborating clock must read at least this much for a breach to be cached. */

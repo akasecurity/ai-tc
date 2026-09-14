@@ -21,7 +21,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
-import { openLocalDatabase } from '../../src/database.ts';
+import { openLocalDatabase, type OpenLocalDatabaseOptions } from '../../src/database.ts';
 import { dataDir, dbPath, settingsDir } from '../../src/local-layout.ts';
 import { ensureDataDirSync } from '../../src/paths.ts';
 import { migratedStore } from './migrated-store.ts';
@@ -38,8 +38,11 @@ export interface TempStore {
   /**
    * A fresh `LocalDatabase` on this store, closed for you at teardown. Call it
    * more than once for independent handles on the same file.
+   *
+   * It opens the way a plugin hook does unless `options` says otherwise, so a
+   * suite whose store must carry the deferred indexes asks for them.
    */
-  readonly open: () => LocalDatabase;
+  readonly open: (options?: OpenLocalDatabaseOptions) => LocalDatabase;
   /**
    * A raw `DatabaseSync` on the same file, closed for you at teardown. A test
    * that opens one by hand has to close it on every path, including the one
@@ -151,8 +154,8 @@ export function createTempStore(
     settingsDir: settingsDir(home),
     dataDir: dataDir(home),
     dbFile: dbPath(home),
-    open: (): LocalDatabase => {
-      const db = openLocalDatabase(dataDir(home));
+    open: (options?: OpenLocalDatabaseOptions): LocalDatabase => {
+      const db = openLocalDatabase(dataDir(home), options);
       // LocalDatabase has no `isOpen`, so the close is wrapped to record it —
       // otherwise a handle a test closed itself still counts as live.
       //
@@ -394,7 +397,7 @@ export function useTempStore(prefix?: string, options?: TempStoreOptions): TempS
     get dbFile(): string {
       return active().dbFile;
     },
-    open: () => active().open(),
+    open: (options?: OpenLocalDatabaseOptions) => active().open(options),
     openRaw: () => active().openRaw(),
     openHandleCount: () => active().openHandleCount(),
     onCleanup: (fn: () => void) => {

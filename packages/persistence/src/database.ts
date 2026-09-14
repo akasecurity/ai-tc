@@ -16,6 +16,7 @@ import type {
 } from '@akasecurity/schema';
 import {
   captureDefinitionVersion,
+  DEFERRED_MIGRATION_TAGS,
   EventKind,
   isoToEpochMillis,
   toCaptureAttributes,
@@ -370,7 +371,7 @@ function backupLegacyStore(db: DatabaseSync, file: string): string {
  * handle, which is the Windows file lock this exists to prevent — so the guard
  * is one window over the whole sequence rather than one per known thrower.
  */
-function openAndInitialize(file: string, base: string) {
+function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<string>) {
   let db = openWithPragmas(file);
   try {
     // A legacy (tenant-bearing) aka.db can't be migrated forward onto the
@@ -392,7 +393,7 @@ function openAndInitialize(file: string, base: string) {
       );
     }
 
-    applyMigrations(db, file);
+    applyMigrations(db, file, { skipTags });
     tightenPerms(file);
 
     const policies = new SqlitePoliciesRepository(db);
@@ -436,7 +437,26 @@ function openAndInitialize(file: string, base: string) {
   }
 }
 
-export function openLocalDatabase(dir: string): LocalDatabase {
+/** What a caller can vary about opening the local store. */
+export interface OpenLocalDatabaseOptions {
+  /**
+   * Apply the migrations named in DEFERRED_MIGRATION_TAGS on this open. Off by
+   * default: each builds an index over every capture row's attribute bag, which
+   * on a large store outlasts a plugin hook's host timeout, and a hook killed
+   * mid-build rolls it back for the next hook to start again. A caller that can
+   * afford the wait opts in. A read that names one of those indexes has to work
+   * without it.
+   */
+  applyDeferredMigrations?: boolean | undefined;
+}
+
+// The set a default open skips, allocated once.
+const DEFERRED_TAGS: ReadonlySet<string> = new Set(DEFERRED_MIGRATION_TAGS);
+
+export function openLocalDatabase(
+  dir: string,
+  options: OpenLocalDatabaseOptions = {},
+): LocalDatabase {
   ensureDataDirSync(dir);
   const file = join(dir, DB_FILENAME);
   // A snapshot killed part-way leaves a staging directory holding a full copy of
@@ -481,6 +501,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     // `dataDir()` — so its parent is the `~/.aka` base the layout splits into
     // settings/ and data/, and the pack-policy floor needs both halves.
     dirname(dir),
+    options.applyDeferredMigrations === true ? undefined : DEFERRED_TAGS,
   );
 
   // The one derivation of a capture's row id, shared by the write and the

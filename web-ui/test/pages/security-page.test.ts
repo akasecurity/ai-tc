@@ -1,8 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 import { dataDir, type LocalDatabase, openLocalDatabase } from '@akasecurity/persistence';
 import type {
@@ -14,10 +11,10 @@ import type {
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import SecurityPage from '../../app/(app)/security/page.tsx';
 import { WidgetNavigation } from '../../app/(app)/security/WidgetNavigation.tsx';
 import { emptyStore } from '../helpers/store-templates.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // The Security route hands each widget a set of deep links, and which WINDOW a
 // link carries is decided per widget: the page reads `inspection_findings` three
@@ -36,6 +33,9 @@ vi.mock('node:os', async (importActual) => {
   return { ...actual, homedir: () => osHome.dir };
 });
 
+// Homes are removed when this FILE finishes, not after each test. See the helper.
+const newHome = tempHomes('aka-security-page-');
+
 let home: string;
 let dir: string;
 
@@ -46,7 +46,7 @@ function dropMemoisedDb(): void {
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-security-page-'));
+  home = newHome();
   osHome.dir = home;
   dir = dataDir();
   emptyStore.seed(dir);
@@ -55,7 +55,6 @@ beforeEach(() => {
 
 afterEach(() => {
   dropMemoisedDb();
-  removeTree(home);
 });
 
 const DAY_MS = 24 * 60 * 60 * 1000;

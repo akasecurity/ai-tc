@@ -1,6 +1,5 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -21,7 +20,6 @@ import type { VaultInventoryEntry } from '@akasecurity/schema';
 import { isVaultConsentValid, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { grantRevealFromPointer, rotateKey } from '../../app/(app)/exceptions/actions.ts';
 import {
   purgeVault,
@@ -30,6 +28,7 @@ import {
   rotateVaultKey,
 } from '../../app/(app)/vault/actions.ts';
 import { emptyStore } from '../helpers/store-templates.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // The vault manage surface: reveal-by-row-id, grant revocation, the purge, and
 // the key rotation. The suite pins the audit and survival properties — one
@@ -56,6 +55,8 @@ vi.mock('next/cache', () => ({ revalidatePath: revalidate }));
 // secret-looking literals out of this public file.
 const RAW = 'vaulted-value-for-web-manage-test';
 
+const newHome = tempHomes('aka-web-vault-manage-');
+
 let home: string;
 
 // web-ui memoizes the open DB handle on globalThis (app/lib/db.ts). Close and
@@ -67,7 +68,7 @@ function resetSingleton(): void {
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-web-vault-manage-'));
+  home = newHome();
   osHome.dir = home;
   // Schema by file copy rather than a migration this test would only repeat.
   emptyStore.seed(dataDir());
@@ -80,7 +81,6 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSingleton();
-  removeTree(home);
 });
 
 // The construction every action performs — the vault over the local store with

@@ -1,6 +1,5 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -20,9 +19,9 @@ import {
 import { isVaultConsentValid, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { revealPointer } from '../../app/(app)/vault/actions.ts';
 import { emptyStore } from '../helpers/store-templates.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // `revealPointer` is the dashboard's reveal surface. It must return the raw
 // value ONLY for a pointer this machine minted (auditing the reveal), return
@@ -42,6 +41,7 @@ vi.mock('node:os', async (importActual) => {
 // secret-looking literals out of this public file.
 const RAW = 'vaulted-value-for-web-reveal-test';
 
+const newHome = tempHomes('aka-web-vault-');
 let home: string;
 
 // web-ui memoizes the open DB handle on globalThis (app/lib/db.ts). Close and
@@ -53,7 +53,7 @@ function resetSingleton(): void {
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-web-vault-'));
+  home = newHome();
   osHome.dir = home;
   // Schema by file copy rather than a migration this test would only repeat.
   emptyStore.seed(dataDir());
@@ -65,7 +65,6 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSingleton();
-  removeTree(home);
 });
 
 // Seed one vaulted value through the real persistence SecretVault — the same

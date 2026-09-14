@@ -135,6 +135,8 @@ export const ShareDestinationSummary = z
     kind: DestinationKind,
     name: z.string(),
     host: z.string(),
+    /** The id of the matched provider catalog entry; null for internal/external/ip destinations. */
+    providerId: z.string().nullable(),
     category: z.string(),
     trust: ShareTrustLevel,
     /** Effective state (decision applied over the trust default). */
@@ -180,8 +182,14 @@ export const ReviewDestination = z
     id: z.string(),
     kind: DestinationKind,
     name: z.string(),
-    /** Registrable host — lets the strip derive the provider lettermark, as the register does. */
+    /** Registrable host — the row identity, shown beside the name as the register does. */
     host: z.string(),
+    /**
+     * The id of the matched provider catalog entry; null for internal/external/ip
+     * destinations. Keys the provider lettermark color, so every host of one provider
+     * shares it.
+     */
+    providerId: z.string().nullable(),
     trust: ShareTrustLevel,
     status: EgressStatus,
     review: ReviewInfo,
@@ -202,6 +210,23 @@ export const ShareDestinationGroup = z
   })
   .meta({ id: 'ShareDestinationGroup' });
 export type ShareDestinationGroup = z.infer<typeof ShareDestinationGroup>;
+
+// ─── Shape 7b: ShareProviderRollup ────────────────────────────────────────────
+
+/** One provider's hosts folded into a single read-side rollup, by providerId. */
+export const ShareProviderRollup = z
+  .object({
+    providerId: z.string(),
+    name: z.string(),
+    category: z.string(),
+    hostCount: z.number().int().positive(),
+    endpointCount: z.number().int().nonnegative(),
+    callSiteCount: z.number().int().nonnegative(),
+    lastSeen: z.iso.datetime(),
+    hosts: z.array(z.string()),
+  })
+  .meta({ id: 'ShareProviderRollup' });
+export type ShareProviderRollup = z.infer<typeof ShareProviderRollup>;
 
 // ─── Shape 8: ListShareDestinationsResponse ──────────────────────────────────
 

@@ -1,3 +1,4 @@
+import { isValidElement, type ReactElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -236,4 +237,156 @@ describe('DataSharesTableView', () => {
     });
     expect(html).toContain('+2');
   });
+
+  describe('groupByProvider', () => {
+    // Two hosts of the same provider — GitHub Raw is the more recently seen
+    // one, so the provider row is named after it (grouping.ts folds the name
+    // from the most recently seen host).
+    const hostA = destination({
+      id: 'gh-a',
+      name: 'GitHub',
+      host: 'api.github.com',
+      providerId: 'github',
+      category: 'Dev tools',
+      trust: 'recognized',
+      lastSeen: '2026-07-01T00:00:00.000Z',
+    });
+    const hostB = destination({
+      id: 'gh-b',
+      name: 'GitHub Raw',
+      host: 'raw.githubusercontent.com',
+      providerId: 'github',
+      category: 'Dev tools',
+      trust: 'recognized',
+      lastSeen: '2026-07-05T00:00:00.000Z',
+    });
+    const twoHostGroup = group({ items: [hostA, hostB] });
+
+    it('folds two hosts sharing a providerId into one provider row, collapsed by default', () => {
+      const html = render({ group: twoHostGroup, groupByProvider: true, expanded: {} });
+      expect(html).toContain('GitHub Raw');
+      expect(html).toContain('2 hosts');
+      expect(html).not.toContain('api.github.com');
+      expect(html).not.toContain('raw.githubusercontent.com');
+    });
+
+    it('reveals both host rows once the provider row is expanded by id', () => {
+      const html = render({
+        group: twoHostGroup,
+        groupByProvider: true,
+        expanded: { 'provider:github': true },
+      });
+      expect(html).toContain('api.github.com');
+      expect(html).toContain('raw.githubusercontent.com');
+    });
+
+    it('opens the provider row on its own while one of its hosts is the drawer selection', () => {
+      const selected = render({
+        group: twoHostGroup,
+        groupByProvider: true,
+        expanded: {},
+        selection: { id: 'gh-b' },
+        drawerOpen: true,
+      });
+      expect(selected).toContain('raw.githubusercontent.com');
+      expect(rowMarkup(selected, DEST_ROW('GitHub Raw'))).toContain('bg-primary-tint');
+      // The pinned row's toggle is disabled, so a click cannot flip an expansion
+      // flag that nothing renders while the selection holds the row open.
+      const providerRow = rowMarkup(selected, 'Collapse provider GitHub Raw');
+      expect(providerRow).toContain('Kept open while a host is selected');
+      expect(providerRow).toContain('disabled=""');
+
+      // The same selection with the drawer closed leaves the row collapsed, so
+      // the auto-open is tied to what is showing rather than to a stale id.
+      const closed = render({
+        group: twoHostGroup,
+        groupByProvider: true,
+        expanded: {},
+        selection: { id: 'gh-b' },
+        drawerOpen: false,
+      });
+      expect(closed).not.toContain('raw.githubusercontent.com');
+    });
+
+    it('forceExpand opens provider rows too', () => {
+      const html = render({
+        group: twoHostGroup,
+        groupByProvider: true,
+        expanded: {},
+        forceExpand: true,
+      });
+      expect(html).toContain('api.github.com');
+      expect(html).toContain('raw.githubusercontent.com');
+    });
+
+    // Positive control: the prop defaults to false, so an app that never
+    // passes it keeps rendering exactly what it always has.
+    it('renders two plain destination rows when the prop is omitted', () => {
+      const html = render({ group: twoHostGroup });
+      expect(html).toContain(DEST_ROW('GitHub'));
+      expect(html).toContain(DEST_ROW('GitHub Raw'));
+      expect(html).not.toContain('2 hosts');
+    });
+
+    it('shows Mixed for trust/status once the folded hosts disagree', () => {
+      const mixed = group({
+        items: [
+          destination({ id: 'gh-a', providerId: 'github', trust: 'recognized' }),
+          destination({ id: 'gh-b', providerId: 'github', trust: 'unverified' }),
+        ],
+      });
+      const html = render({ group: mixed, groupByProvider: true });
+      expect(html).toContain('Mixed');
+    });
+
+    // Handlers never reach the wire as markup, so the provider row's toggle is
+    // exercised by calling the view as a plain function and walking the
+    // element tree it returns for the row carrying the target aria-label —
+    // the same technique this package's other row-handler tests use.
+    it('binds the provider row toggle to the provider group id', () => {
+      const onToggle = vi.fn();
+      const tree = DataSharesTableView({
+        renderedAt: RENDERED_AT,
+        group: twoHostGroup,
+        expanded: {},
+        selection: null,
+        drawerOpen: false,
+        onToggle,
+        onOpenDest: vi.fn(),
+        onOpenEndpoint: vi.fn(),
+        groupByProvider: true,
+      });
+      const row = findByAriaLabel(tree, 'Expand provider GitHub Raw');
+      if (row === null)
+        throw new Error('no row found with aria-label "Expand provider GitHub Raw"');
+      (row.props as { onClick: () => void }).onClick();
+      expect(onToggle).toHaveBeenCalledExactlyOnceWith('provider:github');
+    });
+  });
 });
+
+/**
+ * Finds the element carrying `aria-label={label}` inside an UNRENDERED React
+ * element tree, invoking any function component it walks through along the
+ * way (none of this package's row components use hooks, so calling them
+ * directly is safe) since a row's own aria-label is set inside its body, not
+ * passed down from its caller.
+ */
+function findByAriaLabel(node: ReactNode, label: string): ReactElement | null {
+  if (Array.isArray(node)) {
+    for (const child of node as ReactNode[]) {
+      const hit = findByAriaLabel(child, label);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (!isValidElement(node)) return null;
+  const props = node.props as { 'aria-label'?: string; children?: ReactNode };
+  if (props['aria-label'] === label) return node;
+  if (typeof node.type === 'function') {
+    const rendered = (node.type as (p: unknown) => ReactNode)(node.props);
+    const hit = findByAriaLabel(rendered, label);
+    if (hit) return hit;
+  }
+  return props.children === undefined ? null : findByAriaLabel(props.children, label);
+}

@@ -378,6 +378,12 @@ export const EgressIngestHit = z
     kind: DestinationKind,
     name: z.string(),
     category: z.string(),
+    /**
+     * The id of the matched provider catalog entry; null for internal/external/ip
+     * destinations. Optional on the wire so a receiver built from this schema still
+     * accepts a sender that predates the field; a current sender always writes it.
+     */
+    providerId: z.string().nullable().optional(),
     trust: ShareTrustLevel,
     network: DestinationNetwork.nullable(),
     method: HttpMethod,

@@ -125,6 +125,7 @@ export const COL = {
   // Data Shares API — share_destination / share_endpoint / share_call_site /
   // egress_decision_override.
   host: 'host',
+  providerId: 'provider_id',
   networkJson: 'network_json',
   destinationId: 'destination_id',
   method: 'method',

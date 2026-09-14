@@ -151,4 +151,8 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0030_audit_content_expiry',
     sql: 'ALTER TABLE `audit_events` ADD `content_expired_at` integer;--> statement-breakpoint\nCREATE INDEX `idx_audit_expirable_body` ON `audit_events` (`started_at`) WHERE content IS NOT NULL;',
   },
+  {
+    tag: '0031_share_destination_provider_id',
+    sql: 'ALTER TABLE `share_destination` ADD `provider_id` text;--> statement-breakpoint\nCREATE INDEX `idx_share_destination_provider` ON `share_destination` (`provider_id`) WHERE `provider_id` IS NOT NULL;',
+  },
 ];

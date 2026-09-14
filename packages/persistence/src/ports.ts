@@ -56,6 +56,7 @@ import type {
   SessionTokenReport,
   SeveritySummaryResponse,
   ShareDestinationDetail,
+  ShareProviderRollup,
   SharesStats,
   SourceKind,
   TimeRange,
@@ -237,6 +238,8 @@ export interface SharesReadPort {
   listDestinations(query: ListShareDestinationsQuery): Promise<ListShareDestinationsResponse>;
   needsReview(): Promise<NeedsReviewResponse>;
   getDestination(destinationId: string): Promise<ShareDestinationDetail | null>;
+  /** Every provider's hosts folded into one rollup, ordered by callSiteCount desc then providerId asc. */
+  listProviders(): Promise<ShareProviderRollup[]>;
 }
 
 /**

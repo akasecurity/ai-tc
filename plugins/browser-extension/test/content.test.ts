@@ -296,12 +296,22 @@ describe('showBanner: the block banner has to survive long enough to act on', ()
 
   it('keeps a block banner on screen past the auto-hide window', () => {
     vi.useFakeTimers();
-    showBanner({
+    show({
       tone: 'block',
       message: 'AKA blocked this message.',
       exception: { intro: 'i', command: 'aka exception approve 3f2a91', help: 'h' },
     });
     vi.advanceTimersByTime(60_000);
+
+    // The HOST's presence is the property. Two things made the text read
+    // vacuous: this called `showBanner` directly, so `shadowText()` returned
+    // whichever root an earlier case left in `lastShadow`; and even routed
+    // through `show`, `bannerHost.remove()` only detaches the host — the
+    // closed root keeps its children, so its `textContent` survives a banner
+    // that is no longer on screen. Checked by mutation: arming the hide timer
+    // for every banner left this case green on the text alone.
+    expect(document.body.firstElementChild).not.toBeNull();
+    // Kept as the positive control: the right banner is the one still up.
     expect(shadowText()).toContain('aka exception approve 3f2a91');
   });
 

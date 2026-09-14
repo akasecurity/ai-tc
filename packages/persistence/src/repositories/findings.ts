@@ -1067,7 +1067,12 @@ export class SqliteFindingsRepository
       ),
     );
     for (const row of grouped) {
-      if (row.action_taken in byAction) byAction[row.action_taken as ActionTaken] = row.c;
+      // `Object.hasOwn`, never `in`, as for the severity tally below:
+      // `action_taken` is a stored string with no CHECK, and `in` also accepts
+      // every Object.prototype name.
+      if (Object.hasOwn(byAction, row.action_taken)) {
+        byAction[row.action_taken as ActionTaken] = row.c;
+      }
     }
 
     // Whole-store OPEN-findings count per severity — powers the read surfaces'

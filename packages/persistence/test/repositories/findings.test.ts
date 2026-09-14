@@ -933,6 +933,45 @@ describe('SqliteFindingsRepository.healthSummary — resolution lifecycle', () =
       expect(Object.hasOwn(summary.bySeverity, severity)).toBe(false);
     },
   );
+
+  // `inspection_findings.action_taken` carries no CHECK either. The product
+  // writes it from a Zod-typed action, but a row from another writer takes the
+  // same path, so it must fall through like any unknown action.
+  it.each(['constructor', 'toString', 'hasOwnProperty'])(
+    'adds no key to byAction for a stored action named %s',
+    async (action) => {
+      const raw = store.openRaw();
+      raw
+        .prepare(
+          `INSERT INTO inspection_definitions
+             (id, rule_id, name, category, severity, definition, version)
+           VALUES ('def-proto', 'proto-rule', 'proto-rule', 'secret', 'high', '{}', '1')`,
+        )
+        .run();
+      raw
+        .prepare(
+          `INSERT INTO audit_events (id, event_type, started_at, content)
+           VALUES ('ev-proto', 'prompt', 1000, '')`,
+        )
+        .run();
+      raw
+        .prepare(
+          `INSERT INTO inspection_findings
+             (id, audit_event_id, inspection_definition_id, span_start, span_end,
+              masked_match, action_taken, confidence)
+           VALUES ('f-proto', 'ev-proto', 'def-proto', 0, 1, '••', ?, 1)`,
+        )
+        .run(action);
+
+      const summary = await db.findings.healthSummary();
+      // The positive control: the finding was read and counted by severity, so
+      // an all-zero action tally below is the guard at work.
+      expect(summary.findings).toBe(1);
+      expect(summary.bySeverity.high).toBe(1);
+      expect(Object.values(summary.byAction).every((n) => n === 0)).toBe(true);
+      expect(Object.hasOwn(summary.byAction, action)).toBe(false);
+    },
+  );
 });
 
 // A store larger than any one group's instance PREVIEW. listFindingTypes

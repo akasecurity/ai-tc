@@ -55,11 +55,12 @@ const STATUS_LOOKBACK_ROWS = 128;
  * caught what the scale test does: `source_tool` is not in `idx_audit_type_t`,
  * so the seek for a site with NO rows examines the whole `capture_status`
  * range before it can conclude there is nothing to find — an indexed SEARCH in
- * the plan and linear in the history. Measured before the recency bound below:
- * 0.331 ms at 2,000 rows against 4.389 ms at 20,000, i.e. 13.3x for 10x the
- * rows, and unbounded because `audit_events` has no retention policy. A
- * partial index on (`source_tool`, `started_at`) would make it constant rather
- * than merely bounded; the window is what is in place today.
+ * the plan and linear in the history, and unbounded because `audit_events` has
+ * no retention policy. The FIGURES live in that scale suite's own header
+ * rather than here — they were re-taken when `STATUS_LOOKBACK_ROWS` moved
+ * 32 -> 128, and one measurement quoted in two files is one that goes out of
+ * step. A partial index on (`source_tool`, `started_at`) would make this
+ * constant rather than merely bounded; the window is what is in place today.
  *
  * The index is not a BOUND, and the write side is why. Every report is a fresh
  * row — two per tab load per site, the tap-patched one and the `pagehide` one,

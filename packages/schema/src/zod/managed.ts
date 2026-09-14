@@ -59,6 +59,10 @@ export function isManagedSettingKey(value: string): value is ManagedSettingKey {
 export const ManagedSettingsValues = z
   .object({
     runMode: z.enum(['standalone', 'attached']).optional(),
+    // A plain, non-strict object: a key under `controlPlane` this build does not
+    // know is stripped and nothing reports it. The unknown-value split in
+    // ManagedSettings below classifies top-level names only, so it stops at this
+    // boundary.
     controlPlane: z
       .object({
         endpoint: z.string().min(1),

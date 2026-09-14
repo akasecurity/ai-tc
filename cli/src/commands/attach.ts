@@ -408,6 +408,13 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
       `  organization  ${identity.tenantName}`,
       `  you           ${identity.userEmail}`,
       '',
+      // Said here, on the one path every successful attach ends on, because the
+      // forwarding they describe follows from the attachment and not from the
+      // history answer. The register a scan records is named with what it does
+      // and does not carry, since `aka scan` reads as a local verb.
+      'Activity from here on is sent to that deployment automatically.',
+      'So is the Data Shares register a scan records — destinations and call sites, never source text.',
+      '',
       'Policy arrives on the next session. Run `aka status` to see it.',
       ...(historyConsent === undefined
         ? []
@@ -473,27 +480,25 @@ async function askAboutHistory(
   // Two shapes, because the grant has two subjects and only one of them needs a
   // store to be interesting. A machine with history is told how much; a machine
   // without one is still asked, about the half that is entirely in its future.
+  // What attaching forwards regardless of this answer is not said here: this
+  // question is skipped by both flags and by a session with no terminal, so it
+  // is said once, by `runAttach`, after the attachment has been written.
   const backlog =
     preview === undefined || preview.sessions === 0
       ? undefined
       : preview.days >= 1
-        ? `This machine also has ${String(preview.days)} days of activity already recorded ` +
-          `locally (${String(preview.sessions)} sessions). AKA can send that history too.`
-        : `This machine also has ${String(preview.sessions)} sessions of activity already ` +
-          'recorded locally. AKA can send that history too.';
+        ? `This machine has ${String(preview.days)} days of activity already recorded ` +
+          `locally (${String(preview.sessions)} sessions). AKA can send that history.`
+        : `This machine has ${String(preview.sessions)} sessions of activity already ` +
+          'recorded locally. AKA can send that history.';
 
   io.out(
     [
       '',
       `Verified against ${identity.tenantName}.`,
       '',
-      'Activity from here on is sent to that deployment automatically.',
-      // The register a scan records crosses under this same attachment, and
-      // `aka scan` is a verb people reasonably think of as local — so consent
-      // is where it gets named, and named with what it does and does not carry.
-      'So is the Data Shares register a scan records — destinations and call sites, never source text.',
       ...(backlog === undefined ? [] : [backlog]),
-      'AKA can also keep anything a live send fails to deliver, instead of',
+      `AKA can ${backlog === undefined ? '' : 'also '}keep anything a live send fails to deliver, instead of`,
       'dropping it.',
       '',
       ...(backlog === undefined

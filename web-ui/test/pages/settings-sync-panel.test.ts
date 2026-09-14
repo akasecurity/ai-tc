@@ -1,6 +1,5 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
@@ -18,10 +17,10 @@ import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import SettingsPage from '../../app/(app)/settings/page.tsx';
 import { SyncPanel } from '../../app/(app)/settings/SyncPanel.tsx';
 import { emptyStore } from '../helpers/store-templates.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // The sync panel's WIRING — the part no view test and no store test can see.
 //
@@ -44,6 +43,8 @@ vi.mock('node:os', async (importActual) => {
   return { ...actual, homedir: () => osHome.dir };
 });
 
+const newHome = tempHomes('aka-sync-panel-');
+
 let home: string;
 let dir: string;
 
@@ -65,7 +66,7 @@ function dropMemoisedDb(): void {
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-sync-panel-'));
+  home = newHome();
   osHome.dir = home;
   dir = dataDir();
   emptyStore.seed(dir);
@@ -74,7 +75,6 @@ beforeEach(() => {
 
 afterEach(() => {
   dropMemoisedDb();
-  removeTree(home);
 });
 
 type PanelProps = ComponentProps<typeof SyncPanel>;

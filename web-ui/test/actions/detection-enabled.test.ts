@@ -1,6 +1,5 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { isDisableRefused } from '@akasecurity/dashboard-ui';
@@ -16,7 +15,6 @@ import {
 import type { ActionTaken, InstalledPackInput, Policy, PolicyBundle } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { setDetectionEnabled } from '../../app/(app)/detections/actions.ts';
 import { db } from '../../app/lib/db.ts';
 import {
@@ -27,6 +25,7 @@ import {
 } from '../../app/lib/detection-refusals.ts';
 import { ECHO_RUN, expectNoEchoOf } from '../helpers/no-echo.ts';
 import { expectNoRejection } from '../helpers/no-throw.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // The Detections page's OTHER write, driven against a real store in a real temp
 // `~/.aka` with a real settings.json and a real cached policy bundle.
@@ -49,6 +48,8 @@ const NAMESPACE = 'aka';
 const PACK = 'floor-fixture';
 const DETECTION_ID = `${NAMESPACE}/${PACK}`;
 const RULE_ID = 'floor-fixture/one';
+
+const newHome = tempHomes('aka-detection-enabled-');
 
 let home: string;
 let base: string;
@@ -140,7 +141,7 @@ function resetSingleton(): void {
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-detection-enabled-'));
+  home = newHome();
   osHome.dir = home;
   base = join(home, '.aka');
   resetSingleton();
@@ -149,7 +150,6 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   resetSingleton();
-  removeTree(home);
 });
 
 describe('setDetectionEnabled on a standalone machine', () => {

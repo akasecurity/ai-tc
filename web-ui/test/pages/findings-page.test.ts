@@ -1,18 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 import { dataDir, type LocalDatabase, openLocalDatabase } from '@akasecurity/persistence';
 import type { DetectedFinding, IngestEvent, Severity, SourceTool } from '@akasecurity/schema';
 import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { FindingsClient } from '../../app/(app)/findings/FindingsClient.tsx';
 import FindingsPage from '../../app/(app)/findings/page.tsx';
 import { emptyStore } from '../helpers/store-templates.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // The By-type route issues THREE reads — the type list, the selected type's
 // findings, and (only for a `?finding=` deep link) a single-row seek — and
@@ -40,6 +37,10 @@ vi.mock('node:os', async (importActual) => {
   return { ...actual, homedir: () => osHome.dir };
 });
 
+// Homes are removed when this FILE finishes, not after each test: Windows will
+// not delete a directory the store still holds open. See the helper.
+const newHome = tempHomes('aka-findings-page-');
+
 let home: string;
 let dir: string;
 
@@ -52,7 +53,7 @@ function dropMemoisedDb(): void {
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-findings-page-'));
+  home = newHome();
   osHome.dir = home;
   dir = dataDir();
   emptyStore.seed(dir);
@@ -61,7 +62,6 @@ beforeEach(() => {
 
 afterEach(() => {
   dropMemoisedDb();
-  removeTree(home);
 });
 
 interface SeedRow {

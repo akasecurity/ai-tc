@@ -1,6 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { InstallOrigin } from '@akasecurity/local-ops';
@@ -9,7 +8,7 @@ import type { ComponentProps, ReactElement, ReactNode } from 'react';
 import { Children, isValidElement } from 'react';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { releaseLocalStore } from '../helpers/temp-home.ts';
+import { releaseLocalStore, tempHomes } from '../helpers/temp-home.ts';
 
 // The Updates route derives ONE line per component and hands it to a confirm
 // dialog that introduces it with "This runs the following command on this
@@ -65,24 +64,20 @@ const AUTOMATABLE = AGENT_PLUGINS.filter((a) => pluginRef(a) !== undefined && a.
 const automatableCommands = (commands: Record<string, string>): [string, string][] =>
   AUTOMATABLE.map((a) => [a.id, commands[a.id] ?? '']);
 
-const temps: string[] = [];
-
-function tempDir(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
-  temps.push(dir);
-  return dir;
-}
+// Removed when this FILE finishes, by the helper, which releases the store
+// app/lib/db.ts opened under one of these homes first: Windows will not remove
+// a directory a handle still holds.
+const newHome = tempHomes('aka-web-updates-home-');
+const newNpmPrefix = tempHomes('aka-web-updates-npm-');
+const newCheckout = tempHomes('aka-web-updates-checkout-');
+const newOrphan = tempHomes('aka-web-updates-orphan-');
 
 beforeEach(() => {
-  osHome.dir = tempDir('aka-web-updates-home-');
+  osHome.dir = newHome();
 });
 
 afterAll(async () => {
-  // The store app/lib/db.ts opened under one of these homes is still held, and
-  // Windows will not remove a directory a handle has open. Removing at afterAll
-  // was already right; releasing first is what makes it work there too.
   await releaseLocalStore();
-  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
 });
 
 type ClientProps = ComponentProps<typeof UpdatesClient>;
@@ -112,13 +107,7 @@ function renderPage(): ClientProps {
 
 /** A real npm-global layout: <prefix>/lib/node_modules/@akasecurity/cli. */
 function npmGlobalCli(): string {
-  const packageDir = join(
-    tempDir('aka-web-updates-npm-'),
-    'lib',
-    'node_modules',
-    '@akasecurity',
-    'cli',
-  );
+  const packageDir = join(newNpmPrefix(), 'lib', 'node_modules', '@akasecurity', 'cli');
   mkdirSync(packageDir, { recursive: true });
   writeFileSync(
     join(packageDir, 'package.json'),
@@ -129,7 +118,7 @@ function npmGlobalCli(): string {
 
 /** A source checkout: a workspace manifest above the running module. */
 function sourceCheckout(): string {
-  const root = tempDir('aka-web-updates-checkout-');
+  const root = newCheckout();
   writeFileSync(join(root, 'pnpm-workspace.yaml'), "packages:\n  - 'packages/*'\n");
   const moduleDir = join(root, 'web-ui');
   mkdirSync(moduleDir, { recursive: true });
@@ -157,7 +146,7 @@ describe('the Updates route splits a runnable command from advice', () => {
   });
 
   it('routes an unrecognised install to advice, with a reason', () => {
-    origin.moduleDir = tempDir('aka-web-updates-orphan-');
+    origin.moduleDir = newOrphan();
     const props = renderPage();
     expect(props.commands.cli).toBeUndefined();
     expect(props.advisories.cli?.reason).toBeTruthy();

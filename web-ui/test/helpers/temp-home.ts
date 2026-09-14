@@ -1,8 +1,10 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterAll } from 'vitest';
+
+import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 
 /**
  * Temp directories for a suite that redirects `homedir()`, removed when the FILE
@@ -44,7 +46,13 @@ export function tempHomes(prefix: string): () => string {
   afterAll(async () => {
     // Released first, then removed — one hook, explicit order.
     await releaseLocalStore();
-    for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
+    // Through `removeTrees`, not a bare `rmSync`. Releasing narrows the window in
+    // which Windows refuses the removal but does not close it: the `-wal`/`-shm`
+    // sidecars can outlive the connection for a moment, and a bare `rmSync` that
+    // meets that fails this hook naming a cleanup line and no test — the failure
+    // this helper exists to remove. `removeTrees` retries through that window,
+    // tolerates it on win32 only, and attempts every directory before reporting.
+    removeTrees(made.splice(0));
   });
 
   return () => {

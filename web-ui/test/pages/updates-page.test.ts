@@ -6,9 +6,9 @@ import type { InstallOrigin } from '@akasecurity/local-ops';
 import { AGENT_PLUGINS, createCliPluginManager, pluginRef } from '@akasecurity/local-ops';
 import type { ComponentProps, ReactElement, ReactNode } from 'react';
 import { Children, isValidElement } from 'react';
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { releaseLocalStore, tempHomes } from '../helpers/temp-home.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // The Updates route derives ONE line per component and hands it to a confirm
 // dialog that introduces it with "This runs the following command on this
@@ -74,10 +74,6 @@ const newOrphan = tempHomes('aka-web-updates-orphan-');
 
 beforeEach(() => {
   osHome.dir = newHome();
-});
-
-afterAll(async () => {
-  await releaseLocalStore();
 });
 
 type ClientProps = ComponentProps<typeof UpdatesClient>;

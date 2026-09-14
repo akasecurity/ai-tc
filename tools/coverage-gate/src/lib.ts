@@ -533,10 +533,10 @@ export function runGate(io: GateIo): number {
   }
 
   if (selection.missing.length > 0) {
-    // Loud, and fatal. A gate that quietly measures 12 of 21 packages reports a
-    // number that looks like coverage and is not one: every changed file in a
-    // package whose report is absent lands in `unmeasured`, which reads as
-    // "excluded on purpose".
+    // Loud, and fatal. A gate that quietly measures some of the packages and
+    // stays silent about the rest reports a number that looks like coverage and
+    // is not one: every changed file in a package whose report is absent lands
+    // in `unmeasured`, which reads as "excluded on purpose".
     io.writeErr('coverage-gate: no coverage report for:\n');
     for (const path of selection.missing) io.writeErr(`  ${path}\n`);
     io.writeErr('Run `pnpm turbo run test` first — it is what writes them.\n');

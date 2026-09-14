@@ -1,9 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { ATTACHED_FORWARD_STATE_FILENAME } from '@akasecurity/persistence';
+import {
+  ATTACHED_FORWARD_STATE_FILENAME,
+  BREAKER_COOLDOWN_MS,
+  type ForwardHealth,
+  isForwardPaused,
+  parseForwardHealth,
+  readForwardHealth,
+} from '@akasecurity/persistence';
 import { DATA_FILE_MODE, ensureDataDir } from '@akasecurity/plugin-sdk';
 
 import { classifyFailure, type ControlPlaneFailure, statusOf } from './failure.ts';
@@ -100,62 +106,26 @@ export const DECISION_PATH_BUDGET_MS = 800;
 /** Consecutive failures that trip the breaker open. */
 export const BREAKER_FAILURE_THRESHOLD = 3;
 
-/**
- * How long the breaker stays open before a single probe is allowed through.
- * Sized against hook cadence rather than a server's recovery time: the point
- * is that a session's worth of hooks after a control plane goes down pays the
- * timeout once, not once per hook.
- */
-export const BREAKER_COOLDOWN_MS = 30_000;
+// The breaker's read-only half — the cooldown, the state shape, the parse and
+// the "is it open right now" test — lives in @akasecurity/persistence, which
+// sits below both the paths that write it and the dashboard that renders it.
+// Re-exported under this package's own names so its consumers are unaffected by
+// where they live.
+export { BREAKER_COOLDOWN_MS, type ForwardHealth, isForwardPaused, readForwardHealth };
 
 /**
- * Cross-process breaker state.
+ * Cross-process breaker state, as this file writes it.
  *
- * This file records BREAKER BOOKKEEPING ONLY — a failure count, the instant the
- * breaker opened, and a three-member enum naming HOW the last attempt failed. It
- * never holds a payload and never holds a credential, and that is still true
- * even though a failed forward is now RETAINED rather than dropped. The retention
- * is a `synced_at` column left NULL on a row the local store already holds; this
- * file gains nothing to hold, because the knowledge that forwarding is currently
- * pointless is all it ever needed to carry across processes.
- *
- * `lastFailure` is bounded by the same rule and is why it is an enum rather than
- * an error string. A message from a failed request can carry the URL, a header
- * echo, or a fragment of the body that was being sent — and the body on this
- * path IS the event content. The only way to be sure none of that is ever
- * written next to a session's telemetry is to have nothing to redact, so the
- * classification happens in memory and the classification alone is stored (same
- * argument sync-state.ts makes for its own outcome).
+ * The SAME shape `@akasecurity/persistence` reads back — aliased rather than
+ * re-declared, because two declarations of one file's contents is how a writer
+ * and a reader come to disagree about a field. Everything about what may go in
+ * it, and why `lastFailure` is an enum rather than an error string, is stated
+ * there; what stays here is the writing.
  */
-interface BreakerState {
-  consecutiveFailures: number;
-  /** Epoch ms the breaker opened, or null when closed. */
-  openedAtMs: number | null;
-  /**
-   * How the most recent failure failed, or null when nothing has failed since
-   * the last success. Carried across half-open probes — a probe re-stamps the
-   * breaker but does not re-diagnose it, and a 403 that was refused an hour ago
-   * is still the reason this device is silent.
-   */
-  lastFailure: ControlPlaneFailure | null;
-}
+type BreakerState = ForwardHealth;
 
 const CLOSED: BreakerState = { consecutiveFailures: 0, openedAtMs: null, lastFailure: null };
 
-/**
- * Validated on the way in, exactly as `sync-state.ts` validates its own outcome:
- * `lastFailure` is RENDERED, so an arbitrary string from a hand-edited file must
- * never reach the output. An unrecognised value reads as null — no cause named —
- * rather than as a failure to parse the whole file, because the failure COUNT
- * next to it is still evidence and losing it would cost more than the cause.
- */
-const FAILURES: ReadonlySet<string> = new Set<ControlPlaneFailure>([
-  'unauthorized',
-  'forbidden',
-  'unreachable',
-]);
-
-/** The file's name, shared by the policy and the read-only status view. */
 /**
  * The breaker's state file, in `dataDir`.
  *
@@ -171,105 +141,6 @@ const FAILURES: ReadonlySet<string> = new Set<ControlPlaneFailure>([
 // unaffected by where the string lives.
 export const FORWARD_STATE_FILENAME = ATTACHED_FORWARD_STATE_FILENAME;
 const STATE_FILENAME = FORWARD_STATE_FILENAME;
-
-/**
- * Parse the state file's contents, or `null` when it says nothing usable.
- *
- * Shared by the policy's own reader and by `readForwardHealth` so the two can
- * never disagree about what a given file means — in particular about the future
- * `openedAtMs` clamp below, which they would otherwise each have to remember.
- * The two callers differ only in how they treat `null`: the policy resolves it
- * to CLOSED (forward normally), while the status view says nothing at all.
- */
-function parseBreakerState(raw: string, nowMs: number): BreakerState | null {
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== 'object' || parsed === null) return null;
-    const record = parsed as {
-      consecutiveFailures?: unknown;
-      openedAtMs?: unknown;
-      lastFailure?: unknown;
-    };
-    const failures =
-      typeof record.consecutiveFailures === 'number' && record.consecutiveFailures >= 0
-        ? record.consecutiveFailures
-        : 0;
-    // A stamp we could not yet have written means the CLOCK moved, not that the
-    // breaker is open — and reading it as open wedges forwarding off
-    // PERMANENTLY. `run()`'s cooling path early-returns without rewriting the
-    // file, so `at - openedAtMs` stays strongly negative and every later process
-    // re-reads the same future stamp and returns null again, with nothing left
-    // that can move it back. It does not take hostility to produce one: a laptop
-    // that suspends, wakes and takes an NTP correction BACKWARDS leaves behind a
-    // stamp ahead of the corrected clock. Same rule as a torn read — a value we
-    // cannot have authored reads as CLOSED.
-    const openedAtMs =
-      typeof record.openedAtMs === 'number' &&
-      Number.isFinite(record.openedAtMs) &&
-      record.openedAtMs <= nowMs
-        ? record.openedAtMs
-        : null;
-    // Absent for every file written before this field existed, which is the
-    // common case on an already-deployed device: it reads as "no cause
-    // recorded", the same as an unrecognised one, and the count and stamp
-    // beside it stay usable.
-    const lastFailure =
-      typeof record.lastFailure === 'string' && FAILURES.has(record.lastFailure)
-        ? (record.lastFailure as ControlPlaneFailure)
-        : null;
-    return { consecutiveFailures: failures, openedAtMs, lastFailure };
-  } catch {
-    // TORN READ. A half-written or garbage file must never resolve to "open":
-    // an open breaker is a decision to STOP sending the organization its own
-    // telemetry, and no corrupt byte on disk should make that decision on the
-    // operator's behalf.
-    return null;
-  }
-}
-
-/** What the breaker knows, for a READ-ONLY consumer. */
-export interface ForwardHealth {
-  /** Failures since the last success. Monotonic across probes until one lands. */
-  consecutiveFailures: number;
-  /**
-   * When the breaker last opened, or null when closed.
-   *
-   * ⚠ NOT "how long forwarding has been broken". `run()` re-stamps this on
-   * every half-open probe, so the gap to now is bounded by one cooldown however
-   * long the control plane has been down. `consecutiveFailures` is the duration-ish
-   * signal; this one only says "the last attempt failed, recently".
-   */
-  openedAtMs: number | null;
-  /**
-   * How the last failure failed, or null when nothing has failed since the last
-   * success — and also null for a file written before this field existed, or one
-   * carrying a value this build does not recognise.
-   *
-   * The three are collapsed on purpose. Every one of them means the same thing
-   * to a renderer: there is no cause here that can be named, so say what is
-   * known and stop. Splitting them would create states a caller has to handle
-   * and cannot act on differently.
-   */
-  lastFailure: ControlPlaneFailure | null;
-}
-
-/**
- * Read the breaker's bookkeeping WITHOUT touching it — for `/aka:status`.
- *
- * Synchronous and strictly read-only: the status renderer is sync and total,
- * and a status command must never open, close or re-stamp the breaker it is
- * describing. Returns `null` when the file is absent, unreadable or unusable,
- * which the caller renders as "nothing recorded" rather than as health — the
- * happy path writes no file at all, so an absent file genuinely means no
- * failure has been recorded, not that a forward has ever succeeded.
- */
-export function readForwardHealth(dir: string, nowMs = Date.now()): ForwardHealth | null {
-  try {
-    return parseBreakerState(readFileSync(join(dir, STATE_FILENAME), 'utf8'), nowMs);
-  } catch {
-    return null;
-  }
-}
 
 export interface ForwardPolicyDeps {
   /** Directory holding `attached-state.json`. */
@@ -393,8 +264,8 @@ export function createForwardPolicy(deps: ForwardPolicyDeps): ForwardPolicy {
       return { ...CLOSED };
     }
     // Anything the shared parser cannot vouch for ⇒ CLOSED, i.e. forward
-    // normally. See parseBreakerState for why that direction is the safe one.
-    return parseBreakerState(raw, now()) ?? { ...CLOSED };
+    // normally. See parseForwardHealth for why that direction is the safe one.
+    return parseForwardHealth(raw, now()) ?? { ...CLOSED };
   }
 
   async function load(): Promise<BreakerState> {
@@ -478,7 +349,11 @@ export function createForwardPolicy(deps: ForwardPolicyDeps): ForwardPolicy {
 
       const at = now();
       if (current.openedAtMs !== null) {
-        if (at - current.openedAtMs < BREAKER_COOLDOWN_MS) {
+        // The SHARED test, not a local comparison: the history drain and the
+        // dashboard both ask the same question of the same file, and three
+        // spellings would be three slightly different answers to "is this
+        // machine sending".
+        if (isForwardPaused(current, at)) {
           // Open and still cooling: skip the network entirely. This is the
           // whole point of the breaker — no timeout is paid at all.
           //

@@ -65,8 +65,11 @@ function isTestFile(file) {
   );
 }
 
-/** Every tracked lintable file whose text names the seam. */
-function filesNamingSeam() {
+/**
+ * Every tracked lintable file whose text names the given seam.
+ * @param {string} seam defaults to the raw handle, this file's original subject
+ */
+function filesNamingSeam(seam = SEAM) {
   return lintableTrackedFiles().filter((file) => {
     // A tracked path can still be unreadable — a submodule gitlink, a symlink
     // to nowhere. Skipping one silently would drop a file out of the audit
@@ -75,9 +78,9 @@ function filesNamingSeam() {
     try {
       text = readFileSync(join(REPO_ROOT, file), 'utf8');
     } catch (cause) {
-      throw new Error(`Could not read tracked file ${file} while auditing ${SEAM}.`, { cause });
+      throw new Error(`Could not read tracked file ${file} while auditing ${seam}.`, { cause });
     }
-    return text.includes(SEAM);
+    return text.includes(seam);
   });
 }
 
@@ -145,6 +148,69 @@ describe(`the ${SEAM} test-only seam`, () => {
       // and a hardcoded list does not.
       expect(trackedFiles()).toContain(DEFINITION);
       expect(lintableTrackedFiles()).toContain(DEFINITION);
+    },
+    TREE_WALK_TIMEOUT_MS,
+  );
+});
+
+// The workspace's SECOND test-only seam, and it is held to the SAME two
+// properties as the raw handle above: one shipped definition site, and no
+// re-export from the package entry point.
+//
+// UNSAFE_TEST_ONLY_setManagedSettingsPaths points the DEFAULT managed read at
+// other locations, or at none, so that a suite's view of which administrator
+// owns this machine stops depending on whose machine is running it. Its one
+// caller outside this package is the shared vitest setup file, which reaches it
+// by RELATIVE path — `test/setup/no-managed-settings.ts` sits at the repo root
+// and is not a package, so it needs no `exports` entry to import a module. That
+// is what lets the seam keep the stronger property while still being installed
+// process-wide in every package that can load the overlay.
+const MANAGED_SEAM = 'UNSAFE_TEST_ONLY_setManagedSettingsPaths';
+
+/** The only shipped-source file allowed to name it: where it is defined. */
+const MANAGED_DEFINITION = 'packages/persistence/src/managed-settings.ts';
+
+/** The shared vitest setup file that installs it for every owing package. */
+const MANAGED_GUARD = 'test/setup/no-managed-settings.ts';
+
+describe(`the ${MANAGED_SEAM} test-only seam`, () => {
+  it(
+    'is named by exactly one shipped source file — the one that defines it',
+    () => {
+      const shipped = filesNamingSeam(MANAGED_SEAM)
+        .filter((file) => !isTestFile(file))
+        .sort();
+
+      // An exact set of one, not a floor. A floor keeps the definition honest
+      // and lets the next product caller in beside it — and a product caller is
+      // the entire failure mode, since a seam something in `src/` calls is not a
+      // test seam at all, it is a way for shipped code to decide which
+      // administrator this machine has.
+      expect(shipped).toEqual([MANAGED_DEFINITION]);
+    },
+    TREE_WALK_TIMEOUT_MS,
+  );
+
+  it('is not re-exported from the package entry point', () => {
+    // The same structural property the raw handle has, and available here for
+    // the same reason: the manifest exposes `.` alone, so `src/*.ts` is
+    // unreachable from another PACKAGE. Re-export it here and every consumer of
+    // @akasecurity/persistence could name it, leaving the walk above as the
+    // whole guarantee rather than a second line of defence.
+    expect(readFileSync(join(REPO_ROOT, ENTRY), 'utf8')).not.toContain(MANAGED_SEAM);
+  });
+
+  it(
+    'is installed by the shared guard, so this suite is not guarding an absence',
+    () => {
+      // The positive control. Delete the seam, its guard and its callers and
+      // every assertion above holds perfectly, describing a workspace where the
+      // thing being guarded does not exist. `isTestFile` classifies the guard
+      // as test code on its `test/` segment, which is what keeps it out of the
+      // shipped set above rather than an exemption written by hand.
+      const tests = filesNamingSeam(MANAGED_SEAM).filter(isTestFile);
+      expect(tests).toContain(MANAGED_GUARD);
+      expect(tests).toContain('packages/persistence/test/managed-settings.test.ts');
     },
     TREE_WALK_TIMEOUT_MS,
   );

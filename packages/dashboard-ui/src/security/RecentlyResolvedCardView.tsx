@@ -28,6 +28,16 @@ export interface RecentlyResolvedView {
    * another when the browser hydrates it. See ../lib/relativeTime.ts.
    */
   renderedAt: number;
+  /**
+   * Per-item deep link, keyed by `findingKey`. Host-supplied so this package stays
+   * router-agnostic; an item with no entry renders as plain text.
+   *
+   * The destination is necessarily a SUPERSET of the row: this feed shows findings
+   * resolved by fixing at source, and no findings filter expresses that resolution
+   * method — one resolved by an exception reaches the destination and not the feed.
+   * The row shows no count, so nothing is contradicted.
+   */
+  itemHrefs?: Readonly<Record<string, string>> | undefined;
 }
 
 /** The recently-resolved feed: a vertical timeline of findings moved to resolved,
@@ -37,6 +47,7 @@ export function RecentlyResolvedCardView({
   isLoading,
   error,
   renderedAt,
+  itemHrefs,
 }: RecentlyResolvedView) {
   return (
     <Card className="flex h-full flex-col shadow-sm">
@@ -61,14 +72,18 @@ export function RecentlyResolvedCardView({
         ) : items.length === 0 ? (
           <WidgetEmpty message="No resolved findings yet." />
         ) : (
-          items.map((item, i) => (
-            <ResolvedRow
-              key={item.findingKey}
-              item={item}
-              last={i === items.length - 1}
-              renderedAt={renderedAt}
-            />
-          ))
+          items.map((item, i) => {
+            const href = itemHrefs?.[item.findingKey];
+            return (
+              <ResolvedRow
+                key={item.findingKey}
+                item={item}
+                last={i === items.length - 1}
+                renderedAt={renderedAt}
+                {...(href ? { href } : {})}
+              />
+            );
+          })
         )}
       </CardContent>
     </Card>
@@ -79,13 +94,24 @@ function ResolvedRow({
   item,
   last,
   renderedAt,
+  href,
 }: {
   item: ResolvedFeedItem;
   last: boolean;
   renderedAt: number;
+  href?: string;
 }) {
+  const Row = href ? 'a' : 'div';
   return (
-    <div className={cn('relative flex gap-3', !last && 'pb-4')}>
+    <Row
+      {...(href ? { href, title: `View resolved ${item.ruleId} findings` } : {})}
+      className={cn(
+        'relative flex gap-3',
+        !last && 'pb-4',
+        href &&
+          'rounded-sm transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40',
+      )}
+    >
       {/* Connector line to the next item — centered under the 32px icon tile. */}
       {!last && <span className="absolute bottom-0 left-4 top-8 w-px bg-hairline" />}
       <span
@@ -113,6 +139,6 @@ function ResolvedRow({
           </span>
         </div>
       </div>
-    </div>
+    </Row>
   );
 }

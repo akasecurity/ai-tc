@@ -2,8 +2,10 @@ import type { DatabaseSync, StatementSync } from 'node:sqlite';
 
 import type { AuditEventRow } from '@akasecurity/schema';
 
+import { OUTBOX_CAPTURE_EVENT_TYPES, OUTBOX_CAPTURE_TYPE_LIST } from '../internal/outbox-lane.ts';
 import { allRows, getRow } from '../internal/rows.ts';
 import { withTransaction } from '../internal/transactions.ts';
+import { type SyncFailureReason } from '../sync-failure.ts';
 
 /**
  * The event types this drain will ever send.
@@ -58,16 +60,92 @@ const TYPE_LIST = STRUCTURAL_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
  * Adding it is one word here — and it is a product decision that owes its own
  * disclosure, not a completeness fix.
  */
-// MODULE-PRIVATE, and named for the lane rather than for the grain, because
-// `@akasecurity/schema` already exports a `CAPTURE_EVENT_TYPES_SQL` derived from
-// `EventKind` — FOUR kinds, `code_change` included, with the opposite drift
-// policy — and several reads in this very package interpolate it. Exporting a
-// three-kind constant under the neighbouring name would put both on the
-// package's public surface, where a later findings read reaching for the wrong
-// one silently loses `code_change` and under-reports with nothing failing.
-const OUTBOX_CAPTURE_EVENT_TYPES = ['prompt', 'response', 'tool_use'] as const;
+// Shared with the body-expiry gate through `internal/outbox-lane.ts` rather
+// than written out here: that gate decides what may NOT be expired until this
+// lane has sent it, so the one-word edit the paragraph above anticipates has to
+// move both in the same commit. See that module for why it is internal.
+const CAPTURE_TYPE_LIST = OUTBOX_CAPTURE_TYPE_LIST;
 
-const CAPTURE_TYPE_LIST = OUTBOX_CAPTURE_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
+/**
+ * The kinds a DELIVERY-STATE READ may count. Read-only: nothing that sends or
+ * stamps a row may be written in terms of it.
+ *
+ * DERIVED from the two lists above rather than written out, and the direction is
+ * the point. Those two decide what leaves the machine, and each is interpolated
+ * into statements that SEND and statements that STAMP — so widening one to make
+ * a surface show more would widen egress in the same edit, which is the shape of
+ * change this constant exists to make impossible. Derived, a read follows the
+ * send lists and can never lead them: adding a kind here is not expressible
+ * without adding it to a lane first.
+ *
+ * WHAT IS ABSENT, and why each is absent rather than forgotten:
+ *   - `code_change` is refused by the capture lane by construction. Sending it
+ *     would ship whole source files, gitignored scratch included, as first-time
+ *     egress rather than a retry. It is the most numerous kind on a working
+ *     machine, so counting it would put a permanent majority in a bucket no lane
+ *     can ever drain — a progress figure that cannot reach its own total.
+ *   - `config_scan` is forwarded live and stamped, but sits in neither lane, so
+ *     an undelivered one is owed by nobody. Counting it as outstanding would
+ *     assert that something will send it.
+ *   - `model_refusal` reaches no lane either.
+ * None of that is a claim they are unimportant — only that a delivery-state read
+ * has nothing true to say about a row no lane will ever carry.
+ */
+export type CountedEventType = (typeof COUNTED_EVENT_TYPES)[number];
+
+export const COUNTED_EVENT_TYPES = [
+  ...STRUCTURAL_EVENT_TYPES,
+  ...OUTBOX_CAPTURE_EVENT_TYPES,
+] as const;
+
+const COUNTED_TYPE_LIST = COUNTED_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
+
+/**
+ * The delivery-state buckets, written ONCE.
+ *
+ * Two reads project them — the aggregate and the per-kind breakdown — and a
+ * surface shows both together, so a bucket defined twice is two numbers that
+ * disagree about the same rows in the same view. Composed rather than repeated
+ * for that reason, not for brevity.
+ */
+const PARTITION_BUCKETS = `
+         SUM(CASE WHEN synced_at IS NULL AND sync_claimed_at IS NULL THEN 1 ELSE 0 END) AS queued,
+         SUM(CASE WHEN synced_at IS NULL AND sync_claimed_at IS NOT NULL THEN 1 ELSE 0 END) AS inProgress,
+         SUM(CASE WHEN synced_at > 0 THEN 1 ELSE 0 END) AS synced,
+         SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0
+                       AND sync_failure = 'deployment_refused' THEN 1 ELSE 0 END) AS refused,
+         SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0
+                       AND sync_failure = 'detached_undelivered' THEN 1 ELSE 0 END) AS detached,
+         -- Spelled as what it INCLUDES rather than what it excludes, so a reason
+         -- added later lands in no bucket and fails the sum assertion, instead
+         -- of silently joining this one.
+         SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0
+                       AND (sync_failure IS NULL OR sync_failure = 'payload_invalid')
+                  THEN 1 ELSE 0 END) AS failed,
+         COUNT(*) AS total`;
+
+/**
+ * WHICH ROWS THESE READS ARE ABOUT, and the half that is not a type filter.
+ *
+ * A structural row is always somebody's to deliver: the live path owns it, and
+ * the drain re-offers it. A CAPTURE is only ever outstanding when a live forward
+ * marked it owed — a capture recorded while this machine was detached, or before
+ * anyone consented, was offered to nobody and is owed to nobody. Counted on type
+ * alone it would read as queued, and on a working machine that is most of the
+ * capture rows in the store: a backlog figure made of rows nothing will ever
+ * send.
+ *
+ * So a capture enters these reads only once it is owed or already settled. The
+ * buckets stay simple because this clause has already decided what "outstanding"
+ * means for each lane.
+ */
+const COUNTED_SCOPE = `
+       WHERE event_type IN (${COUNTED_TYPE_LIST})
+         AND (
+           event_type IN (${TYPE_LIST})
+           OR synced_at IS NOT NULL
+           OR outbox_owed = 1
+         )`;
 
 /** `synced_at` values that are not a delivery time. */
 const SKIPPED = -1;
@@ -84,7 +162,30 @@ const SKIPPED = -1;
 export interface HistorySyncCounts {
   pending: number;
   sent: number;
+  /**
+   * Rows THIS MACHINE could not express on the wire — terminal everywhere, so a
+   * change of deployment does not free them. A deployment's own refusal is
+   * counted in `refused` instead, and is not included here.
+   */
   skipped: number;
+  /**
+   * STRUCTURAL rows this deployment refused. Separated from `skipped` because
+   * the two ask different things of a reader: a skip is a fact about the row, a
+   * refusal is one deployment's verdict on it, and re-attaching elsewhere frees
+   * the second and not the first.
+   *
+   * Structural only, and not by oversight: a refused CAPTURE is counted in
+   * `capturesSkipped` instead, because nothing frees that one either. See that
+   * statement for why re-arming a capture is the one thing the lane must not do.
+   */
+  refused: number;
+  /**
+   * STRUCTURAL rows the attached window closed over, undelivered. Counted here
+   * for the same reason `refused` is: the surfaced total is built from this
+   * shape, and a bucket the total does not name is a row that leaves the number
+   * without being reported anywhere.
+   */
+  detached: number;
   capturesSkipped: number;
 }
 
@@ -97,17 +198,15 @@ export interface HistorySyncCounts {
  * the three and the numbers do not sum to anything. These four do sum to
  * `total`, which is what a surface reporting delivery state needs.
  *
- * SCOPE, and the caveat that follows from it: every column here is measured
- * over STRUCTURAL rows only — `partitionStmt` carries the same
- * `event_type IN (…)` filter as the rest of this ledger. Capture rows are not
- * counted in `total`, so this is the delivery state of the structural lane, not
- * of everything the machine owes a deployment.
+ * SCOPE: both lanes, and only the rows a lane will actually carry. Structural
+ * rows are counted unconditionally — the live path owns every one of them and
+ * the drain re-offers them. A capture is counted once it is owed or settled,
+ * because a capture nothing marked owed was offered to nobody; counting it on
+ * type alone would report most of a working machine's capture rows as a backlog
+ * that nothing will ever send.
  *
- * That scope is why `markCaptureDelivered` does NOT settle anything visible
- * here. It stamps a capture row, through the same UPDATE a drain uses, so the
- * two are indistinguishable afterwards — but this query never counts capture
- * rows, so the stamp is invisible to it by construction. The stamp exists for a
- * capture drain to read; it is not a fix for this read.
+ * Kinds no lane carries are absent entirely — see COUNTED_EVENT_TYPES for which
+ * and why. A read has nothing true to say about a row that cannot be sent.
  *
  * `queued` no longer over-counts the rows it used to. A structural row the live
  * path forwarded successfully is now stamped at the forward site through
@@ -130,18 +229,50 @@ export interface HistorySyncCounts {
  *     bounds on `started_at < backlogBefore`, so a post-attach row is never
  *     re-offered by anything: undeliverable for ever, yet reading as queued.
  *
- * Two caveats survive, and neither is closed here. `inProgress` is structurally
- * always 0 until `claimRows`/`releaseStaleClaims` gain a caller — they have
- * none. And `failed` counts a SKIP, not a failed attempt: `classify` returns
- * `'skip'` for both a local rebuild defect and a deployment's 400/413/422, while
- * a transient network failure leaves the row NULL and reads as queued, which is
- * correct — it is still owed.
+ * `failed` and `refused` are separated, and the split is the reason the failure
+ * columns exist. Both hold the same skip sentinel — `synced_at` goes on saying
+ * WHETHER a row is outstanding — but `failed` is a row this machine cannot
+ * express on the wire, terminal against any deployment, while `refused` is one
+ * deployment's verdict on one body. Re-attaching elsewhere frees the second and
+ * leaves the first, which a single bucket could not express.
+ *
+ * A transient network failure is in NEITHER: it leaves the row NULL and reads
+ * as queued, which is correct — it is still owed.
+ *
+ * `failed` cannot be ambiguous on a store that has been through the upgrade
+ * adding these columns: that upgrade re-armed every sentinel row written before
+ * a reason could be recorded, so anything sitting here since carries one.
  */
+/**
+ * One delivery-state partition per event kind, for a surface that shows the
+ * lanes separately rather than as one number.
+ *
+ * The aggregate hides the thing a reader most wants: on a working machine the
+ * structural kinds sit near 70% delivered while the two that carry TEXT sit near
+ * 20%, because the live forward settles a small row and a large one waits for
+ * the drain. One bar averages those into a number that describes neither.
+ *
+ * `kind` is drawn from the counted vocabulary, so a kind no lane carries cannot
+ * appear here — see COUNTED_EVENT_TYPES for which and why.
+ */
+export interface HistorySyncKindPartition extends HistorySyncPartition {
+  kind: CountedEventType;
+}
+
 export interface HistorySyncPartition {
   queued: number;
   inProgress: number;
   synced: number;
+  /** Rows this machine cannot express on the wire. Terminal everywhere. */
   failed: number;
+  /** Rows this deployment refused. Freed by a change of deployment. */
+  refused: number;
+  /**
+   * Rows the attached window closed over — never offered to anyone, because the
+   * machine detached while they were still outstanding. Not a failure of the
+   * row or of a deployment, which is why it is neither of the two above.
+   */
+  detached: number;
   total: number;
 }
 
@@ -173,6 +304,41 @@ export interface HistorySyncLease {
   heartbeatAt: number | null;
 }
 
+/**
+ * How long a claim survives without a heartbeat before anyone may take it.
+ *
+ * HERE, beside the claim it governs, rather than beside the drain that holds
+ * one. Two readers need it and they sit on opposite sides of a package wall:
+ * the drain, which passes it to `claim`, and a dashboard that only wants to
+ * know whether a pass is running right now and may not import the plugin
+ * runtime at all. Defined twice it would be two answers to "is this pass
+ * alive", and the surface's would be the one nothing tests against a real
+ * claim.
+ */
+export const HISTORY_SYNC_LEASE_STALE_MS = 60_000;
+
+/**
+ * Whether a claim is held by something still alive.
+ *
+ * THE EXACT NEGATION of the predicate `claim` uses to decide it may take one,
+ * including the future-heartbeat clause: a backwards clock correction makes a
+ * claim takeable, so a surface that called the same claim live would show
+ * "Sending…" against a pass that any other process is free to displace.
+ *
+ * Pure, so the surface that renders it can be tested without a store — and
+ * `lease-liveness.test.ts` drives this and a real `claim()` over the same rows
+ * to keep the two from drifting.
+ */
+export function isHistorySyncLeaseLive(
+  lease: HistorySyncLease | undefined,
+  nowMs: number,
+): boolean {
+  if (lease === undefined) return false;
+  const { ownerPid, heartbeatAt } = lease;
+  if (ownerPid === null || heartbeatAt === null) return false;
+  return heartbeatAt >= nowMs - HISTORY_SYNC_LEASE_STALE_MS && heartbeatAt <= nowMs;
+}
+
 const ROW_COLUMNS = `id,
    parent_id AS parentId,
    root_session_id AS rootSessionId,
@@ -199,7 +365,7 @@ const ROW_COLUMNS = `id,
  *
  *   NULL              not delivered
  *   positive epoch ms delivered at that instant
- *   -1                permanently skipped; the row could not be rebuilt
+ *   -1                terminal on this lane; `sync_failure` says which reason
  *
  * The claim is POLITENESS, NOT CORRECTNESS. Nothing in this tree can hold
  * exclusion across a network round trip, so two drains would send the same rows
@@ -226,9 +392,11 @@ export class SqliteHistorySyncRepository {
   private readonly freezeBoundaryStmt: StatementSync;
   private readonly captureRowsStmt: StatementSync;
   private readonly markOwedStmt: StatementSync;
+  private readonly markCaptureBacklogOwedStmt: StatementSync;
   private readonly captureSkipCountStmt: StatementSync;
   private readonly disownCapturesStmt: StatementSync;
   private readonly partitionStmt: StatementSync;
+  private readonly partitionByKindStmt: StatementSync;
   private readonly claimRowStmt: StatementSync;
   private readonly releaseRowStmt: StatementSync;
   private readonly releaseStaleClaimsStmt: StatementSync;
@@ -278,10 +446,20 @@ export class SqliteHistorySyncRepository {
     // approximates it, and got both ends wrong — rows a previous attachment left
     // owed fell below a boundary that a re-attach moved, and the entire DETACHED
     // span sat above it, so a machine that ran three weeks unattached would have
-    // shipped every prompt in those weeks, with text, on re-attaching. Neither
-    // is reachable now: a capture recorded while detached never passes through
-    // the attached gateway, so nothing marks it, and no window has to be reasoned
-    // about at all.
+    // shipped every prompt in those weeks, with text, on re-attaching the moment
+    // it opened a session, whether or not anyone asked. A capture recorded while
+    // detached never passes through the attached gateway, so the LIVE forward
+    // path never marks it, and no ongoing drain pass has a time window to reason
+    // about.
+    //
+    // The one other writer of this column is `markCaptureBacklogOwedStmt` below,
+    // and it is a deliberate exception rather than a second inference route: it
+    // runs exactly ONCE, at the moment a human grants existing-history consent
+    // (`aka attach`'s `askAboutHistory`), bounded to what was on disk at that
+    // instant rather than to a boundary that moves on every later pass. The
+    // three-weeks failure mode above was an AUTOMATIC, ongoing inference nobody
+    // asked for; this is a single explicit action the consent copy already
+    // describes before it runs.
     //
     // `:before` is a GRACE WINDOW rather than a boundary. It buys quiet, not
     // correctness: it keeps this pass off rows the live forward is probably
@@ -314,8 +492,25 @@ export class SqliteHistorySyncRepository {
       `UPDATE audit_events SET outbox_owed = 1 WHERE id = :id AND synced_at IS NULL`,
     );
 
+    // The consent-time backfill: everything this machine already has, as of the
+    // moment a human said yes. `:before` is passed by the caller as "now" at
+    // that moment — never re-derived here — so the set marked owed is exactly
+    // the backlog the consent prompt already showed a count for, not a boundary
+    // that could later widen. Idempotent: a row already marked stays marked.
+    this.markCaptureBacklogOwedStmt = db.prepare(
+      `UPDATE audit_events SET outbox_owed = 1
+        WHERE synced_at IS NULL
+          AND event_type IN (${CAPTURE_TYPE_LIST})
+          AND started_at < :before`,
+    );
+
     this.stampStmt = db.prepare(
-      `UPDATE audit_events SET synced_at = :at, sync_claimed_at = NULL WHERE id = :id`,
+      `UPDATE audit_events
+          SET synced_at = :at,
+              sync_claimed_at = NULL,
+              sync_failed_at = :failedAt,
+              sync_failure = :failure
+        WHERE id = :id`,
     );
 
     // Claim only what is still unsent: a row that settled between the read and
@@ -339,22 +534,38 @@ export class SqliteHistorySyncRepository {
     // total. `failed` is `IS NOT NULL AND <= 0` rather than `= -1` for that
     // reason: the ledger only ever writes -1 there, but a row is better counted
     // as failed than silently missing from a rendered breakdown.
-    this.partitionStmt = db.prepare(
-      `SELECT
-         SUM(CASE WHEN synced_at IS NULL AND sync_claimed_at IS NULL THEN 1 ELSE 0 END) AS queued,
-         SUM(CASE WHEN synced_at IS NULL AND sync_claimed_at IS NOT NULL THEN 1 ELSE 0 END) AS inProgress,
-         SUM(CASE WHEN synced_at > 0 THEN 1 ELSE 0 END) AS synced,
-         SUM(CASE WHEN synced_at IS NOT NULL AND synced_at <= 0 THEN 1 ELSE 0 END) AS failed,
-         COUNT(*) AS total
-       FROM audit_events
-       WHERE event_type IN (${TYPE_LIST})`,
+    this.partitionStmt = db.prepare(`SELECT${PARTITION_BUCKETS}
+       FROM audit_events${COUNTED_SCOPE}`);
+
+    // The same partition, per kind.
+    //
+    // INDEXED BY, and not as belt-and-braces. Adding `GROUP BY event_type` is
+    // enough to move the planner off the sync index and onto `idx_audit_type_t`,
+    // which leads with the same column and carries none of the delivery state —
+    // so every group becomes a row fetch on the largest table in the store, for
+    // a read a surface polls. The store never runs ANALYZE, so this is decided
+    // from schema shape alone and does not vary with the data.
+    //
+    // Grouping on the column the index LEADS with is what keeps this a walk in
+    // index order rather than a temp B-tree, which is the other half of the
+    // plan the sibling case pins.
+    this.partitionByKindStmt = db.prepare(
+      `SELECT event_type AS kind,${PARTITION_BUCKETS}
+       FROM audit_events INDEXED BY idx_audit_events_sync${COUNTED_SCOPE}
+       GROUP BY event_type`,
     );
 
     this.countsStmt = db.prepare(
       `SELECT
          SUM(CASE WHEN synced_at IS NULL AND started_at < :before THEN 1 ELSE 0 END) AS pending,
          SUM(CASE WHEN synced_at > 0 THEN 1 ELSE 0 END) AS sent,
-         SUM(CASE WHEN synced_at = ${String(SKIPPED)} THEN 1 ELSE 0 END) AS skipped
+         SUM(CASE WHEN synced_at = ${String(SKIPPED)}
+                       AND (sync_failure IS NULL OR sync_failure = 'payload_invalid')
+                  THEN 1 ELSE 0 END) AS skipped,
+         SUM(CASE WHEN synced_at = ${String(SKIPPED)}
+                       AND sync_failure = 'deployment_refused' THEN 1 ELSE 0 END) AS refused,
+         SUM(CASE WHEN synced_at = ${String(SKIPPED)}
+                       AND sync_failure = 'detached_undelivered' THEN 1 ELSE 0 END) AS detached
        FROM audit_events
        WHERE event_type IN (${TYPE_LIST})`,
     );
@@ -365,6 +576,16 @@ export class SqliteHistorySyncRepository {
     // report a terminal loss once and then drop it on the next pass — while the
     // rows stayed gone.
     this.captureSkipCountStmt = db.prepare(
+      // EVERY sentinel capture, whatever the reason — deliberately NOT split the
+      // way the structural totals are. The split exists because a refusal is
+      // terminal only against the deployment that gave it, and the structural
+      // re-arm frees it on a change of deployment. The capture lane has no such
+      // escape: re-arming a capture would offer one deployment's undelivered
+      // prompts, with their text, to a deployment that never saw them, which is
+      // exactly what disownCapturesStmt exists to prevent. So on this lane both
+      // reasons mean the same thing — this row will not be sent — and splitting
+      // them would put refused captures in a bucket nothing reads and nothing
+      // frees.
       `SELECT COUNT(*) AS skipped
          FROM audit_events
         WHERE synced_at = ${String(SKIPPED)}
@@ -380,8 +601,24 @@ export class SqliteHistorySyncRepository {
           SET endpoint_fingerprint = :fingerprint, backlog_before = :backlogBefore
         WHERE id = 1`,
     );
-    // Permanent skips are NOT re-armed: a row that failed to rebuild locally
-    // fails the same way against any deployment.
+    // WHICH terminal rows are re-armed, and why it is not all of them. STRUCTURAL
+    // ONLY: the capture half is disownCapturesStmt below, and no capture is ever
+    // re-armed whatever its reason, because offering one deployment's
+    // undelivered prompts to another is the leak that statement exists to
+    // prevent.
+    //
+    // A row this machine could not express fails the same way against any
+    // deployment, so `payload_invalid` stays put. The other two are terminal only
+    // against the deployment that produced them — a refusal is one deployment's
+    // verdict on one body, and a row the attached window closed over was simply
+    // never offered to anyone — so both are freed here, exactly as a delivered
+    // row is.
+    //
+    // Freeing `detached_undelivered` is what keeps this change from LOSING data.
+    // Before these columns existed, detach stamped that window with a delivery
+    // time, so the clause below re-armed it like any other stamp and the rows
+    // reached the next deployment. Marking them terminal without naming them
+    // here would quietly stop that.
     // STRUCTURAL ONLY, and the capture half is handled by disownCapturesStmt
     // below rather than here — the two lanes discard different things.
     //
@@ -392,24 +629,43 @@ export class SqliteHistorySyncRepository {
     // The capture lane wants the opposite of that, which is why it is a separate
     // statement rather than a wider WHERE:
     //
-    // A capture recorded under deployment A is pre-attach relative to B, and the
-    // grant says the pre-attach half sends the record of activity, not its text.
-    // B is entitled to the structural rows — which it gets, because those DO
-    // re-arm above — and not to the prompts.
+    // A marker on this column says "a live forward under ONE deployment owed
+    // this row", and that deployment is A's, not B's — B never asked for A's
+    // undelivered captures, and could not have: `outbox_owed` carries no
+    // deployment identity of its own, only the ledger row it sits beside does.
+    // Left set across the switch, the drain would read A's markers as B's and
+    // ship A's prompts, with their text, to a deployment that never saw them.
+    // So EVERY marker is cleared here, unconditionally, whichever writer set
+    // it — the live path above, or `markCaptureBacklogOwedStmt` below.
     //
-    // The marker is what carries that now, so it is CLEARED rather than left:
-    // `outbox_owed` says "a live forward owed this row", and the forward that
-    // owed it was A's. Left set, the drain would read it as owed to B and ship
-    // A's prompts, with their text, to a deployment that never saw them —
-    // exactly the leak the removed floor was reset to prevent. Set-only would
-    // have made this marker worse than the bound it replaced.
+    // `rearmFor`'s caller then has the chance to re-mark B's OWN backlog in the
+    // SAME transaction (its optional third argument, applied after this wipe):
+    // what a human granted FOR B, at the instant they granted it, which is a
+    // fact about B and survives the switch on purpose.
+    //
+    // BOUNDED BY THE ATTACH INSTANT (`rearmFor`'s own `backlogBefore`), not
+    // left unconditional. A's leftover markers are all on rows with
+    // `started_at` strictly before this switch — A's live path could only
+    // have marked a capture while this machine was still attached to A. B's
+    // OWN live path can mark a capture owed from the moment `aka attach`
+    // writes the descriptor, which is before the drain's first pass ever
+    // reaches this method — so a marker B's own gateway set in that gap sits
+    // on a row with `started_at` at or after the bound and must survive. An
+    // unconditional wipe could not tell the two apart; this bound can, because
+    // which deployment could possibly have written a given marker is exactly
+    // what which side of the switch its row falls on.
     this.disownCapturesStmt = db.prepare(
       `UPDATE audit_events SET outbox_owed = NULL
-        WHERE outbox_owed IS NOT NULL AND event_type IN (${CAPTURE_TYPE_LIST})`,
+        WHERE outbox_owed IS NOT NULL
+          AND event_type IN (${CAPTURE_TYPE_LIST})
+          AND started_at < :attachedAt`,
     );
     this.rearmStmt = db.prepare(
-      `UPDATE audit_events SET synced_at = NULL
-        WHERE synced_at > 0 AND event_type IN (${TYPE_LIST})`,
+      `UPDATE audit_events
+          SET synced_at = NULL, sync_failed_at = NULL, sync_failure = NULL
+        WHERE (synced_at > 0
+               OR sync_failure IN ('deployment_refused', 'detached_undelivered'))
+          AND event_type IN (${TYPE_LIST})`,
     );
 
     // A heartbeat in the FUTURE counts as stale. A backwards clock correction
@@ -437,7 +693,10 @@ export class SqliteHistorySyncRepository {
     // drain has never covered it — stamping it is what lets the boundary move
     // forward afterwards without re-sending any of it.
     this.closeWindowStmt = db.prepare(
-      `UPDATE audit_events SET synced_at = :at
+      `UPDATE audit_events
+          SET synced_at = ${String(SKIPPED)},
+              sync_failed_at = :at,
+              sync_failure = 'detached_undelivered'
         WHERE synced_at IS NULL
           AND event_type IN (${TYPE_LIST})
           AND started_at >= :attachedAt`,
@@ -538,20 +797,65 @@ export class SqliteHistorySyncRepository {
     this.markOwedStmt.run({ id });
   }
 
-  /** Record delivery. Called only AFTER the far side has accepted the rows. */
-  markSynced(ids: readonly string[], atMs: number): void {
-    this.stampAll(ids, atMs);
+  /**
+   * Mark every capture already on disk as owed, as of `before`.
+   *
+   * The consent-time backfill, called once from `aka attach` when a human
+   * grants existing-history consent — never from an ongoing drain pass, and
+   * never inferred from a boundary that could later move. `before` is the
+   * caller's own "now" at the moment consent was granted, so what this marks
+   * is exactly the backlog the consent prompt already counted, not whatever a
+   * later re-attach or key rotation might widen it to.
+   *
+   * Returns how many rows matched, for the caller to log or test against. Not a
+   * count of NEWLY marked rows — a row still unsynced from an earlier call
+   * matches again and is counted again, the same as `UPDATE`'s own `changes`.
+   */
+  markCaptureBacklogOwed(before: number): number {
+    return Number(this.markCaptureBacklogOwedStmt.run({ before }).changes);
   }
 
   /**
-   * Record that a row will never be sent.
+   * Record delivery. Called only AFTER the far side has accepted the rows.
+   *
+   * CLEARS any failure reason in the same statement. A row that failed against
+   * one deployment and then landed is delivered, and leaving the reason behind
+   * would leave the store holding two contradictory answers about one row —
+   * with the surface free to render either.
+   */
+  markSynced(ids: readonly string[], atMs: number): void {
+    this.stampAll(ids, atMs, null);
+  }
+
+  /**
+   * Record that THIS MACHINE cannot express the row on the wire.
    *
    * Reserved for a local defect — a row that cannot be rebuilt into a valid
-   * payload. A row that merely failed to reach the deployment stays NULL, so it
+   * payload, or a body the client itself refused to send. It fails identically
+   * against every deployment, so it is terminal everywhere and the re-arm leaves
+   * it alone. A row that merely failed to REACH the deployment stays NULL, so it
    * is retried; marking those would turn one outage into permanent data loss.
    */
-  markSkipped(ids: readonly string[]): void {
-    this.stampAll(ids, SKIPPED);
+  markSkipped(ids: readonly string[], atMs: number): void {
+    this.stampAll(ids, SKIPPED, 'payload_invalid', atMs);
+  }
+
+  /**
+   * Record that THIS DEPLOYMENT refused the row.
+   *
+   * The same sentinel as `markSkipped`, and deliberately so: both stop the row
+   * being re-offered on this lane, and `synced_at` goes on answering whether a
+   * row is outstanding rather than why. What separates them is the reason, and
+   * what the reason buys is the re-arm — a refusal is one deployment's verdict
+   * on one body, so it is terminal only for as long as this machine points at
+   * that deployment, and `rearmFor` clears it when the deployment changes.
+   *
+   * Leaving such a row NULL instead would be worse than the loss it replaces:
+   * these reads carry no cursor, so an unstamped row the deployment refuses is
+   * the head of every subsequent page, and the lane stalls behind it for ever.
+   */
+  markRefused(ids: readonly string[], atMs: number): void {
+    this.stampAll(ids, SKIPPED, 'deployment_refused', atMs);
   }
 
   private eachInTransaction(ids: readonly string[], run: (id: string) => void): void {
@@ -565,15 +869,25 @@ export class SqliteHistorySyncRepository {
     );
   }
 
-  private stampAll(ids: readonly string[], value: number): void {
+  private stampAll(
+    ids: readonly string[],
+    value: number,
+    failure: SyncFailureReason | null,
+    failedAtMs?: number,
+  ): void {
     if (ids.length === 0) return;
+    // Written together, always. The pair is one fact — a row is failed, at a
+    // time, for a reason — and a statement that set only some of it would leave
+    // a reason with no timestamp behind it, or a stale reason on a row that has
+    // since been delivered.
+    const failedAt = failure === null ? null : (failedAtMs ?? null);
     // One short IMMEDIATE transaction: the write lock is taken up front rather
     // than upgraded mid-way, so a concurrent writer meets a busy database at the
     // start instead of half-way through the stamps.
     withTransaction(
       this.db,
       () => {
-        for (const id of ids) this.stampStmt.run({ at: value, id });
+        for (const id of ids) this.stampStmt.run({ at: value, failedAt, failure, id });
       },
       'IMMEDIATE',
     );
@@ -615,6 +929,32 @@ export class SqliteHistorySyncRepository {
    * requiring one would force a caller to invent one and report the whole store
    * as queued.
    */
+  /**
+   * The same partition, one row per kind that a lane carries.
+   *
+   * A kind with nothing to report is ABSENT rather than a row of zeros: the
+   * scope decides which rows exist at all, so a kind that has never been
+   * recorded — or whose captures nobody ever owed — produces no group. A caller
+   * rendering a fixed list of kinds must therefore treat a missing one as "no
+   * rows", never as "zero sent"; the two look identical in a bar and mean
+   * different things.
+   */
+  partitionByKind(): HistorySyncKindPartition[] {
+    return allRows<Record<keyof HistorySyncPartition, number | null> & { kind: CountedEventType }>(
+      this.partitionByKindStmt,
+      {},
+    ).map((row) => ({
+      kind: row.kind,
+      queued: row.queued ?? 0,
+      inProgress: row.inProgress ?? 0,
+      synced: row.synced ?? 0,
+      failed: row.failed ?? 0,
+      refused: row.refused ?? 0,
+      detached: row.detached ?? 0,
+      total: row.total ?? 0,
+    }));
+  }
+
   partition(): HistorySyncPartition {
     const row = getRow<Record<keyof HistorySyncPartition, number | null>>(this.partitionStmt, {});
     return {
@@ -622,22 +962,29 @@ export class SqliteHistorySyncRepository {
       inProgress: row?.inProgress ?? 0,
       synced: row?.synced ?? 0,
       failed: row?.failed ?? 0,
+      refused: row?.refused ?? 0,
+      detached: row?.detached ?? 0,
       total: row?.total ?? 0,
     };
   }
 
   /** `pending` counts only what is inside the backlog; sent and skipped are totals. */
   counts(before: number): HistorySyncCounts {
-    const row = getRow<{ pending: number | null; sent: number | null; skipped: number | null }>(
-      this.countsStmt,
-      { before },
-    );
+    const row = getRow<{
+      pending: number | null;
+      sent: number | null;
+      skipped: number | null;
+      refused: number | null;
+      detached: number | null;
+    }>(this.countsStmt, { before });
     const captures = getRow<{ skipped: number | null }>(this.captureSkipCountStmt);
     // SUM() over no rows is NULL, which is zero of each here.
     return {
       pending: row?.pending ?? 0,
       sent: row?.sent ?? 0,
       skipped: row?.skipped ?? 0,
+      refused: row?.refused ?? 0,
+      detached: row?.detached ?? 0,
       capturesSkipped: captures?.skipped ?? 0,
     };
   }
@@ -668,15 +1015,42 @@ export class SqliteHistorySyncRepository {
    *
    * Delivery is a fact about ONE recipient: rows sent to the deployment a
    * machine has just left are undelivered as far as the new one is concerned.
-   * All three in one transaction, so a crash between them cannot leave stamps
-   * attributed to the wrong deployment, or a boundary that belongs to another.
+   * All four in one transaction, so a crash between them cannot leave stamps
+   * attributed to the wrong deployment, a boundary that belongs to another, or
+   * a disown with no re-mark to follow it.
    *
    * The boundary is written HERE and only here, which is what freezes it: a
    * re-attach to the SAME deployment (a key rotation) leaves the fingerprint
    * unchanged, so this never runs and the backlog does not widen back over rows
    * the live path has since delivered.
+   *
+   * `backfillCapturesBefore` is the caller's OWN "now" at the instant a human
+   * granted existing-history consent for the deployment this call is arming —
+   * a DIFFERENT instant from `backlogBefore`: the re-mark boundary is the GRANT
+   * instant, `backlogBefore` is the ATTACH instant, and the two can be far
+   * apart. Passed only when that grant is valid, since this method has no way
+   * to check consent itself and must not mark a row owed for a machine that
+   * never agreed to it. Applied AFTER the disown above, in the SAME
+   * transaction: what the disown clears is every marker below `backlogBefore`,
+   * which includes this deployment's OWN pre-attach rows — `aka attach` calls
+   * `seedCaptureBacklogOwed` at the attach instant, so every row it marks sits
+   * on the cleared side of that bound — and the re-mark in the same
+   * transaction is what puts those rows back. A crash between the two cannot
+   * strand the ledger disowned with nothing re-marked — the transaction either
+   * lands whole or not at all, and a fingerprint mismatch that has not yet
+   * committed re-enters this method on the very next pass. Omit it (the
+   * structural-only tests do) to exercise the disown in isolation.
+   *
+   * The disown is bounded by `backlogBefore`, which is what keeps it from
+   * touching a marker the NEW deployment's OWN live path has already set: B's
+   * live path can mark a capture owed from the moment `aka attach` writes the
+   * descriptor, before the drain's first pass ever reaches this method, and
+   * such a row sits at or after the bound rather than below it. What keeps the
+   * disown from eating THIS SAME CALL's own re-mark is the order, not the
+   * bound — disown runs first, re-mark second, both inside the one
+   * transaction above.
    */
-  rearmFor(fingerprint: string, backlogBefore: number): void {
+  rearmFor(fingerprint: string, backlogBefore: number, backfillCapturesBefore?: number): void {
     this.ensureRowStmt.run();
     withTransaction(
       this.db,
@@ -693,7 +1067,10 @@ export class SqliteHistorySyncRepository {
         // silently empty the outbox at the moment it started filling. What must
         // be disowned is a marker the PREVIOUS deployment's forward wrote.
         if (previous !== null && previous !== undefined && previous !== fingerprint) {
-          this.disownCapturesStmt.run();
+          this.disownCapturesStmt.run({ attachedAt: backlogBefore });
+        }
+        if (backfillCapturesBefore !== undefined) {
+          this.markCaptureBacklogOwedStmt.run({ before: backfillCapturesBefore });
         }
         this.setFingerprintStmt.run({ fingerprint, backlogBefore });
       },
@@ -712,11 +1089,18 @@ export class SqliteHistorySyncRepository {
    * recorded in that window sit after the boundary and before the re-attach, so
    * neither path takes them, and the pending count reports none outstanding.
    *
-   * Stamping the attached window is not a claim that every one of those rows
-   * reached the deployment — the live path drops on failure and says so
-   * elsewhere. It records that they were ITS to deliver, which is exactly the
-   * status quo: they sit outside the frozen boundary today and are equally never
-   * re-sent. Making it explicit is what lets the boundary move.
+   * WHAT IT RECORDS, and what it deliberately does not. These rows were the
+   * closing attachment's to deliver and are no longer outstanding — that is what
+   * lets the boundary move. It is NOT a claim that any of them arrived, and the
+   * distinction is not academic: this used to write a delivery TIME, which every
+   * read treats as delivery, so one detach turned a window of undelivered rows
+   * into a window of delivered ones and no surface could tell. It writes the
+   * skip sentinel and a reason of its own instead, so "no longer owed" and
+   * "received" stop being the same fact.
+   *
+   * A change of deployment still frees them (see the re-arm), because the next
+   * deployment has seen none of this machine's history — so the rows reach it
+   * exactly as they did when this wrote a delivery time.
    *
    * ONE TRANSACTION, so a crash cannot release the boundary while leaving the
    * window unstamped — that half-state would re-send the whole attached period

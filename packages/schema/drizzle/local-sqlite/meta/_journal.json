@@ -204,6 +204,20 @@
       "when": 1788454323528,
       "tag": "0028_activity_session_probe_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1789138889521,
+      "tag": "0029_audit_capture_rollup_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1789142824330,
+      "tag": "0030_audit_content_expiry",
+      "breakpoints": true
     }
   ]
 }

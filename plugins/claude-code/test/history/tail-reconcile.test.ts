@@ -27,6 +27,7 @@ function config(dataDir: string, consented = false): PluginConfig {
       vaultKeyCustody: 'file',
       vaultInlineReveal: 'masked',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
       ...(consented
         ? {
             vaultConsent: {

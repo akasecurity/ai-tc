@@ -112,6 +112,31 @@ afterEach(() => {
   removeTree(home);
 });
 
+/**
+ * The children array whose LAST entry is the card guard's `false`.
+ *
+ * Walked rather than indexed so this says what it means — the guard rendered
+ * nothing and its siblings are untouched — without also pinning how deeply the
+ * page happens to nest that list today.
+ */
+function guardSiblings(node: unknown): unknown[] | undefined {
+  if (node === null || typeof node !== 'object') return undefined;
+  if (Array.isArray(node)) {
+    const items = node as unknown[];
+    if (items.length > 0 && items.at(-1) === false) return items;
+    for (const child of items) {
+      const found = guardSiblings(child);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  const props: unknown = (node as { props?: unknown }).props;
+  if (props !== null && typeof props === 'object') {
+    return guardSiblings((props as { children?: unknown }).children);
+  }
+  return undefined;
+}
+
 /** Walk the element tree the page returns for a `WebCaptureCardView` node. */
 function captureCard(node: unknown): { props: WebCaptureCardViewProps } | undefined {
   if (node === null || typeof node !== 'object') return undefined;
@@ -155,10 +180,15 @@ describe('the security page derives web-capture posture at read time', () => {
     expect(captureCard(element)).toBeUndefined();
 
     // The guard renders `false` in place of the card block, so every OTHER
-    // top-level child of the page is unaffected by its presence or absence.
-    const topLevel = element.props.children;
-    expect(topLevel.filter(Boolean)).toHaveLength(6);
-    expect(topLevel.at(-1)).toBe(false);
+    // sibling is unaffected by its presence or absence.
+    //
+    // Located by WALKING rather than by indexing the page's top level: the
+    // card sits inside the page's navigation wrapper, and an index here would
+    // be re-asserting the wrapper's depth rather than the guard's behaviour.
+    const siblings = guardSiblings(element);
+    expect(siblings, 'no sibling list ends in the guard').toBeDefined();
+    expect(siblings?.at(-1)).toBe(false);
+    expect(siblings?.filter(Boolean)).toHaveLength(5);
   });
 
   it("is quiet on today's state — a build declaring no endpoints reports standby, not drift", async () => {

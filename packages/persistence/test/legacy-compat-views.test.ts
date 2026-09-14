@@ -949,7 +949,7 @@ describe('the pre-drop snapshot is taken only when the drop would destroy rows',
   });
 });
 
-describe('the legacy drop defers when the store changed under the write lock', () => {
+describe('the legacy drop defers when a row lands just before the write lock is taken', () => {
   // The window this guard covers cannot be reached by calling the migration
   // twice or by seeding differently: it opens when the backup decision is read
   // and closes when `BEGIN IMMEDIATE` takes the lock, and a pre-cutover binary

@@ -42,3 +42,4 @@ export * from './shares-access.ts';
 export * from './triage.ts';
 export * from './updates.ts';
 export * from './vault.ts';
+export * from './web-capture.ts';

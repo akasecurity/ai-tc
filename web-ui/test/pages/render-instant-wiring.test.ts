@@ -1,6 +1,4 @@
-import { mkdtempSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
@@ -13,8 +11,8 @@ import {
 import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { emptyStore } from '../helpers/store-templates.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // Every route that renders a relative label captures ONE instant per request
 // and hands it to each consumer below it. `exceptions-page.test.ts` pins that
@@ -42,6 +40,8 @@ vi.mock('node:os', async (importActual) => {
   return { ...actual, homedir: () => osHome.dir };
 });
 
+const newHome = tempHomes('aka-web-instant-');
+
 let home: string;
 let dir: string;
 
@@ -52,7 +52,7 @@ function resetSingleton(): void {
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-web-instant-'));
+  home = newHome();
   osHome.dir = home;
   dir = dataDir();
   // None of the six routes below reads `installed_packs` (they read
@@ -67,7 +67,6 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   resetSingleton();
-  removeTree(home);
 });
 
 /**

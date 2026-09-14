@@ -1,6 +1,5 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { BLOCKED_WINDOW_MS, isBlockedRowApprovable } from '@akasecurity/dashboard-ui';
@@ -19,12 +18,12 @@ import type { BlockedDetectionInput } from '@akasecurity/schema';
 import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { ExceptionDetailClient } from '../../app/(app)/exceptions/[id]/ExceptionDetailClient.tsx';
 import ExceptionDetailPage from '../../app/(app)/exceptions/[id]/page.tsx';
 import { ExceptionsClient } from '../../app/(app)/exceptions/ExceptionsClient.tsx';
 import ExceptionsPage from '../../app/(app)/exceptions/page.tsx';
 import { withBundledPacks } from '../helpers/store-templates.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // The exceptions route issues TWO reads of the same blocked-detections ledger,
 // over two different windows, and hands both to the client — and which read
@@ -55,6 +54,7 @@ vi.mock('node:os', async (importActual) => {
   return { ...actual, homedir: () => osHome.dir };
 });
 
+const newHome = tempHomes('aka-web-exp-');
 let home: string;
 let dir: string;
 
@@ -144,7 +144,7 @@ async function seedStraddlingFixture(): Promise<void> {
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-web-exp-'));
+  home = newHome();
   osHome.dir = home;
   dir = dataDir();
   // The schema and the installed ruleset arrive as a file copy: both are
@@ -156,7 +156,6 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSingleton();
-  removeTree(home);
 });
 
 describe('the exceptions route wires each ledger read to the consumer that needs it', () => {

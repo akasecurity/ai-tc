@@ -54,6 +54,19 @@ const SCP_FORM = /^(?:[^@/]+@)?([^/:]+):(.+)$/;
 // exactly as a `path:` key is: it never converges across devices, so there is
 // nothing to canonicalize it toward.
 const DOS_DRIVE = /^[A-Za-z]:[\\/]/;
+
+// A `file://` URL, which names a repository by a path on ONE machine — the
+// remote `git clone file:///srv/repos/demo.git` records. It is returned
+// untouched for the reason a drive path is: it never converges across devices,
+// and the trailing-`.git` strip would merge `…/demo` and `…/demo.git` into one
+// project. Neither form below reads it correctly on its own: with the usual
+// empty authority (`file:///…`) scheme form misses it, since its host needs a
+// character, and scp form then takes `file` as the host; with an authority
+// (`file://localhost/…`) scheme form reads that authority as a forge host.
+//
+// Only the `://` spelling is a file URL. `file:acme/widgets` is scp form against
+// a host named `file`, exactly as git reads it, and still canonicalizes.
+const FILE_URL = /^file:\/\//i;
 const SCHEME_FORM = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?(\/.*)?$/i;
 
 const SLASH = '/'.charCodeAt(0);
@@ -96,6 +109,11 @@ function trimSlashes(path: string): string {
  *     how a clone authenticates, not which repository it is.
  *   - the host is lowercased. DNS is case-insensitive by definition, so this
  *     cannot merge two different hosts.
+ *   - any port is dropped, whether or not it is the scheme's default. One
+ *     repository is reached over SSH on one port and HTTPS on another, so
+ *     keeping it would split every repository cloned both ways. The cost is
+ *     that two different forges on one host, told apart only by port, share a
+ *     digest. Scp form carries no port — its colon is the path separator.
  *   - a trailing `.git` and trailing slashes go. Both are spellings of the
  *     same remote.
  *
@@ -110,11 +128,13 @@ function trimSlashes(path: string): string {
  * A string that matches neither form is returned trimmed and otherwise as-is.
  * It is still a stable identity for whatever produced it; it simply does not
  * get the convergence, which is better than guessing at a shape this does not
- * recognize.
+ * recognize. A local path is returned the same way even where it would match
+ * one — a Windows drive path, or a `file://` URL — because it is a location on
+ * one machine rather than a remote every clone shares.
  */
 function canonicalGitUrl(url: string): string {
   const trimmed = url.trim();
-  if (DOS_DRIVE.test(trimmed)) return trimmed;
+  if (DOS_DRIVE.test(trimmed) || FILE_URL.test(trimmed)) return trimmed;
   const scheme = SCHEME_FORM.exec(trimmed);
   const scp = scheme === null ? SCP_FORM.exec(trimmed) : null;
   const host = (scheme?.[1] ?? scp?.[1])?.toLowerCase();

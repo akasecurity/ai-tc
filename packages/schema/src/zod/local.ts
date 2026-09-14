@@ -579,6 +579,8 @@ export function toCaptureAttributes(event: IngestEvent): CaptureAttributes {
     // `.catchall(z.unknown())` carries the long tail.
     ...(metadata?.model !== undefined ? { model: metadata.model } : {}),
     ...(metadata?.turnIndex !== undefined ? { turn_index: metadata.turnIndex } : {}),
+    ...(metadata?.messageId !== undefined ? { message_id: metadata.messageId } : {}),
+    ...(metadata?.conversationId !== undefined ? { conversation_id: metadata.conversationId } : {}),
   };
 }
 

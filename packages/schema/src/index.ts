@@ -1,3 +1,4 @@
+export * from './drizzle/deferred-migrations.ts';
 export * from './drizzle/sqlite-ddl.ts';
 export * from './exception-scope.ts';
 export * from './identity.ts';

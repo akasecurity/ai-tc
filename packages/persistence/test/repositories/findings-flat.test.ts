@@ -540,14 +540,21 @@ describe('SqliteFindingsRepository.listFindingLocations', () => {
       }
     });
 
-    it('restarts from the top on a cursor naming an unknown severity', async () => {
-      seedTied();
-      const cursor = Buffer.from(
-        JSON.stringify({ sev: 'not-a-severity', t: '2026-01-01T00:00:00.000Z', r: '', f: '' }),
-      ).toString('base64url');
-      const res = await db.findings.listFindingLocations({ cursor });
-      expect(res.items).toHaveLength(3);
-    });
+    // 'constructor' and 'toString' are the values a bare rank-table lookup
+    // resolves to an Object.prototype function rather than a miss: every
+    // comparison against the cursor is then NaN, nothing sorts after it, and the
+    // page comes back EMPTY instead of restarting.
+    it.each(['not-a-severity', 'constructor', 'toString', '__proto__'])(
+      'restarts from the top on a cursor naming the unknown severity %s',
+      async (sev) => {
+        seedTied();
+        const cursor = Buffer.from(
+          JSON.stringify({ sev, t: '2026-01-01T00:00:00.000Z', r: '', f: '' }),
+        ).toString('base64url');
+        const res = await db.findings.listFindingLocations({ cursor });
+        expect(res.items).toHaveLength(3);
+      },
+    );
   });
 
   describe('includeId', () => {
@@ -751,18 +758,23 @@ describe('SqliteFindingsRepository.listFindingTypes pagination', () => {
     expect(restarted.items.map((g) => g.id)).toEqual(fresh.items.map((g) => g.id));
   });
 
-  it('restarts from the top on a decodable cursor carrying an unknown severity', async () => {
-    // Decodes fine but names no real severity. That ranks below every known one,
-    // so it sorts before the whole list and degrades to a restart rather than
-    // silently paging past rows.
-    seedGroups(6);
-    const bogus = Buffer.from(
-      JSON.stringify({ sev: 'not-a-severity', t: '2026-01-01T00:00:00.000Z', id: 'x' }),
-    ).toString('base64url');
-    const fresh = await db.findings.listFindingTypes({ limit: 3 });
-    const restarted = await db.findings.listFindingTypes({ limit: 3, cursor: bogus });
-    expect(restarted.items.map((g) => g.id)).toEqual(fresh.items.map((g) => g.id));
-  });
+  // Decodes fine but names no real severity. That ranks below every known one,
+  // so it sorts before the whole list and degrades to a restart rather than
+  // silently paging past rows. The Object.prototype names are the values a bare
+  // rank-table lookup would resolve to a function, turning every comparison
+  // into NaN and the page into an empty one.
+  it.each(['not-a-severity', 'constructor', 'toString', '__proto__'])(
+    'restarts from the top on a decodable cursor carrying the unknown severity %s',
+    async (sev) => {
+      seedGroups(6);
+      const bogus = Buffer.from(
+        JSON.stringify({ sev, t: '2026-01-01T00:00:00.000Z', id: 'x' }),
+      ).toString('base64url');
+      const fresh = await db.findings.listFindingTypes({ limit: 3 });
+      const restarted = await db.findings.listFindingTypes({ limit: 3, cursor: bogus });
+      expect(restarted.items.map((g) => g.id)).toEqual(fresh.items.map((g) => g.id));
+    },
+  );
 
   it('appends an includeId group that sorts past the page', async () => {
     seedGroups(12);

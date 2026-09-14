@@ -20,7 +20,7 @@
  * name the resolver probes for, and it has to run.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -30,6 +30,8 @@ import { fileURLToPath } from 'node:url';
 // literal would prove the two copies agree and nothing else.
 import { HISTORY_SYNC_SCRIPT_NAME as HISTORY_SCRIPT } from '@akasecurity/plugin-runtime';
 import { describe, expect, it } from 'vitest';
+
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 
 // test/e2e -> plugins/claude-code
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -83,7 +85,7 @@ describe('the built history-drain child', () => {
       expect(run.stdout).toBe('');
       expect(run.stderr).toBe('');
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      removeTree(home);
     }
   });
 });

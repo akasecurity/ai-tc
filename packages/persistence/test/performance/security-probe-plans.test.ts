@@ -27,6 +27,7 @@
  */
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 
+import { EventKind } from '@akasecurity/schema';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { SqliteSecurityRepository } from '../../src/repositories/security.ts';
@@ -39,7 +40,13 @@ import { createTempStore } from '../helpers/temp-store.ts';
 const DAY_MS = 86_400_000;
 const NOW = Date.parse('2026-09-01T00:00:00Z');
 const EVENTS = 300;
-const CAPTURE_KINDS = ['prompt', 'response', 'code_change', 'tool_use'] as const;
+/**
+ * The capture kinds the reads filter on, taken from the enum their predicate is
+ * derived from (`CAPTURE_EVENT_TYPES_SQL` is `EventKind.options`), in the same
+ * order. A copy written out here would go on seeding the old vocabulary after
+ * the enum moved, and the corpus would stop exercising a kind the reads cover.
+ */
+const CAPTURE_KINDS = EventKind.options;
 
 interface Read {
   readonly name: string;
@@ -203,6 +210,20 @@ describe('the /security rollups are answered from the capture-rollup index', () 
       }
     });
   }
+
+  // Asked of the store rather than of CAPTURE_KINDS, so it holds whatever the
+  // seed was handed: a kind the reads filter on that no seeded row carries is
+  // coverage this file claims and does not have.
+  it('the corpus seeds every capture kind the reads filter on', () => {
+    const seeded = (
+      raw
+        .prepare(
+          `SELECT DISTINCT event_type AS kind FROM audit_events WHERE id LIKE 'evt-%' ORDER BY kind`,
+        )
+        .all() as { kind: string }[]
+    ).map((row) => row.kind);
+    expect(seeded).toEqual([...EventKind.options].sort());
+  });
 
   // The positive control: without it every assertion above would pass on a
   // corpus the reads matched nothing in, since an empty plan trips no fallback.

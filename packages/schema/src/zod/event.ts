@@ -64,6 +64,12 @@ export const EventMetadata = z
     // to 'allow' — the enforcement audit trail's link back to the grant that
     // authorized the bypass. Absent on captures where no exception applied.
     exceptionIds: z.array(z.guid()).optional(),
+    // The assistant message this capture belongs to, and the conversation it sits
+    // in — set by the browser extension's network capture so a stored `response`
+    // row can be joined to the `llm_call` leaf describing the same turn. Absent
+    // on every other capture path, which has no such id.
+    messageId: z.string().optional(),
+    conversationId: z.string().optional(),
     // How long THIS capture's inspection blocked its caller, in whole
     // milliseconds — the plugin's own added latency, NOT the LLM call it sat in
     // front of. Measured inside `capture()` (@akasecurity/plugin-sdk) across

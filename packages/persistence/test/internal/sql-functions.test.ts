@@ -1,0 +1,111 @@
+import { DatabaseSync } from 'node:sqlite';
+
+import { describe, expect, it } from 'vitest';
+
+import { akaLower, registerSqlFunctions } from '../../src/internal/sql-functions.ts';
+import { corpusConnection } from '../helpers/corpus.ts';
+import { withTempStore } from '../helpers/temp-store.ts';
+
+function withFunctions<T>(fn: (db: DatabaseSync) => T): T {
+  const db = new DatabaseSync(':memory:');
+  try {
+    registerSqlFunctions(db);
+    return fn(db);
+  } finally {
+    db.close();
+  }
+}
+
+function scalar(db: DatabaseSync, sql: string): unknown {
+  return (db.prepare(sql).get() as { v: unknown }).v;
+}
+
+describe('aka_lower', () => {
+  it('folds case beyond ASCII, where the built-in lower() does not', () => {
+    withFunctions((db) => {
+      // The built-in leaves both letters alone; this is why the function exists.
+      expect(scalar(db, "SELECT lower('ӅÄ') AS v")).toBe('ӅÄ');
+      expect(scalar(db, "SELECT aka_lower('ӅÄ') AS v")).toBe('ӆä');
+    });
+  });
+
+  it('keeps every character after an embedded NUL, so instr finds a match past it', () => {
+    withFunctions((db) => {
+      expect(
+        scalar(db, "SELECT length(CAST(aka_lower('ab' || char(0) || 'CD') AS BLOB)) AS v"),
+      ).toBe(5);
+      expect(scalar(db, "SELECT instr(aka_lower('ab' || char(0) || 'CD'), 'cd') AS v")).toBe(4);
+      // LIKE stops at the NUL, which is why a search matches with instr instead.
+      expect(scalar(db, "SELECT ('ab' || char(0) || 'CD') LIKE '%cd%' AS v")).toBe(0);
+    });
+  });
+
+  it('answers every storage class without throwing', () => {
+    withFunctions((db) => {
+      expect(scalar(db, 'SELECT aka_lower(NULL) AS v')).toBeNull();
+      expect(scalar(db, 'SELECT aka_lower(12) AS v')).toBe('12');
+      expect(scalar(db, 'SELECT aka_lower(9223372036854775807) AS v')).toBe('9223372036854775807');
+      expect(scalar(db, 'SELECT aka_lower(-1.5) AS v')).toBe('-1.5');
+      expect(scalar(db, "SELECT aka_lower(X'41C384') AS v")).toBe('aä');
+      expect(scalar(db, "SELECT aka_lower(X'41FF') AS v")).toBe('a�');
+    });
+  });
+
+  it('folds a bound search term the same way akaLower does in JS', () => {
+    withFunctions((db) => {
+      const stmt = db.prepare('SELECT aka_lower(?) AS v');
+      for (const term of ['Ӆ', 'İstanbul', 'ΟΔΟΣ', 'MiXeD 123', 'a\u0000B']) {
+        const folded = akaLower(term);
+        expect(folded, JSON.stringify(term)).not.toBe(term);
+        expect((stmt.get(term) as { v: unknown }).v, JSON.stringify(term)).toBe(folded);
+      }
+    });
+  });
+
+  it.each([
+    ['an index', ['CREATE TABLE t (a TEXT)', 'CREATE INDEX idx_t_folded ON t (aka_lower(a))']],
+    [
+      'a generated column',
+      [
+        'CREATE TABLE g (a TEXT, b TEXT AS (aka_lower(a)))',
+        "INSERT INTO g (a) VALUES ('X')",
+        'SELECT b FROM g',
+      ],
+    ],
+    [
+      'a view',
+      [
+        'CREATE TABLE t (a TEXT)',
+        'CREATE VIEW v AS SELECT aka_lower(a) AS x FROM t',
+        'SELECT x FROM v',
+      ],
+    ],
+    [
+      'a trigger',
+      [
+        'CREATE TABLE u (a TEXT)',
+        'CREATE TRIGGER trg AFTER INSERT ON u BEGIN SELECT aka_lower(NEW.a); END',
+        "INSERT INTO u (a) VALUES ('Q')",
+      ],
+    ],
+  ])('is refused inside %s', (_label, statements) => {
+    withFunctions((db) => {
+      expect(() => {
+        for (const sql of statements) db.prepare(sql).all();
+      }).toThrow(/unsafe use of aka_lower/);
+    });
+  });
+});
+
+describe('the store opener', () => {
+  it('registers aka_lower on the connection openLocalDatabase opens', () => {
+    withTempStore(
+      (store) => {
+        const db = store.open();
+        expect(scalar(corpusConnection(db), "SELECT aka_lower('Ӆ') AS v")).toBe('ӆ');
+      },
+      'aka-sql-functions-',
+      { migrated: true },
+    );
+  });
+});

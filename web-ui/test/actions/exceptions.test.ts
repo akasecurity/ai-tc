@@ -2,7 +2,6 @@ import { createHash, createHmac } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
@@ -10,7 +9,6 @@ import {
   writeFileSync,
 } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
@@ -36,7 +34,6 @@ import type { BlockedDetectionInput, DetectionException } from '@akasecurity/sch
 import { DetectionCategory, PointerToken } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   type ActionResult,
   addException,
@@ -50,6 +47,7 @@ import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { expectNoRejection } from '../helpers/no-throw.ts';
 import { storeBytes } from '../helpers/store-bytes.ts';
 import { withBundledPacks } from '../helpers/store-templates.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // Every mutating Server Action on the exceptions surface, each covered against a
 // real node:sqlite store and a real fingerprint key file — no mocking of either
@@ -129,6 +127,8 @@ if (foreignExample === undefined) {
   throw new Error(`bundled rule ${FOREIGN_RULE_ID} is missing or has no classic-token example`);
 }
 const FOREIGN = `ghu_${foreignExample.slice(4)}`;
+
+const newHome = tempHomes('aka-web-ex-');
 
 let home: string;
 let dir: string;
@@ -265,7 +265,7 @@ const grantRevealFromPointerRaw = grantRevealFromPointer as unknown as (
   input: unknown,
 ) => Promise<RevealGrantResult>;
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-web-ex-'));
+  home = newHome();
   osHome.dir = home;
   dir = dataDir();
   // Seed the installed ruleset the way the plugin/CLI do on open — addException
@@ -279,7 +279,6 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSingleton();
-  removeTree(home);
 });
 
 /**

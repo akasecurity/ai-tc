@@ -1,8 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 import {
   dataDir,
@@ -16,10 +13,10 @@ import type { ComponentProps, ReactElement, ReactNode } from 'react';
 import { Children, isValidElement } from 'react';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import VaultPage from '../../app/(app)/vault/page.tsx';
 import { VaultDashboardClient } from '../../app/(app)/vault/VaultDashboardClient.tsx';
 import { db as appDb } from '../../app/lib/db.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // The vault route issues THREE DISTINCT store reads and hands each to its own
 // prop:
@@ -49,6 +46,11 @@ vi.mock('node:os', async (importActual) => {
   return { ...actual, homedir: () => osHome.dir };
 });
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
+
+// The home is removed when this FILE finishes, after the `afterAll` below: the
+// store app/lib/db.ts opens under it may still be held, and Windows will not
+// delete a directory a handle still holds. See the helper.
+const newHome = tempHomes('aka-web-vault-page-');
 
 let home: string;
 let dir: string;
@@ -92,7 +94,7 @@ function dropMemoisedDb(): void {
 const SEED_TIMEOUT_MS = 60_000;
 
 beforeAll(async () => {
-  home = mkdtempSync(join(tmpdir(), 'aka-web-vault-page-'));
+  home = newHome();
   osHome.dir = home;
   dir = dataDir();
   dropMemoisedDb();
@@ -103,9 +105,8 @@ afterAll(() => {
   // Cleanup sits in the `finally` because vitest runs afterAll even when
   // beforeAll THREW (measured, not assumed). On that path the invariant below
   // reads a store that was never seeded and throws in turn — so outside a
-  // `finally` it would both leak the temp tree and bury the real failure under
-  // its own. Dropping the handle before rmSync matters on Windows too, where an
-  // open SQLite handle refuses the delete.
+  // `finally` it would both skip the handle drop and bury the real failure under
+  // its own. The temp home itself is removed by `tempHomes`, after this hook.
   try {
     // The shared-fixture invariant, checked where a writing test cannot dodge
     // it by running after the totals case. Reads through the memoised handle,
@@ -115,7 +116,6 @@ afterAll(() => {
     expect(props.derefs.hiddenBatched).toBe(BATCHED_DEREFS);
   } finally {
     dropMemoisedDb();
-    removeTree(home);
   }
 });
 

@@ -1,6 +1,5 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
@@ -14,8 +13,8 @@ import type { InstalledPackInput, Policy, PolicyBundle } from '@akasecurity/sche
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import DetectionsPage from '../../app/(app)/detections/page.tsx';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // The Server Component's half of the fix: the floor is computed where the local
 // store is (the browser has no access to it) and travels down as plain data,
@@ -35,6 +34,8 @@ vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 
 const DETECTION_ID = 'aka/floor-fixture';
 const RULE_ID = 'floor-fixture/one';
+
+const newHome = tempHomes('aka-floor-page-');
 
 let home: string;
 let base: string;
@@ -129,7 +130,7 @@ async function renderedFloors(): Promise<Record<string, { floor: string; locked:
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-floor-page-'));
+  home = newHome();
   osHome.dir = home;
   base = join(home, '.aka');
   resetSingleton();
@@ -137,7 +138,6 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSingleton();
-  removeTree(home);
 });
 
 describe('the Detections page floor record', () => {

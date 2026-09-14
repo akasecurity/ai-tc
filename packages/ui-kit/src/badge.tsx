@@ -42,7 +42,14 @@ export function Badge({ variant, className, children }: BadgeProps) {
   return <span className={cn(badgeVariants({ variant }), className)}>{children}</span>;
 }
 
-const DOT_CLASS: Record<Severity, string> = {
+/**
+ * Severity → its dot's background token. Exported because more than one control
+ * leads with this dot (the badge below, and the findings type filter's pills),
+ * and a second copy of the map is a token rename away from generating no CSS at
+ * all — an undefined theme variable produces no utility and the element simply
+ * renders uncoloured, with nothing to catch it.
+ */
+export const SEVERITY_DOT_CLASS: Record<Severity, string> = {
   critical: 'bg-sev-critical',
   high: 'bg-sev-high',
   medium: 'bg-sev-medium',
@@ -53,7 +60,7 @@ const DOT_CLASS: Record<Severity, string> = {
 export function SeverityBadge({ severity }: { severity: Severity }) {
   return (
     <Badge variant={severity} className="h-6">
-      <span className={cn('size-1.5 rounded-full', DOT_CLASS[severity])} />
+      <span className={cn('size-1.5 rounded-full', SEVERITY_DOT_CLASS[severity])} />
       <span className="capitalize">{severity}</span>
     </Badge>
   );

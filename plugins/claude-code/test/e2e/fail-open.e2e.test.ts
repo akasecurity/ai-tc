@@ -500,13 +500,28 @@ const ENFORCING_HOOKS: readonly EnforcingHook[] = [
         cwd: projectDir(home),
         hook_event_name: 'PreToolUse',
       }),
-    // Redact denies rather than tokenizing because this home has no vault
-    // consent: with the vault inert there is nowhere to put the value, and
-    // one-way destruction of a tool call's input is not something to do quietly.
+    // Bash's `command` EXECUTES, so this hook cannot mask it: rewriting a
+    // command changes what runs. What happens instead is the workspace's
+    // `redactFallback`, and this home carries the shipped default — `warn`.
+    //
+    // So redact and vault emit a systemMessage here rather than a deny, and
+    // this row is where that lands on the wire. Read it as the setting's
+    // consequence, not as this hook going quiet: with
+    // `redactFallback: 'block'` all three enforcing rows read a deny again,
+    // which pre-tool-use-decision.test.ts drives directly at both settings.
+    //
+    // The vault row is unchanged in kind: Redact & Vault resolves to the
+    // `redact` ACTION, so it follows the same fallback — and with no vault
+    // consent on this home there was nowhere to put the value anyway.
     emits: {
       block: '"permissionDecision":"deny"',
-      redact: '"permissionDecision":"deny"',
-      vault: '"permissionDecision":"deny"',
+      // The FLAGGED wording, not a bare `"systemMessage"`: the redact path
+      // emits a systemMessage too ("AKA redacted sensitive content"), so the
+      // looser string matched whether or not the hook declared this field
+      // unrewritable — it passed with `rewritable: true` planted, which is the
+      // one mutation this row exists to catch.
+      redact: 'AKA flagged sensitive content',
+      vault: 'AKA flagged sensitive content',
       warn: '"systemMessage"',
       monitor: null,
     },

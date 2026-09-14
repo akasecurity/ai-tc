@@ -171,7 +171,7 @@ and adding one anywhere schema can reach is what would break it.
 
 ### 3. `process.env` is off by default
 
-ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Nine places in shipped source genuinely need the host environment and opt out. Three kinds of file are out of this table's scope and carry inline disables of their own: test harnesses that spawn the real hooks, the real installer scripts, and `tools/` — repo tooling that is never shipped, where a CI gate reads the runner's own output channels. All three are inventoried by `packages/eslint-config/test/inline-disables.test.js` instead, which reads the whole tracked tree rather than only what this table calls shipped:
+ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace — a violation is a CI failure, not a warning. Ten places in shipped source genuinely need the host environment and opt out. Three kinds of file are out of this table's scope and carry inline disables of their own: test harnesses that spawn the real hooks, the real installer scripts, and `tools/` — repo tooling that is never shipped, where a CI gate reads the runner's own output channels. All three are inventoried by `packages/eslint-config/test/inline-disables.test.js` instead, which reads the whole tracked tree rather than only what this table calls shipped:
 
 | Site                                              | Mechanism                         | Why                                                         |
 | ------------------------------------------------- | --------------------------------- | ----------------------------------------------------------- |
@@ -184,8 +184,9 @@ ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace �
 | `plugins/antigravity/src/triage/judge.ts`         | file-scoped ESLint config         | the judge subprocess must inherit PATH + `~/.gemini` auth   |
 | `packages/plugin-sdk/src/provider-antigravity.ts` | file-scoped ESLint config         | LLM-provider resolution at Antigravity's first invocation   |
 | `packages/plugin-sdk/src/bare-command.ts`         | file-scoped ESLint config         | the env an env-less Windows spawn inherits, for `where.exe` |
+| `plugins/claude-code/src/hooks/session-start.ts`  | file-scoped ESLint config         | the interface the host stamps on its own subprocess env     |
 
-Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding a tenth site means updating this table.
+Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding an eleventh site means updating this table.
 
 That last sentence is enforced, not merely asked: `packages/eslint-config/test/effective-config.test.js` parses this table and drives each column against the thing it describes — the site against the tracked tree, the mechanism against the resolved config and the file's own text, the count word against the row count, and the row set against every opt-out shipped source actually carries. So a fifth site that never reaches the table fails CI, and so does a row that outlives the exception it describes. The `Why` column is prose about intent and is guarded by nothing.
 
@@ -212,11 +213,12 @@ ESLint enforces that across the workspace — a violation is a CI failure, not a
 - the network globals `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `WebTransport`, both bare and hung off a container (`globalThis.`/`window.`/`self.`/`global.`), plus `navigator.sendBeacon`;
 - the modules `http`, `https`, `http2`, `net`, `dgram`, `tls`, `dns`, `dns/promises` (each in both the `node:`-prefixed and bare form) and the clients `axios`, `undici`, `got`, `node-fetch` (including their subpaths), in the static **and** the dynamic (`import()`/`require()`) form.
 
-Eight files carry a genuine local-only opt-out:
+Ten files carry a genuine local-only opt-out:
 
 | Site                                                                                                            | Allowed specifier                                      | Why                                                                                                                                                                                                                                                                                                                                                                 |
 | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `cli/src/commands/dashboard.ts` (via `cli/eslint.config.mjs`)                                                   | `node:net`                                             | `isPortFree()` binds a probe server on 127.0.0.1 to find a free port before launching the dashboard — a local bind                                                                                                                                                                                                                                                  |
+| `cli/test/helpers/loopback.ts` (via `cli/eslint.config.mjs`)                                                    | `node:http`                                            | the suite for `aka scan`'s Data Shares forward stands a real server on loopback and reads the request off the wire — a stubbed transport shows what the command decided, never what it sent, and every claim that forward makes is about the bytes that left the process                                                                                            |
 | `cli/scripts/smoke-dashboard.mjs` (via `cli/eslint.scripts.config.mjs`)                                         | `node:http`                                            | the CI smoke test polls the launched dashboard over loopback to confirm it came up                                                                                                                                                                                                                                                                                  |
 | `test/setup/no-network.ts` (via `eslint.root.config.mjs`)                                                       | `node:net`, `node:dgram`, `node:dns`                   | the vitest no-network guard wraps connect/send/resolve on all three transports to refuse non-loopback egress                                                                                                                                                                                                                                                        |
 | `tools/ci/egress-probe.mjs` (via `eslint.root.config.mjs`)                                                      | `node:net`                                             | the CI egress probe opens a TCP socket to a loopback listener before trusting a failed connect                                                                                                                                                                                                                                                                      |
@@ -224,6 +226,7 @@ Eight files carry a genuine local-only opt-out:
 | `packages/remote/src/http.ts` (via `packages/remote/eslint.config.mjs`)                                         | `node:http`, `node:https`                              | the control-plane transport — the one module that sends anything, and only to the deployment a machine's own settings name. `node:https` rather than `fetch` because Node's client follows no redirects, so a credential can never be replayed to a `Location` host; `node:http` is reachable only for a loopback endpoint, which `isSafeEndpoint` is what enforces |
 | `packages/remote/test/helpers/loopback.ts` (via `packages/remote/eslint.config.mjs`)                            | `node:http`                                            | that transport's suite stands a real server on 127.0.0.1 — a deadline firing, an oversized body refused, a 3xx not followed are socket behaviours, and a mocked transport would leave all three unproven                                                                                                                                                            |
 | `tools/installer/test/helpers/serve-release.ts` (via `tools/installer/eslint.config.mjs`)                       | `node:http`                                            | the installer suite serves its fixture release over loopback so the shipped `install.sh`/`install.ps1` run against a local base — the only base BOTH take, since PowerShell rejects a `file://` URI                                                                                                                                                                 |
+| `web-ui/test/helpers/loopback.ts` (via `web-ui/eslint.config.mjs`)                                              | `node:http`                                            | the Scan page's Data Shares forward is a Server Action that sends, so its suite stands a real server on loopback and reads the request off the wire — a stubbed transport shows what the action decided, never what it sent, and every claim that forward makes is about the bytes that left the process                                                            |
 
 All are **file-scoped**, never package-wide, and drop the static and dynamic bans together (`noNetworkImports` + `noNetworkSyntax`) so the exception holds whichever import form the file uses; every other network module stays banned in those same files. The one **global** opt-out — the runtime suite's deliberate `fetch()`, marked `fetch` (inline) above — is an inline `eslint-disable`, not a config `allow`, because `noNetworkGlobals()` (unlike its import/syntax siblings) takes no `allow` option, so §3's preference for a config opt-out cannot be met for a global today. It is pinned instead by the raw-guard measure in `no-network-runtime.test.js` (which lints with inline config **off**, so it sees the disabled `fetch` and would catch a second one), not by the `DOCUMENTED_OPT_OUTS` audit, which reads `no-restricted-imports` paths and structurally cannot see a global. Adding another opt-out site means updating this table.
 
@@ -285,14 +288,14 @@ Both of those read the TABLE and check it against the workspace. The promise thi
 Network access happens through child processes in every path but ONE. In all but the external-dispatch path, this repo chooses the program and its arguments; in that one it chooses neither. The exception is listed last and is the only place the source itself opens a connection:
 
 1. `@akasecurity/local-ops` shelling out to package managers (`npm`/`claude`/`codex`) for update-and-apply. **Two shapes, and only one is user-initiated.** `aka update`, `aka check-updates` and `aka plugins install` run because someone typed them. The passive **update notice** does not: `cli/src/main.ts` calls `notifyFromCache` after every command outside `SKIP_NOTICE` when stdout is a TTY, and a stale cache spawns a detached `aka __update-refresh` whose `gatherReport` asks `npm view` for the CLI package plus every `AGENT_PLUGINS` entry carrying BOTH a `pluginRef` and an `npmPackage` — three today, and asked for whether or not the plugin is installed. It is on by default with no prompt and `--no-update-check` opts out for a single invocation only. Say so wherever this path is enumerated: a reader who sees only "update-and-apply" concludes a bare `aka stats` opens no connection, and both READMEs' `[^egress]` footnotes are held to naming it.
-2. The Claude Code plugin's own `npm audit signatures` child process — run from inside the plugin's dependency closure (a plugin script or `@akasecurity/plugin-sdk`, since the plugin cannot import `@akasecurity/local-ops`).
+2. The Claude Code plugin's `npm audit signatures` child process — written to run from inside the plugin's dependency closure (a plugin script or `@akasecurity/plugin-sdk`, since the plugin cannot import `@akasecurity/local-ops`). **It is NOT reachable in the shipped artifact today**, and that is why it is still listed: `verifyProvenance` is called only by `buildVerifiedIntroCard`, which no `src/` file invokes — the shipped `intro.ts` calls the plain card builder and says so — so esbuild drops it and the spawn is in none of the built scripts. The READMEs' `[^egress]` footnote counted it for as long as `EGRESS_PATHS` was checked against the prose alone; it does not any more, and `privacy-claims.test.ts` now holds each row this plugin implements to the bundle, so wiring it back means restoring the row and the disclosure together. Keep the entry rather than deleting it: the code is still here, and a reader auditing "what could spawn" needs to find it.
 3. The `/aka:setup` wizard's judge subprocess (`plugins/claude-code/src/triage/judge.ts`), which spawns `claude -p` and **sends findings to the model API** so it can rate false positives and severity. `runJudge` serializes a minimized projection (`toJudgePayload`), not the whole `TriageHit`: `rawMatch` (the raw, unmasked secret) crosses, along with `context` (a ±120-character window of the surrounding transcript text — see `plugins/claude-code/src/history/scan.ts` — re-masked with `maskText`, which scans the **bundled** packs rather than the installed set — coverage is still complete because `buildTriageHit` has already redacted every other finding from the full-ruleset scan, and this hit's own value is masked here where it appears in the window; `rawMatch` is therefore the only raw value that crosses), `id` (a sequential counter the rubric requires the model to echo), and the non-sensitive scoring labels `ruleId`, `category`, `severity`, `maskedMatch` and `confidence`. `filePath` (the source transcript's path), `valueFingerprint` (an HMAC of the secret), and `keyVersion` are dropped before egress — a new `TriageHit` field is not disclosed to the model unless `toJudgePayload` and the disclosure copy are updated together. A large history is chunked, so this is several `claude -p` calls, not one. It runs only on the user's explicit opt-in during setup — a consent distinct from the historical-read grant, recorded as `modelJudgeConsent` and re-checked against `MODEL_JUDGE_PAYLOAD_VERSION` on every run, so widening the payload invalidates consents given for the old one. `historicalAccess` gates the READ only — a `full` grant authorizes no egress by itself, and no consent surface may imply that it does. Both grants are revocable under Settings, where **Historical access** and **Model-judge consent** are separate controls; revoking stops future scans but cannot recall what was already sent. The subprocess asks the CLI to suppress its transcript (`CLAUDE_CODE_SKIP_PROMPT_HISTORY=1`), but that is transcript isolation, **not** network isolation — a copy of the raw values leaves the machine, because the whole point is to reach the model. Consent copy must state the payload, the egress, and that limit on revocation plainly; it must never be described as staying "inside an isolated subprocess." Four surfaces carry that copy and move together: `plugins/claude-code/commands/setup.md`, the `[^egress]` footnote in each of the two READMEs that describe the judge (the root and Claude Code plugin pages), and the Settings copy in `packages/dashboard-ui/src/settings/WorkspaceSettingsFormView.tsx`. `cli/README.md` carries an `[^egress]` footnote too, but it is not one of the four: the CLI ships no judge, so that page discloses the CLI's own outbound paths and points at the plugin page for the payload rather than restating it — which is why widening the payload must not add a fifth surface there.
 4. **Git-style external subcommand dispatch** (`cli/src/lib/external-dispatch.ts`). `aka <name>` execs `aka-<name>` from the user's `PATH` when no built-in owns the name, inheriting the caller's environment and stdio. The child is resolved by name at call time — this repo does not bundle, depend on, verify or version-pin it — so its behaviour, including any network access, is outside what this codebase can describe. AKA Security ships one intended occupant, `aka-claude` from `claude-tools`, which launches a Claude Code profile and is network-bound by definition; the dispatch gives it no special status, and any other `aka-*` on `PATH` runs identically. A built-in always wins, so this can never shadow a shipped command, and the path is POSIX-only (disabled on win32). An allowlist or provenance check is a deliberate non-goal: the precondition for abuse is write access to a `PATH` directory, which already permits shadowing `aka` itself. The invariant that is enforced is that a built-in always wins.
 5. The Codex `aka-setup` wizard's judge subprocess (`plugins/codex/src/triage/judge.ts`), which spawns `codex exec` and sends the same minimized `toJudgePayload` projection to the model API as the Claude Code judge — `rawMatch`, the re-masked `context` window, and the sequential `id`; never `filePath`, `valueFingerprint`, or `keyVersion` — chunked into several `codex exec` calls for a large history, under the same distinct `modelJudgeConsent` opt-in, the same `MODEL_JUDGE_PAYLOAD_VERSION` re-check, and the same revocation limit (revoking stops future scans but cannot recall what was already sent). The `--ephemeral` flag stops the judge session from being written under `~/.codex/sessions` (which AKA's own backfill scans — a persisted judge session would re-ingest the raw findings it carries), but that is session-persistence isolation, **not** network isolation. The same consent-copy honesty rules apply (`plugins/codex/skills/setup/SKILL.md`).
 
 6. The Antigravity `aka-setup` wizard's judge subprocess (`plugins/antigravity/src/triage/judge.ts`), which sends the same minimized `toJudgePayload` projection to the model API as the other two judges — `rawMatch`, the re-masked `context` window, and the sequential `id`; never `filePath`, `valueFingerprint`, or `keyVersion` — under the same distinct `modelJudgeConsent` opt-in, the same `MODEL_JUDGE_PAYLOAD_VERSION` re-check, and the same revocation limit. **This host is still weaker than the other two, and the consent copy must say so.** Its CLI documents no `exec` subcommand and no ephemeral mode, so every judge run **persists** a conversation under `~/.gemini/antigravity/brain/<conversationId>/` — the same store AKA's own backfill sweeps — which this module then deletes itself in a `finally`, best effort only (a killed process leaves it). Deletion is a local-write cleanup, **not** network isolation. Attribution for that deletion is deliberately conservative — the reported `conversation_id`, else a newly-appeared conversation only when exactly one appeared — because deleting a conversation the user started is unrecoverable while leaving a judge conversation merely re-surfaces their own known secrets. The prompt does **not** ride argv: the entrypoint is `agy --input-format stream-json --output-format stream-json` with one NDJSON `user` event on stdin, closed to end the session, so the raw values are off `ps`, off any echoed command line and off `ARG_MAX` entirely — the same stdin shape the other two judges use. The two `stream-json` formats are paired because the host documents that pairing (a streaming input against a non-streaming output emits its one envelope only as the process exits), and the consequence for `parseEnvelope` is that the verdict is one line of NDJSON rather than the whole of stdout. The same consent-copy honesty rules apply (`plugins/antigravity/skills/setup/SKILL.md`).
 
-7. **The attached control plane** — the one path that is NOT a child process, and the only place this repo's own source opens a socket. A machine attached with `aka attach` (see §4's opening paragraph) forwards captures, inventory and audit events to the deployment its settings name, and pulls that deployment's policy bundle. Everything goes through `@akasecurity/remote`, whose `src/http.ts` is the single module carrying a transport import; the gateway in `packages/plugin-runtime/src/attached/` forwards on the write path, and the detached `sync.js` child pulls policy. It is inert until BOTH an endpoint (in `settings.json`) and a credential (`~/.aka/settings/control-plane-credential.json`) are present and name the same host, and `aka detach` removes it. Unlike the judge paths above, what crosses is the activity the organization is entitled to see rather than a one-off opt-in payload — so the disclosure lives in the READMEs' `[^egress]` footnote, whose count is derived from `EGRESS_PATHS` in `plugins/claude-code/test/privacy-claims.test.ts` rather than written by hand.
+7. **The attached control plane** — the one path that is NOT a child process, and the only place this repo's own source opens a socket. A machine attached with `aka attach` (see §4's opening paragraph) forwards captures, inventory and audit events to the deployment its settings name, and pulls that deployment's policy bundle. Everything goes through `@akasecurity/remote`, whose `src/http.ts` is the single module carrying a transport import; the gateway in `packages/plugin-runtime/src/attached/` forwards on the write path, the detached `sync.js` child pulls policy, and both manual scan surfaces — `aka scan` and the dashboard's Scan page — forward the Data Shares register they just recorded (destinations and call sites, no source text; `--no-forward` skips the CLI's for one invocation). It is inert until BOTH an endpoint (in `settings.json`) and a credential (`~/.aka/settings/control-plane-credential.json`) are present and name the same host, and `aka detach` removes it. Unlike the judge paths above, what crosses is the activity the organization is entitled to see rather than a one-off opt-in payload — so the disclosure lives in the READMEs' `[^egress]` footnote, whose count is derived from `EGRESS_PATHS` in `plugins/claude-code/test/privacy-claims.test.ts` rather than written by hand.
 
 These are the **shipped product's** egress paths. Repo CI additionally talks to the npm
 registry: `.github/workflows/audit.yml` (via `tools/audit-gate`) runs `pnpm audit` on every
@@ -444,6 +447,8 @@ The worker is a **build entry**, not a source file the loader finds: the publish
 
 Two `scan()` calls inside the SDK are not exposure: `mask.ts` and `tokenize.ts`'s self-scan both pass `getLoadedRules()`, the compiled-in registry the CI battery gates on every commit, so no pulled pattern reaches them. `aka scan` passes no ruleset and falls back to that same registry, so the CLI runs in-process by design and is not exposed — passing it an installed snapshot instead would put an unreviewed regex on an unbounded path.
 
+**The bound is around `scan()`, and the folder scan makes a SECOND unbounded pass that it does not cover.** `scanPathIntoStore` runs `extractFileEgress` — `@akasecurity/detections`' URL/IP and manifest-SDK extraction — on the CALLING thread, before the guarded scan and independent of it. Nothing there can be interrupted, and the exposure is the worse of the two callers': `aka scan` at least runs to a terminal a human can Ctrl-C, while the dashboard's Scan Server Action has no harness timeout at all. So the property extraction owes is not "no catastrophic regex" but the stronger **linear in file length**, since the walker hands it whole files up to `MAX_BYTES` (1 MB) and a merely POLYNOMIAL pass is already minutes at that size. Six had to be fixed to make that true, and only the first two were regexes. **The other four are the shape to recognise, because none of them needs crafted input and none of them looks like a ReDoS: work proportional to the FILE, done once per HIT, in a file whose hit count grows with its size.** A minified bundle puts every hit on one line, so redacting that line per hit is quadratic (118,798 ms of CPU for an ordinary 1 MB bundle carrying 25,641 URLs, against 60 ms memoized); mapping a hit's offset into the redacted line by re-redacting the prefix is quadratic the moment anything on the line is masked, which is to say on exactly the files this product is pointed at (15,333 ms for a 500 KB bundle carrying one token, against 15 ms); and a manifest's line number counted from offset zero, and its quoted key found by scanning from the section start, are each quadratic in its dependency count — an ordinary pretty-printed 1 MB `package.json` cost 1,459 ms and a single-line `pom.xml` 73,925 ms, against 42 ms and 30 ms now. Anything new on this path is linear or it is a denial of service; `packages/detections/test/security/egress-redos.test.ts` holds every pass at the 1 MB cap, and `packages/local-ops/test/performance/fs-scan-egress.test.ts` holds the pipeline that feeds them. Both charge CPU rather than wall time, for the reason the per-rule gate does, and both carry a control proving their input is still adversarial — a budget case fed a harmless string passes for ever.
+
 What remains uncovered here is the packaged artifact under a HOSTILE PACK. §4's packaged-artifact leg installs the published CLI and boots its bundled dashboard, but it drives neither a folder scan nor a pulled rule, so the chain above is still proven link by link rather than end to end.
 
 ### 6. Every writer of `settings.json` takes its lock
@@ -465,7 +470,17 @@ properties are load-bearing:
   Settings action both go through) and `aka init`'s create-if-absent. A third that writes
   `settings.json` directly reopens the hole for both. **Other `~/.aka` files are NOT covered** —
   `fingerprint.ts`'s key ROTATION and `local-ops`' `update-cache.ts` are unlocked
-  read-modify-writes with the same shape, and each is its own outstanding fix. The first MINT
+  read-modify-writes with the same shape, and each is its own outstanding fix.
+  `plugin-sdk`'s `host-floor.ts` (`data/host-version.json`) is a third, and is the one
+  that is NOT owed a fix — though not because it self-heals, which it does NOT. Its
+  max-keeping loses the race that matters: two sessions reading `null` both pass the
+  comparison, and the loser PERSISTS, because the only caller sits behind a
+  once-per-session claim it keeps, so the winner never writes again. What earns the
+  exemption is the BLAST RADIUS rather than the duration — nothing on the hook path
+  reads that file, so a stale value costs a wrong line on `aka status` and
+  /aka:health, pull surfaces somebody is reading because they are already debugging.
+  A fourth writer does not inherit that by being on this list, and a file any
+  enforcement path READS would not qualify for it at all. The first MINT
   is no longer one of them, and it was not fixed with a lock: `createKeyFile` publishes through
   `createOwnerOnlyFileSync`, which links an already-complete tmp into place, so exactly one
   caller wins and every loser reads the file back and ADOPTS the winner's key. That works only
@@ -487,6 +502,11 @@ properties are load-bearing:
   about, which is this section's whole failure mode. And a damaged managed file leaves the machine
   UNMANAGED rather than refusing to run, because a typo in an MDM payload must not break every
   hook on every managed machine at once; that direction is deliberate and stated in the module.
+  One shape is deliberately NOT damage: a lock naming a key this build does not know is dropped
+  from the locked set and reported (`unknownLockedFields`), never a reason to run unmanaged.
+  That is what an older build sees when an administrator locks a key a newer build added, and
+  refusing the whole file there cost it every pin and lock it understood, on exactly the fleets
+  most likely to carry a version skew. A name outside the enum is still never honoured.
 - **Anything derived from the current file is derived INSIDE it.** `applyOnboarding` takes an
   updater function for exactly this: a caller that reads first and passes a plain object has put
   its read outside the lock and kept the lost update, one frame further out. The dashboard's
@@ -595,7 +615,11 @@ takes `platform` and a resolution seam the way `judgeEnv`/`writeCommandShim` tak
 - `cli/src/lib/external-dispatch.ts` is POSIX-only by design, so none of the three facts apply.
 - `plugins/claude-code/src/provenance.ts` shells out to `npm` with its own `USE_SHELL` because
   `npm audit signatures` reads the caller's project — it therefore carries the shell half
-  **without** the cwd anchor, which is a live gap tracked separately.
+  **without** the cwd anchor. On Windows that is the cwd-before-PATH hazard this section opens
+  with, reached from a repository the user merely opened. It is NOT exploitable today for a
+  reason outside this module: the function has no shipped caller and is tree-shaken out of every
+  built script (see §4). So it is a gap in the SOURCE rather than in the artifact — and wiring
+  the check back without anchoring or resolving the spawn first is what would make it live.
 - `packages/local-ops/src/exec.ts` carries `USE_SHELL` **and** the `homedir()` anchor, so it has
   both halves of the cwd defence — but no quoting and no refusal, so on the shell path Node
   concatenates its argv unescaped exactly as DEP0190 describes. It is not exploitable today, and
@@ -655,7 +679,10 @@ Keep these package boundaries intact — a forbidden import across a package wal
 @akasecurity/schema        → zod (core Zod contracts + the SQLite local-store & rule-registry schemas, defined with Drizzle)
 @akasecurity/persistence   → node:sqlite, @akasecurity/schema
                      (SQLite adapter + read/view ports, plus the shared ~/.aka
-                     layout/settings/fingerprint file I/O — NO fetch client, NO Drizzle)
+                     layout/settings/fingerprint file I/O, plus the egress wire
+                     projection — toEgressIngestRequest / hashProjectKey, the one
+                     place an EgressIngestRequest is built, pure and beside the cap
+                     helpers it applies — NO fetch client, NO Drizzle)
 @akasecurity/local-ops     → @akasecurity/schema, @akasecurity/persistence, @akasecurity/detections,
                      @akasecurity/plugin-sdk (repo-identity, project-file walkers, posix
                      path normalization, and the ReDoS gates the dashboard's folder
@@ -663,8 +690,12 @@ Keep these package boundaries intact — a forbidden import across a package wal
                      src/guarded-scan.ts and Architecture principles §5)
                      (shared CLI/web-ui operations: update report + apply via npm/claude
                      child processes, the agent-plugin registry, the fs scan pipeline,
-                     the project-inventory pass; network ONLY via package-manager
-                     shell-outs — no fetch)
+                     the project-inventory pass, and the shares-forward outcome state
+                     machine — forwardProjectEgress is what a scan surface calls to
+                     forward the register it just recorded (attached? opted out?
+                     switch on? credential? then send), with the transport injected by
+                     the caller, plus the one copy of the failure sentences both
+                     surfaces render; network ONLY via package-manager shell-outs — no fetch)
 @akasecurity/detections    → @akasecurity/schema (pure rule engine; no I/O, no Node-API deps)
 @akasecurity/extract       → (no dependencies; pure CSV/tabular parsing — `extractCsv`.
                      Consumed by @akasecurity/detections' tabular suite as a
@@ -676,13 +707,16 @@ Keep these package boundaries intact — a forbidden import across a package wal
 
 web-ui            → @akasecurity/persistence, @akasecurity/dashboard-ui, @akasecurity/ui-kit,
                      @akasecurity/schema, @akasecurity/detections, @akasecurity/local-ops,
-                     remote (the attach verb only) (Next.js dashboard; reads the local
+                     remote (the attach verb, and the Scan page's forward of the Data
+                     Shares register while attached) (Next.js dashboard; reads the local
                      store in Server Components, mutates via Server Actions — no auth.
-                     The ONE network call is the settings page verifying an access key
-                     against the deployment before it writes an attachment; everything
-                     else on every page is the local store)
+                     The TWO network calls are the settings page verifying an access key
+                     against the deployment before it writes an attachment, and the Scan
+                     page forwarding the register it just recorded; everything else on
+                     every page is the local store)
 cli               → @akasecurity/schema, persistence, local-ops, detections,
-                     plugin-runtime + remote (the attach verbs only) (the `aka` command;
+                     plugin-runtime + remote (the attach verbs, and `aka scan`'s forward
+                     of the Data Shares register while attached) (the `aka` command;
                      ships the web-ui as a spawned Next server)
 
 # Plugin
@@ -698,7 +732,10 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      machine that has not attached, which is why `remote` is a
                      runtime edge here and still costs a standalone machine
                      nothing: the client is constructed only once both halves of
-                     an attachment are present and agree)
+                     an attachment are present and agree.
+                     the wire projection lives in persistence and the gateway imports
+                     it from there; the attached barrel re-exports it for consumers
+                     that import it from this package)
 @akasecurity/remote         → @akasecurity/schema, zod
                      (the control-plane transport, and the ONLY package in this
                      workspace permitted to open a socket — see §4. `src/http.ts`
@@ -710,7 +747,13 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      speaks the two anonymous routes a machine uses to OBTAIN one
                      and holds none — a separate factory rather than an optional
                      key, so a caller cannot reach any other route without a
-                     credential, since that client cannot express one. The exact
+                     credential, since that client cannot express one.
+                     It also owns the READING of its own failures: classifyRemoteFailure
+                     maps one of its error classes onto a RemoteFailureKind, so no
+                     caller re-derives a verdict from a status code — and
+                     createSharesSender is the one forwarding adapter for a scan's
+                     Data Shares register, so every surface sends and reads
+                     failures identically. The exact
                      export set is pinned by test/public-surface.test.ts)
 @akasecurity/plugin-sdk     → @akasecurity/detections, persistence, schema
                      (provider resolution for the session-root snapshot reads the host env
@@ -758,8 +801,14 @@ changes. The gaps that exist today:
   no `SessionStart` and no `UserPromptSubmit` — so the once-per-session inventory pass hangs
   off the first `PreInvocation`. That event carries **no prompt text**, so prompts can be
   neither blocked nor redacted. `PreToolUse` has **no `updatedInput` equivalent**, so a
-  `redact` policy escalates to a deny for every field (not just executable ones, the way
-  Codex escalates), and a `warn` has no channel to print on. `PostToolUse` receives **no tool
+  `redact` policy cannot be carried out on any field — not just the executable ones the
+  other two decline — and what happens instead is `WorkspaceSettings.redactFallback`,
+  resolved inside `actionForFinding` rather than by the hook. That location is what keeps
+  the emitted decision, `findings.actionTaken` and the ledger reading one answer; a hook
+  that escalated for itself recorded a deny as `redact`. The fallback ships as `warn`, so
+  a redact on this host lets the call through by default, and a `warn` has no channel to
+  print on — which makes it indistinguishable from `monitor` on screen here.
+  `PostToolUse` receives **no tool
   result at all**, so there is no live response scanning and no `tool-response.ts` /
   `scan-response.ts` counterpart in that package.
 - **Antigravity also fails CLOSED**, which inverts this repo's §1 rule at the boundary: a
@@ -774,7 +823,7 @@ changes. The gaps that exist today:
 **Cross-cutting rules:**
 
 - No `process.env` reads except the sites that explicitly opt out of `n/no-process-env` — §3 tables them, and deliberately is not restated here: a second copy of that list is how the count drifted last time.
-- No `fetch()` and no transport module anywhere except `@akasecurity/remote`, which reaches only the deployment a machine's own settings name and only once it has been attached on purpose (§4). Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly — none of them acquires DATA over a network. Two of them, `cli` and `web-ui`, do take `@akasecurity/remote` for the attach verb alone. For a pasted key that is one `whoami` round trip, which proves the key before an attachment is written. The browser-approval path adds two more, both **unauthenticated** because the caller has no credential yet and obtaining one is the point: a grant POST, then a poll of `POST /v1/attach/token` on an interval the deployment sets, until somebody decides or the grant lapses — and then the same `whoami`. None of it acquires store data, and all of it happens only while a human is attaching, which is why it does not add an egress path to §4.
+- No `fetch()` and no transport module anywhere except `@akasecurity/remote`, which reaches only the deployment a machine's own settings name and only once it has been attached on purpose (§4). Every store-reading package (`persistence`, `local-ops`, `dashboard-ui`, `ui-kit`, `detections`, `scanner`, `web-ui`, `cli`) reads the local store directly — none of them acquires DATA over a network. Two of them, `cli` and `web-ui`, do take `@akasecurity/remote`: both for the attach verb, and both for forwarding the Data Shares register a manual scan just recorded — `aka scan` and the dashboard's Scan page — on a machine that is already attached. For a pasted key that is one `whoami` round trip, which proves the key before an attachment is written. The browser-approval path adds two more, both **unauthenticated** because the caller has no credential yet and obtaining one is the point: a grant POST, then a poll of `POST /v1/attach/token` on an interval the deployment sets, until somebody decides or the grant lapses — and then the same `whoami`. None of it acquires store data, and all of it happens only while a human is attaching, which is why it does not add an egress path to §4.
 - Drizzle is imported **only** by `@akasecurity/schema`, which uses it to _define_ the local-store and registry schemas. Packages that read the store do so via `node:sqlite` through `@akasecurity/persistence` — they must not import Drizzle.
 - The graph above lists **runtime** edges. Test suites may additionally take `@akasecurity/plugin-sdk` as a **dev-only** dependency for fixture seeding — the bundled detection packs (`bundledDetections()` / `registerBundledPacks`) live only there, so a test that must seed `installed_packs` or the engine registry needs it. Both `cli` and `web-ui` do this in their exception tests. A dev-only test dependency is not a runtime package-wall crossing.
 
@@ -1124,6 +1173,16 @@ tools/                repo tooling, never shipped: the installer one-liners and
    test: { setupFiles: [noNetworkGuard], … }
    ```
 
+   A package whose dependency closure can load `@akasecurity/persistence` wires a
+   SECOND setup file beside it, `test/setup/no-managed-settings.ts` — the
+   administrative overlay is read from absolute system paths a temp home cannot
+   redirect, so without it the package's suite reads whichever administrator the
+   developer's own machine is enrolled with. That set is DERIVED rather than
+   listed, by `packages/eslint-config/test/no-managed-settings-guard.test.js`, so a
+   new package that takes such a dependency is told to wire it rather than
+   discovering it as twenty-eight unrelated-looking failures later. See "The
+   no-managed-settings guard" under Testing.
+
    A package that also declares `testTimeout`/`hookTimeout` in that config must add
    itself to `TIMEOUTS` in `packages/eslint-config/test/hook-timeout-ratchet.test.js`,
    which pins every package's ceilings as an EXACT map. The ratchet holds in BOTH
@@ -1431,7 +1490,7 @@ The numbers, measured on arm64 macOS / Node 24 against corpora from
 
 | Property                                    | Measured                           | Gate                   |
 | ------------------------------------------- | ---------------------------------- | ---------------------- |
-| Store growth, 5k → 10k                      | **902.8 B/event** marginal         | ±15% band ✅           |
+| Store growth, 5k → 10k                      | **1,048.6 B/event** marginal       | ±15% band ✅           |
 | `recordCapture` 2k → 20k                    | ratio **1.02** (fastest of 200)    | ratio < 3 ✅           |
 | `openLocalDatabase` 2k → 20k                | ratio **0.99** (fastest of 20)     | ratio < 3 ✅           |
 | `recordCapture` at 1M rows                  | 0.076 ms median, 0.116 p95 (n=200) | backstop ≤ 1,000 ms ✅ |
@@ -1452,6 +1511,12 @@ paid: the ratio's sensitivity floor moved by 2.5x (below), and the growth band's
 had to be retaken, because the marginal creeps with size — 902.8 B/event across 2.5k→5k,
 902.8 across 5k→10k, 923.2 across 10k→20k, all measured, all byte-identical run to run.
 **Do not carry a centre across a size change**; a stale one still reads green.
+
+**Nor across a SCHEMA change**, which is what moved it last: migration 0029's
+`idx_audit_capture_rollup` is bytes per row like any other index, and the 5k→10k marginal
+went 902.8 → 1,048.6 — past the old ceiling of 1,038.2, which is how it announced itself.
+That is the index being paid for rather than a regression, and the figures above describe
+the corpus before it.
 
 **Nor across a CORPUS change, which is the harder one to remember because the test's own
 size did not move.** That centre was 797.9 until the generator's finding rate went from
@@ -1517,6 +1582,35 @@ none of the win — 23.6 ms against 0.9 ms with both, from 35.0 ms.
 The page's `Promise.all` still buys nothing: every repository method here runs its SQL
 **synchronously** and returns an already-resolved promise, so the page costs the SUM of the
 eight.
+
+**The dominant cost on a REAL store was none of the above — it was the ROW FETCH**, and the
+analysis above could not see it because a generated corpus does not reproduce it. `content`
+is declared before `attributes` in the record and holds whole file bodies on a
+`code_change` (42 KB average, 1.79 MB at the top end), so on a field store ~91% of
+`audit_events`' bytes are overflow pages, and reaching either `e.id` — this is a rowid
+table with a TEXT primary key, so a secondary index entry carries the rowid and never
+`id` — or any VIRTUAL column over the bag means walking that chain past the body, once per
+row. Measured on one 6 GB store: the same 53,383 rows cost 14 ms read through a covering
+index over two VIRTUAL columns and 5,020 ms read from the rows. Migration 0029's
+`idx_audit_capture_rollup` carries `(event_type, started_at, repo, id)` for the four
+capture kinds so the four broad rollups answer from the index, and the four reads carry
+`INDEXED BY`; the page went ~15 s to ~2 s warm, with `topSources` — which needs `repo` for
+every capture event in its window — going 8,278 ms to 72 ms WARM, and 8,922 ms to 74 ms
+COLD. The pairs are like-for-like on purpose: a before-figure and an after-figure measured
+in different cache states describe no speedup at all, and `security-probe-plans.test.ts`
+quotes the warm pair against this same warm page total. Two traps come with it.
+`EXPLAIN QUERY PLAN` will NOT say COVERING for a read naming `repo`, because SQLite counts
+a generated column's dependency on `attributes` as a reference to the row even while
+reading the value from the index, so the timing is the evidence and the label is not —
+`security-probe-plans.test.ts` pins the index by name and requires COVERING only of the
+reads that can reach it. And `LENGTH()` on a TEXT value **stops at the first NUL**, which
+real bodies carry (134,576 rows on that store), so any size query over `content` must be
+`LENGTH(CAST(content AS BLOB))` — the text form under-reported a 1.79 MB body as 9.
+
+What the index does NOT fix is `findingsInRange`, which feeds `findingsTimeseries` and
+`enforcementActions` and so runs twice per render: its cost is ~740k index probes across
+369k findings, and folding the JS rollup into SQL was measured at 1.0x — no gain. That one
+needs a rollup or a window, not tuning.
 
 **What remains is `severitySummary`, the budget is still missed at 1M, and closing it is a
 product decision.** Measured at three points — 159 ms at 50k, 350 ms at 150k, 729 ms at 300k
@@ -1598,16 +1692,46 @@ corpus helper says why it does not analyze. Two things to know when reproducing:
 seed without ever analyzing — and a single-id `IN (?)` may plan differently from a hundred-id
 one, so probe the page's real page size.
 
-**Two tables have a retention policy; six do not.**
+**Two tables have a ROW retention policy; six do not.**
 `BLOCKED_DETECTIONS_RETENTION_MS` (24 h) sweeps `blocked_detections`, and
 `EXCEPTION_RETENTION_MS` (90 days) sweeps terminal `exceptions`. `audit_events`,
 `inspection_findings`, `inspection_definitions` and the three `secret_vault*` tables have
-none — and `audit_events.content` is a full prompt corpus, so that is 818 B for every
-prompt, response and tool-call body the machine has ever produced. The vault tables raise
+none — and `audit_events.content` is a full prompt corpus. The vault tables raise
 a second concern beyond size: an entry nobody will reveal again is a ciphertext that
 stays decryptable for as long as its key epoch survives. `retention-surface.test.ts` pins
 the split behaviourally, with a positive control on the swept pair, so adding retention
 for one of the unbounded tables is a deliberate edit rather than a silent one.
+
+**A THIRD sweep expires BODIES, and it is on neither list because the lists are about
+ROWS.** Local body expiry (`bodyRetention` in settings, OFF by default, 30 days when
+switched on) clears `audit_events.content` past a horizon and stamps `content_expired_at`;
+the row, its timestamps and severity, and every finding derived from it are untouched, so
+`audit_events` stays among the tables nothing sweeps. That is where the bytes are — one
+measured 6 GB store carried 5.27 GB of body text, 4.85 GB of it `code_change` at 42 KB a
+row — so this is the difference between a store that settles and one that grows at
+~165 MB/day for ever. Three things about it are load-bearing. **The sync lane is gated**:
+a `prompt`/`response`/`tool_use` body with `synced_at IS NULL` is never expired while an
+attach or a history-sync grant could still claim it retroactively, which `canSweepSyncLane`
+is the single place that decides. **It deletes no row**, and `retention-surface.test.ts`
+now runs it in the same pass as the other two so that membership is a live assertion
+rather than a claim. **It frees no disk by itself**: SQLite returns the pages to its
+freelist, so new captures reuse them and the file stops growing, but the file does not
+shrink without a `VACUUM` — and an in-place one on a live store is unsafe here, because a
+held handle blocks the rename on Windows and loses writes to the unlinked inode on POSIX.
+`aka prune` runs a pass by hand; `triggerContentRetention` runs one hourly from
+SessionStart, in a detached child, never on the hook thread.
+
+**The horizon is configurable, and its RANGE has one definition.** `bodyRetention`
+(`{ enabled, retainDays }`, default `{ false, 30 }`) is editable under Settings → Storage
+and pinnable by an administrator as ONE unit, the way `runMode` + `controlPlane` are — a
+lock that froze the toggle while leaving the day count editable would not be a retention
+policy. `BodyRetention`'s own `min(1).max(3650)` is the only place a legal window is
+defined: `SaveSettingsInput` checks the SHAPE and the action checks the RANGE against that
+schema, so the two cannot drift. An out-of-range horizon is **refused, never clamped** —
+silently rounding one expires a different set of bodies than the user asked for, and
+expiry is not undoable. The Settings control holds the field as raw TEXT and disables Save
+while it does not parse, because parsing per keystroke cannot represent a half-typed or
+emptied field without substituting a horizon nobody chose.
 
 **`wal_autocheckpoint` is not set, and that does NOT mean the WAL is unbounded.**
 `openWithPragmas` leaves it alone, so SQLite's own default of 1000 pages applies: at the
@@ -1785,6 +1909,72 @@ front door only, which is why phase 3 asserts the drop-back landed as well — a
 evaluate false without checking. The full reasoning is in the script's own header and
 phase-3 comment; it is not restated here, because a rationale kept in two places is one
 that goes out of step.
+
+### The no-managed-settings guard
+
+`test/setup/no-managed-settings.ts` is the second shared setup file, wired beside
+the no-network guard by every package whose dependency closure can load
+`@akasecurity/persistence`. It declares, once per test file, that the machine has
+**no administrator**.
+
+The administrative overlay (§6) is read from absolute system paths — outside
+`~/.aka` on purpose, so a lock is not removable by the party being locked — and
+`base` redirects only the home. So a suite that builds a whole fake machine in a
+temp dir still reads the REAL managed file, and its result depends on who ran it:
+a laptop enrolled for dogfooding pins `runMode: attached`, which failed
+twenty-eight cases across `persistence`, `plugin-sdk` and the CLI on a clean
+checkout of main. CI has no such file, so CI stayed green and the failure landed
+only on the machines with no gate on them.
+
+Five things about it are load-bearing:
+
+- **A per-call override cannot replace it.** `readEffectiveSettings` and
+  `applyOnboarding` both take a `managedOverride`, and neither reaches the reads
+  that actually fail: `db.installedPacks.setPolicy()` reaches
+  `readWorkspaceSettings` through `openControlPlaneFloors`, and `aka sync-history`
+  reaches it again inside the attached-mode pass. Threading a parameter there
+  means a test-only argument on `openLocalDatabase` and on the history-sync deps,
+  and the next deep caller reopens the hole. The property is process-scoped
+  because the thing it describes — which administrator owns this machine — is.
+- **It moves the DEFAULT only.** `readManagedSettings` still honours paths it is
+  given, which is what keeps the managed layer's own suite testing the managed
+  layer rather than asserting an unmanaged machine. Verified by mutation: making
+  `overlayManagedSettings` a no-op still reds 39 of that file's 75 cases.
+- **The seam it installs is test-only, and audited.**
+  `UNSAFE_TEST_ONLY_setManagedSettingsPaths` is named by exactly one shipped file
+  and is NOT re-exported from the package entry point — the same two properties
+  the raw handle carries, held by
+  `packages/eslint-config/test/test-only-seam.test.js`. The setup file reaches it
+  by relative path, which is why no `exports` entry is needed.
+- **It imports ONE MODULE, never the package barrel.** A setup file loads before
+  every test file in every package that wires it, so whatever it imports is cached
+  before any of them registers a mock. Importing the barrel pre-cached `paths.ts`,
+  `fingerprint.ts` and the vault against the real `node:fs`, and the three suites
+  that `vi.mock('node:fs')` and then `await import('../src/paths.ts')` got the
+  unmocked instance back — nineteen cases failing on a branch they could no longer
+  enter. Their own "the interception fired" guards are what caught it. That import
+  is pinned by its own case in the guard suite.
+- **A CHILD PROCESS is invisible to it**, exactly as one is to the no-network
+  guard, and for the same reason: the pin lives in ONE process's instance of
+  `managed-settings.ts`, and a spawned child loads its own copy with the shipped
+  `null`. A redirected `HOME` does not move an absolute system path — which is
+  the premise this whole section rests on — so the child reads the real
+  administrator's file. Measured rather than reasoned: with the pin installed,
+  the parent reads `null` while a child spawned with `HOME` redirected reads the
+  machine's own managed values. Every suite that drives a BUILT script is on the
+  far side of that boundary. `plugins/*/test/e2e/fail-open.e2e.test.ts` runs the
+  built hooks under a redirected home and `loadConfig` applies the overlay inside
+  the child, so an administrator pinning `redactFallback` — a key that is both
+  pinnable and lockable — flips rows asserting an exact wire shape. Read that as
+  REACHABLE rather than currently failing: those suites pass on the enrolled
+  machine that motivated this section, whose file pins `runMode` and not
+  `redactFallback`. A worker thread sits on the same boundary and is out of reach
+  today only because `scan-worker.ts` takes no persistence dependency. It is
+  documented rather than closed, because the no-network guard's own mechanism
+  does not transfer: it reaches a worker by appending `--import <itself>` to its
+  `execArgv`, and a child spawned with a deliberately minimal env cannot be
+  reached that way. Nothing covers this the way the `No-network` CI job covers
+  shell-outs.
 
 ### The PATH shim, and why it fails OPEN
 

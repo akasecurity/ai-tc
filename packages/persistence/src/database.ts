@@ -46,6 +46,7 @@ import { applyMigrations, isForeignSqliteLineage } from './migrations.ts';
 import { DB_FILENAME, ensureDataDirSync, tightenPerms } from './paths.ts';
 import { SqliteActivityRepository } from './repositories/activity.ts';
 import { SqliteAuditEventsRepository } from './repositories/audit-events.ts';
+import { SqliteBodyRetentionRepository } from './repositories/body-retention.ts';
 import { SqliteCaptureStatusRepository } from './repositories/capture-status.ts';
 import { SqliteClassifiedDataRepository } from './repositories/classified-data.ts';
 import { SqliteConfigInventoryRepository } from './repositories/config-inventory.ts';
@@ -147,6 +148,10 @@ export interface LocalDatabase {
   // written by the plugin SDK's rule-registration filter, never by the
   // dashboard.
   readonly ruleProbeCache: SqliteRuleProbeCacheRepository;
+  // Local body expiry: clears `audit_events.content` past a retention horizon,
+  // keeping the row and its findings. Never runs on its own — a caller decides
+  // the horizon and whether the sync lane is safe to touch.
+  readonly bodyRetention: SqliteBodyRetentionRepository;
   // Read-only Security dashboard aggregations (severity/enforcement/timeseries/
   // top-sources/scan-coverage) over events+findings. Read by the OSS web-ui + CLI.
   readonly security: SqliteSecurityRepository;
@@ -412,6 +417,7 @@ function openAndInitialize(file: string, base: string) {
       exceptions: new SqliteExceptionsRepository(db),
       resolutions: new SqliteResolutionsRepository(db),
       ruleProbeCache: new SqliteRuleProbeCacheRepository(db),
+      bodyRetention: new SqliteBodyRetentionRepository(db),
       security: new SqliteSecurityRepository(db),
       detections: new SqliteDetectionsRepository(db),
       shares: new SqliteSharesRepository(db),
@@ -456,6 +462,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     installedPacks,
     scanLedger,
     historySync,
+    bodyRetention,
     secretVault,
     exceptions,
     resolutions,
@@ -830,6 +837,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     installedPacks,
     scanLedger,
     historySync,
+    bodyRetention,
     secretVault,
     exceptions,
     resolutions,

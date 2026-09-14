@@ -8,15 +8,9 @@ import type { ActivitySessionSummary, Harness } from '@akasecurity/schema';
 import { Button, cn, Skeleton } from '@akasecurity/ui-kit';
 
 import { relativeTime } from '../lib/relativeTime.ts';
-import {
-  BranchIcon,
-  ClockIcon,
-  ListIcon,
-  RepoIcon,
-  SearchIcon,
-  ShieldCheckIcon,
-} from '../shared/icons.tsx';
+import { BranchIcon, ClockIcon, ListIcon, RepoIcon, ShieldCheckIcon } from '../shared/icons.tsx';
 import { Provider } from '../shared/Provider.tsx';
+import { SearchField } from '../shared/SearchField.tsx';
 import { WidgetError } from '../shared/widget-state.tsx';
 import { Metric, StatusDot } from './atoms.tsx';
 import { durationLabel, groupSessionsByDay } from './format.ts';
@@ -173,18 +167,15 @@ export function SessionListView({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="shrink-0 border-b border-border p-3">
-        <div className="mb-2 flex h-8.5 items-center gap-2 rounded-lg border border-border-field bg-surface-2 px-2.5 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/40">
-          <SearchIcon aria-hidden focusable={false} className="size-3.5 shrink-0 text-text-3" />
-          <input
-            value={query}
-            onChange={(e) => {
-              onQuery(e.target.value);
-            }}
-            placeholder="Search sessions & events…"
-            aria-label="Search sessions and events"
-            className="min-w-0 flex-1 bg-transparent text-sm text-text placeholder:text-text-3 focus:outline-hidden"
-          />
-        </div>
+        <SearchField
+          value={query}
+          onValueChange={onQuery}
+          label="Search sessions and events"
+          placeholder="Search sessions & events…"
+          surface="card"
+          className="mb-2 h-8.5 px-2.5"
+          iconClassName="size-3.5"
+        />
         <HarnessSelect
           value={harness}
           onChange={onHarness}

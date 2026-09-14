@@ -12,6 +12,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { isParseableBinaryVersion } from '@akasecurity/persistence';
+import { BASELINE_HOOK_EVENTS, HOST_FLOORS } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
 import { SUBAGENT_TOOLS } from '../../src/hooks/model-guard.ts';
@@ -88,4 +90,55 @@ describe('the model-switch hooks stay registered', () => {
       expect(manifest.hooks[event], `${event} registered`).toBeDefined();
     },
   );
+});
+
+describe('every registered hook event has a decided host floor', () => {
+  // A host that does not recognise an event DROPS THAT ENTRY and loads the rest
+  // ("unknown hook event; entry ignored"), so registering a newly-introduced
+  // event silently gives users on older hosts a plugin that looks healthy with
+  // that protection missing. That is what happened with the model-switch pair.
+  //
+  // The floor table is TypeScript and this manifest is JSON, so no compile error
+  // can bind them. This partition is the binding: every event is either old
+  // enough that no supported host lacks it, or named by a row that knows which
+  // version introduced it. Both directions, because a row naming an event the
+  // manifest no longer registers is a floor nobody is being warned about.
+  const registered = Object.keys(manifest.hooks);
+  const gated = Object.values(HOST_FLOORS).flatMap((row) => [...row.hookEvents]);
+
+  it('classifies every manifest event as baseline or floor-gated', () => {
+    const unclassified = registered.filter(
+      (event) => !BASELINE_HOOK_EVENTS.includes(event) && !gated.includes(event),
+    );
+    expect(unclassified, 'events with no decided floor').toEqual([]);
+  });
+
+  it('names no event the manifest does not register', () => {
+    const stranded = [...BASELINE_HOOK_EVENTS, ...gated].filter(
+      (event) => !registered.includes(event),
+    );
+    expect(stranded, 'floors for events that are not registered').toEqual([]);
+  });
+
+  it('puts no event in both halves', () => {
+    const both = registered.filter(
+      (event) => BASELINE_HOOK_EVENTS.includes(event) && gated.includes(event),
+    );
+    expect(both, 'events counted as both baseline and gated').toEqual([]);
+  });
+
+  it('gives every floor a version the comparator can actually read', () => {
+    // `compareBinaryVersions` answers 0 for an unparseable input and 0 is not
+    // < 0, so a typo here makes the row silently never fire — reintroducing the
+    // exact silent absence the table exists to report.
+    for (const [feature, row] of Object.entries(HOST_FLOORS)) {
+      expect(isParseableBinaryVersion(row.since), `${feature} since=${row.since}`).toBe(true);
+    }
+  });
+
+  it('actually gates something', () => {
+    // The positive control: an empty table satisfies all three partitions above.
+    expect(gated.length).toBeGreaterThan(0);
+    expect(registered.length).toBeGreaterThan(BASELINE_HOOK_EVENTS.length);
+  });
 });

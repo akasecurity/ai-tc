@@ -102,6 +102,7 @@ function seedCorpus(rows: number): Corpus {
         unparsedBodies: 0,
         shapeMisses: [],
         conversationEndpoints: 1,
+        closed: false,
       },
       'chatgpt',
     ),

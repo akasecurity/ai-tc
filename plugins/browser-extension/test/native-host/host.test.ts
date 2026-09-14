@@ -1066,6 +1066,7 @@ const VALID_STATUS: WebCaptureStatus = {
   unparsedBodies: 0,
   shapeMisses: [],
   conversationEndpoints: 1,
+  closed: false,
 };
 
 describe('capture_status', () => {
@@ -1080,6 +1081,7 @@ describe('capture_status', () => {
       unparsedBodies: 0,
       shapeMisses: ['adapter.model'],
       conversationEndpoints: 1,
+      closed: false,
     };
     const response = await handleRequest(
       {
@@ -1216,6 +1218,7 @@ describe('capture_status durable write', () => {
       unparsedBodies: 0,
       shapeMisses: ['message.id'],
       conversationEndpoints: 2,
+      closed: false,
     };
     const cfgForTool: ConfigForTool = (tool) => ({
       ...config(tool, webChatSettings()),

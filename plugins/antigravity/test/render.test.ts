@@ -813,11 +813,13 @@ describe('runQuery findings — web-capture drift', () => {
     unparsedBodies: 0,
     shapeMisses: [],
     conversationEndpoints: 0,
+    closed: false,
   };
 
   const DRIFTING: WebCaptureStatus = {
     ...BASE_STATUS,
     conversationEndpoints: 1,
+    closed: false,
     blind: true,
     sendsSeenDom: 3,
   };
@@ -878,6 +880,7 @@ describe('runQuery findings — web-capture drift', () => {
     seedCaptureStatus('chatgpt', {
       ...BASE_STATUS,
       conversationEndpoints: 0,
+      closed: false,
       patched: true,
       blind: true,
       parseFailures: 7,
@@ -899,6 +902,7 @@ describe('runQuery findings — web-capture drift', () => {
     seedCaptureStatus('claude-ai', {
       ...BASE_STATUS,
       conversationEndpoints: 1,
+      closed: false,
       blind: true,
       sendsSeenDom: 3,
     });
@@ -922,6 +926,7 @@ describe('runQuery findings — web-capture drift', () => {
     seedCaptureStatus('claude-ai', {
       ...BASE_STATUS,
       conversationEndpoints: 1,
+      closed: false,
       blind: true,
       sendsSeenDom: 3,
     });
@@ -940,6 +945,7 @@ describe('runQuery findings — web-capture drift', () => {
     seedCaptureStatus('claude-ai', {
       ...BASE_STATUS,
       conversationEndpoints: 1,
+      closed: false,
       blind: true,
       sendsSeenDom: 3,
     });
@@ -960,6 +966,7 @@ describe('runQuery findings — web-capture drift', () => {
     seedCaptureStatus('claude-ai', {
       ...BASE_STATUS,
       conversationEndpoints: 1,
+      closed: false,
       blind: true,
       sendsSeenDom: 3,
     });

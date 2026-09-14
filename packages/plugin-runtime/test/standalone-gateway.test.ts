@@ -759,6 +759,7 @@ describe('readCaptureStatuses', () => {
       unparsedBodies: 0,
       shapeMisses: [],
       conversationEndpoints: 1,
+      closed: false,
     };
     await gateway.recordAuditEvent({
       id: randomUUID(),

@@ -1489,11 +1489,13 @@ describe('runQuery — against a seeded standalone gateway', () => {
       unparsedBodies: 0,
       shapeMisses: [],
       conversationEndpoints: 0,
+      closed: false,
     };
 
     const DRIFTING: WebCaptureStatus = {
       ...BASE_STATUS,
       conversationEndpoints: 1,
+      closed: false,
       blind: true,
       sendsSeenDom: 3,
     };
@@ -1552,6 +1554,7 @@ describe('runQuery — against a seeded standalone gateway', () => {
       seedCaptureStatus('chatgpt', {
         ...BASE_STATUS,
         conversationEndpoints: 0,
+        closed: false,
         patched: true,
         blind: true,
         parseFailures: 7,
@@ -1573,6 +1576,7 @@ describe('runQuery — against a seeded standalone gateway', () => {
       seedCaptureStatus('claude-ai', {
         ...BASE_STATUS,
         conversationEndpoints: 1,
+        closed: false,
         blind: true,
         sendsSeenDom: 3,
       });
@@ -1596,6 +1600,7 @@ describe('runQuery — against a seeded standalone gateway', () => {
       seedCaptureStatus('claude-ai', {
         ...BASE_STATUS,
         conversationEndpoints: 1,
+        closed: false,
         blind: true,
         sendsSeenDom: 3,
       });
@@ -1614,6 +1619,7 @@ describe('runQuery — against a seeded standalone gateway', () => {
       seedCaptureStatus('claude-ai', {
         ...BASE_STATUS,
         conversationEndpoints: 1,
+        closed: false,
         blind: true,
         sendsSeenDom: 3,
       });
@@ -1636,6 +1642,7 @@ describe('runQuery — against a seeded standalone gateway', () => {
       seedCaptureStatus('claude-ai', {
         ...BASE_STATUS,
         conversationEndpoints: 1,
+        closed: false,
         blind: true,
         sendsSeenDom: 3,
       });

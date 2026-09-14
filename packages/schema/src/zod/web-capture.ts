@@ -105,6 +105,22 @@ export const WebCaptureStatus = z.object({
   // site nobody has surveyed yet from one whose contract moved. Defaulted so a
   // build predating the field is read as declaring nothing rather than refused.
   conversationEndpoints: z.number().int().nonnegative().default(0),
+  // The document that sent this report is going away. The bridge sets it on
+  // its `pagehide` report and nowhere else.
+  //
+  // A property of the REPORT rather than of capture health, which is why
+  // nothing in `deriveWebCaptureState` reads it and why it stays out of the
+  // bridge's own report signature — a closing tab's last word must not be
+  // suppressed for carrying the same health as the report before it. What
+  // reads it is the per-site fold: a document that said it was unloading stops
+  // voting on the site's state, so the reload the `blind` remediation asks for
+  // can actually clear the verdict it was shown. A document that dies without
+  // sending one is covered by CAPTURE_STATUS_DOCUMENT_QUIET_MS instead.
+  //
+  // Defaulted so a build predating the field reads as a document that never
+  // said it was closing — which keeps it voting, the same as every report that
+  // is not a final one.
+  closed: z.boolean().default(false),
 });
 export type WebCaptureStatus = z.infer<typeof WebCaptureStatus>;
 
@@ -206,6 +222,7 @@ export function toCaptureStatusAttributes(
     unparsed_bodies: status.unparsedBodies,
     shape_misses: status.shapeMisses,
     conversation_endpoints: status.conversationEndpoints,
+    closed: status.closed,
   };
 }
 
@@ -224,6 +241,7 @@ export function fromCaptureStatusAttributes(bag: unknown): WebCaptureStatus | nu
     unparsedBodies: b.unparsed_bodies,
     shapeMisses: b.shape_misses,
     conversationEndpoints: b.conversation_endpoints,
+    closed: b.closed,
   });
   return parsedStatus.success ? parsedStatus.data : null;
 }

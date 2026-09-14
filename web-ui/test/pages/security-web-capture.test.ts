@@ -50,6 +50,7 @@ const BASE_STATUS: WebCaptureStatus = {
   unparsedBodies: 0,
   shapeMisses: [],
   conversationEndpoints: 0,
+  closed: false,
 };
 
 let seedCounter = 0;
@@ -144,6 +145,7 @@ async function renderSecurityPage(): Promise<{ props: { children: unknown[] } }>
 const DRIFTING: WebCaptureStatus = {
   ...BASE_STATUS,
   conversationEndpoints: 1,
+  closed: false,
   blind: true,
   sendsSeenDom: 3,
 };
@@ -172,6 +174,7 @@ describe('the security page derives web-capture posture at read time', () => {
     seedStatus('chatgpt', {
       ...BASE_STATUS,
       conversationEndpoints: 0,
+      closed: false,
       patched: true,
       blind: true,
       parseFailures: 7,

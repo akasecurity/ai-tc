@@ -20,6 +20,7 @@ function status(over: Partial<WebCaptureStatus> = {}): WebCaptureStatus {
     unparsedBodies: 0,
     shapeMisses: [],
     conversationEndpoints: 1,
+    closed: false,
     ...over,
   });
 }
@@ -86,6 +87,7 @@ describe('webCaptureReport — shape', () => {
     const rows = webCaptureReport([
       record('chatgpt', {
         conversationEndpoints: 0,
+        closed: false,
         patched: true,
         blind: true,
         parseFailures: 5,

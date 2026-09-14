@@ -65,6 +65,7 @@ describe('deriveWebCaptureState — the false-signal proof', () => {
       parseFailures: 7,
       unparsedBodies: 0,
       shapeMisses: ['a', 'b'],
+      closed: false,
     };
     expect(deriveWebCaptureState(status)).toBe('standby');
     expect(webCaptureDriftFires(status)).toBe(false);
@@ -82,6 +83,7 @@ describe('deriveWebCaptureState — exhaustive state table', () => {
     parseFailures: 0,
     unparsedBodies: 0,
     shapeMisses: [],
+    closed: false,
   };
 
   // Annotated Record<WebCaptureState, ...> so a state added to the vocabulary
@@ -113,6 +115,7 @@ describe('deriveWebCaptureState — precedence', () => {
     parseFailures: 0,
     unparsedBodies: 0,
     shapeMisses: [],
+    closed: false,
   };
 
   it('blind beats a non-empty shapeMisses', () => {
@@ -145,6 +148,7 @@ describe('the parse-failure threshold', () => {
     parseFailures: 0,
     unparsedBodies: 0,
     shapeMisses: [],
+    closed: false,
   };
 
   it('one parse failure is not drift', () => {

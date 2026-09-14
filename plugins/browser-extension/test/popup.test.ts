@@ -69,6 +69,51 @@ beforeEach(() => {
     Promise.resolve({ type: 'error', requestId: undefined, ok: false, message: 'no relay set' });
 });
 
+describe('renderCaptureSites: the DOM enforcement half', () => {
+  const sitesText = (): string => document.getElementById('capture-sites')?.textContent ?? '';
+
+  it('says so when the send button no longer resolves, naming which half is missing', () => {
+    // The live signed-in chatgpt.com shape. Without this the popup shows the
+    // network state and nothing else, and a tab enforcing nothing reads exactly
+    // like a healthy one.
+    renderCaptureSites(
+      response({ sites: [{ tool: 'chatgpt', state: 'idle', enforcement: 'composer-only' }] }),
+    );
+    expect(sitesText()).toContain('send button');
+  });
+
+  it('says so when the composer no longer resolves', () => {
+    renderCaptureSites(
+      response({ sites: [{ tool: 'chatgpt', state: 'idle', enforcement: 'button-only' }] }),
+    );
+    expect(sitesText()).toContain('composer');
+  });
+
+  it('marks a site enforcing nothing with the error tone', () => {
+    renderCaptureSites(
+      response({ sites: [{ tool: 'chatgpt', state: 'idle', enforcement: 'unattached' }] }),
+    );
+    const rows = [...(document.getElementById('capture-sites')?.children ?? [])];
+    expect(rows.some((r) => r.className.includes('tone-error'))).toBe(true);
+  });
+
+  it('stays quiet while the watcher is bound', () => {
+    renderCaptureSites(
+      response({ sites: [{ tool: 'chatgpt', state: 'idle', enforcement: 'watching' }] }),
+    );
+    expect(sitesText()).not.toContain('send button');
+    expect(sitesText()).not.toContain('not watching');
+  });
+
+  it('stays quiet when the site has never reported an enforcement state', () => {
+    // 'unknown' is the absence of an opinion, not a fault. Rendering it as one
+    // would put a warning on every tab whose DOM half has not run yet.
+    renderCaptureSites(response({ sites: [{ tool: 'chatgpt', state: 'idle' }] }));
+    expect(sitesText()).not.toContain('send button');
+    expect(sitesText()).not.toContain('not watching');
+  });
+});
+
 describe('renderCaptureSites', () => {
   it('renders one row per site with its state word', () => {
     renderCaptureSites(response());

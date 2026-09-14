@@ -435,7 +435,9 @@ export async function handleRequest(
         return {
           tool,
           state: deriveWebCaptureState(record?.status),
-          ...(record !== undefined ? { observedAt: record.observedAt } : {}),
+          ...(record !== undefined
+            ? { enforcement: record.status.enforcement, observedAt: record.observedAt }
+            : {}),
         };
       });
       return {

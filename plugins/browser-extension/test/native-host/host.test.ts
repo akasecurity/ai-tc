@@ -1302,6 +1302,92 @@ describe('capture_state', () => {
     expect(chatgpt?.state).toBe('standby');
   });
 
+  it("carries the DOM half's enforcement state through to the popup's reply", async () => {
+    // The whole point of the field: without it the reply says only what the
+    // NETWORK half is doing, and a tab whose enforcement watcher never bound
+    // reads exactly like a healthy one on every surface a user can see.
+    const dataDir = join(scratchRoot('aka-capture-state-enforcement-'), 'aka');
+    const cfgForTool: ConfigForTool = (tool) => ({
+      ...config(tool, webChatSettings()),
+      dataDir,
+      dbPath: join(dataDir, 'aka.db'),
+    });
+    await handleRequest(
+      {
+        type: 'capture_status',
+        requestId: 'state-enf-1',
+        sessionId: 'state-enf-session',
+        tool: 'chatgpt',
+        // `conversationEndpoints: 0` is what both shipped adapters declare
+        // today, and it is also what makes this record one the picker keeps —
+        // see the case below for why that matters.
+        status: { ...VALID_STATUS, conversationEndpoints: 0, enforcement: 'composer-only' },
+      },
+      cfgForTool,
+    );
+    const response = await handleRequest(
+      { type: 'capture_state', requestId: 'state-enf-2' },
+      cfgForTool,
+    );
+    if (response.type !== 'capture_state') throw new Error('expected capture_state');
+    expect(response.sites.find((s) => s.tool === 'chatgpt')?.enforcement).toBe('composer-only');
+  });
+
+  it('KNOWN LIMIT: a newer enforcement state is passed over when only the network half is dull', async () => {
+    // pickReportedCaptureStatus keeps the newest candidate that "observed the
+    // turn path", and that predicate is defined entirely over NETWORK evidence
+    // — endpoints, exchanges, faults, blindness. Enforcement is orthogonal to
+    // all of it, so a fresh report saying the DOM watcher just died is skipped
+    // in favour of an older one whenever its network half has nothing to say.
+    //
+    // Pinned as the behaviour it is rather than left to be discovered: the
+    // surface then shows a stale enforcement state, which is a quieter version
+    // of the exact failure this field was added to end. Fixing it means
+    // deciding whether an enforcement CHANGE counts as observing something,
+    // which is a design call and not this change's.
+    const dataDir = join(scratchRoot('aka-capture-state-enf-stale-'), 'aka');
+    const cfgForTool: ConfigForTool = (tool) => ({
+      ...config(tool, webChatSettings()),
+      dataDir,
+      dbPath: join(dataDir, 'aka.db'),
+    });
+    // An older report that DID observe the turn path, while enforcement was fine.
+    await handleRequest(
+      {
+        type: 'capture_status',
+        requestId: 'state-enf-stale-1',
+        sessionId: 'state-enf-stale-session',
+        tool: 'claude-ai',
+        status: {
+          ...VALID_STATUS,
+          conversationEndpoints: 1,
+          live: true,
+          exchangesSeenNet: 1,
+          enforcement: 'watching',
+        },
+      },
+      cfgForTool,
+    );
+    // A newer report saying the watcher is gone — but with a network half that
+    // has seen nothing, which is what makes it skippable.
+    await handleRequest(
+      {
+        type: 'capture_status',
+        requestId: 'state-enf-stale-2',
+        sessionId: 'state-enf-stale-session',
+        tool: 'claude-ai',
+        status: { ...VALID_STATUS, conversationEndpoints: 1, enforcement: 'unattached' },
+      },
+      cfgForTool,
+    );
+    const response = await handleRequest(
+      { type: 'capture_state', requestId: 'state-enf-stale-3' },
+      cfgForTool,
+    );
+    if (response.type !== 'capture_state') throw new Error('expected capture_state');
+    expect(response.sites.find((s) => s.tool === 'claude-ai')?.enforcement).toBe('watching');
+  });
+
   it('falls back to this process own map when the store answers nothing', async () => {
     const dataDir1 = join(scratchRoot('aka-capture-state-fallback-1-'), 'aka');
     const dataDir2 = join(scratchRoot('aka-capture-state-fallback-2-'), 'aka');

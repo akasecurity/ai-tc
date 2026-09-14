@@ -9,6 +9,7 @@ import type { BackgroundRequest, BackgroundResponse } from '../messaging.ts';
 import type {
   CaptureStateResponse,
   WebCaptureState,
+  WebEnforcementState,
   WebSourceTool,
 } from '../native-host/protocol.ts';
 
@@ -37,6 +38,16 @@ export const DRIFT_STATES: ReadonlySet<WebCaptureState> = new Set<WebCaptureStat
   'degraded',
 ]);
 
+// What a half-resolved composer means, in words a user can act on. 'watching'
+// and 'unknown' are deliberately absent: the first is healthy, and the second is
+// the absence of an opinion rather than a fault — rendering it would put a
+// warning on every tab whose DOM half has not run yet.
+const ENFORCEMENT_NOTES: Partial<Record<WebEnforcementState, string>> = {
+  'composer-only': 'not enforcing — send button not found',
+  'button-only': 'not enforcing — composer not found',
+  unattached: 'not enforcing — composer and send button not found',
+};
+
 /** Render the network-capture section from a `capture_state` reply. */
 export function renderCaptureSites(response: CaptureStateResponse): void {
   const section = document.getElementById('capture-section');
@@ -50,11 +61,19 @@ export function renderCaptureSites(response: CaptureStateResponse): void {
     return;
   }
   notEnabled.hidden = true;
-  const rows = response.sites.map((site) => {
+  const rows = response.sites.flatMap((site) => {
     const row = document.createElement('div');
     row.className = `row ${DRIFT_STATES.has(site.state) ? 'tone-error' : 'muted'}`;
     row.textContent = `${SITE_LABELS[site.tool]}: ${site.state}`;
-    return row;
+    const note = site.enforcement === undefined ? undefined : ENFORCEMENT_NOTES[site.enforcement];
+    if (note === undefined) return [row];
+    // A second row rather than a word folded into the first: the two describe
+    // different halves, and a tab can read the site perfectly while enforcing
+    // nothing on it.
+    const enforcementRow = document.createElement('div');
+    enforcementRow.className = 'row tone-error';
+    enforcementRow.textContent = `${SITE_LABELS[site.tool]}: ${note}`;
+    return [row, enforcementRow];
   });
   sitesEl.replaceChildren(...rows);
 }

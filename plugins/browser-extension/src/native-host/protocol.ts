@@ -1,5 +1,5 @@
 import type { BlockedDetectionRef, WebCaptureState } from '@akasecurity/plugin-sdk';
-import type { ActionTaken, WebSourceTool } from '@akasecurity/schema';
+import type { ActionTaken, WebEnforcementState, WebSourceTool } from '@akasecurity/schema';
 import {
   EventKind,
   WebCaptureStatus,
@@ -11,7 +11,7 @@ import {
 // @akasecurity/schema as a `SourceTool.extract([...])` narrowing, so the CLI's
 // status surface enumerates the same sites without a second copy of the list.
 const WEB_SOURCE_TOOLS = WebSourceToolEnum.options;
-export type { WebSourceTool } from '@akasecurity/schema';
+export type { WebEnforcementState, WebSourceTool } from '@akasecurity/schema';
 // Re-exported so the popup — which cannot import @akasecurity/plugin-sdk in a
 // browser bundle — can still type its own state handling against the real
 // vocabulary. A type import erases, so this costs the bundle nothing.
@@ -152,6 +152,11 @@ export interface CaptureStateResponse {
   sites: {
     tool: WebSourceTool;
     state: WebCaptureState;
+    // What the DOM enforcement half reported about itself. Carried beside
+    // `state` rather than folded into it: that vocabulary describes the NETWORK
+    // path, and a tab can be reading the site perfectly while enforcing
+    // nothing. Absent when this site has never reported.
+    enforcement?: WebEnforcementState;
     // Absent when this site has never reported.
     observedAt?: string;
   }[];

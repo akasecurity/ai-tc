@@ -101,8 +101,13 @@ export function capResponseText(
   };
 }
 
-/** Trim, and treat a blank result as absent. Never write `''` to the store. */
-function trimmed(value: string | undefined): string | undefined {
+/**
+ * Trim, and treat a blank result as absent. Never write `''` to the store.
+ *
+ * Exported for host.ts, which needs the SAME trim for a response capture whose
+ * exchange has no `llm_call` leaf to read an already-trimmed attribute off.
+ */
+export function trimmed(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   const t = value.trim();
   return t === '' ? undefined : t;

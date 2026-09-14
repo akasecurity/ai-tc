@@ -991,7 +991,7 @@ describe('SqliteHistorySyncRepository — the delivery-state partition', () => {
   it('counts exactly the kinds a lane carries', () => {
     const db = store.open();
     const carried = ['session', 'llm_call', 'tool_call', 'prompt', 'response', 'tool_use'] as const;
-    const notCarried = ['code_change', 'config_scan', 'model_refusal'] as const;
+    const notCarried = ['code_change', 'config_scan', 'model_refusal', 'request_decision'] as const;
 
     db.auditEvents.ensureSessionRoot('root', at(0));
     for (const [i, eventType] of [...carried.slice(1), ...notCarried].entries()) {

@@ -17,7 +17,6 @@ import {
   prohibitedModelMessage,
   readSessionModel,
   recordSessionModel,
-  type RefusalSeam,
 } from '../src/model-governance.ts';
 
 // ONE temp root for the file, with a cheap subdirectory per test, rather than a
@@ -463,8 +462,11 @@ describe('prohibitedModelMessage names the right remedy per seam', () => {
   // control that does not exist on this seam.
   it('sends a request refusal to the model the application requests, naming no CLI', () => {
     const message = prohibitedModelMessage('claude-opus-5', 'request');
-    expect(message).toContain('claude-opus-5');
-    expect(message).toContain('Change the model this application requests');
+    expect(message).toBe(
+      'Cannot use claude-opus-5 for this request — your organization has prohibited this model. ' +
+        'Change the model this application requests, or ask an administrator to change ' +
+        'its status in AKA under Govern → LLM Providers.',
+    );
     expect(message).not.toContain('/model');
     expect(message).not.toContain('subagent');
   });
@@ -495,32 +497,5 @@ describe('prohibitedModelMessage: the pre-existing three arms are unchanged', ()
         'Name an approved model on the subagent, or ask an administrator to change ' +
         'its status in AKA under Govern → LLM Providers.',
     );
-  });
-});
-
-describe('RefusalSeam', () => {
-  // A `default` branch that calls this only compiles while every case above it
-  // is exhaustive, so adding a fifth member without a case here fails `tsc`
-  // rather than silently returning the wrong label.
-  function assertNever(seam: never): never {
-    throw new Error(`unhandled RefusalSeam: ${seam as string}`);
-  }
-
-  function label(seam: RefusalSeam): RefusalSeam {
-    switch (seam) {
-      case 'switch':
-      case 'turn':
-      case 'spawn':
-      case 'request':
-        return seam;
-      default:
-        return assertNever(seam);
-    }
-  }
-
-  it('pins the type to exactly these four members', () => {
-    for (const seam of ['switch', 'turn', 'spawn', 'request'] as const) {
-      expect(label(seam)).toBe(seam);
-    }
   });
 });

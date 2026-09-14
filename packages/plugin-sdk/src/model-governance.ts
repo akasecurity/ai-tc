@@ -364,25 +364,33 @@ export function modelFromTranscript(transcriptPath: string | undefined): string 
  * saying otherwise would overstate the control.
  */
 export function prohibitedModelMessage(model: string, action: RefusalSeam): string {
-  const subject =
-    action === 'switch'
-      ? `Cannot switch to ${model}`
-      : action === 'spawn'
-        ? `Cannot start a subagent on ${model}`
-        : action === 'request'
-          ? `Cannot use ${model} for this request`
-          : `This session is running on ${model}, which cannot be used`;
+  // Keyed by every RefusalSeam, so a new seam is a compile error here rather
+  // than silently inheriting the turn wording and its /model remedy.
+  //
   // The remedy differs by seam: a spawn is refused on an argument the caller
   // chose, so pointing it at /model would name the wrong control. A request
   // is refused from inside the application process, which has no /model and
   // no subagent argument to point at — the remedy is to change the model the
   // application asks for, or have it allowed in the policy.
-  const remedy =
-    action === 'spawn'
-      ? 'Name an approved model on the subagent'
-      : action === 'request'
-        ? 'Change the model this application requests'
-        : 'Switch to an approved model with /model';
+  const wording: Record<RefusalSeam, { subject: string; remedy: string }> = {
+    switch: {
+      subject: `Cannot switch to ${model}`,
+      remedy: 'Switch to an approved model with /model',
+    },
+    turn: {
+      subject: `This session is running on ${model}, which cannot be used`,
+      remedy: 'Switch to an approved model with /model',
+    },
+    spawn: {
+      subject: `Cannot start a subagent on ${model}`,
+      remedy: 'Name an approved model on the subagent',
+    },
+    request: {
+      subject: `Cannot use ${model} for this request`,
+      remedy: 'Change the model this application requests',
+    },
+  };
+  const { subject, remedy } = wording[action];
   return (
     `${subject} — your organization has prohibited this model. ` +
     `${remedy}, or ask an administrator to change ` +

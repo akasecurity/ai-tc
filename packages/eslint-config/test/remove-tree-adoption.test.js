@@ -19,12 +19,16 @@
  *   WHAT IS REMOVED. A named identifier (`rmSync(base, …)`), or a LIST of trees —
  *   drained in the argument (`rmSync(dirs.pop() ?? '', …)`) or walked by a
  *   for-of (`for (const dir of dirs) rmSync(dir, …)`). A for-of binding is its
- *   own nearest declaration, so correlating on the binding finds nothing; a list
- *   removal is correlated on the list instead, expanded to what it holds —
- *   values pushed into it, the local factory doing the pushing, and names bound
- *   from calls to that factory. Every path declared as `join(<one of those>, …)`
- *   counts as well, since it goes WITH the tree. That walk is downward only,
- *   never from the removed tree up to its parent.
+ *   own nearest declaration, so correlating on the binding alone usually finds
+ *   nothing; a list removal is correlated on the list as well, expanded to what
+ *   it holds — values pushed into it, the local factory doing the pushing, and
+ *   names bound from calls to that factory. A named removal counts as a loop's
+ *   only when it sits INSIDE that loop's body and the loop's binding is its
+ *   nearest declaration, and the name's own correlation still runs beside the
+ *   list's, so reading a list can add a site but never clear one. Every path
+ *   declared as `join(<one of those>, …)` counts as well, since it goes WITH the
+ *   tree. That walk is downward only, never from the removed tree up to its
+ *   parent.
  *
  *   WHERE TO LOOK. The block the identifier (or list) was declared in, walked
  *   from that block's start to its end, not merely up to the removal (a
@@ -61,12 +65,16 @@
  *     below with why swallowing a win32 EPERM there would be wrong.
  *
  * The detector is regex-and-brace-counting, not a parser, so it inherits the
- * usual blind spots (a brace inside a string or template literal is counted as
- * real; a path built by anything but `join` is not followed). Nothing here
- * relies on that being wrong in a direction that hides a real site —
- * `DOCUMENTED_EXCEPTIONS` is an exact set checked against what the tree actually
- * holds, so a detector regression that stops seeing a real risky site fails on
- * the exact-set count either way.
+ * usual blind spots: a brace or paren inside a string or template literal is
+ * counted as real; a path built by anything but `join` is not followed; a
+ * declaration is matched as text, not by scope; and a spawn behind a wrapper
+ * FUNCTION is not read as a spawn at its call site unless that function is
+ * imported from a spawning test helper — a same-file `spawnWriter(dir, …)` that
+ * calls `spawn` in its own body is seen only when that body happens to name the
+ * removed tree itself. Each of those can hide a site, and the exact set does not
+ * make up for it: `DOCUMENTED_EXCEPTIONS` is checked against what the tree
+ * actually holds, so it catches a detector regression that stops seeing a site
+ * the tree carries TODAY and says nothing about a shape no tracked file has yet.
  */
 import { readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
@@ -157,6 +165,24 @@ function matchingBlockEnd(code, blockStart) {
 }
 
 /**
+ * The index of the nearest `let`/`const`/`var ident` before `beforePos`, or -1
+ * when the file declares none there.
+ * @param {string} code
+ * @param {string} ident
+ * @param {number} beforePos
+ */
+function nearestDeclaration(code, ident, beforePos) {
+  const declRe = new RegExp(`\\b(?:let|const|var)\\s+${escapeIdent(ident)}\\b`, 'g');
+  let m;
+  let last = -1;
+  while ((m = declRe.exec(code))) {
+    if (m.index >= beforePos) break;
+    last = m.index;
+  }
+  return last;
+}
+
+/**
  * The `[start, end)` span of the block `ident` was declared in — the nearest
  * preceding `let`/`const`/`var ident`, widened to its own enclosing block, so
  * a store opened in a `beforeEach` is visible to a bare removal sitting in the
@@ -172,13 +198,7 @@ function matchingBlockEnd(code, blockStart) {
  */
 function declarationScope(code, ident, beforePos) {
   if (ident.includes('.')) return [0, code.length];
-  const declRe = new RegExp(`\\b(?:let|const|var)\\s+${escapeIdent(ident)}\\b`, 'g');
-  let m;
-  let last = -1;
-  while ((m = declRe.exec(code))) {
-    if (m.index >= beforePos) break;
-    last = m.index;
-  }
+  const last = nearestDeclaration(code, ident, beforePos);
   if (last === -1) return [0, code.length];
   const start = enclosingBlockStart(code, last);
   return [start, matchingBlockEnd(code, start)];
@@ -267,28 +287,97 @@ function withListMembers(window, list) {
 }
 
 /**
- * The identifier of the list a `for (const ident of LIST…)` before `pos`
- * iterates, or undefined when `ident` is not a loop binding. A for-of binding IS
- * its own nearest-preceding declaration, so `declarationScope` collapses to the
- * teardown hook's own body and correlates against nothing; the list is the name
- * the rest of the file actually uses.
+ * The index just past the `)` closing the `(` at `open`, or the end of the file.
+ * Paren counting only, with the same string-literal blind spot as
+ * `enclosingBlockStart`.
+ * @param {string} code
+ * @param {number} open
+ */
+function matchingParenEnd(code, open) {
+  let depth = 0;
+  for (let i = open; i < code.length; i++) {
+    if (code[i] === '(') depth++;
+    else if (code[i] === ')') {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return code.length;
+}
+
+/**
+ * The end of a loop body starting at `from` (just past the loop header's `)`):
+ * its `;` at nesting depth 0, or the `}` closing a block at depth 0 — the body's
+ * own braces, or a block that ends the statement (`if (…) { … }`) — unless an
+ * `else`, `catch` or `finally` carries the statement on, or a `do` body is still
+ * owed its `while (…)`; or the close of the enclosing block, whichever comes
+ * first.
+ * @param {string} code
+ * @param {number} from
+ */
+function loopBodyEnd(code, from) {
+  let i = from;
+  while (i < code.length && /\s/.test(code[i] ?? '')) i++;
+  const isDo = /do\b/y;
+  isDo.lastIndex = i;
+  const continues = isDo.test(code)
+    ? /\s*(?:else|catch|finally|while)\b/y
+    : /\s*(?:else|catch|finally)\b/y;
+  /** @param {number} at */
+  const endsHere = (at) => {
+    continues.lastIndex = at + 1;
+    return !continues.test(code);
+  };
+  let depth = 0;
+  for (; i < code.length; i++) {
+    const ch = code[i];
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      if (depth === 0) return i;
+      depth--;
+      if (ch === '}' && depth === 0 && endsHere(i)) return i;
+    } else if (ch === ';' && depth === 0 && endsHere(i)) return i;
+  }
+  return code.length;
+}
+
+/**
+ * The identifier of the list the removal at `pos` walks: set when it sits in the
+ * body of a `for (const ident of LIST…)` whose binding is `ident`'s nearest
+ * preceding declaration, undefined otherwise. A for-of binding IS its own
+ * nearest declaration, so `declarationScope` collapses to the teardown hook's
+ * own body and correlates against nothing; the list is the name the rest of the
+ * file actually uses. A dotted list is kept whole (`this.dirs`), and a method
+ * called on the list is not part of its name (`dirs.splice(0)` walks `dirs`).
+ *
+ * Both conditions are needed, and each rules out a different wrong list. A later
+ * `let ident` re-declares the name, so a removal after it names THAT binding
+ * rather than an earlier loop's (declarations are matched as text, so one in a
+ * nested block that has already closed counts too, which drops the list rather
+ * than inventing one); and a loop whose body has closed binds nothing at `pos`,
+ * so a removal after it — through a function parameter of the same name, say —
+ * is not walking that loop's list either.
  * @param {string} code
  * @param {string} ident
  * @param {number} pos
  * @returns {string | undefined}
  */
 function loopListRoot(code, ident, pos) {
-  const re = new RegExp(
-    `\\bfor\\s*\\(\\s*(?:const|let|var)\\s+${escapeIdent(ident)}\\s+of\\s+([A-Za-z_$][\\w$]*)`,
-    'g',
+  const decl = nearestDeclaration(code, ident, pos);
+  if (decl === -1) return undefined;
+  const open = code.lastIndexOf('(', decl);
+  if (open === -1 || code.slice(open + 1, decl).trim() !== '') return undefined;
+  if (!/(?:^|[^\w$])for(?:\s+await)?\s*$/.test(code.slice(0, open))) return undefined;
+  const binding = new RegExp(
+    `(?:const|let|var)\\s+${escapeIdent(ident)}\\s+of\\s+([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*?)(?=\\s*\\)|\\s*\\.\\s*[A-Za-z_$][\\w$]*\\s*\\()`,
+    'y',
   );
-  let m;
-  let root;
-  while ((m = re.exec(code))) {
-    if (m.index >= pos) break;
-    root = m[1];
-  }
-  return root;
+  binding.lastIndex = decl;
+  const m = binding.exec(code);
+  if (!m) return undefined;
+  const headerEnd = matchingParenEnd(code, open);
+  if (pos < headerEnd || pos >= loopBodyEnd(code, headerEnd)) return undefined;
+  return m[1];
 }
 
 /**
@@ -308,13 +397,63 @@ function isRemoveTreeDefinition(code, pos) {
 const STORE_RELEASE_RE = /\b(?:closeStore|releaseLocalStore|dropMemoisedDb)\s*\(/;
 
 /**
- * Every recursive `rmSync` in `code` whose removed tree is, within its own
- * declaration scope, handed to `openLocalDatabase(…)`, named inside a real
- * spawn's argument list (or that of a spawning test helper in
- * `spawningImports`), or sits in a scope that releases a memoised store — the
- * out-of-process actors a bare removal can race. Excludes a call sitting inside
- * `removeTree`/`removeTrees`'s own body. See the file header for what "the
- * removed tree" covers.
+ * Whether the tree `ident` stands for is, within `ident`'s own declaration
+ * scope, handed to `openLocalDatabase(…)`, named inside a real spawn's argument
+ * list (or that of a spawning test helper in `spawningImports`), or sits in a
+ * scope that releases a memoised store — the out-of-process actors a bare
+ * removal can race. See the file header for what "the tree" covers.
+ * @param {string} code comments already stripped
+ * @param {string} ident the removed name, or the list of trees it belongs to
+ * @param {boolean} isList whether `ident` names a list of trees
+ * @param {number} pos the removal's index
+ * @param {Set<string>} spawningImports
+ */
+function touchesTree(code, ident, isList, pos, spawningImports) {
+  const [scopeStart, scopeEnd] = declarationScope(code, ident, pos);
+  const window = code.slice(scopeStart, scopeEnd);
+
+  if (STORE_RELEASE_RE.test(window)) return true;
+
+  // The names that stand for the tree being removed: the identifier itself,
+  // what a list of trees holds, and every path declared INSIDE any of them.
+  const names = withPathsUnder(window, isList ? withListMembers(window, ident) : new Set([ident]));
+
+  for (const name of names) {
+    if (new RegExp(`\\bopenLocalDatabase\\s*\\([^)]*\\b${escapeIdent(name)}\\b`).test(window)) {
+      return true;
+    }
+  }
+
+  // A real spawn correlates only when one of those names appears inside that
+  // CALL's own argument list (its cwd, its env, an argv entry) — not merely
+  // somewhere else in the same scope, which is what let `home` in one
+  // unrelated `it()` read as spawn-touched because a distant sibling `it()`
+  // also spawned something. The list runs to the call's matching `)`, so a
+  // nested call in the argv (`[join(dir, 'child.js')]`) does not end it before
+  // the options object that carries `cwd` and `env`. `spawningImports` adds the
+  // test helpers that spawn on the caller's behalf, so a spawn that moved one
+  // file away is still seen.
+  const callees = ['execFileSync', 'spawnSync', 'spawn', ...spawningImports];
+  const spawnCallRe = new RegExp(
+    `\\b(?:${callees.map((c) => escapeIdent(c)).join('|')})\\s*\\(`,
+    'g',
+  );
+  let sm;
+  while ((sm = spawnCallRe.exec(window))) {
+    const open = sm.index + sm[0].length - 1;
+    const args = window.slice(open + 1, matchingParenEnd(window, open) - 1);
+    for (const name of names) {
+      if (new RegExp(`\\b${escapeIdent(name)}\\b`).test(args)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Every recursive `rmSync` in `code` whose removed tree `touchesTree` reports as
+ * touched. Excludes a call sitting inside `removeTree`/`removeTrees`'s own
+ * body. A removal inside a for-of is reported under the list when the list
+ * correlates, and under its own name otherwise.
  * @param {string} code comments already stripped
  * @param {Set<string>} [spawningImports] names this file imports from a test
  *   helper that spawns on its caller's behalf
@@ -324,9 +463,11 @@ function riskyBareRemovals(code, spawningImports = new Set()) {
   const found = [];
   // Either a bare/dotted identifier, or a drain of an array of trees
   // (`dirs.pop() ?? ''`) — which is a CALL, so the identifier form alone never
-  // even considered the site.
+  // even considered the site. What follows the drain may hold balanced calls
+  // (`!.trim()`) but never an unmatched `)`, so a drain passing no options stops
+  // at its own close instead of running on to the next call's and hiding it.
   const callRe =
-    /\brmSync\s*\(\s*(?:([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)|([A-Za-z_$][\w$]*)\s*\.\s*(?:pop|shift|splice)\s*\([^)]*\)[^,]*)\s*,\s*\{([^}]*)\}\s*\)/g;
+    /\brmSync\s*\(\s*(?:([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)|([A-Za-z_$][\w$]*)\s*\.\s*(?:pop|shift|splice)\s*\([^)]*\)(?:[^,()]|\([^()]*\))*)\s*,\s*\{([^}]*)\}\s*\)/g;
   let m;
   while ((m = callRe.exec(code))) {
     const [, direct, drained, opts] = m;
@@ -334,62 +475,21 @@ function riskyBareRemovals(code, spawningImports = new Set()) {
     const pos = m.index;
     if (isRemoveTreeDefinition(code, pos)) continue;
 
-    // A for-of binding is its own nearest declaration, so correlate on the
-    // LIST it iterates rather than on the binding.
-    let ident = direct ?? drained;
-    let isList = drained !== undefined;
-    if (direct !== undefined && !direct.includes('.')) {
-      const root = loopListRoot(code, direct, pos);
-      if (root !== undefined) {
-        ident = root;
-        isList = true;
-      }
+    // What to correlate on, most specific first: the list a for-of removal
+    // walks, then the name it removes. The name is always tried as well, so
+    // reading a list can add a site but never clear one the name alone flags.
+    /** @type {{ ident: string, isList: boolean }[]} */
+    const candidates = [];
+    if (drained !== undefined) {
+      candidates.push({ ident: drained, isList: true });
+    } else if (direct !== undefined) {
+      const root = direct.includes('.') ? undefined : loopListRoot(code, direct, pos);
+      if (root !== undefined) candidates.push({ ident: root, isList: true });
+      candidates.push({ ident: direct, isList: false });
     }
 
-    const [scopeStart, scopeEnd] = declarationScope(code, ident, pos);
-    const window = code.slice(scopeStart, scopeEnd);
-
-    // The names that stand for the tree being removed: the identifier itself,
-    // what a list of trees holds, and every path declared INSIDE any of them.
-    const names = withPathsUnder(
-      window,
-      isList ? withListMembers(window, ident) : new Set([ident]),
-    );
-
-    let touched = STORE_RELEASE_RE.test(window);
-
-    for (const name of names) {
-      if (touched) break;
-      if (new RegExp(`\\bopenLocalDatabase\\s*\\([^)]*\\b${escapeIdent(name)}\\b`).test(window)) {
-        touched = true;
-      }
-    }
-
-    // A real spawn correlates only when one of those names appears inside that
-    // CALL's own argument list (its cwd, its env, an argv entry) — not merely
-    // somewhere else in the same scope, which is what let `home` in one
-    // unrelated `it()` read as spawn-touched because a distant sibling `it()`
-    // also spawned something. `[\s\S]{0,400}` bounds the argument-list window;
-    // every real call site here fits well inside it. `spawningImports` adds the
-    // test helpers that spawn on the caller's behalf, so a spawn that moved one
-    // file away is still seen.
-    const callees = ['execFileSync', 'spawnSync', 'spawn', ...spawningImports];
-    const spawnArgsRe = new RegExp(
-      `\\b(?:${callees.map((c) => escapeIdent(c)).join('|')})\\s*\\(([\\s\\S]{0,400}?)\\)`,
-      'g',
-    );
-    let sm;
-    while (!touched && (sm = spawnArgsRe.exec(window))) {
-      const args = sm[1];
-      for (const name of names) {
-        if (new RegExp(`\\b${escapeIdent(name)}\\b`).test(args)) {
-          touched = true;
-          break;
-        }
-      }
-    }
-
-    if (touched) found.push({ ident, pos });
+    const hit = candidates.find((c) => touchesTree(code, c.ident, c.isList, pos, spawningImports));
+    if (hit) found.push({ ident: hit.ident, pos });
   }
   return found;
 }
@@ -686,6 +786,187 @@ describe('bare rmSync teardown of a store- or spawn-touched temp tree', () => {
         'function tempStoreDir() { const dir = mkdtempSync(x); dirs.push(dir); return dir; }',
         "it('x', () => { const db = openLocalDatabase(join(tempStoreDir(), 'data')); db.close(); });",
         'afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });',
+      ].join('\n');
+      expect(riskyBareRemovals(source)).toEqual([{ ident: 'dirs', pos: expect.any(Number) }]);
+    });
+
+    it('correlates a removal in a BLOCK-bodied for-of on the list too', () => {
+      const source = [
+        'const dirs = [];',
+        'function tempStoreDir() { const dir = mkdtempSync(x); dirs.push(dir); return dir; }',
+        "it('x', () => { const db = openLocalDatabase(join(tempStoreDir(), 'data')); db.close(); });",
+        'afterEach(() => {',
+        '  for (const dir of dirs.splice(0)) {',
+        '    rmSync(dir, { recursive: true, force: true });',
+        '  }',
+        '});',
+      ].join('\n');
+      expect(riskyBareRemovals(source)).toEqual([{ ident: 'dirs', pos: expect.any(Number) }]);
+    });
+
+    it('does not re-key a removal to an earlier loop the name was later re-declared after', () => {
+      // An unrelated loop over the same binding name, then a separately declared
+      // `dir` that a spawn really ran from. Re-keyed to `fixtures`, which nothing
+      // touches, this real site would be cleared.
+      const source = [
+        "import { mkdtempSync, rmSync } from 'node:fs';",
+        "import { execFileSync } from 'node:child_process';",
+        'for (const dir of fixtures) { seed(dir); }',
+        "describe('x', () => {",
+        '  let dir;',
+        '  beforeEach(() => { dir = mkdtempSync(x); });',
+        "  it('y', () => { execFileSync(cmd, [], { cwd: dir }); });",
+        '  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });',
+        '});',
+      ].join('\n');
+      expect(riskyBareRemovals(source)).toEqual([{ ident: 'dir', pos: expect.any(Number) }]);
+    });
+
+    it('does not re-key a removal to a loop whose body closed before it', () => {
+      // Here the loop's binding IS the nearest declaration of `dir` — the
+      // parameter is not a `let`/`const` — so only the body check keeps the
+      // removal from being read as walking `fixtures`.
+      const source = [
+        'for (const dir of fixtures) { seed(dir); }',
+        'function cleanup(dir) {',
+        '  execFileSync(cmd, [], { cwd: dir });',
+        '  rmSync(dir, { recursive: true, force: true });',
+        '}',
+      ].join('\n');
+      expect(riskyBareRemovals(source)).toEqual([{ ident: 'dir', pos: expect.any(Number) }]);
+    });
+
+    it('still flags a loop removal on its own name when the list correlates with nothing', () => {
+      // The list is a literal nothing pushes into, so only the binding's own
+      // correlation — a store opened inside the same loop body — sees this site.
+      const source = [
+        'const dirs = [a, b];',
+        'afterEach(() => {',
+        '  for (const dir of dirs) {',
+        '    const db = openLocalDatabase(dir);',
+        '    db.close();',
+        '    rmSync(dir, { recursive: true, force: true });',
+        '  }',
+        '});',
+      ].join('\n');
+      expect(riskyBareRemovals(source)).toEqual([{ ident: 'dir', pos: expect.any(Number) }]);
+    });
+
+    it('does not read a same-named declaration INSIDE a loop body as the loop binding', () => {
+      // The body re-declares `dir`, so the removal names that inner tree, which
+      // nothing touched — not the list, which a store really was opened on.
+      // Re-keyed to the list, an untouched tree would be flagged under its name.
+      const source = [
+        'const dirs = [];',
+        'function tempStoreDir() { const d = mkdtempSync(x); dirs.push(d); return d; }',
+        "it('x', () => { const db = openLocalDatabase(join(tempStoreDir(), 'data')); db.close(); });",
+        'afterEach(() => {',
+        '  for (const dir of dirs.splice(0)) {',
+        '    const dir = mkdtempSync(y);',
+        '    rmSync(dir, { recursive: true, force: true });',
+        '  }',
+        '});',
+      ].join('\n');
+      expect(riskyBareRemovals(source)).toEqual([]);
+    });
+
+    it('does not read a removal after a closed loop as walking that loop’s list', () => {
+      // The loop's binding is the nearest declaration of `dir` (a parameter is
+      // not a `let`/`const`), and a store really was opened on its list — but
+      // the loop has closed, so `scrub` removes nothing that list holds.
+      const source = [
+        'const dirs = [];',
+        'function tempStoreDir() { const d = mkdtempSync(x); dirs.push(d); return d; }',
+        "it('x', () => { const db = openLocalDatabase(join(tempStoreDir(), 'data')); db.close(); });",
+        'for (const dir of dirs) { seed(dir); }',
+        'function scrub(dir) {',
+        '  rmSync(dir, { recursive: true, force: true });',
+        '}',
+      ].join('\n');
+      expect(riskyBareRemovals(source)).toEqual([]);
+    });
+
+    it('ends a single-statement loop body at the block that closes it', () => {
+      // `for (…) if (…) { … }` has no braces of its own; its statement ends at
+      // that `}`, not at the next `;`, which belongs to the arrow after it.
+      const source = [
+        'const dirs = [];',
+        'function tempStoreDir() { const d = mkdtempSync(x); dirs.push(d); return d; }',
+        "it('x', () => { const db = openLocalDatabase(join(tempStoreDir(), 'data')); db.close(); });",
+        'for (const dir of dirs) if (existsSync(dir)) { seed(dir); }',
+        'const scrub = (dir) => rmSync(dir, { recursive: true, force: true });',
+      ].join('\n');
+      expect(riskyBareRemovals(source)).toEqual([]);
+    });
+
+    it('carries a single-statement loop body on through an else, and a do body through its while', () => {
+      const preamble = [
+        'const dirs = [];',
+        'function tempStoreDir() { const d = mkdtempSync(x); dirs.push(d); return d; }',
+        "it('x', () => { const db = openLocalDatabase(join(tempStoreDir(), 'data')); db.close(); });",
+        'afterEach(() => {',
+      ];
+      const elseBody = [
+        ...preamble,
+        '  for (const dir of dirs.splice(0)) if (skip(dir)) { log(dir); } else { rmSync(dir, { recursive: true, force: true }); }',
+        '});',
+      ].join('\n');
+      expect(riskyBareRemovals(elseBody)).toEqual([{ ident: 'dirs', pos: expect.any(Number) }]);
+
+      const doWhile = [
+        ...preamble,
+        '  for (const dir of dirs.splice(0)) do { log(dir); } while (rmSync(dir, { recursive: true, force: true }));',
+        '});',
+      ].join('\n');
+      expect(riskyBareRemovals(doWhile)).toEqual([{ ident: 'dirs', pos: expect.any(Number) }]);
+    });
+
+    it('keeps a dotted list whole, so what is pushed into it is read', () => {
+      const source = [
+        'class Harness {',
+        '  dirs = [];',
+        "  scratch() { const d = mkdtempSync(x); this.dirs.push(d); const db = openLocalDatabase(join(d, 'data')); db.close(); return d; }",
+        '  dispose() { for (const dir of this.dirs) rmSync(dir, { recursive: true, force: true }); }',
+        '}',
+      ].join('\n');
+      expect(riskyBareRemovals(source)).toEqual([{ ident: 'this.dirs', pos: expect.any(Number) }]);
+    });
+
+    it('reads a spawn’s whole argument list, past a nested call in its argv', () => {
+      // The options object, where `cwd` and `env` go, comes after the argv — so
+      // a window ending at the first `)` would stop inside `join(…)` and miss it.
+      const source = [
+        "describe('x', () => {",
+        "  let home = '';",
+        '  beforeEach(() => { home = mkdtempSync(x); });',
+        '  afterEach(() => { rmSync(home, { recursive: true, force: true }); });',
+        "  it('y', () => { execFileSync(node, [join(dir, 'child.js')], { cwd: home }); });",
+        '});',
+      ].join('\n');
+      expect(riskyBareRemovals(source)).toEqual([{ ident: 'home', pos: expect.any(Number) }]);
+    });
+
+    it('does not let a drain passing no options hide the removal after it', () => {
+      // A drain with no options object ends at its own `)`; read past it, the two
+      // calls become one match and the real removal is never examined.
+      const source = [
+        'let home;',
+        'const files = [];',
+        'afterEach(() => {',
+        '  rmSync(files.pop()!);',
+        '  rmSync(home, { recursive: true, force: true });',
+        '});',
+        "it('x', () => { home = mkdtempSync(x); spawnSync(node, ['-e', '0'], { cwd: home }); });",
+      ].join('\n');
+      expect(riskyBareRemovals(source)).toEqual([{ ident: 'home', pos: expect.any(Number) }]);
+    });
+
+    it('still reads a drain whose argument goes on through a call', () => {
+      const source = [
+        'const dirs = [];',
+        'const tempDir = () => { const dir = mkdtempSync(x); dirs.push(dir); return dir; };',
+        "it('x', () => { const binDir = tempDir(); execFileSync(cmd, [], { cwd: binDir }); });",
+        'afterEach(() => { while (dirs.length > 0) rmSync(dirs.pop()!.trim(), { recursive: true, force: true }); });',
       ].join('\n');
       expect(riskyBareRemovals(source)).toEqual([{ ident: 'dirs', pos: expect.any(Number) }]);
     });

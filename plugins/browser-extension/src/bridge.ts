@@ -80,11 +80,23 @@ export const REQUEST_BODY_MAX_BYTES = 1024 * 1024;
 // for the life of the tab.
 const MAX_IN_FLIGHT = 64;
 
+/**
+ * Whether a relayed request was DELIVERED.
+ *
+ * Always a promise, never an optional one. A status report is only safe to
+ * mark as sent once something has said it arrived, and the one relay that
+ * ships — `relayToBackground` — can always answer: it resolves false for a
+ * rejected sendMessage and for the invalidated-context throw alike. An
+ * optional outcome would mean "assume delivered", which is the behaviour this
+ * type exists to end.
+ */
+export type RelayOutcome = Promise<boolean>;
+
 export interface BridgeOptions {
   adapter: ProviderAdapter;
   sessionId: string;
   // Fire-and-forget: nothing the network path does may make the page wait.
-  relay: (request: BackgroundRequest) => void;
+  relay: (request: BackgroundRequest) => RelayOutcome;
   // Injected so the blind window is a property of the test rather than a race
   // against the runner.
   now: () => number;
@@ -350,7 +362,7 @@ export function createBridge(options: BridgeOptions): Bridge {
 
     live = true;
     try {
-      relay({ type: 'exchange', sessionId, tool: adapter.id, exchange });
+      void relay({ type: 'exchange', sessionId, tool: adapter.id, exchange });
     } catch {
       // An unreachable relay loses this exchange; the next one still tries.
     }
@@ -448,11 +460,32 @@ export function createBridge(options: BridgeOptions): Bridge {
     if (!patchedFetch && !patchedXhr && reported === null) return;
     const signature = reportSignature(status);
     if (signature === reported) return;
+    // Marked reported BEFORE the relay, then rolled back if delivery failed.
+    // The comment here used to promise that "the next transition retries",
+    // and it did not hold: relayToBackground swallowed both a synchronous
+    // throw and the sendMessage rejection, so this catch never fired in
+    // production. Once the status reached a signature that stops changing —
+    // `blind`, or counters at STATUS_COUNTER_CAP — a lost report was never
+    // re-sent, and the drift reached neither the host, nor capture_status,
+    // nor the popup, nor `aka extension status`, nor /security. That silent
+    // failure is the one this whole path exists to surface.
+    const previous = reported;
     reported = signature;
+    const failed = (): void => {
+      // Only if nothing newer has been reported since: a later transition has
+      // already superseded this one, and resurrecting an older signature
+      // would re-send it.
+      if (reported === signature) reported = previous;
+    };
     try {
-      relay({ type: 'capture_status', sessionId, tool: adapter.id, status });
+      void relay({ type: 'capture_status', sessionId, tool: adapter.id, status }).then(
+        (delivered) => {
+          if (!delivered) failed();
+        },
+        failed,
+      );
     } catch {
-      // An unreachable relay loses this report; the next transition retries.
+      failed();
     }
   }
 
@@ -485,7 +518,9 @@ export function createBridge(options: BridgeOptions): Bridge {
       const status = currentStatus();
       reported = reportSignature(status);
       try {
-        relay({ type: 'capture_status', sessionId, tool: adapter.id, status });
+        // The outcome is ignored on purpose: there is nothing left to retry on
+        // a page that is already unloading.
+        void relay({ type: 'capture_status', sessionId, tool: adapter.id, status });
       } catch {
         // Nothing left to report to on a page that is already unloading.
       }
@@ -535,14 +570,17 @@ export function attachTap(win: Window, deliver: (message: TapToPage) => void): v
   win.addEventListener('message', onHandshake);
 }
 
-function relayToBackground(request: BackgroundRequest): void {
+function relayToBackground(request: BackgroundRequest): Promise<boolean> {
   try {
-    void chrome.runtime
-      .sendMessage<BackgroundRequest, BackgroundResponse>(request)
-      .catch(() => undefined);
+    return chrome.runtime.sendMessage<BackgroundRequest, BackgroundResponse>(request).then(
+      () => true,
+      () => false,
+    );
   } catch {
     // The extension context is invalidated on reload or update; the page and
-    // its own traffic carry on regardless.
+    // its own traffic carry on regardless. Reported as undelivered rather
+    // than swallowed, so a status report is retried on the next transition.
+    return Promise.resolve(false);
   }
 }
 
@@ -553,7 +591,7 @@ export interface InstallOptions {
   // two objects would be proving a wiring nothing ships.
   win: Window & SharedScope;
   hostname: string;
-  relay: (request: BackgroundRequest) => void;
+  relay: (request: BackgroundRequest) => RelayOutcome;
   now: () => number;
 }
 

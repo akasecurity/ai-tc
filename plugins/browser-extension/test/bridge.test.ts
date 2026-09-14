@@ -101,6 +101,7 @@ function harness(adapter: ProviderAdapter = fakeAdapter()) {
     sessionId: 'sess_1',
     relay: (request) => {
       relayed.push(request);
+      return Promise.resolve(true);
     },
     now: clock.now,
   });
@@ -884,6 +885,7 @@ describe('installBridge, the wiring itself', () => {
       hostname,
       relay: (request) => {
         relayed.push(request);
+        return Promise.resolve(true);
       },
       now: clock.now,
     });
@@ -920,6 +922,7 @@ describe('installBridge, the wiring itself', () => {
       hostname: 'claude.ai',
       relay: (request) => {
         relayed.push(request);
+        return Promise.resolve(true);
       },
       now: clock.now,
     });
@@ -981,6 +984,49 @@ describe('reporting capture status', () => {
     expect(statuses(h.relayed)).toHaveLength(1);
   });
 
+  it('retries a report whose delivery failed, rather than counting it as sent', async () => {
+    // `reported = signature` is set before the relay, and the shipped relay
+    // swallows both a synchronous throw and the sendMessage rejection — so a
+    // LOST report was indistinguishable from a delivered one. Once the status
+    // reaches a signature that stops changing (`blind`, or counters at the
+    // cap), that report is never re-sent, and the drift reaches neither the
+    // host nor any surface: the silent failure this path exists to surface.
+    const relayed: BackgroundRequest[] = [];
+    let delivered = false;
+    const clock = fakeClock();
+    const bridge = createBridge({
+      adapter: fakeAdapter(),
+      sessionId: 'sess_retry',
+      relay: (request) => {
+        relayed.push(request);
+        return Promise.resolve(delivered);
+      },
+      now: clock.now,
+    });
+    const settle = (): Promise<void> =>
+      new Promise((resolve) => {
+        setTimeout(resolve, 0);
+      });
+
+    bridge.onTapMessage({ type: 'patched', fetch: true, xhr: false });
+    await settle();
+    expect(statuses(relayed)).toHaveLength(1);
+
+    // The same signature again. With the rollback it is re-sent, because the
+    // first attempt was never delivered; without it the bridge believes the
+    // report landed and sends nothing — which is the bug.
+    delivered = true;
+    bridge.onTapMessage({ type: 'patched', fetch: true, xhr: false });
+    await settle();
+    expect(statuses(relayed)).toHaveLength(2);
+
+    // The control: once a report IS delivered, an identical signature is not
+    // re-sent, so the rollback has not turned this into a resend loop.
+    bridge.onTapMessage({ type: 'patched', fetch: true, xhr: false });
+    await settle();
+    expect(statuses(relayed)).toHaveLength(2);
+  });
+
   it('does not re-report an unchanged signature', () => {
     const h = harness();
     h.feed({ type: 'patched', fetch: true, xhr: false });
@@ -1037,6 +1083,7 @@ describe('reporting capture status', () => {
       hostname: 'claude.ai',
       relay: (request) => {
         relayed.push(request);
+        return Promise.resolve(true);
       },
       now: clock.now,
     });

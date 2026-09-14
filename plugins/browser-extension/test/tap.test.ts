@@ -674,6 +674,60 @@ describe('installTap: the fetch half', () => {
     expect(h.of('end')).toHaveLength(0);
   });
 
+  it('closes a rejected fetch only after the deferred body has opened it', async () => {
+    // The ordering the protocol rests on: every exchange opened with `request`
+    // is closed by exactly one `end`, and nothing closes an id that was never
+    // opened. For a deferred body `request` is posted when the cloned body
+    // settles, or at the deadline — while a rejection fires at once. The abort
+    // terminator therefore has to wait on the same promise the response posts
+    // wait on, or the wire carries `error` + `end` first and `request` up to
+    // the deadline later: the bridge closes an id it never opened, then opens
+    // one that nothing ever closes and that consumes a pendingSends entry
+    // belonging to a later send.
+    const never = new ReadableStream<Uint8Array>({
+      start() {
+        // Deliberately never enqueues and never closes, so the clone's read
+        // cannot settle and only the deadline can post `request`.
+      },
+    });
+    const request = new Request('https://site.test/api/conversation', {
+      method: 'POST',
+      body: never,
+      duplex: 'half',
+    } as RequestInit & { duplex: string });
+    const boom = new Error('aborted by the page');
+    const win = { fetch: () => Promise.reject(boom) } as unknown as Window;
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    vi.useFakeTimers();
+    try {
+      await expect(fetchOn(win)(request)).rejects.toBe(boom);
+      // The rejection has already been delivered. Nothing may be on the wire
+      // yet, because `request` is still waiting on the deadline — this is the
+      // assertion that fails when the terminator does not wait.
+      //
+      // Drained by advancing the fake clock, NOT by the harness's settle():
+      // that one is a setTimeout(0), which under fake timers never fires.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.seen.filter((m) => m.type !== 'ready' && m.type !== 'patched')).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    await h.waitFor(() => h.of('end').length > 0);
+
+    // …and once the deadline opened it, the exchange is closed exactly once,
+    // in order.
+    expect(
+      h.seen.filter((m) => m.type !== 'ready' && m.type !== 'patched').map((m) => m.type),
+    ).toEqual(['request', 'error', 'end']);
+    expect(h.of('request')[0]).toMatchObject({ method: 'POST', body: null });
+    expect(h.of('error')[0]).toMatchObject({ reason: 'aborted' });
+    expect(h.of('end')).toHaveLength(1);
+  });
+
   it('proceeds when a deferred request body never settles', async () => {
     // A Request whose body is a stream the page never closes: `duplex: 'half'`
     // lets the server answer first, so without a deadline the tap would hold a
@@ -940,5 +994,56 @@ describe('installTap: the XHR half', () => {
 
     expect(h.seen.filter((m) => m.type !== 'ready' && m.type !== 'patched')).toEqual([]);
     expect(xhr.sent).toEqual(['{"prompt":"hi"}']);
+  });
+
+  it('opens the exchange for a gzip body, rather than losing it whole', async () => {
+    // planBody is shared with the fetch half, so a gzip body plans as
+    // DEFERRED here too. This branch used to test for 'sync' alone, and its
+    // else — written when 'unreadable' was the only other kind — swallowed
+    // the deferred plan: the wire carried `unparsed_body` and nothing else,
+    // so the response was lost as well as the request, while the same body
+    // over fetch still captured the reply.
+    const { win, create } = xhrWindow();
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    const xhr = create();
+    xhr.open('POST', 'https://site.test/api/conversation');
+    xhr.send(await gzipOf('{"prompt":"hi"}'));
+    xhr.respond(200, 'assistant reply');
+    await h.waitFor(() => h.of('end').length > 0);
+
+    // `request` precedes the response posts, as it does over fetch: the
+    // consumer must never see an exchange closed before it was opened.
+    expect(
+      h.seen.filter((m) => m.type !== 'ready' && m.type !== 'patched').map((m) => m.type),
+    ).toEqual(['request', 'chunk', 'end']);
+    expect(h.of('request')[0]).toMatchObject({ body: '{"prompt":"hi"}' });
+    expect(h.of('chunk')[0]).toMatchObject({ text: 'assistant reply' });
+    expect(h.of('end')[0]).toMatchObject({ status: 200, ok: true });
+    // The page's own send still carried its own bytes.
+    expect(xhr.sent).toHaveLength(1);
+  });
+
+  it('still opens no exchange for a body it genuinely cannot read', async () => {
+    // The control for the case above: 'unreadable' must keep reporting
+    // `unparsed_body` and opening nothing, or the fix above would have been
+    // "open an exchange for everything".
+    const { win, create } = xhrWindow();
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    const xhr = create();
+    xhr.open('POST', 'https://site.test/api/conversation');
+    // A stream body has one reader, so taking it would empty the page's own
+    // request — planBody refuses it.
+    xhr.send(new ReadableStream());
+    xhr.respond(200, 'assistant reply');
+    await h.settle();
+
+    expect(
+      h.seen.filter((m) => m.type !== 'ready' && m.type !== 'patched').map((m) => m.type),
+    ).toEqual(['error']);
+    expect(h.of('error')[0]).toMatchObject({ reason: 'unparsed_body' });
   });
 });

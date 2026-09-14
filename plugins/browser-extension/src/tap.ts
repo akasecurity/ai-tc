@@ -448,6 +448,67 @@ export function installTap(win: Window, port: MessagePort, endpoints: readonly T
     started: Promise<void>;
   }
 
+  /**
+   * Opens an exchange for a planned body, and reports when `request` is on the
+   * wire — or reports that no exchange was opened at all, by returning null.
+   *
+   * Shared by BOTH transports on purpose. The XHR half used to branch on
+   * `'sync'` alone, and its `else` was written when `'unreadable'` was the only
+   * other kind; once a gzip body could plan as `'deferred'`, that branch
+   * silently swallowed it. An XHR upload of gzip bytes to a matched endpoint
+   * therefore reported `unparsed_body` and nothing else — no `request`, no
+   * response, no `end` — while the same body over fetch still captured the
+   * response, and the inflate promise was left with no handler, surfacing as an
+   * unhandled rejection in the page's own console. One definition is what stops
+   * the two transports disagreeing about a plan again.
+   */
+  function openRequest(
+    plan: BodyPlan,
+    id: number,
+    url: string,
+    method: string,
+  ): Promise<void> | null {
+    if (plan.kind === 'unreadable') {
+      // Reported and then left alone. The request proceeds untouched and the
+      // tap follows nothing further about it, so this opens no exchange and
+      // no `end` follows.
+      post({ type: 'error', id, reason: 'unparsed_body' });
+      return null;
+    }
+    if (plan.kind === 'sync') {
+      post({ type: 'request', id, url, method, body: plan.body });
+      return Promise.resolve();
+    }
+    // A deferred body still posts `request` before any `chunk`, so the
+    // bridge sees one exchange in order however fast the response arrives —
+    // and it posts one within the deadline whether or not the body ever
+    // arrives, so the response clone is never held on a promise that will
+    // not settle.
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = (body: string | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        post({ type: 'request', id, url, method, body });
+        resolve();
+      };
+      // Read live rather than captured: a page that has replaced setTimeout
+      // can already hang its own upload, so capturing buys nothing here.
+      const timer = setTimeout(() => {
+        finish(null);
+      }, REQUEST_BODY_DEADLINE_MS);
+      plan.body.then(
+        (body) => {
+          finish(body);
+        },
+        () => {
+          finish(null);
+        },
+      );
+    });
+  }
+
   // A window whose fetch cannot be replaced is patched on the XHR half only,
   // and says so.
   let canPatchFetch = false;
@@ -599,45 +660,8 @@ export function installTap(win: Window, port: MessagePort, endpoints: readonly T
             : planBody(init?.body);
 
         const id = nextId++;
-        if (plan.kind === 'unreadable') {
-          // Reported and then left alone. The request proceeds untouched and the
-          // tap follows nothing further about it, so this opens no exchange and
-          // no `end` follows.
-          post({ type: 'error', id, reason: 'unparsed_body' });
-          return null;
-        }
-        if (plan.kind === 'sync') {
-          post({ type: 'request', id, url, method, body: plan.body });
-          return { id, started: Promise.resolve() };
-        }
-        // A deferred body still posts `request` before any `chunk`, so the
-        // bridge sees one exchange in order however fast the response arrives —
-        // and it posts one within the deadline whether or not the body ever
-        // arrives, so the response clone is never held on a promise that will
-        // not settle.
-        const started = new Promise<void>((resolve) => {
-          let settled = false;
-          const finish = (body: string | null): void => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            post({ type: 'request', id, url, method, body });
-            resolve();
-          };
-          // Read live rather than captured: a page that has replaced setTimeout
-          // can already hang its own upload, so capturing buys nothing here.
-          const timer = setTimeout(() => {
-            finish(null);
-          }, REQUEST_BODY_DEADLINE_MS);
-          plan.body.then(
-            (body) => {
-              finish(body);
-            },
-            () => {
-              finish(null);
-            },
-          );
-        });
+        const started = openRequest(plan, id, url, method);
+        if (started === null) return null;
         return { id, started };
       };
 
@@ -657,8 +681,17 @@ export function installTap(win: Window, port: MessagePort, endpoints: readonly T
           // fetch is still the end of an exchange the tap opened, and without a
           // terminator here the bridge holds that id for the life of the page.
           pending.then(undefined, () => {
-            post({ type: 'error', id, reason: 'aborted' });
-            post({ type: 'end', id, status: 0, ok: false });
+            // Closed only once `started` has posted `request`. For a deferred
+            // body `request` is posted from finish(), so a page that aborts
+            // before the cloned body settles would otherwise put `error` and
+            // `end` on the wire first and `request` up to
+            // REQUEST_BODY_DEADLINE_MS later — closing an id the bridge has
+            // not opened, then opening one nothing ever closes. `started`
+            // always resolves; the deadline timer is the worst case.
+            void started.then(() => {
+              post({ type: 'error', id, reason: 'aborted' });
+              post({ type: 'end', id, status: 0, ok: false });
+            });
           });
           return pending.then((response) => {
             try {
@@ -735,14 +768,12 @@ export function installTap(win: Window, port: MessagePort, endpoints: readonly T
             if (state && matched(state.url)) {
               const plan = planBody(body);
               const id = nextId++;
-              if (plan.kind === 'sync') {
-                post({
-                  type: 'request',
-                  id,
-                  url: state.url,
-                  method: state.method,
-                  body: plan.body,
-                });
+              // Every plan kind goes through the one definition, so a body that
+              // plans as 'deferred' here opens its exchange exactly as it does
+              // over fetch. A null `started` is the 'unreadable' case, which
+              // opens no exchange and needs no listener.
+              const started = openRequest(plan, id, state.url, state.method);
+              if (started !== null) {
                 // An XHR object is reusable, and a listener added per send would
                 // otherwise outlive the send it was created for: it stays
                 // attached, fires again on the NEXT response, and posts those
@@ -755,6 +786,11 @@ export function installTap(win: Window, port: MessagePort, endpoints: readonly T
                   'loadend',
                   () => {
                     if (inFlight.get(this) !== state) return;
+                    // Read SYNCHRONOUSLY, post after `request`. The values are
+                    // only certainly this send's at loadend — the object is
+                    // reusable — while the posts have to follow `request`,
+                    // which for a deferred body is not on the wire yet.
+                    let report: () => void;
                     try {
                       const rawStatus = statusOf.call(this);
                       const status = typeof rawStatus === 'number' ? rawStatus : 0;
@@ -766,18 +802,20 @@ export function installTap(win: Window, port: MessagePort, endpoints: readonly T
                           ? responseTextOf.call(this)
                           : '';
                       const text = typeof raw === 'string' ? raw : '';
-                      if (text) post({ type: 'chunk', id, text });
-                      post({ type: 'end', id, status, ok: status >= 200 && status < 300 });
+                      report = (): void => {
+                        if (text) post({ type: 'chunk', id, text });
+                        post({ type: 'end', id, status, ok: status >= 200 && status < 300 });
+                      };
                     } catch {
-                      post({ type: 'error', id, reason: 'tap_error' });
-                      post({ type: 'end', id, status: 0, ok: false });
+                      report = (): void => {
+                        post({ type: 'error', id, reason: 'tap_error' });
+                        post({ type: 'end', id, status: 0, ok: false });
+                      };
                     }
+                    void started.then(report, report);
                   },
                   { once: true },
                 );
-              } else {
-                // Opens no exchange, so no `end` follows.
-                post({ type: 'error', id, reason: 'unparsed_body' });
               }
             }
           } catch {

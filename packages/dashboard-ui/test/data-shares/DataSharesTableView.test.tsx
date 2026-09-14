@@ -54,6 +54,46 @@ describe('DataSharesTableView', () => {
     expect(html).toContain('SendGrid');
   });
 
+  it('shows the host under the name on a flat row, and not again where the name is the host', () => {
+    const html = render({
+      group: group({
+        items: [
+          destination({ id: 'gh', name: 'GitHub', host: 'api.github.com', providerId: 'github' }),
+          destination({
+            id: 'ip',
+            name: '203.0.113.0',
+            host: '203.0.113.0',
+            kind: 'ip',
+            trust: 'ip',
+            providerId: null,
+          }),
+        ],
+      }),
+    });
+    expect(rowMarkup(html, DEST_ROW('GitHub'))).toContain('api.github.com · ');
+    expect(rowMarkup(html, DEST_ROW('203.0.113.0'))).not.toContain('203.0.113.0 · ');
+  });
+
+  it('gives every row of one provider name the same lettermark color, even with no providerId', () => {
+    const html = render({
+      group: group({
+        items: [
+          destination({ id: 'a', name: 'GitHub', host: 'api.github.com', providerId: null }),
+          destination({
+            id: 'b',
+            name: 'GitHub',
+            host: 'raw.githubusercontent.com',
+            providerId: null,
+          }),
+        ],
+      }),
+    });
+    const colors = [...html.matchAll(/background:(#[0-9A-Fa-f]{6})/g)].map((m) => m[1]);
+    // One lettermark per row, both painted from the same key.
+    expect(colors).toHaveLength(2);
+    expect(new Set(colors).size).toBe(1);
+  });
+
   it('renders endpoint rows only when the destination row is expanded (forceExpand)', () => {
     const withEndpoint = group({
       items: [

@@ -160,6 +160,7 @@ function GroupRow({
                 </>
               ) : (
                 <>
+                  {d.host !== d.name ? `${d.host} · ` : ''}
                   {d.category}
                   {d.network?.geo ? ' · ' + d.network.geo : ''}
                 </>

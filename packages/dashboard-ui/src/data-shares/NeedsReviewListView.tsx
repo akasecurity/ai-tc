@@ -51,6 +51,7 @@ export function NeedsReviewListView({ items, onReview }: NeedsReviewListViewProp
               </span>
               <ClassTag cls={d.topDataClass} />
             </div>
+            {d.host !== d.name && <div className="text-xs text-text-3">{d.host}</div>}
             <div className="mt-1.5 flex items-center gap-1.5 text-label text-sev-critical-ink">
               <AlertIcon aria-hidden focusable={false} className="size-3" />
               {flagReason(d.review.reasons)}

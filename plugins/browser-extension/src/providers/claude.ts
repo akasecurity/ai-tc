@@ -102,13 +102,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * If they do not, no case below matches, `messageId` stays undefined and
  * `end()` returns null — this recovers nothing rather than fabricating.
  *
- * UNEXERCISED BY REAL TRAFFIC: this parser has no fixtures and cannot have
- * any until a real capture exists — see the doc comment on
- * EXPECTED_DECLARING_ADAPTERS in test/helpers/fixture-bar.ts. Its own suite
- * (test/providers/claude-stream.test.ts) drives it against synthetic streams
- * shaped from the survey and certifies its FRAMING and ASSEMBLY — never what
- * claude.ai actually sends. `endpoints` stays empty below, so none of this is
- * reachable in production yet.
+ * Exercised by a REAL capture: `test/fixtures/claude-ai/stream.json` is a
+ * sanitiser-produced envelope of a signed-in turn, and
+ * `test/providers/network-contract.test.ts` replays it through this function.
+ * Its own suite (test/providers/claude-stream.test.ts) drives synthetic
+ * streams shaped from the survey alongside that, and certifies FRAMING and
+ * ASSEMBLY rather than what claude.ai sends — the fixture is what speaks for
+ * the site. `endpoints` below names this route, so this IS the production
+ * path for claude.ai.
  */
 function createClaudeStreamAssembler(exchange: MatchedExchange): ExchangeAssembler {
   const conversationId = conversationIdOf(exchange.url);
@@ -178,12 +179,20 @@ function createClaudeStreamAssembler(exchange: MatchedExchange): ExchangeAssembl
       case 'message_stop':
         // The two stop events carry nothing this summary needs.
         return;
-      case 'message_delta':
-        // This stream's message_delta inner keys were never enumerated. The
-        // public API documents `delta.stop_reason` and `usage` here, but this
-        // stream already deviates from that document by omitting `usage` on
-        // message_start, so the document is not evidence for this site.
+      case 'message_delta': {
+        // `delta.stop_reason` is the one inner key the capture shows
+        // populated, so it is the one this reads — and it is read LAST, which
+        // is what makes it the terminal reason: message_start carries the key
+        // too and it arrives null there, so only a non-empty value ever
+        // assigns. `usage` is documented for this event by the public API and
+        // is absent from this stream, exactly as it is absent from
+        // message_start, so the document stays out of it.
+        const delta: unknown = (payload as { delta?: unknown }).delta;
+        if (isPlainObject(delta) && isNonEmptyString(delta.stop_reason)) {
+          stopReason = delta.stop_reason;
+        }
         return;
+      }
       case 'conversation_ready':
         // Its payload keys were never enumerated.
         return;
@@ -279,9 +288,10 @@ export const claudeAdapter: ProviderAdapter = {
   // `closeExchange` record a shape miss, `shapeMisses` is never cleared for
   // the life of the bridge, and a non-empty one derives to `degraded` — so
   // one such turn marks the site as drifting on every surface until the tab
-  // reloads. `stopReason` is therefore NOT among them: it is a key on
-  // message_start.message that arrived null, and message_delta — where a
-  // terminal stop_reason would arrive — is read by nothing here. `usage` is
+  // reloads. `stopReason` is therefore NOT among them, though it IS recovered:
+  // the key on message_start.message arrives null and the terminal one on
+  // message_delta.delta is what the summary carries, and a turn the user stops
+  // early legitimately has neither. `usage` is
   // absent from this stream entirely, which is why the summary reports
   // usageSource 'none' rather than estimating.
   //

@@ -1,0 +1,3 @@
+CREATE INDEX `idx_inspection_definitions_rule` ON `inspection_definitions` (`rule_id`,`severity`,`category`);--> statement-breakpoint
+CREATE INDEX `idx_inspection_findings_def` ON `inspection_findings` (`inspection_definition_id`,`audit_event_id`);--> statement-breakpoint
+CREATE INDEX `idx_inspection_findings_event_cover` ON `inspection_findings` (`audit_event_id`,`inspection_definition_id`,`action_taken`,`finding_key`,`id`);

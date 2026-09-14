@@ -20,17 +20,31 @@
  * tests prove what it decides when called; this proves SessionStart calls it —
  * against the built hook, on a real temp home, with the setting read off disk
  * rather than handed in.
+ *
+ * Three cases sit on the far side of the managed-settings boundary: those two,
+ * and the one before them that runs the child directly with no settings file.
+ * `bodyRetention` is a key an administrator may pin, and every built script
+ * applies the machine's managed file inside ITS OWN process, from absolute
+ * system paths a redirected home does not move. This suite's
+ * no-managed-settings setup file lives in the vitest process and never reaches
+ * that child. So on a machine whose administrator pins an `enabled` that
+ * disagrees with what a case writes (no settings file reads as the default,
+ * off), the script obeys the pin and the case would be reporting the machine
+ * rather than the code. Each of the three reads that file itself and skips when
+ * it disagrees. CI carries no managed file, so there all three always run.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { managedSettingsPaths, readManagedSettings } from '@akasecurity/persistence';
 // IMPORTED from the resolver rather than re-declared: a local copy of either
 // literal would prove the two copies agree and nothing else.
 import {
   CONTENT_RETENTION_MARKER_NAME,
   CONTENT_RETENTION_SCRIPT_NAME,
 } from '@akasecurity/plugin-runtime';
+import type { TestContext } from 'vitest';
 import { describe, expect, it } from 'vitest';
 
 import { runHook, tempHomeEnv, withTempHome } from '../helpers/run-hook.ts';
@@ -41,6 +55,28 @@ const SCRIPTS_DIR = join(PLUGIN_ROOT, 'scripts');
 
 const built = (name: string): string => join(SCRIPTS_DIR, name);
 const marker = (home: string): string => join(home, '.aka', 'data', CONTENT_RETENTION_MARKER_NAME);
+
+/**
+ * The `bodyRetention` this machine's administrator pins, if any — which is what
+ * the built hook acts on, whatever settings.json says. A pin replaces the user's
+ * value on every read, locked or not.
+ *
+ * Read by EXPLICIT path. The no-managed-settings setup file moves only the
+ * default, so a bare `readManagedSettings()` here would report that pin — an
+ * unmanaged machine — rather than the machine the child actually runs on.
+ */
+const machinePin = readManagedSettings(managedSettingsPaths())?.values.bodyRetention;
+
+/** Skip a case whose written `enabled` this machine's administrator overrides. */
+function skipIfPinnedOtherwise(ctx: TestContext, writtenEnabled: boolean): void {
+  if (machinePin !== undefined && machinePin.enabled !== writtenEnabled) {
+    ctx.skip(
+      `this machine's managed settings pin bodyRetention.enabled=${String(machinePin.enabled)}, ` +
+        'and the built hook applies that file in its own process, so it cannot observe what ' +
+        'this case writes',
+    );
+  }
+}
 
 /** Write settings.json directly — the child and the hook both read it off disk. */
 function writeSettings(home: string, bodyRetention: unknown): void {
@@ -89,12 +125,16 @@ describe('the built body-expiry child', () => {
     expect(dirname(built(CONTENT_RETENTION_SCRIPT_NAME))).toBe(dirname(built('session-start.js')));
   });
 
-  it('runs to a clean exit, and creates nothing, on a machine with expiry off', () => {
+  it('runs to a clean exit, and creates nothing, on a machine with expiry off', (ctx) => {
     // Off is the default and so the overwhelming case, and it is where a crash
     // would be worst: the child is spawned detached with stdio ignored, so a
     // non-zero exit or a stack trace reaches nobody. Creating NO store is part
     // of the property — a feature nobody switched on must not leave a database
     // behind as evidence it considered running.
+    //
+    // No settings file is written, so the child reads the default: off. A pin of
+    // `enabled: true` makes it open the store, which this case cannot observe.
+    skipIfPinnedOtherwise(ctx, false);
     withTempHome((home) => {
       const run = runHook(CONTENT_RETENTION_SCRIPT_NAME.replace(/\.js$/, ''), '', {
         env: tempHomeEnv(home),
@@ -107,11 +147,12 @@ describe('the built body-expiry child', () => {
     });
   });
 
-  it('is triggered by a REAL SessionStart once expiry is switched on', () => {
+  it('is triggered by a REAL SessionStart once expiry is switched on', (ctx) => {
     // The end-to-end half. The marker is written by the throttle probe inside
     // the hook's own process, synchronously, before the detached spawn — so it
     // is the one observable that says "SessionStart reached the trigger and the
     // trigger decided to spawn" without racing a child nobody waits for.
+    skipIfPinnedOtherwise(ctx, true);
     withTempHome((home) => {
       writeSettings(home, { enabled: true, retainDays: 30 });
 
@@ -128,11 +169,12 @@ describe('the built body-expiry child', () => {
     });
   });
 
-  it('is NOT triggered by a SessionStart while expiry is off', () => {
+  it('is NOT triggered by a SessionStart while expiry is off', (ctx) => {
     // The control, and it is what stops the case above passing on a hook that
     // probes the throttle unconditionally. Off by default means a machine that
     // never switched this on must carry no marker — a file appearing there is a
     // feature nobody enabled announcing itself.
+    skipIfPinnedOtherwise(ctx, false);
     withTempHome((home) => {
       writeSettings(home, { enabled: false, retainDays: 30 });
 

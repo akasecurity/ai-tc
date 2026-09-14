@@ -563,6 +563,56 @@ export const auditEvents = sqliteTable(
     index('idx_audit_capture_rollup')
       .on(t.eventType, t.startedAt, t.repo, t.id)
       .where(sql`event_type IN (${sql.raw(CAPTURE_EVENT_TYPES_SQL)})`),
+    // The findings read path's covering indexes. Every column a findings read
+    // projects — source_tool, repo, file_path, tool_name — is VIRTUAL over
+    // `attributes`, and `content` (a 43 KB body on a code_change) sits before
+    // `attributes` in the row, so reading any of them off the row means
+    // walking the overflow chain past the body: measured 0.5s grouped by a
+    // real column against 19s grouped by a virtual one on a 6.2 GB store, and
+    // 15ms when the value comes from a covering index instead. All three are
+    // partial on the four capture kinds, so writes of the far more numerous
+    // structural rows (`llm_call`, `tool_call`, `session`) never maintain them.
+    //
+    // Newest-first: the flat findings list and the recent-findings read walk
+    // `started_at DESC, id DESC`; carries the join/facet columns so that walk
+    // never fetches the row.
+    index('idx_audit_capture_by_time')
+      .on(
+        t.startedAt,
+        t.id,
+        t.eventType,
+        t.rootSessionId,
+        t.sourceTool,
+        t.repo,
+        t.filePath,
+        t.toolName,
+      )
+      .where(sql`event_type IN (${sql.raw(CAPTURE_EVENT_TYPES_SQL)})`),
+    // The id-led twin of the index above, and the one a SCOPED findings read
+    // rides: a rule-, session- or location-driven join reaches its events by
+    // `e.id`, and this answers that probe from the index rather than the row.
+    // Same columns, led by `id`, so the probe is a seek and every capture
+    // column it projects is already there.
+    index('idx_audit_capture_by_id')
+      .on(
+        t.id,
+        t.startedAt,
+        t.eventType,
+        t.rootSessionId,
+        t.sourceTool,
+        t.repo,
+        t.filePath,
+        t.toolName,
+      )
+      .where(sql`event_type IN (${sql.raw(CAPTURE_EVENT_TYPES_SQL)})`),
+    // The by-location fold: findings grouped by the (repo, file) pair they
+    // landed in, then newest first within a pair. `event_type` rides along
+    // because the status a location folds is derived from it, and without it
+    // that fold seeks the table row once per capture event — no overflow walk,
+    // since event_type precedes `content`, but a random page read per row.
+    index('idx_audit_capture_location')
+      .on(t.repo, t.filePath, t.startedAt, t.id, t.eventType)
+      .where(sql`event_type IN (${sql.raw(CAPTURE_EVENT_TYPES_SQL)})`),
     // The body-expiry sweep's candidate seek. Partial on `content IS NOT NULL`,
     // so it holds only rows that still HAVE a body to expire and empties itself
     // as the sweep catches up — the steady state is a near-empty index rather
@@ -585,15 +635,23 @@ export const classifiedData = sqliteTable('classified_data', {
 });
 
 // INSPECTION DEFINITION — a detection rule version (id = sha256(rule_id+version)).
-export const inspectionDefinitions = sqliteTable('inspection_definitions', {
-  id: text(COL.id).primaryKey(),
-  ruleId: text(COL.ruleId).notNull(),
-  name: text(COL.name).notNull(),
-  category: text(COL.category).notNull(),
-  severity: text(COL.severity).notNull(),
-  definition: text(COL.definition).notNull(),
-  version: text(COL.version).notNull(),
-});
+export const inspectionDefinitions = sqliteTable(
+  'inspection_definitions',
+  {
+    id: text(COL.id).primaryKey(),
+    ruleId: text(COL.ruleId).notNull(),
+    name: text(COL.name).notNull(),
+    category: text(COL.category).notNull(),
+    severity: text(COL.severity).notNull(),
+    definition: text(COL.definition).notNull(),
+    version: text(COL.version).notNull(),
+  },
+  // A rule id is how every scoped findings read enters this table, and a
+  // rule holds one row per VERSION, so the lookup is a range rather than a
+  // seek. Carrying severity and category makes it index-only: those two are
+  // what a type row renders and what a severity filter tests.
+  (t) => [index('idx_inspection_definitions_rule').on(t.ruleId, t.severity, t.category)],
+);
 
 // INSPECTION FINDING — a hit of a definition against an audit event.
 export const inspectionFindings = sqliteTable(
@@ -625,6 +683,22 @@ export const inspectionFindings = sqliteTable(
   (t) => [
     index('idx_inspection_findings_event').on(t.auditEventId),
     uniqueIndex('uq_inspection_findings_key').on(t.findingKey),
+    // Driving a findings read from its RULE rather than from time: the
+    // definitions index above yields the definition ids, and this turns each
+    // into its findings without touching the table.
+    index('idx_inspection_findings_def').on(t.inspectionDefinitionId, t.auditEventId),
+    // The per-event probe every findings read makes, carrying the finding
+    // columns those reads project — so the probe reads the index alone.
+    // `masked_match` and `confidence` are deliberately absent: only the page
+    // itself renders them, and carrying a masked value in an index would grow
+    // it by the one column with no bound on its width.
+    index('idx_inspection_findings_event_cover').on(
+      t.auditEventId,
+      t.inspectionDefinitionId,
+      t.actionTaken,
+      t.findingKey,
+      t.id,
+    ),
   ],
 );
 

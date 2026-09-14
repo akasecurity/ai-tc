@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
 import {
   assertShimResolves,
   SHIM_NEEDS_SHELL,
@@ -79,7 +80,8 @@ const shimEnv = (binDir?: string): NodeJS.ProcessEnv => ({
 });
 
 afterEach(() => {
-  while (dirs.length > 0) rmSync(dirs.pop() ?? '', { recursive: true, force: true });
+  // Every case here spawns a probe from, or with a PATH through, these trees.
+  removeTrees(dirs.splice(0));
 });
 
 const errorFrom = (fn: () => unknown): Error | undefined => {

@@ -222,8 +222,36 @@
     {
       "idx": 31,
       "version": "6",
-      "when": 1789418343779,
-      "tag": "0031_share_destination_provider_id",
+      "when": 1789297249290,
+      "tag": "0031_audit_capture_by_time_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1789297259789,
+      "tag": "0032_audit_capture_by_id_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "6",
+      "when": 1789359111290,
+      "tag": "0033_audit_capture_location_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "6",
+      "when": 1789359111783,
+      "tag": "0034_findings_read_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "6",
+      "when": 1789423277782,
+      "tag": "0035_share_destination_provider_id",
       "breakpoints": true
     }
   ]

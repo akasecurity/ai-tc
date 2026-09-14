@@ -1,0 +1,1 @@
+CREATE INDEX `idx_audit_capture_location` ON `audit_events` (`repo`,`file_path`,`started_at`,`id`,`event_type`) WHERE event_type IN ('prompt','response','code_change','tool_use');

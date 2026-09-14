@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { closeStore, db } from '../../app/lib/db.ts';
 
 /** The module's cache, reached the way the module itself reaches it. */
@@ -19,7 +20,11 @@ function tempStoreDir(): string {
 
 afterEach(() => {
   closeStore();
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  // Through the helper even after the close: on Windows a closed store's
+  // sidecars can outlive the handle by a moment, which its retry covers. Whether
+  // closeStore really released the handle is these cases' own subject, and is
+  // asserted on the handle below rather than left to this teardown.
+  removeTrees(dirs.splice(0));
 });
 
 // `closeStore()` is the whole mechanism behind test/helpers/temp-home.ts: the

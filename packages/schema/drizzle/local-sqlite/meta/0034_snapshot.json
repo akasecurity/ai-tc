@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "73958be2-e330-4eae-9484-a5587bc9e339",
-  "prevId": "a8778061-de6c-4ce4-9f38-b5be5db58937",
+  "id": "d2e49817-6ef1-40ce-b59b-4c26eb7bf547",
+  "prevId": "0c543c14-3861-42ee-9321-01cb528b31cc",
   "tables": {
     "audit_events": {
       "name": "audit_events",
@@ -409,6 +409,33 @@
             "repo",
             "file_path",
             "tool_name"
+          ],
+          "isUnique": false,
+          "where": "event_type IN ('prompt','response','code_change','tool_use')"
+        },
+        "idx_audit_capture_by_id": {
+          "name": "idx_audit_capture_by_id",
+          "columns": [
+            "id",
+            "started_at",
+            "event_type",
+            "root_session_id",
+            "source_tool",
+            "repo",
+            "file_path",
+            "tool_name"
+          ],
+          "isUnique": false,
+          "where": "event_type IN ('prompt','response','code_change','tool_use')"
+        },
+        "idx_audit_capture_location": {
+          "name": "idx_audit_capture_location",
+          "columns": [
+            "repo",
+            "file_path",
+            "started_at",
+            "id",
+            "event_type"
           ],
           "isUnique": false,
           "where": "event_type IN ('prompt','response','code_change','tool_use')"
@@ -1339,7 +1366,17 @@
           "autoincrement": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "idx_inspection_definitions_rule": {
+          "name": "idx_inspection_definitions_rule",
+          "columns": [
+            "rule_id",
+            "severity",
+            "category"
+          ],
+          "isUnique": false
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
@@ -1440,6 +1477,25 @@
             "finding_key"
           ],
           "isUnique": true
+        },
+        "idx_inspection_findings_def": {
+          "name": "idx_inspection_findings_def",
+          "columns": [
+            "inspection_definition_id",
+            "audit_event_id"
+          ],
+          "isUnique": false
+        },
+        "idx_inspection_findings_event_cover": {
+          "name": "idx_inspection_findings_event_cover",
+          "columns": [
+            "audit_event_id",
+            "inspection_definition_id",
+            "action_taken",
+            "finding_key",
+            "id"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {

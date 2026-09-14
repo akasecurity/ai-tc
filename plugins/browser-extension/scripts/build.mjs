@@ -53,6 +53,17 @@ const BROWSER_ENTRIES = {
 // a working tap that matches nothing, so a build that cannot read the registry
 // has to stop: a silent `[]` here ships an extension that reports itself
 // installed and observes no traffic at all.
+//
+// Every `path` here must be LINEAR, and that is a rule about where it runs.
+// The tap compiles each one to `new RegExp('^(?:…)')` and tests it
+// SYNCHRONOUSLY on the page's own fetch/send call path, against a path and
+// query the PAGE chose — the same exposure the isolated-scan bound exists for,
+// except the cost lands on the user's tab rather than on a hook, where nothing
+// can interrupt it and there is no deadline to blow. So: anchored, no nested
+// quantifiers, and no alternation over overlapping prefixes. The patterns are
+// repo-authored, which is why this is a discipline note and not a hole — a
+// pattern that cannot be written that way belongs behind the same probe
+// battery a pulled pack goes through, not in this table.
 async function tapEndpoints() {
   const module = pathToFileURL(join(root, 'src', 'tap-endpoints.ts')).href;
   let table;

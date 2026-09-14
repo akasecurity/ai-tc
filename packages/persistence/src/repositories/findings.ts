@@ -1067,7 +1067,12 @@ export class SqliteFindingsRepository
       ),
     );
     for (const row of grouped) {
-      if (row.action_taken in byAction) byAction[row.action_taken as ActionTaken] = row.c;
+      // `Object.hasOwn`, never `in`, as for the severity tally below:
+      // `action_taken` is a stored string with no CHECK, and `in` also accepts
+      // every Object.prototype name.
+      if (Object.hasOwn(byAction, row.action_taken)) {
+        byAction[row.action_taken as ActionTaken] = row.c;
+      }
     }
 
     // Whole-store OPEN-findings count per severity — powers the read surfaces'
@@ -1095,7 +1100,12 @@ export class SqliteFindingsRepository
       ),
     );
     for (const row of sevRows) {
-      if (row.severity in bySeverity) bySeverity[row.severity as keyof typeof bySeverity] = row.c;
+      // `Object.hasOwn`, never `in`: the severity is a stored string, and `in`
+      // also accepts every Object.prototype name, so a definition stored with
+      // severity 'constructor' would add a key the tally does not have.
+      if (Object.hasOwn(bySeverity, row.severity)) {
+        bySeverity[row.severity as keyof typeof bySeverity] = row.c;
+      }
     }
 
     // Coverage counts ENFORCEABLE categories only: observe-only categories

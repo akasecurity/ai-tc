@@ -949,13 +949,32 @@ describe('administratively locked rows', () => {
         },
       }),
     );
-    expect(html).toContain('data-slot="managed-unknown-locks"');
+    expect(html).toContain('data-slot="managed-unrecognized"');
     expect(html).toContain('Acme locks 1 setting');
     expect(inputFor(html, 'historicalAccess')).toContain('disabled');
   });
 
-  it('says nothing about unknown locks when every lock is known', () => {
-    expect(lockedHtml()).not.toContain('data-slot="managed-unknown-locks"');
+  it('renders the same notice for an unrecognised pin that carries no lock', () => {
+    // A pin alone reaches the page through the same slot, so the slot names
+    // both halves rather than locks only.
+    const html = renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, {
+        settings,
+        onSave: () => undefined,
+        managed: {
+          present: true,
+          organization: 'Acme',
+          lockedFields: [],
+          unknownValueCount: 1,
+        },
+      }),
+    );
+    expect(html).toContain('data-slot="managed-unrecognized"');
+    expect(html).toContain('Acme pins 1 setting');
+  });
+
+  it('says nothing about unrecognized settings when every lock is known', () => {
+    expect(lockedHtml()).not.toContain('data-slot="managed-unrecognized"');
   });
 
   it('words the unknown-lock notice for one and for several, and never on an unmanaged machine', () => {

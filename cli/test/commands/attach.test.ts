@@ -569,11 +569,6 @@ describe('existing-history consent', () => {
     const shown = io.output();
     // Asked about the half that has a subject...
     expect(shown).toContain('Saying no does not stop live sending');
-    // The register a scan records crosses under this attachment whether or not
-    // there is a backlog, so it is named on the machine with no store too.
-    expect(shown).toContain(
-      'So is the Data Shares register a scan records — destinations and call sites, never source text.',
-    );
     // ...and not about a backlog it does not have.
     expect(shown).not.toContain('What that history sends:');
     expect(shown).not.toContain('days of activity already recorded');
@@ -654,12 +649,6 @@ describe('existing-history consent', () => {
     expect(shown).toContain('What that history sends:');
     // The v2 widening, stated where the user is deciding.
     expect(shown).toContain('INCLUDES ITS TEXT');
-    // And the register `aka scan` forwards, which is the half a reader would
-    // otherwise file under "local": named here with what it carries and what it
-    // does not, because this block is where consent to send it is given.
-    expect(shown).toContain(
-      'So is the Data Shares register a scan records — destinations and call sites, never source text.',
-    );
     // The masking is conditional, and the prompt has to say so: a span is
     // masked only where the policy assigned its detection is redact or block,
     // and every detection ships on monitor. A bare match on `masked` passed
@@ -755,5 +744,64 @@ describe('existing-history consent', () => {
 
     runDetach([], deps(scriptedPrompter({ interactive: true })));
     expect(consentOf()).toBeUndefined();
+  });
+});
+
+// Forwarding follows from the attachment, not from the history answer, so the
+// sentences describing it belong to every attach that finishes — including the
+// flag and no-terminal paths that never ask the question — and to none that
+// does not.
+describe('what a finished attach says it forwards', () => {
+  const FORWARDING = [
+    'Activity from here on is sent to that deployment automatically.',
+    'So is the Data Shares register a scan records — destinations and call sites, never source text.',
+  ];
+  const occurrences = (text: string, needle: string): number => text.split(needle).length - 1;
+
+  it.each(['--sync-history', '--no-sync-history'])(
+    'says each once on an attach driven by %s, which asks nothing',
+    async (flag) => {
+      const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+      await runAttach(['--url', ENDPOINT, flag], deps(io));
+      expect(exits).toEqual([]);
+      expect(readWorkspaceSettings(base).runMode).toBe('attached');
+      // The question was skipped, so nothing it prints can be what satisfied
+      // the counts below.
+      expect(io.output()).not.toContain('Saying no does not stop live sending');
+      for (const sentence of FORWARDING) expect(occurrences(io.output(), sentence)).toBe(1);
+    },
+  );
+
+  it('says each once on an attach with no terminal to ask on', async () => {
+    const io = scriptedPrompter({ interactive: false, stdin: `${KEY}\n` });
+    await runAttach(['--url', ENDPOINT, '--key-stdin'], deps(io));
+    expect(exits).toEqual([]);
+    expect(readWorkspaceSettings(base).runMode).toBe('attached');
+    // The skip is what this case is about, so pin that it happened.
+    expect(io.errors()).toContain('no terminal to prompt on');
+    for (const sentence of FORWARDING) expect(occurrences(io.output(), sentence)).toBe(1);
+  });
+
+  it('says each once on the interactive path, which also asks the question', async () => {
+    const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
+    await runAttach(['--url', ENDPOINT], deps(io));
+    expect(exits).toEqual([]);
+    // The question really was shown, so a copy of either sentence left inside
+    // it would be counted here.
+    expect(io.output()).toContain('Saying no does not stop live sending');
+    for (const sentence of FORWARDING) expect(occurrences(io.output(), sentence)).toBe(1);
+  });
+
+  it('says neither when the attach fails to save after the question was asked', async () => {
+    // A directory where settings.json belongs makes the settings write fail,
+    // which happens after the question — the path where a sentence printed by
+    // the question would claim forwarding that never starts.
+    mkdirSync(join(settingsDirOf(base), 'settings.json', 'occupied'), { recursive: true });
+    const io = scriptedPrompter({ interactive: true, answers: [KEY, 'n'] });
+    await runAttach(['--url', ENDPOINT], deps(io));
+    expect(exits).toEqual([1]);
+    expect(io.errors()).toContain('could not save the attachment');
+    expect(io.output()).toContain('Saying no does not stop live sending');
+    for (const sentence of FORWARDING) expect(io.output()).not.toContain(sentence);
   });
 });

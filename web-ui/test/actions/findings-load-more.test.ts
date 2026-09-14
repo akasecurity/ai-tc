@@ -1,8 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 import { dataDir, type LocalDatabase, openLocalDatabase } from '@akasecurity/persistence';
 import {
@@ -12,13 +9,13 @@ import {
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   loadMoreFindingInstances,
   loadMoreFindingLocations,
   loadMoreFindingTypes,
 } from '../../app/(app)/findings/actions.ts';
 import { emptyStore } from '../helpers/store-templates.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 /**
  * The findings list's "Load more" actions.
@@ -49,11 +46,13 @@ function dropMemoisedDb(): void {
   delete store.__akaDb;
 }
 
+const newHome = tempHomes('aka-findings-more-');
+
 let home: string;
 let dir: string;
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-findings-more-'));
+  home = newHome();
   osHome.dir = home;
   // dataDir()'s argument is the ~/.aka ROOT, not the home — with the mock in
   // place the no-argument form resolves to exactly what the action will open.
@@ -65,7 +64,6 @@ beforeEach(() => {
 
 afterEach(() => {
   dropMemoisedDb();
-  removeTree(home);
 });
 
 /** Seed `n` findings through a second handle, then drop the memoised one. */

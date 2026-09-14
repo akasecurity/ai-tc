@@ -60,6 +60,13 @@ describe('TOOL_TO_HARNESS', () => {
     expect(toApiProvider('not-a-tool')).toBe('api');
   });
 
+  // TOOL_TO_HARNESS is a plain object, so a tool id equal to an
+  // Object.prototype key must still pass through unchanged rather than
+  // resolving to that key's inherited function value.
+  it('passes a tool id shadowing Object.prototype through unchanged', () => {
+    expect(harnessFromTool('constructor')).toBe('constructor');
+  });
+
   // The join rule the registry rests on: the two vocabularies are paired by
   // MEMBER NAME, so the table must be exactly the intersection of the two
   // member-name sets — no more (a row for a tool with no harness to render)

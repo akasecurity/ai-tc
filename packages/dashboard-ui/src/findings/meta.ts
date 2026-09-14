@@ -287,13 +287,17 @@ export function deliveryDetail(
   }
 }
 
-/** The five multi-select filter dimensions of the findings toolbar. */
+/**
+ * The six multi-select filter dimensions of the findings toolbar. `deployment`
+ * renders only on a machine attached to a deployment.
+ */
 export interface FindingsFilters {
   severity: string[];
   type: string[];
   provider: string[];
   action: string[];
   status: string[];
+  deployment: string[];
 }
 
 export const EMPTY_FILTERS: FindingsFilters = {
@@ -302,6 +306,7 @@ export const EMPTY_FILTERS: FindingsFilters = {
   provider: [],
   action: [],
   status: [],
+  deployment: [],
 };
 
 /**

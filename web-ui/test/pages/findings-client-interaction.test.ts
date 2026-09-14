@@ -54,7 +54,14 @@ const { NavigationTransitionProvider } =
 
 const AWS = 'secrets/aws-access-key';
 const TODO = 'code/todo-note';
-const EMPTY_FILTERS = { severity: [], type: [], provider: [], action: [], status: [] };
+const EMPTY_FILTERS = {
+  severity: [],
+  type: [],
+  provider: [],
+  action: [],
+  status: [],
+  deployment: [],
+};
 
 const FACETS: FindingFacets = {
   severity: [{ value: 'critical', count: 1 }],

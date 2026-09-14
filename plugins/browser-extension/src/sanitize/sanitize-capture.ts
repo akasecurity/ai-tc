@@ -138,6 +138,33 @@ const HEX_CHARS = '0123456789abcdef';
 const ALNUM_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 const BASE64URL_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 
+/**
+ * A run of `length` characters over `alphabet`, walking it at a constant
+ * stride from a seeded start.
+ *
+ * KNOWN LIMIT — one surrogate per distinct original holds only for the first
+ * `alphabet.length` distinct values of a class at a given length. A run is
+ * fully determined by (first character, stride, length), and the stride is a
+ * per-class constant, so the seed contributes exactly `alphabet.length`
+ * distinguishable runs: two ordinals congruent modulo it produce byte-identical
+ * output. Measured: `hex` collides at ordinal 17, `numeric-string` at 11
+ * (through `syntheticDigits`, modulo 10), `base64ish` at 63, `jwt` at 65.
+ *
+ * The consequence is FIDELITY, not disclosure — nothing content-derived
+ * crosses either way — but a capture carrying dozens of same-shape ids or
+ * timestamps can sanitise to a fixture in which two distinct originals are
+ * equal, and a test replaying it would then assert over values the site never
+ * had equal.
+ *
+ * Closing it means making the ordinal injective in the OUTPUT, which redefines
+ * what a synthetic run looks like — and `isSyntheticRun` recognises one purely
+ * BY that constant stride. Widening the recogniser to accept a varying stride
+ * would widen "this value is a surrogate", which is the predicate the residue
+ * backstop uses to conclude a value is not a leak; that trade belongs in its
+ * own change, with the backstop's own cases re-argued. The bound is stated
+ * here and asserted in S2 instead, so the contract the suite pins is the one
+ * this code has.
+ */
 function syntheticRun(alphabet: string, length: number, seed: number, stride: number): string {
   let out = '';
   for (let i = 0; i < length; i += 1) {
@@ -146,6 +173,11 @@ function syntheticRun(alphabet: string, length: number, seed: number, stride: nu
   return out;
 }
 
+/**
+ * The digit-only sibling of `syntheticRun`, and subject to the same KNOWN
+ * LIMIT with the tightest modulus in the set: ten. The 11th distinct value of
+ * a numeric class at a given length repeats the 1st.
+ */
 function syntheticDigits(length: number, seed: number): string {
   let out = '';
   for (let i = 0; i < length; i += 1) out += String((seed + i * 3 + 1) % 10);

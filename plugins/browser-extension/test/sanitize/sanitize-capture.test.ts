@@ -471,6 +471,35 @@ describe('contract', () => {
     expect(va).not.toBe(vc);
   });
 
+  it('S2b: distinct surrogates only up to the alphabet size, which is the stated bound', () => {
+    // Two values could never reach this: a synthetic run is determined by
+    // (first character, stride, length) and the stride is a per-class
+    // constant, so the seed yields exactly `alphabet.length` distinguishable
+    // runs and ordinals congruent modulo it collide. `numeric-string` goes
+    // through syntheticDigits, whose modulus is ten — the tightest in the set
+    // and the one a real capture reaches first, since a stream carries far
+    // more than ten distinct timestamps.
+    //
+    // Asserted rather than left implicit: S2 drove two originals and could not
+    // see this, so the contract the suite pinned was stronger than the one the
+    // code has. See syntheticDigits' own KNOWN LIMIT.
+    const distinct = Array.from({ length: 12 }, (_, i) => String(1_000_000_000_000 + i));
+    const result = sanitizeCapture(
+      baseInput({
+        raw: JSON.stringify(Object.fromEntries(distinct.map((v, i) => [`k${String(i)}`, v]))),
+      }),
+    );
+    assertOk(result);
+    const surrogates = Object.values(JSON.parse(firstChunk(result)) as Record<string, string>);
+
+    // The first ten are pairwise distinct — the guarantee, within the bound.
+    expect(new Set(surrogates.slice(0, 10)).size).toBe(10);
+    // And the eleventh repeats the first, which is the bound itself. A fix
+    // that makes the ordinal injective reds this line, which is the point:
+    // the limit stops being true the moment somebody closes it.
+    expect(surrogates[10]).toBe(surrogates[0]);
+  });
+
   // Content-independence, per value class. A surrogate may read an original's
   // SHAPE and nothing else, so two originals of the same shape must sanitise
   // to byte-identical output. This is the only check that can catch content

@@ -4,8 +4,16 @@ import type * as NodeOs from 'node:os';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { dataDir, type LocalDatabase, openLocalDatabase } from '@akasecurity/persistence';
+import {
+  applyOnboarding,
+  dataDir,
+  type LocalDatabase,
+  openLocalDatabase,
+  settingsDir,
+  writeControlPlaneCredential,
+} from '@akasecurity/persistence';
 import type { DetectedFinding, IngestEvent, Severity, SourceTool } from '@akasecurity/schema';
+import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
 import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -433,5 +441,81 @@ describe('findings page — the locations view', () => {
     expect(props.locations.items).toEqual([]);
     expect(props.selectedLocation).toBeNull();
     expect(props.instances).toBeNull();
+  });
+});
+
+// Whether the page may show Deployment controls is decided HERE, from settings,
+// and the filter is dropped when it may not: a shared ?deployment= link on a
+// machine that is not attached would otherwise narrow the list with no control
+// on screen to show or clear it.
+describe('findings page — the Deployment controls', () => {
+  const ENDPOINT = 'https://plane.example.com';
+  const AT = '2026-09-12T00:00:00.000Z';
+  const akaHome = (): string => join(home, '.aka');
+
+  function attachWithoutKey(): void {
+    applyOnboarding(
+      { runMode: 'attached', controlPlane: { endpoint: ENDPOINT, attachedAt: AT } },
+      akaHome(),
+    );
+  }
+
+  function attach(): void {
+    attachWithoutKey();
+    writeControlPlaneCredential(settingsDir(akaHome()), {
+      specVersion: 1,
+      endpoint: ENDPOINT,
+      apiKey: 'k',
+    });
+  }
+
+  function grantHistorySharing(): void {
+    applyOnboarding(
+      {
+        historySyncConsent: {
+          acknowledgedAt: AT,
+          payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+          endpoint: ENDPOINT,
+        },
+      },
+      akaHome(),
+    );
+  }
+
+  it('hands the client no deployment on a machine that is not attached, and drops the filter', async () => {
+    seedStraddlingFixture();
+    const props = await renderPage({ deployment: 'sent' });
+    expect(props.deployment).toBeNull();
+    expect(props.filters.deployment).toEqual([]);
+    // The panel read ran without the filter: both findings of the selected type.
+    expect(props.instances?.items).toHaveLength(2);
+  });
+
+  it('keeps the filter on an attached machine, where the control renders', async () => {
+    seedStraddlingFixture();
+    attach();
+    const props = await renderPage({ deployment: 'sent' });
+    expect(props.deployment).toEqual({ canRetry: false });
+    expect(props.filters.deployment).toEqual(['sent']);
+    // Nothing seeded was delivered, so the filter narrows the panel to none.
+    expect(props.instances?.items).toEqual([]);
+  });
+
+  it('can retry with history sharing granted and a usable key', async () => {
+    attach();
+    grantHistorySharing();
+    expect((await renderPage()).deployment).toEqual({ canRetry: true });
+  });
+
+  it('cannot retry without a usable key, even with history sharing granted', async () => {
+    attachWithoutKey();
+    grantHistorySharing();
+    expect((await renderPage()).deployment).toEqual({ canRetry: false });
+  });
+
+  it('hands every view the same deployment', async () => {
+    attach();
+    expect((await renderView('flat', { view: 'flat' })).deployment).toEqual({ canRetry: false });
+    expect((await renderLocations()).deployment).toEqual({ canRetry: false });
   });
 });

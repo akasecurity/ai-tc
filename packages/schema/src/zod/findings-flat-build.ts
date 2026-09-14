@@ -9,40 +9,21 @@
 // DB→API translation still goes through the shared mappers, so no enum rule is
 // restated.
 
-import {
-  type FindingFacetItem,
-  type FindingFacets,
-  type FindingInstanceDetail,
-  type FindingStatus,
-  Severity,
+import type {
+  FindingFacetItem,
+  FindingFacets,
+  FindingInstanceDetail,
+  FindingStatus,
 } from './finding.ts';
 import {
   type GroupableFindingRow,
+  severityRank,
   toApiAction,
   toApiCategory,
   toApiProvider,
 } from './findings-group-build.ts';
 
-// ─── Ordering primitives (severity rank, code-point comparison) ──────────────
-
-/**
- * Build a `{ [member]: index }` lookup mapping each element of an ordered
- * list to its position — used to derive a rank table from an enum's own
- * declared option order without restating the member names as literals.
- */
-function rankByOrder<T extends readonly PropertyKey[]>(members: T): Record<T[number], number> {
-  return Object.fromEntries(members.map((member, index) => [member, index])) as Record<
-    T[number],
-    number
-  >;
-}
-
-/**
- * Severity rank for sorting: index into Severity.options (critical=0, the
- * highest urgency, through low=3). Derived from the enum's own declared
- * order, so a member added to Severity is ranked here without a second edit.
- */
-export const SEVERITY_RANK = rankByOrder(Severity.options) satisfies Record<Severity, number>;
+// ─── Ordering primitives (code-point comparison) ─────────────────────────────
 
 /**
  * Compares two strings by Unicode CODE POINT — the order SQLite's BINARY
@@ -204,9 +185,11 @@ function toItems(counts: Map<string, number>): FindingFacetItem[] {
         a.value.localeCompare(b.value) ||
         // localeCompare reports canonically-equivalent strings (an NFC and an
         // NFD spelling of the same text) as equal, so a count tie between
-        // them would otherwise have no defined order — one that could differ
-        // between this streaming scan and an equivalent grouped SQL query.
-        // compareCodePoints breaks that tie deterministically.
+        // them would otherwise be ordered by whichever the Map iteration
+        // produced. compareCodePoints breaks that tie deterministically, which
+        // makes this a TOTAL order — not one that agrees with SQL collation,
+        // which it need not: foldFacetTuples runs this same sort over grouped
+        // tuples, so both paths order facets identically by construction.
         compareCodePoints(a.value, b.value),
     );
 }
@@ -268,13 +251,18 @@ export function createInstanceFacetAccumulator(opts: InstanceFilterOptions): {
  * findings carry it. A store that can group in its own query language returns
  * these instead of every row, so the facet counts cost the number of distinct
  * combinations rather than the number of findings.
+ *
+ * `status` is optional for the same reason it is on GroupableFindingRow: a row
+ * with no status still counts toward the total and the five other facets, and
+ * only the status facet skips it. A store whose rows can lack a status groups
+ * them into a tuple with none rather than dropping the group or inventing one.
  */
 export interface FacetTuple {
   severity: string;
   ruleId: string;
   sourceTool: string;
   actionTaken: string;
-  status: FindingStatus;
+  status?: FindingStatus;
   toolName?: string;
   count: number;
 }
@@ -283,9 +271,9 @@ export interface FacetTuple {
  * One tuple as the row shape the filters read. Every field no faceted
  * dimension touches carries a placeholder: the fold below never reads them,
  * and giving them real-looking values would invite a future filter to match on
- * something the tuple does not actually carry. `toolName` is spread rather
- * than defaulted, because "no tool" and "a tool named empty" are different to
- * the tool facet.
+ * something the tuple does not actually carry. `status` and `toolName` are
+ * spread rather than defaulted, because "no status" is not a status and "no
+ * tool" and "a tool named empty" are different to the tool facet.
  */
 export function rowFromTuple(tuple: FacetTuple): FlatFindingRow {
   return {
@@ -301,7 +289,7 @@ export function rowFromTuple(tuple: FacetTuple): FlatFindingRow {
     repo: '',
     file: '',
     eventId: '',
-    status: tuple.status,
+    ...(tuple.status === undefined ? {} : { status: tuple.status }),
     ...(tuple.toolName === undefined ? {} : { toolName: tuple.toolName }),
   };
 }
@@ -417,13 +405,6 @@ export interface LocationAccumulator {
   ruleIds: Set<string>;
 }
 
-const SEVERITY_ORDER: Partial<Record<string, number>> = {
-  critical: 0,
-  high: 1,
-  medium: 2,
-  low: 3,
-};
-
 export function newLocationAccumulator(): LocationAccumulator {
   return {
     instanceCount: 0,
@@ -439,7 +420,7 @@ export function newLocationAccumulator(): LocationAccumulator {
 
 export function addToLocation(acc: LocationAccumulator, row: FlatFindingRow): void {
   acc.instanceCount += 1;
-  const rank = SEVERITY_ORDER[row.severity] ?? Number.MAX_SAFE_INTEGER - 1;
+  const rank = severityRank(row.severity) ?? Number.MAX_SAFE_INTEGER - 1;
   if (rank < acc.maxSeverityRank) {
     acc.maxSeverityRank = rank;
     acc.maxSeverity = row.severity;
@@ -502,8 +483,8 @@ export function compareLocationOrder(a: LocationOrderKey, b: LocationOrderKey): 
   // for its own `sev`. It differs from newLocationAccumulator's miss value on
   // purpose: that one is picking a maximum and must lose every comparison, this
   // one is ordering and must not bucket an unknown value among the known ones.
-  const rankA = SEVERITY_ORDER[a.maxSeverity] ?? -1;
-  const rankB = SEVERITY_ORDER[b.maxSeverity] ?? -1;
+  const rankA = severityRank(a.maxSeverity) ?? -1;
+  const rankB = severityRank(b.maxSeverity) ?? -1;
   if (rankA !== rankB) return rankA - rankB;
   // latestDetectedAt descending — ISO-8601 strings sort lexically.
   if (a.latestDetectedAt !== b.latestDetectedAt) {

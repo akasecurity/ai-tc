@@ -15,11 +15,15 @@ import {
   matchesInstanceFilters,
   newLocationAccumulator,
   rowFromTuple,
-  Severity,
   SEVERITY_RANK,
+  severityRank,
   sortFindingTypes,
   toInstanceDetail,
 } from '../../src/zod/index.ts';
+
+// Severity strings that name an inherited Object.prototype member, which a bare
+// `table[value]` lookup resolves to a function instead of a miss.
+const PROTOTYPE_KEYS = ['constructor', 'toString', '__proto__', 'hasOwnProperty'];
 
 function row(over: Partial<FlatFindingRow> = {}): FlatFindingRow {
   return {
@@ -41,8 +45,28 @@ function row(over: Partial<FlatFindingRow> = {}): FlatFindingRow {
 }
 
 describe('SEVERITY_RANK', () => {
-  it('derives rank from Severity.options order', () => {
-    expect(Severity.options.map((s) => SEVERITY_RANK[s])).toEqual([0, 1, 2, 3]);
+  // A literal, not a read-back of Severity.options: the table is derived from
+  // the enum's declared order, so a comparison against that same order holds
+  // whatever it is. Reordering the enum would silently invert the findings
+  // list, and this is what goes red.
+  it('ranks critical first and low last', () => {
+    expect(SEVERITY_RANK).toEqual({ critical: 0, high: 1, medium: 2, low: 3 });
+  });
+});
+
+// A severity arrives as an arbitrary string — from a stored row or from a
+// caller-supplied cursor — so a value naming an Object.prototype member must
+// miss the rank table exactly as 'not-a-severity' does, not resolve to the
+// inherited function and turn every comparison against it into NaN.
+describe('severityRank', () => {
+  it('ranks every known severity', () => {
+    for (const [severity, rank] of Object.entries(SEVERITY_RANK)) {
+      expect(severityRank(severity)).toBe(rank);
+    }
+  });
+
+  it.each(['not-a-severity', ...PROTOTYPE_KEYS])('misses on %s', (value) => {
+    expect(severityRank(value)).toBeUndefined();
   });
 });
 
@@ -274,6 +298,15 @@ describe('foldFacetTuples', () => {
       status: 'resolved',
       count: 1,
     },
+    // No status: a row that predates the resolution feature still counts toward
+    // the total and five facets, and only the status facet skips it.
+    {
+      severity: 'high',
+      ruleId: 'aws-key',
+      sourceTool: 'codex',
+      actionTaken: 'log',
+      count: 4,
+    },
   ];
 
   function oracle(tuples: readonly FacetTuple[], opts: Parameters<typeof foldFacetTuples>[1]) {
@@ -328,7 +361,20 @@ describe('foldFacetTuples', () => {
     // A tuple carries none of those fields, so a matcher that honoured them
     // would reject every tuple and report zero.
     const scoped = foldFacetTuples(TUPLES, { repo: 'acme/api', file: 'a.ts', q: 'nothing' });
-    expect(scoped.total).toBe(11);
+    expect(scoped.total).toBe(15);
+  });
+
+  it('counts a status-less tuple toward the total and every facet but status', () => {
+    const { total, facets } = foldFacetTuples(TUPLES, {});
+    expect(total).toBe(15);
+    // 11 of the 15 carry a status; the 4 without one are absent from that
+    // facet alone.
+    expect(facets.status.reduce((sum, item) => sum + item.count, 0)).toBe(11);
+    for (const dimension of ['severity', 'subtype', 'provider', 'action'] as const) {
+      expect(facets[dimension].reduce((sum, item) => sum + item.count, 0)).toBe(15);
+    }
+    // And a status filter excludes it from the total, as it would the row.
+    expect(foldFacetTuples(TUPLES, { statuses: ['open', 'handled', 'resolved'] }).total).toBe(11);
   });
 });
 
@@ -401,6 +447,20 @@ describe('compareFindingGroupOrder', () => {
     ).toBeLessThan(0);
   });
 
+  // The cursor decoder does not validate `sev` against the enum on the strength
+  // of the case above, so a value naming an Object.prototype member has to rank
+  // the same way — a finite comparison, before every known severity — rather
+  // than a NaN that `sort` reads as a tie and `> 0` reads as never after.
+  it.each(PROTOTYPE_KEYS)('ranks the prototype name %s below every known severity', (value) => {
+    for (const known of Object.keys(SEVERITY_RANK)) {
+      const cmp = compareFindingGroupOrder(
+        group({ severity: value as FindingTypeSummary['severity'] }),
+        group({ severity: known as FindingTypeSummary['severity'] }),
+      );
+      expect(cmp).toBeLessThan(0);
+    }
+  });
+
   it('is the comparator sortFindingTypes uses', () => {
     const groups = [
       { severity: 'low', latestDetectedAt: '2026-01-03T00:00:00.000Z', id: 'x' },
@@ -439,6 +499,23 @@ describe('location accumulator', () => {
     addToLocation(acc, row({ severity: 'not-a-severity' }));
     addToLocation(acc, row({ severity: 'high' }));
     expect(acc.maxSeverity).toBe('high');
+  });
+
+  // A single row is the discriminating shape: a prototype name that resolved to
+  // an inherited function would compare NaN against the starting rank, lose,
+  // and leave the location reading 'low' at the starting rank — where a real
+  // unknown value takes the slot one below it.
+  it.each(PROTOTYPE_KEYS)('ranks the prototype name %s as an unknown severity', (value) => {
+    const unknown = newLocationAccumulator();
+    addToLocation(unknown, row({ severity: 'not-a-severity' }));
+
+    const acc = newLocationAccumulator();
+    addToLocation(acc, row({ severity: value }));
+    expect(acc.maxSeverityRank).toBe(unknown.maxSeverityRank);
+    expect(acc.maxSeverity).toBe(value);
+
+    addToLocation(acc, row({ severity: 'low' }));
+    expect(acc.maxSeverity).toBe('low');
   });
 });
 
@@ -537,6 +614,21 @@ describe('compareLocationOrder', () => {
       expect(
         compareLocationOrder(loc({ maxSeverity: 'not-a-severity' }), loc({ maxSeverity: known })),
       ).toBeLessThan(0);
+    }
+  });
+
+  // The location cursor's `sev` is caller-supplied and unvalidated, so a value
+  // naming an Object.prototype member must take the same path. Resolved to the
+  // inherited function it would compare NaN, nothing would sort after the
+  // cursor, and the page would come back empty.
+  it.each(PROTOTYPE_KEYS)('ranks the prototype name %s before every known severity', (value) => {
+    for (const known of Object.keys(SEVERITY_RANK)) {
+      expect(
+        compareLocationOrder(loc({ maxSeverity: value }), loc({ maxSeverity: known })),
+      ).toBeLessThan(0);
+      expect(
+        compareLocationOrder(loc({ maxSeverity: known }), loc({ maxSeverity: value })),
+      ).toBeGreaterThan(0);
     }
   });
 });

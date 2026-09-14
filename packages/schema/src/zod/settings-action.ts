@@ -78,6 +78,22 @@ export const SaveSettingsInput = z.object({
   historySyncConsent: HistorySyncConsentChoice,
   vaultConsent: z.string(),
   vaultInlineReveal: z.string(),
+  // Widened to `string` like its neighbours rather than typed as
+  // `RedactFallback`, on this module's own layering rule: shape here, VALUE at
+  // the call site, so the domain check receives the type it was written for.
+  //
+  // NOT because a narrower schema would reject differently. `parseActionInput`
+  // is a `safeParse` wrapper and throws for no field schema, so either spelling
+  // reaches a recoverable `{ ok: false }` and there is no rejected promise to
+  // trade against. The real cost runs the other way and is the part worth
+  // knowing: a value this schema admits and the domain enum then rejects lands
+  // on the action's shared refusal, which names NO field, where a shape
+  // rejection reaches `malformedInput` and names the schema key.
+  redactFallback: z.string(),
+  // Shape only, the way the enum fields above are strings only: the RANGE is
+  // `BodyRetention`'s and the action checks it there, so there is one place
+  // that decides what a legal horizon is rather than two that can drift.
+  bodyRetention: z.object({ enabled: z.boolean(), retainDays: z.number() }),
 });
 export type SaveSettingsInput = z.infer<typeof SaveSettingsInput>;
 

@@ -7,8 +7,20 @@
  * after 24 h and terminal `exceptions` after 90 days — and it is easy to read
  * those two constants as evidence that the store manages its own size. It does
  * not. Everything else grows for as long as the machine is used, and at the
- * measured 902.8 B/event `store-growth.test.ts` pins that is the difference between a store
- * that settles and one that reaches nearly a gigabyte per million events and keeps going.
+ * measured 1,048.6 B/event `store-growth.test.ts` pins that is the difference between a store
+ * that settles and one that reaches a gigabyte per million events and keeps going.
+ *
+ * **A THIRD SWEEP EXISTS AND DOES NOT BELONG ON EITHER LIST.** Local body expiry
+ * clears `audit_events.content` past a horizon, and on a real store that is
+ * where nearly all of the bytes are — one measured 6 GB store carried 5.27 GB of
+ * body text, 4.85 GB of it `code_change`. But it deletes NO ROW: the event, its
+ * timestamps and severity, and every finding derived from it survive, which is
+ * exactly why `audit_events` stays below among the tables nothing sweeps. The
+ * lists here are about ROWS. That distinction is load-bearing rather than
+ * pedantic — a future "optimisation" that expired a body by deleting its row
+ * would reclaim the same bytes, pass any check counting megabytes, and quietly
+ * destroy the security history this store exists to keep. It is run in the same
+ * pass as the other two below so that membership is a live assertion about it.
  *
  * This pins the split BEHAVIOURALLY rather than by reading the source. A text
  * scan for `DELETE FROM` cannot tell a retention sweep from a cascade, a
@@ -197,6 +209,18 @@ describe('the store retention surface', () => {
       repo: null,
     });
 
+    // Body expiry is the third sweep, and it is the reason `audit_events` stays
+    // in the unbounded list rather than moving across: it clears `content` and
+    // deletes NOTHING, so the row count it is run against here must not move.
+    // Run with a cutoff that spares no row and the sync lane wide open, so the
+    // membership below is a real assertion about this sweep rather than one
+    // about a sweep that never fired.
+    db.bodyRetention.expire({
+      cutoff: Date.now(),
+      sweepSyncLane: true,
+      now: Date.now(),
+    });
+
     after = counts();
   });
 
@@ -216,6 +240,25 @@ describe('the store retention surface', () => {
     for (const table of UNBOUNDED_TABLES) {
       expect(after[table], `${table} lost rows to a sweep`).toBe(before[table]);
     }
+  });
+
+  it('body expiry cleared bodies without costing a row', () => {
+    // The positive control for the sweep above, and it is what stops
+    // `audit_events`'s place in UNBOUNDED_TABLES being satisfied by a body
+    // sweep that did nothing. The two halves are the whole design: every body
+    // in range is gone, and the row count did not move (asserted above).
+    const raw = corpusConnection(db);
+    const withBody = raw
+      .prepare(`SELECT COUNT(*) AS n FROM audit_events WHERE content IS NOT NULL`)
+      .get() as { n: number };
+    const expired = raw
+      .prepare(`SELECT COUNT(*) AS n FROM audit_events WHERE content_expired_at IS NOT NULL`)
+      .get() as { n: number };
+
+    expect(expired.n, 'body expiry stamped nothing — the sweep never fired').toBeGreaterThan(0);
+    expect(withBody.n, 'a body survived a cutoff that spares nothing').toBe(0);
+    // And the findings derived from those bodies are all still here.
+    expect(after.inspection_findings).toBe(before.inspection_findings);
   });
 
   it('the two swept tables did lose their aged rows', () => {

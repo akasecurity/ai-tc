@@ -59,7 +59,7 @@ function parseFlags(argv: string[]): Flags {
 
 // The follow-up hint is host-specific (a Claude Code slash command), so it is
 // injected here rather than baked into the shared renderer.
-const FOLLOW_UP = 'Run /findings to review details.';
+const FOLLOW_UP = 'Run /aka:findings to review details.';
 
 try {
   const { dir, discover, root, depth } = parseFlags(process.argv.slice(2));

@@ -253,3 +253,71 @@ describe('the spawn plan discloses every command the automated path runs', () =>
     expect(plan.length).toBeGreaterThan(recipe.length);
   });
 });
+
+// The scope the plugin is ALREADY INSTALLED AT, bound into the manager rather
+// than passed per call.
+//
+// `installedPluginVersions` prefers a `user` record and FALLS BACK to the first
+// one carrying a version, while `claude plugin update` defaults to
+// `--scope user`. So on a machine where an enterprise managed-settings drop-in
+// put the plugin at `managed`, the comparison read the managed record, reported
+// an update, and the apply then failed with
+// `Plugin "ai-tc" is not installed at scope user` — every time, for ever.
+//
+// Bound at construction because there are FOUR ways to reach the update verb,
+// and a per-call parameter is one a caller threads into the spawn and forgets
+// in the hint. This package's own convention says the hint copy and the spawned
+// command must be one string; a scope on one and not the other breaks that in a
+// way only the user's terminal sees.
+describe('the installed scope reaches every update surface', () => {
+  const REF = 'ai-tc@akasecurity';
+  const SOURCE = 'akasecurity/ai-tc';
+  const managed = createCliPluginManager('claude', 'managed');
+
+  it('names the scope in the steps that are spawned', () => {
+    expect(managed.updateSteps(REF)).toEqual([['plugin', 'update', REF, '--scope', 'managed']]);
+  });
+
+  it.each([
+    ['the recipe a user retypes', () => managed.updateRecipe(REF, SOURCE)],
+    ['the spawn plan the CLI announces', () => managed.updateSpawnPlan(REF, SOURCE, 'akasecurity')],
+  ])('names it in %s', (_label, render) => {
+    // Every surface or none: a hint that omits the scope tells the user to run
+    // a command that fails where the spawn beside it succeeded, which is worse
+    // than the bug it replaced because it reads as the user's mistake.
+    expect(render().some((line) => line.includes('--scope managed'))).toBe(true);
+  });
+
+  it('leaves the INSTALL path alone, which has no prior scope to honour', () => {
+    // An install is not targeting an existing record, so a scope read from one
+    // would be inventing a destination.
+    expect(managed.installSteps(REF)).toEqual([['plugin', 'install', REF]]);
+    expect(managed.installRecipe(REF, SOURCE).join(' ')).not.toContain('--scope');
+  });
+
+  it('says nothing when the ledger names no scope', () => {
+    // The state every caller was in before a scope could be read at all: the
+    // host's own default applies, unchanged.
+    expect(createCliPluginManager('claude').updateSteps(REF)).toEqual([['plugin', 'update', REF]]);
+  });
+
+  it.each(['user', 'project', 'local', 'managed'])('carries %s verbatim', (scope) => {
+    // Including `user`. The implicit agreement between the two halves is what
+    // broke, so the reading the comparison used is stated even when it matches
+    // the host's default. Whether a given scope may be updated is the HOST's
+    // call — a refusal from `claude` naming `managed` is a true answer, unlike
+    // the one this replaces.
+    expect(createCliPluginManager('claude', scope).updateSteps(REF)).toEqual([
+      ['plugin', 'update', REF, '--scope', scope],
+    ]);
+  });
+
+  it('is ignored by Codex, which keeps one cache per home', () => {
+    // Passed unconditionally by every caller, because the lookup reads Claude
+    // Code's ledger and a Codex ref is simply absent from it. A scope that
+    // somehow arrived must still not reach a CLI with no such flag.
+    expect(createCliPluginManager('codex', 'managed').updateSteps('aka-codex@ai-tc')).toEqual([
+      ['plugin', 'add', 'aka-codex@ai-tc'],
+    ]);
+  });
+});

@@ -27,6 +27,7 @@ import { configInventoryInputs, harnessFromTool } from '@akasecurity/schema';
 import { triggerHistorySync } from './attached/history-sync-trigger.ts';
 import type { PluginBuildInfo } from './attached/plugin-block.ts';
 import { triggerPolicySync } from './attached/sync-trigger.ts';
+import { triggerContentRetention } from './content-retention-trigger.ts';
 import { pluginRecordedBy } from './recorder.ts';
 import { resolveDataGateway } from './resolve.ts';
 
@@ -193,6 +194,13 @@ export async function handleSessionStart(
       // covering both would let whichever ran first suppress the other. Never
       // throws, never awaited: see triggerHistorySync.
       triggerHistorySync(config);
+      // Local body expiry, in its own detached child. Unlike the two above it
+      // is not gated on attachment — it is disk hygiene every machine wants —
+      // and it carries its own hourly window, because what it bounds is the
+      // store's size rather than how stale a deployment's view is. Off by
+      // default, so on most machines this returns without spawning anything.
+      // Never throws, never awaited: see triggerContentRetention.
+      triggerContentRetention(config);
       // The stale-session check (P2): only meaningful when this session
       // knows its own version; a failing check here falls through to the
       // outer fail-open.

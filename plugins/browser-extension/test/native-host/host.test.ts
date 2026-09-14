@@ -39,6 +39,7 @@ function config(tool: WebSourceTool | undefined): PluginConfig {
       vaultKeyCustody: 'file',
       vaultInlineReveal: 'masked',
       redactFallback: 'warn',
+      bodyRetention: { enabled: false, retainDays: 30 },
     },
     dataDir: dir,
     dbPath: join(dir, 'aka.db'),

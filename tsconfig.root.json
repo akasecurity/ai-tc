@@ -2,10 +2,10 @@
   // The repo-root sources no workspace package owns: the vitest no-network guard,
   // the shared adversarial fixture corpus (whose whole point is that three
   // packages' walkers drive the SAME hostile trees, so it can live inside none of
-  // them), the shared temp-tree teardown helper (nine packages' teardowns need
-  // the SAME win32 rule, for the same reason), the shared pre-migrated store
-  // template (six packages' suites copy one store rather than each migrating a
-  // fresh one per test), the shared vitest coverage block
+  // them), the shared temp-tree teardown helper (every package that removes a
+  // temp tree needs the SAME win32 rule, for the same reason), the shared
+  // pre-migrated store template (six packages' suites copy one store rather
+  // than each migrating a fresh one per test), the shared vitest coverage block
   // and per-package floor table (every package's vitest config imports it), the
   // CI egress probe, and
   // lint:root's own ESLint config (a root-level file, not a directory — it

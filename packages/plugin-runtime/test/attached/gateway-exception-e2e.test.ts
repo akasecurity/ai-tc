@@ -59,6 +59,7 @@ const settings = (): WorkspaceSettings => ({
   vaultKeyCustody: 'file',
   vaultInlineReveal: 'masked',
   redactFallback: 'warn',
+  bodyRetention: { enabled: false, retainDays: 30 },
 });
 
 /** A local store whose exception ledger answers however the test says. */

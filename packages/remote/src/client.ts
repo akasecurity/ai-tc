@@ -368,6 +368,12 @@ export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
         url: url(ROUTES.shares),
         body: JSON.stringify(validated.data),
       });
+      // A DEPLOYMENT THAT PREDATES THIS ROUTE answers 404, and this is the one
+      // place that fact is known: the batch audit route names its own 404 the
+      // same way. Naming it here is what lets a caller tell "older deployment"
+      // from a wrong URL or a proxy answering for a path it never had — the
+      // classifier deliberately reads a bare 404 as neither.
+      if (response.status === 404) throw new RemoteRouteAbsent(ROUTES.shares);
       okBody(response);
     },
 

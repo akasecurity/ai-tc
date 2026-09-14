@@ -53,6 +53,12 @@ export interface RecommendedActionsView {
   items: RecommendedAction[];
   isLoading: boolean;
   error: string | null;
+  /**
+   * Destination for the header's "View all" control. Host-supplied so this package
+   * stays router-agnostic. Omitted, the control is not rendered at all — a button
+   * that looks live and does nothing reads as a broken feature.
+   */
+  viewAllHref?: string | undefined;
   applyAction: (id: string) => void;
   dismissAction: (id: string) => void;
   isMutating: boolean;
@@ -67,6 +73,7 @@ export function RecommendedActionsCardView({
   dismissAction,
   isMutating,
   mutationError,
+  viewAllHref,
 }: RecommendedActionsView) {
   return (
     <Card className="flex flex-col shadow-sm">
@@ -77,14 +84,19 @@ export function RecommendedActionsCardView({
         <CardHeading>
           <CardTitle>Recommended actions</CardTitle>
           <CardDescription>
-            {isLoading ? 'Loading…' : `${String(items.length)} prioritized for your environment`}
+            {/* The scope is named because it is NOT the page's range: this card
+                reports what is still open, so a reader whose range selector says
+                "last 7 days" is not looking at a seven-day number. */}
+            {isLoading ? 'Loading…' : `${String(items.length)} open, prioritized for you`}
           </CardDescription>
         </CardHeading>
-        <CardAction>
-          <Button variant="ghost" tone="primary" size="sm">
-            View all
-          </Button>
-        </CardAction>
+        {viewAllHref ? (
+          <CardAction>
+            <Button asChild variant="ghost" tone="primary" size="sm">
+              <a href={viewAllHref}>View all</a>
+            </Button>
+          </CardAction>
+        ) : null}
       </CardHeader>
       <CardContent aria-busy={isLoading}>
         {error ? (
@@ -96,7 +108,9 @@ export function RecommendedActionsCardView({
             ))}
           </div>
         ) : items.length === 0 ? (
-          <div className="py-6 text-center text-xs text-text-3">No recommendations right now.</div>
+          // "open", not "right now": an empty card here means nothing is
+          // outstanding, which is a different claim from nothing being recent.
+          <div className="py-6 text-center text-xs text-text-3">No open findings.</div>
         ) : (
           <>
             {mutationError && <WidgetError message={mutationError} />}

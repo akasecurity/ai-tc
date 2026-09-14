@@ -72,6 +72,7 @@ export default defineConfig({
     // in scripts/ like every other entry, because that is where
     // triggerHistorySync resolves it from.
     'history-sync': 'src/history-sync.ts',
+    'content-retention': 'src/content-retention.ts',
     statusline: 'src/statusline.ts',
     // Read surface (/health · /findings · /recommend · /audit) + onboarding (/aka:setup)
     query: 'src/query.ts',

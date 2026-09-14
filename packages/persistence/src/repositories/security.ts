@@ -73,7 +73,7 @@ const ENFORCEMENT_KINDS: readonly EnforcementActionKind[] = ['blocked', 'redacte
 // Three such surfaces are known and none is scanned: assistant responses are
 // never read back out of the DOM; an ATTACHMENT is a sibling node rather than
 // composer text, so a file added by paperclip, drag-drop or paste egresses with
-// no scan, no event and no finding (extractText is extractContentEditableText
+// no scan, no event and no finding (extractText is extractComposerText
 // on both adapters and reads the composer element alone); and EDIT-AND-RESEND
 // submits from the message being edited rather than the composer, so nothing
 // watches it. Treat that list as a floor rather than a partition: the

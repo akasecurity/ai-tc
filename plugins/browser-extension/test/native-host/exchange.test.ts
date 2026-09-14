@@ -267,6 +267,71 @@ describe('toLlmCallInput', () => {
   });
 });
 
+describe('toToolCallInputs: what a target may cost to scan', () => {
+  it('hands the scanner a bounded target, however long the raw one is', () => {
+    // The scan is shieldPointers + scan + redact over the whole value, and one
+    // host process serves every tab in sequence, so an unbounded target stalls
+    // every other tab's capture, exchange and ping behind it. The masked value
+    // was already size-capped for storage; this bounds the WORK.
+    let scanned = '';
+    const measuring: TargetScanner = (text) => {
+      scanned = text;
+      return { masked: text, findings: [] };
+    };
+    const exchange = WebExchange.parse({
+      messageId: 'msg_big_target',
+      startedAt: ISO,
+      usageSource: 'none',
+      toolCalls: [{ toolUseId: 'tu_big', toolName: 'web_search', target: 'z'.repeat(300_000) }],
+    });
+
+    toToolCallInputs(exchange, SESSION, measuring);
+    expect(scanned.length).toBeGreaterThan(0);
+    expect(scanned.length).toBeLessThan(300_000);
+  });
+
+  it('scans an ordinary target whole', () => {
+    // The control: the ceiling sits far above any target this can audit, so a
+    // real one must reach the scanner untouched. Without this the case above
+    // would pass with the target cut to nothing.
+    let scanned = '';
+    const measuring: TargetScanner = (text) => {
+      scanned = text;
+      return { masked: text, findings: [] };
+    };
+    const target = 'https://example.test/search?q=' + 'a'.repeat(2_000);
+    const exchange = WebExchange.parse({
+      messageId: 'msg_ord_target',
+      startedAt: ISO,
+      usageSource: 'none',
+      toolCalls: [{ toolUseId: 'tu_ord', toolName: 'web_search', target }],
+    });
+
+    toToolCallInputs(exchange, SESSION, measuring);
+    expect(scanned).toBe(target);
+  });
+
+  it('bounds how many tool calls one turn contributes', () => {
+    // Each entry costs a scan. A five-figure list is not a turn this can
+    // audit; the tail is dropped rather than the whole exchange refused, so
+    // the reply, the usage and the llm_call leaf all survive.
+    const exchange = WebExchange.parse({
+      messageId: 'msg_many',
+      startedAt: ISO,
+      usageSource: 'none',
+      toolCalls: Array.from({ length: 1_000 }, (_unused, i) => ({
+        toolUseId: `tu_${String(i)}`,
+        toolName: 'web_search',
+        target: 'q',
+      })),
+    });
+
+    const inputs = toToolCallInputs(exchange, SESSION, noopScanner);
+    expect(inputs.length).toBeGreaterThan(0);
+    expect(inputs.length).toBeLessThan(1_000);
+  });
+});
+
 describe('toToolCallInputs', () => {
   it('maps every declared WebToolCall field, key by key', () => {
     // Parsed through the real schema, for the same reason the llm_call whole-

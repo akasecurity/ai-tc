@@ -168,6 +168,51 @@ describe('hashProjectKey — cross-device convergence', () => {
     });
   });
 
+  // A `file://` remote is a real git remote form, and it names a local path.
+  describe('a file:// remote, which names a path on one machine', () => {
+    // The digest of a key taken over its text exactly as given, computed
+    // independently of `hashProjectKey`, so "returned untouched" is stated as a
+    // construction rather than inferred from two calls agreeing.
+    const untouched = (key: string): string =>
+      createHash('sha256').update(`v2:${key}`, 'utf8').digest('hex');
+
+    it('does not read an empty authority as a host named "file"', () => {
+      // Scp form matches `file:///srv/repos/demo` with host `file` and path
+      // `///srv/repos/demo`, and the digest was taken over `file/srv/repos/demo`.
+      expect(hashProjectKey('git:file:///srv/repos/demo')).not.toBe(
+        hashProjectKey('git:file/srv/repos/demo'),
+      );
+      expect(hashProjectKey('git:file:///srv/repos/demo')).toBe(
+        untouched('git:file:///srv/repos/demo'),
+      );
+    });
+
+    it.each([
+      'file:///srv/repos/demo',
+      'file://localhost/srv/repos/demo',
+      'FILE:///srv/repos/demo',
+    ])('digests %s over its text as given', (url) => {
+      expect(hashProjectKey(`git:${url}`)).toBe(untouched(`git:${url}`));
+    });
+
+    it.each(['file:///srv/repos/demo', 'file://localhost/srv/repos/demo'])(
+      'keeps %s apart from the same path ending in .git',
+      (url) => {
+        // A bare repository beside a working one is an ordinary layout, and the
+        // trailing-`.git` strip merged the two into one project.
+        expect(hashProjectKey(`git:${url}`)).not.toBe(hashProjectKey(`git:${url}.git`));
+      },
+    );
+
+    it('still canonicalizes scp form against a host that is merely named file', () => {
+      // The positive control: the exclusion is the `://` spelling, not the word.
+      // Without this, a guard on any `file:` prefix would satisfy every case above.
+      expect(hashProjectKey('git:file:acme/widgets.git')).toBe(
+        hashProjectKey('git:ssh://file/acme/widgets'),
+      );
+    });
+  });
+
   it('gives an unrecognised remote a stable digest rather than guessing', () => {
     // Neither scheme nor scp form. It gets no convergence, which is the honest
     // outcome, but it must still hash the same way twice or the device would

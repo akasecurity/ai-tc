@@ -294,19 +294,29 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
 function nextWebChatCapture(
   current: WorkspaceSettings,
   choice: WebChatCaptureConsentChoice,
-): WebChatCapture {
+): WebChatCapture | undefined {
+  // 'unchanged' is what every UNRELATED save sends, and it is answered from the
+  // file rather than from the defaults. `webChatCaptureOf` falls back to the
+  // schema's defaults when the key is absent, so defaulting first meant that
+  // toggling vault reveal on a machine that had never answered this question
+  // wrote `{ responses: 'with-findings', account: false }` into settings.json —
+  // contradicting "absent until the user answers", which is what every reader
+  // of the file takes an absent key to mean, and which the three sibling grants
+  // beside this one all honour.
+  //
+  // Returning the file's own value also keeps the rebuild-whole property below
+  // intact: there is nothing to rebuild when the answer is "no change".
+  if (choice === 'unchanged') return current.webChatCapture;
   const block = webChatCaptureOf(current);
   const consent =
-    choice === 'unchanged'
-      ? block.consent
-      : choice === 'granted'
-        ? isWebChatCaptureConsentValid(block.consent)
-          ? block.consent
-          : {
-              acknowledgedAt: new Date().toISOString(),
-              version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
-            }
-        : undefined;
+    choice === 'granted'
+      ? isWebChatCaptureConsentValid(block.consent)
+        ? block.consent
+        : {
+            acknowledgedAt: new Date().toISOString(),
+            version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+          }
+      : undefined;
   // Spread conditionally rather than assigning `undefined`: an explicit
   // undefined is a present key under exactOptionalPropertyTypes, and the absence
   // of this key is what "not granted" means to every reader of the file.

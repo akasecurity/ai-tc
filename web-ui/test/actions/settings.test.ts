@@ -687,6 +687,43 @@ describe('saveSettings — the web-chat capture grant', () => {
     applyOnboarding({ webChatCapture: block as never }, join(home, '.aka'));
   };
 
+  it('leaves the key absent when an unrelated save answers nothing', async () => {
+    // A fresh home and a save about something else entirely — the response
+    // mode and the account answer have no control on this page, and the grant
+    // was never given. Writing a default block here would record three answers
+    // nobody gave, and every reader of the file takes an absent key to mean
+    // exactly that nobody has answered.
+    const res = await saveSettings(payload('unchanged', { vaultInlineReveal: 'full' }));
+    expect(res).toEqual({ ok: true });
+
+    // The RAW file, not the parsed settings: reading it back through the
+    // schema applies the same defaults that hid this, so a parsed read would
+    // pass whether or not the key was written.
+    expect(rawSettings()).not.toContain('webChatCapture');
+    // The positive control — the save really did land, so the absence above is
+    // about this key rather than about a refused write.
+    expect(readWorkspaceSettings().vaultInlineReveal).toBe('full');
+  });
+
+  it('carries a seeded block through an unrelated save untouched', async () => {
+    // The other half of the short-circuit: answering 'unchanged' from the file
+    // must not drop a block that IS there, which is what the rebuild-whole
+    // comment in the action is about.
+    await seed({
+      responses: 'always',
+      account: true,
+      consent: { acknowledgedAt: '2026-01-01T00:00:00.000Z', version: 1 },
+    });
+
+    const res = await saveSettings(payload('unchanged', { vaultInlineReveal: 'full' }));
+    expect(res).toEqual({ ok: true });
+
+    const block = readWorkspaceSettings().webChatCapture;
+    expect(block?.responses).toBe('always');
+    expect(block?.account).toBe(true);
+    expect(block?.consent?.acknowledgedAt).toBe('2026-01-01T00:00:00.000Z');
+  });
+
   it("records a server-stamped grant at the current version on 'granted'", async () => {
     const before = Date.now();
     const res = await saveSettings(payload('granted'));

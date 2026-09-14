@@ -537,13 +537,26 @@ describe('scanTeardowns — false alarms the first parser-based version raised',
     ).toEqual([]);
   });
 
-  it('does not count a parameter that shadows a wrapper', () => {
+  // The call to `cleanup` really runs here — forEach invokes the callback — so
+  // the only thing standing between it and the outer wrapper is the parameter
+  // that shadows it. The control below is the same shape without the parameter,
+  // which proves that is what the first case is testing.
+  it('does not follow a name a parameter shadows', () => {
     expect(
       removals(`
         const cleanup = () => removeTree(home);
-        afterEach(() => { run((cleanup: () => void) => cleanup); });
+        afterEach(() => { [noop].forEach((cleanup) => cleanup()); });
       `),
     ).toEqual([]);
+  });
+
+  it('does follow the same call when nothing shadows it', () => {
+    expect(
+      removals(`
+        const cleanup = () => removeTree(home);
+        afterEach(() => { [noop].forEach((fn) => cleanup()); });
+      `),
+    ).toEqual(['afterEach → cleanup → removeTree']);
   });
 });
 

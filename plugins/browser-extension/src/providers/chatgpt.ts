@@ -115,6 +115,45 @@ function attributeOf(html: string, name: string): string | undefined {
   return value === undefined || value === '' ? undefined : value;
 }
 
+/**
+ * Where the element `tag` opened before `from` closes, or -1 if it has not.
+ *
+ * Depth-counted rather than the first `</tag>`, because a block's own rendered
+ * content routinely carries an element with the wrapper's tag name — a `<div>`
+ * around a code block or a table is the ordinary case — and the first close tag
+ * then belongs to THAT one. The snapshot is cut at it and the remainder of the
+ * reply is dropped silently: no shape miss, no parse failure, just a short
+ * answer reported as a complete one.
+ *
+ * One pass with a positioned regex rather than re-slicing per tag, so the scan
+ * stays linear in the frame. `tag` is whatever BLOCK_OPEN captured, and its own
+ * character class admits no regex metacharacter, so it is safe to interpolate.
+ *
+ * Case-sensitive, matching the close-tag search this replaced: a differently
+ * cased pair is then ignored on both halves rather than on one, so the depth
+ * still balances. Two shapes are deliberately counted as opens and so leave the
+ * block unclosed — a same-named tag inside an attribute value or an HTML
+ * comment, and a self-closing `<tag/>` — which costs that block's text rather
+ * than borrowing text from after it.
+ */
+function closeTagIndex(html: string, tag: string, from: number): number {
+  // The name has to be followed by whitespace, `>` or `/`, or `<divider>`
+  // would open a `<div>`.
+  const tags = new RegExp(`<(/?)${tag}(?=[\\s/>])`, 'g');
+  tags.lastIndex = from;
+  let depth = 1;
+  for (;;) {
+    const hit = tags.exec(html);
+    if (hit === null) return -1;
+    if (hit[1] === '/') {
+      depth -= 1;
+      if (depth === 0) return hit.index;
+    } else {
+      depth += 1;
+    }
+  }
+}
+
 // A block element: the marker attribute carries no value, and the ordinal
 // lives in its own `-index` attribute beside it. Matching on the marker's own
 // quote is what keeps `-index` from matching here as well.
@@ -166,10 +205,11 @@ function createChatgptAnonymousAssembler(): ExchangeAssembler {
       if (tag === undefined || attributes === undefined) continue;
       const ordinal = attributeOf(attributes, 'data-assistant-stream-block-index') ?? '0';
       if (!/^[0-9]{1,6}$/.test(ordinal)) continue;
-      // Non-greedy to the first matching close tag. These elements do not nest
-      // inside one another on this stream, and a block whose close tag has not
+      // Depth-counted to this element's OWN close tag: the block does not
+      // nest inside another block on this stream, but its rendered content
+      // carries same-named elements routinely. A block whose close tag has not
       // arrived contributes nothing rather than the rest of the frame.
-      const close = html.indexOf(`</${tag}>`, open.index + whole.length);
+      const close = closeTagIndex(html, tag, open.index + whole.length);
       if (close === -1) continue;
       blocks.set(Number(ordinal), textOfBlock(html.slice(open.index + whole.length, close)));
     }

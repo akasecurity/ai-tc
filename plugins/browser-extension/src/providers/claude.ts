@@ -274,18 +274,28 @@ export const claudeAdapter: ProviderAdapter = {
   // sequence and then driven against the captured bytes unchanged, and the
   // request keys named here are the ones that capture carries.
   //
-  // `requiredPaths.response` names only fields the capture showed
-  // POPULATED. A declared path the site never fills makes `closeExchange`
-  // record a shape miss on every healthy turn, so a permanently-absent
-  // field reads as permanent drift. `stopReason` is therefore NOT among
-  // them: it is a key on message_start.message that arrived null, and
-  // message_delta — where a terminal stop_reason would arrive — is read by
-  // nothing here. `usage` is absent from this stream entirely, which is why
-  // the summary reports usageSource 'none' rather than estimating.
+  // `requiredPaths.response` names only fields EVERY well-formed turn
+  // carries. A declared path a healthy turn can leave empty makes
+  // `closeExchange` record a shape miss, `shapeMisses` is never cleared for
+  // the life of the bridge, and a non-empty one derives to `degraded` — so
+  // one such turn marks the site as drifting on every surface until the tab
+  // reloads. `stopReason` is therefore NOT among them: it is a key on
+  // message_start.message that arrived null, and message_delta — where a
+  // terminal stop_reason would arrive — is read by nothing here. `usage` is
+  // absent from this stream entirely, which is why the summary reports
+  // usageSource 'none' rather than estimating.
+  //
+  // `responseText` is not among them either, and for the same reason rather
+  // than a weaker one: the summary carries it only when a text delta arrived,
+  // and a turn that replies purely with a tool_use block is a healthy, common
+  // turn that produces none — the captured request declares several tools.
+  // Tolerating an empty reply only when a tool block was seen would keep the
+  // signal, and it needs a captured tool-only turn to declare against, which
+  // is the bar everything in this block is held to.
   endpoints: [{ host: 'claude.ai', path: COMPLETION_PATH, kind: 'conversation' }],
   requiredPaths: {
     request: ['model', 'prompt'],
-    response: ['messageId', 'model', 'responseText'],
+    response: ['messageId', 'model'],
   },
   // What this adapter switches on: the `case` labels parseStream dispatches
   // on, the one `delta.type` it compares, and the path segments its endpoint

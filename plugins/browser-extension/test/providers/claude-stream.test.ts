@@ -479,15 +479,44 @@ describe('E — the declared network contract', () => {
     }
   });
 
-  it('E1c: requiredPaths name only fields the capture showed populated', () => {
-    // A declared path the site never fills makes closeExchange record a shape
-    // miss on every healthy turn, so a permanently-absent field would read as
-    // permanent drift. stopReason and usage are absent from this stream and
-    // are deliberately not named.
+  it('E1c: requiredPaths name only fields every well-formed turn carries', () => {
+    // A declared path a healthy turn can leave empty makes closeExchange
+    // record a shape miss; `shapeMisses` is never cleared for the life of the
+    // bridge and a non-empty one derives to `degraded`, so one such turn marks
+    // the site as drifting everywhere until the tab reloads. stopReason and
+    // usage are absent from this stream and are deliberately not named;
+    // responseText is absent from a tool-only turn, which E1d drives.
     expect(claudeAdapter.requiredPaths).toEqual({
       request: ['model', 'prompt'],
-      response: ['messageId', 'model', 'responseText'],
+      response: ['messageId', 'model'],
     });
+  });
+
+  it('E1d: a tool-only turn leaves no declared response path unfilled', () => {
+    // The turn behind E1c's set: only text_delta contributes to the reply
+    // text, so a turn answering purely with a tool_use block produces none and
+    // the summary omits `responseText`. The captured request declares several
+    // tools, which makes this a common turn rather than a corner.
+    const summary = replay([
+      messageStartEvent(),
+      sse('content_block_start', {
+        index: 0,
+        content_block: { type: 'tool_use', name: 'web_search' },
+      }),
+      messageStopEvent(),
+    ]);
+    expect(summary).not.toBeNull();
+    // The premise: without this the case below holds over a turn that DID
+    // carry text and proves nothing about the tool-only one.
+    expect(summary?.responseText).toBeUndefined();
+
+    for (const path of claudeAdapter.requiredPaths.response) {
+      // Every declared response path is a flat key, so reading it directly is
+      // the same lookup closeExchange makes rather than a second
+      // implementation of its resolver.
+      expect(path, 'a nested declared path needs the resolver, not this read').not.toContain('.');
+      expect(summaryHasOwn(summary, path), `declared path ${path}`).toBe(true);
+    }
   });
 
   it('E2: parseRequest never throws, and reports the shape met only when both fields are read', () => {

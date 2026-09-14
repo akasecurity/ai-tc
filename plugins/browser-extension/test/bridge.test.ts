@@ -26,6 +26,7 @@ import type { SharedScope } from '../src/tab-session.ts';
 import { notifyDomSend, resolveSessionId } from '../src/tab-session.ts';
 import type { TapToPage } from '../src/tap-protocol.ts';
 import { TAP_CHANNEL } from '../src/tap-protocol.ts';
+import { loadFixture, STREAM_FIXTURE } from './helpers/fixture-bar.ts';
 
 // The isolated-world half. It is the only thing between the page's own bytes
 // and what AKA persists, so every case here asserts one of three things: what
@@ -927,6 +928,14 @@ describe('installBridge, the wiring itself', () => {
   it('reports under the session id the tab already agreed on', () => {
     // A second id would put this tab's exchanges under a different session
     // root than the prompts that produced them.
+    //
+    // Asserted on what the bridge RELAYS, which is the only place the id it
+    // uses is observable. `resolveSessionId` stores the id on the scope before
+    // `installBridge` runs and nothing in installBridge writes it back, so
+    // reading the scope again proves only that the helper is idempotent —
+    // replacing `sessionId: resolveSessionId(win)` with a fresh uuid, which is
+    // exactly the two-ids-for-one-tab bug the module comment warns about,
+    // leaves that green.
     const win = fakeWindow();
     const scope = win.win as unknown as SharedScope;
     const existing = resolveSessionId(scope);
@@ -941,6 +950,23 @@ describe('installBridge, the wiring itself', () => {
       },
       now: clock.now,
     });
+
+    // Driven over the site's declared route with the committed capture's own
+    // bytes, so the exchange reaches the relay through the real endpoint
+    // matcher and the real stream parser rather than a stub of either.
+    const stream = loadFixture('claude-ai', STREAM_FIXTURE);
+    const { port, emit } = fakePort();
+    win.deliverHandshake(port);
+    emit({ type: 'patched', fetch: true, xhr: false });
+    emit({ type: 'request', id: 1, url: stream.url, method: 'POST', body: null });
+    for (const chunk of stream.chunks) emit({ type: 'chunk', id: 1, text: chunk });
+    emit({ type: 'end', id: 1, status: 200, ok: true });
+
+    const exchange = relayed.find((r) => r.type === 'exchange');
+    // The positive control: with no exchange on the wire every assertion
+    // below holds vacuously, and that is the state this case was in.
+    expect(exchange).toBeDefined();
+    expect(exchange?.sessionId).toBe(existing);
     expect(resolveSessionId(scope)).toBe(existing);
   });
 

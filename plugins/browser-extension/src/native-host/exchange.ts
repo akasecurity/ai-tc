@@ -31,6 +31,29 @@ const MAX_TARGET_LEN = 500;
 const truncateTarget = (s: string): string =>
   s.length > MAX_TARGET_LEN ? `${s.slice(0, MAX_TARGET_LEN)}…` : s;
 
+// What a target may cost to SCAN. `WebToolCall.target` carries no `.max()` and
+// the wire frame is the only other bound, so without this the mask-then-cap
+// order above — correct as far as it goes — is charged against an unbounded
+// string: shieldPointers, scan and redact all walk the whole raw value. One
+// host process serves every tab in sequence, so a single exchange carrying a
+// multi-megabyte target stalls every other tab's capture, exchange and ping
+// behind it.
+//
+// Cutting the raw before scanning is the same trade `capResponseText` already
+// makes for `responseText`, and it carries the same cost: a secret straddling
+// the cut is scanned only up to it. The ceiling is set far above any target
+// this product can meaningfully audit — a URL, a search query, a connector
+// argument — so reaching it means the value was never one of those.
+const TARGET_SCAN_MAX_BYTES = 64 * 1024;
+
+// How many server-side tool calls one turn may contribute. A turn is a handful
+// of calls; a five-figure list is not a turn this can audit, and each entry
+// costs a scan. Bounded HERE rather than with a `.max()` on the schema
+// deliberately: a schema refusal would drop the whole exchange — its reply,
+// its usage, its llm_call leaf — over a tail nobody reads, whereas dropping
+// the tail keeps every row the turn is actually worth.
+const MAX_TOOL_CALLS = 256;
+
 /** How a tool-call target is inspected on the host. Injected so this module stays pure. */
 export type TargetScanner = (text: string) => { masked: string; findings: ScanFinding[] };
 
@@ -197,7 +220,7 @@ export function toToolCallInputs(
   // entirely, so this never trusts the static type's non-optional `toolCalls`
   // and reads it back through a type that admits absence.
   const toolCalls = (exchange as { toolCalls?: WebExchange['toolCalls'] }).toolCalls ?? [];
-  for (const tc of toolCalls) {
+  for (const tc of toolCalls.slice(0, MAX_TOOL_CALLS)) {
     const toolUseId = trimmed(tc.toolUseId);
     if (toolUseId === undefined) continue;
     if (seen.has(toolUseId)) continue;
@@ -211,9 +234,11 @@ export function toToolCallInputs(
 
     let inspections: ToolCallInspection[] = [];
     if (tc.target !== undefined) {
-      // Mask the FULL raw target, THEN size-cap the masked value — masking
-      // first guarantees a secret is redacted whole before truncation.
-      const { masked, findings } = scanTarget(tc.target);
+      // Mask the target, THEN size-cap the masked value — masking first
+      // guarantees a secret is redacted whole before truncation. What is
+      // masked is the target cut to TARGET_SCAN_MAX_BYTES, which is what
+      // bounds the scan itself; see that constant for the cost.
+      const { masked, findings } = scanTarget(cutToBytes(tc.target, TARGET_SCAN_MAX_BYTES).text);
       if (masked !== '') attrs.target = truncateTarget(masked);
       // actionTaken = 'log': these are observed post-hoc, after the tool
       // already ran — an audit record, not an enforcement decision.

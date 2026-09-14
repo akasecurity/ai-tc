@@ -11,6 +11,7 @@
 
 import type {
   FindingDelivery,
+  FindingDeliveryState,
   FindingFacetItem,
   FindingFacets,
   FindingInstanceDetail,
@@ -264,18 +265,23 @@ export function createInstanceFacetAccumulator(opts: InstanceFilterOptions): {
 }
 
 /**
- * One distinct combination of the six faceted dimensions, with how many
+ * One distinct combination of the seven faceted dimensions, with how many
  * findings carry it. A store that can group in its own query language returns
  * these instead of every row, so the facet counts cost the number of distinct
  * combinations rather than the number of findings.
  *
  * `status` is optional because it is on GroupableFindingRow, whose rows can
  * predate the resolution lifecycle. A tuple with no status is filtered like any
- * other row. With no status filter set it counts toward the total and the five
+ * other row. With no status filter set it counts toward the total and the six
  * other facets, and only the status facet skips it. Under a status filter it
  * matches nothing, so it leaves the total and the other facets as well. A store
  * grouping such rows gives them a tuple with no status rather than dropping the
  * group or inventing one.
+ *
+ * `deliveryState` is optional for the same reason: a producer that does not
+ * read the sync columns groups without it, and the deployment facet is the
+ * only one such a tuple skips. It carries the state alone, since that is the
+ * value the facet buckets on and the only delivery field a filter reads.
  */
 export interface FacetTuple {
   severity: string;
@@ -284,6 +290,7 @@ export interface FacetTuple {
   actionTaken: string;
   status?: FindingStatus;
   toolName?: string;
+  deliveryState?: FindingDeliveryState;
   count: number;
 }
 
@@ -291,9 +298,10 @@ export interface FacetTuple {
  * One tuple as the row shape the filters read. Every field no faceted
  * dimension touches carries a placeholder: the fold below never reads them,
  * and giving them real-looking values would invite a future filter to match on
- * something the tuple does not actually carry. `status` and `toolName` are
- * spread rather than defaulted, because "no status" is not a status and "no
- * tool" and "a tool named empty" are different to the tool facet.
+ * something the tuple does not actually carry. `status`, `toolName` and the
+ * delivery are spread rather than defaulted, because "no status" is not a
+ * status, "no tool" and "a tool named empty" are different to the tool facet,
+ * and "no delivery" is not a delivery state.
  */
 export function rowFromTuple(tuple: FacetTuple): FlatFindingRow {
   return {
@@ -311,11 +319,12 @@ export function rowFromTuple(tuple: FacetTuple): FlatFindingRow {
     eventId: '',
     ...(tuple.status === undefined ? {} : { status: tuple.status }),
     ...(tuple.toolName === undefined ? {} : { toolName: tuple.toolName }),
+    ...(tuple.deliveryState === undefined ? {} : { delivery: { state: tuple.deliveryState } }),
   };
 }
 
 /**
- * The instance total and the six per-filter-excluded facets, folded from
+ * The instance total and the seven per-filter-excluded facets, folded from
  * grouped tuples instead of from rows — the counterpart of
  * createInstanceFacetAccumulator for a caller that grouped before it counted.
  *
@@ -346,6 +355,7 @@ export function foldFacetTuples(
   const action = new Map<string, number>();
   const status = new Map<string, number>();
   const tool = new Map<string, number>();
+  const deployment = new Map<string, number>();
 
   let total = 0;
   for (const tuple of tuples) {
@@ -367,6 +377,9 @@ export function foldFacetTuples(
     if (row.toolName !== undefined && matchesInstanceFilters(row, scoped, 'tools')) {
       bump(tool, row.toolName, tuple.count);
     }
+    if (row.delivery !== undefined && matchesInstanceFilters(row, scoped, 'deliveries')) {
+      bump(deployment, row.delivery.state, tuple.count);
+    }
   }
 
   return {
@@ -378,6 +391,7 @@ export function foldFacetTuples(
       action: toItems(action),
       status: toItems(status),
       tool: toItems(tool),
+      deployment: toItems(deployment),
     },
   };
 }

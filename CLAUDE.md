@@ -726,7 +726,14 @@ plugins/antigravity  → @akasecurity/plugin-runtime, plugin-sdk
 plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the native-messaging
                      host only — Node side); the browser-side content script bundles just
                      `@akasecurity/plugin-sdk/browser` (mask.ts's Node-API-free slice) and
-                     must never import anything Node-only
+                     must never import anything Node-only. The MAIN-world tap
+                     (`src/tap.ts`) runs with the page's own authority and REASSIGNS the
+                     page's `fetch` and `XMLHttpRequest.prototype.open`/`send` to observe
+                     chat traffic. It originates no network request and imports nothing,
+                     and it passes §4's network ban with no opt-out because it reaches
+                     those globals through its `win` parameter and a structural type — so
+                     an audit of what touches `fetch` has to include it by name.
+                     `test/tap-bundle.test.ts` holds the built bundle to that shape.
 @akasecurity/plugin-runtime → @akasecurity/plugin-sdk, persistence, schema, remote
                      (the attached-mode gateway under src/attached/ — inert on a
                      machine that has not attached, which is why `remote` is a

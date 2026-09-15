@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { removeTree, removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { recordProjectEgress } from '../src/egress-record.ts';
 import { scanPathIntoStore } from '../src/fs-scan.ts';
+import { migratedStore } from './helpers/store-templates.ts';
 
 // End-to-end acceptance for the CLI/web egress pipeline: walk a planted corpus
 // with `scanPathIntoStore`, record it with `recordProjectEgress`, then read the
@@ -253,6 +254,10 @@ let root: string;
 let store: string;
 let base: string;
 let db: LocalDatabase;
+// The handle THIS test's setup opened, or undefined when the setup threw first.
+// `db` still names the previous test's handle in that case, already closed, and
+// closing it again would throw before the trees were removed.
+let opened: LocalDatabase | undefined;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'aka-corpus-'));
@@ -260,12 +265,20 @@ beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), 'aka-corpus-home-'));
   cpSync(CORPUS, root, { recursive: true });
   initRepo(root);
+  // What is under test is the egress ledger, not the store's creation, so the
+  // store is copied from the migrated template rather than migrated per test.
+  migratedStore.seed(store);
   db = openLocalDatabase(store);
+  opened = db;
 });
 
 afterEach(() => {
-  db.close();
-  removeTrees([root, store, base]);
+  try {
+    opened?.close();
+  } finally {
+    opened = undefined;
+    removeTrees([root, store, base]);
+  }
 });
 
 describe('egress acceptance corpus — destination ledger', () => {

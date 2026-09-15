@@ -15,6 +15,7 @@ import {
 } from '@akasecurity/persistence';
 import type {
   CaptureRecord,
+  CaptureStatusReader,
   DataGateway,
   LlmCallLeaf,
   LocalStoreMaintenance,
@@ -41,6 +42,7 @@ import type {
   Policy,
   PolicyBundle,
   ProjectFilesScan,
+  ReportedCaptureDocument,
   ResolvedInventory,
   Rule,
   RuleProbeVerdict,
@@ -64,7 +66,9 @@ import { PLUGIN_RECORDER_BINARY } from './recorder.ts';
  * + install-if-absent into installed_packs — never mutating an existing
  * installed row; updates are manual).
  */
-export class StandaloneDataGateway implements DataGateway, LocalStoreMaintenance {
+export class StandaloneDataGateway
+  implements DataGateway, LocalStoreMaintenance, CaptureStatusReader
+{
   private readonly db: LocalDatabase;
   // Kept for the fingerprint key lookup (exception.key lives beside the store).
   private readonly dataDir: string;
@@ -209,6 +213,14 @@ export class StandaloneDataGateway implements DataGateway, LocalStoreMaintenance
 
   readSessionProvider(sessionId: string): Promise<string | undefined> {
     return Promise.resolve(this.db.auditEvents.sessionProvider(sessionId));
+  }
+
+  readCaptureStatuses(): Promise<ReportedCaptureDocument[]> {
+    // The gateway is the I/O boundary, so it supplies the instant the read's
+    // recency window is measured against. The port takes none: a caller of
+    // `readCaptureStatuses` is asking what is reported NOW, and there is no
+    // second instant for it to mean.
+    return Promise.resolve(this.db.captureStatus.latest(Date.now()));
   }
 
   facets(): Promise<InventoryFacets> {

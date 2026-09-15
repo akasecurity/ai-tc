@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { toolCallId } from '@akasecurity/persistence';
-import type { DataGateway, LocalStoreMaintenance } from '@akasecurity/plugin-sdk';
+import type {
+  CaptureStatusReader,
+  DataGateway,
+  LocalStoreMaintenance,
+} from '@akasecurity/plugin-sdk';
 import { hasLocalStoreMaintenance } from '@akasecurity/plugin-sdk';
 import type {
   AuditEventInput,
@@ -98,7 +102,10 @@ interface Calls {
  * fake that returned promises for them would hide exactly the bug the composite
  * has to avoid.
  */
-function makeLocal(calls: Calls, overrides: Partial<DataGateway & LocalStoreMaintenance> = {}) {
+function makeLocal(
+  calls: Calls,
+  overrides: Partial<DataGateway & LocalStoreMaintenance & CaptureStatusReader> = {},
+) {
   const base: Record<string, unknown> = {};
   for (const name of PORT_METHODS) {
     base[name] = vi.fn((...args: unknown[]) => {
@@ -165,7 +172,13 @@ function makeLocal(calls: Calls, overrides: Partial<DataGateway & LocalStoreMain
     calls.order.push('local.markAuditEventsDelivered');
     for (const event of events) calls.delivered.push(event.id);
   });
-  return Object.assign(base, overrides) as unknown as DataGateway & LocalStoreMaintenance;
+  base.readCaptureStatuses = vi.fn(() => {
+    calls.order.push('local.readCaptureStatuses');
+    return Promise.resolve([]);
+  });
+  return Object.assign(base, overrides) as unknown as DataGateway &
+    LocalStoreMaintenance &
+    CaptureStatusReader;
 }
 
 function makeClient(calls: Calls, overrides: Partial<AttachedClient> = {}): AttachedClient {
@@ -335,6 +348,19 @@ describe('every DataGateway method delegates to the inner local gateway', () => 
           : 'arg';
     await Reflect.apply(methods[name] as (a?: unknown) => Promise<unknown>, gateway, [arg]);
     expect((local as unknown as Record<string, ReturnType<typeof vi.fn>>)[name]).toHaveBeenCalled();
+  });
+});
+
+// readCaptureStatuses is on CaptureStatusReader, not DataGateway, so it is
+// deliberately outside PORT_METHODS above — a separate, explicit case rather
+// than folded into the generic loop.
+describe('readCaptureStatuses', () => {
+  it('delegates the capture-status read and forwards nothing', async () => {
+    const { gateway, local } = build();
+    await gateway.readCaptureStatuses();
+    expect(
+      (local as unknown as Record<string, ReturnType<typeof vi.fn>>).readCaptureStatuses,
+    ).toHaveBeenCalled();
   });
 });
 
@@ -1884,11 +1910,12 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
 
   // ── the two namespaces are separate KEYS but not separate ENFORCEMENT ──────
 
-  // ⚠ THE CROSS-NAMESPACE TEST. `policyKey` keeps rule: and category: distinct,
-  // so these two policies never contend and both survive the merge — the array
-  // looks entirely reasonable. It is the RUNTIME that makes it wrong:
-  // resolveAction consults the rule index first and returns unconditionally, so
-  // the tenant's ruleId policy overrides the user's category policy. The
+  // ⚠ THE CROSS-NAMESPACE TEST. `policyKey` (@akasecurity/schema) keeps rule:
+  // and category: distinct, so these two policies never contend and both
+  // survive the merge — the array looks entirely reasonable. It is the
+  // RESOLVER that makes it wrong: plugin-sdk's `createPolicyResolver` consults
+  // its `byRule` map first and returns unconditionally when it has an entry,
+  // so the tenant's ruleId policy overrides the user's category policy. The
   // compiled-in floor cannot catch it — DEFAULT_ACTIONS tops out at 'warn'.
   it('a tenant ruleId policy cannot undercut the local CATEGORY policy', async () => {
     const calls: Calls = { order: [], delivered: [], batchSizes: [] };
@@ -1936,10 +1963,10 @@ describe('getPolicyBundle merges the tenant bundle raise-only', () => {
   // `installed_packs.policy_id` — NULL for any pack the user never assigned,
   // which policyIdToAction coalesces to Monitor, i.e. 'log'. Those land on
   // `rule:*` keys the tenant's category policy never contends for, and
-  // resolveAction consults the rule index FIRST. So without a floor on this
-  // side, a device's own untouched packs silently reduce the tenant's
-  // `secret -> block` to log-only — the fleet-wide failure this merge exists
-  // to prevent, reached from the local side instead of the wire.
+  // resolveAction's resolver consults its `byRule` map FIRST. So without a
+  // floor on this side, a device's own untouched packs silently reduce the
+  // tenant's `secret -> block` to log-only — the fleet-wide failure this merge
+  // exists to prevent, reached from the local side instead of the wire.
   it('a LOCAL ruleId policy cannot undercut the TENANT category policy', async () => {
     const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const local = makeLocal(calls, {

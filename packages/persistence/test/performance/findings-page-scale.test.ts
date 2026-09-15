@@ -19,16 +19,19 @@
  *
  * The two thresholds are carried across from the read this replaced, and that is
  * a decision rather than an oversight: both are order-of-magnitude separators,
- * not tuned numbers. Re-taken on THIS read (arm64 macOS, Node 24, fastest-of-25
- * across 2k -> 20k events):
+ * not tuned numbers. Re-taken on THIS read with the stores sampled interleaved
+ * (arm64 macOS, 8 cores, Node 24, fastest-of-25 across 2k -> 20k events): three
+ * passes with a video call and an antivirus scan running, three more with 24 CPU
+ * burners added.
  *
- *   typesInSession       0.218 -> 0.231 ms   ratio 1.06
- *   flatInSession        0.089 -> 0.083 ms   ratio 0.94
- *   locationsInSession   0.065 -> 0.066 ms   ratio 1.02
- *   typesAll (control)   1.474 -> 22.206 ms  ratio 15.07
+ *                        quiet        loaded
+ *   typesInSession       1.05-1.07    1.07-1.08
+ *   flatInSession        0.94-1.03    0.93-1.03
+ *   locationsInSession   1.03-1.04    1.05
+ *   typesAll (control)   13.48-14.64  15.76-19.23
  *
- * The flat three sit near 1 against a ceiling of 3, and the control reads 15.07
- * against a floor of 2 — a linear cost would read ~10, and this one exceeds it
+ * The flat three sit near 1 against a ceiling of 3, and the control reads above
+ * 13 against a floor of 2 — a linear cost would read ~10, and this one exceeds it
  * because the aggregate's own work grows with the store on top of the scan.
  *
  * What CAN be flat is a SCOPED read. `?session=` narrows every one of the three
@@ -62,6 +65,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { SqliteFindingsRepository } from '../../src/repositories/findings.ts';
 import type { CorpusRule, GeneratedCaptureCorpus } from '../helpers/corpus.ts';
 import { corpusConnection, seedCaptureCorpus } from '../helpers/corpus.ts';
+import { sampleInterleaved, timeCall } from '../helpers/interleaved-samples.ts';
 import type { OwnedTempStore } from '../helpers/temp-store.ts';
 import { createTempStore } from '../helpers/temp-store.ts';
 
@@ -114,30 +118,14 @@ function fastest(samples: number[]): number {
   return Math.min(...samples);
 }
 
-/**
- * `SAMPLES` timings of the read's SYNCHRONOUS work. Every method here runs its
- * SQL synchronously and returns an already-resolved promise, so the elapsed
- * time around the bare call is the whole of the work — see the note of the same
- * name in security-page-scale.test.ts for why the rejection is caught and why
- * that catch is empty.
- */
-function measure(fn: () => Promise<unknown>): number[] {
-  const out: number[] = [];
-  for (let i = 0; i < SAMPLES; i += 1) {
-    const started = performance.now();
-    void fn().catch(() => {
-      // The awaited call in `seedAndMeasure` reports a broken read; this only
-      // keeps a rejection from being unhandled.
-    });
-    out.push(performance.now() - started);
-  }
-  return out;
-}
-
-interface Scale {
+interface Seeded {
   readonly corpus: GeneratedCaptureCorpus;
   /** Rows each read MATCHED — a read that matches nothing measures nothing. */
   readonly matched: Record<string, number>;
+  readonly run: Record<ReadName, () => Promise<number>>;
+}
+
+interface Scale extends Seeded {
   readonly samples: Record<string, number[]>;
 }
 
@@ -147,7 +135,7 @@ type ReadName = (typeof READS)[number];
 /** The three session-scoped reads that must stay flat; the fourth is the control. */
 const FLAT_READS: readonly ReadName[] = ['typesInSession', 'flatInSession', 'locationsInSession'];
 
-async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Scale> {
+async function seed(store: OwnedTempStore, events: number): Promise<Seeded> {
   const db = store.open();
   const corpus = seedCaptureCorpus(db, {
     events,
@@ -190,12 +178,24 @@ async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Sc
   };
 
   const matched: Record<string, number> = {};
-  const samples: Record<string, number[]> = {};
-  for (const name of READS) {
-    matched[name] = await run[name]();
-    samples[name] = measure(run[name]);
-  }
-  return { corpus, matched, samples };
+  for (const name of READS) matched[name] = await run[name]();
+  return { corpus, matched, run };
+}
+
+/**
+ * `SAMPLES` timings of every read against BOTH stores, interleaved by
+ * `sampleInterleaved` — its file header sets out the order and why each part of
+ * it is load-bearing.
+ */
+async function sampleBothSizes(small: Seeded, large: Seeded): Promise<[Scale, Scale]> {
+  const sides = { small, large };
+  const paired = await sampleInterleaved(READS, SAMPLES, ({ side, name }) =>
+    timeCall(sides[side].run[name]),
+  );
+  return [
+    { ...small, samples: paired.small },
+    { ...large, samples: paired.large },
+  ];
 }
 
 describe(`/findings read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to ${LARGE_EVENTS.toLocaleString('en-US')} events`, () => {
@@ -207,8 +207,9 @@ describe(`/findings read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
   beforeAll(async () => {
     smallStore = createTempStore('aka-findings-scale-small-');
     largeStore = createTempStore('aka-findings-scale-large-');
-    small = await seedAndMeasure(smallStore, SMALL_EVENTS);
-    large = await seedAndMeasure(largeStore, LARGE_EVENTS);
+    const seededSmall = await seed(smallStore, SMALL_EVENTS);
+    const seededLarge = await seed(largeStore, LARGE_EVENTS);
+    [small, large] = await sampleBothSizes(seededSmall, seededLarge);
   }, SEED_TIMEOUT_MS);
 
   afterAll(() => {
@@ -243,6 +244,15 @@ describe(`/findings read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
         large.matched[name],
         `${name} matched nothing at ${String(LARGE_EVENTS)}`,
       ).toBeGreaterThan(0);
+    }
+  });
+
+  it('every read was timed the same number of times against each store', () => {
+    // A fastest-of-13 divided by a fastest-of-25 is a biased ratio that still
+    // clears every bound below, and nothing downstream can see the difference.
+    for (const name of READS) {
+      expect(small.samples[name], `${name} samples at small`).toHaveLength(SAMPLES);
+      expect(large.samples[name], `${name} samples at large`).toHaveLength(SAMPLES);
     }
   });
 

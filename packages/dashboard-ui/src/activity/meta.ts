@@ -42,6 +42,7 @@ export const HARNESS_KIND: Record<Harness, string> = {
   [HARNESS.ChatGpt]: 'Web app',
   [HARNESS.ClaudeAi]: 'Web app',
   [HARNESS.Api]: 'API',
+  [HARNESS.AiTcSdk]: 'Embedded SDK',
 };
 
 // The harnesses shown in the filter, in display order. Derived from the registry

@@ -38,6 +38,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'SqliteActivityRepository',
   'SqliteAuditEventsRepository',
   'SqliteBodyRetentionRepository',
+  'SqliteCaptureStatusRepository',
   'SqliteClassifiedDataRepository',
   'SqliteConfigInventoryRepository',
   'SqliteDetectionsRepository',

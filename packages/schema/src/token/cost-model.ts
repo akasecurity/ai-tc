@@ -103,6 +103,16 @@ export const UNPRICEABLE_PROVIDERS: readonly string[] = Object.freeze([
   'unknown',
   'cli',
   'api',
+  // The browser extension's native host records these as `llm_call.provider`
+  // for a web-chat turn — the web tool id, deliberately never the vendor id
+  // (`openai`/`anthropic`) the session root carries. Subscription traffic
+  // burns rate-limit budget, not dollar credits, and listing them here is
+  // what keeps that true structurally: a later maintainer who wants to price
+  // web-chat traffic at API rates has to delete this entry first, and meet
+  // the reason on the way, rather than quietly adding one to
+  // PROVIDER_PLATFORM.
+  'chatgpt',
+  'claude-ai',
 ]);
 
 /**

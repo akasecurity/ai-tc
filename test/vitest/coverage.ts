@@ -113,7 +113,7 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/ai-tc-antigravity': 59, //          60.96
   '@akasecurity/ai-tc-copilot': 99, //              100 (placeholder only — RE-MEASURE when real source lands)
   '@akasecurity/ai-tc-codex': 58, //                59.78
-  '@akasecurity/plugin-browser-extension': 57, //   58.02
+  '@akasecurity/plugin-browser-extension': 81, //   82.44
   '@akasecurity/cli': 51, //                        52.66
   // These two floors sit ~30 points under what their suites report, and the
   // numbers beside them are the MEASUREMENTS, re-taken: the 24.56 and 24.04

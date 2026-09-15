@@ -88,6 +88,7 @@ const CAPTURE_TYPE_LIST = OUTBOX_CAPTURE_TYPE_LIST;
  *     an undelivered one is owed by nobody. Counting it as outstanding would
  *     assert that something will send it.
  *   - `model_refusal` reaches no lane either.
+ *   - `request_decision` reaches no lane either.
  * None of that is a claim they are unimportant — only that a delivery-state read
  * has nothing true to say about a row no lane will ever carry.
  */

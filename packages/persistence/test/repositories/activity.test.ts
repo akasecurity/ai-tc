@@ -268,6 +268,28 @@ describe('stats', () => {
     expect(stats.liveNow).toBe(0);
   });
 
+  it('a capture status alone does not re-arm liveNow', async () => {
+    // A browser tab relays its status on every load and again on unload,
+    // whether or not anyone typed — so the unload report alone used to re-arm
+    // a thirty-minute live window for a session `listSessions({ excludeEmpty:
+    // true })` and `sessionsToday` both leave out. The Activity page then read
+    // "Live now: 1" with no matching row in the list beneath it.
+    //
+    // The root is OLD, so the session-started branch cannot be what answers
+    // here — only a descendant can, which is what makes this case about the
+    // descendant branches.
+    insertSession({ id: 'W', startedAt: NOW - 5 * HOUR_MS, attributes: {} });
+    insertEvent({ id: 'W1', sessionId: 'W', type: 'capture_status', startedAt: NOW });
+
+    expect((await activity().stats('UTC')).liveNow).toBe(0);
+
+    // The positive control, on the SAME old root: a real descendant inside the
+    // window does make it live, so the zero above is about the event type
+    // rather than about the window or the root's age.
+    insertEvent({ id: 'W2', sessionId: 'W', type: 'prompt', startedAt: NOW });
+    expect((await activity().stats('UTC')).liveNow).toBe(1);
+  });
+
   it('counts a session whose last activity is exactly on the window edge (>=)', async () => {
     // Last activity at precisely now − window: the boundary is inclusive.
     insertSession({ id: 'S', startedAt: NOW - 2 * HOUR_MS, attributes: {} });
@@ -515,6 +537,25 @@ describe('listSessions — zero-activity sessions', () => {
     const res = await activity().listSessions({ limit: 50, excludeEmpty: true });
     expect(res.items.map((s) => s.id)).toEqual(['P']);
     expect(res.emptyCount).toBe(0);
+  });
+
+  // A browser tab reports its own capture status on every load — even one
+  // nobody typed a message in — so a session whose only child is that report
+  // is exactly the ghost shape above, on a different event type. Positive
+  // control at the end: adding a real prompt makes the same session listed,
+  // which is what proves this case is not passing on a broken excludeEmpty
+  // read.
+  it('a session whose only child is a capture status is not listed as activity', async () => {
+    insertSession({ id: 'W', startedAt: NOW - HOUR_MS, attributes: {} });
+    insertEvent({ id: 'W1', sessionId: 'W', type: 'capture_status', startedAt: NOW - HOUR_MS + 1 });
+
+    const empty = await activity().listSessions({ limit: 50, excludeEmpty: true });
+    expect(empty.items.map((s) => s.id)).toEqual([]);
+    expect(empty.emptyCount).toBe(1);
+
+    insertEvent({ id: 'W2', sessionId: 'W', type: 'prompt', startedAt: NOW - HOUR_MS + 2 });
+    const withPrompt = await activity().listSessions({ limit: 50, excludeEmpty: true });
+    expect(withPrompt.items.map((s) => s.id)).toEqual(['W']);
   });
 });
 

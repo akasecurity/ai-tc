@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+import type { WebSourceTool } from './harness-map.ts';
+import { CaptureStatusAttributes } from './meta.ts';
+
 // The wire shapes the browser extension's native-messaging host validates, and
 // the projections it turns into audit rows.
 //
@@ -61,12 +64,37 @@ export const WebExchange = z.object({
   turnIndex: z.number().int().nonnegative().optional(),
   toolCalls: z.array(WebToolCall).default([]),
   // Absent when the adapter recovered no text. Capped by the caller at
-  // RESPONSE_TEXT_MAX_BYTES; `truncated` records that the cap was reached, so a
-  // short capture is never mistaken for a short reply.
+  // RESPONSE_TEXT_MAX_BYTES, so a short capture is never mistaken for a short
+  // reply.
   responseText: z.string().optional(),
+  // The stored text is short of the reply. It does NOT say which of the two
+  // ceilings on this path cut it: the caller applies its own cap on the raw
+  // bytes it reads off the wire, which can be reached by a stream whose
+  // recovered text stays well under RESPONSE_TEXT_MAX_BYTES, and applies that
+  // one to the text. A reader cannot tell them apart, and nothing downstream
+  // should branch as though it could.
   truncated: z.boolean().default(false),
 });
 export type WebExchange = z.infer<typeof WebExchange>;
+
+// What the DOM enforcement path is doing in the reporting tab.
+//
+// The DOM path binds only when BOTH a composer and a send button resolve: an
+// intercepted send is completed by clicking the site's own button, so a
+// composer without one would swallow every message rather than fail open. The
+// two half-resolved states are named separately because each points at a
+// different selector list, and both have been seen live on one site.
+//
+// 'unknown' is a report carrying no opinion — a build predating this field, or
+// a tab whose DOM half has not run.
+export const WebEnforcementState = z.enum([
+  'watching',
+  'composer-only',
+  'button-only',
+  'unattached',
+  'unknown',
+]);
+export type WebEnforcementState = z.infer<typeof WebEnforcementState>;
 
 // Ceiling on the assistant text one exchange may carry to the host. Beyond it
 // the text is cut and `truncated` set — the scan then runs on what was kept.
@@ -90,5 +118,217 @@ export const WebCaptureStatus = z.object({
   // The adapter-declared JSON key paths that were absent from a real payload —
   // the earliest signal that a site's contract moved.
   shapeMisses: z.array(z.string()).default([]),
+  // How many `kind: 'conversation'` endpoints the reporting tab's adapter
+  // compiled. Zero means this build declares none for the site, so observing
+  // nothing is the design rather than a fault — the one fact that separates a
+  // site nobody has surveyed yet from one whose contract moved. Defaulted so a
+  // build predating the field is read as declaring nothing rather than refused.
+  conversationEndpoints: z.number().int().nonnegative().default(0),
+  // The document that sent this report is going away. The bridge sets it on
+  // its `pagehide` report and nowhere else.
+  //
+  // A property of the REPORT rather than of capture health, which is why
+  // nothing in `deriveWebCaptureState` reads it and why it stays out of the
+  // bridge's own report signature — a closing tab's last word must not be
+  // suppressed for carrying the same health as the report before it. What
+  // reads it is the per-site fold: a document that said it was unloading stops
+  // voting on the site's state, so the reload the `blind` remediation asks for
+  // can actually clear the verdict it was shown. A document that dies without
+  // sending one is covered by CAPTURE_STATUS_DOCUMENT_QUIET_MS instead.
+  //
+  // Defaulted so a build predating the field reads as a document that never
+  // said it was closing — which keeps it voting, the same as every report that
+  // is not a final one.
+  closed: z.boolean().default(false),
+  // What the DOM enforcement path is doing, which none of the counters above
+  // can say: `sendsSeenDom` rises only once a send has COMPLETED, so a tab
+  // whose watcher never bound reports zero exactly like a tab nobody typed in.
+  // Defaulted to 'unknown' rather than 'watching' so a status from a build
+  // predating the field is not read as reporting a healthy one.
+  enforcement: WebEnforcementState.default('unknown'),
 });
 export type WebCaptureStatus = z.infer<typeof WebCaptureStatus>;
+
+/**
+ * Whether a report says anything about the site's turn path.
+ *
+ * False for a tab that installed, has conversation endpoints to watch, and has
+ * seen no exchange, no fault and no missing field — a page that has just
+ * loaded, or one whose only activity so far is DOM sends the network path has
+ * not yet given up on. Such a report carries no verdict about the site.
+ *
+ * A build that declares no endpoints, and a tab whose tap did not install, both
+ * count as saying something: each is a statement about this build rather than
+ * an absence of evidence.
+ */
+export function webCaptureStatusObservedTurnPath(status: WebCaptureStatus): boolean {
+  if (!status.patched) return true;
+  if (status.conversationEndpoints === 0) return true;
+  return (
+    status.blind ||
+    status.shapeMisses.length > 0 ||
+    status.parseFailures > 0 ||
+    status.unparsedBodies > 0 ||
+    status.exchangesSeenNet > 0
+  );
+}
+
+/**
+ * The report a surface should show, from candidates in preference order
+ * (newest first).
+ *
+ * It decides WITHIN ONE DOCUMENT. The read side groups a site's rows by the
+ * document that wrote them and applies this to each group, because the
+ * watching-only rule below is about a page that has reloaded and not yet
+ * re-tested — a statement about one document's own history, which says nothing
+ * about the other tab the same user has open. Folding several documents' picks
+ * into the site's one answer is `reportedCaptureDocumentForSite`'s job.
+ *
+ * The first candidate that observed the turn path wins, so a run of
+ * watching-only reports ahead of it does not replace it. Without that, the
+ * newest report always wins and a page load — which relays a fresh
+ * nothing-seen-yet report the moment the tap says it patched — silently
+ * replaces the report that told the user to reload the tab, before anything
+ * has re-tested what was wrong. A report that DID observe the turn path
+ * replaces it immediately, so a site whose next turn is captured clears at
+ * once.
+ *
+ * With no such candidate the newest is returned, so a site that has only ever
+ * been watched still shows its newest state.
+ */
+export function pickReportedCaptureStatus<T extends { status: WebCaptureStatus }>(
+  candidates: readonly T[],
+): T | undefined {
+  return candidates.find((c) => webCaptureStatusObservedTurnPath(c.status)) ?? candidates[0];
+}
+
+/**
+ * How far back a read looks for a site's reported status.
+ *
+ * The other read-policy decision about these rows, and it sits beside the
+ * picker for that reason. A status is a report about what one tab saw at one
+ * instant, and nothing ever supersedes it except a later report from the same
+ * site — so a store keeps the last one for ever, and the browser extension is
+ * its only writer. Unbounded, an extension that was uninstalled a year ago
+ * goes on making a live-sounding claim ("reload the tab") about a tab nothing
+ * is watching, and no later report can arrive to clear it.
+ *
+ * Bounding the read is what makes the claim decay instead: past this window a
+ * site reads as `unreported` — nobody has confirmed anything recently — which
+ * is what the evidence actually supports. It also bounds the SQL, whose
+ * per-site seek otherwise walks every `capture_status` row ever written when
+ * the site it asks for has none (`audit_events` has no retention policy).
+ *
+ * Thirty days, matching the dashboard's own default range.
+ */
+export const CAPTURE_STATUS_RECENCY_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** `CAPTURE_STATUS_RECENCY_MS` in whole days, for copy that names the window. */
+export const CAPTURE_STATUS_RECENCY_DAYS = CAPTURE_STATUS_RECENCY_MS / (24 * 60 * 60 * 1000);
+
+/**
+ * How far behind a site's newest report a document may fall and still vote on
+ * that site's state.
+ *
+ * A document normally stops voting by SAYING so — the bridge's `pagehide`
+ * report carries `closed`. This is the bound for when that never arrives: a
+ * hard crash, an OS kill, Chrome's memory saver discarding the tab, a host
+ * that was not running at unload. Without it such a document's verdict votes
+ * for the whole of CAPTURE_STATUS_RECENCY_MS, which is the failure the picker
+ * exists to prevent one grain up — a user who reloaded the tab as the `blind`
+ * copy told them to would go on being shown the verdict they had just cleared.
+ *
+ * Twelve hours, and deliberately far above any settle time. These reports are
+ * change-triggered, so a tab that is being watched and is behaving reports
+ * once and then stays silent for as long as it is open; a window short enough
+ * to look tidy would retire exactly those quiet healthy documents, whose
+ * silence is the design. This is a backstop for a document that is GONE, not a
+ * liveness probe — there is no such signal in the store, and adding one would
+ * mean a timer in the content script (which the bridge refuses) writing rows
+ * into a table with no retention policy.
+ */
+export const CAPTURE_STATUS_DOCUMENT_QUIET_MS = 12 * 60 * 60 * 1000;
+
+/** One site's reported status, as the local store holds it. */
+export interface StoredCaptureStatus {
+  tool: WebSourceTool;
+  /** When the host received it, ISO-8601 — the row's own `started_at`. */
+  observedAt: string;
+  status: WebCaptureStatus;
+}
+
+/**
+ * One site's reported status from ONE document — one `root_session_id`, which
+ * for these rows is one page load of one tab.
+ *
+ * A site is one thing and a browser is many documents: two tabs on chatgpt.com
+ * and the page a third has just replaced all report for the same site, and the
+ * newest of them is not the one a user needs to see. So the read side returns
+ * every document that reported and the fold takes the worst of those still
+ * voting (`reportedCaptureDocumentForSite`).
+ *
+ * `StoredCaptureStatus` plus what deciding that needs. The extra two fields
+ * are NOT restatements of `observedAt` and `status.closed`: the picker chooses
+ * the newest row in the group that observed the turn path, which can be an
+ * older row than the group's newest, and whether the document is still around
+ * is a property of its LAST word rather than of the row that carried its
+ * verdict.
+ */
+export interface ReportedCaptureDocument extends StoredCaptureStatus {
+  /**
+   * The grouping key. Absent for a row written before the host stamped one;
+   * every such row is read as ONE document, which is the only safe reading —
+   * two unstamped rows cannot be told apart.
+   */
+  rootSessionId?: string;
+  /** When this document's NEWEST report was received, ISO-8601. */
+  lastReportAt: string;
+  /** That newest report said the document was going away. */
+  closed: boolean;
+}
+
+// WebCaptureStatus <-> the snake_case CaptureStatusAttributes bag an
+// audit_events row carries. `source_tool` rides the canonical key so the
+// generated column (migration 0025) can name it directly, exactly as
+// toCaptureAttributes/toCaptureDefinitionInput do for the capture-grain bags
+// in local.ts.
+export function toCaptureStatusAttributes(
+  status: WebCaptureStatus,
+  tool: WebSourceTool,
+): CaptureStatusAttributes {
+  return {
+    source_tool: tool,
+    patched: status.patched,
+    live: status.live,
+    blind: status.blind,
+    sends_seen_dom: status.sendsSeenDom,
+    exchanges_seen_net: status.exchangesSeenNet,
+    parse_failures: status.parseFailures,
+    unparsed_bodies: status.unparsedBodies,
+    shape_misses: status.shapeMisses,
+    conversation_endpoints: status.conversationEndpoints,
+    closed: status.closed,
+    enforcement: status.enforcement,
+  };
+}
+
+/** `null` for a bag that is not a status this version can read. */
+export function fromCaptureStatusAttributes(bag: unknown): WebCaptureStatus | null {
+  const parsedBag = CaptureStatusAttributes.safeParse(bag);
+  if (!parsedBag.success) return null;
+  const b = parsedBag.data;
+  const parsedStatus = WebCaptureStatus.safeParse({
+    patched: b.patched,
+    live: b.live,
+    blind: b.blind,
+    sendsSeenDom: b.sends_seen_dom,
+    exchangesSeenNet: b.exchanges_seen_net,
+    parseFailures: b.parse_failures,
+    unparsedBodies: b.unparsed_bodies,
+    shapeMisses: b.shape_misses,
+    conversationEndpoints: b.conversation_endpoints,
+    closed: b.closed,
+    enforcement: b.enforcement,
+  });
+  return parsedStatus.success ? parsedStatus.data : null;
+}

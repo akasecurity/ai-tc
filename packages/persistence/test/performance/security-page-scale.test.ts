@@ -65,6 +65,7 @@ import { SqliteFindingsRepository } from '../../src/repositories/findings.ts';
 import { SqliteSecurityRepository } from '../../src/repositories/security.ts';
 import type { GeneratedCaptureCorpus } from '../helpers/corpus.ts';
 import { corpusConnection, seedCaptureCorpus } from '../helpers/corpus.ts';
+import { sampleInterleaved, timeCall } from '../helpers/interleaved-samples.ts';
 import type { OwnedTempStore } from '../helpers/temp-store.ts';
 import { createTempStore } from '../helpers/temp-store.ts';
 
@@ -174,48 +175,14 @@ function fastest(samples: number[]): number {
   return Math.min(...samples);
 }
 
-/**
- * `SAMPLES` timings of the read's SYNCHRONOUS work.
- *
- * Every repository method here runs its SQL synchronously and returns an
- * already-resolved promise, so the elapsed time around the bare call is the
- * whole of the work and the promise is never awaited. (That same fact is why
- * `/security`'s `Promise.all` buys nothing and the page costs the SUM of its
- * reads rather than the max.)
- *
- * The rejection is CAUGHT rather than discarded, and the reason is diagnostic
- * rather than cosmetic. A bare `void promise` that rejects is an unhandled
- * rejection — one per sample, 25 per read — and vitest may attribute that to an
- * unrelated test, so a broken read here would fail somewhere else in the suite
- * instead of failing as the clean assertion this file exists to give.
- *
- * The `catch` is deliberately EMPTY, and that is not a swallowed error: what
- * surfaces a broken read is the awaited `run[name]()` in `seedAndMeasure`, which
- * runs before any sampling and rejects the `beforeAll` with the read's own error.
- * Collecting the rejection here and rethrowing it after the loop looks stronger
- * and cannot work — a `.catch` callback runs in a MICROTASK, so it has not fired
- * by the time a synchronous loop finishes, and the check would read `undefined`
- * every time. That exact dead code was written here first, and what caught it was
- * fault-injecting a read that rejects only after its first call: the suite stayed
- * green through all 8 cases.
- */
-function measure(fn: () => Promise<unknown>): number[] {
-  const out: number[] = [];
-  for (let i = 0; i < SAMPLES; i += 1) {
-    const started = performance.now();
-    void fn().catch(() => {
-      // See above: the awaited call in `seedAndMeasure` is what reports a broken
-      // read. This exists only so a rejection is never unhandled.
-    });
-    out.push(performance.now() - started);
-  }
-  return out;
-}
-
-interface Scale {
+interface Seeded {
   readonly corpus: GeneratedCaptureCorpus;
   /** Rows each read returned — a read that returns nothing measures nothing. */
   readonly returned: Record<string, number>;
+  readonly run: Record<ReadName, () => Promise<number>>;
+}
+
+interface Scale extends Seeded {
   readonly samples: Record<string, number[]>;
 }
 
@@ -228,7 +195,7 @@ const READS = [
 ] as const;
 type ReadName = (typeof READS)[number];
 
-async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Scale> {
+async function seed(store: OwnedTempStore, events: number): Promise<Seeded> {
   const db = store.open();
   const corpus = seedCaptureCorpus(db, {
     events,
@@ -289,12 +256,24 @@ async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Sc
   };
 
   const returned: Record<string, number> = {};
-  const samples: Record<string, number[]> = {};
-  for (const name of READS) {
-    returned[name] = await run[name]();
-    samples[name] = measure(run[name]);
-  }
-  return { corpus, returned, samples };
+  for (const name of READS) returned[name] = await run[name]();
+  return { corpus, returned, run };
+}
+
+/**
+ * `SAMPLES` timings of every read against BOTH stores, interleaved by
+ * `sampleInterleaved` — its file header sets out the order and why each part of
+ * it is load-bearing.
+ */
+async function sampleBothSizes(small: Seeded, large: Seeded): Promise<[Scale, Scale]> {
+  const sides = { small, large };
+  const paired = await sampleInterleaved(READS, SAMPLES, ({ side, name }) =>
+    timeCall(sides[side].run[name]),
+  );
+  return [
+    { ...small, samples: paired.small },
+    { ...large, samples: paired.large },
+  ];
 }
 
 describe(`/security read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to ${LARGE_EVENTS.toLocaleString('en-US')} events`, () => {
@@ -306,8 +285,9 @@ describe(`/security read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
   beforeAll(async () => {
     smallStore = createTempStore('aka-security-scale-small-');
     largeStore = createTempStore('aka-security-scale-large-');
-    small = await seedAndMeasure(smallStore, SMALL_EVENTS);
-    large = await seedAndMeasure(largeStore, LARGE_EVENTS);
+    const seededSmall = await seed(smallStore, SMALL_EVENTS);
+    const seededLarge = await seed(largeStore, LARGE_EVENTS);
+    [small, large] = await sampleBothSizes(seededSmall, seededLarge);
   }, SEED_TIMEOUT_MS);
 
   afterAll(() => {
@@ -364,6 +344,10 @@ describe(`/security read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
       // pass while measuring an empty result.
       expect(small.returned[name], `${name} returned nothing at the small size`).toBeGreaterThan(0);
       expect(large.returned[name], `${name} returned nothing at the large size`).toBeGreaterThan(0);
+      // The same number of samples on both sides. The floor below cannot stand
+      // in for it: the minimum of an empty set is Infinity, which clears it.
+      expect(small.samples[name], `${name} samples at small`).toHaveLength(SAMPLES);
+      expect(large.samples[name], `${name} samples at large`).toHaveLength(SAMPLES);
       expect(fastest(small.samples[name] ?? []), `${name} small floor`).toBeGreaterThan(0);
       expect(fastest(large.samples[name] ?? []), `${name} large floor`).toBeGreaterThan(0);
     }

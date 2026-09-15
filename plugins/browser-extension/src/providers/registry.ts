@@ -11,7 +11,10 @@ import type { ProviderAdapter } from './types.ts';
 // injection needs only `matches`, and manifest.test.ts asserts the grant
 // stays absent (it would additionally allow cross-origin fetch into the
 // user's chat sessions, which nothing here does).
-const ADAPTERS: ProviderAdapter[] = [chatgptAdapter, claudeAdapter];
+// Exported because the build generates the MAIN-world tap's endpoint table
+// from it (src/tap-endpoints.ts): what the tap forwards is derived from what
+// the adapters declare, so the two cannot drift.
+export const ADAPTERS: readonly ProviderAdapter[] = [chatgptAdapter, claudeAdapter];
 
 // Every hostname the registry drives, derived from the adapters themselves so
 // a new adapter cannot be added without the manifest guard seeing it.

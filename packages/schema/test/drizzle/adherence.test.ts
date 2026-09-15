@@ -13,6 +13,7 @@ import type {
   BaseSourceProjectRow,
 } from '../../src/drizzle/base-rows.ts';
 import type * as local from '../../src/drizzle/local/sqlite.ts';
+import type { AuditEventType } from '../../src/zod/meta.ts';
 
 // The OSS local SQLite store must equal the tenant-free base row contracts. Time
 // columns are epoch-millis `number` here — the base interfaces default `TTime` to
@@ -48,6 +49,16 @@ describe('OSS local store adheres to the base row contracts', () => {
 
   it('audit_events ≡ BaseAuditEventRow', () => {
     expectTypeOf<typeof local.auditEvents.$inferSelect>().toEqualTypeOf<BaseAuditEventRow>();
+  });
+
+  // The third copy of the event-type list: the Zod-inferred AuditEventType
+  // union (zod/meta.ts) must equal the eventType literal union BaseAuditEventRow
+  // carries (which is itself already tied to the SQLite column above). Any
+  // member added to, removed from, or renamed in one list without the other
+  // fails `tsc --noEmit` and `vitest run`, exactly like the row-level cases
+  // above.
+  it("AuditEventType ≡ BaseAuditEventRow['eventType']", () => {
+    expectTypeOf<AuditEventType>().toEqualTypeOf<BaseAuditEventRow['eventType']>();
   });
 
   it('classified_data ≡ BaseClassifiedDataRow', () => {

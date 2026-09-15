@@ -1734,10 +1734,11 @@ emptied field without substituting a horizon nobody chose.
 
 **`wal_autocheckpoint` is not set, and that does NOT mean the WAL is unbounded.**
 `openWithPragmas` leaves it alone, so SQLite's own default of 1000 pages applies: at the
-store's 4 KiB page size the log settles at about 4.2 MB and stays there — peak 4,223,032 B
-measured over 20,000 committed captures. The unbounded case is a long TRANSACTION — a
-checkpoint cannot run inside one — where the same 20,000 writes peak at 17,571,832 B, and
-the fixture generator's 1M-event transaction grows the log by its whole page footprint,
+store's 4 KiB page size the log settles at about 4.2 MB and stays there over 20,000
+committed captures. The unbounded case is a long TRANSACTION — a checkpoint cannot run
+inside one — where the same writes grow the log nearly four times as far (both figures sit
+beside `MEASURED_SETTLED_WAL_BYTES` in `store-growth.test.ts`, and are not restated here),
+and the fixture generator's 1M-event transaction grows the log by its whole page footprint,
 which is hundreds of megabytes. Nothing on the capture path does that (every
 `recordCapture` commits, and every hook is its own process), but a batch importer would.
 Do not "fix" the pragma without re-reading `store-growth.test.ts`.
@@ -1769,24 +1770,24 @@ The failure this guards is quiet in the wrong direction: it reddens a tree whose
 cannot explain it, and the obvious-looking fix is to widen `FLATNESS_CEILING`. Widening it
 answers a state mismatch by weakening the one number that separates flat from linear.
 
-**That WAL case runs its fixture connection at `synchronous = OFF`, and that is not a
-different configuration from the one it asserts.** Demonstrating the bound needs 20,000
-SEPARATE commits — a checkpoint cannot run inside a transaction, so batching them removes
-the property under test — and node:sqlite is built with `SQLITE_DEFAULT_WAL_SYNCHRONOUS=2`,
-so at the default every one of those commits fsyncs the log: 20,916 fsyncs over the loop.
-That made the setup's cost the runner's fsync latency times twenty thousand. On the Linux
-`No-network` job the file typically takes 22–36 s, and it took 216 s against its 180 s hook
-ceiling on a commit whose diff could not reach it. Reproduced with a fixed delay injected
-into `fsync`, the loop took 277 s at 9 ms an fsync against 1.5 s at `OFF` under the same
-delay, because at `OFF` the loop makes no fsync at all (1.0 s at 100 ms an fsync). `NORMAL`
-is not enough: it still syncs at every checkpoint, 916 times over this loop, and took 100 s
-at 100 ms. What durability cannot change is the arithmetic under test — the autocheckpoint
-counts frames, and a frame is the same bytes synced or not — so the peak is 4,223,032 B under
-`FULL`, `NORMAL` and `OFF` alike, and one enclosing transaction reaches 17,571,832 B under
-both `FULL` and `OFF` (Linux and macOS, Node 24). The case reads `wal_autocheckpoint` back,
-so the pragma that DOES decide the peak stays at its default by assertion rather than by
-comment. A slow setup there is never answered by lowering the autocheckpoint, cutting the
-event count or raising the ceiling.
+**That WAL case runs its fixture connection at `synchronous = OFF`, which is NOT the
+product's configuration — and the quantity it asserts does not depend on the difference.**
+Demonstrating the bound needs 20,000 SEPARATE commits — a checkpoint cannot run inside a
+transaction, so batching them removes the property under test — and `openWithPragmas`
+leaves `synchronous` at node:sqlite's compiled `SQLITE_DEFAULT_WAL_SYNCHRONOUS=2`, where
+every one of those commits fsyncs the log. That made the setup cost the runner's fsync
+latency times twenty thousand, and it overran its 180 s hook ceiling on a commit whose diff
+could not reach it. At `OFF` the loop makes no fsync at all; `NORMAL` is not enough, because
+it still syncs at every checkpoint. Durability moves the cost and not the log — the
+autocheckpoint counts frames, and a frame is the same bytes synced or not — so both
+measurements the ceiling sits between read identically under `FULL` and `OFF`. Those
+measurements live beside `MEASURED_SETTLED_WAL_BYTES`, and the fsync counts and the
+injected-latency reproduction in the fixture's own comment, and are deliberately not
+restated here. The case reads back every pragma the result depends on — `synchronous`,
+which SQLite silently resolves to `NORMAL` when handed a value it does not recognise, and
+the `wal_autocheckpoint` and `page_size` the peak is a product of — so each is held by
+assertion rather than by comment. A slow setup there is never answered by lowering the
+autocheckpoint, cutting the event count or raising the ceiling.
 
 It is still **skipped on Windows, on cost rather than on behaviour.** It overran its own
 180 s setup ceiling on that leg while every commit was an fsync, and starved neighbouring

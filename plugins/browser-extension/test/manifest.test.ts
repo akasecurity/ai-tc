@@ -1,5 +1,5 @@
 import { createHash, createPublicKey } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,7 +16,7 @@ const REPO_ROOT = join(HERE, '..', '..', '..');
 
 interface ExtensionManifest {
   key: string;
-  content_scripts: { matches: string[] }[];
+  content_scripts: { matches: string[]; js: string[]; run_at?: string; world?: string }[];
   host_permissions?: string[];
   permissions: string[];
 }
@@ -41,18 +41,92 @@ describe('manifest.json stays in sync with the provider registry', () => {
     expect(resolveAdapter(hostname)).not.toBeNull();
   });
 
-  it.each(HOSTNAMES)('%s is granted in content_scripts matches', (hostname) => {
-    expect(manifest.content_scripts[0]?.matches).toContain(`https://${hostname}/*`);
+  it.each(HOSTNAMES)('%s is granted in every content_scripts entry', (hostname) => {
+    expect(manifest.content_scripts.length).toBeGreaterThan(0);
+    for (const entry of manifest.content_scripts) {
+      expect(entry.matches, `${entry.js.join(',')} is not granted ${hostname}`).toContain(
+        `https://${hostname}/*`,
+      );
+    }
   });
 
   // The other direction: a granted origin with no adapter behind it injects
   // this script into a site it cannot read, widening the extension's reach
   // for nothing. Whole-set equality catches both drifts at once.
-  it('grants exactly the origins the registry drives, and no others', () => {
-    const granted = (manifest.content_scripts[0]?.matches ?? []).map((match) =>
-      match.replace(/^https:\/\//, '').replace(/\/\*$/, ''),
-    );
-    expect([...granted].sort()).toEqual([...HOSTNAMES].sort());
+  //
+  // Entry-wise, not content_scripts[0]: the tap and the DOM script are separate
+  // entries, and an origin granted to one and not the other is a page where
+  // half the extension runs.
+  it('grants exactly the origins the registry drives in EVERY content-script entry', () => {
+    expect(manifest.content_scripts.length).toBeGreaterThan(0);
+    for (const entry of manifest.content_scripts) {
+      const granted = entry.matches.map((match) =>
+        match.replace(/^https:\/\//, '').replace(/\/\*$/, ''),
+      );
+      expect([...granted].sort()).toEqual([...HOSTNAMES].sort());
+    }
+  });
+
+  it('runs exactly one script in the page-s own world, at document_start', () => {
+    // A MAIN-world script has the page's own authority — it is the page, for
+    // every purpose a site can observe. Exactly one file may have it, it must
+    // be the tap, and it must run before any page script: injected later, it
+    // cannot see a reference the page has already captured, and the site's own
+    // traffic goes past unobserved while the extension reports itself healthy.
+    const main = manifest.content_scripts.filter((entry) => entry.world === 'MAIN');
+    expect(main).toHaveLength(1);
+    expect(main[0]?.js).toEqual(['tap.js']);
+    expect(main[0]?.run_at).toBe('document_start');
+  });
+
+  it('runs the bridge in the isolated world, at document_start, before the tap', () => {
+    // The bridge takes the tap's port off a single window.postMessage the tap
+    // sends as it installs. A listener registered after that handshake has gone
+    // by never hears it, and the tap — which reads nothing from the port — has
+    // no way to be asked again: the tab then reports a healthy patch and
+    // forwards every exchange into a port nobody drains.
+    //
+    // Isolated is stated by the ABSENCE of a world key, not by naming the
+    // default: the MAIN-world guard above counts entries carrying one, and a
+    // "world": "ISOLATED" here would read as a second page-context script to
+    // anything scanning for the key.
+    const bridgeAt = manifest.content_scripts.findIndex((entry) => entry.js.includes('bridge.js'));
+    const tapAt = manifest.content_scripts.findIndex((entry) => entry.js.includes('tap.js'));
+    expect(bridgeAt).toBeGreaterThanOrEqual(0);
+    expect(tapAt).toBeGreaterThanOrEqual(0);
+    expect(bridgeAt).toBeLessThan(tapAt);
+    const bridge = manifest.content_scripts[bridgeAt];
+    expect(bridge?.world).toBeUndefined();
+    expect(bridge?.run_at).toBe('document_start');
+    // Its own file: bundling it with the tap would put the whole bridge into
+    // the page's own context, and with the DOM script it would load too late.
+    expect(bridge?.js).toEqual(['bridge.js']);
+  });
+
+  it('ships a real bundle for every content script it declares', () => {
+    // Derived from the manifest rather than listed, so a fourth entry is
+    // covered without an edit here. The manifest is the only thing naming
+    // these files: an entry dropped from BROWSER_ENTRIES leaves the manifest
+    // pointing at a file the build no longer emits, and the shape assertions
+    // above — which read the manifest alone — all stay green.
+    const declared = manifest.content_scripts.flatMap((entry) => entry.js);
+    expect(declared.length).toBeGreaterThan(0);
+    for (const file of declared) {
+      const built = join(PACKAGE_ROOT, 'dist', file);
+      expect(existsSync(built), `${file} is declared but dist/${file} was not built`).toBe(true);
+      // Not merely present: an emit that produced an empty file loads as a
+      // content script that does nothing, which is the same invisible failure.
+      expect(statSync(built).size, `dist/${file} is empty`).toBeGreaterThan(0);
+    }
+  });
+
+  it('keeps every other content script in the isolated world', () => {
+    // The isolated world is the default, so these entries carry no `world` key
+    // at all. Asserting the complement is non-empty keeps the case above from
+    // passing on a manifest where everything became MAIN-world but the tap.
+    const isolated = manifest.content_scripts.filter((entry) => entry.world !== 'MAIN');
+    expect(isolated.length).toBeGreaterThan(0);
+    for (const entry of isolated) expect(entry.js).not.toContain('tap.js');
   });
 
   it('grants no host_permissions — content-script injection needs only matches', () => {

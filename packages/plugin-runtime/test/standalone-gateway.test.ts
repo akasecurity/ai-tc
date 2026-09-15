@@ -14,9 +14,10 @@ import type {
   DetectedFinding,
   IngestEvent,
   InstalledPackInput,
+  WebCaptureStatus,
   WorkspaceSettings,
 } from '@akasecurity/schema';
-import { DEFAULT_ACTIONS } from '@akasecurity/schema';
+import { DEFAULT_ACTIONS, toCaptureStatusAttributes } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
@@ -744,6 +745,40 @@ interface RawAuditRow {
 function rawRow(db: ReturnType<typeof openLocalDatabase>, id: string): RawAuditRow | undefined {
   return db.auditEvents.findById(id);
 }
+
+describe('readCaptureStatuses', () => {
+  it('reads back what the store holds', async () => {
+    const gateway = new StandaloneDataGateway(dir);
+    const status: WebCaptureStatus = {
+      patched: true,
+      live: true,
+      blind: false,
+      sendsSeenDom: 2,
+      exchangesSeenNet: 2,
+      parseFailures: 0,
+      unparsedBodies: 0,
+      shapeMisses: [],
+      conversationEndpoints: 1,
+      closed: false,
+      enforcement: 'watching',
+    };
+    await gateway.recordAuditEvent({
+      id: randomUUID(),
+      eventType: 'capture_status',
+      // Stamped NOW rather than at a fixed date: `readCaptureStatuses` bounds
+      // its read to the last CAPTURE_STATUS_RECENCY_MS against the wall clock,
+      // so a literal calendar date ages out of the window once the clock
+      // passes it and this case would then read an empty store.
+      startedAt: new Date().toISOString(),
+      attributes: toCaptureStatusAttributes(status, 'claude-ai'),
+    });
+    const records = await gateway.readCaptureStatuses();
+    expect(records).toHaveLength(1);
+    expect(records[0]?.tool).toBe('claude-ai');
+    expect(records[0]?.status).toEqual(status);
+    await gateway.close();
+  });
+});
 
 describe('recordAuditEvent plants the session root it FKs onto', () => {
   // There is deliberately NO case for the `event.rootSessionId !== event.id`

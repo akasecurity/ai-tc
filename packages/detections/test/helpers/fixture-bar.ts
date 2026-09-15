@@ -2,10 +2,12 @@ import { expect } from 'vitest';
 
 // The documented fixture bar, in one place.
 //
-// Two suites gate on it — the rule-pack gate in `engine.test.ts` and the posture
-// gate in `posture/config-posture.test.ts` — over fixture shapes that share only
-// `shouldMatch`. Holding the number and the message here is what stops the two
-// from drifting apart while both stay green.
+// Every suite that gates a rule's fixtures reads this — the rule-pack gate in
+// `engine.test.ts` and each posture gate beside it — over fixture shapes that
+// share only `shouldMatch`. Holding the number and the message here is what
+// stops them drifting apart while all of them stay green. Stated as a shape
+// rather than a list: a count goes stale the first time a posture rule lands
+// its own gate, and a stale count reads as an inventory nobody has to check.
 
 /**
  * The minimum labeled cases of each polarity every rule ships with. Negatives

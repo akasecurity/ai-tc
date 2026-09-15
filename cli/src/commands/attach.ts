@@ -3,7 +3,6 @@ import {
   applyOnboarding,
   clearAttachmentDerivedState,
   dataDir as dataDirOf,
-  isSafeEndpoint,
   ManagedFieldError,
   openLocalDatabase,
   readControlPlaneCredentialFile,
@@ -23,8 +22,16 @@ import {
 } from '@akasecurity/plugin-runtime';
 import { hostCompatibilityLines, readHostVersionCache } from '@akasecurity/plugin-sdk';
 import { createAttachClient, createRemoteClient } from '@akasecurity/remote';
-import type { HistorySyncConsent, ManagedSettings } from '@akasecurity/schema';
-import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
+import type {
+  HistorySyncConsent,
+  ManagedSettings,
+  UnsafeEndpointReason,
+} from '@akasecurity/schema';
+import {
+  HISTORY_SYNC_PAYLOAD_VERSION,
+  originOnly,
+  unsafeEndpointReason,
+} from '@akasecurity/schema';
 
 import { homeBase } from '../lib/args.ts';
 import { openUrl } from '../lib/open-url.ts';
@@ -169,6 +176,36 @@ const MUTUALLY_EXCLUSIVE = '--sync-history and --no-sync-history are mutually ex
 const isError = (v: ParsedArgs | { error: string }): v is { error: string } => 'error' in v;
 
 /**
+ * The plain-language reason `--url` was refused, rendered beneath
+ * `refusing to attach to <origin>:` — never the raw endpoint, since the
+ * `userinfo` case exists to keep a copy-pasted password out of this message.
+ */
+function unsafeEndpointMessage(reason: UnsafeEndpointReason): string {
+  switch (reason) {
+    case 'unparseable':
+      return (
+        'that does not look like a web address; include the scheme, as in ' +
+        'https://aka.example.com.'
+      );
+    case 'userinfo':
+      return (
+        'the address carries a username or password; remove them, the access key ' +
+        'is sent separately.'
+      );
+    case 'query-or-fragment':
+      return (
+        'the address must be an origin, optionally with a path; drop the query ' +
+        'string or fragment.'
+      );
+    case 'insecure':
+      return (
+        'an access key must not travel in the clear. Use an https URL (http is ' +
+        'accepted only for a loopback deployment).'
+      );
+  }
+}
+
+/**
  * Attach: verify the credential, then write both halves.
  *
  * VERIFIED BEFORE ANYTHING IS WRITTEN, and the URL is checked before the
@@ -199,11 +236,9 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     exit(2);
     return;
   }
-  if (!isSafeEndpoint(endpoint)) {
-    io.err(
-      `refusing to attach to ${endpoint}: an access key must not travel in the clear. ` +
-        'Use an https URL (http is accepted only for a loopback deployment).',
-    );
+  const unsafeReason = unsafeEndpointReason(endpoint);
+  if (unsafeReason !== null) {
+    io.err(`refusing to attach to ${originOnly(endpoint)}: ${unsafeEndpointMessage(unsafeReason)}`);
     exit(2);
     return;
   }

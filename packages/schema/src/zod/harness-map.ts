@@ -107,6 +107,17 @@ export const SOURCE_TOOL = {
 export const SourceTool = z.enum(SOURCE_TOOL).meta({ id: 'SourceTool' });
 export type SourceTool = z.infer<typeof SourceTool>;
 
+/**
+ * The web chat UIs the browser extension's native-messaging host serves — a
+ * subset of the canonical `SourceTool` vocabulary named by MEMBER (per the
+ * rule above), so it can carry no id that file does not define. No
+ * `.meta({ id })`: nothing routes this shape, and an orphan id would still
+ * register in Zod's global registry and leak into the generated OpenAPI
+ * client (the same reason web-capture.ts's own shapes omit one).
+ */
+export const WebSourceTool = SourceTool.extract(['ChatGpt', 'ClaudeAi']);
+export type WebSourceTool = z.infer<typeof WebSourceTool>;
+
 // The wire id → display id join, one row per member name both vocabularies
 // carry. Spelled through the members rather than as literal strings, so a
 // renamed member is a compile error here instead of a row that silently stops

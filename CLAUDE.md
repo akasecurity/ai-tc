@@ -676,7 +676,13 @@ The store-reading packages read the local SQLite store directly through
 Keep these package boundaries intact — a forbidden import across a package wall is a defect.
 
 ```
-@akasecurity/schema        → zod (core Zod contracts + the SQLite local-store & rule-registry schemas, defined with Drizzle)
+@akasecurity/schema        → zod (core Zod contracts + the SQLite local-store & rule-registry schemas,
+                     defined with Drizzle; also the endpoint safety rule every
+                     forwarder and client shares — isSafeEndpoint /
+                     unsafeEndpointReason / originOnly / LOOPBACK_HOSTS — the
+                     ControlPlaneFailure type, and the raise-only enforcement
+                     clamp and its category anchor — mergeRaiseOnly +
+                     ruleCategoryMap)
 @akasecurity/persistence   → node:sqlite, @akasecurity/schema
                      (SQLite adapter + read/view ports, plus the shared ~/.aka
                      layout/settings/fingerprint file I/O, plus the egress wire
@@ -726,7 +732,14 @@ plugins/antigravity  → @akasecurity/plugin-runtime, plugin-sdk
 plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the native-messaging
                      host only — Node side); the browser-side content script bundles just
                      `@akasecurity/plugin-sdk/browser` (mask.ts's Node-API-free slice) and
-                     must never import anything Node-only
+                     must never import anything Node-only. The MAIN-world tap
+                     (`src/tap.ts`) runs with the page's own authority and REASSIGNS the
+                     page's `fetch` and `XMLHttpRequest.prototype.open`/`send` to observe
+                     chat traffic. It originates no network request and imports nothing,
+                     and it passes §4's network ban with no opt-out because it reaches
+                     those globals through its `win` parameter and a structural type — so
+                     an audit of what touches `fetch` has to include it by name.
+                     `test/tap-bundle.test.ts` holds the built bundle to that shape.
 @akasecurity/plugin-runtime → @akasecurity/plugin-sdk, persistence, schema, remote
                      (the attached-mode gateway under src/attached/ — inert on a
                      machine that has not attached, which is why `remote` is a
@@ -977,10 +990,11 @@ anything, so it is never a substitute for passing an instant.
 
 See `skills/write-detection-rule/SKILL.md`. A rule PR carrying fewer than 2 positive or
 2 negative fixtures is rejected by CI — `packages/detections/test/engine.test.ts` asserts
-the bar per rule, and `packages/detections/test/posture/config-posture.test.ts` asserts it
-for posture rules. Both read it from `packages/detections/test/helpers/fixture-bar.ts`, so
-the number and its message live in one place; the count is of DISTINCT cases, because a
-repeated fixture exercises nothing the first one did not.
+the bar per rule, and each posture suite under `packages/detections/test/posture/` asserts
+it for its own rules. Every one of them reads it from
+`packages/detections/test/helpers/fixture-bar.ts`, so the number and its message live in
+one place; the count is of DISTINCT cases, because a repeated fixture exercises nothing the
+first one did not.
 
 Any change to the `installed_packs` / `available_packs` **write semantics** must extend the
 legacy-writers suite (`packages/persistence/test/repositories/legacy-writers.test.ts`) — it
@@ -1485,19 +1499,21 @@ magnitude clear of the measurement: a ratio is blind to a constant-factor regres
 scaling one. They catch different defects; neither substitutes for the other.
 
 The numbers, measured on arm64 macOS / Node 24 against corpora from
-`src/test-fixtures/generate.ts`:
+`src/test-fixtures/generate.ts`. The two ratio rows are ranges over six interleaved runs of
+the suite itself (below), three on a machine carrying a video call and an antivirus scan and
+three with 24 CPU burners added on its 8 cores:
 
-| Property                                    | Measured                           | Gate                   |
-| ------------------------------------------- | ---------------------------------- | ---------------------- |
-| Store growth, 5k → 10k                      | **1,048.6 B/event** marginal       | ±15% band ✅           |
-| `recordCapture` 2k → 20k                    | ratio **1.02** (fastest of 200)    | ratio < 3 ✅           |
-| `openLocalDatabase` 2k → 20k                | ratio **0.99** (fastest of 20)     | ratio < 3 ✅           |
-| `recordCapture` at 1M rows                  | 0.076 ms median, 0.116 p95 (n=200) | backstop ≤ 1,000 ms ✅ |
-| `openLocalDatabase` at 1M rows              | 0.55 ms median, 0.72 p95 (n=20)    | backstop ≤ 1,000 ms ✅ |
-| `/security` (8 aggregations) at 50k events  | **159 ms** (was 11,197)            | 3 flatness ratios ✅   |
-| `/security` (8 aggregations) at 150k events | **350 ms** (was 125,987)           | 3 flatness ratios ✅   |
-| `/security` (8 aggregations) at 300k events | **729 ms**                         | 3 flatness ratios ✅   |
-| `/security` at 1M events                    | **~2.5–3 s** extrapolated          | ungated, unmeasured ❌ |
+| Property                                    | Measured                             | Gate                   |
+| ------------------------------------------- | ------------------------------------ | ---------------------- |
+| Store growth, 5k → 10k                      | **1,048.6 B/event** marginal         | ±15% band ✅           |
+| `recordCapture` 2k → 20k                    | ratio **1.02–1.08** (fastest of 200) | ratio < 3 ✅           |
+| `openLocalDatabase` 2k → 20k                | ratio **0.72–1.03** (fastest of 20)  | ratio < 3 ✅           |
+| `recordCapture` at 1M rows                  | 0.076 ms median, 0.116 p95 (n=200)   | backstop ≤ 1,000 ms ✅ |
+| `openLocalDatabase` at 1M rows              | 0.55 ms median, 0.72 p95 (n=20)      | backstop ≤ 1,000 ms ✅ |
+| `/security` (8 aggregations) at 50k events  | **159 ms** (was 11,197)              | 3 flatness ratios ✅   |
+| `/security` (8 aggregations) at 150k events | **350 ms** (was 125,987)             | 3 flatness ratios ✅   |
+| `/security` (8 aggregations) at 300k events | **729 ms**                           | 3 flatness ratios ✅   |
+| `/security` at 1M events                    | **~2.5–3 s** extrapolated            | ungated, unmeasured ❌ |
 
 **Both pairs came down from a decade higher, and the reason is worth carrying.** They
 were 5k → 50k and 10k → 20k, and at those sizes the two files were the largest single
@@ -1531,8 +1547,8 @@ size-dependent term to reach 2/7 of the baseline — ~15 us against `recordCaptu
 (measured 53.4 us at 2k and 53.0 us at 5k, i.e. flat in the corpus size),
 i.e. a per-row slope of ~7.6 ns. Adding a `SELECT COUNT(*)` to that path is genuinely
 linear and does **not** redden it: SQLite answers the count from a covering index. The
-same scan with the index defeated (`WHERE LENGTH(id) = 999`, ~40 ns/row) reads 4.739 and
-fails. So a ratio gate catches a linear cost that changes what the operation costs, not
+same scan with the index defeated (`WHERE LENGTH(id) = 999`, ~40 ns/row) reads 4.06–4.18
+and fails. So a ratio gate catches a linear cost that changes what the operation costs, not
 one inside its noise floor — and the floor is proportional to the SMALL size, so cutting
 the pair by 2.5x raised it by 2.5x.
 
@@ -1552,8 +1568,9 @@ the mechanism and `security-page-scale.test.ts` pins the consequence, as a ratio
 10x store step with `severitySummary` as the growth control. Neither implies the other.
 
 `recentFindings`, `recentlyResolved` and `mttrTrend` are the three now flat in store size —
-ratios **1.10**, **1.26** and **1.32** over 2k → 20k, against a ceiling of 3 and a control
-reading 18.30. What each needed differs, and none of it was tuning:
+ratios **1.05–1.18**, **1.22–1.29** and **1.26–1.32** over 2k → 20k across the same six
+interleaved runs as the table above, against a ceiling of 3 and a control reading
+11.87–12.86. What each needed differs, and none of it was tuning:
 
 - **`recentlyResolved` was QUADRATIC**, O(code_change events x resolved keys), because the
   join key was unreachable: `f` was reached FROM `latest`, so `latest` got probed on
@@ -1734,10 +1751,11 @@ emptied field without substituting a horizon nobody chose.
 
 **`wal_autocheckpoint` is not set, and that does NOT mean the WAL is unbounded.**
 `openWithPragmas` leaves it alone, so SQLite's own default of 1000 pages applies: at the
-store's 4 KiB page size the log settles at about 4.2 MB and stays there — peak 4,198,312 B
-measured over 20,000 committed captures. The unbounded case is a long TRANSACTION — a
-checkpoint cannot run inside one — where the same 20,000 writes peak at 12,219,952 B, and
-the fixture generator's 1M-event transaction grows the log by its whole page footprint,
+store's 4 KiB page size the log settles at about 4.2 MB and stays there over 20,000
+committed captures. The unbounded case is a long TRANSACTION — a checkpoint cannot run
+inside one — where the same writes grow the log nearly four times as far (both figures sit
+beside `MEASURED_SETTLED_WAL_BYTES` in `store-growth.test.ts`, and are not restated here),
+and the fixture generator's 1M-event transaction grows the log by its whole page footprint,
 which is hundreds of megabytes. Nothing on the capture path does that (every
 `recordCapture` commits, and every hook is its own process), but a batch importer would.
 Do not "fix" the pragma without re-reading `store-growth.test.ts`.
@@ -1758,8 +1776,9 @@ product code in it at all.
 So a file that seeds two sizes and divides one measurement by the other **checkpoints after
 seeding** (`PRAGMA wal_checkpoint(TRUNCATE)` through `corpusConnection`), which leaves both
 stores at the steady state — measured 4,148,872 and 4,144,752 B, i.e. equal — so the cost
-cancels in the ratio the way every other shared cost does. `scale-budgets.test.ts` and
-`security-page-scale.test.ts` both do this. It equalizes the LOG and not the DATABASE (2.2
+cancels in the ratio the way every other shared cost does. All four two-size suites here —
+`scale-budgets`, `security-page-scale`, `findings-page-scale` and `activity-page-scale` —
+do this. It equalizes the LOG and not the DATABASE (2.2
 MB against 17.0 MB, still 7.7x apart), so a size-dependent cost in the thing under test
 survives it: verified by mutation, an index-defeated per-open scan fails at 4.14 with the
 checkpoint and 4.08 without. `store-growth.test.ts` is the deliberate exception — the
@@ -1769,13 +1788,46 @@ The failure this guards is quiet in the wrong direction: it reddens a tree whose
 cannot explain it, and the obvious-looking fix is to widen `FLATNESS_CEILING`. Widening it
 answers a state mismatch by weakening the one number that separates flat from linear.
 
-That WAL case is **skipped on Windows, on cost rather than on behaviour.** Demonstrating
-the bound needs 20,000 SEPARATE commits — a checkpoint cannot run inside a transaction, so
-batching them removes the property under test — and each one is an fsync on the platform
-that charges most for it; it overran its own 180 s setup ceiling there and starved
-neighbouring suites on the shared leg while doing it. What it asserts is SQLite's page
-arithmetic, which does not vary by filesystem, so the other two legs cover it. Lowering
-the event count instead is the worse trade: the count is what puts a log that never
+**The same file also samples the two sizes INTERLEAVED, and that is the other half of the
+same contract.** A checkpoint puts both stores in one STATE; it says nothing about WHEN
+each is timed. The four suites used to time each store straight after seeding it, which
+put the large store's samples several seconds of CI seeding after the small store's — and
+a fastest-of-n survives a slowdown that reaches SOME of a side's samples, never one that
+lasts through all of them on one side only. That is how `activity-page-scale.test.ts`
+reddened a Linux CI leg at a ratio of **3.035** (1.974 ms against 5.989 ms) on a change
+whose diff could not reach this package, while the same run's two other full-suite legs
+passed it. So both stores are seeded first, and every probe is then timed against the two
+in alternation through `test/helpers/interleaved-samples.ts`: one probe per block, the
+leading store alternating per iteration and per block, and the microtask queue drained
+between blocks. Its own suite pins each of those without a clock. **Do not hand-roll the
+loop in a new two-size suite** — the four copies it replaced had each got block entry
+wrong in the same way, and a copy's defects are visible to no assertion but its own.
+
+**That WAL case runs its fixture connection at `synchronous = OFF`, which is NOT the
+product's configuration — and the quantity it asserts does not depend on the difference.**
+Demonstrating the bound needs 20,000 SEPARATE commits — a checkpoint cannot run inside a
+transaction, so batching them removes the property under test — and `openWithPragmas`
+leaves `synchronous` at node:sqlite's compiled `SQLITE_DEFAULT_WAL_SYNCHRONOUS=2`, where
+every one of those commits fsyncs the log. That made the setup cost the runner's fsync
+latency times twenty thousand, and it overran its 180 s hook ceiling on a commit whose diff
+could not reach it. At `OFF` the loop makes no fsync at all; `NORMAL` is not enough, because
+it still syncs at every checkpoint. Durability moves the cost and not the log — the
+autocheckpoint counts frames, and a frame is the same bytes synced or not — so both
+measurements the ceiling sits between read identically under `FULL` and `OFF`. Those
+measurements live beside `MEASURED_SETTLED_WAL_BYTES`, and the fsync counts and the
+injected-latency reproduction in the fixture's own comment, and are deliberately not
+restated here. The case reads back every pragma the result depends on — `synchronous`,
+which SQLite silently resolves to `NORMAL` when handed a value it does not recognise, and
+the `wal_autocheckpoint` and `page_size` the peak is a product of — so each is held by
+assertion rather than by comment. A slow setup there is never answered by lowering the
+autocheckpoint, cutting the event count or raising the ceiling.
+
+It is still **skipped on Windows, on cost rather than on behaviour.** It overran its own
+180 s setup ceiling on that leg while every commit was an fsync, and starved neighbouring
+suites on the shared leg while doing it; what the loop costs there without those fsyncs has
+not been measured, so the skip stands until it is. What it asserts is SQLite's page
+arithmetic, which does not vary by filesystem, so the other two legs cover it. Lowering the
+event count instead is the worse trade: the count is what puts a log that never
 checkpointed several times over the ceiling, so cutting it weakens the assertion on every
 platform to buy coverage on one.
 
@@ -2426,8 +2478,9 @@ prefix. `expectNoEchoOf` is the **required form for every raw-value absence asse
 newly written or newly touched** in a package carrying the helper — `cli/test/helpers/no-echo.ts`,
 `plugins/claude-code/test/helpers/no-echo.ts`, `plugins/codex/test/helpers/no-echo.ts`,
 `plugins/antigravity/test/helpers/no-echo.ts`, `web-ui/test/helpers/no-echo.ts`,
-`packages/setup-wizard/test/helpers/no-echo.ts` and
-`packages/persistence/test/helpers/no-echo.ts`. A plain
+`packages/setup-wizard/test/helpers/no-echo.ts`,
+`packages/persistence/test/helpers/no-echo.ts` and
+`packages/remote/test/helpers/no-echo.ts`. A plain
 `not.toContain(rawValue)` in a new or edited assertion is a defect, not a style choice, and
 editing a file means its in-class assertions come along rather than being left beside converted
 ones.
@@ -2446,7 +2499,7 @@ purpose; and the deliberate **control** assertions inside each `no-echo.test.ts`
 to show the whole-value form would have passed.
 
 **Share it inside a package, copy it across a wall — and a copy takes the suite with it.**
-All seven packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
+All eight packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
 each case drives the helper with an output that leaks a run, and asserts both that the helper
 refuses it **and** that the whole-value form it replaced would have passed. That second half is
 what shows the assertion is _stronger_ rather than merely also-red, and it is why raising the
@@ -2464,11 +2517,13 @@ constructed — true by construction, and it stays true however `maskMatch` chan
 (`@akasecurity/plugin-sdk` re-exports it, so the plugin crosses no package wall), which is what
 makes widening its generic branch go red where the reason is written down.
 
-`packages/persistence` is the one copy with **no** masked-preview case, and it is not an
-omission to fix: that package has no masking surface, and `@akasecurity/detections` — which owns
-`maskMatch` — depends ON it, so importing it even as a dev dependency would make a cycle out of
-a test fixture. Its fixture is a generated base64 vault key instead, which is what that package
-actually has to keep out of an error.
+`packages/persistence` and `packages/remote` are the two copies with **no** masked-preview
+case, and neither is an omission to fix: neither package has a masking surface. For
+`persistence` there is a second reason — `@akasecurity/detections`, which owns `maskMatch`,
+depends ON it, so importing it even as a dev dependency would make a cycle out of a test
+fixture. Its fixture is a generated base64 vault key instead, which is what that package
+actually has to keep out of an error; `remote`'s is the userinfo of a refused endpoint, which
+is what that package has to keep out of a `RemoteEndpointRefused` message.
 
 **Capture the error outside the `catch`.** This shape passes while the function under test
 stops throwing entirely:

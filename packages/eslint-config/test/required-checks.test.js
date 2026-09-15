@@ -1100,7 +1100,15 @@ describe('the installer trust chain is wired into CI', () => {
   // the module path it derives from %SystemRoot%, `Compress-Archive` never
   // autoloads, and the case spends its whole timeout before failing as a
   // 120-second hang that names no variable at all.
+  //
+  // TEMP and TMP ARE in turbo's built-in passthrough today, and are pinned here
+  // anyway, because that list lives in the turbo binary. The Windows leg moves
+  // both onto the runner's second disk, and a turbo that stopped forwarding them
+  // would quietly put every temp store back on the OS disk — the state that leg
+  // timed out in — with nothing else going red.
   it.each([
+    'TEMP',
+    'TMP',
     'PROCESSOR_ARCHITECTURE',
     'SystemRoot',
     'windir',
@@ -1183,6 +1191,32 @@ describe('the Turbo caches in ci.yml', () => {
     const block = jobBlock(ci, 'no-network');
     expect(block).toMatch(/no-network-test\.sh/);
     expect(block).not.toMatch(ANY_CACHE_ACTION);
+  });
+
+  // Not a cache property, but the same job and the same failure shape: a task
+  // turbo never schedules is one that never ran under the egress block. This is
+  // the only job running the workspace's suites with a child's egress cut, and
+  // without --continue one red package stops the schedule — nothing else here
+  // would notice the flag going, since the command still matches every other
+  // assertion about this job.
+  //
+  // The flag's PRESENCE is not the property, though. It takes a value, `never` is
+  // turbo's default, and `--continue=never` still contains `--continue`. Measured
+  // on turbo 2.10.12 against a workspace with one task failing, one depending on
+  // it, and an independent chain still running when it failed: bare `--continue`
+  // and `--continue=always` ran all three; `=dependencies-successful` skipped the
+  // dependant; `=never` and no flag at all ran only what had already started. So
+  // this pins exactly one continue flag, spelled one of the two ways that keep
+  // scheduling everything.
+  it('keeps the no-network job running every package past a failure', () => {
+    const run = /no-network-test\.sh .*turbo run test\b.*$/m.exec(jobBlock(ci, 'no-network'));
+    expect(
+      run,
+      'the no-network job runs no `turbo run test` under the egress block',
+    ).not.toBeNull();
+    const flags = run[0].split(/\s+/).filter((token) => token.startsWith('--continue'));
+    expect(flags, `continue flags in: ${run[0]}`).toHaveLength(1);
+    expect(['--continue', '--continue=always'], `continue flag in: ${run[0]}`).toContain(flags[0]);
   });
 
   // And the Windows lint leg, for the same reason one step further out. What it

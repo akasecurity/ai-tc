@@ -1,7 +1,7 @@
 import { captureWireId } from '@akasecurity/persistence';
 import { buildIngestEvent } from '@akasecurity/plugin-sdk';
 import type { AuditEventRow } from '@akasecurity/schema';
-import { ActionTaken, EventMetadata, IngestEvent } from '@akasecurity/schema';
+import { ActionTaken, EventMetadata, IngestEvent, toCaptureAttributes } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { rebuildCapture } from '../../src/attached/capture-rebuild.ts';
@@ -88,6 +88,8 @@ describe('rebuildCapture', () => {
         gitignored: true,
         whole_file: true,
         turn_index: 3,
+        message_id: 'msg_9',
+        conversation_id: 'conv_9',
       }),
     });
     expect(rebuildCapture(rich)?.metadata).toMatchObject({
@@ -97,7 +99,39 @@ describe('rebuildCapture', () => {
       gitignored: true,
       wholeFile: true,
       turnIndex: 3,
+      messageId: 'msg_9',
+      conversationId: 'conv_9',
     });
+  });
+
+  // The join back to the llm_call leaf for the same web-chat turn. Without
+  // this, an attached machine forwards a web-chat response capture with
+  // exactly the ids that join it to its own llm_call leaf stripped.
+  it('round-trips the web-chat join ids through toCaptureAttributes and back', () => {
+    const event = buildIngestEvent({
+      kind: 'response',
+      sourceTool: 'chatgpt',
+      content: 'the reply text',
+      occurredAt: '2026-09-01T10:00:00.000Z',
+      metadata: { sessionId: SESSION, messageId: 'msg_9', conversationId: 'conv_9' },
+    });
+    const attrs = toCaptureAttributes(event);
+    const rebuilt = rebuildCapture(
+      row({
+        attributes: JSON.stringify(attrs),
+        content: event.content,
+        contentHash: event.contentHash,
+      }),
+    );
+    expect(rebuilt?.metadata?.messageId).toBe('msg_9');
+    expect(rebuilt?.metadata?.conversationId).toBe('conv_9');
+  });
+
+  it('drops an empty message id rather than sending an empty string', () => {
+    const empty = row({
+      attributes: JSON.stringify({ source_tool: 'claude-code', message_id: '' }),
+    });
+    expect(rebuildCapture(empty)?.metadata?.messageId).toBeUndefined();
   });
 
   // Replayed work is not latency any session waited on — the field's own

@@ -39,6 +39,9 @@
       .muted {
         color: #6b7280;
       }
+      .tone-error {
+        color: #dc2626;
+      }
       button {
         width: 100%;
         margin-top: 8px;
@@ -62,6 +65,12 @@
     </div>
     <div id="findings-row" class="row muted" hidden>
       <span id="findings-text"></span>
+    </div>
+    <div id="capture-section" hidden>
+      <div id="capture-not-enabled" class="row muted" hidden>
+        network capture not enabled — see Settings
+      </div>
+      <div id="capture-sites"></div>
     </div>
     <button id="open-dashboard">Open dashboard</button>
     <script src="popup.js"></script>

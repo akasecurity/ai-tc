@@ -51,6 +51,7 @@ import { SqliteActivityRepository } from '../../src/repositories/activity.ts';
 import type { ActivityCorpus } from '../helpers/activity-corpus.ts';
 import { seedActivityCorpus } from '../helpers/activity-corpus.ts';
 import { corpusConnection } from '../helpers/corpus.ts';
+import { sampleInterleaved, timeCall } from '../helpers/interleaved-samples.ts';
 import type { OwnedTempStore } from '../helpers/temp-store.ts';
 import { createTempStore } from '../helpers/temp-store.ts';
 
@@ -88,39 +89,24 @@ function fastest(samples: number[]): number {
   return Math.min(...samples);
 }
 
-/**
- * `SAMPLES` timings of the read's SYNCHRONOUS work — every method here runs
- * its SQL synchronously and returns an already-resolved promise, so the
- * elapsed time around the bare call is the whole of the work. See the note of
- * the same name in security-page-scale.test.ts for the empty catch.
- */
-function measure(fn: () => Promise<unknown>): number[] {
-  const out: number[] = [];
-  for (let i = 0; i < SAMPLES; i += 1) {
-    const started = performance.now();
-    void fn().catch(() => {
-      // The awaited call in `seedAndMeasure` reports a broken read; this only
-      // keeps a rejection from being unhandled.
-    });
-    out.push(performance.now() - started);
-  }
-  return out;
-}
-
 const READS = ['stats', 'listFirstPage', 'tokenChip', 'sessionDetail', 'tokensAllTime'] as const;
 type ReadName = (typeof READS)[number];
 
 /** The page-load reads that must stay flat; `tokensAllTime` is the control. */
 const FLAT_READS: readonly ReadName[] = ['stats', 'listFirstPage', 'tokenChip', 'sessionDetail'];
 
-interface Scale {
+interface Seeded {
   readonly corpus: ActivityCorpus;
   /** Rows each read ANSWERED with — a read that matches nothing measures nothing. */
   readonly matched: Record<string, number>;
+  readonly run: Record<ReadName, () => Promise<number>>;
+}
+
+interface Scale extends Seeded {
   readonly samples: Record<string, number[]>;
 }
 
-async function seedAndMeasure(store: OwnedTempStore, captures: number): Promise<Scale> {
+async function seed(store: OwnedTempStore, captures: number): Promise<Seeded> {
   const raw = corpusConnection(store.open());
   const corpus = seedActivityCorpus(raw, { captures, endedRate: 0, giantCaptures: GIANT_CAPTURES });
   // Both sizes measured in the same STATE — the seed's single transaction
@@ -151,12 +137,24 @@ async function seedAndMeasure(store: OwnedTempStore, captures: number): Promise<
   };
 
   const matched: Record<string, number> = {};
-  const samples: Record<string, number[]> = {};
-  for (const name of READS) {
-    matched[name] = await run[name]();
-    samples[name] = measure(run[name]);
-  }
-  return { corpus, matched, samples };
+  for (const name of READS) matched[name] = await run[name]();
+  return { corpus, matched, run };
+}
+
+/**
+ * `SAMPLES` timings of every read against BOTH stores, interleaved by
+ * `sampleInterleaved` — its file header sets out the order and why each part of
+ * it is load-bearing.
+ */
+async function sampleBothSizes(small: Seeded, large: Seeded): Promise<[Scale, Scale]> {
+  const sides = { small, large };
+  const paired = await sampleInterleaved(READS, SAMPLES, ({ side, name }) =>
+    timeCall(sides[side].run[name]),
+  );
+  return [
+    { ...small, samples: paired.small },
+    { ...large, samples: paired.large },
+  ];
 }
 
 describe(`/activity read costs from ${SMALL_CAPTURES.toLocaleString('en-US')} to ${LARGE_CAPTURES.toLocaleString('en-US')} captures`, () => {
@@ -168,8 +166,9 @@ describe(`/activity read costs from ${SMALL_CAPTURES.toLocaleString('en-US')} to
   beforeAll(async () => {
     smallStore = createTempStore('aka-activity-scale-small-', { migrated: true });
     largeStore = createTempStore('aka-activity-scale-large-', { migrated: true });
-    small = await seedAndMeasure(smallStore, SMALL_CAPTURES);
-    large = await seedAndMeasure(largeStore, LARGE_CAPTURES);
+    const seededSmall = await seed(smallStore, SMALL_CAPTURES);
+    const seededLarge = await seed(largeStore, LARGE_CAPTURES);
+    [small, large] = await sampleBothSizes(seededSmall, seededLarge);
   }, SEED_TIMEOUT_MS);
 
   afterAll(() => {
@@ -193,6 +192,15 @@ describe(`/activity read costs from ${SMALL_CAPTURES.toLocaleString('en-US')} to
         large.matched[name],
         `${name} matched nothing at ${String(LARGE_CAPTURES)}`,
       ).toBeGreaterThan(0);
+    }
+  });
+
+  it('every read was timed the same number of times against each store', () => {
+    // A fastest-of-13 divided by a fastest-of-25 is a biased ratio that still
+    // clears every bound below, and nothing downstream can see the difference.
+    for (const name of READS) {
+      expect(small.samples[name], `${name} samples at small`).toHaveLength(SAMPLES);
+      expect(large.samples[name], `${name} samples at large`).toHaveLength(SAMPLES);
     }
   });
 

@@ -131,7 +131,8 @@ export interface BaseAuditEventRow<TTime = number> {
     // that comparison. Adding a member means editing both.
     | 'model_refusal'
     | 'request_decision'
-    | 'config_scan';
+    | 'config_scan'
+    | 'capture_status';
   hostId: string | null;
   harnessId: string | null;
   sourceProjectId: string | null;

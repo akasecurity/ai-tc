@@ -87,6 +87,91 @@ describe('malformed startedAt tolerance', () => {
   });
 });
 
+// The UPSERT's take-MAX(output_tokens) rule assumes a growing output count,
+// which a WEB exchange need not have: both shipped adapters report
+// `usageSource: 'none'`, writing no `output_tokens` at all, so `0 > 0` was
+// false and such a row could never be corrected. These cases pin the second
+// clause AND the two things that must stay true of the first one, because the
+// statement is shared with the transcript reconciler.
+describe('insertLlmCall: correcting a web row with no token count', () => {
+  function webCall(messageId: string, attributes: Record<string, unknown>): LlmCallInput {
+    return {
+      sessionId: SESSION_ID,
+      messageId,
+      parentId: SESSION_ID,
+      rootSessionId: SESSION_ID,
+      startedAt: '2026-06-01T04:00:00.000Z',
+      // `usage_source` is written by exactly one writer — the browser
+      // extension's exchange projection — so its presence is what marks a row
+      // as web. A reconciler row never carries it.
+      attributes: { usage_source: 'none', ...attributes },
+    };
+  }
+
+  it('replaces the bag when a re-observed web turn carries a corrected field', () => {
+    // The failure: a reload, an SPA re-render or a retry brings the same
+    // (sessionId, messageId) back with a model the first observation lacked,
+    // and the first was kept for ever with no signal.
+    db.auditEvents.insertLlmCall(webCall('msg_web', { model: 'first-guess' }));
+    db.auditEvents.insertLlmCall(webCall('msg_web', { model: 'corrected', truncated: true }));
+
+    const row = db.auditEvents.findById(llmCallId(SESSION_ID, 'msg_web'));
+    const attrs = JSON.parse(row?.attributes ?? '{}') as Record<string, unknown>;
+    expect(attrs.model).toBe('corrected');
+    expect(attrs.truncated).toBe(true);
+  });
+
+  it('is still a no-op for an identical re-read', () => {
+    // Idempotence has to survive on the new branch too, or every duplicate
+    // report rewrites the row.
+    db.auditEvents.insertLlmCall(webCall('msg_same', { model: 'm' }));
+    const first = db.auditEvents.findById(llmCallId(SESSION_ID, 'msg_same'));
+    db.auditEvents.insertLlmCall(webCall('msg_same', { model: 'm' }));
+    const second = db.auditEvents.findById(llmCallId(SESSION_ID, 'msg_same'));
+    expect(second?.attributes).toBe(first?.attributes);
+  });
+
+  it('leaves a PRICED web row under the monotonic rule', () => {
+    // A web row reporting `usageSource: 'site'` does carry output_tokens, so it
+    // must keep the take-MAX behaviour: a later report with a LOWER count must
+    // not win. Without the `output_tokens IS NULL` clause in the guard, the
+    // differs-branch would let it.
+    db.auditEvents.insertLlmCall(
+      webCall('msg_priced', { usage_source: 'site', output_tokens: 90, model: 'high' }),
+    );
+    db.auditEvents.insertLlmCall(
+      webCall('msg_priced', { usage_source: 'site', output_tokens: 10, model: 'low' }),
+    );
+
+    const attrs = JSON.parse(
+      db.auditEvents.findById(llmCallId(SESSION_ID, 'msg_priced'))?.attributes ?? '{}',
+    ) as Record<string, unknown>;
+    expect(attrs.output_tokens).toBe(90);
+    expect(attrs.model).toBe('high');
+  });
+
+  it('leaves a RECONCILER row under the monotonic rule', () => {
+    // The control that keeps this change off the CLI path: a row with no
+    // `usage_source` is the transcript reconciler's, and a lagging final with a
+    // lower count must still lose. Widening the guard to every row would make
+    // this case fail.
+    db.auditEvents.insertLlmCall({
+      ...llmCall('msg_cli', '2026-06-01T05:00:00.000Z'),
+      attributes: { output_tokens: 50, model: 'terminal' },
+    });
+    db.auditEvents.insertLlmCall({
+      ...llmCall('msg_cli', '2026-06-01T05:00:00.000Z'),
+      attributes: { output_tokens: 5, model: 'partial' },
+    });
+
+    const attrs = JSON.parse(
+      db.auditEvents.findById(llmCallId(SESSION_ID, 'msg_cli'))?.attributes ?? '{}',
+    ) as Record<string, unknown>;
+    expect(attrs.output_tokens).toBe(50);
+    expect(attrs.model).toBe('terminal');
+  });
+});
+
 describe('ensureSessionRoot', () => {
   it('plants a root a session-scoped leaf can FK onto', () => {
     // A session distinct from the beforeEach seed, with no root yet.

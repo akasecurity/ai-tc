@@ -107,7 +107,16 @@ export function rebuildCapture(row: AuditEventRow): IngestEvent | undefined {
   const metadata: EventMetadata = {
     ...(rootSessionId === null ? {} : { sessionId: rootSessionId }),
     ...(filePath === undefined ? {} : { filePath }),
-    ...pick(attributes, { repo: 'repo', toolName: 'tool_name', model: 'model' }),
+    ...pick(attributes, {
+      repo: 'repo',
+      toolName: 'tool_name',
+      model: 'model',
+      // The join back to the llm_call leaf for the same web-chat turn.
+      // Stripping these would forward a response capture the deployment can
+      // never correlate to the llm_call leaf describing the same turn.
+      messageId: 'message_id',
+      conversationId: 'conversation_id',
+    }),
     // The two constrained strings, kept only if they satisfy the wire.
     ...withField('traceId', keep(stringOrUndefined(attributes.trace_id), TRACE_ID)),
     ...withField(

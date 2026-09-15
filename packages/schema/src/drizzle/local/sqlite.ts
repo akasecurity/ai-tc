@@ -352,6 +352,7 @@ export const auditEvents = sqliteTable(
         'model_refusal',
         'request_decision',
         'config_scan',
+        'capture_status',
       ],
     }).notNull(),
     hostId: text(COL.hostId).references(() => inventory.id),

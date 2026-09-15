@@ -1737,10 +1737,11 @@ emptied field without substituting a horizon nobody chose.
 
 **`wal_autocheckpoint` is not set, and that does NOT mean the WAL is unbounded.**
 `openWithPragmas` leaves it alone, so SQLite's own default of 1000 pages applies: at the
-store's 4 KiB page size the log settles at about 4.2 MB and stays there — peak 4,198,312 B
-measured over 20,000 committed captures. The unbounded case is a long TRANSACTION — a
-checkpoint cannot run inside one — where the same 20,000 writes peak at 12,219,952 B, and
-the fixture generator's 1M-event transaction grows the log by its whole page footprint,
+store's 4 KiB page size the log settles at about 4.2 MB and stays there over 20,000
+committed captures. The unbounded case is a long TRANSACTION — a checkpoint cannot run
+inside one — where the same writes grow the log nearly four times as far (both figures sit
+beside `MEASURED_SETTLED_WAL_BYTES` in `store-growth.test.ts`, and are not restated here),
+and the fixture generator's 1M-event transaction grows the log by its whole page footprint,
 which is hundreds of megabytes. Nothing on the capture path does that (every
 `recordCapture` commits, and every hook is its own process), but a batch importer would.
 Do not "fix" the pragma without re-reading `store-growth.test.ts`.
@@ -1788,13 +1789,31 @@ between blocks. Its own suite pins each of those without a clock. **Do not hand-
 loop in a new two-size suite** — the four copies it replaced had each got block entry
 wrong in the same way, and a copy's defects are visible to no assertion but its own.
 
-That WAL case is **skipped on Windows, on cost rather than on behaviour.** Demonstrating
-the bound needs 20,000 SEPARATE commits — a checkpoint cannot run inside a transaction, so
-batching them removes the property under test — and each one is an fsync on the platform
-that charges most for it; it overran its own 180 s setup ceiling there and starved
-neighbouring suites on the shared leg while doing it. What it asserts is SQLite's page
-arithmetic, which does not vary by filesystem, so the other two legs cover it. Lowering
-the event count instead is the worse trade: the count is what puts a log that never
+**That WAL case runs its fixture connection at `synchronous = OFF`, which is NOT the
+product's configuration — and the quantity it asserts does not depend on the difference.**
+Demonstrating the bound needs 20,000 SEPARATE commits — a checkpoint cannot run inside a
+transaction, so batching them removes the property under test — and `openWithPragmas`
+leaves `synchronous` at node:sqlite's compiled `SQLITE_DEFAULT_WAL_SYNCHRONOUS=2`, where
+every one of those commits fsyncs the log. That made the setup cost the runner's fsync
+latency times twenty thousand, and it overran its 180 s hook ceiling on a commit whose diff
+could not reach it. At `OFF` the loop makes no fsync at all; `NORMAL` is not enough, because
+it still syncs at every checkpoint. Durability moves the cost and not the log — the
+autocheckpoint counts frames, and a frame is the same bytes synced or not — so both
+measurements the ceiling sits between read identically under `FULL` and `OFF`. Those
+measurements live beside `MEASURED_SETTLED_WAL_BYTES`, and the fsync counts and the
+injected-latency reproduction in the fixture's own comment, and are deliberately not
+restated here. The case reads back every pragma the result depends on — `synchronous`,
+which SQLite silently resolves to `NORMAL` when handed a value it does not recognise, and
+the `wal_autocheckpoint` and `page_size` the peak is a product of — so each is held by
+assertion rather than by comment. A slow setup there is never answered by lowering the
+autocheckpoint, cutting the event count or raising the ceiling.
+
+It is still **skipped on Windows, on cost rather than on behaviour.** It overran its own
+180 s setup ceiling on that leg while every commit was an fsync, and starved neighbouring
+suites on the shared leg while doing it; what the loop costs there without those fsyncs has
+not been measured, so the skip stands until it is. What it asserts is SQLite's page
+arithmetic, which does not vary by filesystem, so the other two legs cover it. Lowering the
+event count instead is the worse trade: the count is what puts a log that never
 checkpointed several times over the ceiling, so cutting it weakens the assertion on every
 platform to buy coverage on one.
 

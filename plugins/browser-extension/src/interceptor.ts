@@ -10,21 +10,37 @@
 // loop never ends. `bypassNextSubmit` is armed immediately before each
 // programmatic submit and consumed by the very next handleSubmit invocation,
 // which returns BEFORE preventDefault so the site's own handler finally runs.
-import { blockGuidance, exceptionPointer } from './exception-guidance.ts';
+import type { BlockedDetectionRef } from '@akasecurity/plugin-sdk';
+
+import type { ExceptionRoute } from './exception-guidance.ts';
+import { blockGuidance, redactExceptionRoute } from './exception-guidance.ts';
 import type { BackgroundRequest, BackgroundResponse } from './messaging.ts';
 import type { ProviderAdapter } from './providers/types.ts';
 
 export type BannerTone = 'block' | 'warn' | 'redact';
 
 // What one banner renders. `exception` rides as its own field rather than
-// inside `message` for two reasons: the command has to be a selectable element
-// (a reference nobody can copy is a reference nobody can use), and its presence
-// is what tells the banner to stay on screen — a block whose approve command
-// scrolls away after six seconds offers a route the user cannot take.
+// inside `message` for two reasons: the command has to be its own element with
+// a copy path that never reads the page (a `message` is plain selectable text,
+// which a page `copy` listener can swap on its way to the clipboard), and its
+// presence is what tells the banner to stay on screen — a banner whose approve
+// command scrolls away after six seconds offers a route the user cannot take.
+// So every banner naming a ledger reference carries it here, and no `message`
+// carries the command.
 export interface BannerRequest {
   tone: BannerTone;
   message: string;
-  exception?: { intro: string; command: string; help: string };
+  exception?: ExceptionRoute;
+}
+
+// A banner with the redact approve route attached when the host ledgered one,
+// and without the field at all when it did not — so that banner auto-hides.
+function withRedactRoute(
+  banner: Omit<BannerRequest, 'exception'>,
+  references: readonly BlockedDetectionRef[] | undefined,
+): BannerRequest {
+  const route = redactExceptionRoute(references?.[0]);
+  return route ? { ...banner, exception: route } : banner;
 }
 
 export interface SubmitInterceptor {
@@ -134,10 +150,15 @@ export function createSubmitInterceptor(opts: {
       // the secret — sent, and with no banner at all, so the user's read was
       // "nothing was flagged". A redact the client cannot carry out blocks.
       if (typeof response.text !== 'string') {
-        showBanner({
-          tone: 'block',
-          message: `AKA could not redact this message (${response.ruleIds.join(', ')}) — remove the flagged content and resend.${exceptionPointer(response.blockedReferences)}`,
-        });
+        showBanner(
+          withRedactRoute(
+            {
+              tone: 'block',
+              message: `AKA could not redact this message (${response.ruleIds.join(', ')}) — remove the flagged content and resend.`,
+            },
+            response.blockedReferences,
+          ),
+        );
         return;
       }
       adapter.setText(composer, response.text);
@@ -147,10 +168,15 @@ export function createSubmitInterceptor(opts: {
       // otherwise still show "AKA redacted …" and then send the original — a
       // false assurance about the one action the product exists to perform.
       if (adapter.extractText(composer).trim() !== response.text.trim()) {
-        showBanner({
-          tone: 'block',
-          message: `AKA could not redact this message — remove the flagged content and resend.${exceptionPointer(response.blockedReferences)}`,
-        });
+        showBanner(
+          withRedactRoute(
+            {
+              tone: 'block',
+              message: 'AKA could not redact this message — remove the flagged content and resend.',
+            },
+            response.blockedReferences,
+          ),
+        );
         return;
       }
       // Banner AFTER the send, and only if it happened: both of these name a
@@ -158,21 +184,26 @@ export function createSubmitInterceptor(opts: {
       // first would state an outcome that passThrough may be about to fail to
       // produce — the same false assurance the read-back above guards against.
       if (!passThrough(composer)) return;
-      showBanner({
-        tone: 'redact',
-        message: `AKA redacted sensitive content (${response.ruleIds.join(', ')}) before sending.${exceptionPointer(response.blockedReferences)}`,
-      });
+      showBanner(
+        withRedactRoute(
+          {
+            tone: 'redact',
+            message: `AKA redacted sensitive content (${response.ruleIds.join(', ')}) before sending.`,
+          },
+          response.blockedReferences,
+        ),
+      );
       return;
     }
     if (response.action === 'warn') {
       if (!passThrough(composer)) return;
-      // No approve pointer here, unlike the block and redact banners. A warn
+      // No approve route here, unlike the block and redact banners. A warn
       // decision LEDGERS nothing: `recordBlockedDetections` in
       // @akasecurity/plugin-sdk returns before writing unless the decision's
       // action is block or redact, and it is that result `evaluate` sets
-      // `blockedReferences` from — so the pointer rendered as the empty string
-      // on every warn the native host can actually produce, and offering one
-      // would have named a reference `aka exception approve` cannot find.
+      // `blockedReferences` from — so every warn the native host can actually
+      // produce arrives with no reference, and a route offered here would name
+      // one `aka exception approve` cannot find.
       // Ledgering warn decisions would change the exception flow for every
       // plugin, so it belongs in its own change rather than in this banner.
       showBanner({

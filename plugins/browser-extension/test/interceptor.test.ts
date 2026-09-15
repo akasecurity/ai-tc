@@ -361,7 +361,8 @@ describe('the block banner carries the exception route', () => {
   it('hands the ledger reference through as its own command', async () => {
     // The reference is the whole point: without it the user is told a message
     // was blocked and given no way to allow it. It rides as a separate field
-    // rather than inside the prose so the banner can render it selectably.
+    // rather than inside the prose so the banner can render it as its own
+    // element, copied from this value rather than from a page selection.
     const h = harness([
       {
         type: 'capture',
@@ -399,22 +400,25 @@ describe('the block banner carries the exception route', () => {
     // action is block or redact, and it is that result `evaluate` sets
     // `blockedReferences` from — so a warn carries none. The case this
     // replaced fed a warn WITH references, which the host cannot produce, and
-    // asserted a pointer that rendered as the empty string in production.
+    // asserted an approve command that no warn from the host could carry.
     const h = harness([{ type: 'capture', action: 'warn', ruleIds: ['secrets/aws-access-key'] }]);
     h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
     await settle();
 
     expect(h.submitted()).toBe(1);
     // The positive control: the banner is there and names the rule, so the
-    // absence below is about the pointer rather than about a missing banner.
+    // absences below are about the approve route rather than about a missing
+    // banner.
     expect(h.banners[0]?.message).toContain('secrets/aws-access-key');
+    expect(h.banners[0]?.exception).toBeUndefined();
     expect(h.banners[0]?.message).not.toContain('aka exception approve');
   });
 
   it('offers no approve command even if a warn arrived carrying references', async () => {
     // Defence in depth on a shape the host cannot produce today: if warn
     // decisions are ever ledgered, THIS is the case that has to be revisited
-    // deliberately rather than a banner quietly starting to offer a pointer.
+    // deliberately rather than a banner quietly starting to offer an approve
+    // route.
     const h = harness([
       {
         type: 'capture',
@@ -428,6 +432,93 @@ describe('the block banner carries the exception route', () => {
     h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
     await settle();
 
+    expect(h.banners[0]?.message).toContain('secrets/aws-access-key');
+    expect(h.banners[0]?.exception).toBeUndefined();
     expect(h.banners[0]?.message).not.toContain('aka exception approve');
   });
+});
+
+// Every banner naming a ledger reference hands it over as `exception`, and none
+// splices it into `message`. The prose renders as ordinary selectable text, and a
+// selection is what a page `copy` listener can swap on its way to the clipboard
+// — while a banner with no `exception` also auto-hides, taking the only
+// on-screen copy of the reference with it. Each path gets its OWN reference, so
+// a route taken from the wrong place cannot match by coincidence.
+describe('the redact banners carry the exception route', () => {
+  const REDACT_PATHS = [
+    {
+      path: 'a redact that arrived with no text',
+      reference: '9b8a',
+      response: {},
+      overrides: {},
+      tone: 'block',
+      says: 'could not redact',
+    },
+    {
+      path: 'a redact the composer would not take',
+      reference: '4c1e',
+      response: { text: 'masked' },
+      overrides: { setText: () => undefined },
+      tone: 'block',
+      says: 'could not redact',
+    },
+    {
+      path: 'a redact that went out',
+      reference: '7d2f',
+      response: { text: 'masked' },
+      overrides: {},
+      tone: 'redact',
+      says: 'before sending',
+    },
+  ] as const;
+
+  it.each(REDACT_PATHS)(
+    '$path: names its own reference as the command, never in the prose',
+    async ({ reference, response, overrides, tone, says }) => {
+      const h = harness(
+        [
+          capture({
+            action: 'redact',
+            ruleIds: ['secrets/aws-access-key'],
+            ...response,
+            blockedReferences: [
+              { reference, ruleId: 'secrets/aws-access-key', maskedValue: 'A******E' },
+            ],
+          }),
+        ],
+        overrides,
+      );
+      h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+      await settle();
+
+      expect(h.banners).toHaveLength(1);
+      // The positive control: this is the banner the path produces, so the
+      // absence below is about the command rather than about a missing banner.
+      expect(h.banners[0]?.tone).toBe(tone);
+      expect(h.banners[0]?.message).toContain(says);
+      expect(h.banners[0]?.exception?.command).toBe(`aka exception approve ${reference}`);
+      expect(h.banners[0]?.message).not.toContain('aka exception approve');
+    },
+  );
+
+  it.each(REDACT_PATHS)(
+    '$path: carries no route when the host ledgered nothing',
+    async ({ response, overrides, tone, says }) => {
+      // With no row there is no command that could find it, and no route is
+      // what lets this banner auto-hide like any other. The case above is the
+      // positive control for the absence: the same path does carry a route.
+      const h = harness(
+        [capture({ action: 'redact', ruleIds: ['secrets/aws-access-key'], ...response })],
+        overrides,
+      );
+      h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+      await settle();
+
+      expect(h.banners).toHaveLength(1);
+      expect(h.banners[0]?.tone).toBe(tone);
+      expect(h.banners[0]?.message).toContain(says);
+      expect(h.banners[0]?.exception).toBeUndefined();
+      expect(h.banners[0]?.message).not.toContain('aka exception approve');
+    },
+  );
 });

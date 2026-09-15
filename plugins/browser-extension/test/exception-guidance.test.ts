@@ -1,12 +1,13 @@
 // The pure exception-guidance builders. Sibling of plugins/{claude-code,codex,
 // antigravity}/test/exception-guidance.test.ts, with one deliberate difference:
 // those build TERMINAL text and join it, while this returns the parts
-// separately so the banner can render the command as its own selectable
-// element. A reference the user cannot select is a reference they cannot use.
+// separately so the banner can render the command as its own element, with a
+// copy path that never reads the page, instead of inside prose the page can
+// select and swap on its way to the clipboard.
 import type { BlockedDetectionRef } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
-import { blockGuidance, exceptionPointer } from '../src/exception-guidance.ts';
+import { blockGuidance, redactExceptionRoute } from '../src/exception-guidance.ts';
 
 function ref(reference: string, maskedValue = 'A******E'): BlockedDetectionRef {
   return { reference, ruleId: 'secrets/aws-access-key', maskedValue };
@@ -57,13 +58,25 @@ describe('blockGuidance', () => {
   });
 });
 
-describe('exceptionPointer', () => {
-  it('names the reference for a redact that was ledgered', () => {
-    expect(exceptionPointer([ref('9b8a')])).toContain('aka exception approve 9b8a');
+describe('redactExceptionRoute', () => {
+  it('names the exact reference for a redact that was ledgered', () => {
+    const route = redactExceptionRoute(ref('9b8a'));
+    expect(route?.command).toBe('aka exception approve 9b8a');
+    expect(route?.help).toContain('aka exception --help');
+    expect(route?.intro).not.toContain('aka exception');
   });
 
-  it('is empty when nothing was ledgered, so no unusable command is offered', () => {
-    expect(exceptionPointer([])).toBe('');
-    expect(exceptionPointer(undefined)).toBe('');
+  it('builds the same command and help as the block banner for the same row', () => {
+    // One ledger row, one command, whichever banner names it: a redact route
+    // that drifted from the block wording would teach two ways to do one thing.
+    const row = ref('9b8a');
+    const block = blockGuidance({ ruleIds: 'secrets/aws-access-key', blockedRef: row });
+    expect(redactExceptionRoute(row)).toMatchObject({ command: block.command, help: block.help });
+  });
+
+  it('offers no route when nothing was ledgered, so no unusable command is offered', () => {
+    // The first case above is the positive control: the same builder does
+    // return a route when there is a row to name.
+    expect(redactExceptionRoute(undefined)).toBeUndefined();
   });
 });

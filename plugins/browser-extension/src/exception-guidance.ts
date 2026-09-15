@@ -1,6 +1,6 @@
-// Exception guidance for the enforcement banner. When a detection blocks, the
-// runtime has already recorded a fingerprint-only row in the short-lived
-// blocked-detections ledger and handed back a reference on
+// Exception guidance for the enforcement banner. When a detection blocks or
+// redacts, the runtime has already recorded a fingerprint-only row in the
+// short-lived blocked-detections ledger and handed back a reference on
 // `CaptureResult.blockedReferences`; this turns that into the exact
 // `aka exception approve` command, so a user who accepts the risk can grant an
 // explicit, audited bypass from a terminal. Removal of the flagged content
@@ -14,9 +14,12 @@
 //
 // Sibling of plugins/{claude-code,codex,antigravity}/src/exception-guidance.ts
 // with one deliberate difference: those build terminal text and join it, while
-// this returns the parts SEPARATELY. The banner renders into a shadow root, and
-// the command has to be its own element for the user to select it — a reference
-// nobody can copy is a reference nobody can use.
+// this returns the parts SEPARATELY, for the block banner and the redact
+// banners alike. The command never rides inside a banner's prose. The banner
+// renders it as its own element with a copy button that writes the value handed
+// over here, because ordinary selectable text is exactly what a page `copy`
+// listener can swap on its way to the clipboard — and the command is what the
+// user is about to paste into a terminal.
 //
 // Pure string building, no I/O, so it unit-tests without a page.
 import type { BlockedDetectionRef } from '@akasecurity/plugin-sdk';
@@ -37,6 +40,17 @@ export interface BlockGuidance {
   help: string;
 }
 
+// The approve route as a banner renders it: a lead-in, the command on its own,
+// and where to read more.
+export interface ExceptionRoute {
+  intro: string;
+  command: string;
+  help: string;
+}
+
+const APPROVE_COMMAND = 'aka exception approve';
+const EXCEPTION_HELP = 'More: aka exception --help';
+
 /** The parts of a block banner, in reading order. */
 export function blockGuidance(input: BlockGuidanceInput): BlockGuidance {
   const preview = input.blockedRef ? ` (${input.blockedRef.maskedValue})` : '';
@@ -45,25 +59,33 @@ export function blockGuidance(input: BlockGuidanceInput): BlockGuidance {
     advice: 'Remove the flagged content and resend.',
     approveIntro: 'If this is intentional and you accept the risk, grant an exception:',
     command: input.blockedRef
-      ? `aka exception approve ${input.blockedRef.reference}`
-      : 'aka exception approve',
-    help: 'More: aka exception --help',
+      ? `${APPROVE_COMMAND} ${input.blockedRef.reference}`
+      : APPROVE_COMMAND,
+    help: EXCEPTION_HELP,
   };
 }
 
 /**
- * One trailing sentence for the redact banner.
+ * The approve route for a redact banner, or undefined when nothing was
+ * ledgered.
  *
  * A redacted value lands in the same ledger as a blocked one, so the same
- * approve flow applies. Empty when nothing was ledgered — the sentence is only
- * added when the command would actually find the block.
+ * approve flow applies — including to a redact the page would not take, which
+ * the interceptor turns into a block. Unlike a block, there is no bare-command
+ * fallback: the route is only offered when the command would actually find the
+ * row, so a banner without one has nothing to keep on screen.
  *
  * NOT for a warn banner. A warn decision ledgers nothing (see the interceptor's
- * warn branch), so the reference this would name does not exist and the
- * sentence would send the user to a command that cannot find it.
+ * warn branch), so the reference this would name does not exist and the route
+ * would send the user to a command that cannot find it.
  */
-export function exceptionPointer(references: readonly BlockedDetectionRef[] | undefined): string {
-  const ref = references?.[0];
-  if (ref === undefined) return '';
-  return ` To allow this exact value intentionally, run: aka exception approve ${ref.reference}.`;
+export function redactExceptionRoute(
+  blockedRef: BlockedDetectionRef | undefined,
+): ExceptionRoute | undefined {
+  if (blockedRef === undefined) return undefined;
+  return {
+    intro: 'To allow this exact value intentionally, run:',
+    command: `${APPROVE_COMMAND} ${blockedRef.reference}`,
+    help: EXCEPTION_HELP,
+  };
 }

@@ -206,13 +206,106 @@ function relay(request: BackgroundRequest): Promise<BackgroundResponse> {
 let bannerHost: HTMLElement | null = null;
 let bannerShadow: ShadowRoot | null = null;
 let bannerHideTimer: ReturnType<typeof setTimeout> | null = null;
+let bannerKeeper: MutationObserver | null = null;
+// How many times one approve banner is put back within a single burst — the
+// re-attachments made before a zero-delay timer set on the first of them gets
+// to run — before it is let go. It bounds one uninterrupted exchange rather
+// than the banner's lifetime.
+const BANNER_REATTACH_LIMIT = 20;
+
+// The DOM types declare both always present, but a page can take either out of
+// the document, and the hold has to wait on that rather than throw.
+function hostAncestors(): { root: Element | null; body: HTMLElement | null } {
+  return { root: document.documentElement, body: document.body };
+}
+
+// Stops putting a removed banner back. Called whenever the banner on screen
+// stops being one that carries an approve command: it was dismissed, or a
+// banner that auto-hides replaced it.
+function releaseBanner(): void {
+  bannerKeeper?.disconnect();
+  bannerKeeper = null;
+}
+
+/**
+ * Puts the host back when the page takes it out while an approve banner is up.
+ * That banner stays until dismissed because the command on it is the only
+ * on-screen route to the exception, and showBanner only re-creates a detached
+ * host on its NEXT call — so without this a re-render that drops the host
+ * mid-display takes the route with it, and nothing brings it back.
+ *
+ * `childList` only, on the document, the root element and `document.body` (the
+ * host's parent), never a subtree observer: these pages re-render constantly,
+ * and a subtree observer would run on every one of those mutations for as
+ * long as the banner is up. The host is in the document only while each of
+ * those three links holds, and taking a node out of its parent is a `childList`
+ * record on that parent — so the three observations see the host taken out of
+ * body, body taken out of the root element, and the root element taken out of
+ * the document, however the page does it. They move to a replacement root
+ * element or body on the first delivery after it arrives. While the document
+ * has no body the host waits, uncounted: whatever brings a body back is
+ * inserted into a node already observed, and that delivery puts the host in.
+ *
+ * Bounded by BANNER_REATTACH_LIMIT per burst. A page whose own observer takes
+ * the host out whenever it returns would otherwise trade mutations with this
+ * one on the microtask queue for good, and the tab would never get its event
+ * loop back. That exchange never yields to a task, so the zero-delay timer
+ * that resets the count, started on a burst's first re-attachment, cannot run
+ * inside it; past the limit the banner is let go for good.
+ *
+ * What it does not cover: a page that removes the host more often than the
+ * limit within one burst, and a page that leaves the host in place but hides
+ * it or draws over it.
+ */
+function holdBanner(host: HTMLElement): void {
+  releaseBanner();
+  let burst = 0;
+  let watchedRoot: Element | null = null;
+  let watchedBody: HTMLElement | null = null;
+  const keeper = new MutationObserver(() => {
+    const parent = watchHostAncestors();
+    if (parent === null || host.parentNode === parent) return;
+    if (burst >= BANNER_REATTACH_LIMIT) {
+      keeper.disconnect();
+      if (bannerKeeper === keeper) bannerKeeper = null;
+      return;
+    }
+    if (burst === 0) {
+      setTimeout(() => {
+        burst = 0;
+      }, 0);
+    }
+    burst += 1;
+    parent.append(host);
+  });
+  // Re-registered only when the root element or body is a different node from
+  // the last delivery, so the observer never keeps a replaced one registered.
+  // Disconnecting inside the callback loses nothing: the queue was emptied
+  // when the callback was handed its records, and every decision above is
+  // read from the document rather than from those records.
+  function watchHostAncestors(): HTMLElement | null {
+    const { root, body } = hostAncestors();
+    if (root !== watchedRoot || body !== watchedBody) {
+      keeper.disconnect();
+      keeper.observe(document, { childList: true });
+      if (root) keeper.observe(root, { childList: true });
+      if (body) keeper.observe(body, { childList: true });
+      watchedRoot = root;
+      watchedBody = body;
+    }
+    return body;
+  }
+  watchHostAncestors();
+  bannerKeeper = keeper;
+}
 
 /**
  * A fixed, viewport-anchored toast rather than one positioned relative to the
  * composer: every provider's layout differs enough (sidebar widths, mobile
  * breakpoints, …) that a fixed bottom-center placement stays visible and
- * unclipped everywhere. Rendered in a shadow root so the host page's CSS can
- * neither hide it nor be affected by it.
+ * unclipped everywhere. Rendered in a shadow root so the host page's selectors
+ * cannot reach inside it and its own styles stay out of the page. Properties
+ * the host inherits still flow in, as they do across any shadow boundary.
  *
  * The root is CLOSED, and that is a security property rather than tidiness.
  * The host sits under `document.body`, so an open root let page script reach
@@ -224,8 +317,14 @@ let bannerHideTimer: ReturnType<typeof setTimeout> | null = null;
  * closed root is not reachable from the page in any world.
  *
  * What it does NOT stop, and what only moving the banner out of the page
- * document would: page script can still remove the host, and it can still
- * draw a lookalike banner of its own.
+ * document would: page script can still take the host out of the document, a
+ * page stylesheet can still hide the host element itself, and the page can
+ * still draw a lookalike banner of its own. A banner carrying an
+ * approve command is put back once the removal is delivered, until it is
+ * dismissed (see `holdBanner`, which also says what that does not cover) — but
+ * a page that removes it more often than that function's limit allows within
+ * one burst can keep it off screen, and any other banner stays gone until the
+ * next one is shown.
  */
 export function showBanner(banner: BannerRequest): ShadowRoot {
   // Re-created when the cached host is no longer in the document. These sites
@@ -305,17 +404,26 @@ export function showBanner(banner: BannerRequest): ShadowRoot {
           copy.textContent = 'Copied';
         },
         () => {
-          // The API needs a secure context and can be refused outright. Say
-          // so and hand the selection affordance back rather than leaving a
-          // label that claims a copy nobody made.
-          copy.textContent = 'Copy failed — select it above';
-          command.style.userSelect = 'all';
+          // The API needs a secure context and can be refused outright —
+          // including by a Permissions-Policy the page itself sends, so a
+          // refusal is something the page can arrange. Selection therefore
+          // stays OFF: handing it back here would turn every refusal into the
+          // selectable state a page `copy` listener can rewrite. Say so rather
+          // than leaving a label that claims a copy nobody made, and point at
+          // the route that involves no clipboard at all. It names the approve
+          // command because the line directly above this button is the help
+          // command.
+          copy.textContent = 'Copy failed — type the approve command into a terminal';
         },
       );
     });
     const help = document.createElement('div');
     help.style.marginTop = '6px';
     help.style.opacity = '0.85';
+    // Unselectable for the same reason as the command: it is a second terminal
+    // command, and a selection of it reaches the page's `copy` listener just
+    // the same. It has no copy button because it is short enough to type.
+    help.style.userSelect = 'none';
     help.textContent = banner.exception.help;
     const dismiss = document.createElement('button');
     dismiss.style.all = 'unset';
@@ -323,8 +431,15 @@ export function showBanner(banner: BannerRequest): ShadowRoot {
     dismiss.style.marginTop = '8px';
     dismiss.style.textDecoration = 'underline';
     dismiss.textContent = 'Dismiss';
+    // Closes the host this banner was rendered into, not whichever host is
+    // current. The two differ once the page puts back a host it removed after
+    // a later banner created a new one; this button then removes its own host
+    // and leaves the current banner, and its hold, alone.
+    const owner = bannerHost;
     dismiss.addEventListener('click', () => {
-      bannerHost?.remove();
+      owner.remove();
+      if (bannerHost !== owner) return;
+      releaseBanner();
       bannerHost = null;
       bannerShadow = null;
     });
@@ -336,8 +451,13 @@ export function showBanner(banner: BannerRequest): ShadowRoot {
   bannerHideTimer = null;
   // A banner carrying an approve command does NOT auto-hide: the command is
   // the whole reason it exists, and six seconds is not long enough to read a
-  // reference, switch to a terminal and type it. It is dismissed instead.
-  if (!banner.exception) {
+  // reference, switch to a terminal and type it. It is dismissed instead, and
+  // until then `holdBanner` puts it back when the page takes it out, within
+  // the limit that function describes.
+  if (banner.exception) {
+    holdBanner(bannerHost);
+  } else {
+    releaseBanner();
     bannerHideTimer = setTimeout(() => {
       bannerHost?.remove();
       bannerHost = null;

@@ -368,6 +368,7 @@ export {
   type DataSharesTableViewProps,
 } from './data-shares/DataSharesTableView.tsx';
 export {
+  foldedProviderRowId,
   groupByProvider,
   PROVIDER_ROW_PREFIX,
   type ProviderGroup,

@@ -186,8 +186,9 @@ export const ReviewDestination = z
     host: z.string(),
     /**
      * The id of the matched provider catalog entry; null for internal/external/ip
-     * destinations. Keys the provider lettermark color, so every host of one provider
-     * shares it.
+     * destinations. Shared by every host of one provider, so the register folds
+     * multiple hosts under it; the lettermark color is derived from `name`, not
+     * this id.
      */
     providerId: z.string().nullable(),
     trust: ShareTrustLevel,

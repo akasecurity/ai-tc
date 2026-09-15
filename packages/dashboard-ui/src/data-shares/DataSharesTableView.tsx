@@ -255,8 +255,9 @@ function ProviderRow({
       </TableCell>
       <TableCell>
         <div className="flex items-center gap-3">
-          {/* Every folded host is kind === 'provider' (see groupByProvider), which always
-              carries trust 'recognized' — DestMark ignores trust for this kind regardless. */}
+          {/* DestMark ignores `trust` for kind 'provider', so the value passed here is
+              inert — a folded group's hosts can genuinely disagree on trust (see the
+              "Mixed" trust/status handling below), unlike kind or name. */}
           <DestMark kind="provider" trust="recognized" name={g.name} />
           <div className="min-w-0">
             <div className="flex items-center gap-2">

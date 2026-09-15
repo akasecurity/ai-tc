@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { groupByProvider, PROVIDER_ROW_PREFIX } from '../../src/data-shares/grouping.ts';
+import {
+  foldedProviderRowId,
+  groupByProvider,
+  PROVIDER_ROW_PREFIX,
+} from '../../src/data-shares/grouping.ts';
 import { destination } from './fixtures.ts';
 
 describe('groupByProvider', () => {
@@ -160,5 +164,42 @@ describe('groupByProvider', () => {
       destination({ id: 'b', providerId: 'p', transports: ['http'] }),
     ]);
     expect(oneInsecure[0]).toMatchObject({ group: { insecure: true } });
+  });
+});
+
+describe('foldedProviderRowId', () => {
+  it('returns the provider row id for a member of a folded bucket', () => {
+    const a = destination({ id: 'a', providerId: 'github' });
+    const b = destination({ id: 'b', providerId: 'github' });
+
+    expect(foldedProviderRowId([a, b], 'a')).toBe(PROVIDER_ROW_PREFIX + 'github');
+    expect(foldedProviderRowId([a, b], 'b')).toBe(PROVIDER_ROW_PREFIX + 'github');
+  });
+
+  it('returns null for the sole host of a provider nobody else shares', () => {
+    const solo = destination({ id: 'solo', providerId: 'okta' });
+
+    expect(foldedProviderRowId([solo], 'solo')).toBeNull();
+  });
+
+  it('returns null for a destination with providerId: null', () => {
+    const a = destination({ id: 'a', providerId: null });
+    const b = destination({ id: 'b', providerId: null });
+
+    expect(foldedProviderRowId([a, b], 'a')).toBeNull();
+  });
+
+  it('returns null for a non-provider kind sharing a providerId with another host', () => {
+    const a = destination({ id: 'a', kind: 'external', providerId: 'p' });
+    const b = destination({ id: 'b', kind: 'external', providerId: 'p' });
+
+    expect(foldedProviderRowId([a, b], 'a')).toBeNull();
+  });
+
+  it('returns null when the id is not in the list', () => {
+    const a = destination({ id: 'a', providerId: 'github' });
+    const b = destination({ id: 'b', providerId: 'github' });
+
+    expect(foldedProviderRowId([a, b], 'gone')).toBeNull();
   });
 });

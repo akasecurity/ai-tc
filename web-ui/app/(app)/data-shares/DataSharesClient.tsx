@@ -4,9 +4,9 @@ import {
   DataShareDetailView,
   DataSharesKindTabsView,
   DataSharesTableView,
+  foldedProviderRowId,
   NeedsReviewListView,
   NeedsReviewStripView,
-  PROVIDER_ROW_PREFIX,
   SearchField,
   type ShareSelection,
 } from '@akasecurity/dashboard-ui';
@@ -144,11 +144,11 @@ export function DataSharesClient({
   if (selectedDest !== prevSelectedDest) {
     setPrevSelectedDest(selectedDest);
     if (selectedDest !== null) {
-      const item = groups.flatMap((g) => g.items).find((d) => d.id === selectedDest);
-      if (item !== undefined && item.providerId !== null && item.kind === 'provider') {
-        const key = PROVIDER_ROW_PREFIX + item.providerId;
-        setExpanded((m) => (m[key] ? m : { ...m, [key]: true }));
-      }
+      const key = foldedProviderRowId(
+        groups.flatMap((g) => g.items),
+        selectedDest,
+      );
+      if (key !== null) setExpanded((m) => (m[key] ? m : { ...m, [key]: true }));
     }
   }
 

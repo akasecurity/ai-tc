@@ -78,6 +78,31 @@ function buildProviderGroup(providerId: string, hosts: ShareDestinationSummary[]
 }
 
 /**
+ * A destination this module will fold into a provider row IF its bucket ends
+ * up with 2+ members — `kind === 'provider'` and a non-null `providerId`.
+ * Shared by `groupByProvider` and `foldedProviderRowId` so the two agree on
+ * what "foldable" means by construction rather than by two hand-kept copies
+ * of the same two conditions.
+ */
+function isFoldable(
+  item: ShareDestinationSummary,
+): item is ShareDestinationSummary & { providerId: string } {
+  return item.providerId !== null && item.kind === 'provider';
+}
+
+/** Every foldable item, bucketed by `providerId`, in input order. */
+function foldableBuckets(items: ShareDestinationSummary[]): Map<string, ShareDestinationSummary[]> {
+  const buckets = new Map<string, ShareDestinationSummary[]>();
+  for (const item of items) {
+    if (!isFoldable(item)) continue;
+    const bucket = buckets.get(item.providerId);
+    if (bucket) bucket.push(item);
+    else buckets.set(item.providerId, [item]);
+  }
+  return buckets;
+}
+
+/**
  * Folds `kind === 'provider'` destinations sharing a non-null `providerId`
  * into one `ProviderGroup` row apiece, at the position of the group's first
  * member. Every other item — a `providerId: null` destination, a
@@ -86,24 +111,13 @@ function buildProviderGroup(providerId: string, hosts: ShareDestinationSummary[]
  * `destination` row, unchanged from today.
  */
 export function groupByProvider(items: ShareDestinationSummary[]): RegisterRow[] {
-  const foldable = (
-    item: ShareDestinationSummary,
-  ): item is ShareDestinationSummary & { providerId: string } =>
-    item.providerId !== null && item.kind === 'provider';
-
-  const buckets = new Map<string, ShareDestinationSummary[]>();
-  for (const item of items) {
-    if (!foldable(item)) continue;
-    const bucket = buckets.get(item.providerId);
-    if (bucket) bucket.push(item);
-    else buckets.set(item.providerId, [item]);
-  }
+  const buckets = foldableBuckets(items);
 
   const rows: RegisterRow[] = [];
   const emitted = new Set<string>();
 
   for (const item of items) {
-    if (foldable(item)) {
+    if (isFoldable(item)) {
       const providerId = item.providerId;
       const bucket = buckets.get(providerId) ?? [];
       if (bucket.length >= 2) {
@@ -117,4 +131,22 @@ export function groupByProvider(items: ShareDestinationSummary[]): RegisterRow[]
   }
 
   return rows;
+}
+
+/**
+ * The provider row id `destinationId` folds into via `groupByProvider`, or
+ * `null` when it does not fold — it is not among `items`, its `providerId`
+ * is null, its `kind` is not `'provider'`, or it is the sole host of a
+ * provider nobody else shares. Lets a caller that only holds one destination
+ * id (a drawer selection, say) ask the same question `groupByProvider`
+ * answers for the whole list, without re-deriving the fold rule.
+ */
+export function foldedProviderRowId(
+  items: ShareDestinationSummary[],
+  destinationId: string,
+): string | null {
+  const item = items.find((i) => i.id === destinationId);
+  if (item === undefined || !isFoldable(item)) return null;
+  const bucket = foldableBuckets(items).get(item.providerId) ?? [];
+  return bucket.length >= 2 ? PROVIDER_ROW_PREFIX + item.providerId : null;
 }

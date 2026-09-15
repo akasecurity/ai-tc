@@ -9,6 +9,7 @@ import type {
   ListFindingLocationsQuery,
   Severity,
 } from '@akasecurity/schema';
+import { epochMillisToIso } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { LocalDatabase } from '../../src/database.ts';
@@ -850,5 +851,93 @@ describe('SqliteFindingsRepository.listFindingTypes pagination', () => {
     const found = await db.findings.listFindingInstances({ subtype: ['aws-key'] });
     expect(found.items[0]?.eventId).toBe(eventId);
     expect(found.items[0]?.sessionId).toBe('sess-9');
+  });
+});
+
+// One finding per delivery state, each on its own event, put into that state
+// through the ledger's own writers so the store holds exactly what the product
+// writes.
+describe('delivery state', () => {
+  const AT = Date.parse('2026-02-01T00:00:00.000Z');
+
+  function seedDeliveries(): Record<string, string> {
+    const base = { sourceTool: 'claude-code' as const, ruleId: 'aws-key', repo: 'acme/api' };
+    const ids = {
+      sent: record({ ...base, occurredAt: '2026-01-07T00:00:00.000Z', filePath: 'sent.ts' }),
+      refused: record({ ...base, occurredAt: '2026-01-06T00:00:00.000Z', filePath: 'refused.ts' }),
+      skipped: record({ ...base, occurredAt: '2026-01-05T00:00:00.000Z', filePath: 'skipped.ts' }),
+      owed: record({
+        ...base,
+        occurredAt: '2026-01-04T00:00:00.000Z',
+        filePath: 'owed.ts',
+        kind: 'tool_use',
+      }),
+      claimed: record({
+        ...base,
+        occurredAt: '2026-01-03T00:00:00.000Z',
+        filePath: 'claimed.ts',
+        kind: 'response',
+      }),
+      scanned: record({
+        ...base,
+        occurredAt: '2026-01-02T00:00:00.000Z',
+        filePath: 'scanned.ts',
+        kind: 'code_change',
+      }),
+      untouched: record({
+        ...base,
+        occurredAt: '2026-01-01T00:00:00.000Z',
+        filePath: 'untouched.ts',
+      }),
+    };
+    db.historySync.markSynced([ids.sent], AT);
+    db.historySync.markRefused([ids.refused], AT);
+    db.historySync.markSkipped([ids.skipped], AT);
+    db.historySync.markCaptureOwed(ids.owed);
+    db.historySync.claimRows([ids.claimed], AT);
+    // A scanned file stamped as if delivered still reads as a local scan.
+    db.historySync.markSynced([ids.scanned], AT);
+    return ids;
+  }
+
+  it('derives each finding’s state from its event', async () => {
+    seedDeliveries();
+    const at = epochMillisToIso(AT);
+    const res = await db.findings.listFindingInstances({});
+    expect(Object.fromEntries(res.items.map((i) => [i.file, i.delivery]))).toEqual({
+      'sent.ts': { state: 'sent', at },
+      'refused.ts': { state: 'not_sent', at, reason: 'deployment_refused' },
+      'skipped.ts': { state: 'not_sent', at, reason: 'payload_invalid' },
+      'owed.ts': { state: 'queued' },
+      'claimed.ts': { state: 'queued' },
+      'scanned.ts': { state: 'local_scan' },
+      'untouched.ts': { state: 'never_offered' },
+    });
+  });
+
+  it('filters by state, with a facet that excludes its own filter', async () => {
+    seedDeliveries();
+    const res = await db.findings.listFindingInstances({ deployment: ['queued'] });
+    expect(res.totals.findings).toBe(2);
+    expect(res.items.map((i) => i.file).sort()).toEqual(['claimed.ts', 'owed.ts']);
+    const facet = Object.fromEntries((res.facets.deployment ?? []).map((f) => [f.value, f.count]));
+    expect(facet).toEqual({ sent: 1, not_sent: 2, queued: 2, local_scan: 1, never_offered: 1 });
+  });
+
+  it('narrows the locations read by state', async () => {
+    seedDeliveries();
+    const res = await db.findings.listFindingLocations({ deployment: ['not_sent'] });
+    expect(res.totals.findings).toBe(2);
+    expect(res.items.map((l) => l.file).sort()).toEqual(['refused.ts', 'skipped.ts']);
+  });
+
+  it('resolves a single finding with its state', async () => {
+    const ids = seedDeliveries();
+    const listed = (await db.findings.listFindingInstances({})).items.find(
+      (i) => i.eventId === ids.sent,
+    );
+    expect(listed).toBeDefined();
+    const found = await db.findings.findingInstance(listed?.id ?? '');
+    expect(found?.delivery).toEqual({ state: 'sent', at: epochMillisToIso(AT) });
   });
 });

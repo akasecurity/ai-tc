@@ -104,6 +104,7 @@ export {
   CATEGORY_TONE,
   categoryStyle,
   DEFAULT_FINDINGS_VIEW,
+  type DeploymentDisplay,
   EMPTY_FILTERS,
   FINDINGS_VIEW_LABEL,
   FINDINGS_VIEWS,

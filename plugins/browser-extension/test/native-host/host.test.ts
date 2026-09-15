@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { DB_FILENAME, openLocalDatabase } from '@akasecurity/persistence';
 import { setDefaultGatewayFactory, standaloneGatewayFactory } from '@akasecurity/plugin-runtime';
-import type { PluginConfig } from '@akasecurity/plugin-sdk';
+import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { bundledDetections, contentHashOf } from '@akasecurity/plugin-sdk';
 import type {
   BuiltinPolicyId,
@@ -1141,20 +1141,41 @@ describe('capture_status', () => {
   });
 
   it('bounds the tracked-session map, evicting the oldest', async () => {
-    for (let i = 0; i < 33; i += 1) {
-      const n = String(i);
-      await handleRequest(
-        {
-          type: 'capture_status',
-          requestId: `cs-bound-${n}`,
-          sessionId: `browser-bound-${n}`,
-          tool: 'chatgpt',
-          status: VALID_STATUS,
-        },
-        consentedConfig(),
-      );
+    // The bound is on this process's in-memory map, so the reports go through
+    // a gateway that stores nothing. On the real gateway every report opens,
+    // writes to and closes the store; `capture_status durable write` covers
+    // that row.
+    let durableWrites = 0;
+    const storesNothing = {
+      recordAuditEvent: () => {
+        durableWrites += 1;
+        return Promise.resolve();
+      },
+      close: () => Promise.resolve(),
+    } as unknown as DataGateway;
+    const restore = setDefaultGatewayFactory(() => storesNothing);
+    try {
+      for (let i = 0; i < 33; i += 1) {
+        const n = String(i);
+        await handleRequest(
+          {
+            type: 'capture_status',
+            requestId: `cs-bound-${n}`,
+            sessionId: `browser-bound-${n}`,
+            tool: 'chatgpt',
+            status: VALID_STATUS,
+          },
+          consentedConfig(),
+        );
+      }
+    } finally {
+      restore();
     }
+    // Positive control: every report reached the consented path that tracks
+    // it, so browser-bound-0 is absent because it was evicted.
+    expect(durableWrites).toBe(33);
     expect(readCaptureStatus('browser-bound-0')).toBeUndefined();
+    expect(readCaptureStatus('browser-bound-1')).toBeDefined();
     expect(readCaptureStatus('browser-bound-32')).toBeDefined();
   });
 

@@ -31,24 +31,51 @@ import { rename } from 'node:fs/promises';
  * indefinitely is not a race, and turning that into a long stall would put this
  * on the wrong side of the fail-open rule — the caller is better served by an
  * error it can record than by a hook that waits.
+ *
+ * It retries in two phases, because the two refusals last very different
+ * lengths of time. Measured on the Windows CI runner: a rename refused by
+ * another rename to the same destination clears as soon as that rename lands,
+ * well under a millisecond, and back-to-back renames are never refused at all —
+ * but `setTimeout(1)` there waits ~14ms, a whole scheduler tick. Sleeping
+ * between attempts woke every refused writer on the same tick to collide again,
+ * so each round landed about one of them: twelve concurrent writers lost 13 of
+ * 240 publishes under a sleep-only schedule, and none when the first retries
+ * yield to the event loop instead, every landing inside 4ms. The timed tail is
+ * kept for the other refusal, a handle another process holds open, which an
+ * immediate retry would only spin against.
  */
 const RETRYABLE = new Set(['EPERM', 'EACCES', 'EBUSY']);
 
 /**
- * Attempts including the first.
- *
- * Five tries spend 100ms of backoff, not 150: `delay(attempt * 10)` is reached
- * on attempts 1 through 4 only (10 + 20 + 30 + 40), because the fifth hits the
- * budget check and rethrows without sleeping. Nothing measures this — the tests
- * pin the attempt COUNT and deliberately assert no elapsed time, since a
- * wall-clock assertion on a shared runner is a flake — so this comment is the
- * only statement of the budget and is worth being right.
+ * Retries that yield to the event loop instead of sleeping: the racing-rename
+ * phase. Sized from the same measurement, where the worst of the 240 contended
+ * writers landed on its seventh attempt.
  */
-const ATTEMPTS = 5;
+const IMMEDIATE_RETRIES = 8;
+
+/**
+ * Attempts including the first: the first, eight immediate retries, then four
+ * timed ones.
+ *
+ * The timed tail spends 100ms of backoff, not 150: `delay(n * 10)` is reached
+ * for timed retries 1 through 4 only (10 + 20 + 30 + 40), because the last
+ * attempt hits the budget check and rethrows without sleeping. The immediate
+ * phase adds eight event-loop turns ahead of it. Nothing measures either — the
+ * tests pin the attempt COUNT and that the first phase never waits on a timer,
+ * and deliberately assert no elapsed time, since a wall-clock assertion on a
+ * shared runner is a flake — so this comment is the only statement of the
+ * budget and is worth being right.
+ */
+const ATTEMPTS = IMMEDIATE_RETRIES + 5;
 
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => {
     setTimeout(resolve, ms);
+  });
+
+const yieldToLoop = (): Promise<void> =>
+  new Promise((resolve) => {
+    setImmediate(resolve);
   });
 
 export async function publishByRename(
@@ -68,9 +95,13 @@ export async function publishByRename(
       // A non-transient code, or the budget is spent: the caller owns it, and
       // owns cleaning up the temp file it created.
       if (attempt >= ATTEMPTS || code === undefined || !RETRYABLE.has(code)) throw err;
-      // Linear rather than exponential: the window this closes is a handle
-      // being released, measured in milliseconds, not a backend under load.
-      await delay(attempt * 10);
+      // A turn of the event loop first, for a rename that raced this one; then
+      // linear rather than exponential, since the window the tail closes is a
+      // handle being released, measured in milliseconds, not a backend under
+      // load.
+      await (attempt <= IMMEDIATE_RETRIES
+        ? yieldToLoop()
+        : delay((attempt - IMMEDIATE_RETRIES) * 10));
     }
   }
 }

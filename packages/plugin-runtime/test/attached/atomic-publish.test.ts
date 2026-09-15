@@ -18,7 +18,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { publishByRename } from '../../src/attached/atomic-publish.ts';
 
@@ -33,6 +33,15 @@ afterEach(async () => {
 });
 
 const errno = (code: string): NodeJS.ErrnoException => Object.assign(new Error(code), { code });
+
+/** Resolves after `n` turns of the event loop: a wait no faked timer can shorten or stall. */
+const loopTurns = async (n: number): Promise<void> => {
+  for (let i = 0; i < n; i += 1) {
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+  }
+};
 
 describe('publishByRename', () => {
   it('lands the file through a real rename', async () => {
@@ -62,9 +71,37 @@ describe('publishByRename', () => {
     expect(attempts).toBe(3);
   });
 
+  it('retries a refusal from a racing rename without waiting on a timer', async () => {
+    // A rename refused because another rename to the same destination is in
+    // flight clears as soon as that rename lands, which on the Windows leg is
+    // well under a millisecond — while a timer there waits a whole ~14ms tick.
+    // Sleeping woke every refused writer on the same tick to collide again.
+    // Timers are faked and never advanced, so a retry that sleeps never gets
+    // its second attempt and the race below reports it still waiting.
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      let attempts = 0;
+      const racing = (): Promise<void> => {
+        attempts += 1;
+        return attempts <= 8 ? Promise.reject(errno('EPERM')) : Promise.resolve();
+      };
+
+      const outcome = await Promise.race([
+        publishByRename('tmp', 'file', racing).then(() => 'landed'),
+        loopTurns(200).then(() => 'still waiting'),
+      ]);
+
+      expect(outcome).toBe('landed');
+      expect(attempts).toBe(9);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('gives up rather than stalling a hook when the lock never clears', async () => {
     // A destination held open indefinitely is not a race, and the caller is
-    // better served by an error it can record than by a hook that waits.
+    // better served by an error it can record than by a hook that waits: eight
+    // immediate retries, then four timed ones, then the error.
     let attempts = 0;
     const always = (): Promise<void> => {
       attempts += 1;
@@ -72,7 +109,7 @@ describe('publishByRename', () => {
     };
 
     await expect(publishByRename('tmp', 'file', always)).rejects.toThrow('EBUSY');
-    expect(attempts).toBe(5);
+    expect(attempts).toBe(13);
   });
 
   it('rethrows a code the retry was never meant to swallow, immediately', async () => {

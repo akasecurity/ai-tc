@@ -82,6 +82,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'MAX_TESTED_HOST',
   'POINTER_UNAVAILABLE_TEXT',
   'PROJECT_WALK_BOUNDS',
+  'REFUSAL_SEAMS',
   'RawEgressError',
   'THIRTY_DAYS_MS',
   'aggregateTokenUsage',

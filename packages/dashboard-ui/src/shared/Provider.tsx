@@ -24,8 +24,11 @@ export const PROVIDERS = {
   [HARNESS.ClaudeAi]: { label: 'Claude.ai', short: 'Ca', color: '#D97757' },
   [HARNESS.Api]: { label: 'Anthropic API', short: 'AP', color: '#6058E9' },
   // No vendor brand of its own — an in-process SDK embedded in an
-  // application, so it gets a neutral tile rather than a borrowed color.
-  [HARNESS.AiTcSdk]: { label: 'Application SDK', short: 'SD', color: '#64748B' },
+  // application, so it gets a neutral tile rather than a borrowed color:
+  // --color-mark-neutral (ui-kit/src/styles/theme.css), the one fill in this
+  // table that is a design token rather than a literal hex, because every
+  // other entry here IS a fixed vendor brand color.
+  [HARNESS.AiTcSdk]: { label: 'Application SDK', short: 'SD', color: 'var(--color-mark-neutral)' },
 } satisfies Record<Harness, ProviderMeta>;
 
 export type ProviderId = Harness;

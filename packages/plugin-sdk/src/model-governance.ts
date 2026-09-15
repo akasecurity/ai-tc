@@ -356,43 +356,93 @@ export function modelFromTranscript(transcriptPath: string | undefined): string 
 }
 
 /**
+ * Which seam refused: a model switch, a turn already running on one, a
+ * subagent spawn asking for one, or a request-path decision made before the
+ * call left the process.
+ */
+export const REFUSAL_SEAMS = ['switch', 'turn', 'spawn', 'request'] as const;
+export type RefusalSeam = (typeof REFUSAL_SEAMS)[number];
+
+/** The /model remedy shared by the two seams a user can act on with it. */
+const SWITCH_MODEL_REMEDY = 'Switch to an approved model with /model';
+
+/** One WORDING entry: the refusal's headline and the action it points at. */
+interface WordingEntry {
+  subject: (model: string) => string;
+  remedy: string;
+}
+
+/**
+ * Per-seam wording, keyed by every `RefusalSeam` so a new seam is a compile
+ * error here rather than silently inheriting the turn wording and its /model
+ * remedy.
+ *
+ * The remedy differs by seam: a spawn is refused on an argument the caller
+ * chose, so pointing it at /model would name the wrong control. A request is
+ * refused from inside the application process, which has no /model and no
+ * subagent argument to point at — the remedy is to change the model the
+ * application asks for, or have it allowed in the policy.
+ */
+const WORDING: Record<RefusalSeam, WordingEntry> = {
+  switch: {
+    subject: (model) => `Cannot switch to ${model}`,
+    remedy: SWITCH_MODEL_REMEDY,
+  },
+  turn: {
+    subject: (model) => `This session is running on ${model}, which cannot be used`,
+    remedy: SWITCH_MODEL_REMEDY,
+  },
+  spawn: {
+    subject: (model) => `Cannot start a subagent on ${model}`,
+    remedy: 'Name an approved model on the subagent',
+  },
+  request: {
+    subject: (model) => `Cannot use ${model} for this request`,
+    remedy: 'Change the model this application requests',
+  },
+};
+
+/**
+ * Own-key lookup into `WORDING`, widened to accept any string.
+ *
+ * `WORDING` is typed `Record<RefusalSeam, …>` for compile-time exhaustiveness
+ * (see above), which also means a plain `WORDING[action]` reads to the
+ * compiler as always defined — there is no RefusalSeam that misses. That is
+ * true only when `action` really is a RefusalSeam; `prohibitedModelMessage`
+ * is exported from the package root, so a caller can hand it a value that
+ * bypassed the type (an `as RefusalSeam`, a plain JS import, a value decoded
+ * off the wire). This lookup widens the key back to `string` so that case is
+ * reachable code rather than a lint error, mirroring `lookupOwn` in
+ * `@akasecurity/schema`'s `findings-group-build.ts` (`toApiAction` et al.).
+ */
+function lookupWording(action: string): WordingEntry | undefined {
+  return Object.hasOwn(WORDING, action)
+    ? (WORDING as Record<string, WordingEntry>)[action]
+    : undefined;
+}
+
+/**
  * The reason shown to the user when a model is refused.
  *
  * Names the model and the mechanism, and says who can change it — a governance
- * refusal the user cannot act on is just an obstacle. Deliberately does NOT
- * claim the call was intercepted: nothing here sits in the network path, and
- * saying otherwise would overstate the control.
+ * refusal the user cannot act on is just an obstacle. The switch, turn and
+ * spawn seams are observational: none of them sits in the network path. The
+ * request seam runs in-process before the call leaves the application, which
+ * is a stronger control than the other three — but the message still does
+ * not claim a network interception, for any seam, which `model-governance.test.ts`
+ * holds for the whole `REFUSAL_SEAMS` tuple.
  */
 export function prohibitedModelMessage(model: string, action: RefusalSeam): string {
-  // Keyed by every RefusalSeam, so a new seam is a compile error here rather
-  // than silently inheriting the turn wording and its /model remedy.
-  //
-  // The remedy differs by seam: a spawn is refused on an argument the caller
-  // chose, so pointing it at /model would name the wrong control. A request
-  // is refused from inside the application process, which has no /model and
-  // no subagent argument to point at — the remedy is to change the model the
-  // application asks for, or have it allowed in the policy.
-  const wording: Record<RefusalSeam, { subject: string; remedy: string }> = {
-    switch: {
-      subject: `Cannot switch to ${model}`,
-      remedy: 'Switch to an approved model with /model',
-    },
-    turn: {
-      subject: `This session is running on ${model}, which cannot be used`,
-      remedy: 'Switch to an approved model with /model',
-    },
-    spawn: {
-      subject: `Cannot start a subagent on ${model}`,
-      remedy: 'Name an approved model on the subagent',
-    },
-    request: {
-      subject: `Cannot use ${model} for this request`,
-      remedy: 'Change the model this application requests',
-    },
-  };
-  const { subject, remedy } = wording[action];
+  // The Record above keeps compile-time exhaustiveness over RefusalSeam; the
+  // `?? WORDING.turn` fallback keeps this function total for a value outside
+  // the union at runtime — it is exported from the package root, and a throw
+  // inside a hook fails OPEN under this repo's fail-open rule, which would
+  // let a prohibited model through rather than refuse it. `turn` is the
+  // fallback arm because its wording is true of any seam: the session is
+  // running on a prohibited model, whichever path put it there.
+  const { subject, remedy } = lookupWording(action) ?? WORDING.turn;
   return (
-    `${subject} — your organization has prohibited this model. ` +
+    `${subject(model)} — your organization has prohibited this model. ` +
     `${remedy}, or ask an administrator to change ` +
     `its status in AKA under Govern → LLM Providers.`
   );
@@ -425,13 +475,6 @@ export function decideProhibitedModelTurn(
   if (!isModelProhibited(model, prohibitedModels)) return null;
   return { decision: 'block', reason: prohibitedModelMessage(model, 'turn') };
 }
-
-/**
- * Which seam refused: a model switch, a turn already running on one, a
- * subagent spawn asking for one, or a request-path decision made before the
- * call left the process.
- */
-export type RefusalSeam = 'switch' | 'turn' | 'spawn' | 'request';
 
 /**
  * The audit row for one refusal.

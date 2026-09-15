@@ -86,6 +86,7 @@ export {
   prohibitedModelMessage,
   readSessionModel,
   recordSessionModel,
+  REFUSAL_SEAMS,
 } from './model-governance.ts';
 export { claimOnboardingNudge, claimSessionStart } from './nudge.ts';
 export type { NonGitProject } from './paths.ts';

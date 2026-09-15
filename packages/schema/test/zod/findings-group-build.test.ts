@@ -115,6 +115,7 @@ describe('provider mappers', () => {
     expect(toApiProvider('codex')).toBe('codex');
     expect(toApiProvider('claude-ai')).toBe('claudeai');
     expect(toApiProvider('antigravity')).toBe('antigravity');
+    expect(toApiProvider('ai-tc-sdk')).toBe('ai-tc-sdk');
     expect(toApiProvider('mystery-tool')).toBe('api');
   });
 
@@ -133,6 +134,7 @@ describe('provider mappers', () => {
     expect(toDbProviderFilter('codex')).toEqual(['codex']);
     expect(toDbProviderFilter('claudeai')).toEqual(['claude-ai']);
     expect(toDbProviderFilter('antigravity')).toEqual(['antigravity']);
+    expect(toDbProviderFilter('ai-tc-sdk')).toEqual(['ai-tc-sdk']);
     expect(toDbProviderFilter('api')).toEqual([]);
   });
 });

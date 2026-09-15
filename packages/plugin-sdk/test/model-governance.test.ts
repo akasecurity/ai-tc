@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import type { RefusalSeam } from '../src/model-governance.ts';
 import {
   buildModelRefusalEvent,
   claudeCodeModelFromRecord,
@@ -17,6 +18,7 @@ import {
   prohibitedModelMessage,
   readSessionModel,
   recordSessionModel,
+  REFUSAL_SEAMS,
 } from '../src/model-governance.ts';
 
 // ONE temp root for the file, with a cheap subdirectory per test, rather than a
@@ -182,15 +184,50 @@ describe('modelFromTranscript', () => {
 });
 
 describe('prohibitedModelMessage', () => {
-  it('names the model, the remedy, and never claims the call was intercepted', () => {
-    for (const action of ['switch', 'turn'] as const) {
+  it('names the model and never claims the call was intercepted, for every seam', () => {
+    // Loops over REFUSAL_SEAMS itself, not a hand-copied list, so a seam added
+    // later is covered here without an edit to this test.
+    for (const action of REFUSAL_SEAMS) {
       const message = prohibitedModelMessage('claude-opus-5', action);
       expect(message).toContain('claude-opus-5');
-      expect(message).toContain('/model');
       // Nothing here sits in the network path; saying otherwise would overstate
-      // the control, which is the product claim this feature must not make.
+      // the control, which is the product claim this feature must not make. True
+      // even for `request`, which runs in-process before the call leaves the
+      // application — a stronger control than the other three, but still not a
+      // network interception.
       expect(message).not.toMatch(/proxy|intercept|network|blocked the (call|request)/iu);
     }
+  });
+
+  it('names /model only for the seams whose remedy points there', () => {
+    for (const action of ['switch', 'turn'] as const) {
+      expect(prohibitedModelMessage('claude-opus-5', action)).toContain('/model');
+    }
+    for (const action of ['spawn', 'request'] as const) {
+      expect(prohibitedModelMessage('claude-opus-5', action)).not.toContain('/model');
+    }
+  });
+
+  it('falls back to the turn wording, without throwing, for a seam outside the union', () => {
+    // A value outside RefusalSeam can still arrive here at runtime — this is
+    // exported from the package root, and a throw inside a hook fails OPEN
+    // under this repo's fail-open rule, which would let a prohibited model
+    // through. `as RefusalSeam` simulates a caller that bypassed the type.
+    const bogus = 'bogus' as RefusalSeam;
+    expect(() => prohibitedModelMessage('claude-opus-5', bogus)).not.toThrow();
+    expect(prohibitedModelMessage('claude-opus-5', bogus)).toBe(
+      prohibitedModelMessage('claude-opus-5', 'turn'),
+    );
+  });
+
+  it('produces a distinct subject line for every seam in REFUSAL_SEAMS', () => {
+    // Ties REFUSAL_SEAMS to the wording table without exporting it: a seam
+    // added to the tuple without its own arm fails to compile (the wording
+    // table is typed as a Record over every RefusalSeam), and a seam whose arm
+    // was silently dropped in favor of the fallback collides with 'turn' here
+    // and fails at runtime instead.
+    const subjects = REFUSAL_SEAMS.map((seam) => prohibitedModelMessage('claude-opus-5', seam));
+    expect(new Set(subjects).size).toBe(REFUSAL_SEAMS.length);
   });
 });
 

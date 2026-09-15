@@ -72,6 +72,15 @@ describe('TOOL_TO_HARNESS', () => {
     expect(toApiProvider('ai-tc-sdk')).toBe('ai-tc-sdk');
   });
 
+  // The TOOL_TO_HARNESS row itself, in its own case: `harnessFromTool` passes
+  // an unmapped id through unchanged, and ai-tc-sdk is the one member whose
+  // wire and display spellings coincide, so the round trip above would still
+  // answer 'ai-tc-sdk' with the row deleted. Only a direct read of the row
+  // proves the two enum members are keyed to each other.
+  it('carries the ai-tc-sdk row in TOOL_TO_HARNESS, not merely the pass-through', () => {
+    expect(TOOL_TO_HARNESS[SOURCE_TOOL.AiTcSdk]).toBe(HARNESS.AiTcSdk);
+  });
+
   // The miss path is not shared: harnessFromTool passes an unmapped id through
   // (the read side coalesces it to 'claudecode'), toApiProvider answers 'api'.
   it('answers an unmapped tool differently on each side', () => {

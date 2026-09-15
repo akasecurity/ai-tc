@@ -50,12 +50,15 @@ export const AuditEventType = z
     // 'tool_call' is the reconciler's structural row for every call, while
     // 'tool_use' exists only where a hook enforced against the arguments.
     'tool_use',
-    // One row per model REFUSAL: a switch onto a prohibited model that was
-    // denied, or a turn refused because the session was already running on one.
-    // A structural row like the ones above rather than a capture — it carries
-    // the model that was refused and nothing the user typed, because what is
-    // worth recording about a governance decision is the decision, and prompt
-    // text is the thing this product exists to keep from travelling.
+    // One row per model REFUSAL, across all four seams a prohibited model can be
+    // stopped at: a switch onto it, a turn already running on it, a subagent
+    // spawn asking for it, or a request-path refusal an embedded request-path
+    // SDK makes in-process before the call leaves the application. Which seam
+    // rides `attributes.refusal_seam`, never this member name. A structural row
+    // like the ones above rather than a capture — it carries the model that was
+    // refused and nothing the user typed, because what is worth recording about
+    // a governance decision is the decision, and prompt text is the thing this
+    // product exists to keep from travelling.
     'model_refusal',
     // One row per request-path DECISION: a policy check an embedded request-path
     // SDK performs in-process before a model call leaves the application, or
@@ -64,6 +67,12 @@ export const AuditEventType = z
     // which side, which seam, what action and which field are decided rides
     // `attributes`, never this member name, and the matched text itself never
     // travels.
+    //
+    // A prohibited-model refusal on the request path is deliberately NOT this
+    // member: it stays 'model_refusal' with `refusal_seam: 'request'`, so it
+    // shares one bucket with the plugin's switch/turn/spawn refusals rather
+    // than splitting one governance concept across two event types. This
+    // member carries every OTHER request-path decision.
     'request_decision',
     // One row per config-inventory scan, hung off the session root. It is the
     // fact the posture inspection findings reference (findings require an

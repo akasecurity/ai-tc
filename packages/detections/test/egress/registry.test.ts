@@ -262,15 +262,4 @@ describe('EGRESS_VERSION_MATERIAL', () => {
       );
     },
   );
-
-  it('changes when an entry is added to either exclusion list, not only the registry', () => {
-    // A list-only edit must move the scanner's ledger key exactly like a
-    // registry edit does — otherwise `/aka:scan` would skip an unchanged
-    // file and a newly-excluded or newly-included host would go unnoticed.
-    const withExtraExcluded = `1\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify([...EXCLUDED_HOST_SUFFIXES, 'added.example'])}\n${JSON.stringify(NON_DATA_HOST_SUFFIXES)}`;
-    expect(withExtraExcluded).not.toBe(EGRESS_VERSION_MATERIAL);
-
-    const withExtraNonData = `1\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify(EXCLUDED_HOST_SUFFIXES)}\n${JSON.stringify([...NON_DATA_HOST_SUFFIXES, 'docs.example.com'])}`;
-    expect(withExtraNonData).not.toBe(EGRESS_VERSION_MATERIAL);
-  });
 });

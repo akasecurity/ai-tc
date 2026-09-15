@@ -469,7 +469,7 @@
       }
     },
     {
-      "label": "docs.github.com still resolves to GitHub via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "label": "docs.github.com resolves to GitHub through resolveHost; only resolveEndpointHit drops it, and only as a REF hit",
       "host": "docs.github.com",
       "expect": {
         "kind": "provider",
@@ -479,7 +479,7 @@
       }
     },
     {
-      "label": "help.github.com still resolves to GitHub via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "label": "help.github.com resolves to GitHub through resolveHost; only resolveEndpointHit drops it, and only as a REF hit",
       "host": "help.github.com",
       "expect": {
         "kind": "provider",
@@ -529,7 +529,7 @@
       }
     },
     {
-      "label": "docs.stripe.com still resolves to Stripe via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "label": "docs.stripe.com resolves to Stripe through resolveHost; only resolveEndpointHit drops it, and only as a REF hit",
       "host": "docs.stripe.com",
       "expect": {
         "kind": "provider",
@@ -539,7 +539,7 @@
       }
     },
     {
-      "label": "docs.anthropic.com still resolves to Anthropic via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "label": "docs.anthropic.com resolves to Anthropic through resolveHost; only resolveEndpointHit drops it, and only as a REF hit",
       "host": "docs.anthropic.com",
       "expect": {
         "kind": "provider",
@@ -559,7 +559,7 @@
       }
     },
     {
-      "label": "docs.datadoghq.com still resolves to Datadog via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "label": "docs.datadoghq.com resolves to Datadog through resolveHost; only resolveEndpointHit drops it, and only as a REF hit",
       "host": "docs.datadoghq.com",
       "expect": {
         "kind": "provider",
@@ -569,7 +569,7 @@
       }
     },
     {
-      "label": "docs.sentry.io still resolves to Sentry via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "label": "docs.sentry.io resolves to Sentry through resolveHost; only resolveEndpointHit drops it, and only as a REF hit",
       "host": "docs.sentry.io",
       "expect": {
         "kind": "provider",
@@ -589,7 +589,7 @@
       }
     },
     {
-      "label": "docs.gitlab.com still resolves to GitLab via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "label": "docs.gitlab.com resolves to GitLab through resolveHost; only resolveEndpointHit drops it, and only as a REF hit",
       "host": "docs.gitlab.com",
       "expect": {
         "kind": "provider",
@@ -609,7 +609,7 @@
       }
     },
     {
-      "label": "docs.newrelic.com still resolves to New Relic via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "label": "docs.newrelic.com resolves to New Relic through resolveHost; only resolveEndpointHit drops it, and only as a REF hit",
       "host": "docs.newrelic.com",
       "expect": {
         "kind": "provider",
@@ -629,7 +629,7 @@
       }
     },
     {
-      "label": "docs.honeycomb.io still resolves to Honeycomb via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "label": "docs.honeycomb.io resolves to Honeycomb through resolveHost; only resolveEndpointHit drops it, and only as a REF hit",
       "host": "docs.honeycomb.io",
       "expect": {
         "kind": "provider",
@@ -649,7 +649,7 @@
       }
     },
     {
-      "label": "docs.splunk.com still resolves to Splunk via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "label": "docs.splunk.com resolves to Splunk through resolveHost; only resolveEndpointHit drops it, and only as a REF hit",
       "host": "docs.splunk.com",
       "expect": {
         "kind": "provider",
@@ -659,7 +659,7 @@
       }
     },
     {
-      "label": "help.splunk.com still resolves to Splunk via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "label": "help.splunk.com resolves to Splunk through resolveHost; only resolveEndpointHit drops it, and only as a REF hit",
       "host": "help.splunk.com",
       "expect": {
         "kind": "provider",
@@ -679,7 +679,7 @@
       }
     },
     {
-      "label": "docs.cohere.com still resolves to Cohere via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "label": "docs.cohere.com resolves to Cohere through resolveHost; only resolveEndpointHit drops it, and only as a REF hit",
       "host": "docs.cohere.com",
       "expect": {
         "kind": "provider",
@@ -689,7 +689,7 @@
       }
     },
     {
-      "label": "docs.mistral.ai still resolves to Mistral AI via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "label": "docs.mistral.ai resolves to Mistral AI through resolveHost; only resolveEndpointHit drops it, and only as a REF hit",
       "host": "docs.mistral.ai",
       "expect": {
         "kind": "provider",
@@ -699,7 +699,7 @@
       }
     },
     {
-      "label": "docs.mixpanel.com still resolves to Mixpanel via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "label": "docs.mixpanel.com resolves to Mixpanel through resolveHost; only resolveEndpointHit drops it, and only as a REF hit",
       "host": "docs.mixpanel.com",
       "expect": {
         "kind": "provider",
@@ -709,7 +709,7 @@
       }
     },
     {
-      "label": "docs.mongodb.com still resolves to MongoDB Atlas via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "label": "docs.mongodb.com resolves to MongoDB Atlas through resolveHost; only resolveEndpointHit drops it, and only as a REF hit",
       "host": "docs.mongodb.com",
       "expect": {
         "kind": "provider",

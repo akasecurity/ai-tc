@@ -1,6 +1,6 @@
 // The fixture bar: what a declaring adapter must carry before its network
-// half is trusted, and the hard pin that keeps today's emptiness VISIBLE
-// rather than a green check nobody is reading. See
+// half is trusted, and the hard pin that keeps which adapters declare
+// VISIBLE rather than a green check nobody is reading. See
 // test/helpers/fixture-bar.ts for why EXPECTED_DECLARING_ADAPTERS is an
 // exact-set assertion rather than a reported count.
 import { execFileSync } from 'node:child_process';
@@ -114,7 +114,7 @@ function fixtureExistsAny(site: WebSourceTool): boolean {
   }
 }
 
-// Not wrapped in an outer describe(): with `declaring` empty today, a
+// Not wrapped in an outer describe(): were `declaring` ever empty, a
 // wrapping describe would have no children at all, and vitest treats an
 // empty describe as an error rather than a vacuous pass — exactly the
 // silent-green shape this whole file exists to avoid. Each per-adapter
@@ -289,12 +289,12 @@ for (const adapter of declaring) {
 }
 
 describe('the bar FIRES (non-vacuous today: driven against a site with no fixtures)', () => {
-  // With EXPECTED_DECLARING_ADAPTERS empty, the per-adapter block above
-  // generates no test at all — so nothing would ever have observed this bar
-  // rejecting anything, and the day somebody declares a guessed endpoint the
-  // reviewer sees the same green tick. These drive the SAME missingFixtures
-  // the block above calls, against a site whose fixtures directory does not
-  // exist, which is the state every site is in today.
+  // The per-adapter block above runs over the declaring adapters, and a green
+  // suite means each of them cleared this bar, so it only ever shows the bar
+  // accepting: nothing there observes it rejecting anything, and the day
+  // somebody declares a guessed endpoint the reviewer sees the same green
+  // tick. These drive the SAME missingFixtures the block above calls, against
+  // a site whose fixtures directory does not exist.
   const site = ADAPTERS[0]?.id;
 
   it('B4: a declared conversation endpoint with no fixtures names every artifact it owes', () => {
@@ -718,12 +718,14 @@ describe('declared protocol tokens', () => {
   });
 
   it('PT4 (anti-vacuity): PT2 and PT3 both actually FIRE, driven against a synthetic adapter array', () => {
-    // With every real adapter declaring nothing, PT2/PT3 pass over an empty
-    // loop body for every adapter — which proves nothing about whether the
-    // checks work. This drives assertDeclarableTokens and
-    // assertDeclarationsAreDetectorClean directly against a hand-built
-    // hostile declaration, so a weakened check (a warning instead of a
-    // throw) is caught here even while the registry stays empty.
+    // PT2/PT3 can only ever show these checks ACCEPTING: every token the
+    // registry declares has to clear them for the suite to be green, and an
+    // adapter that declares nothing hands them an empty list. So a check
+    // weakened to refuse nothing (a warning instead of a throw) still passes
+    // both, however many real tokens they run over. This drives
+    // assertDeclarableTokens and assertDeclarationsAreDetectorClean directly
+    // against a hand-built hostile declaration, which is what shows each one
+    // refusing.
     const longRun = 'a'.repeat(41);
     expect(() => {
       assertDeclarableTokens('chatgpt', [longRun]);
@@ -795,8 +797,10 @@ describe('declared protocol tokens', () => {
   });
 
   it('PT6 (anti-vacuity): the source check FIRES, and reads each adapter its own file', () => {
-    // Both adapters declare nothing today, so PT6's loop body never runs for
-    // a real token. These drive the check directly.
+    // PT6 runs over every real declaration, but a green suite only ever shows
+    // the check ACCEPTING them, and an adapter that declares nothing hands it
+    // an empty list. Nothing in the registry shows the check refusing a
+    // token, so these drive it directly.
     const declaredOnly = "  protocolTokens: ['content_block_delta'],";
     const err = errorFrom(() => {
       assertDeclarationsAppearInSource('claude-ai', ['content_block_delta'], declaredOnly);

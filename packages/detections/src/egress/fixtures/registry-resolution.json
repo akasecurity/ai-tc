@@ -427,6 +427,201 @@
         "name": "Amazon Web Services",
         "category": "Cloud platform"
       }
+    },
+    {
+      "label": "fonts.googleapis.com resolves to Google Fonts, not the coarser Google Cloud apex",
+      "host": "fonts.googleapis.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Google Fonts",
+        "category": "CDN / edge"
+      }
+    },
+    {
+      "label": "fonts.gstatic.com resolves to Google Fonts (its second hostSuffix)",
+      "host": "fonts.gstatic.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Google Fonts",
+        "category": "CDN / edge"
+      }
+    },
+    {
+      "label": "storage.googleapis.com still resolves to Google Cloud — the apex entry is unaffected by the more specific fonts entry",
+      "host": "storage.googleapis.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Google Cloud",
+        "category": "Cloud platform"
+      }
+    },
+    {
+      "label": "www.googleapis.com still resolves to Google Cloud",
+      "host": "www.googleapis.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Google Cloud",
+        "category": "Cloud platform"
+      }
+    },
+    {
+      "label": "docs.github.com is a documentation host, not a GitHub egress destination",
+      "host": "docs.github.com",
+      "expect": null
+    },
+    {
+      "label": "help.github.com is a documentation host, not a GitHub egress destination",
+      "host": "help.github.com",
+      "expect": null
+    },
+    {
+      "label": "api.github.com still resolves to GitHub — the exclusion is scoped to the doc hosts, not the whole apex",
+      "host": "api.github.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitHub",
+        "category": "Developer platform"
+      }
+    },
+    {
+      "label": "raw.githubusercontent.com still resolves to GitHub (its second hostSuffix)",
+      "host": "raw.githubusercontent.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitHub",
+        "category": "Developer platform"
+      }
+    },
+    {
+      "label": "gist.github.com still resolves to GitHub",
+      "host": "gist.github.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitHub",
+        "category": "Developer platform"
+      }
+    },
+    {
+      "label": "codeload.github.com still resolves to GitHub",
+      "host": "codeload.github.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitHub",
+        "category": "Developer platform"
+      }
+    },
+    {
+      "label": "docs.stripe.com is a documentation host, not a Stripe egress destination",
+      "host": "docs.stripe.com",
+      "expect": null
+    },
+    {
+      "label": "docs.anthropic.com is a documentation host, not an Anthropic egress destination",
+      "host": "docs.anthropic.com",
+      "expect": null
+    },
+    {
+      "label": "api.anthropic.com still resolves to Anthropic",
+      "host": "api.anthropic.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Anthropic",
+        "category": "LLM provider"
+      }
+    },
+    {
+      "label": "docs.datadoghq.com is a documentation host, not a Datadog egress destination",
+      "host": "docs.datadoghq.com",
+      "expect": null
+    },
+    {
+      "label": "docs.sentry.io is a documentation host, not a Sentry egress destination",
+      "host": "docs.sentry.io",
+      "expect": null
+    },
+    {
+      "label": "sentry.io (bare apex) still resolves to Sentry",
+      "host": "sentry.io",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Sentry",
+        "category": "Error tracking"
+      }
+    },
+    {
+      "label": "docs.gitlab.com is a documentation host, not a GitLab egress destination",
+      "host": "docs.gitlab.com",
+      "expect": null
+    },
+    {
+      "label": "gitlab.com (bare apex) still resolves to GitLab",
+      "host": "gitlab.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitLab",
+        "category": "Developer platform"
+      }
+    },
+    {
+      "label": "docs.newrelic.com is a documentation host, not a New Relic egress destination",
+      "host": "docs.newrelic.com",
+      "expect": null
+    },
+    {
+      "label": "api.newrelic.com still resolves to New Relic",
+      "host": "api.newrelic.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "New Relic",
+        "category": "Observability"
+      }
+    },
+    {
+      "label": "docs.honeycomb.io is a documentation host, not a Honeycomb egress destination",
+      "host": "docs.honeycomb.io",
+      "expect": null
+    },
+    {
+      "label": "api.honeycomb.io still resolves to Honeycomb",
+      "host": "api.honeycomb.io",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Honeycomb",
+        "category": "Observability"
+      }
+    },
+    {
+      "label": "docs.splunk.com is a documentation host, not a Splunk egress destination",
+      "host": "docs.splunk.com",
+      "expect": null
+    },
+    {
+      "label": "help.splunk.com is a documentation host, not a Splunk egress destination",
+      "host": "help.splunk.com",
+      "expect": null
+    },
+    {
+      "label": "splunk.com (bare apex) still resolves to Splunk",
+      "host": "splunk.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Splunk",
+        "category": "Observability"
+      }
     }
   ],
   "sdks": [

@@ -17,8 +17,11 @@ const EXTRACTOR_VERSION = '1';
 
 // One row per known provider. `hostSuffixes` are suffix-matched (see
 // hostMatchesSuffix): 'stripe.com' matches 'api.stripe.com' but never
-// 'evilstripe.com'. `sdks` lists only ecosystems the provider ships a real SDK
-// for.
+// 'evilstripe.com'. When two entries both suffix-match a host, the entry
+// whose matching suffix is longest wins regardless of declaration order (see
+// matchMostSpecificEntry) — so a specific entry like 'google-fonts' below can
+// sit anywhere relative to the 'gcp' entry it overlaps with. `sdks` lists only
+// ecosystems the provider ships a real SDK for.
 export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   {
     id: 'stripe',
@@ -151,6 +154,15 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       rubygems: ['google-cloud-storage'],
       nuget: ['Google.Cloud.Storage.V1'],
     },
+  },
+  {
+    id: 'google-fonts',
+    name: 'Google Fonts',
+    category: 'CDN / edge',
+    hostSuffixes: ['fonts.googleapis.com', 'fonts.gstatic.com'],
+    apiBase: 'https://fonts.googleapis.com',
+    defaultDataClasses: ['none'],
+    sdks: {},
   },
   {
     id: 'azure',
@@ -586,10 +598,59 @@ const EXCLUDED_HOST_SUFFIXES = [
   'maven.apache.org',
 ];
 
+// Documentation/help hosts a registered provider owns but that receive no
+// application data: a URL naming one is a reference a developer read, not a
+// destination anything was sent to. They resolve to null exactly like
+// EXCLUDED_HOST_SUFFIXES, even though their apex domain matches a registry
+// entry's hostSuffixes — without this list, e.g. 'docs.github.com' would
+// resolve to GitHub purely because 'github.com' is GitHub's suffix. Each of
+// these is confirmed to be a static/reference-only host for its provider,
+// distinct from that provider's real API or ingest host.
+export const NON_DATA_HOST_SUFFIXES = [
+  'docs.github.com',
+  'help.github.com',
+  'docs.stripe.com',
+  'docs.anthropic.com',
+  'docs.datadoghq.com',
+  'docs.sentry.io',
+  'docs.gitlab.com',
+  'docs.newrelic.com',
+  'docs.honeycomb.io',
+  'docs.splunk.com',
+  'help.splunk.com',
+];
+
 // Exact match or dotted-suffix match — 'stripe.com' matches 'api.stripe.com'
 // but never 'evilstripe.com' (no dot boundary).
 function hostMatchesSuffix(host: string, suffix: string): boolean {
   return host === suffix || host.endsWith(`.${suffix}`);
+}
+
+/**
+ * The registry entry whose hostSuffixes best matches `host`, among the given
+ * `entries`. When more than one entry matches — an apex entry and a more
+ * specific subdomain entry both suffix-match, e.g. 'googleapis.com' (Google
+ * Cloud) and 'fonts.googleapis.com' (Google Fonts) — the entry whose matching
+ * suffix is LONGEST wins, so the more specific host takes precedence over its
+ * apex regardless of where each entry sits in `entries`. Equal-length matches
+ * fall back to declaration order: the first entry reaching that length keeps
+ * it, since only a strictly longer suffix replaces the running best.
+ */
+export function matchMostSpecificEntry(
+  host: string,
+  entries: readonly ProviderRegistryEntry[],
+): ProviderRegistryEntry | null {
+  let best: ProviderRegistryEntry | null = null;
+  let bestSuffixLength = -1;
+  for (const entry of entries) {
+    for (const suffix of entry.hostSuffixes) {
+      if (hostMatchesSuffix(host, suffix) && suffix.length > bestSuffixLength) {
+        best = entry;
+        bestSuffixLength = suffix.length;
+      }
+    }
+  }
+  return best;
 }
 
 /** True when `host` is a syntactically valid dotted-quad IPv4 literal. */
@@ -688,7 +749,8 @@ function ipv4MappedAddress(host: string): string | null {
  * → ip/ip; an internal signal (a single-label host with no colon, an
  * internal TLD, or a caller-supplied internalDomain) → internal/internal;
  * anything else public → external/unverified. Excluded hosts
- * (loopback/private/reserved, schema-identifier hosts) resolve to `null`. A
+ * (loopback/private/reserved, schema-identifier hosts) and non-data hosts
+ * (a registered provider's own documentation/help hosts) resolve to `null`. A
  * host containing ':' never qualifies for the single-label internal rule, so
  * an IPv6-shaped literal that fails every literal check above still resolves
  * external/unverified — never the trusted-internal fallback.
@@ -716,10 +778,9 @@ export function resolveHost(
   }
 
   if (EXCLUDED_HOST_SUFFIXES.some((suffix) => hostMatchesSuffix(h, suffix))) return null;
+  if (NON_DATA_HOST_SUFFIXES.some((suffix) => hostMatchesSuffix(h, suffix))) return null;
 
-  const entry = PROVIDER_REGISTRY.find((p) =>
-    p.hostSuffixes.some((suffix) => hostMatchesSuffix(h, suffix)),
-  );
+  const entry = matchMostSpecificEntry(h, PROVIDER_REGISTRY);
   if (entry) {
     return {
       kind: 'provider',

@@ -2,12 +2,19 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { DestinationKind, EgressEcosystem, ShareTrustLevel } from '@akasecurity/schema';
+import type {
+  DestinationKind,
+  EgressEcosystem,
+  ProviderRegistryEntry,
+  ShareTrustLevel,
+} from '@akasecurity/schema';
 import { DATA_CLASS_ORDER } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
   EGRESS_VERSION_MATERIAL,
+  matchMostSpecificEntry,
+  NON_DATA_HOST_SUFFIXES,
   PROVIDER_REGISTRY,
   resolveHost,
   resolveSdk,
@@ -91,8 +98,8 @@ describe('PROVIDER_REGISTRY', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it('has 35 seeded providers, each with at least one hostSuffix and one dataClass', () => {
-    expect(PROVIDER_REGISTRY.length).toBe(35);
+  it('has 36 seeded providers, each with at least one hostSuffix and one dataClass', () => {
+    expect(PROVIDER_REGISTRY.length).toBe(36);
     for (const p of PROVIDER_REGISTRY) {
       expect(p.hostSuffixes.length).toBeGreaterThanOrEqual(1);
       expect(p.defaultDataClasses.length).toBeGreaterThanOrEqual(1);
@@ -119,6 +126,84 @@ describe('PROVIDER_REGISTRY', () => {
         expect(covered, `${p.id} lists ${suffix}, already matched by a broader suffix`).toBe(false);
       }
     }
+  });
+
+  it('carries no hostSuffix shared identically by two different entries', () => {
+    // An identical suffix on two entries would make resolution depend on
+    // declaration order (matchMostSpecificEntry's tie-break) rather than on
+    // which entry actually owns the host — a silent ambiguity a more specific
+    // suffix on one side is meant to resolve instead.
+    const bySuffix = new Map<string, string[]>();
+    for (const p of PROVIDER_REGISTRY) {
+      for (const suffix of p.hostSuffixes) {
+        bySuffix.set(suffix, [...(bySuffix.get(suffix) ?? []), p.id]);
+      }
+    }
+    for (const [suffix, ids] of bySuffix) {
+      expect(ids, `${suffix} is listed by more than one entry: ${ids.join(', ')}`).toHaveLength(1);
+    }
+  });
+});
+
+describe('NON_DATA_HOST_SUFFIXES', () => {
+  it('lists only hosts covered by some registry entry’s hostSuffixes', () => {
+    // Otherwise the list could rot: a host removed from every provider's
+    // hostSuffixes would still be named here for no reason, and a host that
+    // was never covered names nothing this resolution step would have caught
+    // anyway.
+    const matches = (host: string, suffix: string) =>
+      host === suffix || host.endsWith(`.${suffix}`);
+    for (const host of NON_DATA_HOST_SUFFIXES) {
+      const covered = PROVIDER_REGISTRY.some((p) => p.hostSuffixes.some((s) => matches(host, s)));
+      expect(covered, `${host} is not covered by any registry entry's hostSuffixes`).toBe(true);
+    }
+  });
+});
+
+describe('matchMostSpecificEntry', () => {
+  function entry(id: string, hostSuffixes: string[]): ProviderRegistryEntry {
+    return {
+      id,
+      name: id,
+      category: 'Test',
+      hostSuffixes,
+      apiBase: `https://${id}.example`,
+      defaultDataClasses: ['none'],
+      sdks: {},
+    };
+  }
+
+  it('picks the entry with the longest matching suffix, regardless of declaration order', () => {
+    const apexFirst = [
+      entry('apex', ['googleapis.com']),
+      entry('specific', ['fonts.googleapis.com']),
+    ];
+    const specificFirst = [
+      entry('specific', ['fonts.googleapis.com']),
+      entry('apex', ['googleapis.com']),
+    ];
+
+    expect(matchMostSpecificEntry('fonts.googleapis.com', apexFirst)?.id).toBe('specific');
+    expect(matchMostSpecificEntry('fonts.googleapis.com', specificFirst)?.id).toBe('specific');
+
+    // The apex still resolves to the apex entry when the specific suffix
+    // doesn't match at all.
+    expect(matchMostSpecificEntry('storage.googleapis.com', apexFirst)?.id).toBe('apex');
+    expect(matchMostSpecificEntry('storage.googleapis.com', specificFirst)?.id).toBe('apex');
+  });
+
+  it('falls back to declaration order when two matching suffixes tie in length', () => {
+    const firstDeclared = [entry('first', ['tied.example']), entry('second', ['tied.example'])];
+    expect(matchMostSpecificEntry('tied.example', firstDeclared)?.id).toBe('first');
+
+    const reversed = [entry('second', ['tied.example']), entry('first', ['tied.example'])];
+    expect(matchMostSpecificEntry('tied.example', reversed)?.id).toBe('second');
+  });
+
+  it('returns null when nothing matches', () => {
+    expect(
+      matchMostSpecificEntry('unrelated.example', [entry('apex', ['googleapis.com'])]),
+    ).toBeNull();
   });
 });
 

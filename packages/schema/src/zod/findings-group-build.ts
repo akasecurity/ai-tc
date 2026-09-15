@@ -19,14 +19,24 @@ import type {
   FindingStatus,
   FindingTypeSummary,
   FindingUser,
-  Severity,
 } from './finding.ts';
-// Value import: the fallback below validates against the enum itself, so a member
-// added to FindingCategory is honored here without restating the member list.
-import { FindingCategory } from './finding.ts';
+// Value imports: the category fallback validates against the enum itself, and the
+// severity rank is derived from the enum's declared order, so a member added to
+// either is honored here without restating the member list.
+import { FindingCategory, Severity } from './finding.ts';
 import { HARNESS, TOOL_TO_HARNESS } from './harness-map.ts';
 
 // ─── Enum translation (DB storage values ↔ API-facing enums) ─────────────────
+
+/**
+ * A plain-object lookup that returns undefined for a key the object does not
+ * OWN — including a key equal to an inherited Object.prototype member (e.g.
+ * 'constructor', 'toString'), which a bare `map[key]` would resolve to that
+ * member's function value instead of a miss.
+ */
+function lookupOwn<T>(map: Record<string, T>, key: string): T | undefined {
+  return Object.hasOwn(map, key) ? map[key] : undefined;
+}
 
 /**
  * DB ActionTaken → API FindingAction.
@@ -41,7 +51,7 @@ export function toApiAction(dbVal: string): FindingAction {
     warn: 'warned',
     allow: 'allowed',
   };
-  return map[dbVal] ?? 'allowed';
+  return lookupOwn(map, dbVal) ?? 'allowed';
 }
 
 /**
@@ -109,7 +119,7 @@ export function toApiProvider(sourceTool: string): FindingProvider {
   // `harnessFromTool`. The table's value type is `Harness & FindingProvider`,
   // so every mapped value is a FindingProvider by construction — no cast. An
   // unknown tool falls back to 'api' (whereas harnessFromTool passes it through).
-  return TOOL_TO_HARNESS[sourceTool] ?? HARNESS.Api;
+  return lookupOwn(TOOL_TO_HARNESS, sourceTool) ?? HARNESS.Api;
 }
 
 /**
@@ -189,11 +199,16 @@ export interface GroupableFindingRow {
 // "done" badge) and disappear from a "handled" status filter even though it
 // still contains a live enforcement action worth surfacing. Enforcement in
 // progress is more informative than a human's risk acceptance, so it wins.
-const STATUS_PRECEDENCE: readonly FindingStatus[] = ['open', 'handled', 'dismissed', 'resolved'];
+export const FINDING_STATUS_PRECEDENCE: readonly FindingStatus[] = [
+  'open',
+  'handled',
+  'dismissed',
+  'resolved',
+];
 
 /**
  * Fold a group's instance statuses into a single group-level status using
- * open-dominates precedence (see STATUS_PRECEDENCE). Statuses that are absent
+ * open-dominates precedence (see FINDING_STATUS_PRECEDENCE). Statuses that are absent
  * are ignored; if NO instance carries a status, returns undefined (never
  * fabricates a status for legacy rows).
  */
@@ -202,7 +217,7 @@ export function foldGroupStatus(
 ): FindingStatus | undefined {
   const statuses = new Set(instanceStatuses.filter((s): s is FindingStatus => s !== undefined));
   if (statuses.size === 0) return undefined;
-  for (const candidate of STATUS_PRECEDENCE) {
+  for (const candidate of FINDING_STATUS_PRECEDENCE) {
     if (statuses.has(candidate)) return candidate;
   }
   return undefined;
@@ -541,10 +556,37 @@ export function applyFindingFilters(
 
 // ─── Sorting ─────────────────────────────────────────────────────────────────
 
-const SEVERITY_ORDER: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3 };
-// Partial map so lookups on unexpected DB values return undefined (→ fallback
-// -1) rather than a type-error-suppressed gap; keeps sort deterministic.
-const SEVERITY_RANK = SEVERITY_ORDER as Partial<Record<string, number>>;
+/**
+ * Build a `{ [member]: index }` lookup mapping each element of an ordered
+ * list to its position — used to derive a rank table from an enum's own
+ * declared option order without restating the member names as literals.
+ */
+function rankByOrder<T extends readonly PropertyKey[]>(members: T): Record<T[number], number> {
+  return Object.fromEntries(members.map((member, index) => [member, index])) as Record<
+    T[number],
+    number
+  >;
+}
+
+/**
+ * Severity rank for sorting: index into Severity.options (critical=0, the
+ * highest urgency, through low=3). Derived from the enum's own declared order,
+ * so that order IS the findings sort order.
+ */
+export const SEVERITY_RANK = rankByOrder(Severity.options) satisfies Record<Severity, number>;
+
+/**
+ * The rank of a stored or cursor-supplied severity, or undefined for a value
+ * that is not one.
+ *
+ * The lookup goes through lookupOwn because the value is an arbitrary string: a
+ * bare `SEVERITY_RANK[value]` resolves 'constructor' or 'toString' to an
+ * Object.prototype function, a caller's `?? fallback` never fires, and every
+ * comparison against it is NaN — which a sort reads as a tie with everything.
+ */
+export function severityRank(severity: string): number | undefined {
+  return lookupOwn(SEVERITY_RANK, severity);
+}
 
 /**
  * The findings list's sort order: severity rank, then most recent, then id.
@@ -562,8 +604,8 @@ export function compareFindingGroupOrder(
   a: Pick<FindingTypeSummary, 'severity' | 'latestDetectedAt' | 'id'>,
   b: Pick<FindingTypeSummary, 'severity' | 'latestDetectedAt' | 'id'>,
 ): number {
-  const rankA = SEVERITY_RANK[a.severity] ?? -1;
-  const rankB = SEVERITY_RANK[b.severity] ?? -1;
+  const rankA = severityRank(a.severity) ?? -1;
+  const rankB = severityRank(b.severity) ?? -1;
   const severityDiff = rankA - rankB;
   if (severityDiff !== 0) return severityDiff;
   // latestDetectedAt desc — ISO strings sort lexically.

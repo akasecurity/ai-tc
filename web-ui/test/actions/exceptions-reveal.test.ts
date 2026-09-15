@@ -1,8 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import {
@@ -21,9 +18,9 @@ import type { DetectionException } from '@akasecurity/schema';
 import { isVaultConsentValid, VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { grantRevealFromPointer } from '../../app/(app)/exceptions/actions.ts';
 import { emptyStore } from '../helpers/store-templates.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // `grantRevealFromPointer` mints the strictly-stronger capability: while the
 // grant is active the model may receive the value's raw form at tool
@@ -51,6 +48,7 @@ const RULE_ID = 'secrets/test-rule';
 const MASKED = 'vau…est';
 
 let home: string;
+const newHome = tempHomes('aka-web-reveal-');
 
 // web-ui memoizes the open DB handle on globalThis (app/lib/db.ts). Close and
 // drop it between tests so the next action reopens against the fresh home.
@@ -61,7 +59,7 @@ function resetSingleton(): void {
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-web-reveal-'));
+  home = newHome();
   osHome.dir = home;
   // Schema by file copy rather than a migration this test would only repeat.
   emptyStore.seed(dataDir());
@@ -73,7 +71,6 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSingleton();
-  removeTree(home);
 });
 
 // Seed one vaulted value through the real persistence SecretVault — the same

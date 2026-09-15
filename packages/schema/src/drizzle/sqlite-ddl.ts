@@ -151,4 +151,20 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0030_audit_content_expiry',
     sql: 'ALTER TABLE `audit_events` ADD `content_expired_at` integer;--> statement-breakpoint\nCREATE INDEX `idx_audit_expirable_body` ON `audit_events` (`started_at`) WHERE content IS NOT NULL;',
   },
+  {
+    tag: '0031_audit_capture_by_time_index',
+    sql: "CREATE INDEX `idx_audit_capture_by_time` ON `audit_events` (`started_at`,`id`,`event_type`,`root_session_id`,`source_tool`,`repo`,`file_path`,`tool_name`) WHERE event_type IN ('prompt','response','code_change','tool_use');",
+  },
+  {
+    tag: '0032_audit_capture_by_id_index',
+    sql: "CREATE INDEX `idx_audit_capture_by_id` ON `audit_events` (`id`,`started_at`,`event_type`,`root_session_id`,`source_tool`,`repo`,`file_path`,`tool_name`) WHERE event_type IN ('prompt','response','code_change','tool_use');",
+  },
+  {
+    tag: '0033_audit_capture_location_index',
+    sql: "CREATE INDEX `idx_audit_capture_location` ON `audit_events` (`repo`,`file_path`,`started_at`,`id`,`event_type`) WHERE event_type IN ('prompt','response','code_change','tool_use');",
+  },
+  {
+    tag: '0034_findings_read_indexes',
+    sql: 'CREATE INDEX `idx_inspection_definitions_rule` ON `inspection_definitions` (`rule_id`,`severity`,`category`);--> statement-breakpoint\nCREATE INDEX `idx_inspection_findings_def` ON `inspection_findings` (`inspection_definition_id`,`audit_event_id`);--> statement-breakpoint\nCREATE INDEX `idx_inspection_findings_event_cover` ON `inspection_findings` (`audit_event_id`,`inspection_definition_id`,`action_taken`,`finding_key`,`id`);',
+  },
 ];

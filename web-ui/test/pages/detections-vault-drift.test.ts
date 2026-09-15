@@ -1,6 +1,4 @@
-import { mkdtempSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { applyOnboarding, dataDir, openLocalDatabase } from '@akasecurity/persistence';
@@ -9,8 +7,8 @@ import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import DetectionsPage from '../../app/(app)/detections/page.tsx';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // The Detections page's drift notice: the surface that tells a machine which
 // used to vault, and now does not, that its redactions became one-way.
@@ -27,10 +25,11 @@ vi.mock('node:os', async (importActual) => {
 });
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 
+const newHome = tempHomes('aka-drift-page-');
 let home: string;
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-drift-page-'));
+  home = newHome();
   osHome.dir = home;
   const globals = globalThis as { __akaDb?: { close: () => void } };
   globals.__akaDb?.close();
@@ -41,7 +40,6 @@ afterEach(() => {
   const globals = globalThis as { __akaDb?: { close: () => void } };
   globals.__akaDb?.close();
   delete globals.__akaDb;
-  removeTree(home);
 });
 
 function grantVaultConsent(): void {

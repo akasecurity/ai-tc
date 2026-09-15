@@ -1,6 +1,5 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
@@ -17,10 +16,10 @@ import { bundledDetections, ruleProbeKey } from '@akasecurity/plugin-sdk';
 import { EgressIngestRequest, type Rule } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { runScan } from '../../app/(app)/scan/actions.ts';
 import { startLoopbackServer } from '../helpers/loopback.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 /**
  * The dashboard's folder scan against a hostile installed pack.
@@ -101,6 +100,9 @@ const CEILING_MS = 2 * (2 * 5_000 + 2 * 2_000);
 // test timed out.
 const CASE_TIMEOUT_MS = 120_000;
 
+const newHome = tempHomes('aka-web-scan-');
+const newTarget = tempHomes('aka-web-scan-target-');
+
 let home: string;
 let target: string;
 
@@ -155,9 +157,9 @@ async function recordedRuleIds(): Promise<string[]> {
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-web-scan-'));
+  home = newHome();
   osHome.dir = home;
-  target = mkdtempSync(join(tmpdir(), 'aka-web-scan-target-'));
+  target = newTarget();
   resetSingleton();
   // The guard reports on stderr as well as in the response; keep the suite's
   // own output readable.
@@ -167,7 +169,6 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   resetSingleton();
-  removeTrees([home, target]);
 });
 
 describe('runScan — a pulled rule that never returns', () => {

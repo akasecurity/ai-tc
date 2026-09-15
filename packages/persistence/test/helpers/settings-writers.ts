@@ -9,11 +9,13 @@
  */
 import type { ChildProcess } from 'node:child_process';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 
 /**
  * A file's contents, or `undefined` when it is not there yet.
@@ -329,7 +331,9 @@ export async function runConcurrentSettingsWriters(
     // child's own barrier deadline.
     for (const w of writers) w.child.kill('SIGKILL');
     await Promise.allSettled(writers.map((w) => w.done));
-    rmSync(sync, { recursive: true, force: true });
+    // Through removeTree: every writer has just exited having polled files
+    // under this directory, which is the window a win32 handle outlives.
+    removeTree(sync);
   }
   const outcomes = results.map((result, index) => {
     if (result.code !== 0) {

@@ -15,7 +15,6 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
@@ -24,6 +23,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import { applyOnboarding, readWorkspaceSettings, SETTINGS_FILENAME } from '../../src/settings.ts';
 import type { WriterJob } from '../helpers/settings-writers.ts';
 import {
@@ -39,7 +39,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(base, { recursive: true, force: true });
+  // The writers are child processes doing exclusive-create, unlink and rename
+  // churn inside this tree, so on Windows a handle can still be on its way out
+  // after the last one exits — the window removeTree's retry covers.
+  removeTree(base);
 });
 
 function settingsFile(): string {

@@ -188,7 +188,7 @@ ESLint (`n/no-process-env`) forbids reading `process.env` across the workspace �
 
 Prefer a file-scoped config opt-out over an inline disable — an inline disable is invisible to anyone auditing the ESLint configs. Adding an eleventh site means updating this table.
 
-That last sentence is enforced, not merely asked: `packages/eslint-config/test/effective-config.test.js` parses this table and drives each column against the thing it describes — the site against the tracked tree, the mechanism against the resolved config and the file's own text, the count word against the row count, and the row set against every opt-out shipped source actually carries. So a fifth site that never reaches the table fails CI, and so does a row that outlives the exception it describes. The `Why` column is prose about intent and is guarded by nothing.
+That last sentence is enforced, not merely asked: `packages/eslint-config/test/effective-config.test.js` parses this table and drives each column against the thing it describes — the site against the tracked tree, the mechanism against the resolved config and the file's own text, the count word against the row count, and the row set against every opt-out shipped source actually carries. So a site that never reaches the table fails CI, and so does a row that outlives the exception it describes. The `Why` column is prose about intent and is guarded by nothing.
 
 **Both mechanisms are inventoried, not just the config one.** An inline disable is invisible to
 anything that resolves configs, so the check above would never have seen one had it been the only
@@ -1967,7 +1967,14 @@ Five things about it are load-bearing:
   pinnable and lockable — flips rows asserting an exact wire shape. Read that as
   REACHABLE rather than currently failing: those suites pass on the enrolled
   machine that motivated this section, whose file pins `runMode` and not
-  `redactFallback`. A worker thread sits on the same boundary and is out of reach
+  `redactFallback`. `plugins/claude-code/test/e2e/content-retention-entry-bundle.e2e.test.ts`
+  is a second suite on that side, and the sharper one: `bodyRetention` is
+  pinnable too, and it is the whole subject of three of that file's cases —
+  the two SessionStart cases and the one that runs the expiry child directly
+  with no settings file — so a disagreeing pin would flip a case rather than
+  perturb a wire shape. Those three read the machine's managed file
+  themselves — by explicit path, since the pin moves only the default — and
+  skip where it overrides what they write. A worker thread sits on the same boundary and is out of reach
   today only because `scan-worker.ts` takes no persistence dependency. It is
   documented rather than closed, because the no-network guard's own mechanism
   does not transfer: it reaches a worker by appending `--import <itself>` to its
@@ -2163,7 +2170,10 @@ not reach for a `./testing` export instead.
   `indexOwners` turn one into a plan step (`full-table` / `full-index` / `search`). The
   point is that no query is ever spelled twice: a plan assertion over SQL restated in a
   test is a real plan for a query no user issues. Record at EXECUTION, not at prepare
-  time — several repositories prepare in their constructor.
+  time — several repositories prepare in their constructor. It leaves out the two
+  statements an index-presence probe (`src/internal/index-presence.ts`) issues: the
+  `sqlite_master` lookup would classify as `full-table`, and it runs only on a name's
+  first call, so a statement count would depend on test order.
 - `fault-injection.ts` — `corruptStore`, `readOnlyStore` and `lockStore`, plus the
   `SQLITE_*` result codes, `sqliteErrcode()` and `primaryCode()`. Each injector produces a
   real error code from the real engine and refuses to run rather than take effect

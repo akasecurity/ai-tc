@@ -1,7 +1,7 @@
 import {
-  extractContentEditableText,
+  extractComposerText,
   firstMatch,
-  setContentEditableText,
+  setComposerText,
   watchButtonClick,
   watchEnterToSend,
 } from './dom-utils.ts';
@@ -33,8 +33,8 @@ export const chatgptAdapter: ProviderAdapter = {
     return firstMatch(COMPOSER_SELECTORS);
   },
   findSendButton,
-  extractText: extractContentEditableText,
-  setText: setContentEditableText,
+  extractText: extractComposerText,
+  setText: setComposerText,
   watchSubmit(composer, onSubmit) {
     const unwatchEnter = watchEnterToSend(composer, onSubmit);
     const sendButton = findSendButton();

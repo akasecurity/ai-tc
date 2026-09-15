@@ -83,10 +83,12 @@ export interface CacheHome {
  * the one HOME the runner hands every worker. A home per child takes the shared
  * file off the path: nothing a child reads was written by any other process.
  *
- * Nothing on win32. PowerShell there derives its cache from LOCALAPPDATA and
- * never reads XDG_CACHE_HOME, and install.ps1 takes its default install
- * directory from LOCALAPPDATA, so redirecting that would change the script under
- * test.
+ * POSIX only — on win32 every start still shares one profile. PowerShell there
+ * keeps its cache under the LocalApplicationData known folder, which .NET
+ * resolves with SHGetKnownFolderPath (and .NET Framework, under Windows
+ * PowerShell 5.1, with SHGetFolderPath). Neither reads the LOCALAPPDATA variable
+ * unless that lookup fails, so no variable a spawn can set moves the file, and
+ * this returns a home that redirects nothing.
  */
 export function privateCacheHome(platform: NodeJS.Platform = process.platform): CacheHome {
   if (platform === 'win32') return { env: {}, dispose: () => undefined };
@@ -253,9 +255,12 @@ const SCRIPT_TIMEOUT_MS = 60_000;
  * narrows it to the startup corruption, where the script has not begun.
  *
  * A damaged startup profile in a cache home shared between concurrent starts
- * reproduces this signature exactly, and every PowerShell child here runs under
- * a {@link privateCacheHome} so it cannot read one. The retry stays, bounded and
- * narrow, for an abort that arrives by any other route.
+ * reproduces this signature exactly. Off Windows, the probe and every
+ * install.ps1 attempt run under a {@link privateCacheHome} so they cannot read
+ * one. The other PowerShell spawns here — `compressArchive`'s runner and the
+ * user-Path helpers — are reached only on win32 today, where that isolation does
+ * not exist. The retry stays, bounded and narrow, for an abort that arrives by
+ * any other route.
  */
 const CLR_ABORT_MARKERS = ['Unhandled exception.', 'assembly name was invalid'] as const;
 
@@ -397,6 +402,24 @@ const runProbe: ProbeRunner = (command, args, env) => {
 };
 
 /**
+ * Remove `home` once the work under it is over, without letting the removal
+ * speak for the work.
+ *
+ * `removeTree` rethrows off win32, and a throw from a `finally` replaces
+ * whatever the body produced: a spawn that could not start would report a temp
+ * directory instead of the missing interpreter. So a failed removal surfaces
+ * only when the body succeeded — a leaked home is still loud, and never masks
+ * the failure that matters more.
+ */
+function disposeAfter(home: CacheHome, bodyFailed: boolean): void {
+  try {
+    home.dispose();
+  } catch (err) {
+    if (!bodyFailed) throw err;
+  }
+}
+
+/**
  * The first PowerShell candidate on this host that starts, or undefined.
  *
  * Each candidate starts under its own {@link privateCacheHome}. The probe runs
@@ -405,6 +428,12 @@ const runProbe: ProbeRunner = (command, args, env) => {
  * profile would report no PowerShell at all, turning every install.ps1 case
  * into a skip rather than a failure.
  *
+ * For the same reason it THROWS, rather than returning undefined, when a
+ * private home cannot be created or removed. undefined means "this host has no
+ * PowerShell" and every install.ps1 case skips on it; a host whose temp
+ * directory is broken is not that host, and a collection error naming the errno
+ * is the honest report.
+ *
  * `platform` and `run` are injectable so both candidate lists and the cache
  * wiring can be driven from any host, with or without a PowerShell.
  */
@@ -412,13 +441,16 @@ export function probePowershell(
   platform: NodeJS.Platform = process.platform,
   run: ProbeRunner = runProbe,
 ): string | undefined {
+  const args = ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'];
   for (const command of platform === 'win32' ? ['powershell', 'pwsh'] : ['pwsh']) {
     const home = privateCacheHome(platform);
+    let failed = true;
     try {
-      const args = ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'];
-      if (run(command, args, powershellEnv(home.env))) return command;
+      const started = run(command, args, powershellEnv(home.env));
+      failed = false;
+      if (started) return command;
     } finally {
-      home.dispose();
+      disposeAfter(home, failed);
     }
   }
   return undefined;
@@ -457,23 +489,33 @@ export function assertHostArchitecture(
   );
 }
 
-/** Run the real install.ps1 against a fixture base, under `exe`. */
+/**
+ * Run the real install.ps1 against a fixture base, under `exe`.
+ *
+ * `spawnOne` and `platform` are injectable, as {@link probePowershell}'s runner
+ * and platform are, so the cache wiring is driven for both platforms from any
+ * host without a PowerShell. `platform` picks the cache convention only: the
+ * architecture handling below stays on the real host, because it is about the
+ * environment this process actually inherited.
+ */
 export async function runInstallPs1(
   exe: string,
   { base, version, installDir }: InstallerOverrides,
-  // Handed to `runScript`, injectable for the reason its spawner is: the cache
-  // wiring below has to be drivable without a PowerShell.
   spawnOne: ScriptRunner = spawnScript,
+  platform: NodeJS.Platform = process.platform,
 ): Promise<InstallerRun> {
   assertHostArchitecture();
   // A home per ATTEMPT rather than per call, so a retry never starts from
   // whatever the attempt before it left in one.
   const isolated: ScriptRunner = async (command, args, env) => {
-    const home = privateCacheHome();
+    const home = privateCacheHome(platform);
+    let failed = true;
     try {
-      return await spawnOne(command, args, { ...env, ...home.env });
+      const result = await spawnOne(command, args, { ...env, ...home.env });
+      failed = false;
+      return result;
     } finally {
-      home.dispose();
+      disposeAfter(home, failed);
     }
   };
   return await runScript(

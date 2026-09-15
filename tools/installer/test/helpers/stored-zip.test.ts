@@ -6,12 +6,12 @@
  * the two agree.
  *
  * `Expand-Archive` would be the closer mirror of what `install.ps1` does, and
- * it is deliberately NOT used: it is a PowerShell module autoload, which is the
- * exact call this file exists to keep off non-Windows CI (see stored-zip.ts).
- * Reaching for it here would put the flake back inside the test that proves the
- * flake was removed. On Windows the writer is never the one building the
- * archive, so `Expand-Archive`'s real agreement with it is not a thing that has
- * to hold.
+ * it is deliberately NOT used: it would start `pwsh`, and a fixture build that
+ * starts no pwsh off Windows is what stored-zip.ts exists for. Checking the
+ * writer through one would put a pwsh start — and the startup-profile crash
+ * that rides on one — back inside the test for the code that removed it. On
+ * Windows the writer is never the one building the archive, so
+ * `Expand-Archive`'s real agreement with it is not a thing that has to hold.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';

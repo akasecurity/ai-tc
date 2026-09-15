@@ -307,7 +307,15 @@ jobs:
         # because this leg runs the whole workspace inside the namespace and is
         # subject to the same contention; the flag goes to turbo directly for
         # the same reason --force does.
-        run: tools/ci/no-network-test.sh pnpm exec turbo run test --force --concurrency=2
+        #
+        # --continue: without it turbo stops scheduling at the first red task,
+        # and every package not yet started never runs under the block. This is
+        # the only job that runs the workspace's suites with a child process's
+        # egress cut, so one package's crash would hide a real refusal in
+        # another until the first was fixed — a run where the installer suite
+        # failed left 11 of 22 tasks unstarted. The job still fails; it reports
+        # every package it reached on the way.
+        run: tools/ci/no-network-test.sh pnpm exec turbo run test --force --continue --concurrency=2
 
   # Packaged-artifact leg: the job above covers every process the SUITE starts,
   # and the suite never installs the published tarball. That is the gap this
@@ -784,6 +792,40 @@ jobs:
           Get-PSDrive -PSProvider FileSystem |
             Where-Object { $null -ne $_.Used } |
             ForEach-Object { "drive $($_.Name): used $([math]::Round($_.Used / 1GB))GB free $([math]::Round($_.Free / 1GB))GB" }
+          # What one SQLite commit costs on each of the two places a test could
+          # put a store: the default TEMP (the OS disk) and RUNNER_TEMP (the
+          # second disk the checkout lives on). Measured here, BEFORE the next
+          # step moves TEMP, so `os.tmpdir()` is still the default. Twenty WAL
+          # commits at SQLite's default `synchronous`, the product's own setting,
+          # so each one is a real flush. The two targets alternate which goes
+          # first each round, so a runner that slows down part-way charges both.
+          # It measures nothing when both resolve to one volume, which is what
+          # this line would see if it ran after the move, and says so instead of
+          # printing two matching medians that read as "the disk buys nothing".
+          # The handle closes and the directory goes on every path.
+          "per-commit ms by target: $(node -e "const { DatabaseSync } = require('node:sqlite'); const fs = require('node:fs'); const path = require('node:path'); const os = require('node:os'); const targets = [['tmpdir', os.tmpdir()], ['RUNNER_TEMP', process.argv[1]]]; if (fs.statSync(targets[0][1]).dev === fs.statSync(targets[1][1]).dev) { process.stdout.write('SAME VOLUME for ' + targets.map((t) => t[1]).join(' and ') + ', so nothing was measured: this has to run before TEMP moves'); } else { const rounds = targets.map(() => []); for (let r = 0; r < 5; r += 1) { for (let k = 0; k < targets.length; k += 1) { const i = r % 2 === 0 ? k : targets.length - 1 - k; const dir = fs.mkdtempSync(path.join(targets[i][1], 'aka-commit-probe-')); let db; try { db = new DatabaseSync(path.join(dir, 'probe.db')); db.exec('PRAGMA journal_mode = WAL; CREATE TABLE t (x INTEGER)'); const insert = db.prepare('INSERT INTO t VALUES (?)'); const start = performance.now(); for (let n = 0; n < 20; n += 1) insert.run(n); rounds[i].push((performance.now() - start) / 20); } finally { try { if (db !== undefined && db.isOpen) db.close(); } finally { fs.rmSync(dir, { recursive: true, force: true }); } } } } process.stdout.write(targets.map((t, i) => { const s = [...rounds[i]].sort((a, b) => a - b); return t[0] + ' ' + t[1] + ' median ' + s[2].toFixed(2) + ' (' + rounds[i].map((v) => v.toFixed(1)).join(', ') + ')'; }).join('; ')); }" $env:RUNNER_TEMP)"
+
+      # Every temp store the suites below create goes wherever `os.tmpdir()`
+      # points, and by default on this image that is the OS disk (C:), while the
+      # checkout, RUNNER_TEMP and the free space are on a second disk (D:). The
+      # store suites are fsync-bound — a store opened with no template writes
+      # every migration as its own commit, a few hundred WAL frames — and the
+      # runner sampler caught this leg's stalls with the CPU mostly idle and the
+      # disk queue at 2-10: the test phase waits on the disk, not the cores.
+      # The per-commit figures in "Runner facts" above say what that disk
+      # choice costs on the run in hand.
+      #
+      # Written to GITHUB_ENV rather than as step `env:`, so every later step —
+      # all three test invocations, and anything added between them — inherits
+      # it without having to remember to. Both names are declared in the `test`
+      # task's `passThroughEnv` in turbo.json rather than left to the list turbo
+      # carries internally, so the vitest workers see them too. Node's
+      # `os.tmpdir()` on Windows reads TEMP, then TMP.
+      - name: Put TEMP on the runner's second disk
+        run: |
+          "TEMP=$env:RUNNER_TEMP" | Add-Content $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" | Add-Content $env:GITHUB_ENV
+          "TEMP and TMP for later steps: $env:RUNNER_TEMP"
 
       # DETACHED, not Start-Job. Each `run:` step is its own PowerShell, and a
       # background job dies with the session that created it — so a job started

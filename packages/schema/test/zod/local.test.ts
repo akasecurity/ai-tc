@@ -9,9 +9,13 @@ import {
   isHistorySyncConsentStale,
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
+  isWebChatCaptureConsentValid,
   MODEL_JUDGE_PAYLOAD_VERSION,
   toEventRow,
   toFindingRow,
+  WEB_CHAT_CAPTURE_CONSENT_VERSION,
+  WebChatCapture,
+  webChatCaptureOf,
   WORKSPACE_SETTINGS_SPEC_VERSION,
   WorkspaceSettings,
 } from '../../src/zod/local.ts';
@@ -413,6 +417,125 @@ describe('isHistorySyncConsentStale', () => {
         ).toBe(false);
       }
     }
+  });
+});
+
+// The browser extension's network capture records things nothing recorded
+// before — per-turn model and token metadata, the tool calls a reply made, and
+// the reply's own text — so it carries its own versioned grant rather than
+// riding an existing one. Same rule as the vault and the model judge: the grant
+// names the version it was given against, and a grant recorded against an older
+// version stops counting.
+describe('WebChatCapture', () => {
+  it('is absent by default — recording is opt-in and never assumed on upgrade', () => {
+    expect(WorkspaceSettings.parse({}).webChatCapture).toBeUndefined();
+  });
+
+  it('defaults a partial block to with-findings, no account data, and no grant', () => {
+    // A settings.json carrying only the grant must still resolve the two modes,
+    // or the reader that projects them has to invent its own defaults.
+    const parsed = WebChatCapture.parse({});
+    expect(parsed.responses).toBe('with-findings');
+    expect(parsed.account).toBe(false);
+    expect(parsed.consent).toBeUndefined();
+  });
+
+  it('round-trips a full block out of a settings.json', () => {
+    const block = {
+      responses: 'always' as const,
+      account: false,
+      consent: { acknowledgedAt: ISO, version: WEB_CHAT_CAPTURE_CONSENT_VERSION },
+    };
+    expect(WorkspaceSettings.parse({ webChatCapture: block }).webChatCapture).toEqual(block);
+  });
+
+  it('refuses a response mode outside the vocabulary', () => {
+    // 'never' must stay distinguishable from an absent grant: it keeps the
+    // per-turn metadata and drops the reply text, which is a different answer
+    // from recording nothing at all.
+    expect(WebChatCapture.safeParse({ responses: 'sometimes' }).success).toBe(false);
+    expect(WebChatCapture.parse({ responses: 'never' }).responses).toBe('never');
+  });
+
+  it('refuses a malformed grant', () => {
+    expect(
+      WebChatCapture.safeParse({ consent: { acknowledgedAt: 'yesterday', version: 1 } }).success,
+    ).toBe(false);
+    expect(WebChatCapture.safeParse({ consent: { acknowledgedAt: ISO, version: 0 } }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('webChatCaptureOf', () => {
+  it('resolves the block in force when the file carries none', () => {
+    // One definition of the defaults, so the settings writer, the form and the
+    // recording gate cannot disagree about what an un-configured machine does.
+    expect(webChatCaptureOf(WorkspaceSettings.parse({}))).toEqual(WebChatCapture.parse({}));
+  });
+
+  it('returns the stored block untouched when there is one', () => {
+    const block = { responses: 'never' as const, account: false };
+    expect(webChatCaptureOf(WorkspaceSettings.parse({ webChatCapture: block }))).toEqual(block);
+  });
+});
+
+describe('isWebChatCaptureConsentValid', () => {
+  const consentAt = (version: number) => ({ acknowledgedAt: ISO, version });
+
+  it('is false when nothing has been granted', () => {
+    expect(isWebChatCaptureConsentValid(undefined)).toBe(false);
+  });
+
+  it('is true for a grant recorded against the current version', () => {
+    expect(isWebChatCaptureConsentValid(consentAt(WEB_CHAT_CAPTURE_CONSENT_VERSION))).toBe(true);
+  });
+
+  // Widening what is written down must re-ask rather than ride the older,
+  // narrower grant.
+  it('is false for a grant recorded against an older version', () => {
+    expect(isWebChatCaptureConsentValid(consentAt(WEB_CHAT_CAPTURE_CONSENT_VERSION - 1))).toBe(
+      false,
+    );
+  });
+
+  it('is false for a grant recorded against an unknown newer version', () => {
+    expect(isWebChatCaptureConsentValid(consentAt(WEB_CHAT_CAPTURE_CONSENT_VERSION + 1))).toBe(
+      false,
+    );
+  });
+
+  it('accepts what the schema actually parses out of a settings.json', () => {
+    const parsed = WorkspaceSettings.parse({
+      webChatCapture: {
+        consent: { acknowledgedAt: ISO, version: WEB_CHAT_CAPTURE_CONSENT_VERSION },
+      },
+    });
+    expect(isWebChatCaptureConsentValid(parsed.webChatCapture?.consent)).toBe(true);
+  });
+});
+
+// A TRIPWIRE, for the reason the history-sync one beside it gives: every other
+// case in this block is written RELATIVE to the constant, so the whole suite
+// stays green when the number changes and nothing sends the author to re-read
+// what the number is supposed to mean.
+//
+// Bumping this WILL fail this test. The fix is to re-read every surface below,
+// confirm each still describes what is now recorded, and then update the number
+// here.
+//
+//   packages/dashboard-ui/src/settings/WorkspaceSettingsFormView.tsx
+//                                     WEB_CHAT_SECTION_DESCRIPTION,
+//                                     WEB_CHAT_CHOICES,
+//                                     WEB_CHAT_STALE_NOTICE
+//
+// A grant given against v1 covers per-turn model, token and tool metadata plus
+// the assistant's reply text under the stored `responses` mode. Anything that
+// widens that set — account and quota snapshots, request bodies, a mode that
+// keeps more text — is a new version.
+describe('the web-chat consent version and its disclosure move together', () => {
+  it('fails on a bump so the copy gets re-read', () => {
+    expect(WEB_CHAT_CAPTURE_CONSENT_VERSION).toBe(1);
   });
 });
 

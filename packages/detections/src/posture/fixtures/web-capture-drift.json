@@ -1,0 +1,137 @@
+[
+  {
+    "label": "declared endpoints; the page sent messages the network never saw",
+    "shouldMatch": true,
+    "status": {
+      "conversationEndpoints": 1,
+      "patched": true,
+      "live": false,
+      "blind": true,
+      "sendsSeenDom": 3,
+      "exchangesSeenNet": 0,
+      "parseFailures": 0,
+      "unparsedBodies": 0,
+      "shapeMisses": []
+    }
+  },
+  {
+    "label": "declared endpoints; responses no longer carry a path the adapter requires",
+    "shouldMatch": true,
+    "status": {
+      "conversationEndpoints": 1,
+      "patched": true,
+      "live": true,
+      "blind": false,
+      "sendsSeenDom": 4,
+      "exchangesSeenNet": 4,
+      "parseFailures": 0,
+      "unparsedBodies": 0,
+      "shapeMisses": ["message.id"]
+    }
+  },
+  {
+    "label": "declared endpoints; the stream parser failed on two turns",
+    "shouldMatch": true,
+    "status": {
+      "conversationEndpoints": 2,
+      "patched": true,
+      "live": true,
+      "blind": false,
+      "sendsSeenDom": 2,
+      "exchangesSeenNet": 2,
+      "parseFailures": 2,
+      "unparsedBodies": 0,
+      "shapeMisses": []
+    }
+  },
+  {
+    "label": "no endpoints declared — the traffic survey has not run",
+    "shouldMatch": false,
+    "status": {
+      "conversationEndpoints": 0,
+      "patched": true,
+      "live": false,
+      "blind": false,
+      "sendsSeenDom": 0,
+      "exchangesSeenNet": 0,
+      "parseFailures": 0,
+      "unparsedBodies": 0,
+      "shapeMisses": []
+    }
+  },
+  {
+    "label": "no endpoints declared, and the page sent messages the network never saw",
+    "shouldMatch": false,
+    "status": {
+      "conversationEndpoints": 0,
+      "patched": true,
+      "live": false,
+      "blind": true,
+      "sendsSeenDom": 5,
+      "exchangesSeenNet": 0,
+      "parseFailures": 0,
+      "unparsedBodies": 0,
+      "shapeMisses": []
+    }
+  },
+  {
+    "label": "healthy: endpoints declared, turns parsed, nothing missing",
+    "shouldMatch": false,
+    "status": {
+      "conversationEndpoints": 2,
+      "patched": true,
+      "live": true,
+      "blind": false,
+      "sendsSeenDom": 6,
+      "exchangesSeenNet": 6,
+      "parseFailures": 0,
+      "unparsedBodies": 0,
+      "shapeMisses": []
+    }
+  },
+  {
+    "label": "a single broken turn is not a stale parser",
+    "shouldMatch": false,
+    "status": {
+      "conversationEndpoints": 1,
+      "patched": true,
+      "live": true,
+      "blind": false,
+      "sendsSeenDom": 5,
+      "exchangesSeenNet": 5,
+      "parseFailures": 1,
+      "unparsedBodies": 0,
+      "shapeMisses": []
+    }
+  },
+  {
+    "label": "declared endpoints, tab never used",
+    "shouldMatch": false,
+    "status": {
+      "conversationEndpoints": 1,
+      "patched": true,
+      "live": false,
+      "blind": false,
+      "sendsSeenDom": 0,
+      "exchangesSeenNet": 0,
+      "parseFailures": 0,
+      "unparsedBodies": 0,
+      "shapeMisses": []
+    }
+  },
+  {
+    "label": "the page tap never attached",
+    "shouldMatch": false,
+    "status": {
+      "conversationEndpoints": 1,
+      "patched": false,
+      "live": false,
+      "blind": true,
+      "sendsSeenDom": 3,
+      "exchangesSeenNet": 0,
+      "parseFailures": 0,
+      "unparsedBodies": 0,
+      "shapeMisses": []
+    }
+  }
+]

@@ -16,6 +16,7 @@ import {
   ListFindingTypesQuery,
   ResolutionMethod,
 } from '../../src/zod/finding.ts';
+import { toApiProvider } from '../../src/zod/findings-group-build.ts';
 import { Policy } from '../../src/zod/policy.ts';
 
 // The base schema (Finding) is tenant-free and equals the producer-side shape
@@ -75,6 +76,11 @@ describe('FindingProvider enum', () => {
   it('rejects raw source_tool values', () => {
     expect(FindingProvider.safeParse('claude-code').success).toBe(false);
     expect(FindingProvider.safeParse('claude-desktop').success).toBe(false);
+  });
+
+  it('accepts ai-tc-sdk as its own provider, distinct from api', () => {
+    expect(FindingProvider.safeParse('ai-tc-sdk').success).toBe(true);
+    expect(toApiProvider('ai-tc-sdk')).not.toBe('api');
   });
 });
 

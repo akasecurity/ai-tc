@@ -232,10 +232,15 @@ export async function attachByDeviceCode(deps: DeviceAttachDeps): Promise<Device
       // writes the attachment against the endpoint the USER typed — so the
       // organization somebody says yes to and the deployment their machine ends
       // up talking to would be read from two different hosts, with nothing
-      // comparing them. It also walks around `isSafeEndpoint`, which runs once
-      // against the typed URL and is never re-applied: an issued
-      // `http://10.0.0.5:8080` would reach the socket with `x-api-key` on it,
-      // in plaintext.
+      // comparing them. `isSafeEndpoint` runs once against the typed URL here,
+      // and @akasecurity/remote's client factories re-apply it against
+      // whatever endpoint they are actually given, so an issued
+      // `http://10.0.0.5:8080` would now be refused at the transport rather
+      // than reach a socket in plaintext — a second line of defence, not the
+      // reason to discard the echoed value. The confirmation guarantee above
+      // is the one this code exists to hold, and it fails just as completely
+      // against an issued `https://` endpoint that simply belongs to someone
+      // else.
       //
       // The contract's reason for echoing it — the deployment is the party that
       // knows its own canonical origin — is real, and it is not worth this. A

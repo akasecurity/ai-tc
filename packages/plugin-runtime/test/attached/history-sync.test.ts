@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 import type { HistorySyncResult } from '../../src/attached/history-sync.ts';
 import { runHistorySync } from '../../src/attached/history-sync.ts';
+import { migratedStore } from '../helpers/store-templates.ts';
 
 /**
  * The result of a pass that RAN, or a failure naming why it did not.
@@ -196,6 +197,10 @@ const sendBatchOk = (events: readonly RecordAuditEventRequest[]): Promise<{ sett
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'aka-history-pass-'));
+  // The pass opens the store and so do the seeders, and none of these cases is
+  // about a store being created: copying the migrated template spares every
+  // test a full migration, which is most of what this file cost on Windows.
+  migratedStore.seed(dataDirOf(home));
 });
 
 afterEach(() => {

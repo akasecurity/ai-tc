@@ -167,6 +167,18 @@
      dark value below is set to clear 3:1 against --color-surface. */
   --color-mark-edge: rgb(17 23 31 / 0.18);
 
+  /* neutral lettermark fill — the fill for a lettermark tile with no vendor
+     brand color of its own (dashboard-ui's Provider.tsx: an in-process SDK
+     embedded in an application, so it gets a plain tile rather than a
+     borrowed brand hue). A solid fill's contrast against the white
+     lettermark text it carries does not depend on the surrounding surface —
+     only on the fill itself — so unlike --color-mark-edge above this needs
+     no per-theme retune: the value stays the same in the dark block below.
+     White text (#ffffff) on #64748B measures 4.76:1 (WCAG relative-luminance
+     formula: L = 0.2126R+0.7152G+0.0722B on linearized sRGB channels,
+     ratio = (L_text+0.05)/(L_fill+0.05)), clear of the 4.5:1 text floor. */
+  --color-mark-neutral: #64748b;
+
   /* accent hues (hue + ink + fill tint).
      Every tonal family carries two foregrounds because the two roles pull opposite
      ways on a light background:
@@ -337,6 +349,13 @@
      so the tile keeps an edge even when its fill has none. Below ~35% it drops under
      3:1 and stops being a boundary you can see. */
   --color-mark-edge: rgb(255 255 255 / 0.38);
+
+  /* neutral lettermark fill — unchanged from the light block above. This is a
+     solid fill with white lettermark text on it, not a hue read against a
+     page surface, so its contrast does not shift with the surrounding theme
+     the way --color-mark-edge's does: white text on #64748b measures 4.76:1
+     here too, the same as in light, clear of the 4.5:1 floor. */
+  --color-mark-neutral: #64748b;
 
   /* stays light, one step off pure white so the knob is not the brightest thing
      on the screen */

@@ -8,11 +8,13 @@ import {
   builtinPolicyToAction,
   DEFAULT_ACTIONS,
   FULL_ENFORCEMENT_POSTURE,
+  mergeRaiseOnly,
   Policy,
   POLICY_BUNDLE_SHAPE_ID,
   PolicyBundle,
   PolicyTarget,
   RedactFallback,
+  ruleCategoryMap,
   strongerRedactFallback,
 } from '../../src/zod/policy.ts';
 
@@ -174,6 +176,186 @@ describe('strongerRedactFallback — an organization tightens, never loosens', (
       new Set(ranks).size,
       `ranks ${ranks.join(', ')} for ${RedactFallback.options.join(', ')}`,
     ).toBe(RedactFallback.options.length);
+  });
+});
+
+describe('mergeRaiseOnly — a cached tenant bundle can only tighten a local one', () => {
+  const policy = (target: Policy['target'], action: Policy['action'], enabled = true): Policy => ({
+    id: `${JSON.stringify(target)}-${action}-${String(enabled)}`,
+    scope: 'global',
+    target,
+    action,
+    enabled,
+  });
+
+  it('leaves the local bundle untouched when the tenant declares nothing', () => {
+    const local = [policy({ category: 'secret' }, 'warn'), policy({ ruleId: 'r1' }, 'log')];
+    const merged = mergeRaiseOnly(local, [], new Map());
+    expect(merged).toStrictEqual(local);
+  });
+
+  it('lets the tenant raise a category above the local policy', () => {
+    const local = [policy({ category: 'secret' }, 'warn')];
+    const remote = [policy({ category: 'secret' }, 'block')];
+    const merged = mergeRaiseOnly(local, remote, new Map());
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.action).toBe('block');
+  });
+
+  // ⚠ THE FIRST-WRITE-WINS TEST. A naive [...remote, ...local] concatenation
+  // hands the remote side precedence for a contended target, so a tenant
+  // policy weaker than the user's own would win under first-write-wins even
+  // though it never should. Exactly one policy must survive per key, and it
+  // must be the stronger one.
+  it('never lets a weaker tenant policy win a contended target', () => {
+    const local = [policy({ category: 'secret' }, 'block')];
+    const remote = [policy({ category: 'secret' }, 'warn')];
+    const merged = mergeRaiseOnly(local, remote, new Map());
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.action).toBe('block');
+  });
+
+  // ⚠ THE CROSS-NAMESPACE TEST. `resolveAction` consults a ruleId-targeted
+  // policy before a category one, so a local category policy must floor a
+  // remote RULE-targeted policy that resolves into that category — otherwise
+  // the two never meet on a shared key and the weaker one still wins at
+  // resolution time.
+  it('floors a remote ruleId policy at what the local bundle enforces for its category', () => {
+    const categoryByRuleId = new Map<string, DetectionCategory>([['aws-key', 'secret']]);
+    const local = [policy({ category: 'secret' }, 'block')];
+    const remote = [policy({ ruleId: 'aws-key' }, 'allow')];
+    const merged = mergeRaiseOnly(local, remote, categoryByRuleId);
+    const ruleEntry = merged.find((p) => 'ruleId' in p.target);
+    expect(ruleEntry?.action).toBe('block');
+    // The local category policy itself must still be present, untouched.
+    const categoryEntry = merged.find((p) => 'category' in p.target);
+    expect(categoryEntry?.action).toBe('block');
+  });
+
+  // The mirror of the case above: an unassigned local pack (a weak ruleId
+  // policy) must not undercut what the tenant enforces for that rule's
+  // category.
+  it('floors a local ruleId policy at what the tenant enforces for its category', () => {
+    const categoryByRuleId = new Map<string, DetectionCategory>([['aws-key', 'secret']]);
+    const local = [policy({ ruleId: 'aws-key' }, 'log')];
+    const remote = [policy({ category: 'secret' }, 'block')];
+    const merged = mergeRaiseOnly(local, remote, categoryByRuleId);
+    const ruleEntry = merged.find((p) => 'ruleId' in p.target);
+    expect(ruleEntry?.action).toBe('block');
+  });
+
+  it('clamps a remote-only target to the compiled-in floor for its category', () => {
+    // 'secret' floors to at least DEFAULT_ACTIONS.secret; a remote policy
+    // below it must never be honoured verbatim, since the cache is read with
+    // no signature or provenance check.
+    const remote = [policy({ category: 'secret' }, 'allow')];
+    const merged = mergeRaiseOnly([], remote, new Map());
+    expect(merged).toHaveLength(1);
+    const [clamped] = merged;
+    expect(clamped).toBeDefined();
+    // A missing entry ranks below everything (actionRank('') === -1), so this
+    // still fails rather than passing vacuously if the assertion above ever did
+    // not hold.
+    expect(actionRank(clamped?.action ?? '')).toBeGreaterThanOrEqual(
+      actionRank(DEFAULT_ACTIONS.secret),
+    );
+  });
+
+  it('leaves an unresolvable ruleId unclamped rather than guessing a floor', () => {
+    const remote = [policy({ ruleId: 'unknown-rule' }, 'allow')];
+    const merged = mergeRaiseOnly([], remote, new Map());
+    expect(merged).toEqual(remote);
+  });
+
+  it('carries disabled policies through from both sides, untouched', () => {
+    const local = [policy({ category: 'secret' }, 'block', false)];
+    const remote = [policy({ ruleId: 'r1' }, 'allow', false)];
+    const merged = mergeRaiseOnly(local, remote, new Map());
+    expect(merged).toEqual(expect.arrayContaining([...local, ...remote]));
+    expect(merged).toHaveLength(2);
+  });
+
+  it('keeps only the first local policy for a duplicate target', () => {
+    const local = [policy({ category: 'secret' }, 'block'), policy({ category: 'secret' }, 'log')];
+    const merged = mergeRaiseOnly(local, [], new Map());
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.action).toBe('block');
+  });
+
+  it('still carries a target only the tenant declares', () => {
+    const remote = [policy({ category: 'pii' }, 'redact')];
+    const merged = mergeRaiseOnly([], remote, new Map());
+    expect(merged.some((p) => 'category' in p.target && p.target.category === 'pii')).toBe(true);
+  });
+});
+
+describe('ruleCategoryMap — the trust order mergeRaiseOnly floors against', () => {
+  const rule = (id: string, category: DetectionCategory) =>
+    ({
+      specVersion: 1,
+      id,
+      name: id,
+      category,
+      severity: 'critical',
+      matcher: { type: 'keyword', keywords: [id] },
+    }) as NonNullable<PolicyBundle['rules']>[number];
+
+  it('resolves a rule from any tier', () => {
+    const map = ruleCategoryMap(
+      [rule('wire-only', 'secret')],
+      [rule('local-only', 'pii')],
+      [rule('compiled-only', 'financial')],
+    );
+    expect(map.get('wire-only')).toBe('secret');
+    expect(map.get('local-only')).toBe('pii');
+    expect(map.get('compiled-only')).toBe('financial');
+  });
+
+  // ⚠ THE TRUST-ORDER TEST. The wire tier is the SAME unsigned bundle the
+  // clamp exists to defend against, so it must never be able to redeclare a
+  // rule id the device already knows a category for — neither the locally
+  // installed tier nor the compiled-in one.
+  it('never lets the wire tier override a locally installed rule’s category', () => {
+    const map = ruleCategoryMap(
+      [rule('shared-id', 'code_context')],
+      [rule('shared-id', 'secret')],
+      [],
+    );
+    expect(map.get('shared-id')).toBe('secret');
+  });
+
+  it('never lets the wire tier override a compiled-in rule’s category', () => {
+    const map = ruleCategoryMap(
+      [rule('shared-id', 'code_context')],
+      [],
+      [rule('shared-id', 'secret')],
+    );
+    expect(map.get('shared-id')).toBe('secret');
+  });
+
+  it('lets the compiled-in tier override a locally installed one', () => {
+    // Compiled-in is the MOST trusted tier — it anchors the clamp whatever an
+    // installed pack or the wire claims.
+    const map = ruleCategoryMap(
+      [],
+      [rule('shared-id', 'code_context')],
+      [rule('shared-id', 'secret')],
+    );
+    expect(map.get('shared-id')).toBe('secret');
+  });
+
+  it('leaves a rule id absent from every tier with no floor at all', () => {
+    const map = ruleCategoryMap([rule('known', 'secret')], [], []);
+    expect(map.has('unknown')).toBe(false);
+  });
+
+  it('is total over an absent (undefined) rules list at the wire and local tiers', () => {
+    // `PolicyBundle['rules']` is optional at these two tiers, so both must
+    // tolerate `undefined` the way `?? []` does. The compiled tier is NOT
+    // optional — see ruleCategoryMap's own comment — so it takes `[]` here
+    // rather than `undefined`, which no longer compiles.
+    expect(() => ruleCategoryMap(undefined, undefined, [])).not.toThrow();
+    expect(ruleCategoryMap(undefined, undefined, []).size).toBe(0);
   });
 });
 

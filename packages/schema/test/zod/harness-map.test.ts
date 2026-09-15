@@ -9,11 +9,32 @@ import {
   SOURCE_TOOL,
   SourceTool,
   TOOL_TO_HARNESS,
+  WebSourceTool,
 } from '../../src/zod/harness-map.ts';
 
 describe('SourceTool enum', () => {
   it('accepts claude-ai as a first-class source', () => {
     expect(SourceTool.safeParse('claude-ai').success).toBe(true);
+  });
+
+  it('accepts ai-tc-sdk as a first-class source', () => {
+    expect(SourceTool.safeParse('ai-tc-sdk').success).toBe(true);
+  });
+});
+
+describe('Harness enum', () => {
+  it('accepts ai-tc-sdk as a first-class harness', () => {
+    expect(Harness.safeParse('ai-tc-sdk').success).toBe(true);
+  });
+});
+
+describe('WebSourceTool', () => {
+  it('is exactly the two web chat wire ids', () => {
+    expect(WebSourceTool.options).toEqual(['chatgpt', 'claude-ai']);
+  });
+
+  it('excludes every non-web SourceTool member', () => {
+    expect(WebSourceTool.safeParse('claude-code').success).toBe(false);
   });
 });
 
@@ -51,6 +72,24 @@ describe('TOOL_TO_HARNESS', () => {
 
   it('routes claude-ai onto the claudeai harness', () => {
     expect(harnessFromTool('claude-ai')).toBe('claudeai');
+  });
+
+  // ai-tc-sdk is the odd member out: wire id and display id are the same
+  // string, so it round-trips through both harnessFromTool and toApiProvider
+  // onto ITS OWN bucket rather than the generic 'api' miss path — unlike an
+  // unmapped tool, which the next test shows landing on 'api'.
+  it('routes ai-tc-sdk onto its own harness and finding provider', () => {
+    expect(harnessFromTool('ai-tc-sdk')).toBe('ai-tc-sdk');
+    expect(toApiProvider('ai-tc-sdk')).toBe('ai-tc-sdk');
+  });
+
+  // The TOOL_TO_HARNESS row itself, in its own case: `harnessFromTool` passes
+  // an unmapped id through unchanged, and ai-tc-sdk is the one member whose
+  // wire and display spellings coincide, so the round trip above would still
+  // answer 'ai-tc-sdk' with the row deleted. Only a direct read of the row
+  // proves the two enum members are keyed to each other.
+  it('carries the ai-tc-sdk row in TOOL_TO_HARNESS, not merely the pass-through', () => {
+    expect(TOOL_TO_HARNESS[SOURCE_TOOL.AiTcSdk]).toBe(HARNESS.AiTcSdk);
   });
 
   // The miss path is not shared: harnessFromTool passes an unmapped id through

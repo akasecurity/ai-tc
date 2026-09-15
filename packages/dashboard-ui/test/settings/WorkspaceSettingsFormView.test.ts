@@ -6,6 +6,8 @@ import {
   RedactFallback,
   TriageHit,
   VAULT_CONSENT_VERSION,
+  WEB_CHAT_CAPTURE_CONSENT_VERSION,
+  WORKSPACE_SETTINGS_SPEC_VERSION,
 } from '@akasecurity/schema';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -54,6 +56,12 @@ import {
   VAULT_STALE_NOTICE,
   vaultChoiceOf,
   vaultConsentStale,
+  WEB_CHAT_CHOICES,
+  WEB_CHAT_SECTION_DESCRIPTION,
+  WEB_CHAT_SECTION_LABEL,
+  WEB_CHAT_STALE_BADGE,
+  WEB_CHAT_STALE_NOTICE,
+  webChatCaptureStale,
   WorkspaceSettingsFormView,
   type WorkspaceSettingsFormViewProps,
 } from '../../src/settings/WorkspaceSettingsFormView.tsx';
@@ -127,6 +135,15 @@ const FORM_COPY: Record<string, string> = {
     VAULT_CHOICES.flatMap((c) => [
       [`VAULT_CHOICES.${c.value}.label`, c.label],
       [`VAULT_CHOICES.${c.value}.description`, c.description],
+    ]),
+  ),
+  WEB_CHAT_SECTION_LABEL,
+  WEB_CHAT_SECTION_DESCRIPTION,
+  WEB_CHAT_STALE_NOTICE,
+  ...Object.fromEntries(
+    WEB_CHAT_CHOICES.flatMap((c) => [
+      [`WEB_CHAT_CHOICES.${c.value}.label`, c.label],
+      [`WEB_CHAT_CHOICES.${c.value}.description`, c.description],
     ]),
   ),
 };
@@ -1205,6 +1222,200 @@ describe('the connection section, credential state', () => {
     const html = render({ settings: base, credentialState: { usable: false, reason: 'absent' } });
     expect(html).not.toContain('data-slot="connection-credential-notice"');
     expect(html).not.toContain(CONNECTION_INACTIVE_BADGE);
+  });
+});
+
+// The browser extension's web-chat capture is its own versioned grant, because
+// it writes down a class of thing nothing wrote down before: per-turn model and
+// token metadata, the tool calls a reply made, and the reply's own text. Its
+// copy has three jobs — name what is recorded, keep enforcement out of the
+// bargain, and refuse to present revocation as an eraser.
+describe('WorkspaceSettingsFormView web-chat capture control', () => {
+  const revoked = WEB_CHAT_CHOICES.find((c) => c.value === 'revoked');
+  const granted = WEB_CHAT_CHOICES.find((c) => c.value === 'granted');
+
+  it('offers exactly a grant and a revoke choice', () => {
+    expect(WEB_CHAT_CHOICES.map((c) => c.value).sort()).toEqual(['granted', 'revoked']);
+  });
+
+  it('labels the section as its own consent for the browser extension', () => {
+    expect(WEB_CHAT_SECTION_LABEL).toMatch(/web chat/i);
+    expect(WEB_CHAT_SECTION_DESCRIPTION).toMatch(/browser extension/i);
+  });
+
+  it('names every class of thing the grant covers', () => {
+    // Each of these is a row or a column that would not exist without the
+    // grant. A blurb that says "records your chats" names none of them.
+    for (const claim of [/\bmodel\b/i, /token/i, /tool call/i, /reply text/i]) {
+      expect(WEB_CHAT_SECTION_DESCRIPTION, `${String(claim)} is not named`).toMatch(claim);
+    }
+  });
+
+  // A stored reply is masked only where the detection that flagged the value
+  // resolves to redact or stronger — the shared capture path filters on exactly
+  // that — and every detection ships on monitor, so on a default install the
+  // reply text is stored as it was seen. Copy promising a span-by-span mask
+  // offers a protection this build does not perform, on the one surface where
+  // that claim is what a person weighs. Pinned on BOTH strings, because the
+  // affirmative choice is what is read at the moment of granting.
+  it('qualifies masking by the detection policy rather than promising it outright', () => {
+    for (const copy of [WEB_CHAT_SECTION_DESCRIPTION, granted?.description ?? '']) {
+      expect(copy).not.toBe('');
+      expect(copy).toMatch(/masked only where/i);
+      expect(copy).toMatch(/redact/i);
+      expect(copy).toMatch(/monitor/i);
+      expect(copy).not.toMatch(/masked at every detected span/i);
+      expect(copy).not.toMatch(/mask every detected span/i);
+    }
+  });
+
+  // The stored `responses` mode decides which replies are kept, and this page
+  // has no control for it — so copy that says the text is kept, flatly, is
+  // wrong for two of the three modes.
+  it('qualifies the reply text by the mode in force rather than claiming it flatly', () => {
+    expect(WEB_CHAT_SECTION_DESCRIPTION).toMatch(/set to keep/i);
+    expect(WEB_CHAT_SECTION_DESCRIPTION).toMatch(/by default/i);
+  });
+
+  // THE PROPERTY THIS PAGE MUST NOT BLUR. Blocking, redaction and warnings on
+  // what a user sends are not gated on this grant; a machine that has never
+  // answered is protected exactly as before. Copy implying the user is turning
+  // protection on or off is the worst thing this section could say.
+  it('states that enforcement is not part of the bargain', () => {
+    expect(WEB_CHAT_SECTION_DESCRIPTION).toMatch(/written down/i);
+    expect(WEB_CHAT_SECTION_DESCRIPTION).toMatch(/blocking, redaction and warnings/i);
+    expect(WEB_CHAT_SECTION_DESCRIPTION).toMatch(/whether or not/i);
+  });
+
+  it('does not present revocation as a recall of what is already stored', () => {
+    expect(WEB_CHAT_SECTION_DESCRIPTION).toMatch(/does not erase what is already stored/i);
+    // ...and does not claim the opposite anywhere.
+    const all = [WEB_CHAT_SECTION_DESCRIPTION, ...WEB_CHAT_CHOICES.map((c) => c.description)].join(
+      ' ',
+    );
+    expect(all).not.toMatch(/deletes what was recorded/i);
+    expect(all).not.toMatch(/erases/i);
+  });
+
+  // An attached machine forwards what it records to the deployment it is
+  // attached to, like any other activity. Copy saying it all stays on this
+  // machine is false there, and that is the reader who most needs the truth.
+  it('does not claim what is recorded stays on this machine', () => {
+    expect(WEB_CHAT_SECTION_DESCRIPTION).toMatch(/attached/i);
+    expect(WEB_CHAT_SECTION_DESCRIPTION).toMatch(/forwarded/i);
+    expect(WEB_CHAT_SECTION_DESCRIPTION).not.toMatch(/never leaves this machine/i);
+    expect(WEB_CHAT_SECTION_DESCRIPTION).not.toMatch(/nothing is sent anywhere/i);
+  });
+
+  it('defaults to the not-granted wording, never assuming the grant', () => {
+    expect(revoked?.description).toMatch(/never assumed/i);
+    expect(revoked?.label).toMatch(/not granted/i);
+  });
+
+  it('keeps the revoked choice free of any claim about protection', () => {
+    expect(revoked?.description).toMatch(/enforcement/i);
+    expect(revoked?.description).toMatch(/unaffected/i);
+  });
+
+  it('names the raw exposure on the grant choice itself', () => {
+    expect(granted?.description).toMatch(/reply text/i);
+    expect(granted?.description).toMatch(/~\/\.aka/);
+  });
+
+  it('emits only the choice string — no acknowledgedAt/version leaves the form', () => {
+    // The grant record is stamped by the server action; the form's save payload
+    // carries the bare answer and nothing a client could forge. THREE answers,
+    // because this form submits every field on every save and an untouched row
+    // has to be able to say so.
+    type Emitted = Parameters<WorkspaceSettingsFormViewProps['onSave']>[0]['webChatCaptureConsent'];
+    expectTypeOf<Emitted>().toEqualTypeOf<'granted' | 'revoked' | 'unchanged'>();
+  });
+});
+
+describe('stale web-chat grant', () => {
+  const block = (version: number): WorkspaceSettings['webChatCapture'] => ({
+    responses: 'with-findings',
+    account: false,
+    consent: { acknowledgedAt: '2026-07-30T00:00:00.000Z', version },
+  });
+
+  it('is stale only when a grant exists at another version', () => {
+    expect(webChatCaptureStale(undefined)).toBe(false);
+    expect(webChatCaptureStale({ responses: 'with-findings', account: false })).toBe(false);
+    expect(webChatCaptureStale(block(WEB_CHAT_CAPTURE_CONSENT_VERSION))).toBe(false);
+    expect(webChatCaptureStale(block(WEB_CHAT_CAPTURE_CONSENT_VERSION + 1))).toBe(true);
+  });
+
+  it('the notice says the grant no longer counts and how re-consent happens', () => {
+    expect(WEB_CHAT_STALE_NOTICE).toMatch(/older version/i);
+    expect(WEB_CHAT_STALE_NOTICE).toMatch(/re-consent/i);
+    // It must NOT claim recording is currently being withheld — this surface
+    // records the answer; it is not the thing that acts on it.
+    expect(WEB_CHAT_STALE_NOTICE).not.toMatch(/paused/i);
+  });
+
+  const staleSettings: WorkspaceSettings = {
+    specVersion: WORKSPACE_SETTINGS_SPEC_VERSION,
+    runMode: 'standalone',
+    policy: 'redact',
+    historicalAccess: 'session-only',
+    dataSharesInPlace: true,
+    vaultKeyCustody: 'file',
+    vaultInlineReveal: 'masked',
+    redactFallback: 'warn',
+    bodyRetention: { enabled: false, retainDays: 30 },
+    webChatCapture: block(WEB_CHAT_CAPTURE_CONSENT_VERSION + 1),
+  };
+
+  // Anchored on the choice COPY, because the radios carry no value attribute —
+  // selection is `checked` on the label that holds the description.
+  const labelHolding = (html: string, copy: string): string => {
+    const at = html.indexOf(copy);
+    return html.slice(html.lastIndexOf('<label', at), at);
+  };
+  const grantedCopy = WEB_CHAT_CHOICES.find((c) => c.value === 'granted')?.description ?? '';
+  const revokedCopy = WEB_CHAT_CHOICES.find((c) => c.value === 'revoked')?.description ?? '';
+
+  const render = (settings: WorkspaceSettings): string =>
+    renderToStaticMarkup(
+      createElement(WorkspaceSettingsFormView, { settings, onSave: () => undefined, busy: false }),
+    );
+
+  it('shows the badge and an opened row, and does NOT pre-assert consent', () => {
+    expect(grantedCopy).not.toBe('');
+    const html = render(staleSettings);
+    expect(html).toContain('data-slot="web-chat-stale-notice"');
+    // Rendered is not visible: a collapsed <details> still renders its
+    // children, so the notice has to sit in a row the browser has opened.
+    const staleRow = html.slice(0, html.indexOf('data-slot="web-chat-stale-notice"'));
+    const rowOpen = staleRow.lastIndexOf('<details');
+    expect(staleRow.slice(rowOpen, staleRow.indexOf('>', rowOpen) + 1)).toContain('open');
+    expect(html).toContain(WEB_CHAT_STALE_BADGE);
+    // THE FAIL-OPEN GUARD, the same one the history-sync row carries. The
+    // submit handler sends whatever this row is seeded with, so a stale grant
+    // seeded 'Granted' would let a user who came to change something else
+    // re-consent to a widened grant by clicking Save. It reads 'Not granted'
+    // until they say otherwise; the badge and notice explain why.
+    expect(labelHolding(html, grantedCopy)).not.toContain('checked');
+    expect(labelHolding(html, revokedCopy)).toContain('checked');
+    // And the form starts clean, so an untouched Save is not even offered —
+    // re-consenting is a deliberate answer, not a click on a button that was
+    // already lit.
+    const saveButton = /<button[^>]*>(?:[^<]*Save changes[^<]*)<\/button>/.exec(html)?.[0] ?? '';
+    expect(saveButton).toContain('disabled=""');
+  });
+
+  it('a current grant reads Granted, with no badge', () => {
+    // The positive control for the case above: without it, a row that always
+    // badges and always seeds 'Not granted' passes it.
+    const html = render({
+      ...staleSettings,
+      webChatCapture: block(WEB_CHAT_CAPTURE_CONSENT_VERSION),
+    });
+    expect(html).not.toContain('data-slot="web-chat-stale-notice"');
+    expect(html).not.toContain(WEB_CHAT_STALE_BADGE);
+    expect(labelHolding(html, grantedCopy)).toContain('checked');
+    expect(labelHolding(html, revokedCopy)).not.toContain('checked');
   });
 });
 

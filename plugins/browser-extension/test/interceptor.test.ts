@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 
-import type { BannerTone } from '../src/interceptor.ts';
+import type { BannerRequest } from '../src/interceptor.ts';
 import { createSubmitInterceptor } from '../src/interceptor.ts';
 import type { BackgroundRequest, BackgroundResponse } from '../src/messaging.ts';
 import type { ProviderAdapter } from '../src/providers/types.ts';
@@ -18,6 +18,8 @@ function harness(
     // Models send-button selector drift: submit() finds nothing to click and
     // reports the send did not happen.
     sendButtonMissing?: boolean;
+    // Models a health-reporting fault: the network path's counter throws.
+    noteSendThrows?: boolean;
   } = {},
 ) {
   const composer = document.createElement('div');
@@ -25,10 +27,13 @@ function harness(
   document.body.append(composer);
 
   const relayCalls: BackgroundRequest[] = [];
-  const banners: { message: string; tone: BannerTone }[] = [];
+  const banners: BannerRequest[] = [];
   const setTextCalls: string[] = [];
   let submitCount = 0;
   let reentrantPrevented = 0;
+  // The signal the network path counts turns against. Recorded in the order it
+  // arrives relative to submit(), because the pairing depends on it.
+  const sendSignals: number[] = [];
 
   const adapter: ProviderAdapter = {
     id: 'chatgpt',
@@ -44,6 +49,15 @@ function harness(
       }
       el.textContent = text;
     },
+    // The network half, unused here: the interceptor is the DOM path, and it
+    // reaches none of these. Declared so this adapter is a whole one — a
+    // partial cast would let the interface grow a member nothing in this file
+    // notices.
+    endpoints: [],
+    requiredPaths: { request: [], response: [] },
+    protocolTokens: [],
+    parseRequest: () => ({ requiredPathsSeen: false }),
+    parseStream: () => ({ push: () => undefined, end: () => null }),
     watchSubmit: () => () => undefined,
     submit: () => {
       if (overrides.sendButtonMissing) return false;
@@ -67,8 +81,12 @@ function harness(
       if (!next) return Promise.reject(new Error('relay exhausted'));
       return Promise.resolve(next as BackgroundResponse);
     },
-    showBanner: (message, tone) => {
-      banners.push({ message, tone });
+    showBanner: (banner) => {
+      banners.push(banner);
+    },
+    noteSend: () => {
+      if (overrides.noteSendThrows) throw new Error('health reporting broke');
+      sendSignals.push(submitCount);
     },
   });
 
@@ -78,6 +96,7 @@ function harness(
     relayCalls,
     banners,
     setTextCalls,
+    sendSignals,
     submitted: () => submitCount,
     reentrantPrevented: () => reentrantPrevented,
   };
@@ -270,4 +289,236 @@ describe('createSubmitInterceptor', () => {
     await settle();
     expect(h.relayCalls).toHaveLength(2);
   });
+});
+
+// The network path counts a DOM-observed send as a turn it must see a network
+// exchange for, and reports the tab BLIND after a run of sends nothing
+// answered. So the signal has to name a send that actually happened: charged
+// at the relay instead, every message AKA itself stopped would count against a
+// tap that is working correctly, and a session that blocked three secrets
+// would report the interception as broken.
+describe('the DOM-send signal the network path counts against', () => {
+  it('fires once per message that actually went out, after the send', async () => {
+    const h = harness([capture({ action: 'log' })]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+    expect(h.submitted()).toBe(1);
+    // The value recorded is submitCount at the moment of the signal: the send
+    // is already on its way, so the request it started can answer it.
+    expect(h.sendSignals).toEqual([1]);
+  });
+
+  it('does not fire for a message the decision blocked', async () => {
+    // The case the counter got wrong. Nothing was sent, so no network turn can
+    // answer it, and charging it to the tap reports enforcement as drift.
+    const h = harness([capture({ action: 'block', ruleIds: ['aws-key'] })]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+    expect(h.submitted()).toBe(0);
+    expect(h.sendSignals).toEqual([]);
+  });
+
+  it('does not fire for a redact the composer would not take', async () => {
+    const h = harness([capture({ action: 'redact', text: 'masked', ruleIds: ['r1'] })], {
+      setText: () => undefined,
+    });
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+    expect(h.submitted()).toBe(0);
+    expect(h.sendSignals).toEqual([]);
+  });
+
+  it('does not fire when the send button drifted away', async () => {
+    // submit() reported the message did not go out. handleSubmit has already
+    // preventDefault()ed the user's own send, so nothing sent it and nothing
+    // will — a DOM-adapter fault, which must not be reported as a network one.
+    const h = harness([capture({ action: 'log' })], { sendButtonMissing: true });
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+    expect(h.sendSignals).toEqual([]);
+  });
+
+  it('fires for a send the host never answered, which still left the composer', async () => {
+    // Fail-open: the message went out, so a network turn is owed for it.
+    const h = harness([]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+    expect(h.submitted()).toBe(1);
+    expect(h.sendSignals).toEqual([1]);
+  });
+
+  it('never lets a reporting fault reach the message it is reporting on', async () => {
+    const h = harness([capture({ action: 'log' })], { noteSendThrows: true });
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+    expect(h.submitted()).toBe(1);
+    // And the send is still treated as having happened.
+    expect(h.banners).toEqual([]);
+  });
+});
+
+describe('the block banner carries the exception route', () => {
+  it('hands the ledger reference through as its own command', async () => {
+    // The reference is the whole point: without it the user is told a message
+    // was blocked and given no way to allow it. It rides as a separate field
+    // rather than inside the prose so the banner can render it as its own
+    // element, copied from this value rather than from a page selection.
+    const h = harness([
+      {
+        type: 'capture',
+        action: 'block',
+        text: null,
+        ruleIds: ['secrets/aws-access-key'],
+        blockedReferences: [
+          { reference: '3f2a91', ruleId: 'secrets/aws-access-key', maskedValue: 'A******E' },
+        ],
+      },
+    ]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+
+    expect(h.submitted()).toBe(0);
+    expect(h.banners[0]?.tone).toBe('block');
+    expect(h.banners[0]?.exception?.command).toBe('aka exception approve 3f2a91');
+    expect(h.banners[0]?.message).toContain('A******E');
+  });
+
+  it('omits the command when the host ledgered nothing', async () => {
+    const h = harness([
+      { type: 'capture', action: 'block', text: null, ruleIds: ['secrets/aws-access-key'] },
+    ]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+
+    expect(h.banners[0]?.tone).toBe('block');
+    expect(h.banners[0]?.exception?.command).toBe('aka exception approve');
+  });
+
+  it('offers a WARN no approve command, because a warn ledgers nothing', async () => {
+    // The shape the native host really produces: `recordBlockedDetections` in
+    // @akasecurity/plugin-sdk returns before writing unless the decision's
+    // action is block or redact, and it is that result `evaluate` sets
+    // `blockedReferences` from — so a warn carries none. The case this
+    // replaced fed a warn WITH references, which the host cannot produce, and
+    // asserted an approve command that no warn from the host could carry.
+    const h = harness([{ type: 'capture', action: 'warn', ruleIds: ['secrets/aws-access-key'] }]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+
+    expect(h.submitted()).toBe(1);
+    // The positive control: the banner is there and names the rule, so the
+    // absences below are about the approve route rather than about a missing
+    // banner.
+    expect(h.banners[0]?.message).toContain('secrets/aws-access-key');
+    expect(h.banners[0]?.exception).toBeUndefined();
+    expect(h.banners[0]?.message).not.toContain('aka exception approve');
+  });
+
+  it('offers no approve command even if a warn arrived carrying references', async () => {
+    // Defence in depth on a shape the host cannot produce today: if warn
+    // decisions are ever ledgered, THIS is the case that has to be revisited
+    // deliberately rather than a banner quietly starting to offer an approve
+    // route.
+    const h = harness([
+      {
+        type: 'capture',
+        action: 'warn',
+        ruleIds: ['secrets/aws-access-key'],
+        blockedReferences: [
+          { reference: '55aa', ruleId: 'secrets/aws-access-key', maskedValue: 'A******E' },
+        ],
+      },
+    ]);
+    h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+    await settle();
+
+    expect(h.banners[0]?.message).toContain('secrets/aws-access-key');
+    expect(h.banners[0]?.exception).toBeUndefined();
+    expect(h.banners[0]?.message).not.toContain('aka exception approve');
+  });
+});
+
+// Every banner naming a ledger reference hands it over as `exception`, and none
+// splices it into `message`. The prose renders as ordinary selectable text, and a
+// selection is what a page `copy` listener can swap on its way to the clipboard
+// — while a banner with no `exception` also auto-hides, taking the only
+// on-screen copy of the reference with it. Each path gets its OWN reference, so
+// a route taken from the wrong place cannot match by coincidence.
+describe('the redact banners carry the exception route', () => {
+  const REDACT_PATHS = [
+    {
+      path: 'a redact that arrived with no text',
+      reference: '9b8a',
+      response: {},
+      overrides: {},
+      tone: 'block',
+      says: 'could not redact',
+    },
+    {
+      path: 'a redact the composer would not take',
+      reference: '4c1e',
+      response: { text: 'masked' },
+      overrides: { setText: () => undefined },
+      tone: 'block',
+      says: 'could not redact',
+    },
+    {
+      path: 'a redact that went out',
+      reference: '7d2f',
+      response: { text: 'masked' },
+      overrides: {},
+      tone: 'redact',
+      says: 'before sending',
+    },
+  ] as const;
+
+  it.each(REDACT_PATHS)(
+    '$path: names its own reference as the command, never in the prose',
+    async ({ reference, response, overrides, tone, says }) => {
+      const h = harness(
+        [
+          capture({
+            action: 'redact',
+            ruleIds: ['secrets/aws-access-key'],
+            ...response,
+            blockedReferences: [
+              { reference, ruleId: 'secrets/aws-access-key', maskedValue: 'A******E' },
+            ],
+          }),
+        ],
+        overrides,
+      );
+      h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+      await settle();
+
+      expect(h.banners).toHaveLength(1);
+      // The positive control: this is the banner the path produces, so the
+      // absence below is about the command rather than about a missing banner.
+      expect(h.banners[0]?.tone).toBe(tone);
+      expect(h.banners[0]?.message).toContain(says);
+      expect(h.banners[0]?.exception?.command).toBe(`aka exception approve ${reference}`);
+      expect(h.banners[0]?.message).not.toContain('aka exception approve');
+    },
+  );
+
+  it.each(REDACT_PATHS)(
+    '$path: carries no route when the host ledgered nothing',
+    async ({ response, overrides, tone, says }) => {
+      // With no row there is no command that could find it, and no route is
+      // what lets this banner auto-hide like any other. The case above is the
+      // positive control for the absence: the same path does carry a route.
+      const h = harness(
+        [capture({ action: 'redact', ruleIds: ['secrets/aws-access-key'], ...response })],
+        overrides,
+      );
+      h.interceptor.handleSubmit(new Event('keydown', { cancelable: true }), h.composer);
+      await settle();
+
+      expect(h.banners).toHaveLength(1);
+      expect(h.banners[0]?.tone).toBe(tone);
+      expect(h.banners[0]?.message).toContain(says);
+      expect(h.banners[0]?.exception).toBeUndefined();
+      expect(h.banners[0]?.message).not.toContain('aka exception approve');
+    },
+  );
 });

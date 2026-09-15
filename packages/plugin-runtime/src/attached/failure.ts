@@ -1,5 +1,5 @@
-import type { ControlPlaneFailure } from '@akasecurity/persistence';
 import { classifyRemoteFailure, statusOf } from '@akasecurity/remote';
+import type { ControlPlaneFailure } from '@akasecurity/schema';
 
 /**
  * One classifier for "the control plane said no", shared by both halves of
@@ -30,11 +30,12 @@ import { classifyRemoteFailure, statusOf } from '@akasecurity/remote';
  *                   why the surfaces that render it say what they observed
  *                   rather than guessing at a cause.
  */
-// Defined in @akasecurity/persistence, beside the breaker file that stores it
-// and the reader a dashboard uses, for the reason that file's own docblock
-// gives. Re-exported here because this is where it is PRODUCED — the classifier
-// below is its only writer, and a caller of `classifyFailure` should be able to
-// name its result without reaching past this module.
+// Defined in @akasecurity/schema, beside `RemoteFailureKind`, so a consumer that
+// cannot depend on @akasecurity/persistence (which also re-exports it, beside
+// the breaker file that stores it and the reader a dashboard uses) can still
+// name it. Re-exported here because this is where it is PRODUCED — the
+// classifier below is its only writer, and a caller of `classifyFailure` should
+// be able to name its result without reaching past this module.
 export type { ControlPlaneFailure };
 
 /**

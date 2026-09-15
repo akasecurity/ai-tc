@@ -88,6 +88,105 @@ export const AttachedCredential = z.object({
 });
 export type AttachedCredential = z.infer<typeof AttachedCredential>;
 
+// ─── Whether an endpoint is safe to send a credential to ─────────────────────
+
+/**
+ * The endpoints a credential may be presented to.
+ *
+ * The credential rides on every request, so a plaintext hop lets anyone on the
+ * network path read it. `https:` is always fine. `http:` is tolerated only for
+ * loopback, which is how a deployment is exercised locally — anything else is
+ * refused, and the caller stays standalone rather than send a bearer token in
+ * the clear over a real network.
+ *
+ * The bracketed `'[::1]'` spelling is listed because `URL.hostname` preserves
+ * the brackets for an IPv6 literal, so both forms occur.
+ */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+/**
+ * Why `isSafeEndpoint` refuses an endpoint, for a caller that has to say more
+ * than "no" — a plain refusal reads to a user as "this deployment is down",
+ * where the true cause is a typo, a copy-pasted credential, or a stray query
+ * string.
+ *
+ * PLAIN TYPESCRIPT, not Zod, for the same reason `CredentialUnusableReason`
+ * above is: a derived answer, not a stored or wire shape.
+ *
+ *   `unparseable`       — not a URL the runtime can parse at all.
+ *   `userinfo`          — carries `user:pass@host`. An accepted `https:` URL
+ *                         would still put that userinfo on the wire as an
+ *                         `Authorization: Basic` header no route here expects,
+ *                         and it would otherwise leak verbatim into an error
+ *                         message built from the same endpoint.
+ *   `query-or-fragment` — carries a query string or a fragment. A base URL
+ *                         built by concatenating a route path onto one silently
+ *                         loses the path instead of reaching it:
+ *                         `new URL('https://host?x=1/v1/whoami').pathname` is
+ *                         `/`, not `/v1/whoami`. A path prefix on its own
+ *                         (`https://host/v1`) stays allowed.
+ *   `insecure`          — a non-loopback endpoint that is not `https:`. The
+ *                         credential rides on every request, so a plaintext
+ *                         hop off-machine lets anyone on the network path
+ *                         read it; `http:` is tolerated only for loopback,
+ *                         which is how a deployment is exercised locally.
+ *
+ * `null` means the endpoint is safe to present a credential to.
+ *
+ * Checked in this order — parse, then userinfo, then query/fragment, then
+ * scheme — so a URL that fails more than one check always reports the
+ * earliest, most structural reason rather than whichever the caller happened
+ * to check first.
+ */
+export type UnsafeEndpointReason = 'unparseable' | 'userinfo' | 'query-or-fragment' | 'insecure';
+
+export function unsafeEndpointReason(endpoint: string): UnsafeEndpointReason | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    return 'unparseable';
+  }
+  if (parsed.username !== '' || parsed.password !== '') return 'userinfo';
+  if (parsed.search !== '' || parsed.hash !== '') return 'query-or-fragment';
+  if (parsed.protocol === 'https:') return null;
+  return parsed.protocol === 'http:' && LOOPBACK_HOSTS.has(parsed.hostname) ? null : 'insecure';
+}
+
+/**
+ * Whether an endpoint is safe to present a credential to.
+ *
+ * A thin boolean wrapper over `unsafeEndpointReason` so the two can never
+ * diverge — a caller that only needs a yes/no keeps using this; one that has
+ * to explain the refusal to a person reads the reason instead.
+ */
+export function isSafeEndpoint(endpoint: string): boolean {
+  return unsafeEndpointReason(endpoint) === null;
+}
+
+/**
+ * The origin alone — protocol and host, never path, query, fragment or
+ * userinfo — safe to put in a message built from a caller-supplied endpoint
+ * that `isSafeEndpoint` has already refused, or that a refusal message is
+ * about before either has been checked.
+ *
+ * Moved here from `@akasecurity/remote`'s `http.ts`, which built the same
+ * projection locally for `RemoteEndpointRefused`. It belongs beside the check
+ * it exists to make safe: the credential writer in `@akasecurity/persistence`
+ * refuses the same endpoints before a `RemoteClient` exists at all, needs the
+ * identical projection, and cannot depend on `remote` (that package depends on
+ * this one, and persistence reaches no network), so the one home both can
+ * import from is this file.
+ */
+export function originOnly(endpoint: string): string {
+  try {
+    const parsed = new URL(endpoint);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return '(unparseable endpoint)';
+  }
+}
+
 // ─── Whether that credential can actually be used ────────────────────────────
 
 // The two types below are PLAIN TYPESCRIPT, not Zod, and they describe a
@@ -513,8 +612,9 @@ export type ControlPlaneErrorBody = z.infer<typeof ControlPlaneErrorBody>;
  *                     route's scope, otherwise it is an administrator's call.
  *   `route-absent`    the deployment never served this route; it is older than
  *                     the build calling it.
- *   `invalid-request` this build assembled a body its own contract refuses —
- *                     a local defect, never the deployment's.
+ *   `invalid-request` this machine refused to send the request at all — a
+ *                     body its own contract refuses, or an endpoint it will
+ *                     not dial — never a verdict from the deployment.
  *   `rejected`        the deployment considered the body and refused it; the
  *                     two ends are out of step.
  *   `unreachable`     no verdict worth naming: a timeout, a transport failure,
@@ -531,6 +631,35 @@ export const RemoteFailureKind = z.enum([
   'unreachable',
 ]);
 export type RemoteFailureKind = z.infer<typeof RemoteFailureKind>;
+
+/**
+ * How a control-plane call failed, as coarsely as anything is willing to say.
+ *
+ * ONE SOURCE, for the reason @akasecurity/persistence's `sync-failure.ts` gives
+ * about its own list: the writer and the readers must agree, and they live on
+ * opposite sides of @akasecurity/persistence. The forward path classifies a
+ * failure and writes this value; the status command and the dashboard render
+ * it; and a second spelling would be a value that silently reads as "no cause
+ * recorded" rather than a type error.
+ *
+ * An `.extract()` over `RemoteFailureKind` rather than a fresh `z.enum` of the
+ * same three strings, the way `RedactFallback` derives from `BuiltinPolicyId`:
+ * a member renamed on one side then fails to compile here instead of quietly
+ * narrowing to `null` wherever a hand-spelled copy did not move with it.
+ *
+ *   `unauthorized` — the deployment knows this machine and refuses its key.
+ *   `forbidden`    — the key is accepted and the call is not permitted.
+ *   `unreachable`  — no verdict was obtained at all. The DEFAULT, and the
+ *                    bucket for "no verdict we are willing to name", which is
+ *                    why the surfaces that render it say what they observed
+ *                    rather than guessing at a cause.
+ */
+export const ControlPlaneFailure = RemoteFailureKind.extract([
+  'unauthorized',
+  'forbidden',
+  'unreachable',
+]);
+export type ControlPlaneFailure = z.infer<typeof ControlPlaneFailure>;
 
 // ─── Attaching a machine without ferrying a key by hand ──────────────────────
 //

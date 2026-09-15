@@ -6,10 +6,11 @@
  * guarantees by construction — no redirects, a deadline on every request, a
  * body cap, a protocol upgrade refused — and one by precondition: that plain
  * `http:` only ever names a loopback host, established by `isSafeEndpoint`
- * before an endpoint reaches disk. `send` cannot re-check that itself (the
- * predicate lives in @akasecurity/persistence, which this package must not
- * depend on), so while `send` was exported it was the one guarantee a caller
- * could step around — build a URL from a less-trusted source and the credential
+ * (@akasecurity/schema) in client.ts's `resolveBaseUrl`, the one function both
+ * factories build a base URL from. `send` has no endpoint of its own to check
+ * and trusts that whichever factory built its URL already refused an unsafe
+ * one, so while `send` was exported it was the one guarantee a caller could
+ * step around — build a URL from a less-trusted source and the credential
  * goes out in cleartext.
  *
  * Pinned as an EXACT set rather than as "does not export send", because the
@@ -30,6 +31,7 @@ import * as remote from '../src/index.ts';
 const EXPECTED = [
   'DEFAULT_TIMEOUT_MS',
   'MAX_RESPONSE_BYTES',
+  'RemoteEndpointRefused',
   'RemoteRequestError',
   'RemoteRequestInvalid',
   'RemoteResponseInvalid',
@@ -79,8 +81,9 @@ describe('the package export surface', () => {
     // failure says WHY rather than just showing a diff of two lists.
     expect(
       Object.keys(remote),
-      '`send` takes a caller-supplied URL, and this package cannot check that a ' +
-        'plain-http one is loopback. Route new work through createRemoteClient.',
+      '`send` takes a caller-supplied URL with no endpoint of its own to check — only ' +
+        'resolveBaseUrl (client.ts) refuses an unsafe one, and only for callers going ' +
+        'through createRemoteClient/createAttachClient. Route new work through one of those.',
     ).not.toContain('send');
   });
 });

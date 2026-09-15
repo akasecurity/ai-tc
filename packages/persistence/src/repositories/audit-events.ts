@@ -48,6 +48,22 @@ export class SqliteAuditEventsRepository {
     // on an equal re-read (idempotent), and is order-independent. Scoped to leaves:
     // it is a leaf-local merge of an intrinsic monotonic count, not derived state on
     // a parent. `ended_at` rides along since it tracks the same final.
+    //
+    // The second clause exists because that monotonic rule assumes a growing
+    // output count, and a WEB exchange need not have one. Both shipped web
+    // adapters report `usageSource: 'none'`, which writes no `output_tokens` at
+    // all, so `0 > 0` is false and the row could NEVER be updated: the same
+    // (sessionId, messageId) arriving again — a reload, an SPA re-render, a
+    // retry — kept the first observation for ever, with a corrected model, stop
+    // reason, conversation id or a newly-true `truncated` silently discarded.
+    //
+    // It is scoped so it cannot reach the transcript reconciler this statement
+    // was built for. `usage_source` is written by exactly one writer, the
+    // browser extension's exchange projection, so its presence IS the web
+    // marker; and requiring `output_tokens` to be absent keeps a priced web row
+    // ('site') under the monotonic rule, where a lower count must never
+    // overwrite a higher one. Comparing the bags is what keeps an identical
+    // re-read a no-op, so idempotence survives on this branch too.
     this.upsertLlmCallStmt = db.prepare(
       `INSERT INTO audit_events
          (id, parent_id, root_session_id, event_type,
@@ -61,7 +77,10 @@ export class SqliteAuditEventsRepository {
          attributes = excluded.attributes,
          ended_at   = excluded.ended_at
        WHERE COALESCE(json_extract(excluded.attributes, '$.output_tokens'), 0)
-           > COALESCE(json_extract(audit_events.attributes, '$.output_tokens'), 0)`,
+           > COALESCE(json_extract(audit_events.attributes, '$.output_tokens'), 0)
+          OR (json_extract(excluded.attributes, '$.usage_source') IS NOT NULL
+              AND json_extract(excluded.attributes, '$.output_tokens') IS NULL
+              AND excluded.attributes <> audit_events.attributes)`,
     );
 
     // Session ROOTS: fill-the-stub UPSERT. `ensureSessionRoot` plants a

@@ -1100,7 +1100,15 @@ describe('the installer trust chain is wired into CI', () => {
   // the module path it derives from %SystemRoot%, `Compress-Archive` never
   // autoloads, and the case spends its whole timeout before failing as a
   // 120-second hang that names no variable at all.
+  //
+  // TEMP and TMP ARE in turbo's built-in passthrough today, and are pinned here
+  // anyway, because that list lives in the turbo binary. The Windows leg moves
+  // both onto the runner's second disk, and a turbo that stopped forwarding them
+  // would quietly put every temp store back on the OS disk — the state that leg
+  // timed out in — with nothing else going red.
   it.each([
+    'TEMP',
+    'TMP',
     'PROCESSOR_ARCHITECTURE',
     'SystemRoot',
     'windir',

@@ -136,7 +136,7 @@ describe('PROVIDER_REGISTRY', () => {
 });
 
 describe('EGRESS_VERSION_MATERIAL', () => {
-  it('is EXTRACTOR_VERSION "1" plus the serialized registry, and so changes with the registry', () => {
-    expect(EGRESS_VERSION_MATERIAL).toBe(`1\n${JSON.stringify(PROVIDER_REGISTRY)}`);
+  it('is EXTRACTOR_VERSION "2" plus the serialized registry, and so changes with the registry', () => {
+    expect(EGRESS_VERSION_MATERIAL).toBe(`2\n${JSON.stringify(PROVIDER_REGISTRY)}`);
   });
 });

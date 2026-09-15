@@ -11,9 +11,11 @@ import type {
   ShareTrustLevel,
 } from '@akasecurity/schema';
 
-// Bumped whenever the resolution/matching rules below change (not the registry
-// data itself — that's covered by PROVIDER_REGISTRY being embedded verbatim).
-const EXTRACTOR_VERSION = '1';
+// Covers every resolution/matching rule below and every field a resolution
+// derives from them (kind, trust, name, category, providerId) — not the
+// registry data itself, which PROVIDER_REGISTRY being embedded verbatim
+// covers separately.
+const EXTRACTOR_VERSION = '2';
 
 // One row per known provider. `hostSuffixes` are suffix-matched (see
 // hostMatchesSuffix): 'stripe.com' matches 'api.stripe.com' but never

@@ -812,19 +812,28 @@ jobs:
           const os = require('node:os');
           const RETRYABLE = new Set(['EPERM', 'EACCES', 'EBUSY']);
           const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-          async function publish(tmp, dest, jitter) {
+          const yieldToLoop = () => new Promise((resolve) => setImmediate(resolve));
+          // Each schedule answers "wait how long before attempt N+1", or undefined to give up.
+          const schedules = {
+            fixed: (attempt) => (attempt < 5 ? sleep(attempt * 10) : undefined),
+            jitterWide: (attempt) => (attempt < 8 ? sleep(Math.random() * attempt * 20) : undefined),
+            yieldFirst: (attempt) =>
+              attempt < 13 ? (attempt <= 8 ? yieldToLoop() : sleep((attempt - 8) * 10)) : undefined,
+          };
+          async function publish(tmp, dest, schedule) {
+            const start = performance.now();
             for (let attempt = 1; ; attempt += 1) {
               try {
                 await fsp.rename(tmp, dest);
-                return attempt;
+                return { attempt, ms: performance.now() - start };
               } catch (err) {
-                if (attempt >= 5 || !RETRYABLE.has(err.code)) throw err;
-                const cap = attempt * 10;
-                await sleep(jitter ? Math.random() * cap : cap);
+                const wait = RETRYABLE.has(err.code) ? schedule(attempt) : undefined;
+                if (wait === undefined) throw err;
+                await wait;
               }
             }
           }
-          async function contend(base, jitter) {
+          async function contend(base, schedule) {
             const dir = fs.mkdtempSync(path.join(base, 'aka-rename-probe-'));
             const dest = path.join(dir, 'cache.json');
             const tmps = [];
@@ -833,60 +842,29 @@ jobs:
               fs.writeFileSync(tmp, JSON.stringify({ i, pad: 'x'.repeat(4096) }));
               tmps.push(tmp);
             }
-            const settled = await Promise.allSettled(tmps.map((tmp) => publish(tmp, dest, jitter)));
+            const settled = await Promise.allSettled(tmps.map((tmp) => publish(tmp, dest, schedule)));
             fs.rmSync(dir, { recursive: true, force: true });
             const landed = settled.filter((s) => s.status === 'fulfilled').map((s) => s.value);
-            return { failed: settled.length - landed.length, worst: Math.max(0, ...landed) };
-          }
-          async function hold(base) {
-            const dir = fs.mkdtempSync(path.join(base, 'aka-rename-hold-'));
-            const dest = path.join(dir, 'cache.json');
-            let refusals = 0;
-            const waits = [];
-            for (let i = 0; i < 20; i += 1) {
-              const tmp = path.join(dir, `h${i}.tmp`);
-              fs.writeFileSync(tmp, 'x'.repeat(4096));
-              const start = performance.now();
-              for (let spins = 0; ; spins += 1) {
-                try {
-                  await fsp.rename(tmp, dest);
-                  break;
-                } catch (err) {
-                  if (!RETRYABLE.has(err.code) || spins > 100000) throw err;
-                  refusals += 1;
-                  await new Promise((resolve) => setImmediate(resolve));
-                }
-              }
-              waits.push(performance.now() - start);
-            }
-            fs.rmSync(dir, { recursive: true, force: true });
-            waits.sort((a, b) => a - b);
-            return `${refusals} refusals over 20 back-to-back renames, wait median ${waits[10].toFixed(2)}ms max ${waits[19].toFixed(2)}ms`;
-          }
-          async function timerFloor() {
-            const got = [];
-            for (let i = 0; i < 20; i += 1) {
-              const start = performance.now();
-              await sleep(1);
-              got.push(performance.now() - start);
-            }
-            got.sort((a, b) => a - b);
-            return `setTimeout(1) took median ${got[10].toFixed(2)}ms max ${got[19].toFixed(2)}ms`;
+            return {
+              failed: settled.length - landed.length,
+              worst: Math.max(0, ...landed.map((l) => l.attempt)),
+              slowest: Math.max(0, ...landed.map((l) => l.ms)),
+            };
           }
           (async () => {
-            console.log(await timerFloor());
             for (const [name, base] of [['tmpdir', os.tmpdir()], ['RUNNER_TEMP', process.argv[2]]]) {
-              for (const jitter of [false, true]) {
+              for (const [label, schedule] of Object.entries(schedules)) {
                 let failed = 0;
                 let worst = 0;
-                for (let round = 0; round < 10; round += 1) {
-                  const r = await contend(base, jitter);
+                let slowest = 0;
+                for (let round = 0; round < 20; round += 1) {
+                  const r = await contend(base, schedule);
                   failed += r.failed;
                   worst = Math.max(worst, r.worst);
+                  slowest = Math.max(slowest, r.slowest);
                 }
-                console.log(`${name} ${base}: ${jitter ? 'jittered' : 'fixed'} backoff, ${failed} of 120 writers failed, worst landing attempt ${worst}`);
+                console.log(`${name}: ${label}, ${failed} of 240 writers failed, worst landing attempt ${worst}, slowest landing ${slowest.toFixed(1)}ms`);
               }
-              console.log(`${name}: ${await hold(base)}`);
             }
           })().catch((err) => {
             console.log(`probe failed: ${err.stack}`);

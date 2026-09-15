@@ -152,8 +152,9 @@
  *    GREEN. SQLite answers that count from a covering index, so it is genuinely
  *    linear and still far under the floor.
  *  - `SELECT COUNT(*) FROM audit_events WHERE LENGTH(id) = 999` — the same scan
- *    with the index defeated, ~40 ns/row — took the ratio to 4.739 (0.1844 ms at
- *    2k against 0.8739 ms at 20k) and FAILED it.
+ *    with the index defeated, ~40 ns/row — took the ratio to 4.06-4.18 (about
+ *    0.29 ms at 2k against 1.21 ms at 20k, two runs with the stores sampled
+ *    interleaved on an 8-core arm64 Mac) and FAILED it.
  *
  * So: this catches a linear cost that meaningfully changes what the operation
  * costs, and does not catch one lost in the noise floor. A regression that only
@@ -205,6 +206,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { LocalDatabase } from '../../src/database.ts';
 import { openLocalDatabase } from '../../src/database.ts';
 import { CORPUS_EPOCH_MS, corpusConnection, seedCaptureCorpus } from '../helpers/corpus.ts';
+import { sampleInterleaved, timeCall } from '../helpers/interleaved-samples.ts';
 import type { OwnedTempStore } from '../helpers/temp-store.ts';
 import { createTempStore } from '../helpers/temp-store.ts';
 
@@ -362,12 +364,6 @@ function seed(store: OwnedTempStore, events: number): Seeded {
   return { store, db, events: corpus.events };
 }
 
-function timeCapture(side: Seeded, seq: number): number {
-  const started = performance.now();
-  side.db.recordCapture(makeEvent(side.events, seq), []);
-  return performance.now() - started;
-}
-
 function timeOpen(side: Seeded): number {
   const started = performance.now();
   const handle = openLocalDatabase(side.store.dataDir);
@@ -377,11 +373,11 @@ function timeOpen(side: Seeded): number {
 }
 
 /**
- * Time both costs against BOTH stores, INTERLEAVED — the header's "Both sizes
- * are sampled INTERLEAVED" says why. Each iteration times one call per store,
- * alternating which store goes first. Every capture is timed before any open, so
- * each open meets a store holding the same probe rows as its counterpart, as it
- * did when each store was measured on its own.
+ * Time both costs against BOTH stores, interleaved by `sampleInterleaved` — the
+ * header's "Both sizes are sampled INTERLEAVED" says why, and the helper's own
+ * header sets out the order. Every capture is timed before any open, so each open
+ * meets a store holding the same probe rows as its counterpart, as it did when
+ * each store was measured on its own.
  *
  * Seeding both stores before timing either is what the sequential form was
  * written to avoid — the small store is no longer freshly written when its turn
@@ -391,35 +387,37 @@ function timeOpen(side: Seeded): number {
  * store's fastest-of-n interleaved was 0.142-0.146 ms for a capture and
  * 1.38-1.44 ms for an open, against 0.144-0.151 ms and 1.41-1.49 ms timed
  * straight after its own seed.
+ *
+ * The ratios hold under CPU load: three passes with 24 burners added on 8 cores
+ * read `recordCapture` at 1.02-1.05 and `openLocalDatabase` at 0.72-1.03, against
+ * 1.05-1.08 and 0.89-1.00 without them. What none of those passes reaches is
+ * memory pressure. Both stores stayed resident throughout — 2.2 MB and 17.0 MB,
+ * each connection with its own SQLite page cache — so a runner short enough of
+ * memory to evict the small store between interleaved calls, which would slow
+ * every small-side sample and LOWER the ratio, is unmeasured.
  */
-function measureInterleaved(small: Seeded, large: Seeded): [Measured, Measured] {
-  const smallCaptures: number[] = [];
-  const largeCaptures: number[] = [];
-  for (let i = 0; i < CAPTURE_SAMPLES; i += 1) {
-    if (i % 2 === 0) {
-      smallCaptures.push(timeCapture(small, i));
-      largeCaptures.push(timeCapture(large, i));
-    } else {
-      largeCaptures.push(timeCapture(large, i));
-      smallCaptures.push(timeCapture(small, i));
-    }
-  }
-
-  const smallOpens: number[] = [];
-  const largeOpens: number[] = [];
-  for (let i = 0; i < OPEN_SAMPLES; i += 1) {
-    if (i % 2 === 0) {
-      smallOpens.push(timeOpen(small));
-      largeOpens.push(timeOpen(large));
-    } else {
-      largeOpens.push(timeOpen(large));
-      smallOpens.push(timeOpen(small));
-    }
-  }
+async function measureInterleaved(small: Seeded, large: Seeded): Promise<[Measured, Measured]> {
+  const sides = { small, large };
+  const captures = await sampleInterleaved(['capture'], CAPTURE_SAMPLES, ({ side, iteration }) =>
+    timeCall(() => {
+      sides[side].db.recordCapture(makeEvent(sides[side].events, iteration), []);
+    }),
+  );
+  const opens = await sampleInterleaved(['open'], OPEN_SAMPLES, ({ side }) =>
+    timeOpen(sides[side]),
+  );
 
   return [
-    { events: small.events, captures: smallCaptures, opens: smallOpens },
-    { events: large.events, captures: largeCaptures, opens: largeOpens },
+    {
+      events: small.events,
+      captures: captures.small.capture ?? [],
+      opens: opens.small.open ?? [],
+    },
+    {
+      events: large.events,
+      captures: captures.large.capture ?? [],
+      opens: opens.large.open ?? [],
+    },
   ];
 }
 
@@ -428,7 +426,7 @@ describe(`store costs from ${SMALL_EVENTS.toLocaleString('en-US')} to ${LARGE_EV
   let small: Measured;
   let large: Measured;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     const smallStore = createTempStore('aka-scale-budget-small-');
     stores.push(smallStore);
     const seededSmall = seed(smallStore, SMALL_EVENTS);
@@ -437,7 +435,7 @@ describe(`store costs from ${SMALL_EVENTS.toLocaleString('en-US')} to ${LARGE_EV
     stores.push(largeStore);
     const seededLarge = seed(largeStore, LARGE_EVENTS);
 
-    [small, large] = measureInterleaved(seededSmall, seededLarge);
+    [small, large] = await measureInterleaved(seededSmall, seededLarge);
   }, SEED_TIMEOUT_MS);
 
   afterAll(() => {

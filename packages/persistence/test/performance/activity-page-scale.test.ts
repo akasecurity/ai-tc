@@ -51,6 +51,7 @@ import { SqliteActivityRepository } from '../../src/repositories/activity.ts';
 import type { ActivityCorpus } from '../helpers/activity-corpus.ts';
 import { seedActivityCorpus } from '../helpers/activity-corpus.ts';
 import { corpusConnection } from '../helpers/corpus.ts';
+import { sampleInterleaved, timeCall } from '../helpers/interleaved-samples.ts';
 import type { OwnedTempStore } from '../helpers/temp-store.ts';
 import { createTempStore } from '../helpers/temp-store.ts';
 
@@ -86,21 +87,6 @@ const SEED_TIMEOUT_MS = 240_000;
 
 function fastest(samples: number[]): number {
   return Math.min(...samples);
-}
-
-/**
- * One timing of the read's SYNCHRONOUS work — every method here runs its SQL
- * synchronously and returns an already-resolved promise, so the elapsed time
- * around the bare call is the whole of the work. See the note of the same name
- * in security-page-scale.test.ts for the empty catch.
- */
-function timeOnce(fn: () => Promise<unknown>): number {
-  const started = performance.now();
-  void fn().catch(() => {
-    // The awaited call in `seed` reports a broken read; this only keeps a
-    // rejection from being unhandled.
-  });
-  return performance.now() - started;
 }
 
 const READS = ['stats', 'listFirstPage', 'tokenChip', 'sessionDetail', 'tokensAllTime'] as const;
@@ -156,40 +142,18 @@ async function seed(store: OwnedTempStore, captures: number): Promise<Seeded> {
 }
 
 /**
- * `SAMPLES` timings of every read against BOTH stores, INTERLEAVED: each read is
- * timed once against each store per iteration, alternating which store goes
- * first, so the two minima a ratio divides are drawn from the same stretch of
- * wall time. `scale-budgets.test.ts` sets out why that is load-bearing.
- *
- * The interleave is by STORE, with each read taking its samples in a run of its
- * own. Cycling all five reads through each connection on every iteration moves
- * the ratio itself: across three runs of nine rounds on one pair of stores
- * (arm64 macOS, Node 24), `listFirstPage` read 1.17-1.27 that way against
- * 0.95-1.01 read by read, and `stats` 0.60-0.86 against 0.59-0.62. The
- * read-by-read figures are the ones that match each store timed on its own
- * straight after its seed (0.94-0.97 and 0.59-0.64).
+ * `SAMPLES` timings of every read against BOTH stores, interleaved by
+ * `sampleInterleaved` — its file header sets out the order and why each part of
+ * it is load-bearing.
  */
-function sampleInterleaved(small: Seeded, large: Seeded): [Scale, Scale] {
-  const smallSamples: Record<string, number[]> = {};
-  const largeSamples: Record<string, number[]> = {};
-  for (const name of READS) {
-    const onSmall: number[] = [];
-    const onLarge: number[] = [];
-    for (let i = 0; i < SAMPLES; i += 1) {
-      if (i % 2 === 0) {
-        onSmall.push(timeOnce(small.run[name]));
-        onLarge.push(timeOnce(large.run[name]));
-      } else {
-        onLarge.push(timeOnce(large.run[name]));
-        onSmall.push(timeOnce(small.run[name]));
-      }
-    }
-    smallSamples[name] = onSmall;
-    largeSamples[name] = onLarge;
-  }
+async function sampleBothSizes(small: Seeded, large: Seeded): Promise<[Scale, Scale]> {
+  const sides = { small, large };
+  const paired = await sampleInterleaved(READS, SAMPLES, ({ side, name }) =>
+    timeCall(sides[side].run[name]),
+  );
   return [
-    { ...small, samples: smallSamples },
-    { ...large, samples: largeSamples },
+    { ...small, samples: paired.small },
+    { ...large, samples: paired.large },
   ];
 }
 
@@ -204,7 +168,7 @@ describe(`/activity read costs from ${SMALL_CAPTURES.toLocaleString('en-US')} to
     largeStore = createTempStore('aka-activity-scale-large-', { migrated: true });
     const seededSmall = await seed(smallStore, SMALL_CAPTURES);
     const seededLarge = await seed(largeStore, LARGE_CAPTURES);
-    [small, large] = sampleInterleaved(seededSmall, seededLarge);
+    [small, large] = await sampleBothSizes(seededSmall, seededLarge);
   }, SEED_TIMEOUT_MS);
 
   afterAll(() => {
@@ -228,6 +192,15 @@ describe(`/activity read costs from ${SMALL_CAPTURES.toLocaleString('en-US')} to
         large.matched[name],
         `${name} matched nothing at ${String(LARGE_CAPTURES)}`,
       ).toBeGreaterThan(0);
+    }
+  });
+
+  it('every read was timed the same number of times against each store', () => {
+    // A fastest-of-13 divided by a fastest-of-25 is a biased ratio that still
+    // clears every bound below, and nothing downstream can see the difference.
+    for (const name of READS) {
+      expect(small.samples[name], `${name} samples at small`).toHaveLength(SAMPLES);
+      expect(large.samples[name], `${name} samples at large`).toHaveLength(SAMPLES);
     }
   });
 

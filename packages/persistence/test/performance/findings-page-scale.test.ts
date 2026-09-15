@@ -19,16 +19,19 @@
  *
  * The two thresholds are carried across from the read this replaced, and that is
  * a decision rather than an oversight: both are order-of-magnitude separators,
- * not tuned numbers. Re-taken on THIS read (arm64 macOS, Node 24, fastest-of-25
- * across 2k -> 20k events):
+ * not tuned numbers. Re-taken on THIS read with the stores sampled interleaved
+ * (arm64 macOS, 8 cores, Node 24, fastest-of-25 across 2k -> 20k events): three
+ * passes with a video call and an antivirus scan running, three more with 24 CPU
+ * burners added.
  *
- *   typesInSession       0.218 -> 0.231 ms   ratio 1.06
- *   flatInSession        0.089 -> 0.083 ms   ratio 0.94
- *   locationsInSession   0.065 -> 0.066 ms   ratio 1.02
- *   typesAll (control)   1.474 -> 22.206 ms  ratio 15.07
+ *                        quiet        loaded
+ *   typesInSession       1.05-1.07    1.07-1.08
+ *   flatInSession        0.94-1.03    0.93-1.03
+ *   locationsInSession   1.03-1.04    1.05
+ *   typesAll (control)   13.48-14.64  15.76-19.23
  *
- * The flat three sit near 1 against a ceiling of 3, and the control reads 15.07
- * against a floor of 2 — a linear cost would read ~10, and this one exceeds it
+ * The flat three sit near 1 against a ceiling of 3, and the control reads above
+ * 13 against a floor of 2 — a linear cost would read ~10, and this one exceeds it
  * because the aggregate's own work grows with the store on top of the scan.
  *
  * What CAN be flat is a SCOPED read. `?session=` narrows every one of the three
@@ -62,6 +65,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { SqliteFindingsRepository } from '../../src/repositories/findings.ts';
 import type { CorpusRule, GeneratedCaptureCorpus } from '../helpers/corpus.ts';
 import { corpusConnection, seedCaptureCorpus } from '../helpers/corpus.ts';
+import { sampleInterleaved, timeCall } from '../helpers/interleaved-samples.ts';
 import type { OwnedTempStore } from '../helpers/temp-store.ts';
 import { createTempStore } from '../helpers/temp-store.ts';
 
@@ -112,22 +116,6 @@ const RULES: readonly CorpusRule[] = Array.from({ length: 12 }, (_, i) => {
 
 function fastest(samples: number[]): number {
   return Math.min(...samples);
-}
-
-/**
- * One timing of the read's SYNCHRONOUS work. Every method here runs its SQL
- * synchronously and returns an already-resolved promise, so the elapsed time
- * around the bare call is the whole of the work — see the note of the same name
- * in security-page-scale.test.ts for why the rejection is caught and why that
- * catch is empty.
- */
-function timeOnce(fn: () => Promise<unknown>): number {
-  const started = performance.now();
-  void fn().catch(() => {
-    // The awaited call in `seed` reports a broken read; this only keeps a
-    // rejection from being unhandled.
-  });
-  return performance.now() - started;
 }
 
 interface Seeded {
@@ -195,34 +183,18 @@ async function seed(store: OwnedTempStore, events: number): Promise<Seeded> {
 }
 
 /**
- * `SAMPLES` timings of every read against BOTH stores, INTERLEAVED: each read is
- * timed once against each store per iteration, alternating which store goes
- * first, so the two minima a ratio divides are drawn from the same stretch of
- * wall time. `scale-budgets.test.ts` sets out why that is load-bearing, and
- * activity-page-scale.test.ts why each read takes its samples in a run of its
- * own rather than every read being cycled on each iteration.
+ * `SAMPLES` timings of every read against BOTH stores, interleaved by
+ * `sampleInterleaved` — its file header sets out the order and why each part of
+ * it is load-bearing.
  */
-function sampleInterleaved(small: Seeded, large: Seeded): [Scale, Scale] {
-  const smallSamples: Record<string, number[]> = {};
-  const largeSamples: Record<string, number[]> = {};
-  for (const name of READS) {
-    const onSmall: number[] = [];
-    const onLarge: number[] = [];
-    for (let i = 0; i < SAMPLES; i += 1) {
-      if (i % 2 === 0) {
-        onSmall.push(timeOnce(small.run[name]));
-        onLarge.push(timeOnce(large.run[name]));
-      } else {
-        onLarge.push(timeOnce(large.run[name]));
-        onSmall.push(timeOnce(small.run[name]));
-      }
-    }
-    smallSamples[name] = onSmall;
-    largeSamples[name] = onLarge;
-  }
+async function sampleBothSizes(small: Seeded, large: Seeded): Promise<[Scale, Scale]> {
+  const sides = { small, large };
+  const paired = await sampleInterleaved(READS, SAMPLES, ({ side, name }) =>
+    timeCall(sides[side].run[name]),
+  );
   return [
-    { ...small, samples: smallSamples },
-    { ...large, samples: largeSamples },
+    { ...small, samples: paired.small },
+    { ...large, samples: paired.large },
   ];
 }
 
@@ -237,7 +209,7 @@ describe(`/findings read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
     largeStore = createTempStore('aka-findings-scale-large-');
     const seededSmall = await seed(smallStore, SMALL_EVENTS);
     const seededLarge = await seed(largeStore, LARGE_EVENTS);
-    [small, large] = sampleInterleaved(seededSmall, seededLarge);
+    [small, large] = await sampleBothSizes(seededSmall, seededLarge);
   }, SEED_TIMEOUT_MS);
 
   afterAll(() => {
@@ -272,6 +244,15 @@ describe(`/findings read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
         large.matched[name],
         `${name} matched nothing at ${String(LARGE_EVENTS)}`,
       ).toBeGreaterThan(0);
+    }
+  });
+
+  it('every read was timed the same number of times against each store', () => {
+    // A fastest-of-13 divided by a fastest-of-25 is a biased ratio that still
+    // clears every bound below, and nothing downstream can see the difference.
+    for (const name of READS) {
+      expect(small.samples[name], `${name} samples at small`).toHaveLength(SAMPLES);
+      expect(large.samples[name], `${name} samples at large`).toHaveLength(SAMPLES);
     }
   });
 

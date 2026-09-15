@@ -224,11 +224,15 @@ function assertZipWritten(archivePath: string): void {
  * a retry reads the same damage: this retry is a bounded backstop, not a
  * recovery to count on.
  *
- * `writeArchive` runs this for real only on Windows. Off Windows it builds the
- * zip in Node (stored-zip.ts) and reaches this only through injected seams. On
- * Windows PowerShell derives that cache from LOCALAPPDATA rather than
- * XDG_CACHE_HOME, and nothing has been observed aborting there; this child is
- * not given a `privateCacheHome`, which on win32 would set nothing.
+ * By default `writeArchive` calls this only on Windows. Off Windows it builds
+ * the zip in Node (stored-zip.ts) and calls this only when a caller passes one
+ * of its seams — and passing `exe` without `run` there starts a real pwsh
+ * through `runCompress`, which gives the child no `privateCacheHome`, so it
+ * reads the shared profile. Every caller that passes a seam today passes `run`
+ * too, so no real pwsh starts off Windows; that holds by convention, not by the
+ * signature. On Windows PowerShell derives that cache from LOCALAPPDATA rather
+ * than XDG_CACHE_HOME, nothing has been observed aborting there, and a
+ * `privateCacheHome` would set nothing.
  *
  * The retry is keyed on the SIGNAL, which is what makes it narrow. A child
  * killed by a signal reports `status: null, signal: 'SIGABRT'`, while every way

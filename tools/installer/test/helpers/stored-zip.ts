@@ -30,9 +30,11 @@
  * pwsh: nothing there reads a profile or adds a start to the ones sharing it.
  * The PowerShell children that remain off Windows — the probe and each
  * `install.ps1` attempt — run under `privateCacheHome` in run-installer.ts. The
- * `Compress-Archive` child does not, and off Windows it runs only when a caller
- * injects `writeArchive`'s seams; the tests that do also inject the runner, so
- * no real pwsh starts.
+ * `Compress-Archive` child does not. Off Windows it is reached only when a
+ * caller passes one of `writeArchive`'s seams, and passing `exe` without `run`
+ * would start a real pwsh reading the shared profile. Every caller passing a
+ * seam today also passes `run`, so none does — a convention the signature does
+ * not enforce.
  *
  * IT IS DELIBERATELY NOT USED ON WINDOWS. There the cmdlet is what
  * `archive-sea.mjs` runs to build a real release, the fixture mirrors it on

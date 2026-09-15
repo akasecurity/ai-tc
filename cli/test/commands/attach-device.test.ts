@@ -233,9 +233,12 @@ describe('polling', () => {
   // freshly-minted key is presented. Trusting it split the flow in half — the
   // organization shown at the confirmation came from the deployment's host
   // while the caller wrote the attachment against the user's, with nothing
-  // comparing them — and it walked around `isSafeEndpoint`, which runs once
-  // against the typed URL and is never re-applied, so an issued
-  // `http://10.0.0.5:8080` reached the socket with `x-api-key` on it.
+  // comparing them. `@akasecurity/remote`'s client factories now re-apply
+  // `isSafeEndpoint` against whatever endpoint they are actually given, so an
+  // issued `http://10.0.0.5:8080` would be refused before reaching a socket —
+  // that is a second line of defence, not why this value is discarded: the
+  // confirmation split above happens just as much against an issued `https://`
+  // endpoint that simply belongs to someone else.
   //
   // Asserted through `verify`, because that is the seam the credential actually
   // crosses. Asserting on the outcome would not have caught it: the outcome
@@ -259,7 +262,8 @@ describe('polling', () => {
 
   // The same value in the shape that would slip past an origin comparison but
   // not past `isSafeEndpoint`: a private address, over plaintext, which the
-  // check on the typed URL is there to refuse and which nothing re-checks.
+  // check on the typed URL refuses here — and which @akasecurity/remote's
+  // client factories refuse again if anything downstream tried to dial it.
   it('does not present the credential to a private plaintext host the answer names', async () => {
     const verifiedAgainst: string[] = [];
     await attachByDeviceCode(

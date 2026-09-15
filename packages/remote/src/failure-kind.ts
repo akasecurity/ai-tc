@@ -44,11 +44,12 @@ function nameOf(err: unknown): string | null {
  *
  * The name-carrying classes are checked before any status, because they say
  * something a status cannot. `RemoteRouteAbsent` means the deployment never had
- * the route rather than refusing the request; `RemoteRequestInvalid` was never
- * sent at all — a defect on this machine, and pointing its user at the
- * deployment would send them to look in the wrong place; `RemoteResponseInvalid`
- * is a 2xx whose body this build cannot read, which is the two ends being out of
- * step, not a deployment to try again.
+ * the route rather than refusing the request; `RemoteRequestInvalid` and
+ * `RemoteEndpointRefused` were never sent at all — a defect on this machine (a
+ * malformed body, or an endpoint this build will not dial) — and pointing its
+ * user at the deployment would send them to look in the wrong place;
+ * `RemoteResponseInvalid` is a 2xx whose body this build cannot read, which is
+ * the two ends being out of step, not a deployment to try again.
  *
  * A bare 404 is NOT a verdict here. Only a route that knows what a 404 means for
  * it — the deployment predates the route — may say so, and it does that by
@@ -67,6 +68,7 @@ export function classifyRemoteFailure(err: unknown): RemoteFailureKind {
     case 'RemoteRouteAbsent':
       return 'route-absent';
     case 'RemoteRequestInvalid':
+    case 'RemoteEndpointRefused':
       return 'invalid-request';
     case 'RemoteResponseInvalid':
       return 'rejected';

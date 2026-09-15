@@ -575,13 +575,48 @@ export const DEFAULT_ACTIONS: Record<DetectionCategory, ActionTaken> = Object.fr
 
 // ─── Merging a cached tenant bundle over the local one, raise-only ───────────
 
-// Moved here from @akasecurity/plugin-runtime's attached/gateway.ts, beside the
-// policy shapes and the DEFAULT_ACTIONS/isActionAtLeast/actionRank/strongerAction
-// helpers it is built from, so a second consumer that cannot depend on
-// plugin-runtime can still merge two policy sets the same way. `ruleCategoryMap`
-// stays in gateway.ts: it seeds its map from `bundledDetections()`
-// (@akasecurity/plugin-sdk), which this package must not depend on, so the
-// caller builds `categoryByRuleId` and passes it in.
+// ruleId -> category for every rule the caller can resolve. A policy whose
+// category can't be resolved this way is left unclamped rather than guessed
+// at, so every source that can name a rule id has to be represented here — a
+// rule missing from this map has NO floor at all.
+//
+// THREE TIERS, WEAKEST TRUST FIRST, because later writes win an id collision:
+//
+//   1. `wireRules` — the untrusted organization bundle. Seeded first so it
+//      still supplies a floor for marketplace rule ids nothing else has heard
+//      of, while never overriding a tier below it.
+//   2. `localRules` — the device's own installed packs. More trustworthy than
+//      the wire (nothing remote wrote them) and less than compiled-in. Without
+//      them a locally installed marketplace rule resolves to no category, so a
+//      remote `{ ruleId, action: 'allow' }` targeting it passes UNCLAMPED.
+//   3. `compiledRules` — compiled into the caller's own build, so it anchors
+//      the clamp whatever anyone else claims. Taken as a plain array rather
+//      than read from a registry here, because this package must not depend on
+//      whatever holds the compiled-in packs; the caller (e.g. `bundledDetections()`
+//      in @akasecurity/plugin-sdk, flattened to its rules) supplies them.
+//
+// Tier 1 losing to tiers 2 and 3 is the load-bearing part: the wire rules come
+// from the SAME unsigned bundle this clamp exists to defend against, so a
+// tampered bundle must not be able to redeclare a known rule's category to pick
+// its own floor — e.g. moving `secrets/aws-access-key` from `secret` to
+// `code_context` (floor warn -> log) and pairing that with a ruleId-targeted
+// `allow` policy to slip a real secret past at only 'log'.
+//
+// The three arrays are separate PARAMETERS rather than one pre-concatenated
+// list on purpose: the order is a security property, and a single argument
+// would let a call site pass `[...local, ...wire, ...compiled]` — which reads
+// just as naturally and silently inverts the trust order above.
+export function ruleCategoryMap(
+  wireRules: PolicyBundle['rules'],
+  localRules: PolicyBundle['rules'],
+  compiledRules: PolicyBundle['rules'],
+): Map<string, DetectionCategory> {
+  const map = new Map<string, DetectionCategory>();
+  for (const rule of wireRules ?? []) map.set(rule.id, rule.category);
+  for (const rule of localRules ?? []) map.set(rule.id, rule.category);
+  for (const rule of compiledRules ?? []) map.set(rule.id, rule.category);
+  return map;
+}
 
 /**
  * The key a policy resolves under, matching how the runtime indexes them.
@@ -609,7 +644,14 @@ function floorFor(
   return category === undefined ? null : DEFAULT_ACTIONS[category];
 }
 
-/** The stronger of two actions, either of which may be absent. */
+/**
+ * The stronger of two actions; either may be absent.
+ *
+ * A thin null-tolerant wrapper over `strongerAction`, and the absence is the
+ * whole reason it exists: "no floor at all" and "the weakest floor" are
+ * different answers here — an unresolvable rule id gets the first — and
+ * spelling the first as `'allow'` would clamp against a floor nobody set.
+ */
 function strongerOf(a: ActionTaken | null, b: ActionTaken | null): ActionTaken | null {
   if (a === null) return b;
   if (b === null) return a;
@@ -619,17 +661,26 @@ function strongerOf(a: ActionTaken | null, b: ActionTaken | null): ActionTaken |
 /**
  * Merge the cached TENANT bundle's policies over the LOCAL bundle's, raise-only.
  *
- * ⚠ This is the one place in E1 where a correct-looking merge silently produces
- * WEAKER enforcement, because of how the runtime consumes the result. It indexes
- * policies FIRST-WRITE-WINS (plugin-sdk `runtime.ts` ensureInitialized: it walks
- * `bundle.policies` in order and only `set`s a key it does not already have).
- * So a naive `[...remote, ...local]` concatenation hands the remote side precedence
- * for every contended target — and a remote policy that is weaker than the
- * user's LOCAL policy but still at or above the compiled-in DEFAULT_ACTIONS
- * floor passes a clamp written against that floor while quietly downgrading
- * real enforcement. Concretely: local says `block` for `secret`, the default
- * floor is `warn`, the remote side says `warn` — floor-clamping alone sees nothing
- * wrong, and the device stops blocking secrets.
+ * The cached bundle is read from disk with no signature or provenance check,
+ * so `remotePolicies` is HOSTILE input: a compromised control plane or a
+ * tampered cache file must not be able to use a policy to REDUCE enforcement,
+ * either below the compiled-in default for its category or below what the
+ * user's own local bundle already enforces. Raising is unaffected.
+ *
+ * ⚠ This is the one place a correct-looking merge silently produces WEAKER
+ * enforcement, because of how a resolver consumes the result. It indexes
+ * policies FIRST-WRITE-WINS (plugin-sdk's `policy-resolver.ts`,
+ * `createPolicyResolver`: it walks `bundle.policies` in order and only `set`s
+ * a key — its `byRule` or `byCategory` map — it does not already have; the
+ * runtime's `ensureInitialized` rebuilds this resolver on every bundle
+ * change). So a naive `[...remote, ...local]` concatenation hands the remote
+ * side precedence for every contended target — and a remote policy that is
+ * weaker than the user's LOCAL policy but still at or above the compiled-in
+ * DEFAULT_ACTIONS floor passes a clamp written against that floor while
+ * quietly downgrading real enforcement. Concretely: local says `block` for
+ * `secret`, the default floor is `warn`, the remote side says `warn` —
+ * floor-clamping alone sees nothing wrong, and the device stops blocking
+ * secrets.
  *
  * So the merge does not rely on order at all. It resolves each contended target
  * to the STRONGER of the two sides and emits exactly ONE policy per key, which
@@ -637,15 +688,15 @@ function strongerOf(a: ActionTaken | null, b: ActionTaken | null): ActionTaken |
  * The floor clamp is still applied on top, for targets only the remote side declares.
  *
  * ⚠ AND THE SAME BUG REACHES ACROSS THE TWO NAMESPACES, where "contended
- * target" does not model it. `policyKey` keeps `rule:` and `category:` distinct
- * because the runtime keeps two indexes — but it does not treat them as
- * independent: `resolveAction` consults `ruleActionIndex` FIRST and returns
- * unconditionally, so a ruleId policy outranks the category policy that would
- * otherwise cover that rule. Two policies on different keys therefore never
- * meet in the comparison below while one still overrides the other in practice:
- * local `{ category: 'secret', action: 'block' }` + remote
- * `{ ruleId: 'aka.secret.aws-access-key', action: 'allow' }` both survive, and
- * the device stops blocking AWS keys.
+ * target" does not model it. `policyKey` keeps `rule:` and `category:`
+ * distinct because the resolver keeps two maps — but it does not treat them
+ * as independent: `actionFor` consults `byRule` FIRST and returns
+ * unconditionally when it has an entry, so a ruleId policy outranks the
+ * category policy that would otherwise cover that rule. Two policies on
+ * different keys therefore never meet in the comparison below while one still
+ * overrides the other in practice: local `{ category: 'secret', action:
+ * 'block' }` + remote `{ ruleId: 'aka.secret.aws-access-key', action: 'allow'
+ * }` both survive, and the device stops blocking AWS keys.
  *
  * The compiled-in floor cannot catch that on its own, and not by accident:
  * DEFAULT_ACTIONS is derived from `severityFloorPolicy`, which only ever returns
@@ -658,7 +709,7 @@ function strongerOf(a: ActionTaken | null, b: ActionTaken | null): ActionTaken |
  * key that happens to match.
  *
  * Disabled policies are carried through untouched, after the merged set: the
- * runtime skips them when indexing, so they cannot affect resolution, and
+ * resolver skips them when indexing, so they cannot affect resolution, and
  * dropping them would silently discard state the user can re-enable.
  */
 export function mergeRaiseOnly(

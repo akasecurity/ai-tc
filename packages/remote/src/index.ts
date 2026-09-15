@@ -36,12 +36,12 @@ export { createSharesSender, SHARES_FORWARD_TIMEOUT_MS } from './shares-sender.t
 // Every guarantee `http.ts` makes is held by construction inside that module —
 // no redirects, a deadline on every request, a body cap, an upgrade refused —
 // with ONE exception: that plain `http:` only ever names a loopback host. That
-// one is `isSafeEndpoint` (@akasecurity/schema), enforced by `createRemoteClient`
-// and `createAttachClient` themselves before either factory returns a client at
-// all; `send` has no endpoint of its own to check and trusts that the client
-// that built its URL already refused an unsafe one — repeating the check inside
-// `send` in a weaker form is exactly the drift the switch's own comment warns
-// about.
+// one is `isSafeEndpoint` (@akasecurity/schema), enforced by `client.ts`'s
+// `resolveBaseUrl` — the single function both factories build their base URL
+// from, before either returns a client at all; `send` has no endpoint of its
+// own to check and trusts that the client that built its URL already refused
+// an unsafe one — repeating the check inside `send` in a weaker form is
+// exactly the drift the switch's own comment warns about.
 //
 // While `send` was exported, that made the weakest guarantee in the file the
 // only one a caller could step around: anything in the workspace could build a
@@ -53,6 +53,7 @@ export { createSharesSender, SHARES_FORWARD_TIMEOUT_MS } from './shares-sender.t
 export {
   DEFAULT_TIMEOUT_MS,
   MAX_RESPONSE_BYTES,
+  RemoteEndpointRefused,
   RemoteRequestError,
   RemoteRequestInvalid,
   RemoteResponseInvalid,

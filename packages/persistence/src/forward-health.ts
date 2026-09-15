@@ -1,28 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import type { ControlPlaneFailure } from '@akasecurity/schema';
+import { ControlPlaneFailure } from '@akasecurity/schema';
 
 import { ATTACHED_FORWARD_STATE_FILENAME } from './attached-derived.ts';
 
-// `ControlPlaneFailure` now lives in @akasecurity/schema, beside
-// `RemoteFailureKind`, so a second consumer that cannot depend on this package
-// can still name it. Re-exported here so every existing importer of this
-// module keeps working.
-export type { ControlPlaneFailure };
-
-/**
- * Validated on the way in, exactly as the sync outcome is: `lastFailure` is
- * RENDERED, so an arbitrary string from a hand-edited file must never reach the
- * output. An unrecognised value reads as null — no cause named — rather than as
- * a failure to parse the whole file, because the failure COUNT next to it is
- * still evidence and losing it would cost more than the cause.
- */
-const FAILURES: ReadonlySet<string> = new Set<ControlPlaneFailure>([
-  'unauthorized',
-  'forbidden',
-  'unreachable',
-]);
+export { ControlPlaneFailure };
 
 /**
  * How long the breaker stays open before a single probe is allowed through.
@@ -114,14 +97,15 @@ export function parseForwardHealth(raw: string, nowMs: number): ForwardHealth | 
       record.openedAtMs <= nowMs
         ? record.openedAtMs
         : null;
-    // Absent for every file written before this field existed, which is the
-    // common case on an already-deployed device: it reads as "no cause
-    // recorded", the same as an unrecognised one, and the count and stamp
-    // beside it stay usable.
-    const lastFailure =
-      typeof record.lastFailure === 'string' && FAILURES.has(record.lastFailure)
-        ? (record.lastFailure as ControlPlaneFailure)
-        : null;
+    // `lastFailure` is RENDERED, so an arbitrary string from a hand-edited
+    // file must never reach the output — validated with the same schema a
+    // fourth member would have to be added to, rather than a hand-spelled
+    // set that could silently drift from it. Absent for every file written
+    // before this field existed, which is the common case on an
+    // already-deployed device: it reads as "no cause recorded", the same as
+    // an unrecognised one, and the count and stamp beside it stay usable.
+    const parsedFailure = ControlPlaneFailure.safeParse(record.lastFailure);
+    const lastFailure = parsedFailure.success ? parsedFailure.data : null;
     return { consecutiveFailures: failures, openedAtMs, lastFailure };
   } catch {
     // TORN READ. A half-written or garbage file must never resolve to "open":

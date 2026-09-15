@@ -14,6 +14,7 @@ import {
   PolicyBundle,
   PolicyTarget,
   RedactFallback,
+  ruleCategoryMap,
   strongerRedactFallback,
 } from '../../src/zod/policy.ts';
 
@@ -190,7 +191,7 @@ describe('mergeRaiseOnly — a cached tenant bundle can only tighten a local one
   it('leaves the local bundle untouched when the tenant declares nothing', () => {
     const local = [policy({ category: 'secret' }, 'warn'), policy({ ruleId: 'r1' }, 'log')];
     const merged = mergeRaiseOnly(local, [], new Map());
-    expect(new Set(merged.map((p) => p.id))).toEqual(new Set(local.map((p) => p.id)));
+    expect(merged).toStrictEqual(local);
   });
 
   it('lets the tenant raise a category above the local policy', () => {
@@ -284,6 +285,74 @@ describe('mergeRaiseOnly — a cached tenant bundle can only tighten a local one
     const remote = [policy({ category: 'pii' }, 'redact')];
     const merged = mergeRaiseOnly([], remote, new Map());
     expect(merged.some((p) => 'category' in p.target && p.target.category === 'pii')).toBe(true);
+  });
+});
+
+describe('ruleCategoryMap — the trust order mergeRaiseOnly floors against', () => {
+  const rule = (id: string, category: DetectionCategory) =>
+    ({
+      specVersion: 1,
+      id,
+      name: id,
+      category,
+      severity: 'critical',
+      matcher: { type: 'keyword', keywords: [id] },
+    }) as NonNullable<PolicyBundle['rules']>[number];
+
+  it('resolves a rule from any tier', () => {
+    const map = ruleCategoryMap(
+      [rule('wire-only', 'secret')],
+      [rule('local-only', 'pii')],
+      [rule('compiled-only', 'financial')],
+    );
+    expect(map.get('wire-only')).toBe('secret');
+    expect(map.get('local-only')).toBe('pii');
+    expect(map.get('compiled-only')).toBe('financial');
+  });
+
+  // ⚠ THE TRUST-ORDER TEST. The wire tier is the SAME unsigned bundle the
+  // clamp exists to defend against, so it must never be able to redeclare a
+  // rule id the device already knows a category for — neither the locally
+  // installed tier nor the compiled-in one.
+  it('never lets the wire tier override a locally installed rule’s category', () => {
+    const map = ruleCategoryMap(
+      [rule('shared-id', 'code_context')],
+      [rule('shared-id', 'secret')],
+      [],
+    );
+    expect(map.get('shared-id')).toBe('secret');
+  });
+
+  it('never lets the wire tier override a compiled-in rule’s category', () => {
+    const map = ruleCategoryMap(
+      [rule('shared-id', 'code_context')],
+      [],
+      [rule('shared-id', 'secret')],
+    );
+    expect(map.get('shared-id')).toBe('secret');
+  });
+
+  it('lets the compiled-in tier override a locally installed one', () => {
+    // Compiled-in is the MOST trusted tier — it anchors the clamp whatever an
+    // installed pack or the wire claims.
+    const map = ruleCategoryMap(
+      [],
+      [rule('shared-id', 'code_context')],
+      [rule('shared-id', 'secret')],
+    );
+    expect(map.get('shared-id')).toBe('secret');
+  });
+
+  it('leaves a rule id absent from every tier with no floor at all', () => {
+    const map = ruleCategoryMap([rule('known', 'secret')], [], []);
+    expect(map.has('unknown')).toBe(false);
+  });
+
+  it('is total over an absent (undefined) rules list at any tier', () => {
+    // `PolicyBundle['rules']` is optional, so every tier must tolerate
+    // `undefined` the way `?? []` does.
+    expect(() => ruleCategoryMap(undefined, undefined, undefined)).not.toThrow();
+    expect(ruleCategoryMap(undefined, undefined, undefined).size).toBe(0);
   });
 });
 

@@ -96,6 +96,34 @@ export class RemoteRequestInvalid extends Error {
 }
 
 /**
+ * An endpoint this package refuses to dial at all: not `https:`, `http:` to
+ * anything but loopback, userinfo embedded in the URL, or a string that does
+ * not parse as a URL. A local, construction-time refusal like
+ * `RemoteRequestInvalid` — nothing was ever sent, so a caller counting toward
+ * a circuit breaker must not count this either.
+ *
+ * The message carries `protocol//host` alone, NEVER the endpoint verbatim: a
+ * path, a query string or userinfo can carry a credential, and an error
+ * message is exactly the surface that gets pasted into a bug report or a log
+ * line.
+ */
+export class RemoteEndpointRefused extends Error {
+  constructor(endpoint: string) {
+    super(`refusing to talk to an unsafe control-plane endpoint: ${originOnly(endpoint)}`);
+    this.name = 'RemoteEndpointRefused';
+  }
+}
+
+function originOnly(endpoint: string): string {
+  try {
+    const parsed = new URL(endpoint);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return '(unparseable endpoint)';
+  }
+}
+
+/**
  * An answered request whose 2xx BODY is not what the route publishes.
  *
  * Its own class for the same reason `RemoteRequestInvalid` is: a caller has to
@@ -188,9 +216,11 @@ export async function send(options: SendOptions): Promise<RemoteResponse> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   // http is reachable here only for a loopback endpoint; `isSafeEndpoint`
   // (@akasecurity/schema) is what establishes that, enforced at this package's
-  // own door by `createRemoteClient`/`createAttachClient` in client.ts, and
-  // this switch trusts that check rather than repeating it — repeating it here
-  // in a weaker form is how the two would drift.
+  // own door by client.ts's `resolveBaseUrl` — the single function both
+  // factories build a base URL from — and this switch trusts that check
+  // rather than repeating it. Repeating it here would mean re-parsing `url`
+  // (already done above) against a second copy of the same predicate, which is
+  // exactly the drift the two would fall into.
   const send_ = url.protocol === 'http:' ? httpRequest : httpsRequest;
 
   const requestOptions: RequestOptions = {

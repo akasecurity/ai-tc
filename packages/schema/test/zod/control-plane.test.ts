@@ -11,6 +11,7 @@ import {
   AttachTokenIssued,
   AttachTokenResponse,
   ControlPlaneErrorBody,
+  ControlPlaneFailure,
   DeviceCommand,
   DeviceCommandAckBody,
   DeviceCommandPollResponse,
@@ -115,6 +116,15 @@ describe('isSafeEndpoint', () => {
     expect(isSafeEndpoint('http://localhost.example.com')).toBe(false);
     expect(isSafeEndpoint('ftp://example.com')).toBe(false);
     expect(isSafeEndpoint('not a url')).toBe(false);
+  });
+
+  it('refuses userinfo even over https, and even on loopback', () => {
+    // Accepted otherwise, this would put the userinfo on the wire as an
+    // Authorization: Basic header no route expects, and leak it into any
+    // error message built from the same endpoint.
+    expect(isSafeEndpoint('https://user:pass@aka.example-org.internal')).toBe(false);
+    expect(isSafeEndpoint('https://user@aka.example-org.internal')).toBe(false);
+    expect(isSafeEndpoint('http://user:pass@localhost:3000')).toBe(false);
   });
 });
 
@@ -327,6 +337,26 @@ describe('RemoteFailureKind', () => {
     // consumer walking that registry would publish it into a generated document
     // as a component no route uses.
     expect(z.globalRegistry.get(RemoteFailureKind)?.id).toBeUndefined();
+  });
+});
+
+describe('ControlPlaneFailure', () => {
+  it('is an .extract() of RemoteFailureKind, not a second spelling', () => {
+    expect(ControlPlaneFailure.options).toEqual(['unauthorized', 'forbidden', 'unreachable']);
+    for (const member of ControlPlaneFailure.options) {
+      expect(RemoteFailureKind.options).toContain(member);
+    }
+  });
+
+  it('rejects a RemoteFailureKind member outside its three, and anything else', () => {
+    expect(ControlPlaneFailure.safeParse('route-absent').success).toBe(false);
+    expect(ControlPlaneFailure.safeParse('rejected').success).toBe(false);
+    expect(ControlPlaneFailure.safeParse('teapot').success).toBe(false);
+    expect(ControlPlaneFailure.safeParse(undefined).success).toBe(false);
+  });
+
+  it('carries no component id', () => {
+    expect(z.globalRegistry.get(ControlPlaneFailure)?.id).toBeUndefined();
   });
 });
 

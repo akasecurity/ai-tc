@@ -15,7 +15,6 @@ import type {
   ConfigInventoryReport,
   ConfigScanRecord,
   DayActivity,
-  DetectionCategory,
   EgressIngestRequest,
   EgressWriteSummary,
   FindingView,
@@ -37,7 +36,7 @@ import type {
   ToolCallInput,
   ToolCallInspection,
 } from '@akasecurity/schema';
-import { AUDIT_EVENT_BATCH_MAX, mergeRaiseOnly } from '@akasecurity/schema';
+import { AUDIT_EVENT_BATCH_MAX, mergeRaiseOnly, ruleCategoryMap } from '@akasecurity/schema';
 
 import { recordForwardDrops } from './forward-drops.ts';
 import type { ForwardPolicy } from './forward-policy.ts';
@@ -134,54 +133,11 @@ export interface AttachedDataGatewayDeps {
 // compromised control plane or a tampered cache file must not be able to use a
 // policy to REDUCE enforcement, either below the compiled-in default for its
 // category or below what the user's own local bundle already enforces. Raising
-// is unaffected. `mergeRaiseOnly` itself, and the ordering it reads
-// (`@akasecurity/schema`'s single `actionRank` / `isActionAtLeast` /
-// `strongerAction` ladder), now live in that package, beside the policy shapes
-// and DEFAULT_ACTIONS they are built from — this module only builds the
-// `categoryByRuleId` map it takes, below, since that map is seeded from
-// `bundledDetections()` (@akasecurity/plugin-sdk), which @akasecurity/schema must
-// not depend on.
-
-// ruleId -> category for every rule the gateway can resolve. A policy whose
-// category can't be resolved this way is left unclamped rather than guessed at,
-// so every source that can name a rule id has to be represented here — a rule
-// missing from this map has NO floor at all.
-//
-// THREE TIERS, WEAKEST TRUST FIRST, because later writes win an id collision:
-//
-//   1. `wireRules` — the untrusted organization bundle. Seeded first so it still
-//      supplies a floor for marketplace rule ids nothing else has heard of,
-//      while never overriding a tier below it.
-//   2. `localRules` — the device's own installed packs. More trustworthy than
-//      the wire (nothing remote wrote them) and less than compiled-in. Without
-//      them a locally installed marketplace rule resolves to no category, so a
-//      a remote `{ ruleId, action: 'allow' }` targeting it passes UNCLAMPED.
-//   3. `bundledDetections()` — compiled into this build, so it anchors the
-//      clamp whatever anyone else claims.
-//
-// Tier 1 losing to tiers 2 and 3 is the load-bearing part: the wire rules come
-// from the SAME unsigned bundle this clamp exists to defend against, so a
-// tampered bundle must not be able to redeclare a known rule's category to pick
-// its own floor — e.g. moving `secrets/aws-access-key` from `secret` to
-// `code_context` (floor warn -> log) and pairing that with a ruleId-targeted
-// `allow` policy to slip a real secret past at only 'log'.
-//
-// The two arrays are separate PARAMETERS rather than one pre-concatenated list
-// on purpose: the order is a security property, and a single argument would let
-// a call site pass `[...local, ...wire]` — which reads just as naturally and
-// silently inverts tiers 1 and 2.
-function ruleCategoryMap(
-  wireRules: PolicyBundle['rules'],
-  localRules: PolicyBundle['rules'],
-): Map<string, DetectionCategory> {
-  const map = new Map<string, DetectionCategory>();
-  for (const rule of wireRules ?? []) map.set(rule.id, rule.category);
-  for (const rule of localRules ?? []) map.set(rule.id, rule.category);
-  for (const pack of bundledDetections()) {
-    for (const rule of pack.rules) map.set(rule.id, rule.category);
-  }
-  return map;
-}
+// is unaffected. `mergeRaiseOnly` and `ruleCategoryMap` both live in
+// `@akasecurity/schema`, beside the policy shapes and `DEFAULT_ACTIONS` they
+// are built from; that package cannot reach `bundledDetections()`
+// (`@akasecurity/plugin-sdk`), so this module supplies its rules, flattened,
+// as `ruleCategoryMap`'s compiled-in tier.
 
 /**
  * Attached mode: the plugin wired to a control plane, LOCAL-FIRST.
@@ -876,7 +832,11 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
       policies: mergeRaiseOnly(
         local.policies,
         cached.policies,
-        ruleCategoryMap(cached.rules, local.rules),
+        ruleCategoryMap(
+          cached.rules,
+          local.rules,
+          bundledDetections().flatMap((pack) => pack.rules),
+        ),
       ),
       customKeywords: [...local.customKeywords, ...cached.customKeywords],
       // TAKEN FROM THE CACHE, unlike the two fields below — and the asymmetry

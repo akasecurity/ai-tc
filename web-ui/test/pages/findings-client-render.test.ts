@@ -51,7 +51,14 @@ const { NavigationTransitionProvider } =
 const AWS = 'secrets/aws-access-key';
 const TODO = 'code/todo-note';
 
-const EMPTY_FILTERS = { severity: [], type: [], provider: [], action: [], status: [] };
+const EMPTY_FILTERS = {
+  severity: [],
+  type: [],
+  provider: [],
+  action: [],
+  status: [],
+  deployment: [],
+};
 
 function facets(over: Partial<FindingFacets> = {}): FindingFacets {
   return {
@@ -156,6 +163,7 @@ const COMMON = {
   repo: '',
   file: '',
   renderedAt: Date.parse('2026-01-02T00:00:00.000Z'),
+  deployment: null,
 };
 
 function render(props: Record<string, unknown>): string {
@@ -400,5 +408,45 @@ describe('findings client — the other views', () => {
     expect(html).toContain('Showing findings enforced live in session');
     expect(html).toContain('sess-1');
     expect(html).toContain('/activity?id=sess-1');
+  });
+});
+
+describe('findings client — the Deployment controls', () => {
+  const delivered = (id: string): FindingInstanceDetail => ({
+    ...instance(id),
+    delivery: { state: 'sent', at: '2026-01-01T00:00:00.000Z' },
+  });
+
+  it('renders no Deployment column or filter on a machine that is not attached', () => {
+    const html = render({ view: 'flat', flat: instances([delivered('f1')]) });
+    expect(html).not.toContain('>Deployment<');
+    expect(html).not.toContain('>Sent<');
+  });
+
+  it('renders the column and the toolbar filter on an attached machine', () => {
+    const html = render({
+      view: 'flat',
+      flat: instances([delivered('f1')]),
+      deployment: { canRetry: true },
+    });
+    // One toolbar trigger and one column header.
+    expect(html.match(/>Deployment</g) ?? []).toHaveLength(2);
+    expect(html).toContain('>Sent<');
+  });
+
+  it('puts the Deployment filter in the By-type findings panel', () => {
+    const html = grouped({
+      instances: instances([delivered('f1')]),
+      deployment: { canRetry: true },
+    });
+    expect(html.match(/>Deployment</g) ?? []).toHaveLength(2);
+  });
+
+  it('puts the Deployment filter and column in the locations view', () => {
+    const html = files({
+      instances: instances([delivered('f1')]),
+      deployment: { canRetry: true },
+    });
+    expect(html.match(/>Deployment</g) ?? []).toHaveLength(2);
   });
 });

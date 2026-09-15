@@ -6,7 +6,14 @@ import { cn, Popover, PopoverContent, PopoverTrigger } from '@akasecurity/ui-kit
 import { CheckIcon, ChevronDownIcon } from '../shared/icons.tsx';
 import { PROVIDERS } from '../shared/Provider.tsx';
 import { SearchField } from '../shared/SearchField.tsx';
-import { FINDING_STATUS_META, FINDING_STATUSES, type FindingsFilters, SEVERITIES } from './meta.ts';
+import {
+  FINDING_DELIVERY_META,
+  FINDING_DELIVERY_STATES,
+  FINDING_STATUS_META,
+  FINDING_STATUSES,
+  type FindingsFilters,
+  SEVERITIES,
+} from './meta.ts';
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -38,7 +45,8 @@ function withSelected(
 }
 
 /**
- * The three FINDING-level filter dimensions: provider, action and status.
+ * The FINDING-level filter dimensions: provider, action and status, plus
+ * Deployment when the host says the machine is attached.
  *
  * Its own component because it is rendered in two places that must stay
  * identical — the flat view's toolbar below, and the By-type view's detail
@@ -55,10 +63,13 @@ export function FindingLevelFilters({
   facets,
   filters,
   onFiltersChange,
+  showDeployment = false,
 }: {
   facets: FindingFacets;
   filters: FindingsFilters;
   onFiltersChange: (next: FindingsFilters) => void;
+  /** Render the Deployment filter. Only a machine attached to a deployment has one. */
+  showDeployment?: boolean;
 }) {
   const providerOptions = withSelected(
     facets.provider.map((f) => ({ value: f.value, label: providerLabel(f.value), count: f.count })),
@@ -75,6 +86,14 @@ export function FindingLevelFilters({
     value,
     label: FINDING_STATUS_META[value].label,
     count: statusCount.get(value) ?? 0,
+  }));
+  // A closed enum, like status: every state renders in display order, counted
+  // from the facet (absent ⇒ 0).
+  const deploymentCount = new Map((facets.deployment ?? []).map((f) => [f.value, f.count]));
+  const deploymentOptions = FINDING_DELIVERY_STATES.map((value) => ({
+    value,
+    label: FINDING_DELIVERY_META[value].label,
+    count: deploymentCount.get(value) ?? 0,
   }));
 
   const set = (key: keyof FindingsFilters, next: string[]) => {
@@ -107,6 +126,16 @@ export function FindingLevelFilters({
           set('status', next);
         }}
       />
+      {showDeployment && (
+        <MultiSelectFilter
+          label="Deployment"
+          options={deploymentOptions}
+          selected={filters.deployment}
+          onChange={(next) => {
+            set('deployment', next);
+          }}
+        />
+      )}
     </>
   );
 }
@@ -126,12 +155,15 @@ export function FindingsToolbarView({
   onFiltersChange,
   query,
   onQueryChange,
+  showDeployment = false,
 }: {
   facets: FindingFacets;
   filters: FindingsFilters;
   onFiltersChange: (next: FindingsFilters) => void;
   query: string;
   onQueryChange: (next: string) => void;
+  /** Render the Deployment filter. Only a machine attached to a deployment has one. */
+  showDeployment?: boolean;
 }) {
   // Severity and type are here because in THIS view one list carries both
   // levels, so every dimension narrows the same rows. The master/detail view
@@ -186,7 +218,12 @@ export function FindingsToolbarView({
           set('type', next);
         }}
       />
-      <FindingLevelFilters facets={facets} filters={filters} onFiltersChange={onFiltersChange} />
+      <FindingLevelFilters
+        facets={facets}
+        filters={filters}
+        onFiltersChange={onFiltersChange}
+        showDeployment={showDeployment}
+      />
     </div>
   );
 }

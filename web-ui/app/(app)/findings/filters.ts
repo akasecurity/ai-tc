@@ -6,6 +6,7 @@ import {
 } from '@akasecurity/dashboard-ui';
 import {
   FindingAction,
+  FindingDeliveryState,
   type FindingLocationSummary,
   FindingProvider,
   FindingStatus,
@@ -16,7 +17,7 @@ import {
   TimeRange,
 } from '@akasecurity/schema';
 
-// The findings filters ride in the URL (?severity=…&type=…&provider=…&action=…&status=…&q=…,
+// The findings filters ride in the URL (?severity=…&type=…&provider=…&action=…&status=…&deployment=…&q=…,
 // plus the Activity page's deep-link context: ?session=… scopes the list to one
 // session and ?finding=… opens the detail sheet) so the Server Component re-queries
 // the local store per filter change — the same mechanism as RangeSelect. These pure
@@ -39,11 +40,11 @@ const keepKnown = (values: string[], allowed: readonly string[]): string[] =>
   [...new Set(values)].filter((v) => allowed.includes(v));
 
 /**
- * URL search params → the toolbar's five filter dimensions. Severity/provider/
- * action/status are validated against their schema enums HERE, in the Server
- * Component, because this is the only boundary the value crosses before it
- * reaches the store — a crafted `?severity=bogus` is dropped rather than passed
- * on. `type`/subtype is a free string.
+ * URL search params → the toolbar's six filter dimensions. Severity/provider/
+ * action/status/deployment are validated against their schema enums HERE, in
+ * the Server Component, because this is the only boundary the value crosses
+ * before it reaches the store — a crafted `?severity=bogus` is dropped rather
+ * than passed on. `type`/subtype is a free string.
  */
 export function parseFindingsFilters(sp: FindingsSearchParams): FindingsFilters {
   return {
@@ -54,6 +55,7 @@ export function parseFindingsFilters(sp: FindingsSearchParams): FindingsFilters 
     provider: keepKnown(asArray(sp.provider), FindingProvider.options),
     action: keepKnown(asArray(sp.action), FindingAction.options),
     status: keepKnown(asArray(sp.status), FindingStatus.options),
+    deployment: keepKnown(asArray(sp.deployment), FindingDeliveryState.options),
   };
 }
 
@@ -198,8 +200,9 @@ export function toFindingTypesQuery(
  * The complement of toFindingTypesQuery — `severity` is deliberately absent
  * (constant within a type, so it would filter every row or none) and so is `q`
  * (it selects types; see that function). What remains is the pinned type plus
- * the three dimensions that genuinely vary between one type's findings, so this
- * panel can legitimately come back empty, which the view says rather than hides.
+ * the dimensions that genuinely vary between one type's findings (provider,
+ * action, status, deployment), so this panel can legitimately come back empty,
+ * which the view says rather than hides.
  */
 export function toTypeInstancesQuery(
   filters: FindingsFilters,
@@ -212,6 +215,9 @@ export function toTypeInstancesQuery(
     ...(filters.provider.length ? { provider: filters.provider as FindingProvider[] } : {}),
     ...(filters.action.length ? { action: filters.action as FindingAction[] } : {}),
     ...(filters.status.length ? { status: filters.status as FindingStatus[] } : {}),
+    ...(filters.deployment.length
+      ? { deployment: filters.deployment as FindingDeliveryState[] }
+      : {}),
     ...(session ? { sessionId: session } : {}),
     ...(scope.from ? { from: scope.from } : {}),
   };
@@ -242,6 +248,9 @@ export function toInstancesQuery(
     ...(filters.provider.length ? { provider: filters.provider as FindingProvider[] } : {}),
     ...(filters.action.length ? { action: filters.action as FindingAction[] } : {}),
     ...(filters.status.length ? { status: filters.status as FindingStatus[] } : {}),
+    ...(filters.deployment.length
+      ? { deployment: filters.deployment as FindingDeliveryState[] }
+      : {}),
     ...(trimmed ? { q: trimmed } : {}),
     ...(session ? { sessionId: session } : {}),
     ...(scope.from ? { from: scope.from } : {}),
@@ -277,6 +286,9 @@ export function toLocationsQuery(
     ...(filters.provider.length ? { provider: filters.provider as FindingProvider[] } : {}),
     ...(filters.action.length ? { action: filters.action as FindingAction[] } : {}),
     ...(filters.status.length ? { status: filters.status as FindingStatus[] } : {}),
+    ...(filters.deployment.length
+      ? { deployment: filters.deployment as FindingDeliveryState[] }
+      : {}),
     ...(trimmed ? { q: trimmed } : {}),
     ...(session ? { sessionId: session } : {}),
     ...(scope.from ? { from: scope.from } : {}),
@@ -344,6 +356,7 @@ export function buildFindingsParams(
   for (const p of filters.provider) sp.append('provider', p);
   for (const a of filters.action) sp.append('action', a);
   for (const s of filters.status) sp.append('status', s);
+  for (const d of filters.deployment) sp.append('deployment', d);
   const trimmed = q.trim();
   if (trimmed) sp.set('q', trimmed);
   if (session) sp.set('session', session);

@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  type DeploymentDisplay,
   FindingDetailView,
   FindingLevelFilters,
   FindingLocationsListView,
@@ -81,6 +82,11 @@ interface CommonProps {
    * read its own would render different text than the HTML it is hydrating.
    */
   renderedAt: number;
+  /**
+   * The deployment this machine sends to, or null when it is not attached. Null
+   * hides the Deployment column, filter and drawer row.
+   */
+  deployment: DeploymentDisplay | null;
 }
 
 type ViewProps =
@@ -142,6 +148,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
     repo,
     file,
     renderedAt,
+    deployment,
   } = props;
   const pathname = usePathname();
   const { isPending, push } = useNavigationTransition();
@@ -225,7 +232,8 @@ export function FindingsClient(props: CommonProps & ViewProps) {
     filters.type.length === 0 &&
     filters.provider.length === 0 &&
     filters.action.length === 0 &&
-    filters.status.length === 0;
+    filters.status.length === 0 &&
+    filters.deployment.length === 0;
 
   const emptyState = noActiveFilters ? (
     <p className="py-8 text-center text-sm text-text-3">
@@ -314,6 +322,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
             }}
             query={query}
             onQueryChange={setQuery}
+            showDeployment={deployment !== null}
           />
         </div>
       )}
@@ -364,6 +373,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
             sessionHref={sessionHref}
             emptyState={emptyState}
             renderedAt={renderedAt}
+            deployment={deployment}
             onSelectRule={(nextRule) => {
               pushState(filters, query, session, { rule: nextRule });
             }}
@@ -387,6 +397,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
             file={file}
             emptyState={emptyState}
             renderedAt={renderedAt}
+            deployment={deployment}
           />
         )}
         {props.view === 'files' && (
@@ -403,6 +414,7 @@ export function FindingsClient(props: CommonProps & ViewProps) {
             sessionHref={sessionHref}
             emptyState={emptyState}
             renderedAt={renderedAt}
+            deployment={deployment}
             onSelectLocation={(nextLoc) => {
               pushState(filters, query, session, { loc: nextLoc });
             }}
@@ -488,6 +500,7 @@ function TypesMasterDetail({
   sessionHref,
   emptyState,
   renderedAt,
+  deployment,
   onSelectRule,
   onSeverityChange,
   onFiltersChange,
@@ -511,6 +524,7 @@ function TypesMasterDetail({
   sessionHref: string | null;
   emptyState: React.ReactNode;
   renderedAt: number;
+  deployment: DeploymentDisplay | null;
   onSelectRule: (rule: string) => void;
   onSeverityChange: (next: string[]) => void;
   onFiltersChange: (next: FindingsFilters) => void;
@@ -582,6 +596,7 @@ function TypesMasterDetail({
                   facets={instances.facets}
                   filters={filters}
                   onFiltersChange={onFiltersChange}
+                  showDeployment={deployment !== null}
                 />
               </div>
             </div>
@@ -606,6 +621,7 @@ function TypesMasterDetail({
             ) : undefined
           }
           renderedAt={renderedAt}
+          deployment={deployment}
         />
       ) : (
         <Card className="grid h-full min-h-0 place-items-center p-8 text-center text-sm text-text-3">
@@ -716,6 +732,7 @@ function InstancesPanel({
   loadMore,
   emptyState,
   renderedAt,
+  deployment,
   pinnedType = false,
   header,
   initialSelected = null,
@@ -725,6 +742,8 @@ function InstancesPanel({
   loadMore: (cursor: string) => Promise<ListFindingInstancesResponse>;
   emptyState: React.ReactNode;
   renderedAt: number;
+  /** The deployment this machine sends to, or null when it is not attached. */
+  deployment: DeploymentDisplay | null;
   pinnedType?: boolean;
   header?: React.ReactNode;
   /**
@@ -772,6 +791,7 @@ function InstancesPanel({
   const table = (
     <FindingsFlatTableView
       renderedAt={renderedAt}
+      showDeploymentColumn={deployment !== null}
       {...(header === undefined ? {} : { header })}
       items={paged.items}
       selectedId={selectedInstanceId}
@@ -809,6 +829,7 @@ function InstancesPanel({
           {selected && (
             <FindingDetailView
               renderedAt={renderedAt}
+              deployment={deployment}
               // Every row IS a single finding, so the drawer opens narrowed and
               // stays there — there is no group to step back to.
               selection={{ finding: instanceAsGroup(selected), instance: selected }}
@@ -858,6 +879,7 @@ function FlatView({
   file,
   emptyState,
   renderedAt,
+  deployment,
 }: {
   data: ListFindingInstancesResponse;
   filters: FindingsFilters;
@@ -874,11 +896,13 @@ function FlatView({
   file: string;
   emptyState: React.ReactNode;
   renderedAt: number;
+  deployment: DeploymentDisplay | null;
 }) {
   return (
     <InstancesPanel
       data={data}
       renderedAt={renderedAt}
+      deployment={deployment}
       emptyState={emptyState}
       loadMore={(cursor) =>
         loadMoreFindingInstances({
@@ -922,6 +946,7 @@ function LocationsMasterDetail({
   sessionHref,
   emptyState,
   renderedAt,
+  deployment,
   onSelectLocation,
 }: {
   locations: ListFindingLocationsResponse;
@@ -947,6 +972,7 @@ function LocationsMasterDetail({
   sessionHref: string | null;
   emptyState: React.ReactNode;
   renderedAt: number;
+  deployment: DeploymentDisplay | null;
   onSelectLocation: (loc: string) => void;
 }) {
   const locationPages = usePagedList(
@@ -1030,6 +1056,7 @@ function LocationsMasterDetail({
             sessionHref ? <SessionFooter firings={null} sessionHref={sessionHref} /> : undefined
           }
           renderedAt={renderedAt}
+          deployment={deployment}
         />
       ) : (
         <Card className="grid h-full min-h-0 place-items-center p-8 text-center text-sm text-text-3">

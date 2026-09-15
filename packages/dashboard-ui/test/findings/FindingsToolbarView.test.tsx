@@ -94,4 +94,20 @@ describe('FindingLevelFilters', () => {
     expect((html.match(/bg-primary-tint/g) ?? []).length).toBe(1);
     expect(html).toContain('>2<');
   });
+
+  it('offers Deployment only when asked, in both the panel filters and the toolbar', () => {
+    expect(renderFindingLevel()).not.toContain('>Deployment<');
+    expect(renderFindingLevel({ showDeployment: true })).toContain('>Deployment<');
+    expect(renderToolbar()).not.toContain('>Deployment<');
+    expect(renderToolbar({ showDeployment: true })).toContain('>Deployment<');
+  });
+
+  it('marks Deployment active with its selection count', () => {
+    const html = renderFindingLevel({
+      showDeployment: true,
+      filters: { ...EMPTY_FILTERS, deployment: ['sent', 'queued', 'not_sent'] },
+    });
+    expect((html.match(/bg-primary-tint/g) ?? []).length).toBe(1);
+    expect(html).toContain('>3<');
+  });
 });

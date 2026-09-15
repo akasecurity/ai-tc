@@ -1,11 +1,14 @@
+import { SyncFailureReason } from '@akasecurity/schema';
+
 /**
  * Why a row this machine owed the deployment will not be sent again as it is.
  *
- * ONE SOURCE, because two consumers must agree and they live on opposite sides
- * of the store: the migration builds this list into the guard it installs on
- * `audit_events.sync_failure`, and the ledger writes values into it. A second
- * spelling would be a refusal at runtime rather than a type error at build, on a
- * write path whose whole job is to record why something failed.
+ * ONE SOURCE, because consumers on opposite sides of the store must agree: the
+ * migration builds this list into the guard it installs on
+ * `audit_events.sync_failure`, the ledger writes values into it, and the
+ * findings views label them. The members are defined once, as
+ * `SyncFailureReason` in `@akasecurity/schema`; a second spelling would be a
+ * refusal at runtime rather than a type error at build.
  *
  * WHY AN ENUM AND NOT FREE TEXT. The tree already gives this reason three
  * times — `forward-policy.ts` keeps its `lastFailure` an enum because "a
@@ -36,13 +39,9 @@
  * column answers "why", never "whether" — nothing reads `sync_failure` to
  * decide if a row is outstanding.
  */
-export const SYNC_FAILURE_REASONS = [
-  'deployment_refused',
-  'payload_invalid',
-  'detached_undelivered',
-] as const;
+export const SYNC_FAILURE_REASONS: readonly SyncFailureReason[] = SyncFailureReason.options;
 
-export type SyncFailureReason = (typeof SYNC_FAILURE_REASONS)[number];
+export type { SyncFailureReason };
 
 /**
  * The condition a write must NOT satisfy, built from the list so the guard and

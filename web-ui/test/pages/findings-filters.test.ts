@@ -320,6 +320,7 @@ describe('toLocationInstancesQuery', () => {
       provider: ['claudecode'],
       action: ['blocked'],
       status: ['open'],
+      deployment: [],
     };
     const scope = { from: '2026-01-01T00:00:00.000Z', tools: ['Bash'] };
     const list = toLocationsQuery(filters, 'leak', 'sess-1', scope);
@@ -361,5 +362,41 @@ describe('buildFindingsParams — the selected location', () => {
         buildFindingsParams(EMPTY_FILTERS, '', '', { view, loc: 'acme%2Fapi/a.ts' }).has('loc'),
       ).toBe(false);
     }
+  });
+});
+
+describe('the deployment filter', () => {
+  it('parses known delivery states, drops unknown ones and dedupes', () => {
+    expect(
+      parseFindingsFilters({ deployment: ['sent', 'bogus', 'sent', 'queued'] }).deployment,
+    ).toEqual(['sent', 'queued']);
+    expect(parseFindingsFilters({ deployment: 'not_sent' }).deployment).toEqual(['not_sent']);
+    expect(parseFindingsFilters({}).deployment).toEqual([]);
+  });
+
+  it('writes deployment under every view, since every view offers the control', () => {
+    const filters = { ...EMPTY_FILTERS, deployment: ['not_sent'] };
+    for (const view of ['grouped', 'flat', 'files'] as const) {
+      expect(buildFindingsParams(filters, '', '', { view }).getAll('deployment')).toEqual([
+        'not_sent',
+      ]);
+    }
+  });
+
+  it('reaches the findings panel, the flat list and both location reads, but not the type list', () => {
+    const filters = { ...EMPTY_FILTERS, deployment: ['queued'] };
+    expect(toTypeInstancesQuery(filters, 'aws-key').deployment).toEqual(['queued']);
+    expect(toInstancesQuery(filters, '').deployment).toEqual(['queued']);
+    expect(toLocationsQuery(filters, '').deployment).toEqual(['queued']);
+    expect(toLocationInstancesQuery(filters, '', { repo: 'r', file: 'f' }).deployment).toEqual([
+      'queued',
+    ]);
+    expect('deployment' in toFindingTypesQuery(filters, '')).toBe(false);
+  });
+
+  it('omits deployment from every query when nothing is selected', () => {
+    expect('deployment' in toTypeInstancesQuery(EMPTY_FILTERS, 'aws-key')).toBe(false);
+    expect('deployment' in toInstancesQuery(EMPTY_FILTERS, '')).toBe(false);
+    expect('deployment' in toLocationsQuery(EMPTY_FILTERS, '')).toBe(false);
   });
 });

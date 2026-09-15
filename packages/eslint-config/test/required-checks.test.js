@@ -1185,6 +1185,18 @@ describe('the Turbo caches in ci.yml', () => {
     expect(block).not.toMatch(ANY_CACHE_ACTION);
   });
 
+  // Not a cache property, but the same job and the same failure shape: a task
+  // turbo never schedules is one that never ran under the egress block. This is
+  // the only job running the workspace's suites with a child's egress cut, and
+  // without --continue one red package stops the schedule — nothing else here
+  // would notice the flag going, since the command still matches every other
+  // assertion about this job.
+  it('keeps the no-network job running every package past a failure', () => {
+    expect(jobBlock(ci, 'no-network')).toMatch(
+      /no-network-test\.sh .*turbo run test\b.*--continue/,
+    );
+  });
+
   // And the Windows lint leg, for the same reason one step further out. What it
   // exists to observe is who expands `*.config.*` on this platform — a property
   // of the runner image, the shell and the Node build, none of which turbo

@@ -41,8 +41,9 @@
  * The bound depends on the writes COMMITTING, which is the one thing that makes
  * this worth pinning rather than assuming: a checkpoint cannot run inside a
  * transaction, so a single long one grows the log by its whole page footprint.
- * Measured at the same 20k events, autocommit peaks at 4,198,312 B while one
- * enclosing transaction peaks at 12,219,952 B; the fixture generator's own 1M-event
+ * Measured at the same 20k events, one enclosing transaction leaves a log nearly
+ * four times the size autocommit settles at (both figures are beside
+ * `MEASURED_SETTLED_WAL_BYTES`); the fixture generator's own 1M-event
  * transaction grows the log by its whole page footprint, which runs to hundreds of
  * megabytes. Nothing on the capture path does that — every
  * `recordCapture` is its own transaction and every hook is its own process — but
@@ -164,12 +165,37 @@ const SETUP_TIMEOUT_MS = 180_000;
 const WAL_EVENTS = 20_000;
 
 /**
- * 8 MiB: about double the 4,198,312 B an autocheckpointing log settles at, and
- * comfortably below the 12,219,952 B the same writes reach with the checkpoint
- * suppressed. Both numbers were measured at this event count, so the ceiling
- * sits between two known outcomes rather than at a round number.
+ * The log the WAL case's loop leaves, read after its last commit: 20,000
+ * autocommit captures on a templated store at the default autocheckpoint and
+ * page size.
+ *
+ * The ceiling is placed against a second outcome that nothing here measures:
+ * the same writes inside ONE enclosing transaction, where no checkpoint can run,
+ * grow the log to 16,203,992 B read after the COMMIT, or 15,388,232 B read just
+ * before it — the commit's own frames are the difference, so re-take it at the
+ * same point. Durability moves neither figure: on an unmigrated store each read
+ * identically under FULL and OFF, on Linux and macOS.
+ *
+ * Nothing asserts either number, so re-take both when the schema, the event or
+ * the fixture's store changes; the ceiling is the only thing derived from them.
  */
-const MAX_WAL_BYTES = 8 * 1024 * 1024;
+const MEASURED_SETTLED_WAL_BYTES = 4_223_032;
+
+/**
+ * Twice the settled log, which leaves the unbounded case still more than 1.8
+ * times over it — so the bound separates two measured outcomes rather than
+ * sitting at a round number.
+ */
+const MAX_WAL_BYTES = 2 * MEASURED_SETTLED_WAL_BYTES;
+
+/**
+ * SQLite's compiled-in `wal_autocheckpoint` and `page_size`. The settled log is
+ * roughly their product and `openWithPragmas` sets neither, so a node:sqlite
+ * build with a smaller default of either settles lower and passes the ceiling
+ * without being the store it was measured on. Read back in the positive control.
+ */
+const DEFAULT_AUTOCHECKPOINT_PAGES = 1000;
+const DEFAULT_PAGE_SIZE_BYTES = 4096;
 
 /** A checkpointed store's own file size, with the sidecars flushed into it. */
 function settledDbBytes(dataDir: string, raw: { exec: (sql: string) => void }): number {
@@ -186,7 +212,10 @@ function sizeOr0(file: string): number {
 }
 
 function corpusBytes(events: number): number {
-  const store = createTempStore('aka-growth-');
+  // Templated: the slope is taken between two stores, so whatever the template
+  // changes about the base cancels — and both sizes measured byte-identical to
+  // an unmigrated store's anyway.
+  const store = createTempStore('aka-growth-', { migrated: true });
   try {
     const db = store.open();
     seedCaptureCorpus(db, { events, sessions: 50, seed: 1 });
@@ -224,11 +253,13 @@ describe('store growth per event', () => {
 
 // Skipped on Windows on COST, not because the property differs there. The
 // `beforeAll` below commits 20,000 separate transactions — that is the whole
-// point, since a checkpoint cannot run inside one — and every commit is an
-// fsync on the platform that charges most for it. It overran its own 180 s
-// setup ceiling on that runner, and the leg is SHARED: `findings-flat.test.ts`
+// point, since a checkpoint cannot run inside one — and it overran its own 180 s
+// setup ceiling on that runner while every one of those commits was an fsync, on
+// the platform that charges most for it. The leg is SHARED: `findings-flat.test.ts`
 // timed out alongside it at the config's 20 s while having nothing to do with
-// this file.
+// this file. The loop no longer fsyncs (see the `synchronous` note below), but
+// what it costs on that leg without them has not been measured, so the skip
+// stands until it is.
 //
 // What is asserted is SQLite's page arithmetic — the default 1000-page
 // autocheckpoint against a 4 KiB page — which is a property of the engine, not
@@ -241,14 +272,45 @@ describe('store growth per event', () => {
 const describeWal = describe.skipIf(process.platform === 'win32');
 
 describeWal('write-ahead log growth under sustained writes', () => {
-  let store: OwnedTempStore;
+  let store: OwnedTempStore | undefined;
   let peak = 0;
   let written = 0;
+  let pragmas: Record<string, number | undefined> = {};
 
   beforeAll(() => {
-    store = createTempStore('aka-wal-');
+    // Templated: this case measures the log a capture loop leaves, not the open
+    // path, and the settled figure is byte-identical either way. It also spares
+    // the migration replay on open.
+    store = createTempStore('aka-wal-', { migrated: true });
     const db = store.open();
+    const raw = corpusConnection(db);
     const walFile = join(store.dataDir, 'aka.db-wal');
+
+    // Durability is the one setting this fixture turns down, and the product
+    // does not share it: `openWithPragmas` leaves `synchronous` at node:sqlite's
+    // compiled SQLITE_DEFAULT_WAL_SYNCHRONOUS=2, where every commit below fsyncs
+    // the log, so the setup cost the runner's fsync latency times twenty
+    // thousand. Counted on an unmigrated store, a run made 20,916 fsyncs from
+    // open to close, all but 53 of them in this loop. Reproduced with a fixed
+    // delay injected into fsync, the loop took 277 s at 9 ms an fsync, past the
+    // ceiling above; at OFF it makes no fsync at all and took 1.5 s under the
+    // same delay. NORMAL still syncs at every checkpoint — 916 fsyncs in that
+    // run — which is 100 s at 100 ms an fsync.
+    //
+    // What that moves is the cost, not the quantity asserted: the
+    // autocheckpoint counts frames, and a frame is the same bytes synced or
+    // not, so both measurements beside MEASURED_SETTLED_WAL_BYTES read
+    // identically under FULL and OFF. Every pragma the result depends on is
+    // read back rather than trusted — including this one, because SQLite
+    // resolves an unrecognised `synchronous` value to NORMAL without raising.
+    raw.exec('PRAGMA synchronous = OFF');
+    const pragma = (name: string): number | undefined =>
+      (raw.prepare(`PRAGMA ${name}`).get() as Record<string, number | undefined>)[name];
+    pragmas = {
+      synchronous: pragma('synchronous'),
+      walAutocheckpoint: pragma('wal_autocheckpoint'),
+      pageSize: pragma('page_size'),
+    };
 
     for (let i = 0; i < WAL_EVENTS; i += 1) {
       // No enclosing transaction: each call commits on its own, which is what
@@ -268,17 +330,22 @@ describeWal('write-ahead log growth under sustained writes', () => {
         metadata: { sessionId: '11111111-1111-4111-8111-111111111111' },
       };
       db.recordCapture(event, []);
+      // At the default `journal_size_limit` a checkpoint rewinds the log and
+      // reuses the file rather than truncating it, so its size never falls and
+      // the read after the loop is already the peak. These reads matter only
+      // for a log that DOES shrink — a size limit, or a TRUNCATE checkpoint
+      // landing mid-loop — which the final read alone would report as small.
       if (i % 500 === 0) peak = Math.max(peak, sizeOr0(walFile));
     }
     peak = Math.max(peak, sizeOr0(walFile));
 
-    written = (
-      corpusConnection(db).prepare(`SELECT COUNT(*) AS n FROM audit_events`).get() as { n: number }
-    ).n;
+    written = (raw.prepare(`SELECT COUNT(*) AS n FROM audit_events`).get() as { n: number }).n;
   }, SETUP_TIMEOUT_MS);
 
   afterAll(() => {
-    store.destroy();
+    // Undefined when `createTempStore` itself threw, which removes its own tree
+    // first; a TypeError here would only speak over that failure.
+    store?.destroy();
   });
 
   it('actually wrote, and actually used the log', () => {
@@ -293,6 +360,16 @@ describeWal('write-ahead log growth under sustained writes', () => {
       WAL_EVENTS,
     );
     expect(peak, 'the -wal file never appeared; this measured nothing').toBeGreaterThan(0);
+    // The two defaults the settled log is a product of, and the durability the
+    // setup's cost rests on. A smaller autocheckpoint or page settles the log
+    // lower and passes the ceiling for a store it was not measured on; a
+    // `synchronous` that fell back from OFF would pass every other assertion
+    // here while bringing the setup's fsyncs back.
+    expect(pragmas, 'the fixture connection is not configured as measured').toEqual({
+      synchronous: 0,
+      walAutocheckpoint: DEFAULT_AUTOCHECKPOINT_PAGES,
+      pageSize: DEFAULT_PAGE_SIZE_BYTES,
+    });
   });
 
   it('stays bounded while the product writes one transaction per capture', () => {

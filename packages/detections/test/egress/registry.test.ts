@@ -160,6 +160,27 @@ describe('NON_DATA_HOST_SUFFIXES', () => {
       expect(covered, `${host} is not covered by any registry entry's hostSuffixes`).toBe(true);
     }
   });
+
+  it('lists no host that a registry hostSuffix equals or sits above', () => {
+    // The reverse direction from the case above. A listed host must be
+    // strictly more specific than every registry hostSuffix it falls under
+    // — never equal to one, and never a superdomain a provider's own
+    // hostSuffix sits underneath. Note the argument order: the registry
+    // suffix is the candidate HOST here, and the listed doc host is the
+    // SUFFIX being matched against. Otherwise `isNonDataHost` would exclude
+    // that whole registry suffix — and every subdomain under it — rather
+    // than only the documentation host, e.g. listing 'openai.com' here would
+    // make 'api.openai.com' a non-data host too.
+    for (const host of NON_DATA_HOST_SUFFIXES) {
+      const swallowsARegistrySuffix = PROVIDER_REGISTRY.some((p) =>
+        p.hostSuffixes.some((suffix) => matches(suffix, host)),
+      );
+      expect(
+        swallowsARegistrySuffix,
+        `${host} equals or sits above a registry entry's hostSuffix`,
+      ).toBe(false);
+    }
+  });
 });
 
 describe('isNonDataHost', () => {

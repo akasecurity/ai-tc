@@ -12,6 +12,10 @@
 // The stripping runs on every host, so its regression is catchable on every
 // host; only its CONSEQUENCE is Windows-only. Hence a unit test rather than
 // trusting the Windows leg to notice.
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -19,6 +23,9 @@ import {
   describeRun,
   type InstallerRun,
   powershellEnv,
+  privateCacheHome,
+  probePowershell,
+  runInstallPs1,
   runScript,
   type ScriptRunner,
 } from './run-installer.ts';
@@ -212,6 +219,201 @@ describe('runScript retries a CLR startup abort', () => {
     const result = await runScript('pwsh', [], {}, run);
     expect(result).toEqual(noisySuccess);
     expect(calls()).toBe(1);
+  });
+});
+
+/**
+ * Every PowerShell this suite starts off Windows gets a cache home of its own.
+ *
+ * pwsh keeps a startup profile in its cache home that every start reads and
+ * then rewrites on the way out. Shared between concurrent starts, it can be left
+ * holding a damaged assembly name inside records that still parse, and a start
+ * that reads it dies in .NET's assembly-name parser before its command runs —
+ * the crash `runScript` retries. The retry cannot get past it on its own: the
+ * crashed start writes nothing back, so the next attempt reads the same file.
+ *
+ * Provoking that needs a real pwsh and a damaged profile, and whether a given
+ * damage crashes is a race inside .NET, so it is not driven here. What is pinned
+ * is the property that takes the shared file off the path: each child sees an
+ * empty home no other process has written to, and none is left behind.
+ */
+
+/** What a child found in its cache home at the moment it was spawned. */
+interface HomeAtSpawn {
+  dir: string | undefined;
+  /** undefined when the directory did not exist. */
+  entries: string[] | undefined;
+}
+
+function homeAtSpawn(env: NodeJS.ProcessEnv): HomeAtSpawn {
+  const dir = env.XDG_CACHE_HOME;
+  return { dir, entries: dir !== undefined && existsSync(dir) ? readdirSync(dir) : undefined };
+}
+
+const EMPTY_HOME: HomeAtSpawn = { dir: expect.any(String) as string, entries: [] };
+
+// Driven with an injected platform for the reason assertHostArchitecture is:
+// both branches have to be reachable from every runner.
+describe('privateCacheHome', () => {
+  it('gives a POSIX child an empty home that no other process has written to', () => {
+    const home = privateCacheHome('linux');
+    try {
+      expect(homeAtSpawn(home.env)).toEqual(EMPTY_HOME);
+    } finally {
+      home.dispose();
+    }
+  });
+
+  it('never hands two children the same home', () => {
+    const first = privateCacheHome('linux');
+    const second = privateCacheHome('linux');
+    try {
+      expect(first.env.XDG_CACHE_HOME).toEqual(expect.any(String));
+      expect(second.env.XDG_CACHE_HOME).not.toBe(first.env.XDG_CACHE_HOME);
+    } finally {
+      first.dispose();
+      second.dispose();
+    }
+  });
+
+  it('removes the home on dispose, with whatever the child wrote into it', () => {
+    const home = privateCacheHome('linux');
+    const dir = home.env.XDG_CACHE_HOME;
+    expect(dir).toEqual(expect.any(String));
+    // What pwsh leaves behind, so the removal has to be recursive. The write
+    // succeeding is also the control that the home existed before dispose.
+    const profileDir = join(dir ?? '', 'powershell');
+    mkdirSync(profileDir);
+    writeFileSync(join(profileDir, 'StartupProfileData-NonInteractive'), 'profile');
+
+    home.dispose();
+
+    expect(existsSync(dir ?? '')).toBe(false);
+  });
+
+  it('sets nothing on win32, where PowerShell keeps its cache under LOCALAPPDATA', () => {
+    const home = privateCacheHome('win32');
+
+    expect(home.env).toEqual({});
+    expect(() => {
+      home.dispose();
+    }).not.toThrow();
+  });
+});
+
+describe('probePowershell', () => {
+  // The probe matters as much as the run it gates. A probe that read a damaged
+  // profile would crash, report no PowerShell, and turn every install.ps1 case
+  // into a skip — unrun rather than red.
+  it('probes under a private home and leaves none behind', () => {
+    const seen: HomeAtSpawn[] = [];
+
+    const exe = probePowershell('linux', (_command, _args, env) => {
+      seen.push(homeAtSpawn(env));
+      return true;
+    });
+
+    expect(exe).toBe('pwsh');
+    expect(seen).toEqual([EMPTY_HOME]);
+    expect(existsSync(seen[0]?.dir ?? '')).toBe(false);
+  });
+
+  it('leaves no home behind when nothing starts', () => {
+    const seen: HomeAtSpawn[] = [];
+
+    const exe = probePowershell('linux', (_command, _args, env) => {
+      seen.push(homeAtSpawn(env));
+      return false;
+    });
+
+    expect(exe).toBeUndefined();
+    expect(seen).toEqual([EMPTY_HOME]);
+    expect(existsSync(seen[0]?.dir ?? '')).toBe(false);
+  });
+
+  it('tries Windows PowerShell before pwsh on win32', () => {
+    const tried: string[] = [];
+
+    const exe = probePowershell('win32', (command) => {
+      tried.push(command);
+      return command === 'pwsh';
+    });
+
+    expect(tried).toEqual(['powershell', 'pwsh']);
+    expect(exe).toBe('pwsh');
+  });
+});
+
+// Skipped on win32 rather than asserted there: runInstallPs1 takes the host's
+// platform, and on win32 there is no home to observe — that branch is pinned
+// through privateCacheHome('win32') above.
+describe.skipIf(process.platform === 'win32')('runInstallPs1 isolates the cache home', () => {
+  const OVERRIDES = { base: 'http://localhost:1/', version: '9.9.9', installDir: 'unused' };
+
+  it('hands the run an empty home and removes it afterwards', async () => {
+    const seen: HomeAtSpawn[] = [];
+    const versions: (string | undefined)[] = [];
+
+    const result = await runInstallPs1('pwsh', OVERRIDES, (_command, _args, env) => {
+      seen.push(homeAtSpawn(env));
+      versions.push(env.AKA_VERSION);
+      return Promise.resolve(REFUSAL);
+    });
+
+    expect(result).toEqual(REFUSAL);
+    // The overrides still arrive: a home that REPLACED the env rather than
+    // joining it would satisfy every other line here.
+    expect(versions).toEqual(['9.9.9']);
+    expect(seen).toEqual([EMPTY_HOME]);
+    expect(existsSync(seen[0]?.dir ?? '')).toBe(false);
+  });
+
+  it('starts a retry from a fresh home, not the one the abort died in', async () => {
+    const seen: HomeAtSpawn[] = [];
+
+    const result = await runInstallPs1('pwsh', OVERRIDES, (_command, _args, env) => {
+      const home = homeAtSpawn(env);
+      seen.push(home);
+      if (seen.length > 1) return Promise.resolve(REFUSAL);
+      // The first attempt leaves a profile behind and aborts. A home shared
+      // across attempts would hand the retry this exact file.
+      //
+      // Written only into a directory this call can show is a fresh temp one.
+      // A regression that stopped isolating hands this runner the HOST's cache
+      // home, or none — which `join` resolves against the working directory —
+      // and planting a damaged profile in either is the one thing this suite
+      // must never do to the machine running it. Refused, it still fails here.
+      if (home.dir === undefined || home.entries?.length !== 0 || !home.dir.startsWith(tmpdir())) {
+        return Promise.reject(new Error(`not a private cache home: ${String(home.dir)}`));
+      }
+      const profileDir = join(home.dir, 'powershell');
+      mkdirSync(profileDir);
+      writeFileSync(join(profileDir, 'StartupProfileData-NonInteractive'), 'damaged');
+      return Promise.resolve(runOf({ status: 134, stderr: CLR_ABORT_STDERR }));
+    });
+
+    expect(result).toEqual(REFUSAL);
+    expect(seen).toEqual([EMPTY_HOME, EMPTY_HOME]);
+    expect(seen[1]?.dir).not.toBe(seen[0]?.dir);
+    for (const { dir } of seen) {
+      expect(existsSync(dir ?? '')).toBe(false);
+    }
+  });
+
+  it('removes the home when the spawn itself fails', async () => {
+    const seen: HomeAtSpawn[] = [];
+
+    const error = await runInstallPs1('pwsh', OVERRIDES, (_command, _args, env) => {
+      seen.push(homeAtSpawn(env));
+      return Promise.reject(new Error('could not spawn pwsh: ENOENT'));
+    }).then(
+      () => undefined,
+      (err: unknown) => err as Error,
+    );
+
+    expect(error?.message).toContain('ENOENT');
+    expect(seen).toEqual([EMPTY_HOME]);
+    expect(existsSync(seen[0]?.dir ?? '')).toBe(false);
   });
 });
 

@@ -4,8 +4,12 @@
 // a step of either script — the whole point of this package is that the scripts
 // themselves run.
 import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { removeTree } from '../../../../test/helpers/remove-tree.ts';
 
 // tools/installer — the two scripts under test sit at this package's root.
 // Exported because script-encoding.test.ts reads the same two files rather than
@@ -51,6 +55,48 @@ export function powershellEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv 
   return Object.fromEntries(
     Object.entries(merged).filter(([key]) => key.toLowerCase() !== 'psmodulepath'),
   );
+}
+
+/** A PowerShell cache home that belongs to one child, and its removal. */
+export interface CacheHome {
+  /** Merged into the child's env; empty where there is nothing to redirect. */
+  env: NodeJS.ProcessEnv;
+  dispose: () => void;
+}
+
+/**
+ * A fresh, empty cache home for ONE PowerShell child.
+ *
+ * pwsh keeps a .NET startup profile at
+ * `$XDG_CACHE_HOME/powershell/StartupProfileData-NonInteractive` — under
+ * `~/.cache` with the variable unset — and every start both reads that one file
+ * and rewrites it on the way out. Concurrent starts sharing it can leave an
+ * assembly name damaged inside records that still parse, and a start that reads
+ * such a file dies in .NET's assembly-name parser before its command runs: the
+ * {@link CLR_ABORT_MARKERS} signature, frame for frame. The start that crashed
+ * writes nothing back, so the damage outlives it and every retry reads the same
+ * file — which is why retrying alone did not recover, and why no pause between
+ * attempts would.
+ *
+ * This suite starts pwsh concurrently itself — every vitest worker that loads
+ * install-ps1.test.ts or release-fixture.test.ts probes at module load — under
+ * the one HOME the runner hands every worker. A home per child takes the shared
+ * file off the path: nothing a child reads was written by any other process.
+ *
+ * Nothing on win32. PowerShell there derives its cache from LOCALAPPDATA and
+ * never reads XDG_CACHE_HOME, and install.ps1 takes its default install
+ * directory from LOCALAPPDATA, so redirecting that would change the script under
+ * test.
+ */
+export function privateCacheHome(platform: NodeJS.Platform = process.platform): CacheHome {
+  if (platform === 'win32') return { env: {}, dispose: () => undefined };
+  const dir = mkdtempSync(join(tmpdir(), 'aka-pwsh-cache-'));
+  return {
+    env: { XDG_CACHE_HOME: dir },
+    dispose: () => {
+      removeTree(dir);
+    },
+  };
 }
 
 /**
@@ -205,6 +251,11 @@ const SCRIPT_TIMEOUT_MS = 60_000;
  * genuine crash inside a `Compress-Archive` the script itself ran, which is a
  * real failure this must not swallow; pairing it with the assembly-name parser
  * narrows it to the startup corruption, where the script has not begun.
+ *
+ * A damaged startup profile in a cache home shared between concurrent starts
+ * reproduces this signature exactly, and every PowerShell child here runs under
+ * a {@link privateCacheHome} so it cannot read one. The retry stays, bounded and
+ * narrow, for an abort that arrives by any other route.
  */
 const CLR_ABORT_MARKERS = ['Unhandled exception.', 'assembly name was invalid'] as const;
 
@@ -333,13 +384,42 @@ export function powershellExe(): string | undefined {
   return resolvedPowershell.exe;
 }
 
-function probePowershell(): string | undefined {
-  for (const command of process.platform === 'win32' ? ['powershell', 'pwsh'] : ['pwsh']) {
-    const probe = spawnSync(command, ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], {
-      encoding: 'utf8',
-      env: powershellEnv(),
-    });
-    if (probe.error === undefined && probe.status === 0) return command;
+/** Whether `command` started and exited 0 — what {@link probePowershell} spawns with. */
+export type ProbeRunner = (
+  command: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+) => boolean;
+
+const runProbe: ProbeRunner = (command, args, env) => {
+  const probe = spawnSync(command, [...args], { encoding: 'utf8', env });
+  return probe.error === undefined && probe.status === 0;
+};
+
+/**
+ * The first PowerShell candidate on this host that starts, or undefined.
+ *
+ * Each candidate starts under its own {@link privateCacheHome}. The probe runs
+ * at module load in every worker that asks, so it is one of the concurrent
+ * starts a shared cache is exposed to — and a probe that died on a damaged
+ * profile would report no PowerShell at all, turning every install.ps1 case
+ * into a skip rather than a failure.
+ *
+ * `platform` and `run` are injectable so both candidate lists and the cache
+ * wiring can be driven from any host, with or without a PowerShell.
+ */
+export function probePowershell(
+  platform: NodeJS.Platform = process.platform,
+  run: ProbeRunner = runProbe,
+): string | undefined {
+  for (const command of platform === 'win32' ? ['powershell', 'pwsh'] : ['pwsh']) {
+    const home = privateCacheHome(platform);
+    try {
+      const args = ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'];
+      if (run(command, args, powershellEnv(home.env))) return command;
+    } finally {
+      home.dispose();
+    }
   }
   return undefined;
 }
@@ -381,8 +461,21 @@ export function assertHostArchitecture(
 export async function runInstallPs1(
   exe: string,
   { base, version, installDir }: InstallerOverrides,
+  // Handed to `runScript`, injectable for the reason its spawner is: the cache
+  // wiring below has to be drivable without a PowerShell.
+  spawnOne: ScriptRunner = spawnScript,
 ): Promise<InstallerRun> {
   assertHostArchitecture();
+  // A home per ATTEMPT rather than per call, so a retry never starts from
+  // whatever the attempt before it left in one.
+  const isolated: ScriptRunner = async (command, args, env) => {
+    const home = privateCacheHome();
+    try {
+      return await spawnOne(command, args, { ...env, ...home.env });
+    } finally {
+      home.dispose();
+    }
+  };
   return await runScript(
     exe,
     ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', INSTALL_PS1],
@@ -397,6 +490,7 @@ export async function runInstallPs1(
       // and the refusal cases need step 1 to pass to reach step 4 at all.
       ...(process.platform === 'win32' ? {} : { PROCESSOR_ARCHITECTURE: 'AMD64' }),
     }),
+    isolated,
   );
 }
 

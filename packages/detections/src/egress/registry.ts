@@ -11,8 +11,10 @@ import type {
   ShareTrustLevel,
 } from '@akasecurity/schema';
 
-// Bumped whenever the resolution/matching rules below change (not the registry
-// data itself — that's covered by PROVIDER_REGISTRY being embedded verbatim).
+// Bumped whenever the resolution/matching rules below change (not the
+// registry data or the exclusion lists — those are covered by
+// EGRESS_VERSION_MATERIAL embedding PROVIDER_REGISTRY, EXCLUDED_HOST_SUFFIXES
+// and NON_DATA_HOST_SUFFIXES verbatim).
 const EXTRACTOR_VERSION = '1';
 
 // One row per known provider. `hostSuffixes` are suffix-matched (see
@@ -564,10 +566,6 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
 ];
 
-// The scanner's ledger key material: this changes whenever the registry data
-// or the resolution rules change, forcing a one-time re-extraction.
-export const EGRESS_VERSION_MATERIAL = `${EXTRACTOR_VERSION}\n${JSON.stringify(PROVIDER_REGISTRY)}`;
-
 export interface HostResolution {
   kind: DestinationKind;
   trust: ShareTrustLevel;
@@ -583,7 +581,7 @@ const INTERNAL_TLDS = ['internal', 'local', 'corp', 'lan', 'intranet', 'home.arp
 // Non-provider hosts excluded from resolution entirely: loopback/reserved
 // name suffixes (RFC 2606/6761-style) and the schema/XML-namespace hosts that
 // show up as URL-shaped literals in source but name no real destination.
-const EXCLUDED_HOST_SUFFIXES = [
+export const EXCLUDED_HOST_SUFFIXES = [
   'localhost',
   'test',
   'example',
@@ -599,13 +597,15 @@ const EXCLUDED_HOST_SUFFIXES = [
 ];
 
 // Documentation/help hosts a registered provider owns but that receive no
-// application data: a URL naming one is a reference a developer read, not a
-// destination anything was sent to. They resolve to null exactly like
-// EXCLUDED_HOST_SUFFIXES, even though their apex domain matches a registry
-// entry's hostSuffixes — without this list, e.g. 'docs.github.com' would
-// resolve to GitHub purely because 'github.com' is GitHub's suffix. Each of
-// these is confirmed to be a static/reference-only host for its provider,
-// distinct from that provider's real API or ingest host.
+// application data. A host here matches a registry entry's hostSuffixes —
+// without this list, e.g. 'docs.github.com' would resolve to GitHub purely
+// because 'github.com' is GitHub's suffix — so `isNonDataHost` is checked
+// only against a `REF` hit: a bare URL reference to one of these hosts names
+// a page a developer read, not a destination anything was sent to, and is
+// dropped. A call carrying verb evidence (GET/POST/PUT/DELETE) to the same
+// host is a real observed request, so it is still recorded under that host's
+// provider. Each of these is confirmed to be a static/reference-only host for
+// its provider, distinct from that provider's real API or ingest host.
 export const NON_DATA_HOST_SUFFIXES = [
   'docs.github.com',
   'help.github.com',
@@ -625,6 +625,25 @@ export const NON_DATA_HOST_SUFFIXES = [
 function hostMatchesSuffix(host: string, suffix: string): boolean {
   return host === suffix || host.endsWith(`.${suffix}`);
 }
+
+/**
+ * True when `host` matches one of `NON_DATA_HOST_SUFFIXES` — a documentation
+ * or help host a registered provider owns. Lowercases before matching, and
+ * matches by exact host or dotted suffix (see `hostMatchesSuffix`), so
+ * 'developer.docs.github.com' matches 'docs.github.com' while
+ * 'evildocs.github.com' does not (no dot boundary). Used by
+ * `resolveEndpointHit` to drop only the `REF` hits against these hosts,
+ * never a hit carrying verb evidence.
+ */
+export function isNonDataHost(host: string): boolean {
+  const h = host.toLowerCase();
+  return NON_DATA_HOST_SUFFIXES.some((suffix) => hostMatchesSuffix(h, suffix));
+}
+
+// The scanner's ledger key material: this changes whenever the registry
+// data, the exclusion lists, or the resolution rules change, forcing a
+// one-time re-extraction.
+export const EGRESS_VERSION_MATERIAL = `${EXTRACTOR_VERSION}\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify(EXCLUDED_HOST_SUFFIXES)}\n${JSON.stringify(NON_DATA_HOST_SUFFIXES)}`;
 
 /**
  * The registry entry whose hostSuffixes best matches `host`, among the given
@@ -749,11 +768,15 @@ function ipv4MappedAddress(host: string): string | null {
  * → ip/ip; an internal signal (a single-label host with no colon, an
  * internal TLD, or a caller-supplied internalDomain) → internal/internal;
  * anything else public → external/unverified. Excluded hosts
- * (loopback/private/reserved, schema-identifier hosts) and non-data hosts
- * (a registered provider's own documentation/help hosts) resolve to `null`. A
+ * (loopback/private/reserved, schema-identifier hosts) resolve to `null`. A
  * host containing ':' never qualifies for the single-label internal rule, so
  * an IPv6-shaped literal that fails every literal check above still resolves
  * external/unverified — never the trusted-internal fallback.
+ *
+ * This function has no notion of a hit's method, so it does NOT apply
+ * `isNonDataHost` — a documentation host still resolves to its provider
+ * here. That exclusion is scoped to `REF` hits and applied by the caller
+ * (`resolveEndpointHit`), which does see the method.
  */
 export function resolveHost(
   host: string,
@@ -778,7 +801,6 @@ export function resolveHost(
   }
 
   if (EXCLUDED_HOST_SUFFIXES.some((suffix) => hostMatchesSuffix(h, suffix))) return null;
-  if (NON_DATA_HOST_SUFFIXES.some((suffix) => hostMatchesSuffix(h, suffix))) return null;
 
   const entry = matchMostSpecificEntry(h, PROVIDER_REGISTRY);
   if (entry) {

@@ -469,14 +469,24 @@
       }
     },
     {
-      "label": "docs.github.com is a documentation host, not a GitHub egress destination",
+      "label": "docs.github.com still resolves to GitHub via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
       "host": "docs.github.com",
-      "expect": null
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitHub",
+        "category": "Developer platform"
+      }
     },
     {
-      "label": "help.github.com is a documentation host, not a GitHub egress destination",
+      "label": "help.github.com still resolves to GitHub via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
       "host": "help.github.com",
-      "expect": null
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitHub",
+        "category": "Developer platform"
+      }
     },
     {
       "label": "api.github.com still resolves to GitHub — the exclusion is scoped to the doc hosts, not the whole apex",
@@ -519,14 +529,24 @@
       }
     },
     {
-      "label": "docs.stripe.com is a documentation host, not a Stripe egress destination",
+      "label": "docs.stripe.com still resolves to Stripe via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
       "host": "docs.stripe.com",
-      "expect": null
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Stripe",
+        "category": "Payments"
+      }
     },
     {
-      "label": "docs.anthropic.com is a documentation host, not an Anthropic egress destination",
+      "label": "docs.anthropic.com still resolves to Anthropic via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
       "host": "docs.anthropic.com",
-      "expect": null
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Anthropic",
+        "category": "LLM provider"
+      }
     },
     {
       "label": "api.anthropic.com still resolves to Anthropic",
@@ -539,14 +559,24 @@
       }
     },
     {
-      "label": "docs.datadoghq.com is a documentation host, not a Datadog egress destination",
+      "label": "docs.datadoghq.com still resolves to Datadog via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
       "host": "docs.datadoghq.com",
-      "expect": null
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Datadog",
+        "category": "Observability"
+      }
     },
     {
-      "label": "docs.sentry.io is a documentation host, not a Sentry egress destination",
+      "label": "docs.sentry.io still resolves to Sentry via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
       "host": "docs.sentry.io",
-      "expect": null
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Sentry",
+        "category": "Error tracking"
+      }
     },
     {
       "label": "sentry.io (bare apex) still resolves to Sentry",
@@ -559,9 +589,14 @@
       }
     },
     {
-      "label": "docs.gitlab.com is a documentation host, not a GitLab egress destination",
+      "label": "docs.gitlab.com still resolves to GitLab via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
       "host": "docs.gitlab.com",
-      "expect": null
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitLab",
+        "category": "Developer platform"
+      }
     },
     {
       "label": "gitlab.com (bare apex) still resolves to GitLab",
@@ -574,9 +609,14 @@
       }
     },
     {
-      "label": "docs.newrelic.com is a documentation host, not a New Relic egress destination",
+      "label": "docs.newrelic.com still resolves to New Relic via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
       "host": "docs.newrelic.com",
-      "expect": null
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "New Relic",
+        "category": "Observability"
+      }
     },
     {
       "label": "api.newrelic.com still resolves to New Relic",
@@ -589,9 +629,14 @@
       }
     },
     {
-      "label": "docs.honeycomb.io is a documentation host, not a Honeycomb egress destination",
+      "label": "docs.honeycomb.io still resolves to Honeycomb via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
       "host": "docs.honeycomb.io",
-      "expect": null
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Honeycomb",
+        "category": "Observability"
+      }
     },
     {
       "label": "api.honeycomb.io still resolves to Honeycomb",
@@ -604,14 +649,24 @@
       }
     },
     {
-      "label": "docs.splunk.com is a documentation host, not a Splunk egress destination",
+      "label": "docs.splunk.com still resolves to Splunk via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
       "host": "docs.splunk.com",
-      "expect": null
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Splunk",
+        "category": "Observability"
+      }
     },
     {
-      "label": "help.splunk.com is a documentation host, not a Splunk egress destination",
+      "label": "help.splunk.com still resolves to Splunk via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
       "host": "help.splunk.com",
-      "expect": null
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Splunk",
+        "category": "Observability"
+      }
     },
     {
       "label": "splunk.com (bare apex) still resolves to Splunk",

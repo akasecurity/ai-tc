@@ -13,6 +13,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   EGRESS_VERSION_MATERIAL,
+  EXCLUDED_HOST_SUFFIXES,
+  isNonDataHost,
   matchMostSpecificEntry,
   NON_DATA_HOST_SUFFIXES,
   PROVIDER_REGISTRY,
@@ -146,17 +148,39 @@ describe('PROVIDER_REGISTRY', () => {
 });
 
 describe('NON_DATA_HOST_SUFFIXES', () => {
+  const matches = (host: string, suffix: string) => host === suffix || host.endsWith(`.${suffix}`);
+
   it('lists only hosts covered by some registry entry’s hostSuffixes', () => {
     // Otherwise the list could rot: a host removed from every provider's
     // hostSuffixes would still be named here for no reason, and a host that
     // was never covered names nothing this resolution step would have caught
     // anyway.
-    const matches = (host: string, suffix: string) =>
-      host === suffix || host.endsWith(`.${suffix}`);
     for (const host of NON_DATA_HOST_SUFFIXES) {
       const covered = PROVIDER_REGISTRY.some((p) => p.hostSuffixes.some((s) => matches(host, s)));
       expect(covered, `${host} is not covered by any registry entry's hostSuffixes`).toBe(true);
     }
+  });
+});
+
+describe('isNonDataHost', () => {
+  it('is true for a listed documentation host', () => {
+    expect(isNonDataHost('docs.github.com')).toBe(true);
+  });
+
+  it('is true for a subdomain of a listed documentation host', () => {
+    expect(isNonDataHost('developer.docs.github.com')).toBe(true);
+  });
+
+  it('is false for a provider host that is not on the list', () => {
+    expect(isNonDataHost('api.github.com')).toBe(false);
+  });
+
+  it('is false for a host with no dot boundary against a listed suffix', () => {
+    expect(isNonDataHost('evildocs.github.com')).toBe(false);
+  });
+
+  it('is case-insensitive', () => {
+    expect(isNonDataHost('DOCS.GITHUB.COM')).toBe(true);
   });
 });
 
@@ -208,7 +232,24 @@ describe('matchMostSpecificEntry', () => {
 });
 
 describe('EGRESS_VERSION_MATERIAL', () => {
-  it('is EXTRACTOR_VERSION "1" plus the serialized registry, and so changes with the registry', () => {
-    expect(EGRESS_VERSION_MATERIAL).toBe(`1\n${JSON.stringify(PROVIDER_REGISTRY)}`);
+  it(
+    'is EXTRACTOR_VERSION "1" plus the serialized registry and both exclusion lists, ' +
+      'and so changes with any of them',
+    () => {
+      expect(EGRESS_VERSION_MATERIAL).toBe(
+        `1\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify(EXCLUDED_HOST_SUFFIXES)}\n${JSON.stringify(NON_DATA_HOST_SUFFIXES)}`,
+      );
+    },
+  );
+
+  it('changes when an entry is added to either exclusion list, not only the registry', () => {
+    // A list-only edit must move the scanner's ledger key exactly like a
+    // registry edit does — otherwise `/aka:scan` would skip an unchanged
+    // file and a newly-excluded or newly-included host would go unnoticed.
+    const withExtraExcluded = `1\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify([...EXCLUDED_HOST_SUFFIXES, 'added.example'])}\n${JSON.stringify(NON_DATA_HOST_SUFFIXES)}`;
+    expect(withExtraExcluded).not.toBe(EGRESS_VERSION_MATERIAL);
+
+    const withExtraNonData = `1\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify(EXCLUDED_HOST_SUFFIXES)}\n${JSON.stringify([...NON_DATA_HOST_SUFFIXES, 'docs.example.com'])}`;
+    expect(withExtraNonData).not.toBe(EGRESS_VERSION_MATERIAL);
   });
 });

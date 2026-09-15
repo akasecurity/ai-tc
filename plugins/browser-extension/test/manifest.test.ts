@@ -16,7 +16,7 @@ const REPO_ROOT = join(HERE, '..', '..', '..');
 
 interface ExtensionManifest {
   key: string;
-  content_scripts: { matches: string[] }[];
+  content_scripts: { matches: string[]; js: string[]; run_at?: string; world?: string }[];
   host_permissions?: string[];
   permissions: string[];
 }
@@ -41,18 +41,51 @@ describe('manifest.json stays in sync with the provider registry', () => {
     expect(resolveAdapter(hostname)).not.toBeNull();
   });
 
-  it.each(HOSTNAMES)('%s is granted in content_scripts matches', (hostname) => {
-    expect(manifest.content_scripts[0]?.matches).toContain(`https://${hostname}/*`);
+  it.each(HOSTNAMES)('%s is granted in every content_scripts entry', (hostname) => {
+    expect(manifest.content_scripts.length).toBeGreaterThan(0);
+    for (const entry of manifest.content_scripts) {
+      expect(entry.matches, `${entry.js.join(',')} is not granted ${hostname}`).toContain(
+        `https://${hostname}/*`,
+      );
+    }
   });
 
   // The other direction: a granted origin with no adapter behind it injects
   // this script into a site it cannot read, widening the extension's reach
   // for nothing. Whole-set equality catches both drifts at once.
-  it('grants exactly the origins the registry drives, and no others', () => {
-    const granted = (manifest.content_scripts[0]?.matches ?? []).map((match) =>
-      match.replace(/^https:\/\//, '').replace(/\/\*$/, ''),
-    );
-    expect([...granted].sort()).toEqual([...HOSTNAMES].sort());
+  //
+  // Entry-wise, not content_scripts[0]: the tap and the DOM script are separate
+  // entries, and an origin granted to one and not the other is a page where
+  // half the extension runs.
+  it('grants exactly the origins the registry drives in EVERY content-script entry', () => {
+    expect(manifest.content_scripts.length).toBeGreaterThan(0);
+    for (const entry of manifest.content_scripts) {
+      const granted = entry.matches.map((match) =>
+        match.replace(/^https:\/\//, '').replace(/\/\*$/, ''),
+      );
+      expect([...granted].sort()).toEqual([...HOSTNAMES].sort());
+    }
+  });
+
+  it('runs exactly one script in the page-s own world, at document_start', () => {
+    // A MAIN-world script has the page's own authority — it is the page, for
+    // every purpose a site can observe. Exactly one file may have it, it must
+    // be the tap, and it must run before any page script: injected later, it
+    // cannot see a reference the page has already captured, and the site's own
+    // traffic goes past unobserved while the extension reports itself healthy.
+    const main = manifest.content_scripts.filter((entry) => entry.world === 'MAIN');
+    expect(main).toHaveLength(1);
+    expect(main[0]?.js).toEqual(['tap.js']);
+    expect(main[0]?.run_at).toBe('document_start');
+  });
+
+  it('keeps every other content script in the isolated world', () => {
+    // The isolated world is the default, so these entries carry no `world` key
+    // at all. Asserting the complement is non-empty keeps the case above from
+    // passing on a manifest where everything became MAIN-world but the tap.
+    const isolated = manifest.content_scripts.filter((entry) => entry.world !== 'MAIN');
+    expect(isolated.length).toBeGreaterThan(0);
+    for (const entry of isolated) expect(entry.js).not.toContain('tap.js');
   });
 
   it('grants no host_permissions — content-script injection needs only matches', () => {

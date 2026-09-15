@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { EventMetadata } from '../../src/zod/event.ts';
+import { EventMetadata, IngestEvent } from '../../src/zod/event.ts';
 import { toCaptureAttributes } from '../../src/zod/local.ts';
 import { CaptureAttributes } from '../../src/zod/meta.ts';
 import {
@@ -378,18 +378,46 @@ describe('correlation ids reach the stored attribute bag', () => {
     expect(attrs.conversation_id).toBe('conv_9');
   });
 
-  it('omits both keys when the metadata carries neither', () => {
+  it('omits both keys when the metadata carries neither, and a blank message id', () => {
     // Omitted, never null: every other optional key in this bag is spread
     // conditionally, and a null would land in the stored JSON as a real value.
-    const attrs = toCaptureAttributes({
+    const event: IngestEvent = {
       id: '00000000-0000-4000-8000-000000000001',
       sourceTool: 'chatgpt',
       kind: 'prompt',
       occurredAt: ISO,
       contentHash: 'deadbeef',
       content: 'hi',
-    });
+    };
+    const attrs = toCaptureAttributes(event);
     expect('message_id' in attrs).toBe(false);
     expect('conversation_id' in attrs).toBe(false);
+
+    // A blank id is omitted too, and this is the only place that can do it:
+    // the local write path hands the mapper a typed event it never parsed, so
+    // the schema's refusal below does not reach here. A stored `message_id: ''`
+    // is a join key matching no llm_call leaf. The camelCase case above is
+    // what keeps this absence from passing on a mapper that dropped the key.
+    const blank = toCaptureAttributes({ ...event, metadata: { messageId: '' } });
+    expect('message_id' in blank).toBe(false);
+  });
+
+  it('the wire contract refuses a blank message id', () => {
+    // Wherever an event IS parsed — the attached drain's rebuild, and the
+    // deployment's own ingest — a blank id is refused rather than forwarded.
+    // The same event with a real id is the control that the refusal is about
+    // the id and not about any other field.
+    const event = {
+      id: '00000000-0000-4000-8000-000000000002',
+      sourceTool: 'claude-ai',
+      kind: 'response',
+      occurredAt: ISO,
+      contentHash: 'deadbeef',
+      content: 'hi',
+    };
+    expect(IngestEvent.safeParse({ ...event, metadata: { messageId: 'msg_9' } }).success).toBe(
+      true,
+    );
+    expect(IngestEvent.safeParse({ ...event, metadata: { messageId: '' } }).success).toBe(false);
   });
 });

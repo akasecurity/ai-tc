@@ -661,7 +661,12 @@ export function toCaptureAttributes(event: IngestEvent): CaptureAttributes {
     // `.catchall(z.unknown())` carries the long tail.
     ...(metadata?.model !== undefined ? { model: metadata.model } : {}),
     ...(metadata?.turnIndex !== undefined ? { turn_index: metadata.turnIndex } : {}),
-    ...(metadata?.messageId !== undefined ? { message_id: metadata.messageId } : {}),
+    // A blank id is omitted rather than stored: it is a join key and `''` joins
+    // nothing. This runs on the local write path, which types the event but
+    // never parses it, so EventMetadata's own `.min(1)` does not reach here.
+    ...(metadata?.messageId !== undefined && metadata.messageId !== ''
+      ? { message_id: metadata.messageId }
+      : {}),
     ...(metadata?.conversationId !== undefined ? { conversation_id: metadata.conversationId } : {}),
   };
 }

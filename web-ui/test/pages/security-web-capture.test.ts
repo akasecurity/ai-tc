@@ -1,6 +1,4 @@
-import { mkdtempSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { WebCaptureCardView, type WebCaptureCardViewProps } from '@akasecurity/dashboard-ui';
@@ -18,8 +16,8 @@ import {
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import { emptyStore } from '../helpers/store-templates.ts';
+import { tempHomes } from '../helpers/temp-home.ts';
 
 // The store-backed half of the web-capture-drift read-time derivation: a row
 // inserted into SQLite -> SqliteCaptureStatusRepository.latest() ->
@@ -30,6 +28,11 @@ vi.mock('node:os', async (importActual) => {
   const actual = await importActual<typeof NodeOs>();
   return { ...actual, homedir: () => osHome.dir };
 });
+
+// Removed when the FILE finishes: the page holds its store handle for the life
+// of the process, and a home deleted while that handle is open is refused on
+// Windows. `tempHomes` releases the store and removes every home in one hook.
+const newHome = tempHomes('aka-web-capture-');
 
 let home: string;
 let dir: string;
@@ -113,7 +116,7 @@ function grantConsent(version: number = WEB_CHAT_CAPTURE_CONSENT_VERSION): void 
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'aka-web-capture-'));
+  home = newHome();
   osHome.dir = home;
   dir = dataDir();
   // The security page reads no installed-pack surface here — only the
@@ -125,7 +128,6 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSingleton();
-  removeTree(home);
 });
 
 /** Walk the element tree the page returns for a `WebCaptureCardView` node. */

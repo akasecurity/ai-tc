@@ -57,10 +57,11 @@ const STATUS_LOOKBACK_ROWS = 128;
  * range before it can conclude there is nothing to find — an indexed SEARCH in
  * the plan and linear in the history, and unbounded because `audit_events` has
  * no retention policy. The FIGURES live in that scale suite's own header
- * rather than here — they were re-taken when `STATUS_LOOKBACK_ROWS` moved
- * 32 -> 128, and one measurement quoted in two files is one that goes out of
- * step. A partial index on (`source_tool`, `started_at`) would make this
- * constant rather than merely bounded; the window is what is in place today.
+ * rather than here, because one measurement quoted in two files is one that
+ * goes out of step; they depend on `STATUS_LOOKBACK_ROWS`, which sets this
+ * read's fixed cost. A partial index on (`source_tool`, `started_at`) would
+ * make this constant rather than merely bounded; the window is what is in
+ * place today.
  *
  * The index is not a BOUND, and the write side is why. Every report is a fresh
  * row — two per tab load per site, the tap-patched one and the `pagehide` one,

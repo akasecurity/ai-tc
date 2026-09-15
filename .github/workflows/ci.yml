@@ -793,6 +793,109 @@ jobs:
           # first each round, so a runner that slows down part-way charges both.
           "per-commit ms by target: $(node -e "const { DatabaseSync } = require('node:sqlite'); const fs = require('node:fs'); const path = require('node:path'); const os = require('node:os'); const targets = [['tmpdir', os.tmpdir()], ['RUNNER_TEMP', process.argv[1]]]; const rounds = targets.map(() => []); for (let r = 0; r < 5; r += 1) { for (let k = 0; k < targets.length; k += 1) { const i = r % 2 === 0 ? k : targets.length - 1 - k; const dir = fs.mkdtempSync(path.join(targets[i][1], 'aka-commit-probe-')); const db = new DatabaseSync(path.join(dir, 'probe.db')); db.exec('PRAGMA journal_mode = WAL; CREATE TABLE t (x INTEGER)'); const insert = db.prepare('INSERT INTO t VALUES (?)'); const start = performance.now(); for (let n = 0; n < 20; n += 1) insert.run(n); rounds[i].push((performance.now() - start) / 20); db.close(); fs.rmSync(dir, { recursive: true, force: true }); } } process.stdout.write(targets.map((t, i) => { const s = [...rounds[i]].sort((a, b) => a - b); return t[0] + ' ' + t[1] + ' median ' + s[2].toFixed(2) + ' (' + rounds[i].map((v) => v.toFixed(1)).join(', ') + ')'; }).join('; '))" $env:RUNNER_TEMP)"
 
+      # TEMPORARY diagnostic, to be removed before this merges. Moving TEMP to
+      # the second disk made the policy cache's twelve-writer publish case throw
+      # EPERM after publishByRename's five attempts. This separates the two
+      # readings of that: writers refused together retrying together (the fixed
+      # 10/20/30/40ms schedule), against a landed file staying unreplaceable for
+      # a while after each rename. It runs before the TEMP move, so `os.tmpdir()`
+      # is still the OS disk.
+      - name: Rename contention probe (temporary)
+        continue-on-error: true
+        run: |
+          try { "defender real-time protection: $((Get-MpComputerStatus).RealTimeProtectionEnabled)" } catch { "defender status unavailable: $_" }
+          try { "defender exclusion paths: $((Get-MpPreference).ExclusionPath -join '; ')" } catch { "defender preferences unavailable: $_" }
+          $js = @'
+          const fs = require('node:fs');
+          const fsp = require('node:fs/promises');
+          const path = require('node:path');
+          const os = require('node:os');
+          const RETRYABLE = new Set(['EPERM', 'EACCES', 'EBUSY']);
+          const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          async function publish(tmp, dest, jitter) {
+            for (let attempt = 1; ; attempt += 1) {
+              try {
+                await fsp.rename(tmp, dest);
+                return attempt;
+              } catch (err) {
+                if (attempt >= 5 || !RETRYABLE.has(err.code)) throw err;
+                const cap = attempt * 10;
+                await sleep(jitter ? Math.random() * cap : cap);
+              }
+            }
+          }
+          async function contend(base, jitter) {
+            const dir = fs.mkdtempSync(path.join(base, 'aka-rename-probe-'));
+            const dest = path.join(dir, 'cache.json');
+            const tmps = [];
+            for (let i = 0; i < 12; i += 1) {
+              const tmp = path.join(dir, `w${i}.tmp`);
+              fs.writeFileSync(tmp, JSON.stringify({ i, pad: 'x'.repeat(4096) }));
+              tmps.push(tmp);
+            }
+            const settled = await Promise.allSettled(tmps.map((tmp) => publish(tmp, dest, jitter)));
+            fs.rmSync(dir, { recursive: true, force: true });
+            const landed = settled.filter((s) => s.status === 'fulfilled').map((s) => s.value);
+            return { failed: settled.length - landed.length, worst: Math.max(0, ...landed) };
+          }
+          async function hold(base) {
+            const dir = fs.mkdtempSync(path.join(base, 'aka-rename-hold-'));
+            const dest = path.join(dir, 'cache.json');
+            let refusals = 0;
+            const waits = [];
+            for (let i = 0; i < 20; i += 1) {
+              const tmp = path.join(dir, `h${i}.tmp`);
+              fs.writeFileSync(tmp, 'x'.repeat(4096));
+              const start = performance.now();
+              for (let spins = 0; ; spins += 1) {
+                try {
+                  await fsp.rename(tmp, dest);
+                  break;
+                } catch (err) {
+                  if (!RETRYABLE.has(err.code) || spins > 100000) throw err;
+                  refusals += 1;
+                  await new Promise((resolve) => setImmediate(resolve));
+                }
+              }
+              waits.push(performance.now() - start);
+            }
+            fs.rmSync(dir, { recursive: true, force: true });
+            waits.sort((a, b) => a - b);
+            return `${refusals} refusals over 20 back-to-back renames, wait median ${waits[10].toFixed(2)}ms max ${waits[19].toFixed(2)}ms`;
+          }
+          async function timerFloor() {
+            const got = [];
+            for (let i = 0; i < 20; i += 1) {
+              const start = performance.now();
+              await sleep(1);
+              got.push(performance.now() - start);
+            }
+            got.sort((a, b) => a - b);
+            return `setTimeout(1) took median ${got[10].toFixed(2)}ms max ${got[19].toFixed(2)}ms`;
+          }
+          (async () => {
+            console.log(await timerFloor());
+            for (const [name, base] of [['tmpdir', os.tmpdir()], ['RUNNER_TEMP', process.argv[2]]]) {
+              for (const jitter of [false, true]) {
+                let failed = 0;
+                let worst = 0;
+                for (let round = 0; round < 10; round += 1) {
+                  const r = await contend(base, jitter);
+                  failed += r.failed;
+                  worst = Math.max(worst, r.worst);
+                }
+                console.log(`${name} ${base}: ${jitter ? 'jittered' : 'fixed'} backoff, ${failed} of 120 writers failed, worst landing attempt ${worst}`);
+              }
+              console.log(`${name}: ${await hold(base)}`);
+            }
+          })().catch((err) => {
+            console.log(`probe failed: ${err.stack}`);
+          });
+          '@
+          $probe = Join-Path $env:RUNNER_TEMP 'rename-probe.cjs'
+          Set-Content -Path $probe -Value $js -Encoding utf8
+          node $probe $env:RUNNER_TEMP
+
       # Every temp store the suites below create goes wherever `os.tmpdir()`
       # points, and by default on this image that is the OS disk (C:), while the
       # checkout, RUNNER_TEMP and the free space are on a second disk (D:). The

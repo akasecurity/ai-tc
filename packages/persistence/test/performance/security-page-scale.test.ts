@@ -175,7 +175,7 @@ function fastest(samples: number[]): number {
 }
 
 /**
- * `SAMPLES` timings of the read's SYNCHRONOUS work.
+ * One timing of the read's SYNCHRONOUS work.
  *
  * Every repository method here runs its SQL synchronously and returns an
  * already-resolved promise, so the elapsed time around the bare call is the
@@ -190,32 +190,32 @@ function fastest(samples: number[]): number {
  * instead of failing as the clean assertion this file exists to give.
  *
  * The `catch` is deliberately EMPTY, and that is not a swallowed error: what
- * surfaces a broken read is the awaited `run[name]()` in `seedAndMeasure`, which
- * runs before any sampling and rejects the `beforeAll` with the read's own error.
- * Collecting the rejection here and rethrowing it after the loop looks stronger
- * and cannot work — a `.catch` callback runs in a MICROTASK, so it has not fired
- * by the time a synchronous loop finishes, and the check would read `undefined`
- * every time. That exact dead code was written here first, and what caught it was
- * fault-injecting a read that rejects only after its first call: the suite stayed
- * green through all 8 cases.
+ * surfaces a broken read is the awaited `run[name]()` in `seed`, which runs
+ * before any sampling and rejects the `beforeAll` with the read's own error.
+ * Collecting the rejection here and rethrowing it after the sampling loop looks
+ * stronger and cannot work — a `.catch` callback runs in a MICROTASK, so it has
+ * not fired by the time a synchronous loop finishes, and the check would read
+ * `undefined` every time. That exact dead code was written here first, and what
+ * caught it was fault-injecting a read that rejects only after its first call:
+ * the suite stayed green through all 8 cases.
  */
-function measure(fn: () => Promise<unknown>): number[] {
-  const out: number[] = [];
-  for (let i = 0; i < SAMPLES; i += 1) {
-    const started = performance.now();
-    void fn().catch(() => {
-      // See above: the awaited call in `seedAndMeasure` is what reports a broken
-      // read. This exists only so a rejection is never unhandled.
-    });
-    out.push(performance.now() - started);
-  }
-  return out;
+function timeOnce(fn: () => Promise<unknown>): number {
+  const started = performance.now();
+  void fn().catch(() => {
+    // See above: the awaited call in `seed` is what reports a broken read. This
+    // exists only so a rejection is never unhandled.
+  });
+  return performance.now() - started;
 }
 
-interface Scale {
+interface Seeded {
   readonly corpus: GeneratedCaptureCorpus;
   /** Rows each read returned — a read that returns nothing measures nothing. */
   readonly returned: Record<string, number>;
+  readonly run: Record<ReadName, () => Promise<number>>;
+}
+
+interface Scale extends Seeded {
   readonly samples: Record<string, number[]>;
 }
 
@@ -228,7 +228,7 @@ const READS = [
 ] as const;
 type ReadName = (typeof READS)[number];
 
-async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Scale> {
+async function seed(store: OwnedTempStore, events: number): Promise<Seeded> {
   const db = store.open();
   const corpus = seedCaptureCorpus(db, {
     events,
@@ -289,12 +289,40 @@ async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Sc
   };
 
   const returned: Record<string, number> = {};
-  const samples: Record<string, number[]> = {};
+  for (const name of READS) returned[name] = await run[name]();
+  return { corpus, returned, run };
+}
+
+/**
+ * `SAMPLES` timings of every read against BOTH stores, INTERLEAVED: each read is
+ * timed once against each store per iteration, alternating which store goes
+ * first, so the two minima a ratio divides are drawn from the same stretch of
+ * wall time. `scale-budgets.test.ts` sets out why that is load-bearing, and
+ * activity-page-scale.test.ts why each read takes its samples in a run of its
+ * own rather than every read being cycled on each iteration.
+ */
+function sampleInterleaved(small: Seeded, large: Seeded): [Scale, Scale] {
+  const smallSamples: Record<string, number[]> = {};
+  const largeSamples: Record<string, number[]> = {};
   for (const name of READS) {
-    returned[name] = await run[name]();
-    samples[name] = measure(run[name]);
+    const onSmall: number[] = [];
+    const onLarge: number[] = [];
+    for (let i = 0; i < SAMPLES; i += 1) {
+      if (i % 2 === 0) {
+        onSmall.push(timeOnce(small.run[name]));
+        onLarge.push(timeOnce(large.run[name]));
+      } else {
+        onLarge.push(timeOnce(large.run[name]));
+        onSmall.push(timeOnce(small.run[name]));
+      }
+    }
+    smallSamples[name] = onSmall;
+    largeSamples[name] = onLarge;
   }
-  return { corpus, returned, samples };
+  return [
+    { ...small, samples: smallSamples },
+    { ...large, samples: largeSamples },
+  ];
 }
 
 describe(`/security read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to ${LARGE_EVENTS.toLocaleString('en-US')} events`, () => {
@@ -306,8 +334,9 @@ describe(`/security read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
   beforeAll(async () => {
     smallStore = createTempStore('aka-security-scale-small-');
     largeStore = createTempStore('aka-security-scale-large-');
-    small = await seedAndMeasure(smallStore, SMALL_EVENTS);
-    large = await seedAndMeasure(largeStore, LARGE_EVENTS);
+    const seededSmall = await seed(smallStore, SMALL_EVENTS);
+    const seededLarge = await seed(largeStore, LARGE_EVENTS);
+    [small, large] = sampleInterleaved(seededSmall, seededLarge);
   }, SEED_TIMEOUT_MS);
 
   afterAll(() => {

@@ -47,6 +47,27 @@
  * fastest of n samples is the closest estimate of the work itself, and the one a
  * loaded runner cannot inflate.
  *
+ * ## Both sizes are sampled INTERLEAVED, and that is as load-bearing
+ *
+ * A ratio cancels the machine only if both of its sides ran on the same one. The
+ * minimum survives a slowdown that reaches SOME of a side's samples, because the
+ * rest are clean; it cannot survive one lasting through EVERY sample on one side
+ * and none on the other. So both stores are seeded before either is timed, and
+ * each cost is then timed against the two stores in alternation — one call per
+ * store per iteration, with the store that goes first alternating too — so both
+ * minima are drawn from the same stretch of wall time, and a slowdown reaches
+ * both sides or neither.
+ *
+ * The sequential form — each store timed straight after its own seed — put the
+ * large store's samples several seconds of CI seeding after the small store's,
+ * and a sibling suite of that shape reddened a Linux CI run on exactly that:
+ * `/activity`'s list read at 1.974 ms against 5.989 ms, a ratio of 3.035, on a
+ * commit whose diff could not reach this package, while the same run's two
+ * other full-suite legs passed it. Widening FLATNESS_CEILING would have answered
+ * that by weakening the one number that separates flat from linear; the fix was
+ * to stop the two sides being timed at different moments. `measureInterleaved`
+ * records what interleaving costs and why the minimum absorbs it.
+ *
  * ## What the ratio cannot see, and what the backstop is for
  *
  * A ratio tests FLATNESS. It is blind to a regression that adds a constant: a
@@ -181,6 +202,7 @@
 import type { IngestEvent } from '@akasecurity/schema';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import type { LocalDatabase } from '../../src/database.ts';
 import { openLocalDatabase } from '../../src/database.ts';
 import { CORPUS_EPOCH_MS, corpusConnection, seedCaptureCorpus } from '../helpers/corpus.ts';
 import type { OwnedTempStore } from '../helpers/temp-store.ts';
@@ -267,21 +289,20 @@ function makeEvent(scope: number, seq: number): IngestEvent {
   };
 }
 
+interface Seeded {
+  readonly store: OwnedTempStore;
+  readonly db: LocalDatabase;
+  readonly events: number;
+}
+
 interface Measured {
   readonly events: number;
   readonly captures: number[];
   readonly opens: number[];
 }
 
-/**
- * Seed a store of `events` and time both costs against it.
- *
- * Seeded and measured together, one store at a time, so each size is timed in
- * the same state: freshly written, its own pages hot. Measuring both sizes after
- * seeding both would leave the smaller store's pages evicted by the larger
- * seed — an asymmetry that lands entirely in the ratio.
- */
-function seedAndMeasure(store: OwnedTempStore, events: number): Measured {
+/** Seed a store of `events` and leave it in the state both costs are timed in. */
+function seed(store: OwnedTempStore, events: number): Seeded {
   const db = store.open();
   // Throws unless the rows are on disk. Every bound below is an upper bound on
   // time, and the fastest possible store is an empty one — so without this the
@@ -338,22 +359,68 @@ function seedAndMeasure(store: OwnedTempStore, events: number): Measured {
   // sides being in different states, and that is the thing to fix.
   corpusConnection(db).exec('PRAGMA wal_checkpoint(TRUNCATE)');
 
-  const captures: number[] = [];
+  return { store, db, events: corpus.events };
+}
+
+function timeCapture(side: Seeded, seq: number): number {
+  const started = performance.now();
+  side.db.recordCapture(makeEvent(side.events, seq), []);
+  return performance.now() - started;
+}
+
+function timeOpen(side: Seeded): number {
+  const started = performance.now();
+  const handle = openLocalDatabase(side.store.dataDir);
+  const elapsed = performance.now() - started;
+  handle.close();
+  return elapsed;
+}
+
+/**
+ * Time both costs against BOTH stores, INTERLEAVED — the header's "Both sizes
+ * are sampled INTERLEAVED" says why. Each iteration times one call per store,
+ * alternating which store goes first. Every capture is timed before any open, so
+ * each open meets a store holding the same probe rows as its counterpart, as it
+ * did when each store was measured on its own.
+ *
+ * Seeding both stores before timing either is what the sequential form was
+ * written to avoid — the small store is no longer freshly written when its turn
+ * comes — and the first call on it does read about twice its fastest: 0.26-0.42
+ * ms against 0.14 ms for a capture, 2.44-2.59 ms against 1.4 ms for an open,
+ * three runs on arm64 macOS / Node 24. The minimum discards that call. The small
+ * store's fastest-of-n interleaved was 0.142-0.146 ms for a capture and
+ * 1.38-1.44 ms for an open, against 0.144-0.151 ms and 1.41-1.49 ms timed
+ * straight after its own seed.
+ */
+function measureInterleaved(small: Seeded, large: Seeded): [Measured, Measured] {
+  const smallCaptures: number[] = [];
+  const largeCaptures: number[] = [];
   for (let i = 0; i < CAPTURE_SAMPLES; i += 1) {
-    const started = performance.now();
-    db.recordCapture(makeEvent(events, i), []);
-    captures.push(performance.now() - started);
+    if (i % 2 === 0) {
+      smallCaptures.push(timeCapture(small, i));
+      largeCaptures.push(timeCapture(large, i));
+    } else {
+      largeCaptures.push(timeCapture(large, i));
+      smallCaptures.push(timeCapture(small, i));
+    }
   }
 
-  const opens: number[] = [];
+  const smallOpens: number[] = [];
+  const largeOpens: number[] = [];
   for (let i = 0; i < OPEN_SAMPLES; i += 1) {
-    const started = performance.now();
-    const handle = openLocalDatabase(store.dataDir);
-    opens.push(performance.now() - started);
-    handle.close();
+    if (i % 2 === 0) {
+      smallOpens.push(timeOpen(small));
+      largeOpens.push(timeOpen(large));
+    } else {
+      largeOpens.push(timeOpen(large));
+      smallOpens.push(timeOpen(small));
+    }
   }
 
-  return { events: corpus.events, captures, opens };
+  return [
+    { events: small.events, captures: smallCaptures, opens: smallOpens },
+    { events: large.events, captures: largeCaptures, opens: largeOpens },
+  ];
 }
 
 describe(`store costs from ${SMALL_EVENTS.toLocaleString('en-US')} to ${LARGE_EVENTS.toLocaleString('en-US')} events`, () => {
@@ -364,11 +431,13 @@ describe(`store costs from ${SMALL_EVENTS.toLocaleString('en-US')} to ${LARGE_EV
   beforeAll(() => {
     const smallStore = createTempStore('aka-scale-budget-small-');
     stores.push(smallStore);
-    small = seedAndMeasure(smallStore, SMALL_EVENTS);
+    const seededSmall = seed(smallStore, SMALL_EVENTS);
 
     const largeStore = createTempStore('aka-scale-budget-large-');
     stores.push(largeStore);
-    large = seedAndMeasure(largeStore, LARGE_EVENTS);
+    const seededLarge = seed(largeStore, LARGE_EVENTS);
+
+    [small, large] = measureInterleaved(seededSmall, seededLarge);
   }, SEED_TIMEOUT_MS);
 
   afterAll(() => {

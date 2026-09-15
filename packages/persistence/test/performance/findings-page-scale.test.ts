@@ -115,29 +115,29 @@ function fastest(samples: number[]): number {
 }
 
 /**
- * `SAMPLES` timings of the read's SYNCHRONOUS work. Every method here runs its
- * SQL synchronously and returns an already-resolved promise, so the elapsed
- * time around the bare call is the whole of the work — see the note of the same
- * name in security-page-scale.test.ts for why the rejection is caught and why
- * that catch is empty.
+ * One timing of the read's SYNCHRONOUS work. Every method here runs its SQL
+ * synchronously and returns an already-resolved promise, so the elapsed time
+ * around the bare call is the whole of the work — see the note of the same name
+ * in security-page-scale.test.ts for why the rejection is caught and why that
+ * catch is empty.
  */
-function measure(fn: () => Promise<unknown>): number[] {
-  const out: number[] = [];
-  for (let i = 0; i < SAMPLES; i += 1) {
-    const started = performance.now();
-    void fn().catch(() => {
-      // The awaited call in `seedAndMeasure` reports a broken read; this only
-      // keeps a rejection from being unhandled.
-    });
-    out.push(performance.now() - started);
-  }
-  return out;
+function timeOnce(fn: () => Promise<unknown>): number {
+  const started = performance.now();
+  void fn().catch(() => {
+    // The awaited call in `seed` reports a broken read; this only keeps a
+    // rejection from being unhandled.
+  });
+  return performance.now() - started;
 }
 
-interface Scale {
+interface Seeded {
   readonly corpus: GeneratedCaptureCorpus;
   /** Rows each read MATCHED — a read that matches nothing measures nothing. */
   readonly matched: Record<string, number>;
+  readonly run: Record<ReadName, () => Promise<number>>;
+}
+
+interface Scale extends Seeded {
   readonly samples: Record<string, number[]>;
 }
 
@@ -147,7 +147,7 @@ type ReadName = (typeof READS)[number];
 /** The three session-scoped reads that must stay flat; the fourth is the control. */
 const FLAT_READS: readonly ReadName[] = ['typesInSession', 'flatInSession', 'locationsInSession'];
 
-async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Scale> {
+async function seed(store: OwnedTempStore, events: number): Promise<Seeded> {
   const db = store.open();
   const corpus = seedCaptureCorpus(db, {
     events,
@@ -190,12 +190,40 @@ async function seedAndMeasure(store: OwnedTempStore, events: number): Promise<Sc
   };
 
   const matched: Record<string, number> = {};
-  const samples: Record<string, number[]> = {};
+  for (const name of READS) matched[name] = await run[name]();
+  return { corpus, matched, run };
+}
+
+/**
+ * `SAMPLES` timings of every read against BOTH stores, INTERLEAVED: each read is
+ * timed once against each store per iteration, alternating which store goes
+ * first, so the two minima a ratio divides are drawn from the same stretch of
+ * wall time. `scale-budgets.test.ts` sets out why that is load-bearing, and
+ * activity-page-scale.test.ts why each read takes its samples in a run of its
+ * own rather than every read being cycled on each iteration.
+ */
+function sampleInterleaved(small: Seeded, large: Seeded): [Scale, Scale] {
+  const smallSamples: Record<string, number[]> = {};
+  const largeSamples: Record<string, number[]> = {};
   for (const name of READS) {
-    matched[name] = await run[name]();
-    samples[name] = measure(run[name]);
+    const onSmall: number[] = [];
+    const onLarge: number[] = [];
+    for (let i = 0; i < SAMPLES; i += 1) {
+      if (i % 2 === 0) {
+        onSmall.push(timeOnce(small.run[name]));
+        onLarge.push(timeOnce(large.run[name]));
+      } else {
+        onLarge.push(timeOnce(large.run[name]));
+        onSmall.push(timeOnce(small.run[name]));
+      }
+    }
+    smallSamples[name] = onSmall;
+    largeSamples[name] = onLarge;
   }
-  return { corpus, matched, samples };
+  return [
+    { ...small, samples: smallSamples },
+    { ...large, samples: largeSamples },
+  ];
 }
 
 describe(`/findings read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to ${LARGE_EVENTS.toLocaleString('en-US')} events`, () => {
@@ -207,8 +235,9 @@ describe(`/findings read costs from ${SMALL_EVENTS.toLocaleString('en-US')} to $
   beforeAll(async () => {
     smallStore = createTempStore('aka-findings-scale-small-');
     largeStore = createTempStore('aka-findings-scale-large-');
-    small = await seedAndMeasure(smallStore, SMALL_EVENTS);
-    large = await seedAndMeasure(largeStore, LARGE_EVENTS);
+    const seededSmall = await seed(smallStore, SMALL_EVENTS);
+    const seededLarge = await seed(largeStore, LARGE_EVENTS);
+    [small, large] = sampleInterleaved(seededSmall, seededLarge);
   }, SEED_TIMEOUT_MS);
 
   afterAll(() => {

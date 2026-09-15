@@ -99,6 +99,18 @@ function toggleable(props: Partial<Parameters<typeof DetectionDetailView>[0]> = 
   return detail({ onToggleEnabled: () => undefined, ...props });
 }
 
+/**
+ * The opening tag of the "Add rule" button, picked out by its own slot rather
+ * than position — the same reasoning as switchTag above.
+ */
+function addRuleTag(html: string): string {
+  const tag = buttonTags(html).find((t) => t.includes('data-slot="add-rule"'));
+  expect(tag, 'the pane rendered no Add rule button').toBeDefined();
+  return tag ?? '';
+}
+
+const CUSTOM_DETAIL: DetectionDetail = { ...DETAIL, origin: 'custom' };
+
 function list(floorsById?: ReadonlyMap<string, DetectionPolicyFloor>): string {
   return renderToStaticMarkup(
     createElement(DetectionsListView, {
@@ -304,5 +316,34 @@ describe('DetectionsListView under a control-plane floor', () => {
   it('leaves a row whose choice already satisfies the floor unmarked', () => {
     const html = list(new Map([[ITEM.id, { floor: 'monitor', locked: false }]]));
     expect(html).toBe(list());
+  });
+});
+
+describe('the Add rule button', () => {
+  it('enables it for a custom detection whose host wired the write path', () => {
+    const html = detail({ d: CUSTOM_DETAIL, onAddRule: () => undefined });
+    const tag = addRuleTag(html);
+    expect(tag).not.toContain(' disabled=""');
+    expect(tag).not.toContain('title=');
+  });
+
+  it('disables a custom detection whose host offers no write path, with a reason', () => {
+    const html = detail({ d: CUSTOM_DETAIL });
+    const tag = addRuleTag(html);
+    expect(tag).toContain(' disabled=""');
+    expect(tag).toContain('title="Rule authoring is not available here"');
+  });
+
+  it('disables a library detection regardless of the callback, with its own reason', () => {
+    // A library pack is edited by publishing a new version, never in place —
+    // so onAddRule being supplied changes nothing for it.
+    const withCallback = addRuleTag(detail({ onAddRule: () => undefined }));
+    const without = addRuleTag(detail());
+    for (const tag of [withCallback, without]) {
+      expect(tag).toContain(' disabled=""');
+      expect(tag).toContain(
+        'title="Library rules are the registry&#x27;s published snapshot"',
+      );
+    }
   });
 });

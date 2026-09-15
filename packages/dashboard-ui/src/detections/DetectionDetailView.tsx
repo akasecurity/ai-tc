@@ -18,9 +18,34 @@
 //   - enabledError    : the same, for the enable/disable toggle. Its own message
 //     rather than the picker's, because a refusal shown at the wrong control
 //     attributes the organization's constraint to a choice it never touched.
-//   - onOpenUpdate    : present + update available ⇒ Update button in the provenance
+//   - onOpenUpdate    : present + update available ⇒ Update button in the
+//     provenance block below.
+//   - onAddRule       : gates the "Add rule" button's ENABLED state for a
+//     custom detection (`d.origin === 'custom'`) — a library pack is edited
+//     by publishing a new version, not in place. The button itself always
+//     renders; when the origin disallows it, or it allows it but this callback
+//     is absent, the button stays disabled with a title explaining which of
+//     the two is true, rather than disappearing.
+//   - onEditRules, onDelete : each independently gates the PRESENCE of one
+//     "More" menu item for a custom detection — a host that can author but
+//     not delete (or vice versa) is a real combination, not an all-or-nothing
+//     switch. Absent, that item is not rendered at all (an item has no
+//     disabled state of its own to explain itself in). When NEITHER applies
+//     — a non-custom origin, or a custom one with no callback wired at all —
+//     the "More" control itself falls back to a disabled button with its own
+//     title, the same contract as "Add rule".
 import type { DetectionDetail, DetectionRule } from '@akasecurity/schema';
-import { Button, SeverityBadge, Switch, toneColors } from '@akasecurity/ui-kit';
+import {
+  Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+  SeverityBadge,
+  Switch,
+  toneColors,
+} from '@akasecurity/ui-kit';
 import { type ReactNode, useId } from 'react';
 
 import type { IconComponent } from '../lib/icons.ts';
@@ -93,6 +118,9 @@ export function DetectionDetailView({
   onOpenUpdate,
   onRecheck,
   unknownHint,
+  onAddRule,
+  onEditRules,
+  onDelete,
 }: {
   d: DetectionDetail;
   onOpenRule: (id: string) => void;
@@ -122,6 +150,29 @@ export function DetectionDetailView({
   // App-supplied copy for the unknown provenance state (see ProvenanceBlock) —
   // the "how an inventory gets recorded" hint differs per app.
   unknownHint?: ReactNode;
+  /**
+   * Adds a rule to this detection. Enables the "Add rule" button for a
+   * custom detection (`d.origin === 'custom'`) — a library pack is edited by
+   * publishing a new version, never in place. The button always renders;
+   * absent (even on a custom detection), or the detection is a library one,
+   * it stays disabled with a title explaining why, rather than hiding.
+   */
+  onAddRule?: (() => void) | undefined;
+  /**
+   * Opens rule editing for this detection. Same origin gate as onAddRule,
+   * but item-scoped rather than button-scoped: present ⇒ an "Edit rules"
+   * item in the "More" menu; absent ⇒ no such item, not a disabled one. If
+   * this and onDelete are both absent (or the origin disallows both), the
+   * "More" control itself falls back to a disabled button with its own
+   * title.
+   */
+  onEditRules?: (() => void) | undefined;
+  /**
+   * Deletes this detection outright. Same origin gate and item-scoped
+   * absence as onEditRules; present ⇒ a "Delete detection" item in the
+   * "More" menu.
+   */
+  onDelete?: (() => void) | undefined;
 }) {
   // What is ENFORCED, not merely what is stored: a store written before this
   // machine was attached can hold an assignment weaker than the organization
@@ -148,6 +199,26 @@ export function DetectionDetailView({
   // Two panes on one page must not mint the same id; this one is the anchor the
   // Switch's aria-describedby points at.
   const staysOnId = useId();
+
+  // A library pack is edited by publishing a new version, never in place — so
+  // every authoring action is gated on the detection being one this host
+  // itself created, and independently on the host having actually wired the
+  // write path for THAT action (see the props block above).
+  const isCustomOrigin = d.origin === 'custom';
+  const canAddRule = isCustomOrigin && onAddRule !== undefined;
+  const canEditRules = isCustomOrigin && onEditRules !== undefined;
+  const canDelete = isCustomOrigin && onDelete !== undefined;
+  const hasMoreActions = canEditRules || canDelete;
+  const addRuleTitle = !isCustomOrigin
+    ? "Library rules are the registry's published snapshot"
+    : canAddRule
+      ? undefined
+      : 'Rule authoring is not available here';
+  // Only read when hasMoreActions is false, so which of the two applies is
+  // exactly the isCustomOrigin split — same shape as addRuleTitle above.
+  const moreTitle = !isCustomOrigin
+    ? 'Library detections are managed from the library'
+    : 'Detection actions are not available here';
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -197,15 +268,52 @@ export function DetectionDetailView({
                 />
               )}
             </div>
-            <Button
-              variant="ghost"
-              tone="neutral"
-              size="icon"
-              aria-label="More"
-              className="size-8.5 text-text-3"
-            >
-              <MoreVertIcon aria-hidden focusable={false} />
-            </Button>
+            {hasMoreActions ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    tone="neutral"
+                    size="icon"
+                    aria-label="More"
+                    className="size-8.5 text-text-3"
+                  >
+                    <MoreVertIcon aria-hidden focusable={false} />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {canEditRules && (
+                    <DropdownMenuItem onClick={onEditRules}>Edit rules</DropdownMenuItem>
+                  )}
+                  {canEditRules && canDelete && <DropdownMenuSeparator />}
+                  {canDelete && (
+                    // No destructive variant on the primitive itself (see
+                    // dropdown-menu.tsx) — the tone token is applied here.
+                    <DropdownMenuItem
+                      onClick={onDelete}
+                      className="text-sev-critical-ink focus:bg-sev-critical-fill focus:text-sev-critical-ink"
+                    >
+                      Delete detection
+                    </DropdownMenuItem>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
+              // Disabled rather than absent or silently inert, same contract
+              // as "Add rule" below: an enabled, title-less button that does
+              // nothing on click reads as broken, not as "no action here".
+              <Button
+                variant="ghost"
+                tone="neutral"
+                size="icon"
+                aria-label="More"
+                disabled
+                title={moreTitle}
+                className="size-8.5 text-text-3"
+              >
+                <MoreVertIcon aria-hidden focusable={false} />
+              </Button>
+            )}
           </div>
         </div>
         {staysOn && (
@@ -271,13 +379,21 @@ export function DetectionDetailView({
               {d.rules.length}
             </span>
             <span className="flex-1" />
-            {/* Rule authoring is not available — the button stays disabled. */}
+            {/*
+              Stays rendered and DISABLED (never absent) in every state that
+              cannot add a rule: hiding it would read as "this pane cannot
+              author", the wrong lesson both for a library pack (edited by
+              publishing a new version) and for a custom one whose host simply
+              has not wired onAddRule yet.
+            */}
             <Button
               variant="outline"
               tone="neutral"
               size="sm"
-              disabled
-              title="Rule authoring coming soon"
+              disabled={!canAddRule}
+              title={addRuleTitle}
+              onClick={onAddRule}
+              data-slot="add-rule"
             >
               <PlusIcon aria-hidden focusable={false} />
               Add rule

@@ -784,6 +784,35 @@ jobs:
           Get-PSDrive -PSProvider FileSystem |
             Where-Object { $null -ne $_.Used } |
             ForEach-Object { "drive $($_.Name): used $([math]::Round($_.Used / 1GB))GB free $([math]::Round($_.Free / 1GB))GB" }
+          # What one SQLite commit costs on each of the two places a test could
+          # put a store: the default TEMP (the OS disk) and RUNNER_TEMP (the
+          # second disk the checkout lives on). Measured here, BEFORE the next
+          # step moves TEMP, so `os.tmpdir()` is still the default. Twenty WAL
+          # commits at SQLite's default `synchronous`, the product's own setting,
+          # so each one is a real flush. The two targets alternate which goes
+          # first each round, so a runner that slows down part-way charges both.
+          "per-commit ms by target: $(node -e "const { DatabaseSync } = require('node:sqlite'); const fs = require('node:fs'); const path = require('node:path'); const os = require('node:os'); const targets = [['tmpdir', os.tmpdir()], ['RUNNER_TEMP', process.argv[1]]]; const rounds = targets.map(() => []); for (let r = 0; r < 5; r += 1) { for (let k = 0; k < targets.length; k += 1) { const i = r % 2 === 0 ? k : targets.length - 1 - k; const dir = fs.mkdtempSync(path.join(targets[i][1], 'aka-commit-probe-')); const db = new DatabaseSync(path.join(dir, 'probe.db')); db.exec('PRAGMA journal_mode = WAL; CREATE TABLE t (x INTEGER)'); const insert = db.prepare('INSERT INTO t VALUES (?)'); const start = performance.now(); for (let n = 0; n < 20; n += 1) insert.run(n); rounds[i].push((performance.now() - start) / 20); db.close(); fs.rmSync(dir, { recursive: true, force: true }); } } process.stdout.write(targets.map((t, i) => { const s = [...rounds[i]].sort((a, b) => a - b); return t[0] + ' ' + t[1] + ' median ' + s[2].toFixed(2) + ' (' + rounds[i].map((v) => v.toFixed(1)).join(', ') + ')'; }).join('; '))" $env:RUNNER_TEMP)"
+
+      # Every temp store the suites below create goes wherever `os.tmpdir()`
+      # points, and by default on this image that is the OS disk (C:), while the
+      # checkout, RUNNER_TEMP and the free space are on a second disk (D:). The
+      # store suites are fsync-bound — a store opened with no template writes
+      # every migration as its own commit, a few hundred WAL frames — and the
+      # runner sampler caught this leg's stalls with the CPU mostly idle and the
+      # disk queue at 2-10: the test phase waits on the disk, not the cores.
+      # The per-commit figures in "Runner facts" above say what that disk
+      # choice costs on the run in hand.
+      #
+      # Written to GITHUB_ENV rather than as step `env:`, so every later step —
+      # all three test invocations, and anything added between them — inherits
+      # it without having to remember to. turbo's strict env mode passes TEMP
+      # and TMP through by default (see the note in turbo.json), so the vitest
+      # workers see it too. Node's `os.tmpdir()` on Windows reads TEMP, then TMP.
+      - name: Put TEMP on the runner's second disk
+        run: |
+          "TEMP=$env:RUNNER_TEMP" | Add-Content $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" | Add-Content $env:GITHUB_ENV
+          "TEMP and TMP for later steps: $env:RUNNER_TEMP"
 
       # DETACHED, not Start-Job. Each `run:` step is its own PowerShell, and a
       # background job dies with the session that created it — so a job started

@@ -75,9 +75,16 @@ describe('the tap bootstrap handshake', () => {
       seen.push(event.data as { type?: string });
     };
     port.start();
-    await new Promise((resolve) => {
-      setTimeout(resolve, 0);
-    });
+    // Wait for the report itself rather than for one timer. A Node MessagePort
+    // delivers through its own event-loop source, so a single timer can fire
+    // before the queued messages are dispatched and read an empty list. The
+    // wait is bounded, so a tap that never reports fails on the assertion
+    // below rather than on the runner's timeout.
+    for (let turn = 0; turn < 400 && !seen.some((m) => m.type === 'patched'); turn += 1) {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    }
 
     expect(seen.map((m) => m.type)).toContain('patched');
   });

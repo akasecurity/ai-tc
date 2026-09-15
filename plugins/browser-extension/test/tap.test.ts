@@ -36,15 +36,21 @@ function harness() {
   const send = (message: unknown): void => {
     channel.port1.postMessage(message);
   };
-  // Let the microtask/message queue drain.
-  const settle = (): Promise<void> =>
-    new Promise((resolve) => {
-      setTimeout(resolve, 0);
-    });
+  // Let queued port messages drain. Two timer turns rather than one: a Node
+  // MessagePort delivers through its own event-loop source, which a single
+  // timer can outrun, and an absence check after a settle that ran too early
+  // passes without having looked.
+  const settle = async (): Promise<void> => {
+    for (let turn = 0; turn < 2; turn += 1) {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    }
+  };
   const of = <T extends TapToPage['type']>(type: T) =>
     seen.filter((m): m is Extract<TapToPage, { type: T }> => m.type === type);
-  // For a drain that spans many reads, where one macrotask is not enough. Gives
-  // up rather than hanging, so a property that never holds fails on its own
+  // For a drain that spans more turns than one settle() waits for. Gives up
+  // rather than hanging, so a property that never holds fails on its own
   // assertion instead of on the runner's timeout.
   const waitFor = async (predicate: () => boolean): Promise<void> => {
     for (let attempt = 0; attempt < 400; attempt += 1) {
@@ -776,7 +782,11 @@ describe('installTap: the fetch half', () => {
       // assertion that fails when the terminator does not wait.
       //
       // Drained by advancing the fake clock, NOT by the harness's settle():
-      // that one is a setTimeout(0), which under fake timers never fires.
+      // that calls setTimeout, which vi.useFakeTimers() replaces, so its timer
+      // would fire only when the fake clock moves. Each advance by 0 waits one
+      // real turn and moves the fake clock not at all, so the deadline still
+      // cannot fire; two of them, for the reason settle() takes two.
+      await vi.advanceTimersByTimeAsync(0);
       await vi.advanceTimersByTimeAsync(0);
       expect(h.seen.filter((m) => m.type !== 'ready' && m.type !== 'patched')).toEqual([]);
 

@@ -14,7 +14,7 @@
 // specifier.
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import * as esbuild from 'esbuild';
@@ -182,7 +182,14 @@ const FIXTURE_ROOT = join(root, 'test', 'fixtures');
 
 function isInsideFixtureRoot(outPath) {
   const rel = relative(FIXTURE_ROOT, resolve(outPath));
-  return rel === '' || (!rel.startsWith('..') && !rel.startsWith('/'));
+  // Judged on the path TEXT after `resolve`, so no alias the filesystem
+  // resolves is seen: a symlink or junction into the fixtures, a case-folded
+  // spelling on a case-insensitive volume, a `subst` drive, a `\\?\` prefix.
+  // Within that, `relative` answers with an ABSOLUTE path when no relative
+  // route exists (a different Windows drive, a UNC share), which is another
+  // root; and a directory merely named `..x` is inside: only `..` itself, or a
+  // leading `..` SEGMENT, climbs out of the root.
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 async function main() {
@@ -212,7 +219,10 @@ async function main() {
   }
 
   const outputPaths = args.survey ? [`${args.out}.keys.txt`, `${args.out}.values.txt`] : [args.out];
-  if (args.survey && isInsideFixtureRoot(args.out)) {
+  // Judged on the files a survey actually writes, not on `--out` itself: an
+  // `--out` ending in `..` resolves above the root but writes `...keys.txt`
+  // inside it.
+  if (args.survey && outputPaths.some(isInsideFixtureRoot)) {
     usage(
       'refusing to write a survey inside test/fixtures/: it carries raw capture content. ' +
         'Write it outside the repository and paste the pruned lines into the approvals files.',

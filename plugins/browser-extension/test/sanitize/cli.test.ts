@@ -1,9 +1,9 @@
 // Drives the built CLI shim as a real child process. Each case gets its own
 // mkdtempSync directory so no test can see another's files.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -92,14 +92,85 @@ describe('sanitize-capture CLI', () => {
     expect(result.stderr).toContain('RAW capture content');
   });
 
+  // The fixtures root is not in the tree at every layer, and the CLI creates no
+  // directories, so a guard that let a survey through would fail on a missing
+  // parent instead of writing it and an absence check would pass without having
+  // looked. Create the root when it is missing, and remove only what was created.
+  function fixturesRootForCase(): { root: string; restore: () => void } {
+    const root = join(PACKAGE_ROOT, 'test', 'fixtures');
+    const created = !existsSync(root);
+    if (created) mkdirSync(root, { recursive: true });
+    return {
+      root,
+      restore: () => {
+        if (created) rmSync(root, { recursive: true, force: true });
+      },
+    };
+  }
+
   it('K1d: --survey refuses an --out inside test/fixtures/', () => {
     const inPath = join(dir, 'in.json');
     writeFileSync(inPath, '{}');
-    const outBase = join(PACKAGE_ROOT, 'test', 'fixtures', 'chatgpt', 'approved');
-    const result = run([...baseArgs(), '--in', inPath, '--out', outBase, '--survey']);
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain('test/fixtures');
-    expect(existsSync(`${outBase}.keys.txt`)).toBe(false);
+    const fixtures = fixturesRootForCase();
+    const outBase = join(fixtures.root, 'approved');
+    const written = [`${outBase}.keys.txt`, `${outBase}.values.txt`];
+    try {
+      expect(existsSync(fixtures.root)).toBe(true);
+      const result = run([...baseArgs(), '--in', inPath, '--out', outBase, '--survey']);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('refusing to write a survey inside');
+      for (const path of written) expect(existsSync(path)).toBe(false);
+    } finally {
+      for (const path of written) rmSync(path, { force: true });
+      fixtures.restore();
+    }
+  });
+
+  it('K1e: --survey refuses an --out in a fixtures directory whose NAME starts with ..', () => {
+    // `..sanitize-cli-probe` is a directory inside test/fixtures/, not a step
+    // above it. A check that reads every `..`-prefixed relative path as outside
+    // lets a survey of raw capture content land in the committed fixtures. The
+    // directory exists before the run, so a guard that let it through would
+    // write the survey there and the absence check below would see it.
+    const inPath = join(dir, 'in.json');
+    writeFileSync(inPath, '{}');
+    const fixtures = fixturesRootForCase();
+    const probeDir = join(fixtures.root, '..sanitize-cli-probe');
+    const outBase = join(probeDir, 'survey');
+    try {
+      mkdirSync(probeDir);
+      expect(existsSync(probeDir)).toBe(true);
+      const result = run([...baseArgs(), '--in', inPath, '--out', outBase, '--survey']);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('refusing to write a survey inside');
+      expect(existsSync(`${outBase}.keys.txt`)).toBe(false);
+    } finally {
+      rmSync(probeDir, { recursive: true, force: true });
+      fixtures.restore();
+    }
+  });
+
+  it('K1f: --survey judges the files it writes, so an --out ending in .. is refused', () => {
+    // `<fixtures>/..` resolves above test/fixtures/, but a survey writes
+    // `${out}.keys.txt`, which is `...keys.txt` INSIDE it. Judging `--out`
+    // alone let that through. The root exists before the run, so a guard that
+    // let it through would write those files and the absence check would see them.
+    const inPath = join(dir, 'in.json');
+    writeFileSync(inPath, '{}');
+    const fixtures = fixturesRootForCase();
+    // Built by hand: `join` would normalise the trailing `..` away.
+    const outBase = `${fixtures.root}${sep}..`;
+    const written = [`${outBase}.keys.txt`, `${outBase}.values.txt`];
+    try {
+      expect(existsSync(fixtures.root)).toBe(true);
+      const result = run([...baseArgs(), '--in', inPath, '--out', outBase, '--survey']);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('refusing to write a survey inside');
+      for (const path of written) expect(existsSync(path)).toBe(false);
+    } finally {
+      for (const path of written) rmSync(path, { force: true });
+      fixtures.restore();
+    }
   });
 
   it('K2: a full run writes bytes identical to sanitizeCapture computed in-test', () => {

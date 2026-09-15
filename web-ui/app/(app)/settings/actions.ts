@@ -34,12 +34,17 @@ import {
   isHistorySyncConsentValid,
   isModelJudgeConsentValid,
   isVaultConsentValid,
+  isWebChatCaptureConsentValid,
   MODEL_JUDGE_PAYLOAD_VERSION,
   parseActionInput,
   RedactFallback,
   SaveSettingsInput,
   VAULT_CONSENT_VERSION,
   VaultInlineReveal,
+  WEB_CHAT_CAPTURE_CONSENT_VERSION,
+  type WebChatCapture,
+  type WebChatCaptureConsentChoice,
+  webChatCaptureOf,
 } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
@@ -234,6 +239,15 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
         // is assigned — so it carries no consent record and is written like any
         // other plain preference.
         redactFallback: redactFallback.data,
+        // The web-chat capture block, rebuilt WHOLE from what is on file at merge
+        // time. applyOnboarding merges at the top level, so a block written with
+        // only the grant in it REPLACES the response mode and the account answer
+        // beside it — neither of which this page has a control for — and an
+        // unrelated save here would silently reset a choice made elsewhere.
+        // Deriving it from `current` inside the lock is what keeps both true at
+        // once: the modes survive, and the grant is judged against the file this
+        // write is about to land on rather than the one the page rendered.
+        webChatCapture: nextWebChatCapture(current, data.webChatCaptureConsent),
       };
     });
   } catch (error) {
@@ -250,6 +264,73 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
   }
   revalidatePath('/settings');
   return { ok: true };
+}
+
+/**
+ * The web-chat capture block to write, given the settings this write is about to
+ * merge into and the answer the page sent.
+ *
+ * A private helper rather than an inline expression only because the block has
+ * three fields and one of them is derived: every export of a `'use server'`
+ * module must be an async Server Action, so this cannot be exported, and it must
+ * be CALLED from inside applyOnboarding's updater — `current` is the file under
+ * the lock, and reading it out beforehand puts the read back outside.
+ *
+ * `responses` and `account` have no control on this page and are carried
+ * forward. The grant is stamped here and never accepted from the client: the
+ * input is the bare answer, so a caller-supplied acknowledgedAt or version has
+ * no path in. 'granted' records the current time at the current version, unless
+ * a still-valid grant is already on file, which is kept as-is so its
+ * acknowledgedAt survives unrelated edits. 'revoked' drops the grant entirely —
+ * future recording stops, and what is already stored stays — and on a machine
+ * that never answered there is no grant to drop, so the key stays absent.
+ * 'unchanged' is what an untouched row sends, and it asserts nothing either way.
+ *
+ * The branches are ordered so that anything OTHER than the two affirmative
+ * answers drops the grant. `webChatCaptureConsent` is required on the input, so
+ * there is nothing else to arrive — but if that requirement were ever relaxed,
+ * an absent answer must fall to the safe side rather than mint a grant nobody
+ * gave.
+ */
+function nextWebChatCapture(
+  current: WorkspaceSettings,
+  choice: WebChatCaptureConsentChoice,
+): WebChatCapture | undefined {
+  // 'unchanged' is what every UNRELATED save sends, and it is answered from the
+  // file rather than from the defaults. `webChatCaptureOf` falls back to the
+  // schema's defaults when the key is absent, so defaulting first meant that
+  // toggling vault reveal on a machine that had never answered this question
+  // wrote `{ responses: 'with-findings', account: false }` into settings.json —
+  // contradicting "absent until the user answers", which is what every reader
+  // of the file takes an absent key to mean, and which the three sibling grants
+  // beside this one all honour.
+  //
+  // Returning the file's own value also keeps the rebuild-whole property below
+  // intact: there is nothing to rebuild when the answer is "no change".
+  if (choice === 'unchanged') return current.webChatCapture;
+  // The same holds for a revoke on a machine that never answered: there is no
+  // grant to drop, and falling through would write that defaulted block with no
+  // consent in it. The page sends 'revoked' for a row toggled on and back off
+  // before saving, so this is reachable. Only 'granted' creates the block.
+  if (choice !== 'granted' && current.webChatCapture === undefined) return undefined;
+  const block = webChatCaptureOf(current);
+  const consent =
+    choice === 'granted'
+      ? isWebChatCaptureConsentValid(block.consent)
+        ? block.consent
+        : {
+            acknowledgedAt: new Date().toISOString(),
+            version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+          }
+      : undefined;
+  // Spread conditionally rather than assigning `undefined`: an explicit
+  // undefined is a present key under exactOptionalPropertyTypes, and the absence
+  // of this key is what "not granted" means to every reader of the file.
+  return {
+    responses: block.responses,
+    account: block.account,
+    ...(consent === undefined ? {} : { consent }),
+  };
 }
 
 /**

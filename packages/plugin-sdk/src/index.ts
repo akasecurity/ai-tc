@@ -15,13 +15,18 @@ export {
 } from './data-dir.ts';
 export type {
   CaptureRecord,
+  CaptureStatusReader,
   DataGateway,
   LocalStoreMaintenance,
   RuleProbeVerdictEntry,
   ScanLedgerEntry,
   ScanLedgerState,
 } from './data-gateway.ts';
-export { hasLocalStoreMaintenance, offersMaintenance } from './data-gateway.ts';
+export {
+  hasLocalStoreMaintenance,
+  offersCaptureStatusReader,
+  offersMaintenance,
+} from './data-gateway.ts';
 export type { BuildEventInput } from './events.ts';
 export { buildIngestEvent, contentHashOf } from './events.ts';
 export type { FindingKeyInput } from './finding-key.ts';
@@ -195,6 +200,17 @@ export {
 // Posture evaluation re-exported for @akasecurity/plugin-runtime, which may not
 // depend on @akasecurity/detections directly (the SDK is its one detections door).
 export { configPostureDefinitions, evaluateConfigPosture } from '@akasecurity/detections';
+// Web-capture posture re-exported for the SAME reason: the browser extension's
+// native-messaging host is a plugin-sdk consumer, not a detections one.
+export type { WebCaptureSiteReport, WebCaptureState } from '@akasecurity/detections';
+export {
+  deriveWebCaptureState,
+  DRIFT_MIN_PARSE_FAILURES,
+  reportedCaptureDocumentForSite,
+  WEB_CAPTURE_DRIFT_RULE,
+  WEB_CAPTURE_DRIFT_STATES,
+  webCaptureReport,
+} from '@akasecurity/detections';
 // Egress extraction re-exported so the scanner can consume the pure
 // extraction API without importing @akasecurity/detections directly — the
 // scanner's package wall only allows plugin-sdk.

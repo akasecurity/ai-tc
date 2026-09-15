@@ -2,6 +2,7 @@ import type { BlockedDetectionInput, ResolutionInput } from '@akasecurity/persis
 import { llmCallId, toEgressIngestRequest, toolCallId } from '@akasecurity/persistence';
 import type {
   CaptureRecord,
+  CaptureStatusReader,
   DataGateway,
   LocalStoreMaintenance,
   RuleProbeVerdictEntry,
@@ -31,6 +32,7 @@ import type {
   PolicyBundle,
   ProjectFilesScan,
   RecordProjectEgressInput,
+  ReportedCaptureDocument,
   ResolvedInventory,
   RuleProbeVerdict,
   SessionTokenReport,
@@ -104,8 +106,12 @@ export interface AttachedDataGatewayDeps {
    * gateway would make that answer a lie — the runtime would call a member
    * that is not there. Requiring it here turns that into a compile error at
    * the one construction site instead of a TypeError inside a hook.
+   *
+   * `CaptureStatusReader` for the same reason: `readCaptureStatuses` below
+   * delegates to it, so a `local` that cannot answer would make the
+   * delegation a lie too.
    */
-  local: DataGateway & LocalStoreMaintenance;
+  local: DataGateway & LocalStoreMaintenance & CaptureStatusReader;
   client: AttachedClient;
   // Reads the out-of-band-pulled organization policy bundle from the on-disk cache.
   // Null when the cache is cold (no pull yet) — the local bundle then stands
@@ -959,6 +965,10 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
 
   async readSessionProvider(sessionId: string): Promise<string | undefined> {
     return this.deps.local.readSessionProvider(sessionId);
+  }
+
+  async readCaptureStatuses(): Promise<ReportedCaptureDocument[]> {
+    return this.deps.local.readCaptureStatuses();
   }
 
   async facets(): Promise<InventoryFacets> {

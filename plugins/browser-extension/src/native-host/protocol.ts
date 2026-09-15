@@ -1,18 +1,21 @@
-import type { BlockedDetectionRef } from '@akasecurity/plugin-sdk';
-import type { ActionTaken } from '@akasecurity/schema';
-import { EventKind, SOURCE_TOOL } from '@akasecurity/schema';
+import type { BlockedDetectionRef, WebCaptureState } from '@akasecurity/plugin-sdk';
+import type { ActionTaken, WebEnforcementState, WebSourceTool } from '@akasecurity/schema';
+import {
+  EventKind,
+  WebCaptureStatus,
+  WebExchange,
+  WebSourceTool as WebSourceToolEnum,
+} from '@akasecurity/schema';
 
-// The web chat UIs this native host serves — the narrower SET of wire ids this
-// RPC contract accepts, taken FROM the registry rather than spelled again beside
-// it. content.ts's provider registry is the one place new web providers (Gemini,
-// DeepSeek, T3 Chat, …) get added, and each addition extends this list +
-// WEB_TOOL_TO_SOURCE in host.ts together.
-//
-// Narrowing by listing members keeps that property while making the ids
-// themselves unspellable here: a value that is not a SourceTool cannot be added
-// to this list, and a member respelled upstream moves this union with it.
-const WEB_SOURCE_TOOLS = [SOURCE_TOOL.ChatGpt, SOURCE_TOOL.ClaudeAi] as const;
-export type WebSourceTool = (typeof WEB_SOURCE_TOOLS)[number];
+// The web chat UIs this native host serves. The SET now lives in
+// @akasecurity/schema as a `SourceTool.extract([...])` narrowing, so the CLI's
+// status surface enumerates the same sites without a second copy of the list.
+const WEB_SOURCE_TOOLS = WebSourceToolEnum.options;
+export type { WebEnforcementState, WebSourceTool } from '@akasecurity/schema';
+// Re-exported so the popup — which cannot import @akasecurity/plugin-sdk in a
+// browser bundle — can still type its own state handling against the real
+// vocabulary. A type import erases, so this costs the bundle nothing.
+export type { WebCaptureState } from '@akasecurity/plugin-sdk';
 
 export interface SessionStartRequest {
   type: 'session_start';
@@ -35,6 +38,39 @@ export interface CaptureRequest {
   text: string;
 }
 
+// One assistant turn as the isolated-world bridge parsed it off the network.
+// Carries what the DOM path cannot see: the model, the token counts the site
+// itself reported, the server-side tool calls, and the response text.
+//
+// `exchange` is a `WebExchange` on the wire. This interface is what
+// background.ts relays and is not a substitute for parsing the payload where
+// it lands — `isHostRequest` below re-validates with `WebExchange.safeParse`
+// before this host ever acts on one.
+export interface ExchangeRequest {
+  type: 'exchange';
+  requestId: string;
+  sessionId: string;
+  tool: WebSourceTool;
+  exchange: WebExchange;
+}
+
+// What one tab's interception is actually doing. Reported so a tap that
+// installed and sees nothing is distinguishable from a tab nobody used —
+// installation alone is not visibility.
+export interface CaptureStatusRequest {
+  type: 'capture_status';
+  requestId: string;
+  sessionId: string;
+  tool: WebSourceTool;
+  status: WebCaptureStatus;
+}
+
+/** What every web chat site's capture is doing, for the popup. */
+export interface CaptureStateRequest {
+  type: 'capture_state';
+  requestId: string;
+}
+
 export interface PingRequest {
   type: 'ping';
   requestId: string;
@@ -45,7 +81,14 @@ export interface HealthRequest {
   requestId: string;
 }
 
-export type HostRequest = SessionStartRequest | CaptureRequest | PingRequest | HealthRequest;
+export type HostRequest =
+  | SessionStartRequest
+  | CaptureRequest
+  | ExchangeRequest
+  | CaptureStatusRequest
+  | CaptureStateRequest
+  | PingRequest
+  | HealthRequest;
 
 export interface SessionStartResponse {
   type: 'session_start';
@@ -67,6 +110,56 @@ export interface CaptureResponse {
   text?: string | null;
   ruleIds: string[];
   blockedReferences?: BlockedDetectionRef[];
+}
+
+export interface ExchangeResponse {
+  type: 'exchange';
+  requestId: string;
+  ok: true;
+  // Whether this host was permitted to record the exchange AND could key it.
+  // False means nothing was written and nothing will be; `skipped` says which.
+  accepted: boolean;
+  skipped?: 'no-consent' | 'unkeyable';
+  // How many leaves this host SUBMITTED for this exchange — not a row count.
+  // Both leaf ids are content-addressed, so a re-observed turn collapses onto
+  // the rows already there (INSERT OR IGNORE for a tool call, an
+  // UPSERT-take-MAX for an llm call); and every gateway write on this path is
+  // fail-open, so a dropped write is not reflected here either.
+  llmCalls: number;
+  toolCalls: number;
+  // The response capture's decision. Absent when no reply text was captured
+  // (no responseText, or the stored `responses` mode is 'never'). INFORMATIONAL:
+  // the reply has already been rendered, so nothing is enforced on it here.
+  responseAction?: ActionTaken;
+  ruleIds: string[];
+}
+
+export interface CaptureStatusResponse {
+  type: 'capture_status';
+  requestId: string;
+  ok: true;
+  accepted: boolean;
+  skipped?: 'no-consent';
+}
+
+export interface CaptureStateResponse {
+  type: 'capture_state';
+  requestId: string;
+  ok: true;
+  // False when no valid web-chat capture consent is recorded: nothing is being
+  // observed or stored, which is a different answer from "nothing was seen".
+  consented: boolean;
+  sites: {
+    tool: WebSourceTool;
+    state: WebCaptureState;
+    // What the DOM enforcement half reported about itself. Carried beside
+    // `state` rather than folded into it: that vocabulary describes the NETWORK
+    // path, and a tab can be reading the site perfectly while enforcing
+    // nothing. Absent when this site has never reported.
+    enforcement?: WebEnforcementState;
+    // Absent when this site has never reported.
+    observedAt?: string;
+  }[];
 }
 
 export interface PingResponse {
@@ -97,7 +190,14 @@ export interface ErrorResponse {
 }
 
 export type HostResponse =
-  SessionStartResponse | CaptureResponse | PingResponse | HealthResponse | ErrorResponse;
+  | SessionStartResponse
+  | CaptureResponse
+  | ExchangeResponse
+  | CaptureStatusResponse
+  | CaptureStateResponse
+  | PingResponse
+  | HealthResponse
+  | ErrorResponse;
 
 function isWebSourceTool(value: unknown): value is WebSourceTool {
   return (WEB_SOURCE_TOOLS as readonly unknown[]).includes(value);
@@ -136,10 +236,31 @@ export function isHostRequest(value: unknown): value is HostRequest {
         isEventKind(v.kind) &&
         typeof v.text === 'string'
       );
+    // A successful safeParse proves the payload is ACCEPTABLE, not that the
+    // narrowed object carries the schema's defaults — `toolCalls` and
+    // `truncated` are `.default(...)`, and a guard does not rewrite its input.
+    // The handler re-parses and reads `parsed.data`; nothing may read
+    // `request.exchange` / `request.status` directly.
+    case 'exchange':
+      return (
+        typeof v.sessionId === 'string' &&
+        isWebSourceTool(v.tool) &&
+        WebExchange.safeParse(v.exchange).success
+      );
+    case 'capture_status':
+      return (
+        typeof v.sessionId === 'string' &&
+        isWebSourceTool(v.tool) &&
+        WebCaptureStatus.safeParse(v.status).success
+      );
+    case 'capture_state':
     case 'ping':
     case 'health':
       return true;
     default:
+      // A request type this contract does not define at all (extension/host
+      // version skew, or a stray value). Refused here so runHost answers it
+      // with 'unrecognized request' rather than routing it to handleRequest.
       return false;
   }
 }

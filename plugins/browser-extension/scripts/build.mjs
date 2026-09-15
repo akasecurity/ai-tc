@@ -8,7 +8,7 @@
 import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import * as esbuild from 'esbuild';
 
@@ -25,6 +25,10 @@ const BROWSER_ENTRIES = {
   // test/tap-bundle.test.ts reads this emitted file expecting a tap and
   // nothing more.
   tap: 'src/tap.ts',
+  // The isolated-world half of the network capture. Its own entry because the
+  // manifest loads it as a separate content script at document_start, so its
+  // window listener is in place before the tap posts its handshake.
+  bridge: 'src/bridge.ts',
 };
 
 // The endpoints the MAIN-world tap forwards, compiled INTO the bundle rather
@@ -38,16 +42,48 @@ const BROWSER_ENTRIES = {
 // the pattern text, and the tap runs on pages whose own script chooses the
 // origins it fetches.
 //
-// Empty today, because no adapter declares an endpoint yet — so the shipped tap
-// matches nothing and forwards nothing. When adapters gain their network half,
-// derive the list here from src/providers/registry.ts so the two cannot drift;
-// nothing about it is hand-written in src/tap.ts, which only declares the name
-// and an empty fallback.
-function tapEndpoints() {
-  return [];
+// DERIVED from src/providers/registry.ts, never written here: the adapters are
+// what declare a site's endpoints, and a second hand-kept copy is a tap that
+// silently observes something other than what the adapters parse. The
+// derivation and every check on it live in src/tap-endpoints.ts, which this
+// imports directly (Node strips the types) so there is no second transformation
+// to get wrong.
+//
+// It REFUSES rather than falling back. An empty table is indistinguishable from
+// a working tap that matches nothing, so a build that cannot read the registry
+// has to stop: a silent `[]` here ships an extension that reports itself
+// installed and observes no traffic at all.
+//
+// Every `path` here must be LINEAR, and that is a rule about where it runs.
+// The tap compiles each one to `new RegExp('^(?:…)')` and tests it
+// SYNCHRONOUSLY on the page's own fetch/send call path, against a path and
+// query the PAGE chose — the same exposure the isolated-scan bound exists for,
+// except the cost lands on the user's tab rather than on a hook, where nothing
+// can interrupt it and there is no deadline to blow. So: anchored, no nested
+// quantifiers, and no alternation over overlapping prefixes. The patterns are
+// repo-authored, which is why this is a discipline note and not a hole — a
+// pattern that cannot be written that way belongs behind the same probe
+// battery a pulled pack goes through, not in this table.
+async function tapEndpoints() {
+  const module = pathToFileURL(join(root, 'src', 'tap-endpoints.ts')).href;
+  let table;
+  try {
+    ({ TAP_ENDPOINTS: table } = await import(module));
+  } catch (cause) {
+    throw new Error(
+      'cannot read the adapter registry to generate the tap endpoint table — refusing to ' +
+        'build a tap that would match nothing',
+      { cause },
+    );
+  }
+  if (!Array.isArray(table)) {
+    throw new Error('the adapter registry produced no endpoint table — refusing to build');
+  }
+  return table;
 }
 
 async function buildBrowser() {
+  const endpoints = await tapEndpoints();
   const entryPoints = Object.fromEntries(
     Object.entries(BROWSER_ENTRIES).map(([name, file]) => [name, join(root, file)]),
   );
@@ -58,7 +94,7 @@ async function buildBrowser() {
     define: {
       // Substituted into src/tap.ts's `declare const`. Only the tap references
       // the name, so the other entries are unaffected.
-      AKA_TAP_ENDPOINTS: JSON.stringify(tapEndpoints()),
+      AKA_TAP_ENDPOINTS: JSON.stringify(endpoints),
     },
     bundle: true,
     // IIFE everywhere (background included): MV3 service workers don't need

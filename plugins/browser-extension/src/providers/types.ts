@@ -1,9 +1,85 @@
+import type { WebExchange } from '@akasecurity/schema';
+
 import type { WebSourceTool } from '../native-host/protocol.ts';
+
+// Which half of a site's traffic a matched request belongs to. 'conversation'
+// is one assistant turn; 'account' is plan/quota, which nothing reads yet.
+export type EndpointKind = 'conversation' | 'account';
+
+// One request shape an adapter wants forwarded.
+//
+// The host is declared SEPARATELY from the path rather than written into one
+// pattern, and that separation is the whole point: a pattern tested against a
+// whole URL matches any origin that happens to carry the pattern text, in its
+// path or in a query parameter. The tap binds the host exactly and anchors the
+// path at its start, so neither half can float onto somebody else's traffic.
+// `host` must be one of the adapter's own `hostnames`; src/tap-endpoints.ts
+// refuses the table otherwise.
+export interface ProviderEndpoint {
+  readonly host: string;
+  readonly path: RegExp;
+  readonly kind: EndpointKind;
+}
+
+/**
+ * Which of an adapter's own endpoints claimed this exchange, and the URL that
+ * matched it.
+ *
+ * `endpoint` is the adapter's OWN declaration BY REFERENCE, not a copy: a site
+ * served over several routes branches on identity rather than re-matching a
+ * pattern it already wrote, and two routes of the same `kind` are otherwise
+ * indistinguishable. chatgpt.com is the worked example — its anonymous and
+ * authenticated turn routes are both `conversation` and share no parser, one
+ * streaming HTML frames and the other Server-Sent Events.
+ *
+ * `url` is the absolute request URL as the tap forwarded it. Some sites carry
+ * ids only there: claude.ai's conversation uuid is a path segment and appears
+ * nowhere in the request body.
+ */
+export interface MatchedExchange {
+  readonly url: string;
+  readonly endpoint: ProviderEndpoint;
+}
+
+// What an adapter recovered from an outbound request body. Partial by design:
+// a field the adapter did not recognise is absent rather than guessed, and
+// `requiredPathsSeen` is the adapter's own verdict on whether the body still
+// carries the shape it parses — the earliest signal that a site moved.
+export interface ParsedRequest {
+  prompt?: string;
+  model?: string;
+  conversationId?: string;
+  requiredPathsSeen: boolean;
+}
+
+// One assistant turn as an adapter recovered it. The bridge owns the two fields
+// left out: `startedAt` (the adapter may know a site-reported time, and the
+// bridge stamps the request's own arrival when it does not) and `truncated`,
+// which is a fact about the ceilings the bytes crossed rather than about the
+// site's payload.
+export type WebExchangeSummary = Omit<WebExchange, 'startedAt' | 'truncated'> & {
+  startedAt?: string;
+};
+
+// The incremental response parser. `push` is called once per forwarded chunk
+// and `end` once, after the last one.
+export interface ExchangeAssembler {
+  push(chunk: string): void;
+  // `null` when nothing recognisable was recovered. A summary cannot be
+  // half-built — its message id is the natural key the stored row hashes on —
+  // so an adapter that found no turn says so rather than inventing one.
+  end(): WebExchangeSummary | null;
+}
 
 // The one seam a new web provider (Gemini, DeepSeek, T3 Chat, …) implements —
 // content.ts is written once, against this interface, and never touches a
 // specific site's DOM directly. See providers/registry.ts for how a new
 // adapter gets wired in.
+//
+// The network half below is called only from the isolated-world bridge, always
+// inside its try/catch: a method that throws costs that one exchange and is
+// counted as a parse failure, and a field that cannot be recovered is left
+// undefined rather than thrown over.
 export interface ProviderAdapter {
   readonly id: WebSourceTool;
   // The hostnames this adapter drives. Enumerable rather than a matches()
@@ -40,4 +116,56 @@ export interface ProviderAdapter {
   // listeners; the interceptor arms a one-shot bypass before calling this so
   // the re-entrant event passes through instead of looping (see interceptor.ts).
   submit(composer: HTMLElement): boolean;
+
+  // NETWORK HALF
+
+  // Which requests this adapter wants to see. The MAIN-world tap's build-time
+  // table is generated from exactly these (src/tap-endpoints.ts), so an adapter
+  // that declares none is observed on no traffic at all — which is the honest
+  // state for a site whose contract has not been surveyed. The bridge reads the
+  // same declarations to decide what a forwarded URL IS.
+  readonly endpoints: readonly ProviderEndpoint[];
+
+  // The JSON key paths this adapter depends on, named so the bridge can report
+  // which one went missing rather than only that parsing failed. `request`
+  // entries are recorded when parseRequest reports its shape unmet; `response`
+  // entries are resolved as dotted paths against the summary parseStream
+  // produced, and one that reads undefined is a drift signal.
+  readonly requiredPaths: {
+    readonly request: readonly string[];
+    readonly response: readonly string[];
+  };
+
+  // The exact strings this adapter's parsers switch on — the `case` labels of
+  // parseStream's dispatch, the path segments its endpoints anchor on, the
+  // discriminator values parseRequest reads. The capture sanitiser preserves a
+  // captured value verbatim only when it matches one of these EXACTLY and the
+  // detector does not flag it; nothing here is a pattern, a prefix or a
+  // substring. Adding one means updating EXPECTED_PROTOCOL_TOKENS in
+  // test/helpers/fixture-bar.ts in the same diff.
+  readonly protocolTokens: readonly string[];
+
+  // The outbound message. Never throws for a body it does not recognise —
+  // it returns what it found, with requiredPathsSeen false.
+  //
+  // `exchange` names which endpoint matched and at what URL, as it does for
+  // parseStream. A site whose routes take different request shapes — form
+  // encoding on one, JSON on the other — cannot tell them apart from the body
+  // alone, which is the same bind parseStream was in.
+  //
+  // Prefer parseStream for anything read off the URL rather than the body.
+  // This seam is REACHED ONLY FOR A BODY THE BRIDGE ADMITTED: a request with
+  // no body, or one over REQUEST_BODY_MAX_BYTES, opens an exchange that never
+  // calls this. A field recovered here would go missing on exactly those
+  // turns, while the same field recovered in parseStream survives them.
+  parseRequest(body: string, exchange: MatchedExchange): ParsedRequest;
+
+  // A fresh assembler per exchange. Streams arrive in pieces that do not
+  // respect event boundaries, so framing is the assembler's business rather
+  // than the bridge's.
+  //
+  // `exchange` names which endpoint matched and at what URL. An adapter with
+  // one route may ignore it; one with several cannot work without it, since
+  // nothing else distinguishes them once the bytes start arriving.
+  parseStream(exchange: MatchedExchange): ExchangeAssembler;
 }

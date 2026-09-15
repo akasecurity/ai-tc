@@ -26,14 +26,17 @@ import { printable } from './control-plane.ts';
  * times and payload versions are stamped server-side, so a client cannot
  * backdate a grant or claim a version it never saw.
  *
- * `modelJudgeConsent` and `historySyncConsent` are REQUIRED, and that is a
+ * `modelJudgeConsent`, `historySyncConsent` and `webChatCaptureConsent` are
+ * REQUIRED, and that is a
  * security property rather than a strictness preference. `historySyncConsent`
  * is a three-state enum rather than a boolean for a related reason, set out on
  * HistorySyncConsentChoice — but it is required in exactly the same way. `modelJudgeConsent` was
  * optional, and the action treated an absent field as `false` — so any caller
  * that simply did not mention it silently REVOKED a live egress grant. A
  * required boolean makes a revocation something the caller has to say, and every
- * egress grant added since carries the same requirement for the same reason.
+ * consent grant added since carries the same requirement for the same reason —
+ * including `webChatCaptureConsent`, which gates recording rather than egress
+ * and is required on identical grounds.
  */
 /**
  * The history-sync answer, as three EXPLICIT states rather than a boolean.
@@ -72,12 +75,37 @@ export const ModelJudgeConsentChoice = z
   .meta({ id: 'ModelJudgeConsentChoice' });
 export type ModelJudgeConsentChoice = z.infer<typeof ModelJudgeConsentChoice>;
 
+/**
+ * The web-chat capture answer — whether the browser extension may write down
+ * what it observes on a chat site. Three states for the reason
+ * HistorySyncConsentChoice gives: this form submits every field on every save,
+ * so a row nobody touched has to be able to say "leave it alone".
+ *
+ * A boolean here deletes the grant fleet-wide on everyone's next unrelated save
+ * the moment WEB_CHAT_CAPTURE_CONSENT_VERSION is bumped, and rewrites
+ * acknowledgedAt on edits that had nothing to do with it. An OPTIONAL field is
+ * worse still and is the defect this whole shape carries forward from:
+ * modelJudgeConsent was optional and an absent field was read as `false`, so any
+ * caller that simply did not mention it silently revoked a live grant. The
+ * answer is a required three-state, so revoking is something a caller has to
+ * say.
+ *
+ * It is the bare answer, never the stored record: the acknowledgement time and
+ * the version are stamped server-side, so a client cannot backdate a grant or
+ * claim a version it never saw.
+ */
+export const WebChatCaptureConsentChoice = z
+  .enum(['granted', 'revoked', 'unchanged'])
+  .meta({ id: 'WebChatCaptureConsentChoice' });
+export type WebChatCaptureConsentChoice = z.infer<typeof WebChatCaptureConsentChoice>;
+
 export const SaveSettingsInput = z.object({
   historicalAccess: z.string(),
   modelJudgeConsent: ModelJudgeConsentChoice,
   historySyncConsent: HistorySyncConsentChoice,
   vaultConsent: z.string(),
   vaultInlineReveal: z.string(),
+  webChatCaptureConsent: WebChatCaptureConsentChoice,
   // Widened to `string` like its neighbours rather than typed as
   // `RedactFallback`, on this module's own layering rule: shape here, VALUE at
   // the call site, so the domain check receives the type it was written for.

@@ -32,6 +32,7 @@ describe('HARNESS_IDS', () => {
       'chatgpt',
       'claudeai',
       'api',
+      'ai-tc-sdk',
     ]);
     // Membership stays derived: the literal above may reorder the vocabulary but
     // may not drop or invent a member.

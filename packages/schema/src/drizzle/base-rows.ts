@@ -130,6 +130,7 @@ export interface BaseAuditEventRow<TTime = number> {
     // LITERALS (drizzle/adherence.test.ts), and a type alias does not satisfy
     // that comparison. Adding a member means editing both.
     | 'model_refusal'
+    | 'request_decision'
     | 'config_scan'
     | 'capture_status';
   hostId: string | null;

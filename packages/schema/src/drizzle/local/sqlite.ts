@@ -350,6 +350,7 @@ export const auditEvents = sqliteTable(
         'code_change',
         'tool_use',
         'model_refusal',
+        'request_decision',
         'config_scan',
         'capture_status',
       ],

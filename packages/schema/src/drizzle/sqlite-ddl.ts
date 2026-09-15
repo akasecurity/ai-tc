@@ -169,6 +169,6 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
   },
   {
     tag: '0035_share_destination_provider_id',
-    sql: 'ALTER TABLE `share_destination` ADD `provider_id` text;--> statement-breakpoint\nCREATE INDEX `idx_share_destination_provider` ON `share_destination` (`provider_id`) WHERE `provider_id` IS NOT NULL;',
+    sql: 'ALTER TABLE `share_destination` ADD `provider_id` text;',
   },
 ];

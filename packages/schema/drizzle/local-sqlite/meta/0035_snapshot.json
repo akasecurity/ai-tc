@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "f5cd75ac-2ae9-4355-9e38-b9ad7a3c321e",
+  "id": "40e821fe-d73d-4b26-ac9b-72837176f74c",
   "prevId": "d2e49817-6ef1-40ce-b59b-4c26eb7bf547",
   "tables": {
     "audit_events": {
@@ -2706,14 +2706,6 @@
             "host"
           ],
           "isUnique": true
-        },
-        "idx_share_destination_provider": {
-          "name": "idx_share_destination_provider",
-          "columns": [
-            "provider_id"
-          ],
-          "isUnique": false,
-          "where": "`provider_id` IS NOT NULL"
         }
       },
       "foreignKeys": {},

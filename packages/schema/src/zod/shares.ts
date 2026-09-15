@@ -211,23 +211,6 @@ export const ShareDestinationGroup = z
   .meta({ id: 'ShareDestinationGroup' });
 export type ShareDestinationGroup = z.infer<typeof ShareDestinationGroup>;
 
-// ─── Shape 7b: ShareProviderRollup ────────────────────────────────────────────
-
-/** One provider's hosts folded into a single read-side rollup, by providerId. */
-export const ShareProviderRollup = z
-  .object({
-    providerId: z.string(),
-    name: z.string(),
-    category: z.string(),
-    hostCount: z.number().int().positive(),
-    endpointCount: z.number().int().nonnegative(),
-    callSiteCount: z.number().int().nonnegative(),
-    lastSeen: z.iso.datetime(),
-    hosts: z.array(z.string()),
-  })
-  .meta({ id: 'ShareProviderRollup' });
-export type ShareProviderRollup = z.infer<typeof ShareProviderRollup>;
-
 // ─── Shape 8: ListShareDestinationsResponse ──────────────────────────────────
 
 /** Grouped branch — `groups` ordered provider → internal → external → ip. */

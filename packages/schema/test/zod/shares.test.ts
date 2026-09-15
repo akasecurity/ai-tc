@@ -23,7 +23,6 @@ import {
   ShareDestinationDetail,
   ShareDestinationGroup,
   ShareDestinationSummary,
-  ShareProviderRollup,
   SharesStats,
   ShareTrustLevel,
   Transport,
@@ -426,27 +425,6 @@ describe('ShareDestinationGroup', () => {
       ShareDestinationGroup.safeParse({ kind: 'provider', total: 1, items: [validSummary] })
         .success,
     ).toBe(true);
-  });
-});
-
-describe('ShareProviderRollup', () => {
-  const validRollup = {
-    providerId: 'github',
-    name: 'GitHub',
-    category: 'Source control',
-    hostCount: 2,
-    endpointCount: 5,
-    callSiteCount: 9,
-    lastSeen: '2026-07-03T21:58:00Z',
-    hosts: ['github.com', 'raw.githubusercontent.com'],
-  };
-
-  it('parses a valid provider rollup', () => {
-    expect(ShareProviderRollup.safeParse(validRollup).success).toBe(true);
-  });
-
-  it('rejects a zero hostCount', () => {
-    expect(ShareProviderRollup.safeParse({ ...validRollup, hostCount: 0 }).success).toBe(false);
   });
 });
 

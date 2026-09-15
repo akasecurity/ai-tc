@@ -742,9 +742,6 @@ export const shareDestination = sqliteTable(
   (t) => [
     index('idx_share_destination_kind').on(t.kind),
     uniqueIndex('uq_share_destination_host').on(t.host),
-    index('idx_share_destination_provider')
-      .on(t.providerId)
-      .where(sql`\`provider_id\` IS NOT NULL`),
   ],
 );
 

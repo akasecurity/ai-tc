@@ -19,7 +19,6 @@ import type {
   ShareDestinationDetail,
   ShareDestinationGroup,
   ShareDestinationSummary,
-  ShareProviderRollup,
   SharesStats,
   ShareTrustLevel,
   Transport,
@@ -415,54 +414,6 @@ export class SqliteSharesRepository implements SharesReadPort {
     const endpoints = this.fetchEndpoints([dest.id]);
     const callSites = this.fetchCallSites(endpoints.map((e) => e.id));
     return Promise.resolve(buildDetail(dest, endpoints, callSites));
-  }
-
-  /**
-   * Every provider's hosts folded into one rollup, one row per distinct
-   * `provider_id` over `kind = 'provider'` destinations. `name`/`category` are
-   * taken from the row with the greatest `last_seen` in the group (SQLite's
-   * bare-column min/max rule), `endpointCount`/`callSiteCount` sum the same
-   * per-host counts `fetchEndpoints` computes, and `hosts` is alphabetically
-   * ordered and distinct. Ordered by callSiteCount desc, then providerId asc.
-   */
-  listProviders(): Promise<ShareProviderRollup[]> {
-    const rows = allRows<{
-      providerId: string;
-      name: string;
-      category: string;
-      hostCount: number;
-      endpointCount: number;
-      callSiteCount: number;
-      lastSeenMs: number;
-      hosts: string;
-    }>(
-      this.db.prepare(
-        `SELECT d.provider_id AS providerId, d.name AS name, d.category AS category,
-                count(DISTINCT d.id) AS hostCount,
-                count(DISTINCT e.id) AS endpointCount,
-                count(c.id) AS callSiteCount,
-                MAX(d.last_seen) AS lastSeenMs,
-                group_concat(DISTINCT d.host ORDER BY d.host) AS hosts
-         FROM share_destination d
-         LEFT JOIN share_endpoint e ON e.destination_id = d.id
-         LEFT JOIN share_call_site c ON c.endpoint_id = e.id
-         WHERE d.kind = 'provider' AND d.provider_id IS NOT NULL
-         GROUP BY d.provider_id
-         ORDER BY callSiteCount DESC, providerId ASC`,
-      ),
-    );
-    return Promise.resolve(
-      rows.map((r) => ({
-        providerId: r.providerId,
-        name: r.name,
-        category: r.category,
-        hostCount: r.hostCount,
-        endpointCount: r.endpointCount,
-        callSiteCount: r.callSiteCount,
-        lastSeen: new Date(r.lastSeenMs).toISOString(),
-        hosts: r.hosts === '' ? [] : r.hosts.split(','),
-      })),
-    );
   }
 
   // ─── Writes ────────────────────────────────────────────────────────────────

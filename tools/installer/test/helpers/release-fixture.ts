@@ -211,19 +211,26 @@ function assertZipWritten(archivePath: string): void {
 }
 
 /**
- * Run one `Compress-Archive`, retrying the CLR aborts that PowerShell raises on
- * some hosts for a command that is correct.
+ * Run one `Compress-Archive`, retrying the CLR startup abort `pwsh` can die with
+ * before a correct command has run.
  *
- * On at least one CI runner architecture, `pwsh` intermittently dies before
- * `Compress-Archive` does anything, with a `FileLoadException` naming an
- * assembly whose PublicKeyToken has been TRUNCATED mid-string. The token is a
- * fixed 16-hex-digit constant, so a short one is not a version mismatch or a
- * missing module — it is a corrupted read of the assembly name, and the process
- * aborts rather than exiting. It is not the command: the same call succeeds on
- * the next attempt, and succeeds on other legs of the same run against the same
- * commit; one observed job had one call abort and another complete.
+ * The abort is pwsh dying inside .NET startup, before `Compress-Archive` does
+ * anything: `Unhandled exception.`, a `FileLoadException` "The given assembly
+ * name was invalid" naming an assembly whose PublicKeyToken is cut short, then
+ * SIGABRT. The damaged name is not this command's. It is carried by the startup
+ * profile pwsh reads at every start and rewrites on exit, one file per cache
+ * home (see `privateCacheHome` in run-installer.ts, and stored-zip.ts for what
+ * was measured). A start that crashes on that file leaves it byte-identical, so
+ * a retry reads the same damage: this retry is a bounded backstop, not a
+ * recovery to count on.
  *
- * So the retry is keyed on the SIGNAL, which is what makes it narrow. A child
+ * `writeArchive` runs this for real only on Windows. Off Windows it builds the
+ * zip in Node (stored-zip.ts) and reaches this only through injected seams. On
+ * Windows PowerShell derives that cache from LOCALAPPDATA rather than
+ * XDG_CACHE_HOME, and nothing has been observed aborting there; this child is
+ * not given a `privateCacheHome`, which on win32 would set nothing.
+ *
+ * The retry is keyed on the SIGNAL, which is what makes it narrow. A child
  * killed by a signal reports `status: null, signal: 'SIGABRT'`, while every way
  * `Compress-Archive` can genuinely fail — a path that does not exist, a
  * destination that cannot be written, a module it cannot autoload — is caught by
@@ -240,13 +247,13 @@ function assertZipWritten(archivePath: string): void {
  *
  * It matters more with a retry than without one. `-Force` only permits
  * clobbering, and it is applied when the destination stream is opened — AFTER
- * parameter binding and module autoload, which is where this abort fires. So an
- * attempt that dies early never reaches it, and a truncated file from an earlier
- * attempt survives untouched. What consumes this is `writeRelease`, which hashes
- * whatever bytes are on disk into SHA256SUMS: a truncated archive would be
- * listed CORRECTLY, leaving a release that verifies against itself and proves
- * nothing. Starting every attempt from no file at all makes that unreachable
- * rather than unlikely.
+ * .NET startup, parameter binding and module autoload, and this abort fires in
+ * the first of those. So an attempt that dies early never reaches it, and a
+ * truncated file from an earlier attempt survives untouched. What consumes this
+ * is `writeRelease`, which hashes whatever bytes are on disk into SHA256SUMS: a
+ * truncated archive would be listed CORRECTLY, leaving a release that verifies
+ * against itself and proves nothing. Starting every attempt from no file at all
+ * makes that unreachable rather than unlikely.
  */
 export function compressArchive(
   exe: string,

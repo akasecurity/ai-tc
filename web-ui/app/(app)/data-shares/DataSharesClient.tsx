@@ -6,6 +6,7 @@ import {
   DataSharesTableView,
   NeedsReviewListView,
   NeedsReviewStripView,
+  PROVIDER_ROW_PREFIX,
   SearchField,
   type ShareSelection,
 } from '@akasecurity/dashboard-ui';
@@ -131,6 +132,25 @@ export function DataSharesClient({
   // this falls back to the first remaining group without an extra render.
   // Undefined (not just an empty groups[]) whenever there's nothing to tab.
   const activeGroup = groups.find((g) => g.kind === activeKind) ?? groups[0];
+
+  // Pins a selection's provider row open once it resolves to a folded host.
+  // DataSharesTableView's own `holdsSelection` holds the row only while the
+  // drawer shows that host, so the pin lives in state and outlives the close
+  // (Review from the needs-review sheet, or a `?dest=…` load). The state is
+  // adjusted during render, keyed on the previous `selectedDest`, and starts
+  // at `null` so a page loaded with `?dest=…` already set pins on its first
+  // render too.
+  const [prevSelectedDest, setPrevSelectedDest] = useState<string | null>(null);
+  if (selectedDest !== prevSelectedDest) {
+    setPrevSelectedDest(selectedDest);
+    if (selectedDest !== null) {
+      const item = groups.flatMap((g) => g.items).find((d) => d.id === selectedDest);
+      if (item !== undefined && item.providerId !== null && item.kind === 'provider') {
+        const key = PROVIDER_ROW_PREFIX + item.providerId;
+        setExpanded((m) => (m[key] ? m : { ...m, [key]: true }));
+      }
+    }
+  }
 
   const openDest = makeOpenDestHandler(push, q);
   const closeDrawer = makeCloseDrawerHandler(push, q, setDecisionError);

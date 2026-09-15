@@ -174,6 +174,44 @@ describe('DataSharesClient', () => {
     expect(html).not.toContain('hosts');
   });
 
+  // A single item is never folded regardless of providerId, so the case above
+  // cannot tell a real providerId: null guard from one that folds on name —
+  // this pairs two items sharing a NAME but carrying providerId: null, which
+  // would fold under a name-keyed guard and must not fold under the real one.
+  it('renders two plain destination rows when providerId is null, even sharing a name', () => {
+    const dup = (id: string, host: string) => ({
+      id,
+      kind: 'external' as const,
+      name: 'Duplicate Co',
+      host,
+      providerId: null,
+      category: 'External domain',
+      trust: 'unverified' as const,
+      status: 'allowed' as const,
+      isCustom: false,
+      lastSeen: '2026-07-01T00:00:00.000Z',
+      endpointCount: 1,
+      callSiteCount: 1,
+      transports: ['https' as const],
+      dataClasses: ['pii' as const],
+      review: { needsReview: false, reasons: [] },
+      network: null,
+      endpoints: [],
+    });
+    const html = render({
+      groups: [
+        {
+          kind: 'external' as const,
+          total: 2,
+          items: [dup('dup-a', 'a.example.com'), dup('dup-b', 'b.example.com')],
+        },
+      ],
+    });
+    expect(html).toContain('a.example.com');
+    expect(html).toContain('b.example.com');
+    expect(html).not.toContain('hosts');
+  });
+
   it('renders the needs-review strip once review items are present', () => {
     const html = render({ groups: [group('provider', 1)], review: [reviewItem()] });
     expect(html).toContain('Needs review');

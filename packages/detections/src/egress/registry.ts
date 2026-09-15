@@ -618,6 +618,10 @@ export const NON_DATA_HOST_SUFFIXES = [
   'docs.honeycomb.io',
   'docs.splunk.com',
   'help.splunk.com',
+  'docs.cohere.com',
+  'docs.mistral.ai',
+  'docs.mixpanel.com',
+  'docs.mongodb.com',
 ];
 
 // Exact match or dotted-suffix match — 'stripe.com' matches 'api.stripe.com'

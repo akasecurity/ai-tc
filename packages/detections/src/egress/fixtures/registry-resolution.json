@@ -677,6 +677,46 @@
         "name": "Splunk",
         "category": "Observability"
       }
+    },
+    {
+      "label": "docs.cohere.com still resolves to Cohere via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "host": "docs.cohere.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Cohere",
+        "category": "LLM provider"
+      }
+    },
+    {
+      "label": "docs.mistral.ai still resolves to Mistral AI via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "host": "docs.mistral.ai",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Mistral AI",
+        "category": "LLM provider"
+      }
+    },
+    {
+      "label": "docs.mixpanel.com still resolves to Mixpanel via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "host": "docs.mixpanel.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Mixpanel",
+        "category": "Analytics"
+      }
+    },
+    {
+      "label": "docs.mongodb.com still resolves to MongoDB Atlas via resolveHost (isNonDataHost is checked only for REF hits, by resolveEndpointHit, not by resolveHost itself)",
+      "host": "docs.mongodb.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "MongoDB Atlas",
+        "category": "Database SaaS"
+      }
     }
   ],
   "sdks": [

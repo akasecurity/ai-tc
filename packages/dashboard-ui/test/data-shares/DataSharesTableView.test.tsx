@@ -74,16 +74,19 @@ describe('DataSharesTableView', () => {
     expect(rowMarkup(html, DEST_ROW('203.0.113.0'))).not.toContain('203.0.113.0 · ');
   });
 
-  it('gives every row of one provider name the same lettermark color, even with no providerId', () => {
+  it('gives every row of one provider name the same lettermark color, regardless of providerId', () => {
     const html = render({
       group: group({
         items: [
+          // A store holds destinations resolved before and after provider_id
+          // existed, so this pairs a null-providerId row with a populated one —
+          // an id-keyed hash would color these two differently.
           destination({ id: 'a', name: 'GitHub', host: 'api.github.com', providerId: null }),
           destination({
             id: 'b',
             name: 'GitHub',
             host: 'raw.githubusercontent.com',
-            providerId: null,
+            providerId: 'github',
           }),
         ],
       }),
@@ -320,6 +323,36 @@ describe('DataSharesTableView', () => {
       expect(html).toContain('raw.githubusercontent.com');
     });
 
+    it('gives two same-named hosts of one provider distinct accessible names', () => {
+      const sameName = group({
+        items: [
+          destination({
+            id: 'gh-a',
+            name: 'GitHub',
+            host: 'github.com',
+            providerId: 'github',
+          }),
+          destination({
+            id: 'gh-b',
+            name: 'GitHub',
+            host: 'api.github.com',
+            providerId: 'github',
+          }),
+        ],
+      });
+      const html = render({
+        group: sameName,
+        groupByProvider: true,
+        expanded: { 'provider:github': true },
+      });
+      // A flat row's label falls back to `name`, so two hosts sharing one
+      // provider name would otherwise both read "View details for destination
+      // GitHub" — indistinguishable to a screen reader.
+      expect(html).toContain(DEST_ROW('github.com'));
+      expect(html).toContain(DEST_ROW('api.github.com'));
+      expect(html).not.toContain(DEST_ROW('GitHub'));
+    });
+
     it('opens the provider row on its own while one of its hosts is the drawer selection', () => {
       const selected = render({
         group: twoHostGroup,
@@ -329,7 +362,11 @@ describe('DataSharesTableView', () => {
         drawerOpen: true,
       });
       expect(selected).toContain('raw.githubusercontent.com');
-      expect(rowMarkup(selected, DEST_ROW('GitHub Raw'))).toContain('bg-primary-tint');
+      // A folded host's accessible name is its host, not its (possibly shared)
+      // provider name — see the accessible-name case above.
+      expect(rowMarkup(selected, DEST_ROW('raw.githubusercontent.com'))).toContain(
+        'bg-primary-tint',
+      );
       // The pinned row's toggle is disabled, so a click cannot flip an expansion
       // flag that nothing renders while the selection holds the row open.
       const providerRow = rowMarkup(selected, 'Collapse provider GitHub Raw');

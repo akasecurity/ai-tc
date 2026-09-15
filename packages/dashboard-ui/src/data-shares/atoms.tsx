@@ -124,26 +124,24 @@ export function StatusTag({ status, isCustom }: { status: EgressStatus; isCustom
 
 /**
  * Destination mark: a colored lettermark for known providers (derived from
- * name; colored by `providerId` when the API sends one, so every host of a
- * provider shares the same color), or a tinted icon tile (server / building /
- * pin) for internal domains, external domains and raw IPs. External
- * destinations take the unverified treatment, never internal's.
+ * name — see providerMark for why it never keys the color on the provider
+ * catalog id), or a tinted icon tile (server / building / pin) for internal
+ * domains, external domains and raw IPs. External destinations take the
+ * unverified treatment, never internal's.
  */
 export function DestMark({
   kind,
   trust,
   name,
-  providerId,
   size = 34,
 }: {
   kind: DestinationKind;
   trust: ShareTrustLevel;
   name: string;
-  providerId?: string | null;
   size?: number;
 }) {
   if (kind === 'provider') {
-    const { short, color } = providerMark(name, providerId ?? undefined);
+    const { short, color } = providerMark(name);
     // Same construction as Provider in shared/Provider.tsx — white lettermark on a
     // fixed hex — so it carries the same per-theme inset ring. This palette has no
     // value sitting on a surface color today; the ring is here so the two tiles

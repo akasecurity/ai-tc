@@ -111,7 +111,7 @@ function GroupRow({
   return (
     <TableRow
       onClick={onOpen}
-      aria-label={`View details for destination ${d.name}`}
+      aria-label={`View details for destination ${showHost ? d.host : d.name}`}
       className={cn('cursor-pointer', selected ? 'bg-primary-tint' : 'hover:bg-surface-2')}
     >
       <TableCell className="w-9">
@@ -136,7 +136,7 @@ function GroupRow({
           {showHost && (
             <span className="h-3.5 w-3.5 shrink-0 rounded-bl border-b-[1.5px] border-l-[1.5px] border-border-strong" />
           )}
-          <DestMark kind={d.kind} trust={d.trust} name={d.name} providerId={d.providerId} />
+          <DestMark kind={d.kind} trust={d.trust} name={d.name} />
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span
@@ -197,11 +197,6 @@ function GroupRow({
   );
 }
 
-/** The host with the latest `lastSeen` — non-empty by construction. */
-function mostRecentHost(hosts: ShareDestinationSummary[]): ShareDestinationSummary {
-  return hosts.reduce((a, b) => (b.lastSeen > a.lastSeen ? b : a));
-}
-
 /** The value every host shares, or null once any host disagrees. */
 function sharedValue<T>(
   hosts: ShareDestinationSummary[],
@@ -260,12 +255,9 @@ function ProviderRow({
       </TableCell>
       <TableCell>
         <div className="flex items-center gap-3">
-          <DestMark
-            kind="provider"
-            trust={mostRecentHost(g.hosts).trust}
-            name={g.name}
-            providerId={g.providerId}
-          />
+          {/* Every folded host is kind === 'provider' (see groupByProvider), which always
+              carries trust 'recognized' — DestMark ignores trust for this kind regardless. */}
+          <DestMark kind="provider" trust="recognized" name={g.name} />
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span className="whitespace-nowrap font-semibold text-text">{g.name}</span>

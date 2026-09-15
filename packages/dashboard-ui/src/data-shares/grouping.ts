@@ -1,13 +1,12 @@
 // Pure grouping helper for the Data Shares register: folds the hosts of one
-// provider (matching, non-null `providerId`) into a single expandable row, so
-// a provider with many endpoints doesn't dominate the register with one row
-// per host. A lone provider host is left as a plain destination row — nothing
-// changes for the common case — and destinations with no matched provider
-// (`providerId: null`) are never folded, even when their names happen to
-// match. This is a presentation fold over the rows a page already holds; the
-// store's own provider rollup (`listProviders` in @akasecurity/persistence)
-// answers "how many providers, how many hosts under each" and counts a
-// single-host provider too, which this fold deliberately leaves unfolded.
+// provider (matching, non-null `providerId`, and `kind === 'provider'`) into
+// a single expandable row, so a provider with many endpoints doesn't
+// dominate the register with one row per host. A lone provider host is left
+// as a plain destination row — nothing changes for the common case — and
+// destinations with no matched provider (`providerId: null`) or a non-provider
+// kind sharing a `providerId` by coincidence are never folded, even when
+// their names happen to match. This is a presentation fold over the rows a
+// page already holds, with no store-side counterpart.
 import type { DataClass, ShareDestinationSummary, Transport } from '@akasecurity/schema';
 
 import { hasInsecureTransport } from './meta.ts';
@@ -49,7 +48,6 @@ function buildProviderGroup(providerId: string, hosts: ShareDestinationSummary[]
   const transports: Transport[] = [];
   const dataClasses: DataClass[] = [];
   let insecure = false;
-  let lastSeen = '';
 
   for (const host of hosts) {
     endpointCount += host.endpointCount;
@@ -57,7 +55,6 @@ function buildProviderGroup(providerId: string, hosts: ShareDestinationSummary[]
     for (const t of host.transports) if (!transports.includes(t)) transports.push(t);
     for (const c of host.dataClasses) if (!dataClasses.includes(c)) dataClasses.push(c);
     if (hasInsecureTransport(host.transports)) insecure = true;
-    if (host.lastSeen > lastSeen) lastSeen = host.lastSeen;
   }
 
   // `.reduce` with no seed is typed as returning `T`, never `T | undefined` —
@@ -75,21 +72,28 @@ function buildProviderGroup(providerId: string, hosts: ShareDestinationSummary[]
     callSiteCount,
     transports,
     dataClasses,
-    lastSeen,
+    lastSeen: mostRecent.lastSeen,
     insecure,
   };
 }
 
 /**
- * Folds destinations sharing a non-null `providerId` into one `ProviderGroup`
- * row apiece, at the position of the group's first member. Every other item —
- * a `providerId: null` destination, or the sole host of a provider nobody else
- * shares — passes through as its own `destination` row, unchanged from today.
+ * Folds `kind === 'provider'` destinations sharing a non-null `providerId`
+ * into one `ProviderGroup` row apiece, at the position of the group's first
+ * member. Every other item — a `providerId: null` destination, a
+ * non-provider-kind destination that happens to share a `providerId`, or the
+ * sole host of a provider nobody else shares — passes through as its own
+ * `destination` row, unchanged from today.
  */
 export function groupByProvider(items: ShareDestinationSummary[]): RegisterRow[] {
+  const foldable = (
+    item: ShareDestinationSummary,
+  ): item is ShareDestinationSummary & { providerId: string } =>
+    item.providerId !== null && item.kind === 'provider';
+
   const buckets = new Map<string, ShareDestinationSummary[]>();
   for (const item of items) {
-    if (item.providerId === null) continue;
+    if (!foldable(item)) continue;
     const bucket = buckets.get(item.providerId);
     if (bucket) bucket.push(item);
     else buckets.set(item.providerId, [item]);
@@ -99,12 +103,13 @@ export function groupByProvider(items: ShareDestinationSummary[]): RegisterRow[]
   const emitted = new Set<string>();
 
   for (const item of items) {
-    if (item.providerId !== null) {
-      const bucket = buckets.get(item.providerId) ?? [];
+    if (foldable(item)) {
+      const providerId = item.providerId;
+      const bucket = buckets.get(providerId) ?? [];
       if (bucket.length >= 2) {
-        if (emitted.has(item.providerId)) continue;
-        emitted.add(item.providerId);
-        rows.push({ type: 'provider', group: buildProviderGroup(item.providerId, bucket) });
+        if (emitted.has(providerId)) continue;
+        emitted.add(providerId);
+        rows.push({ type: 'provider', group: buildProviderGroup(providerId, bucket) });
         continue;
       }
     }

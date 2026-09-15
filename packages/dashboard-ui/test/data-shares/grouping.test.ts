@@ -106,6 +106,22 @@ describe('groupByProvider', () => {
     ]);
   });
 
+  // Positive control: two rows sharing a providerId but carrying a non-provider
+  // kind must never fold — a matched provider registry entry only ever
+  // resolves to kind 'provider', so this guards against a stale or
+  // reclassified row that still carries the old providerId.
+  it('never folds destinations sharing a providerId when their kind is not provider', () => {
+    const a = destination({ id: 'a', kind: 'external', providerId: 'p' });
+    const b = destination({ id: 'b', kind: 'external', providerId: 'p' });
+
+    const rows = groupByProvider([a, b]);
+
+    expect(rows).toEqual([
+      { type: 'destination', item: a },
+      { type: 'destination', item: b },
+    ]);
+  });
+
   it('preserves row order at the position of each group’s first member', () => {
     const first = destination({ id: 'first', providerId: null, name: 'First' });
     const ghA = destination({ id: 'gh-a', providerId: 'github', name: 'GitHub A' });

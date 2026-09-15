@@ -4,6 +4,8 @@ import { createAttachClient, createRemoteClient } from '../src/client.ts';
 import { classifyRemoteFailure } from '../src/failure-kind.ts';
 import { RemoteEndpointRefused } from '../src/http.ts';
 import { useLoopbackServer } from './helpers/loopback.ts';
+import { expectNoEchoOf } from './helpers/no-echo.ts';
+import { thrownBy } from './helpers/thrown.ts';
 
 // `createRemoteClient` and `createAttachClient` refuse an endpoint
 // `isSafeEndpoint` (@akasecurity/schema) rejects, at construction — before
@@ -13,21 +15,11 @@ import { useLoopbackServer } from './helpers/loopback.ts';
 const API_KEY = 'not-a-real-key-1a2b3c4d5e6f';
 const UNSAFE_ENDPOINT = 'http://aka.example-org.internal';
 
-/** Capture the error a thunk threw, outside its own catch. */
-function errorFrom(fn: () => unknown): Error | undefined {
-  try {
-    fn();
-    return undefined;
-  } catch (err) {
-    return err as Error;
-  }
-}
-
 describe('createRemoteClient refuses an unsafe endpoint', () => {
   const server = useLoopbackServer();
 
   it('refuses plain http to a real host, as a named, non-retryable error', () => {
-    const err = errorFrom(() => createRemoteClient({ endpoint: UNSAFE_ENDPOINT, apiKey: API_KEY }));
+    const err = thrownBy(() => createRemoteClient({ endpoint: UNSAFE_ENDPOINT, apiKey: API_KEY }));
     expect(err).toBeInstanceOf(RemoteEndpointRefused);
     expect(err?.name).toBe('RemoteEndpointRefused');
     // A local, construction-time refusal — never a verdict from the
@@ -37,9 +29,9 @@ describe('createRemoteClient refuses an unsafe endpoint', () => {
 
   it('names the origin alone in the message, never the full URL', () => {
     const withUserinfo = 'http://user:secret-token@aka.example-org.internal/path?token=abc';
-    const err = errorFrom(() => createRemoteClient({ endpoint: withUserinfo, apiKey: API_KEY }));
+    const err = thrownBy(() => createRemoteClient({ endpoint: withUserinfo, apiKey: API_KEY }));
     expect(err?.message).toContain('http://aka.example-org.internal');
-    expect(err?.message).not.toContain('secret-token');
+    expectNoEchoOf(err?.message, 'secret-token');
     expect(err?.message).not.toContain('/path');
     expect(err?.message).not.toContain('token=abc');
   });
@@ -63,28 +55,38 @@ describe('createRemoteClient refuses an unsafe endpoint', () => {
   });
 
   it('accepts https anywhere, at construction', () => {
-    const err = errorFrom(() =>
+    const err = thrownBy(() =>
       createRemoteClient({ endpoint: 'https://aka.example-org.internal', apiKey: API_KEY }),
     );
     expect(err).toBeUndefined();
+  });
+
+  it('refuses a query string on the endpoint — it silently swallows every route path', () => {
+    // `new URL('https://host?x=1/v1/whoami').pathname` is `/`, not
+    // `/v1/whoami`: the query string absorbs everything appended after it, so
+    // a client built on this endpoint would silently call the wrong route.
+    const err = thrownBy(() =>
+      createRemoteClient({ endpoint: 'https://host?x=1', apiKey: API_KEY }),
+    );
+    expect(err).toBeInstanceOf(RemoteEndpointRefused);
   });
 });
 
 describe('createAttachClient refuses an unsafe endpoint', () => {
   it('refuses plain http to a real host, as a named, non-retryable error', () => {
-    const err = errorFrom(() => createAttachClient({ endpoint: UNSAFE_ENDPOINT }));
+    const err = thrownBy(() => createAttachClient({ endpoint: UNSAFE_ENDPOINT }));
     expect(err).toBeInstanceOf(RemoteEndpointRefused);
     expect(err?.name).toBe('RemoteEndpointRefused');
     expect(classifyRemoteFailure(err)).toBe('invalid-request');
   });
 
   it('accepts http on loopback', () => {
-    const err = errorFrom(() => createAttachClient({ endpoint: 'http://127.0.0.1:1' }));
+    const err = thrownBy(() => createAttachClient({ endpoint: 'http://127.0.0.1:1' }));
     expect(err).toBeUndefined();
   });
 
   it('accepts https anywhere', () => {
-    const err = errorFrom(() =>
+    const err = thrownBy(() =>
       createAttachClient({ endpoint: 'https://aka.example-org.internal' }),
     );
     expect(err).toBeUndefined();

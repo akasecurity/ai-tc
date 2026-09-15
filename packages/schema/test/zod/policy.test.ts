@@ -272,6 +272,7 @@ describe('mergeRaiseOnly — a cached tenant bundle can only tighten a local one
     const remote = [policy({ ruleId: 'r1' }, 'allow', false)];
     const merged = mergeRaiseOnly(local, remote, new Map());
     expect(merged).toEqual(expect.arrayContaining([...local, ...remote]));
+    expect(merged).toHaveLength(2);
   });
 
   it('keeps only the first local policy for a duplicate target', () => {
@@ -348,11 +349,13 @@ describe('ruleCategoryMap — the trust order mergeRaiseOnly floors against', ()
     expect(map.has('unknown')).toBe(false);
   });
 
-  it('is total over an absent (undefined) rules list at any tier', () => {
-    // `PolicyBundle['rules']` is optional, so every tier must tolerate
-    // `undefined` the way `?? []` does.
-    expect(() => ruleCategoryMap(undefined, undefined, undefined)).not.toThrow();
-    expect(ruleCategoryMap(undefined, undefined, undefined).size).toBe(0);
+  it('is total over an absent (undefined) rules list at the wire and local tiers', () => {
+    // `PolicyBundle['rules']` is optional at these two tiers, so both must
+    // tolerate `undefined` the way `?? []` does. The compiled tier is NOT
+    // optional — see ruleCategoryMap's own comment — so it takes `[]` here
+    // rather than `undefined`, which no longer compiles.
+    expect(() => ruleCategoryMap(undefined, undefined, [])).not.toThrow();
+    expect(ruleCategoryMap(undefined, undefined, []).size).toBe(0);
   });
 });
 

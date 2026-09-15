@@ -17,12 +17,14 @@ import {
   DeviceCommandPollResponse,
   IngestAck,
   isSafeEndpoint,
+  originOnly,
   PluginWhoami,
   RecordAuditEventRequest,
   RemoteFailureKind,
   StorePosturePack,
   StorePosturePlugin,
   StorePostureSnapshot,
+  unsafeEndpointReason,
 } from '../../src/zod/control-plane.ts';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -125,6 +127,81 @@ describe('isSafeEndpoint', () => {
     expect(isSafeEndpoint('https://user:pass@aka.example-org.internal')).toBe(false);
     expect(isSafeEndpoint('https://user@aka.example-org.internal')).toBe(false);
     expect(isSafeEndpoint('http://user:pass@localhost:3000')).toBe(false);
+  });
+
+  it('refuses a query string or a fragment, even though a path prefix is fine', () => {
+    // https://host?x=1 + /v1/whoami resolves to `/`, not `/v1/whoami` — see
+    // unsafeEndpointReason's own coverage of that URL below.
+    expect(isSafeEndpoint('https://host?x=1')).toBe(false);
+    expect(isSafeEndpoint('https://host#frag')).toBe(false);
+    expect(isSafeEndpoint('https://host/v1')).toBe(true);
+  });
+});
+
+// ─── unsafeEndpointReason ──────────────────────────────────────────────────────
+
+describe('unsafeEndpointReason', () => {
+  it('is null exactly where isSafeEndpoint is true — the two cannot diverge', () => {
+    for (const [endpoint, safe] of [
+      ['https://aka.example-org.internal', true],
+      ['https://localhost:8443', true],
+      ['http://localhost:3000', true],
+      ['http://127.0.0.1:3000', true],
+      ['http://[::1]:3000', true],
+      ['http://aka.example-org.internal', false],
+      ['http://localhost.example.com', false],
+      ['ftp://example.com', false],
+      ['not a url', false],
+      ['https://user:pass@aka.example-org.internal', false],
+      ['https://host?x=1', false],
+    ] as const) {
+      expect(unsafeEndpointReason(endpoint) === null).toBe(safe);
+      expect(isSafeEndpoint(endpoint)).toBe(safe);
+    }
+  });
+
+  it('reports unparseable for a string that is not a URL at all', () => {
+    expect(unsafeEndpointReason('not a url')).toBe('unparseable');
+  });
+
+  it('reports userinfo ahead of every other reason, including an insecure scheme', () => {
+    expect(unsafeEndpointReason('https://user:pass@aka.example-org.internal')).toBe('userinfo');
+    expect(unsafeEndpointReason('https://user@aka.example-org.internal')).toBe('userinfo');
+    expect(unsafeEndpointReason('http://user:pass@localhost:3000')).toBe('userinfo');
+    // Userinfo on an otherwise-insecure endpoint reports as userinfo, not
+    // insecure — the checks are ordered, and userinfo comes first.
+    expect(unsafeEndpointReason('http://user:pass@aka.example-org.internal')).toBe('userinfo');
+  });
+
+  it('reports query-or-fragment, and a path prefix alone stays allowed', () => {
+    expect(unsafeEndpointReason('https://host?x=1')).toBe('query-or-fragment');
+    expect(unsafeEndpointReason('https://host#frag')).toBe('query-or-fragment');
+    expect(unsafeEndpointReason('https://host/v1')).toBeNull();
+  });
+
+  it('reports insecure for plaintext to a real network, and for a foreign scheme', () => {
+    expect(unsafeEndpointReason('http://aka.example-org.internal')).toBe('insecure');
+    // A host merely SPELLED like loopback is a different host.
+    expect(unsafeEndpointReason('http://localhost.example.com')).toBe('insecure');
+    expect(unsafeEndpointReason('ftp://example.com')).toBe('insecure');
+  });
+});
+
+// ─── originOnly ────────────────────────────────────────────────────────────
+
+describe('originOnly', () => {
+  it('keeps protocol and host only — no userinfo, path, query or fragment', () => {
+    expect(originOnly('https://user:pass@aka.example-org.internal:8443/path?x=1#frag')).toBe(
+      'https://aka.example-org.internal:8443',
+    );
+  });
+
+  it('keeps a bare origin unchanged', () => {
+    expect(originOnly('https://aka.example-org.internal')).toBe('https://aka.example-org.internal');
+  });
+
+  it('falls back to a fixed marker for a string that does not parse as a URL', () => {
+    expect(originOnly('not a url')).toBe('(unparseable endpoint)');
   });
 });
 

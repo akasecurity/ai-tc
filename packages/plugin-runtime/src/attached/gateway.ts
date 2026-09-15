@@ -29,6 +29,7 @@ import type {
   ProjectFilesScan,
   RecordProjectEgressInput,
   ResolvedInventory,
+  Rule,
   RuleProbeVerdict,
   SessionTokenReport,
   SimpleDetectionPolicy,
@@ -137,7 +138,18 @@ export interface AttachedDataGatewayDeps {
 // `@akasecurity/schema`, beside the policy shapes and `DEFAULT_ACTIONS` they
 // are built from; that package cannot reach `bundledDetections()`
 // (`@akasecurity/plugin-sdk`), so this module supplies its rules, flattened,
-// as `ruleCategoryMap`'s compiled-in tier.
+// as `ruleCategoryMap`'s compiled-in tier — required now, not optional, so a
+// call site that forgot it fails to compile rather than clamping nothing.
+
+// Lazily memoised at module scope: `bundledDetections()` already caches the
+// pack array itself, but the flatten below was repeated on every
+// `getPolicyBundle()` call regardless — one allocation and one pass per
+// process, not one per cache hit.
+let bundledRulesFlatCache: readonly Rule[] | undefined;
+function bundledRulesFlat(): readonly Rule[] {
+  bundledRulesFlatCache ??= bundledDetections().flatMap((pack) => pack.rules);
+  return bundledRulesFlatCache;
+}
 
 /**
  * Attached mode: the plugin wired to a control plane, LOCAL-FIRST.
@@ -832,11 +844,7 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
       policies: mergeRaiseOnly(
         local.policies,
         cached.policies,
-        ruleCategoryMap(
-          cached.rules,
-          local.rules,
-          bundledDetections().flatMap((pack) => pack.rules),
-        ),
+        ruleCategoryMap(cached.rules, local.rules, bundledRulesFlat()),
       ),
       customKeywords: [...local.customKeywords, ...cached.customKeywords],
       // TAKEN FROM THE CACHE, unlike the two fields below — and the asymmetry

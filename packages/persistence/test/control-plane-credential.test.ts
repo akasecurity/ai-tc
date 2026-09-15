@@ -27,6 +27,8 @@ import {
 } from '../src/control-plane-credential.ts';
 import { DATA_FILE_MODE } from '../src/paths.ts';
 import { applyOnboarding } from '../src/settings.ts';
+import { errorFrom } from './helpers/errors.ts';
+import { expectNoEchoOf } from './helpers/no-echo.ts';
 import { useTempStore } from './helpers/temp-store.ts';
 
 const ENDPOINT = 'https://aka.example-org.internal';
@@ -122,6 +124,23 @@ describe('write then read', () => {
     expect(() => {
       writeControlPlaneCredential(store.settingsDir, unsafe);
     }).toThrow();
+    // A refused write leaves nothing behind for a later read to find.
+    expect(readControlPlaneCredentialState(store.settingsDir).usable).toBe(false);
+  });
+
+  it('refuses an endpoint carrying a password without echoing it in the refusal', () => {
+    const withPassword = {
+      ...credential,
+      endpoint: 'https://svc:SUPER-SECRET-PASSWORD@aka.example-org.internal',
+    };
+    const err = errorFrom(() => {
+      writeControlPlaneCredential(store.settingsDir, withPassword);
+    });
+    // Positive control: the origin still reaches the message, and the refusal
+    // names the userinfo cause — this is not merely "the message is empty".
+    expect(err?.message).toContain('https://aka.example-org.internal');
+    expect(err?.message).toContain('username or password');
+    expectNoEchoOf(err?.message, 'SUPER-SECRET-PASSWORD');
     // A refused write leaves nothing behind for a later read to find.
     expect(readControlPlaneCredentialState(store.settingsDir).usable).toBe(false);
   });

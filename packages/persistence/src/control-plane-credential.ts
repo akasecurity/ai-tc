@@ -6,11 +6,14 @@ import type {
   ControlPlaneConnection,
   CredentialState,
   CredentialUnusableReason,
+  UnsafeEndpointReason,
 } from '@akasecurity/schema';
 import {
   ATTACHED_CREDENTIAL_FILENAME,
   AttachedCredential as CredentialSchema,
   isSafeEndpoint,
+  originOnly,
+  unsafeEndpointReason,
 } from '@akasecurity/schema';
 
 import { DATA_FILE_MODE, ensureDataDirSync, writeOwnerOnlyFileSync } from './paths.ts';
@@ -248,6 +251,25 @@ export function readControlPlaneCredential(
 }
 
 /**
+ * The plain-language reason `writeControlPlaneCredential` refused an endpoint,
+ * beneath `refusing to store a control-plane credential for <origin>:` — never
+ * the raw endpoint, since the `userinfo` case exists to keep a password
+ * carried on the URL out of this message.
+ */
+function unsafeEndpointRefusal(reason: UnsafeEndpointReason): string {
+  switch (reason) {
+    case 'unparseable':
+      return 'that does not look like a web address.';
+    case 'userinfo':
+      return 'the address carries a username or password, which must not be stored alongside the credential.';
+    case 'query-or-fragment':
+      return 'the address must be an origin, optionally with a path, not a query string or fragment.';
+    case 'insecure':
+      return 'an access key must not be stored for a non-HTTPS endpoint (http is accepted only for a loopback deployment).';
+  }
+}
+
+/**
  * Write (or overwrite) the credential, owner-only.
  *
  * Overwrites silently: re-attaching an attached machine is how a credential is
@@ -266,9 +288,11 @@ export function writeControlPlaneCredential(
   settingsDir: string,
   credential: AttachedCredential,
 ): void {
-  if (!isSafeEndpoint(credential.endpoint)) {
+  const reason = unsafeEndpointReason(credential.endpoint);
+  if (reason !== null) {
     throw new Error(
-      `refusing to store a control-plane credential for a non-HTTPS endpoint: ${credential.endpoint}`,
+      `refusing to store a control-plane credential for ${originOnly(credential.endpoint)}: ` +
+        unsafeEndpointRefusal(reason),
     );
   }
   ensureDataDirSync(settingsDir);

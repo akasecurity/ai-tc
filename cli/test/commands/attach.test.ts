@@ -232,6 +232,26 @@ describe('what attach refuses', () => {
     expect(io.errors()).toContain('in the clear');
   });
 
+  it('an endpoint carrying a password, before the key is ever put on a wire', async () => {
+    let verified = false;
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', 'https://svc:SUPER-SECRET-PASSWORD@aka.example-org.internal'], {
+      ...deps(io),
+      verify: () => {
+        verified = true;
+        return verify();
+      },
+    });
+
+    expect(exits).toEqual([2]);
+    expect(verified).toBe(false);
+    // Positive control: the origin still reaches the message, and the refusal
+    // names the userinfo cause — this is not merely "the message is empty".
+    expect(io.errors()).toContain('https://aka.example-org.internal');
+    expect(io.errors()).toContain('username or password');
+    expectNoEchoOf(io.errors(), 'SUPER-SECRET-PASSWORD');
+  });
+
   it('a key the deployment does not accept, and writes nothing', async () => {
     // What verification buys: the difference between "attached" and "attached
     // to something that will refuse every request from now on" — which would

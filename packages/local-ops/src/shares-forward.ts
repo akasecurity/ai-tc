@@ -82,9 +82,7 @@ export const FORWARD_FAILURE_LINES: Record<RemoteFailureKind, string> = {
     'key is valid but not permitted for Data Shares ingest; a key minted before Data Shares ' +
     'ingest existed needs a re-attach, otherwise ask your org admin',
   'route-absent': 'the deployment predates Data Shares ingest; upgrade it, then re-run the scan',
-  'invalid-request':
-    'this build refused to send the request (a malformed body, or an unsafe endpoint); ' +
-    'check the control-plane endpoint in settings, then report it if that is not the cause',
+  'invalid-request': 'this build assembled a request the contract refuses; please report it',
   rejected:
     'the deployment refused the request body; this build and the deployment are out of step — ' +
     'upgrade one of them',

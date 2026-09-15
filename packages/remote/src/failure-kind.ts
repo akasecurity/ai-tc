@@ -51,6 +51,17 @@ function nameOf(err: unknown): string | null {
  * `RemoteResponseInvalid` is a 2xx whose body this build cannot read, which is
  * the two ends being out of step, not a deployment to try again.
  *
+ * `RemoteEndpointRefused` classifying as `invalid-request` specifically (rather
+ * than, say, a dedicated kind of its own) is not an approximation. Every
+ * production caller checks `isSafeEndpoint` before constructing a client at
+ * all — `resolveBaseUrl` in `client.ts` is the one place either factory builds
+ * a base URL — so a refusal reaching this classifier is a caller-contract
+ * violation: something in this build asked for a client against an endpoint it
+ * had already been told to refuse. That is a defect in this build, which is
+ * the one thing `invalid-request` names, and it is not a user-fixable endpoint
+ * problem on any path that reaches a classifier — the endpoint was already
+ * wrong before the request was ever assembled.
+ *
  * A bare 404 is NOT a verdict here. Only a route that knows what a 404 means for
  * it — the deployment predates the route — may say so, and it does that by
  * throwing `RemoteRouteAbsent` itself. Any other 404 is a wrong URL, a proxy or

@@ -1,6 +1,8 @@
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest, type RequestOptions } from 'node:https';
 
+import { originOnly } from '@akasecurity/schema';
+
 // The only module in this workspace that sends anything over a network, and the
 // only one whose ESLint config permits a transport import at all.
 //
@@ -111,15 +113,6 @@ export class RemoteEndpointRefused extends Error {
   constructor(endpoint: string) {
     super(`refusing to talk to an unsafe control-plane endpoint: ${originOnly(endpoint)}`);
     this.name = 'RemoteEndpointRefused';
-  }
-}
-
-function originOnly(endpoint: string): string {
-  try {
-    const parsed = new URL(endpoint);
-    return `${parsed.protocol}//${parsed.host}`;
-  } catch {
-    return '(unparseable endpoint)';
   }
 }
 

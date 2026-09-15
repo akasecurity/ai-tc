@@ -105,22 +105,86 @@ export type AttachedCredential = z.infer<typeof AttachedCredential>;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 /**
- * Refuses an endpoint carrying userinfo (`user:pass@host`), on top of the
- * protocol/host check above. An accepted `https:` URL still puts that userinfo
- * on the wire as an `Authorization: Basic` header no route here expects, and
- * it would otherwise leak verbatim into an error message built from the same
- * endpoint.
+ * Why `isSafeEndpoint` refuses an endpoint, for a caller that has to say more
+ * than "no" — a plain refusal reads to a user as "this deployment is down",
+ * where the true cause is a typo, a copy-pasted credential, or a stray query
+ * string.
+ *
+ * PLAIN TYPESCRIPT, not Zod, for the same reason `CredentialUnusableReason`
+ * above is: a derived answer, not a stored or wire shape.
+ *
+ *   `unparseable`       — not a URL the runtime can parse at all.
+ *   `userinfo`          — carries `user:pass@host`. An accepted `https:` URL
+ *                         would still put that userinfo on the wire as an
+ *                         `Authorization: Basic` header no route here expects,
+ *                         and it would otherwise leak verbatim into an error
+ *                         message built from the same endpoint.
+ *   `query-or-fragment` — carries a query string or a fragment. A base URL
+ *                         built by concatenating a route path onto one silently
+ *                         loses the path instead of reaching it:
+ *                         `new URL('https://host?x=1/v1/whoami').pathname` is
+ *                         `/`, not `/v1/whoami`. A path prefix on its own
+ *                         (`https://host/v1`) stays allowed.
+ *   `insecure`          — a non-loopback endpoint that is not `https:`. The
+ *                         credential rides on every request, so a plaintext
+ *                         hop off-machine lets anyone on the network path
+ *                         read it; `http:` is tolerated only for loopback,
+ *                         which is how a deployment is exercised locally.
+ *
+ * `null` means the endpoint is safe to present a credential to.
+ *
+ * Checked in this order — parse, then userinfo, then query/fragment, then
+ * scheme — so a URL that fails more than one check always reports the
+ * earliest, most structural reason rather than whichever the caller happened
+ * to check first.
  */
-export function isSafeEndpoint(endpoint: string): boolean {
+export type UnsafeEndpointReason = 'unparseable' | 'userinfo' | 'query-or-fragment' | 'insecure';
+
+export function unsafeEndpointReason(endpoint: string): UnsafeEndpointReason | null {
   let parsed: URL;
   try {
     parsed = new URL(endpoint);
   } catch {
-    return false;
+    return 'unparseable';
   }
-  if (parsed.username !== '' || parsed.password !== '') return false;
-  if (parsed.protocol === 'https:') return true;
-  return parsed.protocol === 'http:' && LOOPBACK_HOSTS.has(parsed.hostname);
+  if (parsed.username !== '' || parsed.password !== '') return 'userinfo';
+  if (parsed.search !== '' || parsed.hash !== '') return 'query-or-fragment';
+  if (parsed.protocol === 'https:') return null;
+  return parsed.protocol === 'http:' && LOOPBACK_HOSTS.has(parsed.hostname) ? null : 'insecure';
+}
+
+/**
+ * Whether an endpoint is safe to present a credential to.
+ *
+ * A thin boolean wrapper over `unsafeEndpointReason` so the two can never
+ * diverge — a caller that only needs a yes/no keeps using this; one that has
+ * to explain the refusal to a person reads the reason instead.
+ */
+export function isSafeEndpoint(endpoint: string): boolean {
+  return unsafeEndpointReason(endpoint) === null;
+}
+
+/**
+ * The origin alone — protocol and host, never path, query, fragment or
+ * userinfo — safe to put in a message built from a caller-supplied endpoint
+ * that `isSafeEndpoint` has already refused, or that a refusal message is
+ * about before either has been checked.
+ *
+ * Moved here from `@akasecurity/remote`'s `http.ts`, which built the same
+ * projection locally for `RemoteEndpointRefused`. It belongs beside the check
+ * it exists to make safe: the credential writer in `@akasecurity/persistence`
+ * refuses the same endpoints before a `RemoteClient` exists at all, needs the
+ * identical projection, and cannot depend on `remote` (that package depends on
+ * this one, and persistence reaches no network), so the one home both can
+ * import from is this file.
+ */
+export function originOnly(endpoint: string): string {
+  try {
+    const parsed = new URL(endpoint);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return '(unparseable endpoint)';
+  }
 }
 
 // ─── Whether that credential can actually be used ────────────────────────────

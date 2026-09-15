@@ -594,6 +594,13 @@ export const DEFAULT_ACTIONS: Record<DetectionCategory, ActionTaken> = Object.fr
 //      than read from a registry here, because this package must not depend on
 //      whatever holds the compiled-in packs; the caller (e.g. `bundledDetections()`
 //      in @akasecurity/plugin-sdk, flattened to its rules) supplies them.
+//      REQUIRED, unlike the two tiers above it: schema cannot reach the
+//      compiled-in inventory itself, so the caller owns this anchor, and a
+//      caller that forgot it is a caller with no floor at all rather than one
+//      merely missing the marketplace rules the wire and local tiers cover —
+//      `undefined` stops compiling instead of silently degrading to `[]`. The
+//      one production caller is `@akasecurity/plugin-runtime`'s attached
+//      gateway, which passes every bundled rule flattened.
 //
 // Tier 1 losing to tiers 2 and 3 is the load-bearing part: the wire rules come
 // from the SAME unsigned bundle this clamp exists to defend against, so a
@@ -609,12 +616,12 @@ export const DEFAULT_ACTIONS: Record<DetectionCategory, ActionTaken> = Object.fr
 export function ruleCategoryMap(
   wireRules: PolicyBundle['rules'],
   localRules: PolicyBundle['rules'],
-  compiledRules: PolicyBundle['rules'],
+  compiledRules: readonly Rule[],
 ): Map<string, DetectionCategory> {
   const map = new Map<string, DetectionCategory>();
   for (const rule of wireRules ?? []) map.set(rule.id, rule.category);
   for (const rule of localRules ?? []) map.set(rule.id, rule.category);
-  for (const rule of compiledRules ?? []) map.set(rule.id, rule.category);
+  for (const rule of compiledRules) map.set(rule.id, rule.category);
   return map;
 }
 

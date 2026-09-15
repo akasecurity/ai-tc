@@ -12,9 +12,13 @@ import {
 } from '../../src/repositories/history-sync.ts';
 import type { RecordedQuery } from '../helpers/query-plans.ts';
 import { explain, recordingConnection } from '../helpers/query-plans.ts';
-import { useTempStore } from '../helpers/temp-store.ts';
+import { useTempStore, withTempStore } from '../helpers/temp-store.ts';
 
-const store = useTempStore('aka-history-sync-');
+// Seeded from the migrated template: nothing here is about opening a store, and
+// ninety tests each migrating their own is the heaviest store build this
+// package does on the Windows leg. The one case that needs NO store file takes
+// a bare store of its own, below.
+const store = useTempStore('aka-history-sync-', { migrated: true });
 
 const T0 = Date.parse('2026-08-01T00:00:00.000Z');
 const at = (offsetMs: number): string => new Date(T0 + offsetMs).toISOString();
@@ -1300,12 +1304,18 @@ describe('seedCaptureBacklogOwed — the shared consent-time backfill helper', (
   // definition. Without this, the call below would build the store and run
   // every migration in the ledger to mark zero rows — mirrors the same guard
   // on the same `aka attach` prompt path in `readLocalHistoryPreview`.
+  //
+  // A bare store of its own, because the suite's store is seeded from the
+  // migrated template and so already has the file this case says must not
+  // appear.
   it('does not create a store on a machine that has never run init', () => {
-    expect(existsSync(store.dbFile)).toBe(false);
+    withTempStore((bare) => {
+      expect(existsSync(bare.dbFile)).toBe(false);
 
-    seedCaptureBacklogOwed(store.dataDir, Date.now());
+      seedCaptureBacklogOwed(bare.dataDir, Date.now());
 
-    expect(existsSync(store.dbFile)).toBe(false);
+      expect(existsSync(bare.dbFile)).toBe(false);
+    }, 'aka-history-sync-bare-');
   });
 });
 

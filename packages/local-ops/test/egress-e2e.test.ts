@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { removeTree, removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { recordProjectEgress } from '../src/egress-record.ts';
 import { scanPathIntoStore } from '../src/fs-scan.ts';
+import { migratedStore } from './helpers/store-templates.ts';
 
 // End-to-end acceptance for the CLI/web egress pipeline: walk a planted corpus
 // with `scanPathIntoStore`, record it with `recordProjectEgress`, then read the
@@ -260,6 +261,9 @@ beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), 'aka-corpus-home-'));
   cpSync(CORPUS, root, { recursive: true });
   initRepo(root);
+  // What is under test is the egress ledger, not the store's creation, so the
+  // store is copied from the migrated template rather than migrated per test.
+  migratedStore.seed(store);
   db = openLocalDatabase(store);
 });
 

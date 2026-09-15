@@ -42,6 +42,7 @@ import {
 } from '../../src/commands/scan.ts';
 import { startLoopbackServer } from '../helpers/loopback.ts';
 import { expectNoEchoOf } from '../helpers/no-echo.ts';
+import { migratedStore } from '../helpers/store-templates.ts';
 
 // `aka scan`'s two machine contracts — `--format json` (what another program
 // parses) and `--fail-on` (what a CI gate branches on) — plus the ignore
@@ -268,6 +269,14 @@ describe('runScan', () => {
     return existsSync(join(dataDir(home), DB_FILENAME));
   }
 
+  // A scan records into the store, so a block whose cases all run one copies
+  // the migrated template in first rather than migrating per test. Seeded per
+  // block rather than here in the outer hook, because the blocks that assert a
+  // refused run never opens the store need the store to be absent.
+  function seedStore(): void {
+    migratedStore.seed(dataDir(home));
+  }
+
   // The nearest `.git` at or above `dir`, mirroring findGitRoot's upward walk.
   // Used to state the precondition the null-inventory case depends on.
   function gitRootAbove(dir: string): string | undefined {
@@ -338,6 +347,8 @@ describe('runScan', () => {
   });
 
   describe('--format json', () => {
+    beforeEach(seedStore);
+
     it('emits the documented payload, with every finding field present and no others', async () => {
       writeSecretFile();
 
@@ -431,6 +442,8 @@ describe('runScan', () => {
   });
 
   describe('the JSON never contains a raw secret', () => {
+    beforeEach(seedStore);
+
     it('prints the masked preview and no run of the value it stands for', async () => {
       writeSecretFile();
 
@@ -477,6 +490,8 @@ describe('runScan', () => {
   // is what only this layer can show, since the span is what the JSON hands a
   // consumer.
   describe('vault pointers', () => {
+    beforeEach(seedStore);
+
     it('leaves every later span addressing the right bytes and reports nothing in any pointer', async () => {
       // TWO pointers, not one: the criterion is about EVERY other span, and a
       // shield that stopped after its first match would keep a single-pointer
@@ -528,6 +543,8 @@ describe('runScan', () => {
   });
 
   describe('--fail-on', () => {
+    beforeEach(seedStore);
+
     // The whole matrix in one case per fixture: four thresholds against a file
     // whose own severity band is asserted first, so "exits 0" can never pass
     // because the fixture quietly stopped matching.
@@ -750,6 +767,8 @@ describe('runScan', () => {
   });
 
   describe('ignore layering', () => {
+    beforeEach(seedStore);
+
     it('marks a .gitignore match as gitignored but still scans it', async () => {
       writeFileSync(join(root, '.gitignore'), 'scratch.env\n');
       writeFileSync(join(root, 'tracked.ts'), `const key = '${RAW}';\n`);

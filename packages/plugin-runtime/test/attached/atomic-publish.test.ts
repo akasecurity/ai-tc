@@ -34,9 +34,13 @@ afterEach(async () => {
 
 const errno = (code: string): NodeJS.ErrnoException => Object.assign(new Error(code), { code });
 
-/** Resolves after `n` turns of the event loop: a wait no faked timer can shorten or stall. */
-const loopTurns = async (n: number): Promise<void> => {
-  for (let i = 0; i < n; i += 1) {
+/**
+ * Resolves after `n` turns of the event loop, or sooner once `stop` reports
+ * true: a wait no faked timer can shorten or stall, and one that stops turning
+ * once the case it raced against has settled.
+ */
+const loopTurns = async (n: number, stop: () => boolean = () => false): Promise<void> => {
+  for (let i = 0; i < n && !stop(); i += 1) {
     await new Promise<void>((resolve) => {
       setImmediate(resolve);
     });
@@ -86,13 +90,73 @@ describe('publishByRename', () => {
         return attempts <= 8 ? Promise.reject(errno('EPERM')) : Promise.resolve();
       };
 
+      // Both branches end cleanly whichever wins: the publish branch handles its
+      // own rejection, and the waiter stops turning once the publish settles.
+      let settled = false;
       const outcome = await Promise.race([
-        publishByRename('tmp', 'file', racing).then(() => 'landed'),
-        loopTurns(200).then(() => 'still waiting'),
+        publishByRename('tmp', 'file', racing)
+          .then(
+            () => 'landed',
+            () => 'threw',
+          )
+          .finally(() => {
+            settled = true;
+          }),
+        loopTurns(200, () => settled).then(() => 'still waiting'),
       ]);
 
       expect(outcome).toBe('landed');
       expect(attempts).toBe(9);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waits out a held destination on the timed tail: 10, 20, 30 then 40ms', async () => {
+    // The other half of the schedule. A handle another process holds open does
+    // not clear when a racing rename lands, so once the eight immediate retries
+    // are spent each further attempt waits on a timer. Timers are faked and
+    // moved by hand, a millisecond short of each delay and then onto it: a tail
+    // that never touches a timer, a split in a different place, or a different
+    // delay each fails the count at the step where it differs.
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      let attempts = 0;
+      const held = (): Promise<void> => {
+        attempts += 1;
+        return Promise.reject(errno('EBUSY'));
+      };
+      let outcome: unknown = 'pending';
+      const publishing = publishByRename('tmp', 'file', held).then(
+        () => {
+          outcome = 'landed';
+        },
+        (err: unknown) => {
+          outcome = err;
+        },
+      );
+
+      // The first attempt and eight immediate retries, then a wait on a timer.
+      await loopTurns(50);
+      expect(attempts).toBe(9);
+
+      for (const [ms, attemptsOnceElapsed] of [
+        [10, 10],
+        [20, 11],
+        [30, 12],
+        [40, 13],
+      ] as const) {
+        await vi.advanceTimersByTimeAsync(ms - 1);
+        await loopTurns(5);
+        expect(attempts, `before the ${String(ms)}ms wait elapsed`).toBe(attemptsOnceElapsed - 1);
+        await vi.advanceTimersByTimeAsync(1);
+        await loopTurns(5);
+        expect(attempts, `once the ${String(ms)}ms wait elapsed`).toBe(attemptsOnceElapsed);
+      }
+
+      await publishing;
+      expect((outcome as NodeJS.ErrnoException).code).toBe('EBUSY');
+      expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
     }

@@ -54,19 +54,15 @@ const RETRYABLE = new Set(['EPERM', 'EACCES', 'EBUSY']);
 const IMMEDIATE_RETRIES = 8;
 
 /**
- * Attempts including the first: the first, eight immediate retries, then four
- * timed ones.
- *
- * The timed tail spends 100ms of backoff, not 150: `delay(n * 10)` is reached
- * for timed retries 1 through 4 only (10 + 20 + 30 + 40), because the last
- * attempt hits the budget check and rethrows without sleeping. The immediate
- * phase adds eight event-loop turns ahead of it. Nothing measures either — the
- * tests pin the attempt COUNT and that the first phase never waits on a timer,
+ * Retries that sleep, the nth for `n * 10` ms: 10 + 20 + 30 + 40, so the tail
+ * spends 100ms. The tests pin the split and each delay through faked timers,
  * and deliberately assert no elapsed time, since a wall-clock assertion on a
- * shared runner is a flake — so this comment is the only statement of the
- * budget and is worth being right.
+ * shared runner is a flake.
  */
-const ATTEMPTS = IMMEDIATE_RETRIES + 5;
+const TIMED_RETRIES = 4;
+
+/** Attempts including the first. The last one rethrows without sleeping. */
+const ATTEMPTS = 1 + IMMEDIATE_RETRIES + TIMED_RETRIES;
 
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => {

@@ -254,6 +254,10 @@ let root: string;
 let store: string;
 let base: string;
 let db: LocalDatabase;
+// The handle THIS test's setup opened, or undefined when the setup threw first.
+// `db` still names the previous test's handle in that case, already closed, and
+// closing it again would throw before the trees were removed.
+let opened: LocalDatabase | undefined;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'aka-corpus-'));
@@ -265,11 +269,16 @@ beforeEach(() => {
   // store is copied from the migrated template rather than migrated per test.
   migratedStore.seed(store);
   db = openLocalDatabase(store);
+  opened = db;
 });
 
 afterEach(() => {
-  db.close();
-  removeTrees([root, store, base]);
+  try {
+    opened?.close();
+  } finally {
+    opened = undefined;
+    removeTrees([root, store, base]);
+  }
 });
 
 describe('egress acceptance corpus — destination ledger', () => {

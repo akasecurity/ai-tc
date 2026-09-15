@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -216,6 +216,7 @@ describe('runScan', () => {
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'aka-scan-home-'));
     mkdirSync(dataDir(home), { recursive: true });
+    seedStore();
     root = mkdtempSync(join(tmpdir(), 'aka-scan-root-'));
     out = '';
     err = '';
@@ -269,12 +270,17 @@ describe('runScan', () => {
     return existsSync(join(dataDir(home), DB_FILENAME));
   }
 
-  // A scan records into the store, so a block whose cases all run one copies
-  // the migrated template in first rather than migrating per test. Seeded per
-  // block rather than here in the outer hook, because the blocks that assert a
-  // refused run never opens the store need the store to be absent.
+  // A scan records into the store, so every case starts from a copy of the
+  // migrated template, seeded in the outer hook, rather than migrating its own.
+  // The blocks that assert a refused run never opens the store take the copy
+  // back out with `unseedStore`: it was never opened, so removing the one file
+  // it wrote leaves exactly the empty data dir those cases were written against.
   function seedStore(): void {
     migratedStore.seed(dataDir(home));
+  }
+
+  function unseedStore(): void {
+    rmSync(join(dataDir(home), DB_FILENAME));
   }
 
   // The nearest `.git` at or above `dir`, mirroring findGitRoot's upward walk.
@@ -347,8 +353,6 @@ describe('runScan', () => {
   });
 
   describe('--format json', () => {
-    beforeEach(seedStore);
-
     it('emits the documented payload, with every finding field present and no others', async () => {
       writeSecretFile();
 
@@ -442,8 +446,6 @@ describe('runScan', () => {
   });
 
   describe('the JSON never contains a raw secret', () => {
-    beforeEach(seedStore);
-
     it('prints the masked preview and no run of the value it stands for', async () => {
       writeSecretFile();
 
@@ -490,8 +492,6 @@ describe('runScan', () => {
   // is what only this layer can show, since the span is what the JSON hands a
   // consumer.
   describe('vault pointers', () => {
-    beforeEach(seedStore);
-
     it('leaves every later span addressing the right bytes and reports nothing in any pointer', async () => {
       // TWO pointers, not one: the criterion is about EVERY other span, and a
       // shield that stopped after its first match would keep a single-pointer
@@ -543,8 +543,6 @@ describe('runScan', () => {
   });
 
   describe('--fail-on', () => {
-    beforeEach(seedStore);
-
     // The whole matrix in one case per fixture: four thresholds against a file
     // whose own severity band is asserted first, so "exits 0" can never pass
     // because the fixture quietly stopped matching.
@@ -660,6 +658,8 @@ describe('runScan', () => {
   });
 
   describe('invalid flags', () => {
+    beforeEach(unseedStore);
+
     // The four cases above reject a bad option VALUE and return, which is the
     // path that owns its own message and exit code. A bad option NAME — the
     // likelier typo — never reaches any of that: `parseArgs` throws, so runScan
@@ -744,6 +744,8 @@ describe('runScan', () => {
   });
 
   describe('a target that is not there', () => {
+    beforeEach(unseedStore);
+
     it('exits 1 saying no such file or directory, and reports no scan', async () => {
       const missing = join(root, 'nope');
 
@@ -767,8 +769,6 @@ describe('runScan', () => {
   });
 
   describe('ignore layering', () => {
-    beforeEach(seedStore);
-
     it('marks a .gitignore match as gitignored but still scans it', async () => {
       writeFileSync(join(root, '.gitignore'), 'scratch.env\n');
       writeFileSync(join(root, 'tracked.ts'), `const key = '${RAW}';\n`);

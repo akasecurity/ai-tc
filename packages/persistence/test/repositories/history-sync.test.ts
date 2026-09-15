@@ -1333,8 +1333,8 @@ describe('seedCaptureBacklogOwed — the shared consent-time backfill helper', (
 describe('SqliteHistorySyncRepository — the ledger reads use the index', () => {
   /** The plans for every statement `drive` executes, as one string. */
   const planFor = (drive: (ledger: SqliteHistorySyncRepository) => void): string => {
-    // Migrations run on `open()`; `openRaw` only attaches to the file.
-    store.open();
+    // The store is seeded from the migrated template, so the file `openRaw`
+    // attaches to already carries the schema.
     const raw = store.openRaw();
     const recorded: RecordedQuery[] = [];
     drive(new SqliteHistorySyncRepository(recordingConnection(raw, recorded)));

@@ -282,8 +282,9 @@ export async function saveSettings(input: unknown): Promise<SaveSettingsResult> 
  * no path in. 'granted' records the current time at the current version, unless
  * a still-valid grant is already on file, which is kept as-is so its
  * acknowledgedAt survives unrelated edits. 'revoked' drops the grant entirely —
- * future recording stops, and what is already stored stays. 'unchanged' is what
- * an untouched row sends, and it asserts nothing either way.
+ * future recording stops, and what is already stored stays — and on a machine
+ * that never answered there is no grant to drop, so the key stays absent.
+ * 'unchanged' is what an untouched row sends, and it asserts nothing either way.
  *
  * The branches are ordered so that anything OTHER than the two affirmative
  * answers drops the grant. `webChatCaptureConsent` is required on the input, so
@@ -307,6 +308,11 @@ function nextWebChatCapture(
   // Returning the file's own value also keeps the rebuild-whole property below
   // intact: there is nothing to rebuild when the answer is "no change".
   if (choice === 'unchanged') return current.webChatCapture;
+  // The same holds for a revoke on a machine that never answered: there is no
+  // grant to drop, and falling through would write that defaulted block with no
+  // consent in it. The page sends 'revoked' for a row toggled on and back off
+  // before saving, so this is reachable. Only 'granted' creates the block.
+  if (choice !== 'granted' && current.webChatCapture === undefined) return undefined;
   const block = webChatCaptureOf(current);
   const consent =
     choice === 'granted'

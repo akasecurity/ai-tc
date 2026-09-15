@@ -696,13 +696,45 @@ describe('saveSettings — the web-chat capture grant', () => {
     const res = await saveSettings(payload('unchanged', { vaultInlineReveal: 'full' }));
     expect(res).toEqual({ ok: true });
 
-    // The RAW file, not the parsed settings: reading it back through the
-    // schema applies the same defaults that hid this, so a parsed read would
-    // pass whether or not the key was written.
+    // The RAW file. Readers of this block either read only its consent or apply
+    // the schema's defaults through `webChatCaptureOf`, so no reader's behaviour
+    // shows whether the key was written; the file's own text does.
     expect(rawSettings()).not.toContain('webChatCapture');
     // The positive control — the save really did land, so the absence above is
     // about this key rather than about a refused write.
     expect(readWorkspaceSettings().vaultInlineReveal).toBe('full');
+  });
+
+  it("leaves the key absent when 'revoked' is saved on a machine that never answered", async () => {
+    // The page sends 'revoked' for any touched row left at not granted, which
+    // includes one toggled on and back off before saving. On a fresh home there
+    // is no grant to drop, so the save must not write a defaulted block either.
+    // The grant-first 'revoked' case below cannot see this.
+    const res = await saveSettings(payload('revoked', { vaultInlineReveal: 'full' }));
+    expect(res).toEqual({ ok: true });
+
+    // Raw text, for the reason given in the case above.
+    expect(rawSettings()).not.toContain('webChatCapture');
+    // The positive control: the save landed.
+    expect(readWorkspaceSettings().vaultInlineReveal).toBe('full');
+  });
+
+  it("keeps a block that has no grant, and its modes, through a 'revoked' save", async () => {
+    // The other side of that early return: only an ABSENT block is left out. A
+    // block already on file without a grant, which is what an earlier revoke
+    // leaves, is carried forward with its answers. The modes are seeded away
+    // from the schema's defaults, so a block rebuilt at the defaults cannot pass
+    // for one carried forward.
+    await seed({ responses: 'always', account: true });
+
+    const res = await saveSettings(payload('revoked', { vaultInlineReveal: 'full' }));
+    expect(res).toEqual({ ok: true });
+    // The positive control: the save landed.
+    expect(readWorkspaceSettings().vaultInlineReveal).toBe('full');
+
+    const stored = (JSON.parse(rawSettings()) as { webChatCapture?: Record<string, unknown> })
+      .webChatCapture;
+    expect(stored).toEqual({ responses: 'always', account: true });
   });
 
   it('carries a seeded block through an unrelated save untouched', async () => {

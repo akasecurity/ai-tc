@@ -23,6 +23,7 @@ import {
   SheetDescription,
   SheetHeader,
   SheetTitle,
+  Switch,
   Tabs,
   TabsContent,
 } from '@akasecurity/ui-kit';
@@ -86,6 +87,11 @@ export function DataSharesClient({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [reviewOpen, setReviewOpen] = useState(false);
   const [activeKind, setActiveKind] = useState<DestinationKind | null>(null);
+  // Folds a provider's hosts into one expandable row (see @akasecurity/dashboard-ui's
+  // grouping.ts) — on by default, since it's the more readable shape once a
+  // provider has more than one host. Expansion state already keys on ids
+  // ('provider:<id>' included), so toggling this needs no state of its own.
+  const [groupByProvider, setGroupByProvider] = useState(true);
   const [isSettingDecision, startTransition] = useTransition();
   // Surface a failed egress write instead of silently keeping the old toggle —
   // this is a security-posture control, so a silent no-op is the worst mode.
@@ -196,6 +202,14 @@ export function DataSharesClient({
               surface="canvas"
               className="h-9 min-w-48 max-w-80 flex-1"
             />
+            <div className="flex shrink-0 items-center gap-2">
+              <span className="text-xs font-semibold text-text-2">Group by provider</span>
+              <Switch
+                checked={groupByProvider}
+                onCheckedChange={setGroupByProvider}
+                aria-label="Group by provider"
+              />
+            </div>
           </div>
           <Card className="flex min-h-112 flex-1 flex-col overflow-hidden">
             {activeGroup ? (
@@ -213,6 +227,7 @@ export function DataSharesClient({
                   onToggle={makeExpandToggleHandler(setExpanded)}
                   onOpenDest={openDest}
                   onOpenEndpoint={makeOpenEndpointHandler(push, q)}
+                  groupByProvider={groupByProvider}
                 />
               </TabsContent>
             ) : (

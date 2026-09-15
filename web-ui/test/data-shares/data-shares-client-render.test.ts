@@ -25,6 +25,7 @@ function group(kind: 'provider' | 'internal' | 'external' | 'ip', total: number)
         kind,
         name: `Destination (${kind})`,
         host: 'example.com',
+        providerId: kind === 'provider' ? 'example' : null,
         category: 'Cloud platform',
         trust: kind === 'ip' ? ('ip' as const) : ('recognized' as const),
         status: 'allowed' as const,
@@ -42,12 +43,44 @@ function group(kind: 'provider' | 'internal' | 'external' | 'ip', total: number)
   };
 }
 
+/** A single provider group carrying two hosts that share `providerId: 'github'`. */
+function twoHostProviderGroup() {
+  const host = (id: string, name: string, hostname: string) => ({
+    id,
+    kind: 'provider' as const,
+    name,
+    host: hostname,
+    providerId: 'github',
+    category: 'Dev tools',
+    trust: 'recognized' as const,
+    status: 'allowed' as const,
+    isCustom: false,
+    lastSeen: '2026-07-01T00:00:00.000Z',
+    endpointCount: 1,
+    callSiteCount: 1,
+    transports: ['https' as const],
+    dataClasses: ['pii' as const],
+    review: { needsReview: false, reasons: [] },
+    network: null,
+    endpoints: [],
+  });
+  return {
+    kind: 'provider' as const,
+    total: 2,
+    items: [
+      host('dest-github-1', 'GitHub', 'api.github.com'),
+      host('dest-github-2', 'GitHub Raw', 'raw.githubusercontent.com'),
+    ],
+  };
+}
+
 function reviewItem() {
   return {
     id: 'dest-review-1',
     kind: 'ip' as const,
     name: '203.0.113.0',
     host: '203.0.113.0',
+    providerId: null,
     trust: 'ip' as const,
     status: 'review' as const,
     review: { needsReview: true, reasons: ['raw_ip' as const] },
@@ -63,6 +96,7 @@ function destinationDetail() {
     kind: 'provider' as const,
     name: 'Okta',
     host: 'okta.com',
+    providerId: 'okta',
     category: 'Identity',
     trust: 'recognized' as const,
     status: 'allowed' as const,
@@ -124,6 +158,20 @@ describe('DataSharesClient', () => {
     expect(html).toContain('Providers');
     expect(html).toContain('Raw IP addresses');
     expect(html).toContain('Destination (provider)');
+  });
+
+  // Grouping is on by default (DataSharesClient's own initial state), so two
+  // hosts sharing a providerId fold into one provider row without the app
+  // reaching for the toggle first.
+  it('folds two hosts sharing a providerId into one provider row by default', () => {
+    const html = render({ groups: [twoHostProviderGroup()] });
+    expect(html).toContain('2 hosts');
+  });
+
+  it('renders a plain destination row when providerId is null', () => {
+    const html = render({ groups: [group('external', 1)] });
+    expect(html).toContain('Destination (external)');
+    expect(html).not.toContain('hosts');
   });
 
   it('renders the needs-review strip once review items are present', () => {

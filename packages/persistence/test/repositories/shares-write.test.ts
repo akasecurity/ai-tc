@@ -41,6 +41,7 @@ interface HitOptions {
   kind?: DestinationKind;
   name?: string;
   category?: string;
+  providerId?: string | null;
   trust?: ShareTrustLevel;
   network?: DestinationNetwork | null;
   method?: HttpMethod;
@@ -71,6 +72,7 @@ function hit(o: HitOptions = {}): ResolvedEgressHit {
       method: o.method,
       transport: o.transport,
       template: o.template,
+      providerId: o.providerId,
     }).filter(([, value]) => value !== undefined),
   ) as Partial<ResolvedEgressHit>;
   return resolvedHit({
@@ -706,6 +708,259 @@ describe('recordProjectEgress — payload refresh', () => {
     walk('git:alpha', [hit({ file: 'a.ts', line: 1 })], '', 'proj-2');
 
     expect(projectIds('git:alpha')).toEqual(['proj-2']);
+  });
+});
+
+// ─── providerId ──────────────────────────────────────────────────────────────
+
+describe('recordProjectEgress — providerId', () => {
+  it('records providerId for a provider hit and null for a non-provider hit', async () => {
+    walk('git:alpha', [
+      hit({ providerId: 'stripe' }),
+      hit({
+        host: 'api.acme-partner.com',
+        kind: 'external',
+        name: 'api.acme-partner.com',
+        category: 'External domain',
+        providerId: null,
+        trust: 'unverified',
+        url: 'https://api.acme-partner.com/v1/orders',
+      }),
+    ]);
+
+    const stripe = await shares.getDestination(destinationId('api.stripe.com'));
+    expect(stripe?.providerId).toBe('stripe');
+    const external = await shares.getDestination(destinationId('api.acme-partner.com'));
+    expect(external?.providerId).toBeNull();
+  });
+
+  it('gives two hosts of the same provider their own row, both carrying that providerId', () => {
+    walk('git:alpha', [
+      hit({
+        host: 'github.com',
+        name: 'GitHub',
+        category: 'Developer platform',
+        providerId: 'github',
+        url: 'https://github.com/octocat/hello-world',
+      }),
+      hit({
+        host: 'api.github.com',
+        name: 'GitHub',
+        category: 'Developer platform',
+        providerId: 'github',
+        url: 'https://api.github.com/repos/octocat/hello-world',
+      }),
+    ]);
+
+    // Row identity stays per-host: the conflict target is (host), never provider_id.
+    expect(hosts()).toEqual(['api.github.com', 'github.com']);
+  });
+
+  it('surfaces providerId on listDestinations and needsReview, matching getDestination', async () => {
+    walk('git:alpha', [
+      hit({
+        host: 'api.acme-partner.com',
+        kind: 'external',
+        name: 'api.acme-partner.com',
+        category: 'External domain',
+        providerId: null,
+        trust: 'unverified',
+        url: 'https://api.acme-partner.com/v1/orders',
+      }),
+    ]);
+
+    const { groups } = await shares.listDestinations({ groupBy: 'destination', review: false });
+    const external = groups.find((g) => g.kind === 'external');
+    expect(external?.items[0]?.providerId).toBeNull();
+
+    const { items } = await shares.needsReview();
+    expect(items[0]?.providerId).toBeNull();
+
+    const detail = await shares.getDestination(destinationId('api.acme-partner.com'));
+    expect(detail?.providerId).toBeNull();
+  });
+
+  it('updates providerId in place on a re-scan that resolves a host to a different provider, adding no row', async () => {
+    walk('git:alpha', [
+      hit({
+        host: 'shared.saas-host.io',
+        name: 'First Co',
+        category: 'Cat A',
+        providerId: 'first-co',
+      }),
+    ]);
+    walk('git:alpha', [
+      hit({
+        host: 'shared.saas-host.io',
+        name: 'Second Co',
+        category: 'Cat B',
+        providerId: 'second-co',
+      }),
+    ]);
+
+    expect(hosts()).toEqual(['shared.saas-host.io']);
+    const detail = await shares.getDestination(destinationId('shared.saas-host.io'));
+    expect(detail?.providerId).toBe('second-co');
+  });
+});
+
+// ─── listProviders ───────────────────────────────────────────────────────────
+
+describe('listProviders', () => {
+  it('rolls up every host of one provider into a single row and excludes non-provider hosts', async () => {
+    walk('git:alpha', [
+      hit({
+        host: 'github.com',
+        name: 'GitHub',
+        category: 'Developer platform',
+        providerId: 'github',
+        url: 'https://github.com/octocat/hello-world',
+        file: 'src/a.ts',
+        line: 1,
+      }),
+      hit({
+        host: 'github.com',
+        name: 'GitHub',
+        category: 'Developer platform',
+        providerId: 'github',
+        method: 'GET',
+        url: 'https://github.com/octocat/hello-world/issues',
+        file: 'src/a.ts',
+        line: 2,
+      }),
+      hit({
+        host: 'api.github.com',
+        name: 'GitHub',
+        category: 'Developer platform',
+        providerId: 'github',
+        url: 'https://api.github.com/repos/octocat/hello-world',
+        file: 'src/b.ts',
+        line: 1,
+      }),
+      hit({
+        host: 'api.acme-partner.com',
+        kind: 'external',
+        name: 'api.acme-partner.com',
+        category: 'External domain',
+        providerId: null,
+        trust: 'unverified',
+        url: 'https://api.acme-partner.com/v1/orders',
+        file: 'src/c.ts',
+        line: 1,
+      }),
+    ]);
+
+    const githubDest = await shares.getDestination(destinationId('github.com'));
+    const apiGithubDest = await shares.getDestination(destinationId('api.github.com'));
+    const perHostEndpointCount =
+      (githubDest?.endpoints.length ?? 0) + (apiGithubDest?.endpoints.length ?? 0);
+    const perHostCallSiteCount =
+      (githubDest?.endpoints.reduce((sum, e) => sum + e.sites.length, 0) ?? 0) +
+      (apiGithubDest?.endpoints.reduce((sum, e) => sum + e.sites.length, 0) ?? 0);
+
+    const providers = await shares.listProviders();
+    expect(providers).toHaveLength(1);
+    expect(providers[0]).toMatchObject({
+      providerId: 'github',
+      hostCount: 2,
+      hosts: ['api.github.com', 'github.com'],
+    });
+    expect(providers[0]?.endpointCount).toBe(perHostEndpointCount);
+    expect(providers[0]?.callSiteCount).toBe(perHostCallSiteCount);
+  });
+
+  it('names the rollup after the most recently seen host and reports that instant as lastSeen', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-03-01T00:00:00.000Z'));
+      walk('git:alpha', [
+        hit({
+          host: 'github.com',
+          name: 'GitHub',
+          category: 'Developer platform',
+          providerId: 'github',
+          url: 'https://github.com/acme/repo',
+          file: 'src/a.ts',
+          line: 1,
+        }),
+      ]);
+      vi.setSystemTime(new Date('2026-04-01T00:00:00.000Z'));
+      walk('git:beta', [
+        hit({
+          host: 'api.github.com',
+          name: 'GitHub API',
+          category: 'Developer platform (API)',
+          providerId: 'github',
+          url: 'https://api.github.com/repos',
+          file: 'src/b.ts',
+          line: 1,
+        }),
+      ]);
+
+      const providers = await shares.listProviders();
+      expect(providers).toHaveLength(1);
+      expect(providers[0]).toMatchObject({
+        providerId: 'github',
+        name: 'GitHub API',
+        category: 'Developer platform (API)',
+        lastSeen: '2026-04-01T00:00:00.000Z',
+        hostCount: 2,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('orders rollups by callSiteCount descending, then providerId ascending', async () => {
+    // The fixture is arranged so that each candidate ordering gives a different
+    // answer: the busiest provider sorts LAST by id and is written first, and the
+    // two tied providers are written in reverse id order.
+    walk('git:alpha', [
+      hit({
+        host: 'z-provider.io',
+        name: 'Z Provider',
+        category: 'Cat Z',
+        providerId: 'z-provider',
+        url: 'https://z-provider.io/v1/one',
+        file: 'src/z.ts',
+        line: 1,
+      }),
+      hit({
+        host: 'z-provider.io',
+        name: 'Z Provider',
+        category: 'Cat Z',
+        providerId: 'z-provider',
+        method: 'GET',
+        url: 'https://z-provider.io/v1/two',
+        file: 'src/z.ts',
+        line: 2,
+      }),
+      hit({
+        host: 'm-provider.io',
+        name: 'M Provider',
+        category: 'Cat M',
+        providerId: 'm-provider',
+        url: 'https://m-provider.io/v1',
+        file: 'src/m.ts',
+        line: 1,
+      }),
+      hit({
+        host: 'a-provider.io',
+        name: 'A Provider',
+        category: 'Cat A',
+        providerId: 'a-provider',
+        url: 'https://a-provider.io/v1',
+        file: 'src/a.ts',
+        line: 1,
+      }),
+    ]);
+
+    const providers = await shares.listProviders();
+    expect(providers.map((p) => [p.providerId, p.callSiteCount])).toEqual([
+      ['z-provider', 2],
+      ['a-provider', 1],
+      ['m-provider', 1],
+    ]);
   });
 });
 

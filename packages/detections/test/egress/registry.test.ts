@@ -20,6 +20,8 @@ interface HostCase {
   host: string;
   opts?: { internalDomains?: string[] };
   expect: { kind: DestinationKind; trust: ShareTrustLevel; name: string; category: string } | null;
+  /** Checked only when present, against `resolveHost(...)?.providerId`. */
+  expectProviderId?: string | null;
 }
 
 interface SdkCase {
@@ -58,7 +60,18 @@ describe('resolveHost — fixture corpus', () => {
       expect(result?.trust).toBe(c.expect.trust);
       expect(result?.name).toBe(c.expect.name);
       expect(result?.category).toBe(c.expect.category);
+      if (c.expectProviderId !== undefined) {
+        expect(result?.providerId).toBe(c.expectProviderId);
+      }
     }
+  });
+
+  it('has at least one host case pinning a populated providerId and one pinning null', () => {
+    const withProviderId = fixture.hosts.filter(
+      (c) => c.expect !== null && c.expectProviderId !== undefined,
+    );
+    expect(withProviderId.some((c) => c.expectProviderId !== null)).toBe(true);
+    expect(withProviderId.some((c) => c.expectProviderId === null)).toBe(true);
   });
 
   it('providers carry the matched registry entry; non-providers carry null', () => {

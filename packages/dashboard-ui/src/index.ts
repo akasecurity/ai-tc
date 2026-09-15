@@ -368,6 +368,12 @@ export {
   type DataSharesTableViewProps,
 } from './data-shares/DataSharesTableView.tsx';
 export {
+  groupByProvider,
+  PROVIDER_ROW_PREFIX,
+  type ProviderGroup,
+  type RegisterRow,
+} from './data-shares/grouping.ts';
+export {
   CLASS_META,
   type ClassMeta,
   destMarkStyle,

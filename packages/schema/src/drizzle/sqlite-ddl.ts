@@ -167,4 +167,8 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     tag: '0034_findings_read_indexes',
     sql: 'CREATE INDEX `idx_inspection_definitions_rule` ON `inspection_definitions` (`rule_id`,`severity`,`category`);--> statement-breakpoint\nCREATE INDEX `idx_inspection_findings_def` ON `inspection_findings` (`inspection_definition_id`,`audit_event_id`);--> statement-breakpoint\nCREATE INDEX `idx_inspection_findings_event_cover` ON `inspection_findings` (`audit_event_id`,`inspection_definition_id`,`action_taken`,`finding_key`,`id`);',
   },
+  {
+    tag: '0035_share_destination_provider_id',
+    sql: 'ALTER TABLE `share_destination` ADD `provider_id` text;--> statement-breakpoint\nCREATE INDEX `idx_share_destination_provider` ON `share_destination` (`provider_id`) WHERE `provider_id` IS NOT NULL;',
+  },
 ];

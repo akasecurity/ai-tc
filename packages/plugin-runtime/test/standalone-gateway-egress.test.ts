@@ -28,6 +28,7 @@ function hit(o: Partial<ResolvedEgressHit> = {}): ResolvedEgressHit {
     kind: o.kind ?? 'provider',
     name: o.name ?? host,
     category: o.category ?? 'Payments',
+    providerId: o.providerId ?? 'stripe',
     trust: o.trust ?? 'recognized',
     network: o.network ?? null,
     method: o.method ?? 'POST',

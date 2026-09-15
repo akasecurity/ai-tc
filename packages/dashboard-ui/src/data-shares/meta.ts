@@ -180,11 +180,14 @@ function initials(name: string): string {
 }
 
 /**
- * Provider lettermark ({short,color}) derived client-side from name/host — the
- * API doesn't send it, since SaaS destinations are open-ended.
+ * Provider lettermark ({short,color}) derived client-side — the API doesn't
+ * send it, since SaaS destinations are open-ended. The color hash reads
+ * `colorKey` when the caller has one (the provider catalog id) so every host
+ * of a provider shares the same color; a caller with no id falls back to
+ * hashing the name itself. Initials are always derived from `name`.
  */
-export function providerMark(name: string, host?: string): ProviderMark {
-  const key = host ?? name;
+export function providerMark(name: string, colorKey?: string): ProviderMark {
+  const key = colorKey ?? name;
   let hash = 0;
   for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
   return {

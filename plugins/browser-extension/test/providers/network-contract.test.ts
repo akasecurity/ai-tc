@@ -351,33 +351,287 @@ describe('classifyCompiled (non-vacuous today: a synthetic adapter, not a regist
   });
 });
 
-describe('the sanitiser stays a dev tool (B8)', () => {
-  it('no file under src/ outside src/sanitize/ imports src/sanitize/**', () => {
-    const srcRoot = fileURLToPath(new URL('../../src', import.meta.url));
-    const tracked = execFileSync('git', ['ls-files', 'src'], {
-      cwd: fileURLToPath(new URL('../..', import.meta.url)),
-      encoding: 'utf8',
-    })
-      .split('\n')
-      .filter((f) => f.length > 0 && !f.startsWith('src/sanitize/'))
-      .filter((f) => f.endsWith('.ts') || f.endsWith('.tsx'));
+// The one reading of an import B8 applies: every specifier in `source` that
+// resolves into src/sanitize/ from `importer`, a package-relative posix path as
+// `git ls-files` prints it. The specimens and the tree scan below both call it,
+// so each form a specimen proves is a form the scan reads.
+//
+// It matches the SHAPE of an import and does not parse code: `from '…'` (a
+// static import, or an `export … from`), a side-effect `import '…'`, a dynamic
+// `import(…)` and `require(…)`. Whitespace, newlines, and block and line
+// comments may sit between the keyword, a parenthesis and the specifier, in any
+// number and order. The specifier is in either quote or a backtick and is read
+// no further than its own line. Only literal text is read, so a specifier whose
+// directory is computed at runtime is invisible to it. A comment shaped like an
+// import counts as one: telling it apart from code means finding where comments
+// start, which strings and regex literals make a pattern get wrong, and deleting
+// a dead import is the cheaper fix. Prose that names the directory without that
+// shape does not count.
+//
+// The whole shape sits in a lookahead, so a match consumes no text and every
+// keyword is tried where it stands. A keyword in prose or at the end of a string
+// opens a false match at the quote or backtick after it, and that false match
+// cannot carry the scan past a real import. Two keywords reach one specifier
+// when a line comment ending in one sits before it, so a specifier is counted
+// once per offset. No gap can be split into whitespace and comments two ways, so
+// a try costs what it reads.
+//
+// A relative specifier is resolved against its importer rather than matched as
+// text, so `./sanitizer/` or a same-named directory elsewhere is not a hit and
+// `./sanitize`, naming the directory itself, is. A bare specifier is skipped:
+// this package declares no `exports`, and neither tsconfig nor either build maps
+// an alias onto src/, so one cannot reach the directory.
+function sanitiserImportsIn(importer: string, source: string): string[] {
+  const gap = String.raw`(?:\s|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|//[^\n]*\n)*`;
+  const keyword = String.raw`\bfrom|\bimport(?:${gap}\()?|\brequire${gap}\(`;
+  const quoted = String.raw`'([^'\n]*)'|"([^"\n]*)"|\`([^\`\n]*)\``;
+  const importShape = new RegExp(`(?=((?:${keyword})${gap})(?:${quoted}))`, 'g');
+  const counted = new Set<number>();
+  const found: string[] = [];
+  for (const match of source.matchAll(importShape)) {
+    const specifier = match[2] ?? match[3] ?? match[4] ?? '';
+    const offset = match.index + (match[1] ?? '').length;
+    if (counted.has(offset) || !specifier.startsWith('.')) continue;
+    counted.add(offset);
+    const segments = importer.split('/').slice(0, -1);
+    for (const part of specifier.split('/')) {
+      if (part === '..') segments.pop();
+      else if (part !== '.' && part !== '') segments.push(part);
+    }
+    const resolved = segments.join('/');
+    if (resolved === 'src/sanitize' || resolved.startsWith('src/sanitize/')) {
+      found.push(specifier);
+    }
+  }
+  return found;
+}
 
+const packageRoot = fileURLToPath(new URL('../..', import.meta.url));
+
+// The tree scan's read of one file: what sanitiserImportsIn finds in the file at
+// `relPath`, or null when the working tree no longer has it. The one path both
+// locates the file and is the importer the matcher resolves against, and the
+// matcher reports a hit only for an importer spelled from the package root
+// ('src/…'). A control drives this function on a real file, so a read that
+// handed the matcher any other spelling would empty the scan and be seen to.
+function sanitiserImportsInFile(relPath: string): string[] | null {
+  let contents: string;
+  try {
+    contents = readFileSync(join(packageRoot, relPath), 'utf8');
+  } catch (error) {
+    // A tracked file deleted from the working tree imports nothing. Any other
+    // failed read would drop a file out of the scan unseen.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  return sanitiserImportsIn(relPath, contents);
+}
+
+describe('the sanitiser stays a dev tool (B8)', () => {
+  // The positive controls for the tree scan: its empty offender list means
+  // nothing unless the same matcher is seen to flag every form it claims to
+  // read. Each importer is one the specifier really resolves into src/sanitize/
+  // from.
+  const flagged = [
+    {
+      form: 'a static import',
+      importer: 'src/providers/chatgpt.ts',
+      source: "import { createDetector } from '../sanitize/detector.ts';",
+      specifier: '../sanitize/detector.ts',
+    },
+    {
+      form: 'a type import split across lines',
+      importer: 'src/providers/chatgpt.ts',
+      source: 'import type {\n  Detector,\n} from "../sanitize/detector.ts";',
+      specifier: '../sanitize/detector.ts',
+    },
+    {
+      form: 'an export-from',
+      importer: 'src/providers/registry.ts',
+      source: "export { classify } from '../sanitize/classify.ts';",
+      specifier: '../sanitize/classify.ts',
+    },
+    {
+      form: 'a side-effect import',
+      importer: 'src/background.ts',
+      source: "import './sanitize/index.ts';",
+      specifier: './sanitize/index.ts',
+    },
+    {
+      form: 'a dynamic import',
+      importer: 'src/content.ts',
+      source: "const engine = await import('./sanitize/detector.ts');",
+      specifier: './sanitize/detector.ts',
+    },
+    {
+      form: 'a dynamic import with whitespace and a newline before the specifier',
+      importer: 'src/content.ts',
+      source: 'void import (\n  "./sanitize/detector.ts"\n);',
+      specifier: './sanitize/detector.ts',
+    },
+    {
+      form: 'a dynamic import of a template literal',
+      importer: 'src/content.ts',
+      source: 'void import(`./sanitize/detector.ts`);',
+      specifier: './sanitize/detector.ts',
+    },
+    {
+      form: 'a dynamic import of the directory itself',
+      importer: 'src/content.ts',
+      source: "void import('./sanitize');",
+      specifier: './sanitize',
+    },
+    {
+      form: 'a require',
+      importer: 'src/native-host/host.ts',
+      source: "const { createDetector } = require('../sanitize/detector.ts');",
+      specifier: '../sanitize/detector.ts',
+    },
+    {
+      form: 'a commented-out import',
+      importer: 'src/content.ts',
+      source: "// import { createDetector } from './sanitize/detector.ts';",
+      specifier: './sanitize/detector.ts',
+    },
+    {
+      form: 'a dynamic import with a block comment before the specifier',
+      importer: 'src/content.ts',
+      source: 'void import(/* lazy */ "./sanitize/detector.ts");',
+      specifier: './sanitize/detector.ts',
+    },
+    {
+      form: 'a dynamic import with a line comment before the specifier',
+      importer: 'src/content.ts',
+      source: "const engine = await import(\n  // lazy\n  './sanitize/detector.ts'\n);",
+      specifier: './sanitize/detector.ts',
+    },
+    {
+      form: 'a static import with comments and whitespace interleaved before the specifier',
+      importer: 'src/providers/chatgpt.ts',
+      source:
+        "import { createDetector } from /* engine */\n  // eager\n  '../sanitize/detector.ts';",
+      specifier: '../sanitize/detector.ts',
+    },
+    {
+      form: 'a dynamic import with a comment before its parenthesis',
+      importer: 'src/content.ts',
+      source: "void import /* lazy */ ('./sanitize/detector.ts');",
+      specifier: './sanitize/detector.ts',
+    },
+    {
+      form: 'a require with a comment before its parenthesis',
+      importer: 'src/native-host/host.ts',
+      source: "const { createDetector } = require /* sync */ ('../sanitize/detector.ts');",
+      specifier: '../sanitize/detector.ts',
+    },
+    {
+      // The comment's last word is a keyword whose own match reaches the same
+      // specifier as the dynamic import's.
+      form: 'a specifier two keywords reach, once',
+      importer: 'src/content.ts',
+      source:
+        "void import(\n  // loaded here, not by a static import\n  './sanitize/detector.ts'\n);",
+      specifier: './sanitize/detector.ts',
+    },
+    // A keyword the matcher tries before each real import below is followed by
+    // a closing quote or backtick. After a quote, the next quote on the same
+    // line closes a false match that runs over the real import; after a
+    // backtick, the specifier's line bound stops one before the backtick further
+    // down can close it. Either would hide the import if a match consumed text.
+    {
+      form: 'a dynamic import below a comment naming import in backticks',
+      importer: 'src/content.ts',
+      source:
+        '// loaded by a dynamic `import`\nconst engine = await import("./sanitize/detector.ts");\nconst label = `engine`;',
+      specifier: './sanitize/detector.ts',
+    },
+    {
+      form: 'a static import below a comment naming from in backticks',
+      importer: 'src/content.ts',
+      source:
+        "// values are read `from` the page\nimport { createDetector } from './sanitize/detector.ts';\nconst label = `detector`;",
+      specifier: './sanitize/detector.ts',
+    },
+    {
+      form: 'a dynamic import after a string that ends in a keyword on its line',
+      importer: 'src/content.ts',
+      source: "const label = 'read from '; void import('./sanitize/detector.ts');",
+      specifier: './sanitize/detector.ts',
+    },
+  ];
+  for (const { form, importer, source, specifier } of flagged) {
+    it(`B8 (anti-vacuity): the matcher flags ${form}`, () => {
+      expect(sanitiserImportsIn(importer, source)).toEqual([specifier]);
+    });
+  }
+
+  // Paths that only resemble the directory. Each sits beside a real import of
+  // it, so one assertion shows the lookalike is skipped while the matcher was
+  // still reading that source.
+  const realImport = "import { createDetector } from './sanitize/detector.ts';";
+  const resembling = [
+    {
+      what: 'a sibling directory whose name extends it',
+      line: "import { a } from './sanitizer/index.ts';",
+    },
+    {
+      what: 'a sibling directory whose name starts with it',
+      line: "import './sanitize-notes/index.ts';",
+    },
+    {
+      what: 'a same-named directory elsewhere under src/',
+      line: "import { a } from './providers/sanitize/index.ts';",
+    },
+    {
+      // Read as relative from src/content.ts, this would land in the directory.
+      what: 'a bare specifier',
+      line: "import { a } from 'sanitize/detector.ts';",
+    },
+    {
+      what: 'prose naming a relative path into it',
+      line: '// the engine loads through ./sanitize/classify.ts',
+    },
+  ];
+  for (const { what, line } of resembling) {
+    it(`B8 (anti-vacuity): the matcher skips ${what}`, () => {
+      expect(sanitiserImportsIn('src/content.ts', `${line}\n${realImport}`)).toEqual([
+        './sanitize/detector.ts',
+      ]);
+    });
+  }
+
+  it('B8 (anti-vacuity): the per-file read flags src/sanitize/index.ts importing its siblings', () => {
+    // index.ts re-exports its siblings through './' specifiers, which resolve
+    // into src/sanitize/ only from the path spelled the way the scan spells it.
+    expect(sanitiserImportsInFile('src/sanitize/index.ts')).toContain('./detector.ts');
+  });
+
+  it('no file under src/ outside src/sanitize/ imports src/sanitize/**', () => {
+    // Untracked files too: the bundler follows imports rather than the index,
+    // so a new importer reds a local run before it is ever committed. -z keeps
+    // a name with non-ASCII bytes unquoted, so the extension filter reads it.
+    const candidates = execFileSync(
+      'git',
+      ['ls-files', '-z', '--cached', '--others', '--exclude-standard', 'src'],
+      { cwd: packageRoot, encoding: 'utf8' },
+    )
+      .split('\0')
+      .filter((f) => f.length > 0 && !f.startsWith('src/sanitize/'))
+      .filter((f) => /\.[cm]?[jt]sx?$/.test(f));
+
+    const scanned: string[] = [];
     const offenders: string[] = [];
-    for (const relPath of tracked) {
-      const absPath = join(srcRoot, relPath.slice('src/'.length));
-      let contents: string;
-      try {
-        contents = readFileSync(absPath, 'utf8');
-      } catch {
-        continue;
-      }
-      if (
-        /from\s+['"][^'"]*\/sanitize\//.test(contents) ||
-        /import\s+['"][^'"]*\/sanitize\//.test(contents)
-      ) {
-        offenders.push(relPath);
+    for (const relPath of candidates) {
+      const found = sanitiserImportsInFile(relPath);
+      if (found === null) continue;
+      scanned.push(relPath);
+      if (found.length > 0) {
+        offenders.push(`${relPath}: ${found.join(', ')}`);
       }
     }
+    // content.ts is the script injected into every chat page, so a walk that
+    // never read it would report the tree clean without having looked.
+    expect(scanned).toContain('src/content.ts');
     expect(offenders).toEqual([]);
   });
 });

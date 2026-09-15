@@ -676,7 +676,13 @@ The store-reading packages read the local SQLite store directly through
 Keep these package boundaries intact — a forbidden import across a package wall is a defect.
 
 ```
-@akasecurity/schema        → zod (core Zod contracts + the SQLite local-store & rule-registry schemas, defined with Drizzle)
+@akasecurity/schema        → zod (core Zod contracts + the SQLite local-store & rule-registry schemas,
+                     defined with Drizzle; also the endpoint safety rule every
+                     forwarder and client shares — isSafeEndpoint /
+                     unsafeEndpointReason / originOnly / LOOPBACK_HOSTS — the
+                     ControlPlaneFailure type, and the raise-only enforcement
+                     clamp and its category anchor — mergeRaiseOnly +
+                     ruleCategoryMap)
 @akasecurity/persistence   → node:sqlite, @akasecurity/schema
                      (SQLite adapter + read/view ports, plus the shared ~/.aka
                      layout/settings/fingerprint file I/O, plus the egress wire
@@ -2472,8 +2478,9 @@ prefix. `expectNoEchoOf` is the **required form for every raw-value absence asse
 newly written or newly touched** in a package carrying the helper — `cli/test/helpers/no-echo.ts`,
 `plugins/claude-code/test/helpers/no-echo.ts`, `plugins/codex/test/helpers/no-echo.ts`,
 `plugins/antigravity/test/helpers/no-echo.ts`, `web-ui/test/helpers/no-echo.ts`,
-`packages/setup-wizard/test/helpers/no-echo.ts` and
-`packages/persistence/test/helpers/no-echo.ts`. A plain
+`packages/setup-wizard/test/helpers/no-echo.ts`,
+`packages/persistence/test/helpers/no-echo.ts` and
+`packages/remote/test/helpers/no-echo.ts`. A plain
 `not.toContain(rawValue)` in a new or edited assertion is a defect, not a style choice, and
 editing a file means its in-class assertions come along rather than being left beside converted
 ones.
@@ -2492,7 +2499,7 @@ purpose; and the deliberate **control** assertions inside each `no-echo.test.ts`
 to show the whole-value form would have passed.
 
 **Share it inside a package, copy it across a wall — and a copy takes the suite with it.**
-All seven packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
+All eight packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
 each case drives the helper with an output that leaks a run, and asserts both that the helper
 refuses it **and** that the whole-value form it replaced would have passed. That second half is
 what shows the assertion is _stronger_ rather than merely also-red, and it is why raising the
@@ -2510,11 +2517,13 @@ constructed — true by construction, and it stays true however `maskMatch` chan
 (`@akasecurity/plugin-sdk` re-exports it, so the plugin crosses no package wall), which is what
 makes widening its generic branch go red where the reason is written down.
 
-`packages/persistence` is the one copy with **no** masked-preview case, and it is not an
-omission to fix: that package has no masking surface, and `@akasecurity/detections` — which owns
-`maskMatch` — depends ON it, so importing it even as a dev dependency would make a cycle out of
-a test fixture. Its fixture is a generated base64 vault key instead, which is what that package
-actually has to keep out of an error.
+`packages/persistence` and `packages/remote` are the two copies with **no** masked-preview
+case, and neither is an omission to fix: neither package has a masking surface. For
+`persistence` there is a second reason — `@akasecurity/detections`, which owns `maskMatch`,
+depends ON it, so importing it even as a dev dependency would make a cycle out of a test
+fixture. Its fixture is a generated base64 vault key instead, which is what that package
+actually has to keep out of an error; `remote`'s is the userinfo of a refused endpoint, which
+is what that package has to keep out of a `RemoteEndpointRefused` message.
 
 **Capture the error outside the `catch`.** This shape passes while the function under test
 stops throwing entirely:

@@ -23,6 +23,7 @@ import {
   DeviceCommandPollResponse,
   EgressIngestRequest,
   IngestAck,
+  isSafeEndpoint,
   PluginWhoami,
   PolicyBundle,
   RecordAuditEventBatch,
@@ -33,6 +34,7 @@ import type { z } from 'zod';
 
 import type { RemoteResponse } from './http.ts';
 import {
+  RemoteEndpointRefused,
   RemoteRequestError,
   RemoteRequestInvalid,
   RemoteResponseInvalid,
@@ -87,7 +89,7 @@ function ackRoute(id: string): string {
 }
 
 export interface RemoteClientOptions {
-  /** Where the deployment lives, already checked with `isSafeEndpoint`. */
+  /** Where the deployment lives. `resolveBaseUrl` refuses one `isSafeEndpoint` rejects. */
   endpoint: string;
   apiKey: string;
   timeoutMs?: number | undefined;
@@ -193,16 +195,31 @@ function parsed<T>(schema: z.ZodType<T>, body: string, route: string): T {
 }
 
 /**
- * Drop trailing slashes so a route can be appended without doubling one.
+ * The base URL both factories below build every request from: `options.endpoint`,
+ * refused and trimmed. The one place either builds it, so "plain `http:` only
+ * to loopback" holds structurally rather than by each factory remembering to
+ * ask — a third factory added later gets it by construction, not by copying a
+ * call.
  *
- * A scan rather than `replace(/\/+$/, '')`, which is quadratic on a string that
- * is all slashes: the engine retries `\/+$` from each position and every attempt
- * walks to the end. The endpoint is not attacker-supplied in the ordinary case —
- * it comes from `settings.json` or an administrator's managed overlay — but it
- * crosses a trust boundary this module does not own, and a linear scan costs
- * nothing to prefer over reasoning about who can write that file.
+ * Refuses anything `isSafeEndpoint` (`@akasecurity/schema`) rejects — not
+ * `https:`, or `http:` to something other than loopback, or userinfo embedded
+ * in the URL — the same check `@akasecurity/persistence`'s
+ * `writeControlPlaneCredential` already makes before a credential is ever
+ * written to disk. Thrown rather than reported through a result: both callers
+ * are synchronous factories with no request in flight yet to attach a verdict
+ * to, so refusing here is also the EARLIEST this package can fail — before
+ * either factory returns a client at all, rather than on its first call.
+ *
+ * Trims trailing slashes with a scan rather than `replace(/\/+$/, '')`, which
+ * is quadratic on a string that is all slashes: the engine retries `\/+$` from
+ * each position and every attempt walks to the end. The endpoint is not
+ * attacker-supplied in the ordinary case — it comes from `settings.json` or an
+ * administrator's managed overlay — but it crosses a trust boundary this
+ * module does not own, and a linear scan costs nothing to prefer over
+ * reasoning about who can write that file.
  */
-function withoutTrailingSlashes(endpoint: string): string {
+function resolveBaseUrl(endpoint: string): string {
+  if (!isSafeEndpoint(endpoint)) throw new RemoteEndpointRefused(endpoint);
   let end = endpoint.length;
   while (end > 0 && endpoint.charCodeAt(end - 1) === SLASH) end -= 1;
   return endpoint.slice(0, end);
@@ -211,7 +228,7 @@ function withoutTrailingSlashes(endpoint: string): string {
 const SLASH = '/'.charCodeAt(0);
 
 export function createRemoteClient(options: RemoteClientOptions): RemoteClient {
-  const base = withoutTrailingSlashes(options.endpoint);
+  const base = resolveBaseUrl(options.endpoint);
   const url = (route: string): string => `${base}${route}`;
   const common = { apiKey: options.apiKey, timeoutMs: options.timeoutMs };
 
@@ -425,8 +442,8 @@ const ATTACH_ROUTES = {
  *
  * The same guarantees `send` holds for the attached client hold here: no
  * redirects, a deadline on every request, a body cap, a protocol upgrade
- * refused, and plain `http` only for a loopback endpoint the caller has already
- * checked with `isSafeEndpoint`.
+ * refused, and plain `http` only for a loopback endpoint — refused otherwise by
+ * `resolveBaseUrl`, the base-URL builder this shares with `createRemoteClient`.
  */
 export interface AttachClient {
   /** POST /v1/attach/device — start a grant and get the codes to display. */
@@ -445,11 +462,11 @@ export interface AttachClient {
 }
 
 export function createAttachClient(options: {
-  /** Where the deployment lives, already checked with `isSafeEndpoint`. */
+  /** Where the deployment lives. `resolveBaseUrl` refuses one `isSafeEndpoint` rejects. */
   endpoint: string;
   timeoutMs?: number | undefined;
 }): AttachClient {
-  const base = withoutTrailingSlashes(options.endpoint);
+  const base = resolveBaseUrl(options.endpoint);
   const common = { timeoutMs: options.timeoutMs };
 
   return {

@@ -20,14 +20,16 @@ import { AttachedDataGateway } from '../../src/attached/gateway.ts';
 /**
  * The composed policy bundle, judged by what the RUNTIME does with it.
  *
- * The unit suite next door asserts on the merged array, and for most of
- * `mergeRaiseOnly` that is the right level. It cannot reach this bug. The two
- * policies below sit on DIFFERENT keys — `rule:` and `category:` — so they never
- * contend, both survive any merge, and the array is entirely reasonable to look
- * at. What makes the outcome wrong is `resolveAction`'s precedence: it consults
- * `ruleActionIndex` first and returns unconditionally, so the tenant's
- * ruleId-targeted policy silently overrides the user's category-wide one. Only
- * an assertion that runs the real resolution can fail on that.
+ * The unit suite next door (@akasecurity/schema's own) asserts on the merged
+ * array, and for most of `mergeRaiseOnly` that is the right level. It cannot
+ * reach this bug. The two policies below sit on DIFFERENT keys — `rule:` and
+ * `category:` — so they never contend, both survive any merge, and the array
+ * is entirely reasonable to look at. What makes the outcome wrong is
+ * `createPolicyResolver`'s `actionFor` (plugin-sdk's `policy-resolver.ts`): it
+ * consults its `byRule` map first and returns unconditionally when it has an
+ * entry, so the tenant's ruleId-targeted policy silently overrides the user's
+ * category-wide one. Only an assertion that runs the real resolution can fail
+ * on that.
  *
  * And the compiled-in floor cannot stand in for the local policy here.
  * DEFAULT_ACTIONS is derived from `severityFloorPolicy`, which returns only

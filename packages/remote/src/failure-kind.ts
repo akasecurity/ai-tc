@@ -44,11 +44,23 @@ function nameOf(err: unknown): string | null {
  *
  * The name-carrying classes are checked before any status, because they say
  * something a status cannot. `RemoteRouteAbsent` means the deployment never had
- * the route rather than refusing the request; `RemoteRequestInvalid` was never
- * sent at all — a defect on this machine, and pointing its user at the
- * deployment would send them to look in the wrong place; `RemoteResponseInvalid`
- * is a 2xx whose body this build cannot read, which is the two ends being out of
- * step, not a deployment to try again.
+ * the route rather than refusing the request; `RemoteRequestInvalid` and
+ * `RemoteEndpointRefused` were never sent at all — a defect on this machine (a
+ * malformed body, or an endpoint this build will not dial) — and pointing its
+ * user at the deployment would send them to look in the wrong place;
+ * `RemoteResponseInvalid` is a 2xx whose body this build cannot read, which is
+ * the two ends being out of step, not a deployment to try again.
+ *
+ * `RemoteEndpointRefused` classifying as `invalid-request` specifically (rather
+ * than, say, a dedicated kind of its own) is not an approximation. Every
+ * production caller checks `isSafeEndpoint` before constructing a client at
+ * all — `resolveBaseUrl` in `client.ts` is the one place either factory builds
+ * a base URL — so a refusal reaching this classifier is a caller-contract
+ * violation: something in this build asked for a client against an endpoint it
+ * had already been told to refuse. That is a defect in this build, which is
+ * the one thing `invalid-request` names, and it is not a user-fixable endpoint
+ * problem on any path that reaches a classifier — the endpoint was already
+ * wrong before the request was ever assembled.
  *
  * A bare 404 is NOT a verdict here. Only a route that knows what a 404 means for
  * it — the deployment predates the route — may say so, and it does that by
@@ -67,6 +79,7 @@ export function classifyRemoteFailure(err: unknown): RemoteFailureKind {
     case 'RemoteRouteAbsent':
       return 'route-absent';
     case 'RemoteRequestInvalid':
+    case 'RemoteEndpointRefused':
       return 'invalid-request';
     case 'RemoteResponseInvalid':
       return 'rejected';

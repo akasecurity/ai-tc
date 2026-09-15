@@ -23,35 +23,75 @@ function fetchOn(win: Window) {
   ).fetch;
 }
 
+// One real macrotask turn. The timer is captured before any case can install
+// fake timers: vi.useFakeTimers() replaces the global setTimeout, and a turn
+// taken through the replacement waits for the fake clock instead of the loop.
+const realSetTimeout = globalThis.setTimeout;
+function macrotask(): Promise<void> {
+  return new Promise((resolve) => {
+    realSetTimeout(resolve, 0);
+  });
+}
+
+// What settle() posts on the tap's end of the channel. No TapToPage type is
+// spelled this way, and it is dropped before anything reaches `seen`.
+const SETTLED = 'harness:settled';
+
 // The bridge side of the port: collects everything the tap emits.
 function harness() {
   const seen: TapToPage[] = [];
+  const returned = new Set<number>();
   const channel = new MessageChannel();
   channel.port1.onmessage = (event: MessageEvent) => {
-    seen.push(event.data as TapToPage);
+    const data = event.data as TapToPage | { type: typeof SETTLED; marker: number };
+    if (data.type === SETTLED) {
+      returned.add(data.marker);
+      return;
+    }
+    seen.push(data);
   };
   channel.port1.start();
+  // Bound once, before the port is handed to any case, so the marker goes out
+  // through the real postMessage however a case later stubs that method on
+  // the instance. Read live, a stub that makes the tap's own posts fail would
+  // fail settle() as well, on the harness's account rather than the tap's.
+  const postAsTap = channel.port2.postMessage.bind(channel.port2);
   // Deliberately typed `unknown`: there is no bridge → tap message shape any
   // more, and the one case that uses this is proving exactly that.
   const send = (message: unknown): void => {
     channel.port1.postMessage(message);
   };
-  // Let queued port messages drain. Two timer turns rather than one: a Node
-  // MessagePort delivers through its own event-loop source, which a single
-  // timer can outrun, and an absence check after a settle that ran too early
-  // passes without having looked.
+  let nextMarker = 0;
+  // Waits until the port has provably drained, rather than for a number of
+  // turns. A macrotask first, so every microtask already queued has run — the
+  // tap posts from promise callbacks, including a whole response it reads
+  // from memory — then a marker posted on the TAP's end of the channel.
+  // Messages posted on one port arrive in order, so once the marker is back,
+  // everything the tap posted before it has been delivered. Every wait is a
+  // real macrotask, never a bare microtask, so a waitFor built on this still
+  // hands the loop to streams and the decompressor between attempts.
+  //
+  // What it cannot see is tap work still waiting on a stream, a decompressor
+  // or a timer; a case whose forbidden message would come from there waits on
+  // a positive message of the same flow with waitFor. Bounded, and it throws
+  // at the bound: a marker that never came back proves nothing drained, and
+  // an absence check read after it would pass without having looked.
   const settle = async (): Promise<void> => {
-    for (let turn = 0; turn < 2; turn += 1) {
-      await new Promise((resolve) => {
-        setTimeout(resolve, 0);
-      });
+    await macrotask();
+    const marker = nextMarker++;
+    postAsTap({ type: SETTLED, marker });
+    for (let turn = 0; turn < 400; turn += 1) {
+      await macrotask();
+      if (returned.delete(marker)) return;
     }
+    throw new Error('settle(): the marker never came back, so nothing proves the port drained');
   };
   const of = <T extends TapToPage['type']>(type: T) =>
     seen.filter((m): m is Extract<TapToPage, { type: T }> => m.type === type);
-  // For a drain that spans more turns than one settle() waits for. Gives up
-  // rather than hanging, so a property that never holds fails on its own
-  // assertion instead of on the runner's timeout.
+  // For a drain that also waits on something other than the port: a stream,
+  // the decompressor, a timer. Gives up rather than hanging, so a property
+  // that never holds fails on its own assertion instead of on the runner's
+  // timeout.
   const waitFor = async (predicate: () => boolean): Promise<void> => {
     for (let attempt = 0; attempt < 400; attempt += 1) {
       if (predicate()) return;
@@ -68,6 +108,12 @@ const CONVERSATION = { host: 'site.test', path: '/api/conversation' };
 // A table that matches every path on the one host — never every host, which is
 // not a table the build can emit.
 const EVERYTHING = { host: 'site.test', path: '.*' };
+
+// The tap's 1 MiB binary-body decode ceiling, and valid text exactly at it and
+// one byte past it.
+const DECODE_CEILING_BYTES = 1024 * 1024;
+const AT_DECODE_CEILING = 'a'.repeat(DECODE_CEILING_BYTES);
+const OVER_DECODE_CEILING = `${AT_DECODE_CEILING}a`;
 
 // A window whose `fetch` cannot be replaced. Assignment to a non-writable
 // property throws in strict mode, which is what the fetch half has to survive.
@@ -401,12 +447,31 @@ describe('installTap: the fetch half', () => {
       });
   });
 
+  it('forwards a typed-array body exactly at the decode ceiling', async () => {
+    // The ceiling refuses what is over it, not what reaches it, so a body of
+    // exactly that many bytes still decodes and forwards. Without this, the
+    // refusal below holds just as well for a ceiling one byte too strict.
+    const { fn } = fakeFetch('ok');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+
+    installTap(win, h.port, [CONVERSATION]);
+    await fetchOn(win)('https://site.test/api/conversation', {
+      method: 'POST',
+      body: new TextEncoder().encode(AT_DECODE_CEILING),
+    });
+    await h.settle();
+
+    // By length, so a failure prints a number rather than a megabyte of text.
+    expect(h.of('request').map((m) => m.body?.length)).toEqual([DECODE_CEILING_BYTES]);
+  });
+
   it('refuses a typed-array body over the decode ceiling', () => {
     // The ceiling bounds a synchronous fatal-mode decode on the page's own
-    // call stack, and it is charged against the CAPTURED size accessors — a
-    // live `.byteLength` read let a page redefine that getter to 0 and take
-    // its own bound off. One byte over, so the case sits on the boundary
-    // rather than somewhere past it.
+    // call stack. One byte past the case above, so the two hold the
+    // comparison from both sides. This buffer's own `.byteLength` tells the
+    // truth, so it cannot say which read the ceiling is charged against; the
+    // cases after it can.
     const { fn } = fakeFetch('ok');
     const win = { fetch: fn } as unknown as Window;
     const h = harness();
@@ -416,7 +481,7 @@ describe('installTap: the fetch half', () => {
       method: 'POST',
       // Valid, control-free text: an all-zero buffer would be refused by the
       // C0 scan instead, and the case would then pass with no ceiling at all.
-      body: new TextEncoder().encode('a'.repeat(1024 * 1024 + 1)),
+      body: new TextEncoder().encode(OVER_DECODE_CEILING),
     })
       .then(() => h.settle())
       .then(() => {
@@ -424,6 +489,93 @@ describe('installTap: the fetch half', () => {
         expect(h.of('request')).toHaveLength(0);
       });
   });
+
+  it.each([
+    ['a typed array', () => new TextEncoder().encode(OVER_DECODE_CEILING)],
+    ['an ArrayBuffer', () => new TextEncoder().encode(OVER_DECODE_CEILING).slice().buffer],
+  ])('refuses %s over the decode ceiling whose own byteLength says 0', async (_shape, make) => {
+    // The ceiling is charged against size accessors the tap captured at
+    // load, because `.byteLength` is the page's to redefine: read live, a
+    // body that reports 0 takes its own bound off.
+    const { fn } = fakeFetch('ok');
+    const win = { fetch: fn } as unknown as Window;
+    const h = harness();
+    installTap(win, h.port, [CONVERSATION]);
+
+    const body = make();
+    Object.defineProperty(body, 'byteLength', { value: 0, configurable: true });
+    // What a live read now sees. Without it, a define that did not take
+    // would leave the case passing with nothing to see through.
+    expect(body.byteLength).toBe(0);
+
+    await fetchOn(win)('https://site.test/api/conversation', { method: 'POST', body });
+    await h.settle();
+
+    expect(h.of('error')[0]).toMatchObject({ reason: 'unparsed_body' });
+    expect(h.of('request')).toHaveLength(0);
+  });
+
+  it.each([
+    [
+      'a typed array',
+      // %TypedArray%.prototype, which has no global name of its own.
+      Object.getPrototypeOf(Uint8Array.prototype) as object,
+      () => Uint8Array.from(new TextEncoder().encode(OVER_DECODE_CEILING)),
+    ],
+    [
+      'an ArrayBuffer',
+      ArrayBuffer.prototype,
+      () => Uint8Array.from(new TextEncoder().encode(OVER_DECODE_CEILING)).buffer,
+    ],
+  ])(
+    'refuses %s over the decode ceiling whose inherited getter says 0',
+    async (_shape, shared, make) => {
+      // The same spoof one level up: a getter moved on the prototype that
+      // owns it reaches every object of that kind in the realm, including a
+      // tap that looked the accessor up when it measured rather than when it
+      // loaded. The own-property cases above cannot see that: a lookup made
+      // at call time either starts at the prototype, which they leave alone,
+      // or finds their own data property, which carries no getter.
+      //
+      // Each body is built through the global Uint8Array rather than taken
+      // straight from TextEncoder. Under jsdom the encoder is Node's own, and
+      // what it returns inherits from different prototypes than the globals
+      // the tap captured its getters from, so a spoof on those reaches the
+      // body but not the prototypes the tap reads.
+      const reply = new Response('ok');
+      const win = { fetch: () => Promise.resolve(reply) } as unknown as Window;
+      const h = harness();
+      installTap(win, h.port, [CONVERSATION]);
+
+      const body = make();
+      const original = Object.getOwnPropertyDescriptor(shared, 'byteLength');
+      if (original === undefined || !('get' in original)) {
+        throw new Error('this prototype carries no byteLength getter');
+      }
+
+      // Held for the synchronous call alone, and restored before anything is
+      // awaited: the getter is shared by every object of this kind built from
+      // the same constructors, whatever else in the process holds one. The
+      // tap decides on a body inside that call.
+      let reported: unknown;
+      let sent: Promise<Response> | undefined;
+      Object.defineProperty(shared, 'byteLength', { get: () => 0, configurable: true });
+      try {
+        reported = body.byteLength;
+        sent = fetchOn(win)('https://site.test/api/conversation', { method: 'POST', body });
+      } finally {
+        Object.defineProperty(shared, 'byteLength', original);
+      }
+      // What a live read on the body saw inside the window: the spoof took,
+      // and it took on the prototype this body really inherits from.
+      expect(reported).toBe(0);
+      await sent;
+      await h.settle();
+
+      expect(h.of('error')[0]).toMatchObject({ reason: 'unparsed_body' });
+      expect(h.of('request')).toHaveLength(0);
+    },
+  );
 
   it('refuses a binary body that is not valid UTF-8', async () => {
     // The control for the case above: decoding is gated on the bytes actually
@@ -781,13 +933,10 @@ describe('installTap: the fetch half', () => {
       // yet, because `request` is still waiting on the deadline — this is the
       // assertion that fails when the terminator does not wait.
       //
-      // Drained by advancing the fake clock, NOT by the harness's settle():
-      // that calls setTimeout, which vi.useFakeTimers() replaces, so its timer
-      // would fire only when the fake clock moves. Each advance by 0 waits one
-      // real turn and moves the fake clock not at all, so the deadline still
-      // cannot fire; two of them, for the reason settle() takes two.
-      await vi.advanceTimersByTimeAsync(0);
-      await vi.advanceTimersByTimeAsync(0);
+      // settle() turns the loop through a timer captured before the fake
+      // clock was installed, so it drains the port without moving that clock
+      // and the deadline still cannot fire.
+      await h.settle();
       expect(h.seen.filter((m) => m.type !== 'ready' && m.type !== 'patched')).toEqual([]);
 
       await vi.advanceTimersByTimeAsync(60_000);

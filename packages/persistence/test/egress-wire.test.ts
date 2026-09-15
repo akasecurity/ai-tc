@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 
 import type { RecordProjectEgressInput } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
@@ -164,6 +165,51 @@ describe('hashProjectKey — cross-device convergence', () => {
       // scp form entirely would satisfy every case above.
       expect(hashProjectKey(`git:${gitUser}github.com:acme/widgets.git`)).toBe(
         hashProjectKey('git:https://github.com/acme/widgets'),
+      );
+    });
+  });
+
+  // A `file://` remote is a real git remote form, and it names a local path.
+  describe('a file:// remote, which names a path on one machine', () => {
+    // The digest of a key taken over its text exactly as given, computed
+    // independently of `hashProjectKey`, so "returned untouched" is stated as a
+    // construction rather than inferred from two calls agreeing.
+    const untouched = (key: string): string =>
+      createHash('sha256').update(`v2:${key}`, 'utf8').digest('hex');
+    // The empty-authority form, built the way the platform spells it: a drive
+    // lands after the third slash on Windows, and the URL is still `file://`.
+    const LOCAL = pathToFileURL('/srv/repos/demo').href;
+
+    it('does not read an empty authority as a host named "file"', () => {
+      // Scp form matches the empty-authority URL with host `file` and a path of
+      // slashes then the directory, and the digest was taken over `file/<path>`.
+      const scpMisread = LOCAL.replace(/^file:\/+/, 'file/');
+      expect(scpMisread.startsWith('file/')).toBe(true);
+      expect(hashProjectKey(`git:${LOCAL}`)).not.toBe(hashProjectKey(`git:${scpMisread}`));
+      expect(hashProjectKey(`git:${LOCAL}`)).toBe(untouched(`git:${LOCAL}`));
+    });
+
+    it.each([LOCAL, 'file://localhost/srv/repos/demo', LOCAL.replace(/^file:/, 'FILE:')])(
+      'digests %s over its text as given',
+      (url) => {
+        expect(hashProjectKey(`git:${url}`)).toBe(untouched(`git:${url}`));
+      },
+    );
+
+    it.each([LOCAL, 'file://localhost/srv/repos/demo'])(
+      'keeps %s apart from the same path ending in .git',
+      (url) => {
+        // A bare repository beside a working one is an ordinary layout, and the
+        // trailing-`.git` strip merged the two into one project.
+        expect(hashProjectKey(`git:${url}`)).not.toBe(hashProjectKey(`git:${url}.git`));
+      },
+    );
+
+    it('still canonicalizes scp form against a host that is merely named file', () => {
+      // The positive control: the exclusion is the `://` spelling, not the word.
+      // Without this, a guard on any `file:` prefix would satisfy every case above.
+      expect(hashProjectKey('git:file:acme/widgets.git')).toBe(
+        hashProjectKey('git:ssh://file/acme/widgets'),
       );
     });
   });

@@ -137,6 +137,39 @@ export const FindingStatus = z
   .meta({ id: 'FindingStatus' });
 export type FindingStatus = z.infer<typeof FindingStatus>;
 
+// Why a row this machine owed its deployment will not be sent again as it is.
+// The one list: persistence builds its database guard on
+// audit_events.sync_failure from these members, and the findings views label
+// them.
+export const SyncFailureReason = z
+  .enum(['deployment_refused', 'payload_invalid', 'detached_undelivered'])
+  .meta({ id: 'SyncFailureReason' });
+export type SyncFailureReason = z.infer<typeof SyncFailureReason>;
+
+// Whether the activity a finding was most recently detected in reached the
+// deployment this machine is attached to. A finding itself is never sent: the
+// deployment derives its own findings from the activity it receives.
+//   sent           delivered
+//   queued         owed, or claimed by a pass sending it now
+//   not_sent       will not be sent again as it is; `reason` says why when recorded
+//   never_offered  never queued for sending
+//   local_scan     found by a local scan; scanned files are never sent
+export const FindingDeliveryState = z
+  .enum(['sent', 'queued', 'not_sent', 'never_offered', 'local_scan'])
+  .meta({ id: 'FindingDeliveryState' });
+export type FindingDeliveryState = z.infer<typeof FindingDeliveryState>;
+
+export const FindingDelivery = z
+  .object({
+    state: FindingDeliveryState,
+    // The delivery time for `sent`; the failure time for `not_sent` when recorded.
+    at: z.iso.datetime().optional(),
+    // Only on `not_sent`, and only when a known reason was recorded.
+    reason: SyncFailureReason.optional(),
+  })
+  .meta({ id: 'FindingDelivery' });
+export type FindingDelivery = z.infer<typeof FindingDelivery>;
+
 // ResolutionMethod: how a finding reached its current disposition (status).
 // 'enforced-in-flight' = blocked/redacted/warned at the boundary; 'fixed-at-source'
 // = the underlying content was remediated (no longer detected on re-scan);
@@ -231,6 +264,9 @@ export const FindingInstance = z
     // per-instance "view session" link needs. Absent for events captured
     // outside a session.
     sessionId: z.string().optional(),
+    // The delivery state of the event above (see FindingDelivery). Optional so
+    // readers that do not project it stay valid.
+    delivery: FindingDelivery.optional(),
   })
   .meta({ id: 'FindingInstance' });
 export type FindingInstance = z.infer<typeof FindingInstance>;
@@ -306,6 +342,9 @@ export const FindingFacets = z
     // reads, which can filter by it; the type-level read omits the dimension
     // because a group spans tools.
     tool: z.array(FindingFacetItem).optional(),
+    // Delivery states (FindingDeliveryState). Present only on the
+    // instance-level reads, like `tool`.
+    deployment: z.array(FindingFacetItem).optional(),
   })
   .meta({ id: 'FindingFacets' });
 export type FindingFacets = z.infer<typeof FindingFacets>;
@@ -505,6 +544,8 @@ export const ListFindingInstancesQuery = z.object({
   // Exact host-tool names (attributes.tool_name, e.g. 'Bash'). A real filter,
   // where the free-text `q` can only match the rendered "via Bash" label.
   tool: z.array(z.string()).optional(),
+  // The delivery state of each finding's event (see FindingDelivery).
+  deployment: z.array(FindingDeliveryState).optional(),
   // Exact repository / file-path matches, for the drill-down out of the
   // locations view. A row whose event carries no repo/file matches neither.
   repo: z.string().optional(),
@@ -530,6 +571,18 @@ export const ListFindingInstancesResponse = z
   })
   .meta({ id: 'ListFindingInstancesResponse' });
 export type ListFindingInstancesResponse = z.infer<typeof ListFindingInstancesResponse>;
+
+// A continuation page: the rows and the cursor that follows them, and nothing
+// else. Totals and facets describe the whole filtered scope rather than a page,
+// so a continuation would repeat the numbers its first page already reported —
+// and pay for them again. A caller appending pages reads only these two fields.
+export const ListFindingInstancesPage = z
+  .object({
+    items: z.array(FindingInstanceDetail),
+    nextCursor: z.string().nullable(),
+  })
+  .meta({ id: 'ListFindingInstancesPage' });
+export type ListFindingInstancesPage = z.infer<typeof ListFindingInstancesPage>;
 
 // ─── Location findings list (the "By location" master/detail pair) ──────────
 
@@ -616,6 +669,8 @@ export const ListFindingLocationsQuery = z.object({
   // instances that match, and folds its status from those.
   status: z.array(FindingStatus).optional(),
   tool: z.array(z.string()).optional(),
+  // The delivery state of each finding's event (see FindingDelivery).
+  deployment: z.array(FindingDeliveryState).optional(),
   q: z.string().optional(),
   sessionId: z.string().optional(),
   from: z.iso.datetime().optional(),

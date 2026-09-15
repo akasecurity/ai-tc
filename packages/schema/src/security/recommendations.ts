@@ -10,9 +10,9 @@ import type { DetectionCategory, Severity } from '../zod/finding.ts';
 import type { FindingView, HealthSummary } from '../zod/local.ts';
 
 /**
- * Descending severity weight — bigger is worse. Distinct from the private
- * `SEVERITY_ORDER` ranks in `findings-*-build.ts`, which run the other way
- * (critical = 0) and order a list rather than weigh a bucket.
+ * Descending severity weight — bigger is worse. Distinct from `SEVERITY_RANK` in
+ * `findings-group-build.ts`, which runs the other way (critical = 0) and orders a
+ * list rather than weighs a bucket.
  *
  * Annotated over `Severity`, so a member added there fails the build here instead
  * of weighing 0 and silently sorting last.
@@ -25,26 +25,20 @@ const SEVERITY_WEIGHT: Record<Severity, number> = {
 };
 
 /**
- * The same table indexed by a plain string, for the callers that hold one.
- *
- * `FindingView.severity` is `string` at this layer, so the lookups below cannot use
- * the annotated table directly. Two names over one literal is the pattern
- * `findings-group-build.ts` uses for `SEVERITY_ORDER`/`SEVERITY_RANK`: the
- * annotation buys the exhaustiveness, the alias buys the index.
- */
-const SEVERITY_WEIGHT_BY_STRING = SEVERITY_WEIGHT as Partial<Record<string, number>>;
-
-/**
  * The weight of `severity`, and 0 for one this build does not rank.
  *
- * The accessor is what is exported rather than either table, for the reason
+ * The accessor is what is exported rather than the table, for the reason
  * {@link recommendationCopy} is: a caller holds a `string`, so indexing the
  * annotated table is a TS7053 at every call site and the cast that silences it
  * would be written once per caller. The three plugins rank their own top-findings
  * list through this.
+ *
+ * `Object.hasOwn` rather than a bare index: a severity equal to an inherited
+ * Object.prototype member ('constructor', 'toString') would otherwise resolve to
+ * that member's function, skip the `0` fallback, and weigh in as NaN.
  */
 export function severityWeight(severity: string): number {
-  return SEVERITY_WEIGHT_BY_STRING[severity] ?? 0;
+  return Object.hasOwn(SEVERITY_WEIGHT, severity) ? SEVERITY_WEIGHT[severity as Severity] : 0;
 }
 
 // Plain-language next step per detection category, shown by the Recommend view.

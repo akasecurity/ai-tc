@@ -1,11 +1,12 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import type { ApplyMode } from '../src/apply.ts';
 import { applyPluginUpdate, installAgentPlugin } from '../src/apply.ts';
 import { createCliPluginManager } from '../src/cli-plugin-manager.ts';
@@ -171,7 +172,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
-  rmSync(dir, { recursive: true, force: true });
+  // The shims under `bin` run as child processes with `home` as their HOME.
+  removeTree(dir);
 });
 
 describe('the shim source itself', () => {

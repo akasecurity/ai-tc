@@ -96,4 +96,23 @@ describe('FindingsFlatTableView', () => {
     expect(count(html, 'td')).toBe(8);
     expect(html).toContain('<span class="text-text-3">—</span>');
   });
+
+  it('renders no Deployment column unless asked', () => {
+    const html = render({ items: [instance({ delivery: { state: 'sent' } })] });
+    expect(html).not.toContain('>Deployment<');
+    expect(html).not.toContain('>Sent<');
+  });
+
+  it('renders the Deployment column with each row’s state, and a dash without one', () => {
+    const html = render({
+      showDeploymentColumn: true,
+      items: [instance({ delivery: { state: 'queued' } }), instance({ id: 'fnd-2' })],
+    });
+    expect(html).toContain('>Deployment<');
+    expect(html).toContain('>Queued<');
+    expect(count(html, 'th')).toBe(8);
+    expect(count(html, 'td')).toBe(16);
+    // Both rows carry a status, so the only dash is the second row's Deployment cell.
+    expect(html.match(/<span class="text-text-3">—<\/span>/g) ?? []).toHaveLength(1);
+  });
 });

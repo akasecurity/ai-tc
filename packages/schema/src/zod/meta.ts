@@ -307,6 +307,10 @@ export const CaptureAttributes = z
     // to 'allow' — the enforcement audit trail's link back to the grant that
     // authorized the bypass.
     exception_ids: z.array(z.guid()).optional(),
+    // The persisted spellings of EventMetadata's messageId/conversationId — the
+    // join back to the `llm_call` leaf for the same assistant turn.
+    message_id: z.string().optional(),
+    conversation_id: z.string().optional(),
     // Whole milliseconds this capture's inspection blocked its caller — the
     // plugin's own added latency (see EventMetadata.inspectionMs, whose value
     // this is). Promoted to the `inspection_ms` generated column so the facet is

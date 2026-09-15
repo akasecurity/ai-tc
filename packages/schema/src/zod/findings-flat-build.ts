@@ -10,6 +10,8 @@
 // restated.
 
 import type {
+  FindingDelivery,
+  FindingDeliveryState,
   FindingFacetItem,
   FindingFacets,
   FindingInstanceDetail,
@@ -17,10 +19,41 @@ import type {
 } from './finding.ts';
 import {
   type GroupableFindingRow,
+  severityRank,
   toApiAction,
   toApiCategory,
   toApiProvider,
 } from './findings-group-build.ts';
+
+// ─── Ordering primitives (code-point comparison) ─────────────────────────────
+
+/**
+ * Compares two strings by Unicode CODE POINT — the order SQLite's BINARY
+ * collation produces when comparing UTF-8 text, so a comparison done here on
+ * a scanned row and the identical comparison done in SQL on a stored one
+ * agree.
+ *
+ * This is NOT what JavaScript's `<` does: `<` compares UTF-16 CODE UNITS, and
+ * a character outside the Basic Multilingual Plane is represented in UTF-16
+ * by a surrogate pair whose leading unit (U+D800–U+DBFF) is numerically BELOW
+ * every code unit in U+E000–U+FFFF. So `<` orders such an astral character
+ * before those characters, while code-point order — and a UTF-8 byte
+ * comparison — orders it after.
+ */
+export function compareCodePoints(a: string, b: string): number {
+  const aIter = a[Symbol.iterator]();
+  const bIter = b[Symbol.iterator]();
+  for (;;) {
+    const aNext = aIter.next();
+    const bNext = bIter.next();
+    if (aNext.done && bNext.done) return 0;
+    if (aNext.done) return -1;
+    if (bNext.done) return 1;
+    const aPoint = aNext.value.codePointAt(0) ?? 0;
+    const bPoint = bNext.value.codePointAt(0) ?? 0;
+    if (aPoint !== bPoint) return aPoint - bPoint;
+  }
+}
 
 /**
  * A GroupableFindingRow that also carries its event linkage. The flat list
@@ -32,6 +65,9 @@ export interface FlatFindingRow extends GroupableFindingRow {
   // projected from the findings⋈events join, so it always has its event.
   // `sessionId` stays optional — an event outside a session carries none.
   eventId: string;
+  // The delivery state of that event (see deriveFindingDelivery). Optional, like
+  // `status`: a producer that does not read the sync columns omits it.
+  delivery?: FindingDelivery;
 }
 
 export interface InstanceFilterOptions {
@@ -43,6 +79,7 @@ export interface InstanceFilterOptions {
   providers?: string[] | undefined;
   actions?: string[] | undefined;
   statuses?: string[] | undefined;
+  deliveries?: string[] | undefined;
   tools?: string[] | undefined;
   repo?: string | undefined;
   file?: string | undefined;
@@ -93,6 +130,11 @@ function matchesDimension(
       return (
         !opts.statuses?.length || (row.status !== undefined && opts.statuses.includes(row.status))
       );
+    case 'deliveries':
+      return (
+        !opts.deliveries?.length ||
+        (row.delivery !== undefined && opts.deliveries.includes(row.delivery.state))
+      );
     case 'tools':
       return (
         !opts.tools?.length || (row.toolName !== undefined && opts.tools.includes(row.toolName))
@@ -122,6 +164,7 @@ const DIMENSIONS: readonly InstanceFilterDimension[] = [
   'providers',
   'actions',
   'statuses',
+  'deliveries',
   'tools',
   'repo',
   'file',
@@ -148,11 +191,23 @@ export function matchesInstanceFilters(
 function toItems(counts: Map<string, number>): FindingFacetItem[] {
   return [...counts.entries()]
     .map(([value, count]) => ({ value, count }))
-    .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+    .sort(
+      (a, b) =>
+        b.count - a.count ||
+        a.value.localeCompare(b.value) ||
+        // localeCompare reports canonically-equivalent strings (an NFC and an
+        // NFD spelling of the same text) as equal, so a count tie between
+        // them would otherwise be ordered by whichever the Map iteration
+        // produced. compareCodePoints breaks that tie deterministically, which
+        // makes this a TOTAL order — not one that agrees with SQL collation,
+        // which it need not: foldFacetTuples runs this same sort over grouped
+        // tuples, so both paths order facets identically by construction.
+        compareCodePoints(a.value, b.value),
+    );
 }
 
-function bump(counts: Map<string, number>, value: string): void {
-  counts.set(value, (counts.get(value) ?? 0) + 1);
+function bump(counts: Map<string, number>, value: string, by = 1): void {
+  counts.set(value, (counts.get(value) ?? 0) + by);
 }
 
 /**
@@ -174,6 +229,7 @@ export function createInstanceFacetAccumulator(opts: InstanceFilterOptions): {
   const action = new Map<string, number>();
   const status = new Map<string, number>();
   const tool = new Map<string, number>();
+  const deployment = new Map<string, number>();
 
   return {
     add(row) {
@@ -191,6 +247,10 @@ export function createInstanceFacetAccumulator(opts: InstanceFilterOptions): {
       if (row.toolName !== undefined && matchesInstanceFilters(row, opts, 'tools')) {
         bump(tool, row.toolName);
       }
+      // A row with no delivery contributes to no deployment facet.
+      if (row.delivery !== undefined && matchesInstanceFilters(row, opts, 'deliveries')) {
+        bump(deployment, row.delivery.state);
+      }
     },
     facets: () => ({
       severity: toItems(severity),
@@ -199,7 +259,140 @@ export function createInstanceFacetAccumulator(opts: InstanceFilterOptions): {
       action: toItems(action),
       status: toItems(status),
       tool: toItems(tool),
+      deployment: toItems(deployment),
     }),
+  };
+}
+
+/**
+ * One distinct combination of the seven faceted dimensions, with how many
+ * findings carry it. A store that can group in its own query language returns
+ * these instead of every row, so the facet counts cost the number of distinct
+ * combinations rather than the number of findings.
+ *
+ * `status` is optional because it is on GroupableFindingRow, whose rows can
+ * predate the resolution lifecycle. A tuple with no status is filtered like any
+ * other row. With no status filter set it counts toward the total and the six
+ * other facets, and only the status facet skips it. Under a status filter it
+ * matches nothing, so it leaves the total and the other facets as well. A store
+ * grouping such rows gives them a tuple with no status rather than dropping the
+ * group or inventing one.
+ *
+ * `deliveryState` is optional for the same reason: a producer that does not
+ * read the sync columns groups without it, and the deployment facet is the
+ * only one such a tuple skips. It carries the state alone, since that is the
+ * value the facet buckets on and the only delivery field a filter reads.
+ */
+export interface FacetTuple {
+  severity: string;
+  ruleId: string;
+  sourceTool: string;
+  actionTaken: string;
+  status?: FindingStatus;
+  toolName?: string;
+  deliveryState?: FindingDeliveryState;
+  count: number;
+}
+
+/**
+ * One tuple as the row shape the filters read. Every field no faceted
+ * dimension touches carries a placeholder: the fold below never reads them,
+ * and giving them real-looking values would invite a future filter to match on
+ * something the tuple does not actually carry. `status`, `toolName` and the
+ * delivery are spread rather than defaulted, because "no status" is not a
+ * status, "no tool" and "a tool named empty" are different to the tool facet,
+ * and "no delivery" is not a delivery state.
+ */
+export function rowFromTuple(tuple: FacetTuple): FlatFindingRow {
+  return {
+    id: '',
+    ruleId: tuple.ruleId,
+    category: '',
+    severity: tuple.severity,
+    maskedMatch: '',
+    actionTaken: tuple.actionTaken,
+    confidence: 0,
+    occurredAt: '',
+    sourceTool: tuple.sourceTool,
+    repo: '',
+    file: '',
+    eventId: '',
+    ...(tuple.status === undefined ? {} : { status: tuple.status }),
+    ...(tuple.toolName === undefined ? {} : { toolName: tuple.toolName }),
+    ...(tuple.deliveryState === undefined ? {} : { delivery: { state: tuple.deliveryState } }),
+  };
+}
+
+/**
+ * The instance total and the seven per-filter-excluded facets, folded from
+ * grouped tuples instead of from rows — the counterpart of
+ * createInstanceFacetAccumulator for a caller that grouped before it counted.
+ *
+ * It reuses matchesInstanceFilters rather than re-deciding any dimension, so
+ * the two paths cannot drift on what a filter means. The raw source tool and
+ * action are mapped through the shared mappers before counting, because
+ * several raw values collapse into one API bucket and the facet counts that
+ * bucket.
+ *
+ * `repo`, `file` and `q` have no facet of their own, so a grouping caller
+ * applies them before grouping and the tuples it returns are already narrowed
+ * by them. Passing them to the matcher here would reject every tuple, since a
+ * tuple carries none of those fields — hence they are blanked out.
+ */
+export function foldFacetTuples(
+  tuples: readonly FacetTuple[],
+  opts: InstanceFilterOptions,
+): { total: number; facets: FindingFacets } {
+  const scoped: InstanceFilterOptions = {
+    ...opts,
+    repo: undefined,
+    file: undefined,
+    q: undefined,
+  };
+  const severity = new Map<string, number>();
+  const subtype = new Map<string, number>();
+  const provider = new Map<string, number>();
+  const action = new Map<string, number>();
+  const status = new Map<string, number>();
+  const tool = new Map<string, number>();
+  const deployment = new Map<string, number>();
+
+  let total = 0;
+  for (const tuple of tuples) {
+    const row = rowFromTuple(tuple);
+    if (matchesInstanceFilters(row, scoped)) total += tuple.count;
+    if (matchesInstanceFilters(row, scoped, 'severity')) {
+      bump(severity, row.severity, tuple.count);
+    }
+    if (matchesInstanceFilters(row, scoped, 'subtype')) bump(subtype, row.ruleId, tuple.count);
+    if (matchesInstanceFilters(row, scoped, 'providers')) {
+      bump(provider, toApiProvider(row.sourceTool), tuple.count);
+    }
+    if (matchesInstanceFilters(row, scoped, 'actions')) {
+      bump(action, toApiAction(row.actionTaken), tuple.count);
+    }
+    if (row.status !== undefined && matchesInstanceFilters(row, scoped, 'statuses')) {
+      bump(status, row.status, tuple.count);
+    }
+    if (row.toolName !== undefined && matchesInstanceFilters(row, scoped, 'tools')) {
+      bump(tool, row.toolName, tuple.count);
+    }
+    if (row.delivery !== undefined && matchesInstanceFilters(row, scoped, 'deliveries')) {
+      bump(deployment, row.delivery.state, tuple.count);
+    }
+  }
+
+  return {
+    total,
+    facets: {
+      severity: toItems(severity),
+      subtype: toItems(subtype),
+      provider: toItems(provider),
+      action: toItems(action),
+      status: toItems(status),
+      tool: toItems(tool),
+      deployment: toItems(deployment),
+    },
   };
 }
 
@@ -219,6 +412,7 @@ export function toInstanceDetail(row: FlatFindingRow): FindingInstanceDetail {
     ...(row.toolName === undefined ? {} : { toolName: row.toolName }),
     eventId: row.eventId,
     ...(row.sessionId === undefined ? {} : { sessionId: row.sessionId }),
+    ...(row.delivery === undefined ? {} : { delivery: row.delivery }),
     ...(row.user === undefined ? {} : { user: row.user }),
     action: toApiAction(row.actionTaken),
     detectedAt: row.occurredAt,
@@ -246,13 +440,6 @@ export interface LocationAccumulator {
   ruleIds: Set<string>;
 }
 
-const SEVERITY_ORDER: Partial<Record<string, number>> = {
-  critical: 0,
-  high: 1,
-  medium: 2,
-  low: 3,
-};
-
 export function newLocationAccumulator(): LocationAccumulator {
   return {
     instanceCount: 0,
@@ -268,7 +455,7 @@ export function newLocationAccumulator(): LocationAccumulator {
 
 export function addToLocation(acc: LocationAccumulator, row: FlatFindingRow): void {
   acc.instanceCount += 1;
-  const rank = SEVERITY_ORDER[row.severity] ?? Number.MAX_SAFE_INTEGER - 1;
+  const rank = severityRank(row.severity) ?? Number.MAX_SAFE_INTEGER - 1;
   if (rank < acc.maxSeverityRank) {
     acc.maxSeverityRank = rank;
     acc.maxSeverity = row.severity;
@@ -304,12 +491,21 @@ export interface LocationOrderKey {
  * third location is unreachable behind a Next button that was enabled. The pair
  * is unique per location, so ordering on it removes ties outright.
  *
- * The two string keys are compared with `<` rather than `localeCompare`, which
- * is NOT interchangeable here: ICU collation reports canonically-equivalent
- * strings as equal, so a precomposed and a decomposed 'café.ts' compare 0 — and
- * macOS stores NFD where event metadata arrives NFC, which reintroduces exactly
- * the tie this key exists to remove. `<` is UTF-16 code-unit order: total,
- * locale-free, and the same in every runtime.
+ * The two string keys are compared with compareCodePoints rather than
+ * `localeCompare`, which is NOT interchangeable here: ICU collation reports
+ * canonically-equivalent strings as equal, so a precomposed and a decomposed
+ * 'café.ts' compare 0 — and macOS stores NFD where event metadata arrives
+ * NFC, which reintroduces exactly the tie this key exists to remove.
+ *
+ * compareCodePoints, rather than JavaScript's `<`, is what the order now IS,
+ * and it has to be: this list is produced by a SQL query as well as by this
+ * in-memory fold, and SQLite's BINARY collation compares UTF-8 bytes, which
+ * for well-formed text is Unicode CODE POINT order — not the UTF-16
+ * CODE-UNIT order `<` uses. The two diverge exactly on astral characters
+ * (outside the Basic Multilingual Plane), whose UTF-16 surrogate pair sorts
+ * below U+E000–U+FFFF under `<` while its code point sorts above them. A
+ * comparator that used `<` here would agree with a streaming, in-memory scan
+ * and disagree with the equivalent SQL `ORDER BY`.
  *
  * They are also two SEPARATE keys rather than one joined string. Joining needs a
  * separator provably absent from arbitrary repo names and file paths, and there
@@ -322,16 +518,16 @@ export function compareLocationOrder(a: LocationOrderKey, b: LocationOrderKey): 
   // for its own `sev`. It differs from newLocationAccumulator's miss value on
   // purpose: that one is picking a maximum and must lose every comparison, this
   // one is ordering and must not bucket an unknown value among the known ones.
-  const rankA = SEVERITY_ORDER[a.maxSeverity] ?? -1;
-  const rankB = SEVERITY_ORDER[b.maxSeverity] ?? -1;
+  const rankA = severityRank(a.maxSeverity) ?? -1;
+  const rankB = severityRank(b.maxSeverity) ?? -1;
   if (rankA !== rankB) return rankA - rankB;
   // latestDetectedAt descending — ISO-8601 strings sort lexically.
   if (a.latestDetectedAt !== b.latestDetectedAt) {
     return a.latestDetectedAt < b.latestDetectedAt ? 1 : -1;
   }
-  if (a.repo !== b.repo) return a.repo < b.repo ? -1 : 1;
-  if (a.file !== b.file) return a.file < b.file ? -1 : 1;
-  return 0;
+  const repoDiff = compareCodePoints(a.repo, b.repo);
+  if (repoDiff !== 0) return repoDiff;
+  return compareCodePoints(a.file, b.file);
 }
 
 /**

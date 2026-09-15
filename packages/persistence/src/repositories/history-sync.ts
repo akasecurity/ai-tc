@@ -92,12 +92,12 @@ const CAPTURE_TYPE_LIST = OUTBOX_CAPTURE_TYPE_LIST;
  * None of that is a claim they are unimportant — only that a delivery-state read
  * has nothing true to say about a row no lane will ever carry.
  */
-export type CountedEventType = (typeof COUNTED_EVENT_TYPES)[number];
-
 export const COUNTED_EVENT_TYPES = [
   ...STRUCTURAL_EVENT_TYPES,
   ...OUTBOX_CAPTURE_EVENT_TYPES,
 ] as const;
+
+export type CountedEventType = (typeof COUNTED_EVENT_TYPES)[number];
 
 const COUNTED_TYPE_LIST = COUNTED_EVENT_TYPES.map((t) => `'${t}'`).join(', ');
 
@@ -244,22 +244,6 @@ export interface HistorySyncCounts {
  * adding these columns: that upgrade re-armed every sentinel row written before
  * a reason could be recorded, so anything sitting here since carries one.
  */
-/**
- * One delivery-state partition per event kind, for a surface that shows the
- * lanes separately rather than as one number.
- *
- * The aggregate hides the thing a reader most wants: on a working machine the
- * structural kinds sit near 70% delivered while the two that carry TEXT sit near
- * 20%, because the live forward settles a small row and a large one waits for
- * the drain. One bar averages those into a number that describes neither.
- *
- * `kind` is drawn from the counted vocabulary, so a kind no lane carries cannot
- * appear here — see COUNTED_EVENT_TYPES for which and why.
- */
-export interface HistorySyncKindPartition extends HistorySyncPartition {
-  kind: CountedEventType;
-}
-
 export interface HistorySyncPartition {
   queued: number;
   inProgress: number;
@@ -275,6 +259,22 @@ export interface HistorySyncPartition {
    */
   detached: number;
   total: number;
+}
+
+/**
+ * One delivery-state partition per event kind, for a surface that shows the
+ * lanes separately rather than as one number.
+ *
+ * The aggregate hides the thing a reader most wants: on a working machine the
+ * structural kinds sit near 70% delivered while the two that carry TEXT sit near
+ * 20%, because the live forward settles a small row and a large one waits for
+ * the drain. One bar averages those into a number that describes neither.
+ *
+ * `kind` is drawn from the counted vocabulary, so a kind no lane carries cannot
+ * appear here — see COUNTED_EVENT_TYPES for which and why.
+ */
+export interface HistorySyncKindPartition extends HistorySyncPartition {
+  kind: CountedEventType;
 }
 
 /**
@@ -326,9 +326,10 @@ export const HISTORY_SYNC_LEASE_STALE_MS = 60_000;
  * claim takeable, so a surface that called the same claim live would show
  * "Sending…" against a pass that any other process is free to displace.
  *
- * Pure, so the surface that renders it can be tested without a store — and
- * `lease-liveness.test.ts` drives this and a real `claim()` over the same rows
- * to keep the two from drifting.
+ * Pure, so the surface that renders it can be tested without a store — and the
+ * `isHistorySyncLeaseLive` cases in `test/repositories/history-sync.test.ts`
+ * drive this and a real `claim()` over the same rows to keep the two from
+ * drifting.
  */
 export function isHistorySyncLeaseLive(
   lease: HistorySyncLease | undefined,

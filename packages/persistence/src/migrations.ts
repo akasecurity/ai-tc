@@ -20,6 +20,16 @@ import { akaWarn } from './internal/warn.ts';
 import { COUNTED_EVENT_TYPES } from './repositories/history-sync.ts';
 import { syncFailureRejectCondition } from './sync-failure.ts';
 
+/** What a caller can vary about one migration pass. */
+export interface ApplyMigrationsOptions {
+  /**
+   * Tags to leave unapplied on this pass. The store opener passes the deferred
+   * set here on a default open; a caller that omits it applies every migration,
+   * which is what these tests and any direct caller get.
+   */
+  skipTags?: ReadonlySet<string> | undefined;
+}
+
 // --- migration-DDL introspection --------------------------------------------
 // drizzle's generated SQLite DDL is rigidly formatted — backtick-quoted
 // identifiers, one statement per `--> statement-breakpoint` — which is what
@@ -79,7 +89,11 @@ function createdIndexName(statement: string): string | undefined {
 // CREATEd table for evidenceObjects to see).
 const LEGACY_DROP_MIGRATION_TAG = '0014_drop_legacy_events_findings';
 
-export function applyMigrations(db: DatabaseSync, file?: string): void {
+export function applyMigrations(
+  db: DatabaseSync,
+  file?: string,
+  options: ApplyMigrationsOptions = {},
+): void {
   const legacyCount = (db.prepare('PRAGMA user_version').get() as { user_version: number })
     .user_version;
   db.exec(
@@ -96,6 +110,7 @@ export function applyMigrations(db: DatabaseSync, file?: string): void {
 
   for (const [index, migration] of SQLITE_MIGRATIONS.entries()) {
     if (applied.has(migration.tag)) continue;
+    if (options.skipTags?.has(migration.tag) === true) continue;
     // Handled after the backfill below, once (and only once) it reports both
     // legacy tables fully drained — see applyLegacyDropMigration.
     if (migration.tag === LEGACY_DROP_MIGRATION_TAG) continue;

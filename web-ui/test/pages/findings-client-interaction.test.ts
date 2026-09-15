@@ -54,7 +54,14 @@ const { NavigationTransitionProvider } =
 
 const AWS = 'secrets/aws-access-key';
 const TODO = 'code/todo-note';
-const EMPTY_FILTERS = { severity: [], type: [], provider: [], action: [], status: [] };
+const EMPTY_FILTERS = {
+  severity: [],
+  type: [],
+  provider: [],
+  action: [],
+  status: [],
+  deployment: [],
+};
 
 const FACETS: FindingFacets = {
   severity: [{ value: 'critical', count: 1 }],
@@ -197,6 +204,7 @@ function mount(over: Record<string, unknown> = {}): void {
           repo: '',
           file: '',
           renderedAt: Date.parse('2026-01-02T00:00:00.000Z'),
+          deployment: null,
           view: 'grouped',
           types: TYPES,
           instances: pageOf(['f1', 'f2'], 'cursor-1'),
@@ -580,5 +588,31 @@ describe('findings client — the By-location view', () => {
 
     const query = loadMoreFindingLocations.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(query.q).toBeUndefined();
+  });
+});
+
+describe('findings drawer — the Deployment row', () => {
+  const queued = (id: string): FindingInstanceDetail => ({
+    ...instance(id),
+    delivery: { state: 'queued' },
+  });
+  const onePage = (): ListFindingInstancesResponse => ({
+    ...pageOf(['f1'], null),
+    items: [queued('f1')],
+  });
+
+  it('explains the state on an attached machine', () => {
+    mount({ instances: onePage(), deployment: { canRetry: false } });
+    click(byText('tr', 'MASK-f1', panel()));
+    expect(document.body.textContent).toContain('Based on its latest detection.');
+    expect(document.body.textContent).toContain('Settings → Sync');
+  });
+
+  it('shows no Deployment row on a machine that is not attached', () => {
+    mount({ instances: onePage() });
+    click(byText('tr', 'MASK-f1', panel()));
+    // The drawer did open, so the absence below is not the absence of a drawer.
+    expect(document.body.textContent).toContain('Back to finding');
+    expect(document.body.textContent).not.toContain('Based on its latest detection.');
   });
 });

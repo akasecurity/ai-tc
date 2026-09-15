@@ -16,6 +16,7 @@ import type {
 } from '@akasecurity/schema';
 import {
   captureDefinitionVersion,
+  DEFERRED_MIGRATION_TAGS,
   EventKind,
   isoToEpochMillis,
   toCaptureAttributes,
@@ -39,6 +40,7 @@ import {
   reapStalePartials,
   snapshotStore,
 } from './internal/snapshot.ts';
+import { registerSqlFunctions } from './internal/sql-functions.ts';
 import { escapeLikePattern } from './internal/sql-text.ts';
 import { failOpenTransaction, withTransaction } from './internal/transactions.ts';
 import { akaWarn } from './internal/warn.ts';
@@ -270,13 +272,16 @@ function closeQuietly(db: DatabaseSync): void {
 
 // Open the store with the shared PRAGMAs: WAL lets the plugin (events/findings)
 // and an optional local reader share the file; busy_timeout absorbs brief
-// contention; foreign keys enforce the event→finding reference.
+// contention; foreign keys enforce the event→finding reference. The package's
+// SQL functions (sql-functions.ts) are registered on the same connection, so a
+// statement prepared on it can call them.
 function openWithPragmas(file: string): DatabaseSync {
   const db = new DatabaseSync(file);
   try {
     db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA busy_timeout = 2000');
     db.exec('PRAGMA foreign_keys = ON');
+    registerSqlFunctions(db);
   } catch (err) {
     // The OS handle exists the moment the constructor returns, but SQLite does
     // not read the file until a statement runs — so a corrupt store opens fine
@@ -370,7 +375,7 @@ function backupLegacyStore(db: DatabaseSync, file: string): string {
  * handle, which is the Windows file lock this exists to prevent — so the guard
  * is one window over the whole sequence rather than one per known thrower.
  */
-function openAndInitialize(file: string, base: string) {
+function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<string>) {
   let db = openWithPragmas(file);
   try {
     // A legacy (tenant-bearing) aka.db can't be migrated forward onto the
@@ -392,7 +397,7 @@ function openAndInitialize(file: string, base: string) {
       );
     }
 
-    applyMigrations(db, file);
+    applyMigrations(db, file, { skipTags });
     tightenPerms(file);
 
     const policies = new SqlitePoliciesRepository(db);
@@ -436,7 +441,29 @@ function openAndInitialize(file: string, base: string) {
   }
 }
 
-export function openLocalDatabase(dir: string): LocalDatabase {
+/** What a caller can vary about opening the local store. */
+export interface OpenLocalDatabaseOptions {
+  /**
+   * Apply the migrations named in DEFERRED_MIGRATION_TAGS on this open. Off by
+   * default: each builds an index over every capture row's attribute bag, which
+   * on a large store outlasts a plugin hook's host timeout, and a hook killed
+   * mid-build rolls it back for the next hook to start again. The build also
+   * holds the write lock throughout, and a default open writes on its way in, so
+   * every other process that opens the store meanwhile waits out its busy
+   * timeout and fails to open it. Opt in only from a pass that runs with no
+   * session live, never on a request path. A read that names one of those
+   * indexes has to work without it.
+   */
+  applyDeferredMigrations?: boolean | undefined;
+}
+
+// The set a default open skips, allocated once.
+const DEFERRED_TAGS: ReadonlySet<string> = new Set(DEFERRED_MIGRATION_TAGS);
+
+export function openLocalDatabase(
+  dir: string,
+  options: OpenLocalDatabaseOptions = {},
+): LocalDatabase {
   ensureDataDirSync(dir);
   const file = join(dir, DB_FILENAME);
   // A snapshot killed part-way leaves a staging directory holding a full copy of
@@ -481,6 +508,7 @@ export function openLocalDatabase(dir: string): LocalDatabase {
     // `dataDir()` — so its parent is the `~/.aka` base the layout splits into
     // settings/ and data/, and the pack-policy floor needs both halves.
     dirname(dir),
+    options.applyDeferredMigrations === true ? undefined : DEFERRED_TAGS,
   );
 
   // The one derivation of a capture's row id, shared by the write and the

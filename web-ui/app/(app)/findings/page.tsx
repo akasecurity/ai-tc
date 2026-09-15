@@ -1,5 +1,10 @@
-import { rangeToFromIso } from '@akasecurity/dashboard-ui';
-import { encodeLocationId } from '@akasecurity/schema';
+import { type DeploymentDisplay, rangeToFromIso } from '@akasecurity/dashboard-ui';
+import {
+  readControlPlaneCredentialState,
+  readWorkspaceSettings,
+  settingsDir,
+} from '@akasecurity/persistence';
+import { encodeLocationId, isAttached, isHistorySyncConsentValid } from '@akasecurity/schema';
 
 import { db } from '../../lib/db';
 import { renderInstant } from '../../lib/rendered-at';
@@ -30,6 +35,24 @@ export const dynamic = 'force-dynamic';
 
 export const metadata = { title: 'Findings' };
 
+/**
+ * What the page may say about the deployment this machine sends to, or null
+ * when the machine is not attached — which hides every Deployment control.
+ *
+ * Both reads fail open: an unreadable settings file reads as not attached, and
+ * an unreadable key file as a key that is not usable.
+ */
+function readDeploymentDisplay(): DeploymentDisplay | null {
+  const settings = readWorkspaceSettings();
+  const connection = settings.controlPlane;
+  if (!isAttached(settings) || connection === undefined) return null;
+  return {
+    canRetry:
+      isHistorySyncConsentValid(settings.historySyncConsent, connection.endpoint) &&
+      readControlPlaneCredentialState(settingsDir(), connection).usable,
+  };
+}
+
 // Reads the local store's findings for the URL's view + filters, then hands off
 // to the client shell for the interactive table + detail sheet. Everything lives
 // in the URL so this re-runs (server-side) on every change. The Activity page
@@ -56,7 +79,12 @@ export default async function FindingsPage({
   searchParams: Promise<FindingsSearchParams>;
 }) {
   const sp = await searchParams;
-  const filters = parseFindingsFilters(sp);
+  const deployment = readDeploymentDisplay();
+  const parsed = parseFindingsFilters(sp);
+  // A deployment filter applies only where its control renders: from a shared
+  // link on a machine that is not attached, it would narrow the list with
+  // nothing on screen to show or clear it.
+  const filters = deployment === null ? { ...parsed, deployment: [] } : parsed;
   const query = parseQuery(sp);
   const session = parseSession(sp);
   const selectedId = parseSelectedFinding(sp);
@@ -98,6 +126,7 @@ export default async function FindingsPage({
         repo={repo}
         file={file}
         renderedAt={renderedAt}
+        deployment={deployment}
       />
     );
   }
@@ -173,6 +202,7 @@ export default async function FindingsPage({
         repo={repo}
         file={file}
         renderedAt={renderedAt}
+        deployment={deployment}
       />
     );
   }
@@ -245,6 +275,7 @@ export default async function FindingsPage({
       repo={repo}
       file={file}
       renderedAt={renderedAt}
+      deployment={deployment}
     />
   );
 }

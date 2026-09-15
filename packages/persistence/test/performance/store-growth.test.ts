@@ -41,8 +41,8 @@
  * The bound depends on the writes COMMITTING, which is the one thing that makes
  * this worth pinning rather than assuming: a checkpoint cannot run inside a
  * transaction, so a single long one grows the log by its whole page footprint.
- * Measured at the same 20k events, autocommit peaks at 4,198,312 B while one
- * enclosing transaction peaks at 12,219,952 B; the fixture generator's own 1M-event
+ * Measured at the same 20k events, autocommit peaks at 4,223,032 B while one
+ * enclosing transaction peaks at 17,571,832 B; the fixture generator's own 1M-event
  * transaction grows the log by its whole page footprint, which runs to hundreds of
  * megabytes. Nothing on the capture path does that — every
  * `recordCapture` is its own transaction and every hook is its own process — but
@@ -164,12 +164,19 @@ const SETUP_TIMEOUT_MS = 180_000;
 const WAL_EVENTS = 20_000;
 
 /**
- * 8 MiB: about double the 4,198,312 B an autocheckpointing log settles at, and
- * comfortably below the 12,219,952 B the same writes reach with the checkpoint
+ * 8 MiB: about double the 4,223,032 B an autocheckpointing log settles at, and
+ * comfortably below the 17,571,832 B the same writes reach with the checkpoint
  * suppressed. Both numbers were measured at this event count, so the ceiling
  * sits between two known outcomes rather than at a round number.
  */
 const MAX_WAL_BYTES = 8 * 1024 * 1024;
+
+/**
+ * SQLite's compiled-in `wal_autocheckpoint`, and the one pragma on the fixture
+ * connection that decides the peak. Read back in the positive control, so the
+ * connection is shown to run the default both numbers above were measured at.
+ */
+const DEFAULT_AUTOCHECKPOINT_PAGES = 1000;
 
 /** A checkpointed store's own file size, with the sidecars flushed into it. */
 function settledDbBytes(dataDir: string, raw: { exec: (sql: string) => void }): number {
@@ -224,11 +231,13 @@ describe('store growth per event', () => {
 
 // Skipped on Windows on COST, not because the property differs there. The
 // `beforeAll` below commits 20,000 separate transactions — that is the whole
-// point, since a checkpoint cannot run inside one — and every commit is an
-// fsync on the platform that charges most for it. It overran its own 180 s
-// setup ceiling on that runner, and the leg is SHARED: `findings-flat.test.ts`
+// point, since a checkpoint cannot run inside one — and it overran its own 180 s
+// setup ceiling on that runner while every one of those commits was an fsync, on
+// the platform that charges most for it. The leg is SHARED: `findings-flat.test.ts`
 // timed out alongside it at the config's 20 s while having nothing to do with
-// this file.
+// this file. The loop no longer fsyncs (see the `synchronous` note below), but
+// what it costs on that leg without them has not been measured, so the skip
+// stands until it is.
 //
 // What is asserted is SQLite's page arithmetic — the default 1000-page
 // autocheckpoint against a 4 KiB page — which is a property of the engine, not
@@ -244,11 +253,33 @@ describeWal('write-ahead log growth under sustained writes', () => {
   let store: OwnedTempStore;
   let peak = 0;
   let written = 0;
+  let autocheckpointPages = 0;
 
   beforeAll(() => {
     store = createTempStore('aka-wal-');
     const db = store.open();
+    const raw = corpusConnection(db);
     const walFile = join(store.dataDir, 'aka.db-wal');
+
+    // Durability is the one thing this fixture turns down, and it is not what
+    // the case measures. node:sqlite is built with
+    // SQLITE_DEFAULT_WAL_SYNCHRONOUS=2, so at the default every commit below
+    // fsyncs the log — 20,916 fsyncs over this loop — and the setup costs the
+    // runner's fsync latency times twenty thousand. Reproduced with a fixed
+    // delay injected into fsync, the loop took 277 s at 9 ms an fsync, past the
+    // ceiling above; at OFF it makes no fsync at all and took 1.5 s under the
+    // same delay. NORMAL still syncs at every checkpoint, 916 times here, which
+    // is 100 s at 100 ms an fsync.
+    //
+    // The log is the same either way: the autocheckpoint counts frames, and a
+    // frame is the same bytes synced or not. The sampled peak was 4,223,032 B
+    // under FULL, NORMAL and OFF alike, and one enclosing transaction reached
+    // 17,571,832 B under both FULL and OFF (Linux and macOS, Node 24). The
+    // pragma that DOES decide the peak is read back below rather than trusted.
+    raw.exec('PRAGMA synchronous = OFF');
+    autocheckpointPages = (
+      raw.prepare('PRAGMA wal_autocheckpoint').get() as { wal_autocheckpoint: number }
+    ).wal_autocheckpoint;
 
     for (let i = 0; i < WAL_EVENTS; i += 1) {
       // No enclosing transaction: each call commits on its own, which is what
@@ -272,9 +303,7 @@ describeWal('write-ahead log growth under sustained writes', () => {
     }
     peak = Math.max(peak, sizeOr0(walFile));
 
-    written = (
-      corpusConnection(db).prepare(`SELECT COUNT(*) AS n FROM audit_events`).get() as { n: number }
-    ).n;
+    written = (raw.prepare(`SELECT COUNT(*) AS n FROM audit_events`).get() as { n: number }).n;
   }, SETUP_TIMEOUT_MS);
 
   afterAll(() => {
@@ -293,6 +322,12 @@ describeWal('write-ahead log growth under sustained writes', () => {
       WAL_EVENTS,
     );
     expect(peak, 'the -wal file never appeared; this measured nothing').toBeGreaterThan(0);
+    // A smaller autocheckpoint settles the log lower and passes the bound for a
+    // configuration the product does not run.
+    expect(
+      autocheckpointPages,
+      'the fixture connection is not on the default autocheckpoint the ceiling was measured at',
+    ).toBe(DEFAULT_AUTOCHECKPOINT_PAGES);
   });
 
   it('stays bounded while the product writes one transaction per capture', () => {

@@ -339,18 +339,18 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 
 ### A. Make the package build (nothing else can land first)
 
-- [ ] A1. Add `@akasecurity/{persistence,scanner,setup-wizard}` and `tsup` to
+- [x] A1. Add `@akasecurity/{persistence,scanner,setup-wizard}` and `tsup` to
       `plugins/copilot/package.json` devDependencies at the exact ranges the siblings carry;
       add `build`, `dev`, `prepack` scripts and a `files` array. Leave `private` alone for now.
-- [ ] A2. Copy `tsup.config.ts` from `plugins/codex`, trimming `entry` to the hook scripts
+- [x] A2. Copy `tsup.config.ts` from `plugins/codex`, trimming `entry` to the hook scripts
       that exist at this point plus `scan-worker`. Verify `normalizeSqliteSpecifier` and the
       `triage-rubric.md` copy come across unchanged.
-- [ ] A3. Add `test/global-setup.ts` (one-shot `tsup`), wire `globalSetup` +
+- [x] A3. Add `test/global-setup.ts` (one-shot `tsup`), wire `globalSetup` +
       `testTimeout: 20_000` + `hookTimeout: 20_000` into `vitest.config.ts`, and **replace**
       the comment there that says the package has no timeout overrides.
-- [ ] A4. Add `'@akasecurity/ai-tc-copilot': { testTimeout: 20_000, hookTimeout: 20_000 }`
+- [x] A4. Add `'@akasecurity/ai-tc-copilot': { testTimeout: 20_000, hookTimeout: 20_000 }`
       to `TIMEOUTS` in `packages/eslint-config/test/hook-timeout-ratchet.test.js`.
-- [ ] A5. Copy `src/build-info.ts` with the manifest read moved from `argv[2]` to
+- [x] A5. Copy `src/build-info.ts` with the manifest read moved from `argv[2]` to
       **`argv[3]`**; add `test/build-info.test.ts` pinning that offset explicitly.
 - [ ] A6. Write `plugin.json` and `hooks.json` (one entry per event, event name as a literal
       argv token, `timeoutSec: 30`). Add a test asserting every command in `hooks.json`

@@ -86,3 +86,39 @@ the offset exists to prevent, driven rather than asserted about.
 - `packages/eslint-config`: `pnpm test` **1526 passed / 23 files** — the guard package that
   owns the ratchet, the effective-config audit, the derived lint-coverage check and the
   no-network runtime audit. Green after A4.
+
+### B1–B4 — the wire vocabulary
+
+`HarnessId` in `packages/schema/src/zod/inventory.ts` extends with `'Copilot'`. `pnpm
+typecheck` then named **exactly two** sites, as the plan predicted —
+`inventory-assets.ts:106` (`HARNESS_LABELS`) and `:165` (`TITLE_NEEDLES`) — and said nothing
+about the third, `resolveHarnessId`'s hand-written `if` ladder. All three carry Copilot now:
+
+- `HARNESS_LABELS[HARNESS.Copilot] = 'GitHub Copilot'`.
+- `TITLE_NEEDLES.Copilot = stripSeparators(SOURCE_TOOL.Copilot)` → **`githubcopilot`**, the
+  stripped wire id like every other row, not the display id.
+- one dispatch arm, added by hand.
+
+`packages/schema/test/zod/inventory.test.ts`'s `HarnessId` cases moved with it. Its
+rejection case used to name `'copilot'`, which is now an accepted member; it names the wire
+id `'github-copilot'` instead — still a near-miss on a real member rather than an arbitrary
+string, which is what made that case worth having.
+
+**B4's test.** `inventory-harness-resolution.test.ts` already drives every `HarnessId`
+member from its own wire id, so Copilot picks up derived coverage for free — but that case
+would pass with the dispatch arm missing, because a member resolving to `null` yields no
+card and reads as an ordinary absence in a set comparison. Two named cases were added
+instead: Copilot's wire id resolves **and** labels the card, and a row titled with the bare
+word `copilot` resolves to **nothing** (the needle is the wire id; the two spellings differ
+here exactly as they do for Claude Code).
+
+Verified: `packages/schema` 116 passed, `packages/persistence/test/repositories` 678 passed
+across 31 files, workspace-wide `turbo run typecheck` 26/26.
+
+### B5 — deferred, deliberately
+
+`SCAN_COVERAGE`'s Copilot row is still `{ coverage: 0, supported: false }`. Flipping it is
+a claim that this harness is scanned, and at this point in the branch the package emits no
+hook at all — the number would be false in every store that read it, and the dashboard would
+render a coverage row for a harness nothing captures. The flip belongs with the commit that
+lands the hooks. Not ticked.

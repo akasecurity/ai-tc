@@ -358,12 +358,12 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 
 ### B. Wire vocabulary (independent of A; do early so types settle)
 
-- [ ] B1. Extend `HarnessId` in `packages/schema/src/zod/inventory.ts` with `'Copilot'` and
+- [x] B1. Extend `HarnessId` in `packages/schema/src/zod/inventory.ts` with `'Copilot'` and
       run `pnpm typecheck` — the `Record<HarnessId, …>` tables will name every site that
       must now decide.
-- [ ] B2. Add the `HARNESS_LABELS` row.
-- [ ] B3. Add the `TITLE_NEEDLES` row as `stripSeparators(SOURCE_TOOL.Copilot)`.
-- [ ] B4. Add the `resolveHarnessId` dispatch line by hand — **the compiler will not ask for
+- [x] B2. Add the `HARNESS_LABELS` row.
+- [x] B3. Add the `TITLE_NEEDLES` row as `stripSeparators(SOURCE_TOOL.Copilot)`.
+- [x] B4. Add the `resolveHarnessId` dispatch line by hand — **the compiler will not ask for
       it** — and a test that drives a Copilot harness row end to end through it.
 - [ ] B5. Flip `SCAN_COVERAGE`'s Copilot row to a justified number with the argument in a
       comment beside it (see Risks: this is open question 3).

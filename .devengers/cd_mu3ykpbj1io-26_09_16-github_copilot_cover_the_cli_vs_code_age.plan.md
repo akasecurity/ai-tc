@@ -374,7 +374,7 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 
 - [x] C1. Write `src/hooks/shared.ts`: `readStdin`, `parseJson`, `getString`, `baseMetadata`,
       `emit(output: HookOutput)`, and `runHookFailOpen(main, failOpen, watchdogMs =
-    WATCHDOG_MS)` ported from Antigravity. Restate the blocking-body limit in the header.
+  WATCHDOG_MS)` ported from Antigravity. Restate the blocking-body limit in the header.
 - [x] C2. Define the `HookOutput` union spanning both dialects.
 - [x] C3. Write `src/hooks/event-name.ts` (argv[2], validated, `undefined` on anything else).
 - [x] C4. Write `src/hooks/dialect.ts` (`hook_event_name` first, `sessionId`/`session_id`
@@ -409,7 +409,7 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 ### E. The remaining events
 
 - [ ] E1. `src/hooks/session-start.ts` — `handleSessionStart({ tool: SOURCE_TOOL.Copilot,
-    harnessVersion, harnessInterface })`, provider recorded `unknown` with the model id.
+  harnessVersion, harnessInterface })`, provider recorded `unknown` with the model id.
       The once-per-session pass must tolerate running **after** the session's first prompt
       (the recordings show `userPromptSubmitted` 20 ms _before_ `sessionStart`); add a case
       that drives that order.
@@ -471,9 +471,9 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
       a live install**.
 - [x] H4. `test/capability-matrix.test.ts` — fails when matrix and `SKILL.md` disagree.
 - [ ] H5. `src/{present,render,setup-show,setup-frame-json,intro,start-light,firstrun,
-    firstrun-core,posture,calibration,onboard,query,dashboard,dashboard-launch,
-    skills-registry,exception-guidance,filescan,apply-suppressions,sync,history-sync,
-    content-retention,reconcile,scan-worker}.ts` and `src/remediation/*` from the Codex
+  firstrun-core,posture,calibration,onboard,query,dashboard,dashboard-launch,
+  skills-registry,exception-guidance,filescan,apply-suppressions,sync,history-sync,
+  content-retention,reconcile,scan-worker}.ts` and `src/remediation/*` from the Codex
       siblings, plus their suites.
 
 ### I. Fixtures and provenance

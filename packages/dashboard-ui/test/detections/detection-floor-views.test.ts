@@ -110,6 +110,28 @@ function addRuleTag(html: string): string {
   return tag ?? '';
 }
 
+/**
+ * The opening tag of the "⋮" fallback button. It carries no data-slot of its
+ * own (unlike Add rule), so it is picked out by its `aria-label` instead —
+ * still unique among the pane's buttons.
+ */
+function moreTag(html: string): string {
+  const tag = buttonTags(html).find((t) => t.includes('aria-label="More"'));
+  expect(tag, 'the pane rendered no "More" button').toBeDefined();
+  return tag ?? '';
+}
+
+/**
+ * The `hover:bg-*`/`hover:text-*` class tokens on a button's opening tag —
+ * the ones a refused control must neutralise itself, or Button's own
+ * variant/tone hover classes (see ui-kit's button.tsx) would still paint a
+ * background or text-color change while the control is inert.
+ */
+function hoverTokens(tag: string): string[] {
+  const classAttr = /class="([^"]*)"/.exec(tag)?.[1] ?? '';
+  return classAttr.split(/\s+/).filter((token) => /^hover:(bg|text)-/.test(token));
+}
+
 const CUSTOM_DETAIL: DetectionDetail = { ...DETAIL, origin: 'custom' };
 
 function list(floorsById?: ReadonlyMap<string, DetectionPolicyFloor>): string {
@@ -370,6 +392,29 @@ describe('the Add rule button', () => {
       expect(tag).toContain('aria-disabled="true"');
       expect(tag).toContain('title="Library rules are not edited in place"');
     }
+  });
+
+  it('neutralises its own hover state while refused, on both Add rule and the "⋮" fallback', () => {
+    // cursor-not-allowed alone does not read as inert if hovering ALSO still
+    // paints a background or text-color change — Button's own variant/tone
+    // hover classes (ui-kit's button.tsx) do exactly that unless a refused
+    // control overrides them (see shared/Refusal.tsx's `neutralizeHover`).
+    // Both controls are refused on the default (library, no callbacks)
+    // fixture, so one rendering covers both.
+    const html = detail();
+
+    // Add rule is outline/neutral, which hovers via `hover:bg-surface-2`
+    // alone — the refused state must override that ONE token with the
+    // non-hover value, and add nothing else.
+    expect(hoverTokens(addRuleTag(html))).toEqual(['hover:bg-surface']);
+
+    // The "⋮" fallback is ghost/neutral, which hovers via a background AND
+    // a text color — both must be neutralised, or one surviving alone would
+    // still read as "this does something."
+    expect(hoverTokens(moreTag(html)).sort()).toEqual([
+      'hover:bg-transparent',
+      'hover:text-text-3',
+    ]);
   });
 });
 

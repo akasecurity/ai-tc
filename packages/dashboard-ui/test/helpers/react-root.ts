@@ -1,6 +1,7 @@
-// Shared jsdom mount/unmount boilerplate — every jsdom suite in this package
-// used to repeat its own copy of the `IS_REACT_ACT_ENVIRONMENT` flag plus a
-// `createRoot`/`unmount` pair, in its own `beforeEach`/`afterEach`.
+// Shared jsdom mount/unmount boilerplate: the `IS_REACT_ACT_ENVIRONMENT` flag,
+// a `createRoot`/`unmount` pair, and (for a suite that queries the rendered
+// DOM) a host `<div>` appended to and removed from `document.body`. Every
+// jsdom suite in this package builds its `beforeEach`/`afterEach` on these.
 import { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 

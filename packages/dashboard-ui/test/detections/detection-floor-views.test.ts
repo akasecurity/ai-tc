@@ -341,9 +341,7 @@ describe('the Add rule button', () => {
     const without = addRuleTag(detail());
     for (const tag of [withCallback, without]) {
       expect(tag).toContain(' disabled=""');
-      expect(tag).toContain(
-        'title="Library rules are the registry&#x27;s published snapshot"',
-      );
+      expect(tag).toContain('title="Library rules are the registry&#x27;s published snapshot"');
     }
   });
 });

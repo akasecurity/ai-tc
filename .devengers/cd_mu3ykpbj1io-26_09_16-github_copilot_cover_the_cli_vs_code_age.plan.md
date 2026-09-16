@@ -370,20 +370,20 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 
 ### C. The wrapper and the wire (the load-bearing half)
 
-- [ ] C1. Write `src/hooks/shared.ts`: `readStdin`, `parseJson`, `getString`, `baseMetadata`,
+- [x] C1. Write `src/hooks/shared.ts`: `readStdin`, `parseJson`, `getString`, `baseMetadata`,
       `emit(output: HookOutput)`, and `runHookFailOpen(main, failOpen, watchdogMs =
       WATCHDOG_MS)` ported from Antigravity. Restate the blocking-body limit in the header.
-- [ ] C2. Define the `HookOutput` union spanning both dialects.
-- [ ] C3. Write `src/hooks/event-name.ts` (argv[2], validated, `undefined` on anything else).
-- [ ] C4. Write `src/hooks/dialect.ts` (`hook_event_name` first, `sessionId`/`session_id`
+- [x] C2. Define the `HookOutput` union spanning both dialects.
+- [x] C3. Write `src/hooks/event-name.ts` (argv[2], validated, `undefined` on anything else).
+- [x] C4. Write `src/hooks/dialect.ts` (`hook_event_name` first, `sessionId`/`session_id`
       second, `undefined` third) plus the per-dialect envelope readers.
-- [ ] C5. `test/hooks/fail-open-wrapper.test.ts` — throw, undecided body, watchdog win, a
+- [x] C5. `test/hooks/fail-open-wrapper.test.ts` — throw, undecided body, watchdog win, a
       late rejection that must not surface as an unhandled rejection, the synchronous-block
       limit pinned as behaviour, and **exactly one JSON object** on stdout (two concatenated
       objects do not parse).
-- [ ] C6. `test/hooks/{event-name,dialect}.test.ts` — including an envelope matching neither
+- [x] C6. `test/hooks/{event-name,dialect}.test.ts` — including an envelope matching neither
       dialect.
-- [ ] C7. `test/hook-output-shapes.test.ts` — both compile-direction pins, the
+- [x] C7. `test/hook-output-shapes.test.ts` — both compile-direction pins, the
       `emit`-narrows pin, and the read of `CLAUDE.md`'s bullets.
 
 ### D. PreToolUse

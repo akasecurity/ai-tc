@@ -1,0 +1,179 @@
+/**
+ * The shapes `emit()` may write to stdout, held to the sentence that enumerates
+ * them.
+ *
+ * The Claude Code sibling's version of this file exists because that
+ * enumeration drifted once — it said four while six were reaching the wire, and
+ * the two it omitted belonged to the two hooks the prose never named, so
+ * nothing about the sentence looked wrong. The drift was possible because
+ * `emit` took `unknown`: a new shape reached stdout without passing anything
+ * that could be counted.
+ *
+ * Here `emit` takes the `HookOutput` union, which makes the chain checkable end
+ * to end:
+ *
+ *   call site → union     the compiler, via `emit`'s parameter type
+ *   union → this list     the compile-time pins below
+ *   this list → the prose the assertions below
+ *
+ * Each link is enforced by something, so a seventh shape cannot land quietly at
+ * any of them. What none of it covers is a hook that writes to stdout WITHOUT
+ * going through `emit` — that is `test/e2e/fail-open.e2e.test.ts`'s ground,
+ * which reads what the built scripts really print.
+ *
+ * The sentence lives in `src/hooks/shared.ts` rather than in `CLAUDE.md`
+ * because this adapter's two dialects are not yet described there; when the
+ * hook-contract bullets land, this reads them as well.
+ */
+import { readFileSync } from 'node:fs';
+
+import { describe, expect, it } from 'vitest';
+
+import type { emit, HookOutput } from '../src/hooks/shared.ts';
+
+const SOURCE_FILE = 'src/hooks/shared.ts';
+
+/**
+ * One entry per variant of the union, named by the key that is REQUIRED on it
+ * and on no sibling — which is how a reader tells them apart, and how the
+ * compile-time pins below identify them.
+ */
+const SHAPE_KEYS = [
+  'permissionDecision',
+  'modifiedArgs',
+  'modifiedResult',
+  'hookSpecificOutput',
+  'decision',
+  'systemMessage',
+] as const;
+
+// ---------------------------------------------------------------------------
+// The compile-time half — `pnpm typecheck` covers test/, so these are gates
+// ---------------------------------------------------------------------------
+
+/** The keys of `T` that are not optional. */
+type RequiredKeys<T> = {
+  [K in keyof T]-?: object extends Pick<T, K> ? never : K;
+}[keyof T];
+
+/**
+ * Every required key of every member of the union.
+ *
+ * The distribution has to happen through a type PARAMETER — `HookOutput extends
+ * unknown ? RequiredKeys<HookOutput> : never` written out against the concrete
+ * alias does not distribute, and `keyof` over a union is the INTERSECTION of
+ * its members' keys, which for this union is empty. That version resolves to
+ * `never`, which makes the "every variant is named" pin vacuously true while
+ * the "every name has a variant" pin is the only thing that fails. Both
+ * directions exist precisely so one of them notices.
+ */
+type DistributedRequiredKeys<T> = T extends unknown ? RequiredKeys<T> : never;
+type VariantKey = DistributedRequiredKeys<HookOutput>;
+
+// Both directions, because they fail differently. A variant added to the union
+// and not to the list is a shape nothing counts (the drift that happened); a
+// list entry whose variant is gone is an expectation outliving what it
+// described, which leaves the prose naming a shape no hook can emit.
+type EveryVariantNamed = [VariantKey] extends [(typeof SHAPE_KEYS)[number]] ? true : never;
+type EveryNameEmitted = [(typeof SHAPE_KEYS)[number]] extends [VariantKey] ? true : never;
+
+// And that `emit` still narrows at all: were its parameter widened back to
+// `unknown`, this stops being assignable and the union above becomes decoration
+// the compiler no longer enforces at the one call site that matters.
+type EmitNarrowsToHookOutput = [Parameters<typeof emit>[0]] extends [HookOutput] ? true : never;
+
+const everyVariantNamed: EveryVariantNamed = true;
+const everyNameEmitted: EveryNameEmitted = true;
+const emitNarrows: EmitNarrowsToHookOutput = true;
+
+// ---------------------------------------------------------------------------
+// Reading the sentence
+// ---------------------------------------------------------------------------
+
+// Written out rather than derived from Intl: the prose spells the count in
+// words, and a locale-dependent list would make this expectation depend on the
+// runner.
+const CARDINALS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+
+/**
+ * The count word and body of the one "Its <n> shapes are …" sentence.
+ *
+ * Throws unless it occurs exactly once. A reworded sentence this cannot find is
+ * a guard that would otherwise assert nothing and pass — the same failure the
+ * enumeration itself had, one level up.
+ */
+function shapesSentence(text: string): { count: string; body: string } {
+  // `\s+` around the wrapping, not a literal space: the source is hard-wrapped
+  // with a ` * ` comment prefix, so any of these gaps can be a line break.
+  const found = [...text.matchAll(/Its\s+\*?(\w+)\*?\s+shapes\s+are\s+([\s\S]*?)\.\s/gu)];
+  const [match, ...extra] = found;
+  const count = match?.[1];
+  const body = match?.[2];
+  if (count === undefined || body === undefined || extra.length > 0) {
+    throw new Error(
+      `${SOURCE_FILE}: expected exactly one "Its <n> shapes are …" sentence, found ` +
+        `${String(found.length)}. It was reworded, removed or duplicated, and this guard cannot ` +
+        'read what it is meant to be asserting.',
+    );
+  }
+  return { count: count.toLowerCase(), body };
+}
+
+/** The backticked code spans in `text`, in order. */
+const codeSpansOf = (text: string): string[] =>
+  [...text.matchAll(/`([^`]+)`/gu)].flatMap((m) => (m[1] === undefined ? [] : [m[1]]));
+
+// The sentence lives in a block comment, so every continuation line opens with
+// ` * `. Stripped before anything is matched: left in, the prefix lands mid-
+// sentence wherever the hard wrap fell, and a phrase assertion would then be
+// pinning today's line breaks rather than today's wording.
+const SOURCE = readFileSync(new URL(`../${SOURCE_FILE}`, import.meta.url), 'utf8').replace(
+  /^\s*\*[ \t]?/gmu,
+  '',
+);
+const SENTENCE = shapesSentence(SOURCE);
+
+describe(`${SOURCE_FILE}'s emit() shape enumeration`, () => {
+  it('is pinned to the union at compile time', () => {
+    // These are `true` only because the conditional types above resolved to
+    // `true`; had either resolved to `never`, `pnpm typecheck` would already
+    // have failed and this file would not run. Asserting them here is what
+    // stops them being unused declarations someone deletes as dead weight.
+    expect([everyVariantNamed, everyNameEmitted, emitNarrows]).toEqual([true, true, true]);
+  });
+
+  it('reads a sentence that is really there', () => {
+    // Every assertion below is about a set parsed out of prose, and all of them
+    // pass on the empty set. This separates "the prose says nothing" from "the
+    // prose agrees".
+    expect(SENTENCE.body.length, 'the shapes sentence has no body').toBeGreaterThan(0);
+    expect(SHAPE_KEYS.length, 'no shapes derived from the union').toBeGreaterThan(0);
+  });
+
+  it('states the number of shapes the union carries', () => {
+    const word = CARDINALS[SHAPE_KEYS.length];
+    expect(
+      word,
+      `no cardinal word for ${String(SHAPE_KEYS.length)} — extend CARDINALS`,
+    ).toBeDefined();
+    expect(SENTENCE.count).toBe(word);
+  });
+
+  it('names every shape, and no others', () => {
+    // A set rather than a sequence: the prose is free to reorder or reword
+    // around them. What it is not free to do is drop one, or name one that no
+    // variant of the union carries.
+    expect([...new Set(codeSpansOf(SENTENCE.body))].sort()).toEqual([...SHAPE_KEYS].sort());
+  });
+
+  it('keeps the two dialects distinguishable in the prose', () => {
+    // The set check above passes on a sentence that lists all six spans in a
+    // heap. This is the substantive claim a reader acts on: which host each
+    // shape belongs to, since emitting a CLI shape under VS Code is a payload
+    // that host's schema rejects.
+    const flat = SENTENCE.body.replace(/\s+/gu, ' ');
+    expect(flat).toMatch(/CLI's `permissionDecision`, `modifiedArgs` and `modifiedResult`/u);
+    expect(flat).toMatch(/VS Code's `hookSpecificOutput` and `decision`/u);
+    expect(flat).toMatch(/`systemMessage` both dialects share/u);
+  });
+});

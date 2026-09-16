@@ -122,3 +122,58 @@ a claim that this harness is scanned, and at this point in the branch the packag
 hook at all — the number would be false in every store that read it, and the dashboard would
 render a coverage row for a harness nothing captures. The flip belongs with the commit that
 lands the hooks. Not ticked.
+
+### C1–C7 — the wrapper and the wire
+
+`src/hooks/shared.ts` carries `readStdin`, `parseJson`, `getString`, `baseMetadata`, `emit`,
+`runHookFailOpen`, `WATCHDOG_MS` and the `HookOutput` union; `src/hooks/event-name.ts` reads
+the argv token; `src/hooks/dialect.ts` places a payload and reads its envelope.
+
+Decisions worth naming:
+
+- **`WATCHDOG_MS = 24_000`** against the 30 s this host's manifest registers — the same
+  ratio Antigravity keeps at 8 s under 10 s, with the margin reserved for `emit`'s awaited
+  flush, which sits outside the race by design. `runHookFailOpen`'s blocking-body limit is
+  restated verbatim in the header rather than softened, and driven as behaviour in the
+  wrapper suite.
+- **`allowFor(dialect)` is a function, not two frozen constants.** A caller holding the
+  object that goes on the wire could mutate what every later emit in the process prints;
+  pinned by a case.
+- **An unplaced envelope gets the CLI allow.** The CLI is the surface whose fail-closed
+  reading is documented; being wrong in the other direction costs a warning on a host that
+  fails open, not a blocked call.
+- **`baseMetadata` gives VS Code no cwd fallback.** That host's spawn cwd defaults to the
+  HOME directory, so `process.cwd()` there would stamp every capture with a repo resolved
+  from `~`. The CLI keeps the fallback.
+- **An unobserved `toolArgs` encoding is not guessed at.** A bag arriving as a JSON string
+  reads as no args — scanning nothing and saying nothing, like any other unknown shape —
+  rather than being parsed on a hunch.
+
+**The union's two-direction pin caught a real defect in itself while being written.**
+`HookOutput extends unknown ? RequiredKeys<HookOutput> : never`, written against the
+concrete alias rather than a type parameter, does **not** distribute — and `keyof` over a
+union is the INTERSECTION of its members' keys, which is empty here. That version resolves
+to `never`, which makes "every variant is named" vacuously true; only the opposite
+direction failed. Fixed by distributing through a parameter, and the reason is written
+beside it.
+
+**C7 reads the sentence in `src/hooks/shared.ts`, not `CLAUDE.md`.** The count word, the six
+spans and the dialect pairings are parsed out of the module header, in the shape the Claude
+Code sibling parses §1. `CLAUDE.md`'s hook-contract bullets for this host are K7 and do not
+exist yet; a guard reading a section that is not there would throw, and one written to
+tolerate its absence would assert nothing. The test gains that read at K7.
+
+`test/hooks/{fail-open-wrapper,event-name,dialect}.test.ts` and
+`test/hook-output-shapes.test.ts` are the cover. The wrapper suite drives both dialects'
+fail-open payloads, the throw, the sync throw, the undecided body, the watchdog win, the
+late rejection that must not surface as an unhandled rejection, the synchronous-block limit,
+`emit`'s flush, and `soleDecision` — exactly one JSON object and exit 0, because two
+concatenated objects do not parse and a non-zero exit is a deny here.
+
+**Coverage floor moved off its placeholder** ahead of K5: `99` was a stand-in written when
+the package held one exported constant, and the first real source made `pnpm test` red on
+it. It reads `61` now, one point under the measured `62.50`, with the measurement beside it.
+K5 re-measures once the adapter is complete; this is not that step and is not ticked.
+
+Verified: `plugins/copilot` 72 passed / 7 files, lint, typecheck and `prettier --check`
+green; `packages/eslint-config`'s `coverage-config.test.js` 17 passed.

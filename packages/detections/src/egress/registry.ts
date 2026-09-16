@@ -11,9 +11,11 @@ import type {
   ShareTrustLevel,
 } from '@akasecurity/schema';
 
-// Bumped whenever the resolution/matching rules below change (not the registry
-// data itself — that's covered by PROVIDER_REGISTRY being embedded verbatim).
-const EXTRACTOR_VERSION = '1';
+// Covers every resolution/matching rule below and every field a resolution
+// derives from them (kind, trust, name, category, providerId) — not the
+// registry data itself, which PROVIDER_REGISTRY being embedded verbatim
+// covers separately.
+const EXTRACTOR_VERSION = '2';
 
 // One row per known provider. `hostSuffixes` are suffix-matched (see
 // hostMatchesSuffix): 'stripe.com' matches 'api.stripe.com' but never
@@ -561,6 +563,8 @@ export interface HostResolution {
   trust: ShareTrustLevel;
   name: string;
   category: string;
+  /** The matched provider catalog entry's id; null for every non-provider kind. */
+  providerId: string | null;
   entry: ProviderRegistryEntry | null;
 }
 
@@ -701,18 +705,39 @@ export function resolveHost(
 
   if (isValidIPv4(h)) {
     if (isPrivateOrReservedIPv4(h)) return null;
-    return { kind: 'ip', trust: 'ip', name: h, category: 'Unresolved host', entry: null };
+    return {
+      kind: 'ip',
+      trust: 'ip',
+      name: h,
+      category: 'Unresolved host',
+      providerId: null,
+      entry: null,
+    };
   }
 
   if (isValidIPv6(h)) {
     if (isPrivateOrReservedIPv6(h)) return null;
-    return { kind: 'ip', trust: 'ip', name: h, category: 'Unresolved host', entry: null };
+    return {
+      kind: 'ip',
+      trust: 'ip',
+      name: h,
+      category: 'Unresolved host',
+      providerId: null,
+      entry: null,
+    };
   }
 
   const mappedIPv4 = ipv4MappedAddress(h);
   if (mappedIPv4 !== null && isValidIPv4(mappedIPv4)) {
     if (isPrivateOrReservedIPv4(mappedIPv4)) return null;
-    return { kind: 'ip', trust: 'ip', name: h, category: 'Unresolved host', entry: null };
+    return {
+      kind: 'ip',
+      trust: 'ip',
+      name: h,
+      category: 'Unresolved host',
+      providerId: null,
+      entry: null,
+    };
   }
 
   if (EXCLUDED_HOST_SUFFIXES.some((suffix) => hostMatchesSuffix(h, suffix))) return null;
@@ -726,6 +751,7 @@ export function resolveHost(
       trust: 'recognized',
       name: entry.name,
       category: entry.category,
+      providerId: entry.id,
       entry,
     };
   }
@@ -741,6 +767,7 @@ export function resolveHost(
       trust: 'internal',
       name: h,
       category: 'Internal services',
+      providerId: null,
       entry: null,
     };
   }
@@ -750,6 +777,7 @@ export function resolveHost(
     trust: 'unverified',
     name: h,
     category: 'External domain',
+    providerId: null,
     entry: null,
   };
 }

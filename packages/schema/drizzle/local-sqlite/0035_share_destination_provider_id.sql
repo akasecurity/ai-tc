@@ -1,0 +1,1 @@
+ALTER TABLE `share_destination` ADD `provider_id` text;

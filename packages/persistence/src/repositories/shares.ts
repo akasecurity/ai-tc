@@ -77,6 +77,7 @@ interface DestRow {
   kind: DestinationKind;
   name: string;
   host: string;
+  providerId: string | null;
   category: string;
   trust: ShareTrustLevel;
   note: string | null;
@@ -216,6 +217,7 @@ function buildSummary(dest: DestRow, endpoints: EndpointRow[]): ShareDestination
     kind: dest.kind,
     name: dest.name,
     host: dest.host,
+    providerId: dest.providerId,
     category: dest.category,
     trust: dest.trust,
     status: effectiveStatus(dest.trust, dest.overrideDecision),
@@ -254,6 +256,7 @@ function buildDetail(
     kind: dest.kind,
     name: dest.name,
     host: dest.host,
+    providerId: dest.providerId,
     category: dest.category,
     trust: dest.trust,
     status: effectiveStatus(dest.trust, dest.overrideDecision),
@@ -385,6 +388,7 @@ export class SqliteSharesRepository implements SharesReadPort {
         kind: summary.kind,
         name: summary.name,
         host: summary.host,
+        providerId: summary.providerId,
         trust: summary.trust,
         status: summary.status,
         review: summary.review,
@@ -575,12 +579,14 @@ export class SqliteSharesRepository implements SharesReadPort {
 
     const destStmt = this.db.prepare(
       `INSERT INTO share_destination
-         (id, kind, name, host, category, trust, network_json, last_seen, provenance,
+         (id, kind, name, host, provider_id, category, trust, network_json, last_seen, provenance,
           created_at, updated_at)
-       VALUES (:id, :kind, :name, :host, :category, :trust, :networkJson, :now, 'scan', :now, :now)
+       VALUES (:id, :kind, :name, :host, :providerId, :category, :trust, :networkJson, :now, 'scan',
+               :now, :now)
        ON CONFLICT (host) DO UPDATE SET
          kind = excluded.kind,
          name = excluded.name,
+         provider_id = excluded.provider_id,
          category = excluded.category,
          trust = excluded.trust,
          network_json = excluded.network_json,
@@ -635,6 +641,7 @@ export class SqliteSharesRepository implements SharesReadPort {
           kind: hit.kind,
           name: hit.name,
           host: hit.host,
+          providerId: hit.providerId,
           category: hit.category,
           trust: hit.trust,
           networkJson: hit.network === null ? null : JSON.stringify(hit.network),
@@ -789,6 +796,7 @@ export class SqliteSharesRepository implements SharesReadPort {
     kind: string;
     name: string;
     host: string;
+    providerId: string | null;
     category: string;
     trust: string;
     note: string | null;
@@ -801,6 +809,7 @@ export class SqliteSharesRepository implements SharesReadPort {
       kind: r.kind as DestinationKind,
       name: r.name,
       host: r.host,
+      providerId: r.providerId,
       category: r.category,
       trust: r.trust as ShareTrustLevel,
       note: r.note,
@@ -815,8 +824,8 @@ export class SqliteSharesRepository implements SharesReadPort {
     kinds: DestinationKind[] | undefined,
     reviewOnly = false,
   ): DestRow[] {
-    const cols = `d.id, d.kind, d.name, d.host, d.category, d.trust, d.note,
-                  d.network_json AS networkJson, d.last_seen AS lastSeenMs,
+    const cols = `d.id, d.kind, d.name, d.host, d.provider_id AS providerId, d.category, d.trust,
+                  d.note, d.network_json AS networkJson, d.last_seen AS lastSeenMs,
                   d.created_at AS createdAt,
                   COALESCE(oh.decision, ol.decision) AS overrideDecision`;
     const conditions: string[] = [];
@@ -874,8 +883,8 @@ export class SqliteSharesRepository implements SharesReadPort {
   private fetchDestinationById(destinationId: string): DestRow | null {
     const row = getRow<Parameters<typeof this.mapDestRow>[0]>(
       this.db.prepare(
-        `SELECT d.id, d.kind, d.name, d.host, d.category, d.trust, d.note,
-                d.network_json AS networkJson, d.last_seen AS lastSeenMs,
+        `SELECT d.id, d.kind, d.name, d.host, d.provider_id AS providerId, d.category, d.trust,
+                d.note, d.network_json AS networkJson, d.last_seen AS lastSeenMs,
                 COALESCE(oh.decision, ol.decision) AS overrideDecision
          FROM share_destination d
          ${OVERRIDE_JOIN}

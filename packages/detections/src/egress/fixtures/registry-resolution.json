@@ -8,7 +8,30 @@
         "trust": "recognized",
         "name": "Stripe",
         "category": "Payments"
-      }
+      },
+      "expectProviderId": "stripe"
+    },
+    {
+      "label": "github.com resolves to GitHub (exact hostSuffix)",
+      "host": "github.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitHub",
+        "category": "Developer platform"
+      },
+      "expectProviderId": "github"
+    },
+    {
+      "label": "raw.githubusercontent.com resolves to GitHub (second hostSuffix entry)",
+      "host": "raw.githubusercontent.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitHub",
+        "category": "Developer platform"
+      },
+      "expectProviderId": "github"
     },
     {
       "label": "stripe.com resolves to Stripe (exact hostSuffix)",
@@ -68,7 +91,8 @@
         "trust": "internal",
         "name": "db.internal",
         "category": "Internal services"
-      }
+      },
+      "expectProviderId": null
     },
     {
       "label": "intranet (single-label host) resolves internal",
@@ -131,7 +155,8 @@
         "trust": "unverified",
         "name": "acme-partner.com",
         "category": "External domain"
-      }
+      },
+      "expectProviderId": null
     },
     {
       "label": "an unrecognized public domain with a malformed-IP-looking label still resolves external",
@@ -151,7 +176,8 @@
         "trust": "ip",
         "name": "198.51.100.23",
         "category": "Unresolved host"
-      }
+      },
+      "expectProviderId": null
     },
     {
       "label": "172.32.0.1 is just outside the private 172.16-31 range \u2014 kind ip, not excluded",
@@ -435,6 +461,12 @@
       "ecosystem": "npm",
       "pkg": "stripe",
       "expectId": "stripe"
+    },
+    {
+      "label": "npm:@octokit/rest resolves to github",
+      "ecosystem": "npm",
+      "pkg": "@octokit/rest",
+      "expectId": "github"
     },
     {
       "label": "pypi:SENTRY_SDK resolves to sentry (PEP-503: case AND separator normalization)",

@@ -49,6 +49,7 @@ const hit = (file: string): ResolvedEgressHit => ({
   kind: 'provider',
   name: 'Stripe',
   category: 'payments',
+  providerId: 'stripe',
   trust: 'recognized',
   network: null,
   method: 'POST',

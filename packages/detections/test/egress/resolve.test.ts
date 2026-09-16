@@ -191,6 +191,57 @@ describe('resolveEgress — URL/IP hit resolution', () => {
   });
 });
 
+describe('resolveEgress — documentation host exclusion', () => {
+  it('drops a REF hit against a registered provider’s documentation host', () => {
+    const hits = resolveEgress([
+      fileHits({
+        endpoints: [
+          endpointHit({
+            url: 'https://docs.github.com/en/rest',
+            host: 'docs.github.com',
+            method: 'REF',
+          }),
+        ],
+      }),
+    ]);
+    expect(hits).toEqual([]);
+  });
+
+  it('resolves a POST hit against a documentation host as a real provider destination', () => {
+    const hits = resolveEgress([
+      fileHits({
+        endpoints: [
+          endpointHit({
+            url: 'https://docs.stripe.com/api/charges',
+            host: 'docs.stripe.com',
+            method: 'POST',
+          }),
+        ],
+      }),
+    ]);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.kind).toBe('provider');
+    expect(hits[0]?.name).toBe('Stripe');
+  });
+
+  it('resolves a GET hit against a documentation host as a real provider destination', () => {
+    const hits = resolveEgress([
+      fileHits({
+        endpoints: [
+          endpointHit({
+            url: 'https://docs.github.com/en/rest/search',
+            host: 'docs.github.com',
+            method: 'GET',
+          }),
+        ],
+      }),
+    ]);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.kind).toBe('provider');
+    expect(hits[0]?.name).toBe('GitHub');
+  });
+});
+
 describe('resolveEgress — SDK hit resolution', () => {
   it('resolves a recognized SDK dependency into a synthetic endpoint at the provider apiBase', () => {
     const hits = resolveEgress([fileHits({ file: 'package.json', sdkHits: [sdkHit()] })]);

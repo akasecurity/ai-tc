@@ -12,15 +12,19 @@ import type {
 } from '@akasecurity/schema';
 
 // Covers every resolution/matching rule below and every field a resolution
-// derives from them (kind, trust, name, category, providerId) — not the
-// registry data itself, which PROVIDER_REGISTRY being embedded verbatim
-// covers separately.
+// derives from them (kind, trust, name, category, providerId). The registry
+// data and the exclusion lists are covered separately, by EGRESS_VERSION_MATERIAL
+// embedding PROVIDER_REGISTRY, EXCLUDED_HOST_SUFFIXES and NON_DATA_HOST_SUFFIXES
+// verbatim.
 const EXTRACTOR_VERSION = '2';
 
 // One row per known provider. `hostSuffixes` are suffix-matched (see
 // hostMatchesSuffix): 'stripe.com' matches 'api.stripe.com' but never
-// 'evilstripe.com'. `sdks` lists only ecosystems the provider ships a real SDK
-// for.
+// 'evilstripe.com'. When two entries both suffix-match a host, the entry
+// whose matching suffix is longest wins regardless of declaration order (see
+// matchMostSpecificEntry) — so a specific entry like 'google-fonts' below can
+// sit anywhere relative to the 'gcp' entry it overlaps with. `sdks` lists only
+// ecosystems the provider ships a real SDK for.
 export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   {
     id: 'stripe',
@@ -153,6 +157,15 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       rubygems: ['google-cloud-storage'],
       nuget: ['Google.Cloud.Storage.V1'],
     },
+  },
+  {
+    id: 'google-fonts',
+    name: 'Google Fonts',
+    category: 'CDN / edge',
+    hostSuffixes: ['fonts.googleapis.com', 'fonts.gstatic.com'],
+    apiBase: 'https://fonts.googleapis.com',
+    defaultDataClasses: ['none'],
+    sdks: {},
   },
   {
     id: 'azure',
@@ -554,10 +567,6 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
 ];
 
-// The scanner's ledger key material: this changes whenever the registry data
-// or the resolution rules change, forcing a one-time re-extraction.
-export const EGRESS_VERSION_MATERIAL = `${EXTRACTOR_VERSION}\n${JSON.stringify(PROVIDER_REGISTRY)}`;
-
 export interface HostResolution {
   kind: DestinationKind;
   trust: ShareTrustLevel;
@@ -575,7 +584,7 @@ const INTERNAL_TLDS = ['internal', 'local', 'corp', 'lan', 'intranet', 'home.arp
 // Non-provider hosts excluded from resolution entirely: loopback/reserved
 // name suffixes (RFC 2606/6761-style) and the schema/XML-namespace hosts that
 // show up as URL-shaped literals in source but name no real destination.
-const EXCLUDED_HOST_SUFFIXES = [
+export const EXCLUDED_HOST_SUFFIXES = [
   'localhost',
   'test',
   'example',
@@ -590,10 +599,84 @@ const EXCLUDED_HOST_SUFFIXES = [
   'maven.apache.org',
 ];
 
+// Documentation/help hosts a registered provider owns but that receive no
+// application data. A host here matches a registry entry's hostSuffixes —
+// without this list, e.g. 'docs.github.com' would resolve to GitHub purely
+// because 'github.com' is GitHub's suffix — so `isNonDataHost` is checked
+// only against a `REF` hit: a bare URL reference to one of these hosts names
+// a page a developer read, not a destination anything was sent to, and is
+// dropped. A call carrying verb evidence (GET/POST/PUT/DELETE) to the same
+// host is a real observed request, so it is still recorded under that host's
+// provider. Each of these is confirmed to be a static/reference-only host for
+// its provider, distinct from that provider's real API or ingest host.
+export const NON_DATA_HOST_SUFFIXES = [
+  'docs.github.com',
+  'help.github.com',
+  'docs.stripe.com',
+  'docs.anthropic.com',
+  'docs.datadoghq.com',
+  'docs.sentry.io',
+  'docs.gitlab.com',
+  'docs.newrelic.com',
+  'docs.honeycomb.io',
+  'docs.splunk.com',
+  'help.splunk.com',
+  'docs.cohere.com',
+  'docs.mistral.ai',
+  'docs.mixpanel.com',
+  'docs.mongodb.com',
+];
+
 // Exact match or dotted-suffix match — 'stripe.com' matches 'api.stripe.com'
 // but never 'evilstripe.com' (no dot boundary).
 function hostMatchesSuffix(host: string, suffix: string): boolean {
   return host === suffix || host.endsWith(`.${suffix}`);
+}
+
+/**
+ * True when `host` matches one of `NON_DATA_HOST_SUFFIXES` — a documentation
+ * or help host a registered provider owns. Lowercases before matching, and
+ * matches by exact host or dotted suffix (see `hostMatchesSuffix`), so
+ * 'developer.docs.github.com' matches 'docs.github.com' while
+ * 'evildocs.github.com' does not (no dot boundary). Used by
+ * `resolveEndpointHit` to drop only the `REF` hits against these hosts,
+ * never a hit carrying verb evidence.
+ */
+export function isNonDataHost(host: string): boolean {
+  const h = host.toLowerCase();
+  return NON_DATA_HOST_SUFFIXES.some((suffix) => hostMatchesSuffix(h, suffix));
+}
+
+// The scanner's ledger key material: this changes whenever the registry
+// data, the exclusion lists, or the resolution rules change, forcing a
+// one-time re-extraction.
+export const EGRESS_VERSION_MATERIAL = `${EXTRACTOR_VERSION}\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify(EXCLUDED_HOST_SUFFIXES)}\n${JSON.stringify(NON_DATA_HOST_SUFFIXES)}`;
+
+/**
+ * The registry entry whose hostSuffixes best matches `host`, among the given
+ * `entries`. When more than one entry matches — an apex entry and a more
+ * specific subdomain entry both suffix-match, e.g. 'googleapis.com' (Google
+ * Cloud) and 'fonts.googleapis.com' (Google Fonts) — the entry whose matching
+ * suffix is LONGEST wins, so the more specific host takes precedence over its
+ * apex regardless of where each entry sits in `entries`. Equal-length matches
+ * fall back to declaration order: the first entry reaching that length keeps
+ * it, since only a strictly longer suffix replaces the running best.
+ */
+export function matchMostSpecificEntry(
+  host: string,
+  entries: readonly ProviderRegistryEntry[],
+): ProviderRegistryEntry | null {
+  let best: ProviderRegistryEntry | null = null;
+  let bestSuffixLength = -1;
+  for (const entry of entries) {
+    for (const suffix of entry.hostSuffixes) {
+      if (hostMatchesSuffix(host, suffix) && suffix.length > bestSuffixLength) {
+        best = entry;
+        bestSuffixLength = suffix.length;
+      }
+    }
+  }
+  return best;
 }
 
 /** True when `host` is a syntactically valid dotted-quad IPv4 literal. */
@@ -696,6 +779,11 @@ function ipv4MappedAddress(host: string): string | null {
  * host containing ':' never qualifies for the single-label internal rule, so
  * an IPv6-shaped literal that fails every literal check above still resolves
  * external/unverified — never the trusted-internal fallback.
+ *
+ * This function has no notion of a hit's method, so it does NOT apply
+ * `isNonDataHost` — a documentation host still resolves to its provider
+ * here. That exclusion is scoped to `REF` hits and applied by the caller
+ * (`resolveEndpointHit`), which does see the method.
  */
 export function resolveHost(
   host: string,
@@ -742,9 +830,7 @@ export function resolveHost(
 
   if (EXCLUDED_HOST_SUFFIXES.some((suffix) => hostMatchesSuffix(h, suffix))) return null;
 
-  const entry = PROVIDER_REGISTRY.find((p) =>
-    p.hostSuffixes.some((suffix) => hostMatchesSuffix(h, suffix)),
-  );
+  const entry = matchMostSpecificEntry(h, PROVIDER_REGISTRY);
   if (entry) {
     return {
       kind: 'provider',

@@ -6,11 +6,16 @@
 // them. The environment is opted into per file, as this package's
 // vitest.config.ts asks.
 import { act, useState } from 'react';
-import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SearchField } from '../../src/shared/SearchField.tsx';
+import {
+  type MountedRoot,
+  mountRoot,
+  renderRoot,
+  unmountMountedRoot,
+} from '../helpers/react-root.ts';
 
 /**
  * A host that owns the query the way every real call site does — controlled,
@@ -43,37 +48,28 @@ function Host({
   );
 }
 
-let container: HTMLDivElement;
-let root: ReturnType<typeof createRoot>;
+let mounted: MountedRoot;
 
 beforeEach(() => {
-  (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  container = document.createElement('div');
-  document.body.append(container);
-  root = createRoot(container);
+  mounted = mountRoot();
 });
 
 afterEach(() => {
-  // Unmounted here rather than at the end of a body: a failing assertion would
-  // skip an in-body teardown and leave a live root (and a focused element) in
-  // the document for every case after it.
-  act(() => {
-    root.unmount();
-  });
-  container.remove();
+  // Torn down here rather than at the end of a body: a failing assertion
+  // would skip an in-body teardown and leave a live root (and a focused
+  // element) in the document for every case after it.
+  unmountMountedRoot(mounted);
 });
 
 const input = (): HTMLInputElement => {
-  const el = container.querySelector('input');
+  const el = mounted.host.querySelector('input');
   if (el === null) throw new Error('no input rendered');
   return el;
 };
-const clearButton = (): HTMLButtonElement | null => container.querySelector('button');
+const clearButton = (): HTMLButtonElement | null => mounted.host.querySelector('button');
 
 function mount(props: Parameters<typeof Host>[0]): void {
-  act(() => {
-    root.render(<Host {...props} />);
-  });
+  renderRoot(mounted.root, <Host {...props} />);
 }
 
 describe('SearchField', () => {

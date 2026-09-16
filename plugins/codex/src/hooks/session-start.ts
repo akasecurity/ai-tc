@@ -107,14 +107,25 @@ async function main(): Promise<void> {
 
   // Standing vault-protocol brief: only when the user has granted vault
   // consent does this hook emit anything at all — the brief teaches the model
-  // what a pointer is and carries the per-session authenticity marker.
+  // what a pointer is and carries a per-session authenticity marker.
   // Without consent the vault is inert and SessionStart stays silent.
+  //
+  // The marker is minted with `sessionId` deliberately OMITTED, so it is
+  // never persisted to the shared `protocol-marker` file: that file is keyed
+  // by session id and overwritten on every mismatch, and Claude Code's
+  // pre-tool-use/post-tool-use hooks re-read it on every vaulted event, so a
+  // Codex session persisting its own marker there (SessionStart also fires on
+  // resume/compact) would silently break a concurrent Claude Code session's
+  // marker chain — the exact "authentic note reads as a forgery" degrade
+  // protocol/marker.ts describes. Nothing is lost by not persisting: no
+  // Codex hook emits a per-event note today (eventNote has no caller here),
+  // so this marker is only ever read back from the brief text itself.
   if (isVaultConsentValid(config.settings.vaultConsent)) {
     await emit({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
         additionalContext: standingBrief({
-          marker: sessionProtocolMarker(config.dataDir, sessionId),
+          marker: sessionProtocolMarker(config.dataDir, undefined),
           inlineReveal: config.settings.vaultInlineReveal,
         }),
       },

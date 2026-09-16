@@ -10,7 +10,7 @@
 // settings.json under ~/.aka — a machine where the user has granted it via
 // Claude Code's onboarding still has it set when a Codex session starts, so
 // this hook must honor it identically rather than staying silent forever.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { VAULT_CONSENT_VERSION } from '@akasecurity/schema';
@@ -81,8 +81,32 @@ describe('session-start standing vault brief', () => {
       // Default inlineReveal is 'masked' → no inline-visibility claim.
       expect(brief).not.toContain('inline');
       expect(brief).toContain('aka vault show');
-      // The marker rides the brief and persists for the session.
+      // The marker rides the brief text itself, minted fresh each call.
       expect(brief).toMatch(/\[AKA [0-9a-f]{16}\]/);
+    });
+  });
+
+  // Regression pin for the cross-host marker collision a reviewer caught:
+  // `<dataDir>/protocol-marker` is the SAME single file Claude Code's
+  // pre-tool-use/post-tool-use hooks re-read (and overwrite) on every
+  // vaulted event. Before this brief existed, Codex never touched that file
+  // at all, so one Claude Code session beside any number of Codex sessions
+  // was stable. Persisting a Codex-keyed marker there would break that —
+  // this hook must mint in memory and never write it.
+  it('never persists a marker file, even with valid consent', () => {
+    withTempHome((home) => {
+      writeSettings(home, {
+        vaultConsent: {
+          acknowledgedAt: new Date().toISOString(),
+          version: VAULT_CONSENT_VERSION,
+        },
+      });
+      const result = runHook('session-start', payload(home), { env: tempHomeEnv(home) });
+      expect(result.status).toBe(0);
+      // The positive control: the brief really was emitted (a run that
+      // silently stopped emitting would pass the absence check vacuously).
+      expect(result.stdout).toContain('[AKA ');
+      expect(existsSync(join(home, '.aka', 'data', 'protocol-marker'))).toBe(false);
     });
   });
 });

@@ -7,10 +7,15 @@
 // Identical to plugins/claude-code/src/protocol/marker.ts (a package wall
 // blocks importing it, same reason exception-guidance.ts is a peer copy): this
 // is pure I/O over `dataDir`/`sessionId`, unrelated to any host's hook
-// mechanics. Both plugins key off the SAME `~/.aka` data dir, so a Claude Code
-// session and a Codex session running concurrently on one machine already
-// contend for this single-marker file — that degrade (see below) predates
-// this copy and is unchanged by it.
+// mechanics. Both plugins key off the SAME `~/.aka` data dir and its single
+// `protocol-marker` file, so a SECOND writer sharing it would break a running
+// Claude Code session's marker chain the moment a Codex session started (or
+// compacted) beside it — the persisted, keyed-by-`sessionId` form below is
+// only ever safe among sessions of ONE host, which is all it predates.
+// session-start.ts therefore calls this with `sessionId` omitted: the
+// `!sessionId` branch mints an in-memory marker and never touches the file,
+// so this plugin reads and writes it never, and the pre-existing contention
+// among concurrent Claude Code sessions is unchanged by this copy existing.
 //
 // What it actually defends against, stated narrowly: BLIND injection — content
 // authored before it could observe this session, which is the overwhelming

@@ -71,11 +71,10 @@ function detail(props: Partial<Parameters<typeof DetectionDetailView>[0]> = {}):
  * The opening tags of every <button> in a rendering.
  *
  * The assertions below are about ONE control, and the pane carries other
- * buttons of its own that render `aria-disabled` rather than natively
- * `disabled` on the default fixture — the "Add rule" placeholder and the "⋮"
- * fallback (see DetectionDetailView's onAddRule JSDoc) — so a blind search of
- * the whole document would answer about the wrong element and pass whatever
- * one of them emitted.
+ * buttons of its own that may render `aria-disabled` depending on props —
+ * the "Add rule" button and the "⋮" fallback (see DetectionDetailView's
+ * onAddRule JSDoc) — so a blind search of the whole document would answer
+ * about the wrong element and pass whatever one of them emitted.
  */
 function buttonTags(html: string): string[] {
   return html
@@ -336,17 +335,28 @@ describe('the Add rule button', () => {
     expect(tag).not.toContain('title=');
   });
 
-  it('disables a custom detection whose host offers no write path, with a reason', () => {
+  it('disables a custom detection whose host offers no write path, with a reason scoped to adding', () => {
+    // "Adding rules" rather than "Rule authoring" — a custom detection with
+    // only onEditRules/onDelete wired has a live "Edit rules" item right
+    // beside this button, and the old copy ("authoring is not available
+    // here") would have contradicted it.
     const html = detail({ d: CUSTOM_DETAIL });
     const tag = addRuleTag(html);
     // aria-, not native: a natively disabled control drops out of the tab
     // order and hides its own `title` (see onAddRule's JSDoc).
     expect(tag).not.toContain(' disabled=""');
     expect(tag).toContain('aria-disabled="true"');
-    expect(tag).toContain('title="Rule authoring is not available here"');
+    expect(tag).toContain('title="Adding rules is not available here"');
     const describedBy = /aria-describedby="([^"]+)"/.exec(tag);
     expect(describedBy, 'the refused button describes nothing').not.toBeNull();
-    expect(html).toContain(`id="${describedBy?.[1] ?? ''}"`);
+    // Visible prose, not sr-only — a tooltip alone is invisible on touch,
+    // the same reasoning the Switch's staysOn reason and PolicyPicker's
+    // per-option one already follow. Found by its own data-slot rather than
+    // a second aria-describedby regex over the whole document.
+    expect(html).toMatch(
+      new RegExp(`id="${describedBy?.[1] ?? ''}"[^>]*data-slot="add-rule-reason"`),
+    );
+    expect(html).toContain('Adding rules is not available here');
   });
 
   it('disables a library detection regardless of the callback, with its own reason', () => {
@@ -360,5 +370,19 @@ describe('the Add rule button', () => {
       expect(tag).toContain('aria-disabled="true"');
       expect(tag).toContain('title="Library rules are not edited in place"');
     }
+  });
+});
+
+describe('a library detection ignores every authoring callback', () => {
+  it('renders identically with all three supplied as with none', () => {
+    // Origin decides, never the presence of a handler — proven end to end
+    // rather than per-control, so a future control added to this trio cannot
+    // reintroduce the bug by skipping its own version of this case.
+    const withAll = detail({
+      onAddRule: () => undefined,
+      onEditRules: () => undefined,
+      onDelete: () => undefined,
+    });
+    expect(withAll).toBe(detail());
   });
 });

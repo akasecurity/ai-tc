@@ -10,6 +10,7 @@ export function resolvedHit(over: Partial<ResolvedEgressHit> = {}): ResolvedEgre
     kind: 'provider',
     name: 'Stripe',
     category: 'payments',
+    providerId: 'stripe',
     trust: 'recognized',
     network: null,
     method: 'POST',

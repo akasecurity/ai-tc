@@ -9,7 +9,6 @@
 // it the chart renders nothing at all and every assertion below about a
 // plotted series would hold vacuously.
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -20,6 +19,12 @@ import {
 } from '../../src/security/FindingsOverTimeCardView.tsx';
 import { type MttrChartPoint, MttrTrendCardView } from '../../src/security/MttrTrendCardView.tsx';
 import { SeriesLegend, useSeriesVisibility } from '../../src/shared/SeriesLegend.tsx';
+import {
+  type MountedRoot,
+  mountRoot,
+  renderRoot,
+  unmountMountedRoot,
+} from '../helpers/react-root.ts';
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -72,18 +77,15 @@ class StubResizeObserver {
   }
 }
 
-let host: HTMLDivElement;
-let root: Root;
+let mounted: MountedRoot;
 
 function mount(ui: React.ReactElement): void {
-  act(() => {
-    root.render(ui);
-  });
+  renderRoot(mounted.root, ui);
 }
 
 /** The legend entry for one severity, found by the title the toggle writes. */
 function legendButton(label: SeverityLabel): HTMLButtonElement {
-  const match = [...host.querySelectorAll('button')].find((b) =>
+  const match = [...mounted.host.querySelectorAll('button')].find((b) =>
     (b.getAttribute('title') ?? '').includes(label),
   );
   if (!match) throw new Error(`no legend entry for ${label}`);
@@ -107,7 +109,7 @@ function click(label: SeverityLabel): void {
  */
 function plotted(): SeverityLabel[] {
   return ALL.filter(
-    (label) => host.querySelector(`svg path[stroke="${SEVERITY_STROKES[label]}"]`) !== null,
+    (label) => mounted.host.querySelector(`svg path[stroke="${SEVERITY_STROKES[label]}"]`) !== null,
   );
 }
 
@@ -118,7 +120,7 @@ function plotted(): SeverityLabel[] {
  */
 function drawn(): SeverityLabel[] {
   return ALL.filter((label) => {
-    const path = host.querySelector(`svg path[stroke="${SEVERITY_STROKES[label]}"]`);
+    const path = mounted.host.querySelector(`svg path[stroke="${SEVERITY_STROKES[label]}"]`);
     return (path?.getAttribute('d') ?? '') !== '';
   });
 }
@@ -132,19 +134,12 @@ function swatch(label: SeverityLabel): HTMLElement {
 
 describe('chart legend toggles', () => {
   beforeEach(() => {
-    (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
-      true;
     globalThis.ResizeObserver = StubResizeObserver;
-    host = document.createElement('div');
-    document.body.append(host);
-    root = createRoot(host);
+    mounted = mountRoot();
   });
 
   afterEach(() => {
-    act(() => {
-      root.unmount();
-    });
-    host.remove();
+    unmountMountedRoot(mounted);
   });
 
   it('plots every severity before anything is clicked', () => {
@@ -309,7 +304,7 @@ describe('chart legend toggles', () => {
       />,
     );
     click('Critical');
-    expect(host.textContent).not.toContain('No findings in this range.');
+    expect(mounted.host.textContent).not.toContain('No findings in this range.');
   });
 
   // A card header renders above its loading, error and empty states, so the
@@ -348,10 +343,10 @@ describe('chart legend toggles', () => {
   it.each(NO_CHART_STATES)('offers no toggles in the $name state', ({ view }) => {
     mount(view);
 
-    expect(host.querySelectorAll('button')).toHaveLength(0);
+    expect(mounted.host.querySelectorAll('button')).toHaveLength(0);
     // The legend is still THERE — it just stops being interactive. Without
     // this the case would pass on a card that rendered no legend at all.
-    expect(host.textContent).toContain('Critical');
+    expect(mounted.host.textContent).toContain('Critical');
   });
 
   it('still reports each severity latest value while no chart is on screen', () => {
@@ -360,8 +355,8 @@ describe('chart legend toggles', () => {
     // line can be deleted with the whole suite staying green.
     mount(<MttrTrendCardView points={MTTR} isLoading error={null} />);
 
-    expect(host.querySelectorAll('button')).toHaveLength(0);
-    expect(host.textContent).toContain('1d 1h');
+    expect(mounted.host.querySelectorAll('button')).toHaveLength(0);
+    expect(mounted.host.textContent).toContain('1d 1h');
   });
 
   it('toggles the same way on the time-to-remediate chart', () => {
@@ -371,7 +366,7 @@ describe('chart legend toggles', () => {
     click('High');
 
     expect(plotted()).toEqual(['Critical', 'Medium', 'Low']);
-    expect(host.textContent).not.toContain('No resolved findings in this range.');
+    expect(mounted.host.textContent).not.toContain('No resolved findings in this range.');
   });
 
   it('keeps each severity latest value in the legend while it is hidden', () => {
@@ -395,7 +390,7 @@ describe('chart legend toggles', () => {
       />,
     );
 
-    expect(host.textContent).not.toContain('No resolved findings in this range.');
+    expect(mounted.host.textContent).not.toContain('No resolved findings in this range.');
     expect(plotted()).toEqual(ALL);
   });
 
@@ -485,18 +480,11 @@ describe('chart legend trailing value', () => {
   }
 
   beforeEach(() => {
-    (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
-      true;
-    host = document.createElement('div');
-    document.body.append(host);
-    root = createRoot(host);
+    mounted = mountRoot();
   });
 
   afterEach(() => {
-    act(() => {
-      root.unmount();
-    });
-    host.remove();
+    unmountMountedRoot(mounted);
   });
 
   it('treats an empty trailing value as nothing to report', () => {
@@ -505,9 +493,9 @@ describe('chart legend trailing value', () => {
     // renders an empty styled span that still eats a flex `gap`.
     mount(<LegendProbe metaLabel={() => ''} />);
 
-    const button = host.querySelector('button');
+    const button = mounted.host.querySelector('button');
     expect(button?.getAttribute('aria-label')).toBe('Alpha');
-    expect(host.querySelector('.text-text-3')).toBeNull();
+    expect(mounted.host.querySelector('.text-text-3')).toBeNull();
   });
 
   it('composes the name from a trailing value that is present', () => {
@@ -515,8 +503,8 @@ describe('chart legend trailing value', () => {
     // value would satisfy the case above.
     mount(<LegendProbe metaLabel={() => '3h'} />);
 
-    expect(host.querySelector('button')?.getAttribute('aria-label')).toBe('Alpha, 3h');
-    expect(host.querySelector('.text-text-3')?.textContent).toBe('3h');
+    expect(mounted.host.querySelector('button')?.getAttribute('aria-label')).toBe('Alpha, 3h');
+    expect(mounted.host.querySelector('.text-text-3')?.textContent).toBe('3h');
   });
 });
 

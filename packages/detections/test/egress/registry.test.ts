@@ -29,6 +29,8 @@ interface HostCase {
   host: string;
   opts?: { internalDomains?: string[] };
   expect: { kind: DestinationKind; trust: ShareTrustLevel; name: string; category: string } | null;
+  /** Checked only when present, against `resolveHost(...)?.providerId`. */
+  expectProviderId?: string | null;
 }
 
 interface SdkCase {
@@ -67,7 +69,18 @@ describe('resolveHost — fixture corpus', () => {
       expect(result?.trust).toBe(c.expect.trust);
       expect(result?.name).toBe(c.expect.name);
       expect(result?.category).toBe(c.expect.category);
+      if (c.expectProviderId !== undefined) {
+        expect(result?.providerId).toBe(c.expectProviderId);
+      }
     }
+  });
+
+  it('has at least one host case pinning a populated providerId and one pinning null', () => {
+    const withProviderId = fixture.hosts.filter(
+      (c) => c.expect !== null && c.expectProviderId !== undefined,
+    );
+    expect(withProviderId.some((c) => c.expectProviderId !== null)).toBe(true);
+    expect(withProviderId.some((c) => c.expectProviderId === null)).toBe(true);
   });
 
   it('providers carry the matched registry entry; non-providers carry null', () => {
@@ -254,11 +267,11 @@ describe('matchMostSpecificEntry', () => {
 
 describe('EGRESS_VERSION_MATERIAL', () => {
   it(
-    'is EXTRACTOR_VERSION "1" plus the serialized registry and both exclusion lists, ' +
+    'is EXTRACTOR_VERSION "2" plus the serialized registry and both exclusion lists, ' +
       'and so changes with any of them',
     () => {
       expect(EGRESS_VERSION_MATERIAL).toBe(
-        `1\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify(EXCLUDED_HOST_SUFFIXES)}\n${JSON.stringify(NON_DATA_HOST_SUFFIXES)}`,
+        `2\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify(EXCLUDED_HOST_SUFFIXES)}\n${JSON.stringify(NON_DATA_HOST_SUFFIXES)}`,
       );
     },
   );

@@ -13,11 +13,16 @@
 // left open freezes. A test that only checked one of them would pass on an
 // implementation that reintroduces the bug this hook exists to fix.
 import { act } from 'react';
-import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CLOCK_TICK_MS, useRenderClock } from '../../src/lib/useRenderClock.ts';
+import {
+  createRootDetached,
+  enableActEnvironment,
+  renderRoot,
+  unmountRoot,
+} from '../helpers/react-root.ts';
 
 // The instant an SSR host captured, and a browser clock an hour ahead of it.
 // That gap is the mismatch: it is what the label would move by if the first
@@ -43,8 +48,7 @@ describe('useRenderClock', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(AMBIENT);
-    (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
-      true;
+    enableActEnvironment();
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -66,10 +70,8 @@ describe('useRenderClock', () => {
 
   it('starts at the server instant, so the hydration render reproduces the markup', () => {
     const seen: number[] = [];
-    const root = createRoot(document.createElement('div'));
-    act(() => {
-      root.render(<Probe seen={seen} />);
-    });
+    const root = createRootDetached();
+    renderRoot(root, <Probe seen={seen} />);
 
     // Order is the assertion. Seeding the store from the live clock would make
     // the first value AMBIENT and every label on the page shift under
@@ -81,10 +83,8 @@ describe('useRenderClock', () => {
 
   it('catches up on mount rather than waiting out a whole tick', () => {
     const seen: number[] = [];
-    const root = createRoot(document.createElement('div'));
-    act(() => {
-      root.render(<Probe seen={seen} />);
-    });
+    const root = createRootDetached();
+    renderRoot(root, <Probe seen={seen} />);
 
     // Hydration can land long after the server render. Without the immediate
     // read the page would keep showing the server's instant for a full tick,
@@ -95,10 +95,8 @@ describe('useRenderClock', () => {
 
   it('keeps moving on the interval', () => {
     const seen: number[] = [];
-    const root = createRoot(document.createElement('div'));
-    act(() => {
-      root.render(<Probe seen={seen} />);
-    });
+    const root = createRootDetached();
+    renderRoot(root, <Probe seen={seen} />);
     act(() => {
       vi.advanceTimersByTime(CLOCK_TICK_MS);
     });
@@ -114,10 +112,8 @@ describe('useRenderClock', () => {
 
   it('republishes on return to a visible tab, which a throttled interval would not', () => {
     const seen: number[] = [];
-    const root = createRoot(document.createElement('div'));
-    act(() => {
-      root.render(<Probe seen={seen} />);
-    });
+    const root = createRootDetached();
+    renderRoot(root, <Probe seen={seen} />);
     const beforeLeaving = seen.at(-1);
 
     // Ten minutes of a backgrounded tab, with the interval throttled to
@@ -135,10 +131,8 @@ describe('useRenderClock', () => {
 
   it('does not spend a render while the tab is still hidden', () => {
     const seen: number[] = [];
-    const root = createRoot(document.createElement('div'));
-    act(() => {
-      root.render(<Probe seen={seen} />);
-    });
+    const root = createRootDetached();
+    renderRoot(root, <Probe seen={seen} />);
     const settled = seen.length;
 
     backgroundFor(10 * 60 * 1000);
@@ -152,13 +146,9 @@ describe('useRenderClock', () => {
 
   it('stops on unmount, so a torn-down page leaves no interval behind', () => {
     const seen: number[] = [];
-    const root = createRoot(document.createElement('div'));
-    act(() => {
-      root.render(<Probe seen={seen} />);
-    });
-    act(() => {
-      root.unmount();
-    });
+    const root = createRootDetached();
+    renderRoot(root, <Probe seen={seen} />);
+    unmountRoot(root);
     const settled = seen.length;
 
     act(() => {
@@ -182,15 +172,11 @@ describe('useRenderClock', () => {
       spy.mock.calls.filter(([type]) => type === 'visibilitychange').map(([, handler]) => handler);
 
     const seen: number[] = [];
-    const root = createRoot(document.createElement('div'));
-    act(() => {
-      root.render(<Probe seen={seen} />);
-    });
+    const root = createRootDetached();
+    renderRoot(root, <Probe seen={seen} />);
     expect(visibilityHandlers(addSpy)).toHaveLength(1);
 
-    act(() => {
-      root.unmount();
-    });
+    unmountRoot(root);
 
     expect(visibilityHandlers(removeSpy)).toEqual(visibilityHandlers(addSpy));
   });

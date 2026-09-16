@@ -24,14 +24,14 @@ afterEach(() => {
 
 // Insert a real (provenance='scan') destination directly, bypassing the fixtures,
 // so the isolation tests can prove purgeSampleData leaves real egress alone.
-function insertScanDestination(host: string): string {
+function insertScanDestination(host: string, providerId: string | null = null): string {
   const id = randomUUID();
   const now = Date.now();
   db.prepare(
     `INSERT INTO share_destination
-       (id, kind, name, host, category, trust, last_seen, provenance, created_at, updated_at)
-     VALUES (?, 'provider', ?, ?, 'Scanned', 'recognized', ?, 'scan', ?, ?)`,
-  ).run(id, host, host, now, now, now);
+       (id, kind, name, host, provider_id, category, trust, last_seen, provenance, created_at, updated_at)
+     VALUES (?, 'provider', ?, ?, ?, 'Scanned', 'recognized', ?, 'scan', ?, ?)`,
+  ).run(id, host, host, providerId, now, now, now);
   return id;
 }
 
@@ -294,6 +294,38 @@ describe('host-keyed egress decisions', () => {
       q: 'searchable',
     });
     expect(groups.flatMap((g) => g.items).map((d) => d.status)).toEqual(['blocked']);
+  });
+});
+
+describe('providerId round-trips through every read view', () => {
+  it('surfaces a populated providerId on getDestination, listDestinations and needsReview', async () => {
+    const id = insertScanDestination('reviewme.example.com', 'stripe');
+    // A plaintext endpoint puts the destination on the review queue without
+    // touching trust, so needsReview has a row to surface providerId on too.
+    insertScanEndpoint(id, 'http', 'http://reviewme.example.com/v1');
+
+    expect((await shares.getDestination(id))?.providerId).toBe('stripe');
+
+    const { groups } = await shares.listDestinations({ groupBy: 'destination', review: false });
+    const listed = groups.flatMap((g) => g.items).find((d) => d.id === id);
+    expect(listed?.providerId).toBe('stripe');
+
+    const { items } = await shares.needsReview();
+    expect(items.find((d) => d.id === id)?.providerId).toBe('stripe');
+  });
+
+  it('surfaces a null providerId on every read view for a non-provider destination', async () => {
+    const id = insertScanDestination('noprovider.example.com', null);
+    insertScanEndpoint(id, 'http', 'http://noprovider.example.com/v1');
+
+    expect((await shares.getDestination(id))?.providerId).toBeNull();
+
+    const { groups } = await shares.listDestinations({ groupBy: 'destination', review: false });
+    const listed = groups.flatMap((g) => g.items).find((d) => d.id === id);
+    expect(listed?.providerId).toBeNull();
+
+    const { items } = await shares.needsReview();
+    expect(items.find((d) => d.id === id)?.providerId).toBeNull();
   });
 });
 

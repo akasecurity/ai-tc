@@ -1,6 +1,8 @@
 import type {
   EndpointSummary,
+  EndpointWithSites,
   ReviewDestination,
+  ShareDestinationDetail,
   ShareDestinationGroup,
   ShareDestinationSummary,
 } from '@akasecurity/schema';
@@ -27,6 +29,7 @@ export function destination(
     kind: 'provider',
     name: 'Okta',
     host: 'okta.com',
+    providerId: 'okta',
     category: 'Identity',
     trust: 'recognized',
     status: 'allowed',
@@ -43,6 +46,34 @@ export function destination(
   };
 }
 
+export function endpointWithSites(overrides: Partial<EndpointWithSites> = {}): EndpointWithSites {
+  return { ...endpoint(), sites: [], ...overrides };
+}
+
+export function destinationDetail(
+  overrides: Partial<ShareDestinationDetail> = {},
+): ShareDestinationDetail {
+  return {
+    id: 'dest-1',
+    kind: 'provider',
+    name: 'Okta',
+    host: 'okta.com',
+    providerId: 'okta',
+    category: 'Identity',
+    trust: 'recognized',
+    status: 'allowed',
+    isCustom: false,
+    lastSeen: '2026-07-01T00:00:00.000Z',
+    transports: ['https'],
+    dataClasses: ['pii'],
+    review: { needsReview: false, reasons: [] },
+    network: null,
+    note: null,
+    endpoints: [endpointWithSites()],
+    ...overrides,
+  };
+}
+
 export function group(overrides: Partial<ShareDestinationGroup> = {}): ShareDestinationGroup {
   return { kind: 'provider', total: 1, items: [destination()], ...overrides };
 }
@@ -53,6 +84,7 @@ export function reviewDestination(overrides: Partial<ReviewDestination> = {}): R
     kind: 'ip',
     name: '203.0.113.0',
     host: '203.0.113.0',
+    providerId: null,
     trust: 'ip',
     status: 'review',
     review: { needsReview: true, reasons: ['raw_ip'] },

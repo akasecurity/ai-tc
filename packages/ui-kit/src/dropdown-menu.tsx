@@ -1,4 +1,5 @@
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
+import { cva, type VariantProps } from 'class-variance-authority';
 import { type ComponentPropsWithRef } from 'react';
 
 import { cn } from './lib/cn.ts';
@@ -58,11 +59,34 @@ export function DropdownMenuContent({
   );
 }
 
-export function DropdownMenuItem({
-  className,
-  ...props
-}: ComponentPropsWithRef<typeof DropdownMenuPrimitive.Item>) {
-  return <DropdownMenuPrimitive.Item className={cn(itemClass, className)} {...props} />;
+// Same axis as button.tsx's `tone`: `default` is this menu's ordinary item
+// color, `danger` is the one override a destructive item (e.g. "Delete") used
+// to spell out by hand as three ad hoc classes at each call site.
+const dropdownMenuItemVariants = cva(
+  'flex cursor-pointer select-none items-center gap-2 rounded-md px-2.5 py-1.5 text-sm outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+  {
+    variants: {
+      tone: {
+        default: 'text-text-2 focus:bg-surface-2 focus:text-text',
+        danger: 'text-sev-critical-ink focus:bg-sev-critical-fill focus:text-sev-critical-ink',
+      },
+    },
+    defaultVariants: { tone: 'default' },
+  },
+);
+
+export interface DropdownMenuItemProps
+  extends
+    ComponentPropsWithRef<typeof DropdownMenuPrimitive.Item>,
+    VariantProps<typeof dropdownMenuItemVariants> {}
+
+export function DropdownMenuItem({ className, tone, ...props }: DropdownMenuItemProps) {
+  return (
+    <DropdownMenuPrimitive.Item
+      className={cn(dropdownMenuItemVariants({ tone }), className)}
+      {...props}
+    />
+  );
 }
 
 export function DropdownMenuRadioItem({

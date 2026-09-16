@@ -6,12 +6,14 @@
 // existence and pass against an empty string. This is the one place its real
 // open/select/close behavior is proven.
 //
-// The Add rule button needs no portal and its title/disabled states are
-// already covered by static markup in detection-floor-views.test.ts — but a
-// title and a `disabled` attribute both hold even for a button whose click
-// handler was silently dropped, so THIS file is what proves a live click
-// actually reaches onAddRule, and that a disabled rendering really refuses
-// one.
+// The Add rule button and the "More" fallback need no portal, and their
+// title/aria-disabled/aria-describedby states are already covered by static
+// markup in detection-floor-views.test.ts — but all three of those attributes
+// hold even for a button whose click handler was silently dropped. THIS file
+// is what proves a live click actually reaches onAddRule when the button is
+// enabled, and is refused when it is not — including on a library detection
+// that was handed a callback anyway, where only the origin (not the presence
+// of a handler) is supposed to decide.
 import type { DetectionDetail } from '@akasecurity/schema';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -86,6 +88,18 @@ function addRuleButton(): HTMLButtonElement {
 }
 
 /**
+ * The text of the element a control's `aria-describedby` points at — the
+ * reason a refused control explains itself with, now that it is aria- rather
+ * than natively disabled and so cannot rely on `title` alone (see
+ * DetectionDetailView's onAddRule JSDoc).
+ */
+function describedReason(el: HTMLElement): string | null {
+  const id = el.getAttribute('aria-describedby');
+  if (id === null) return null;
+  return document.getElementById(id)?.textContent ?? null;
+}
+
+/**
  * Radix's DropdownMenuTrigger opens on `pointerdown` (so the menu is ready by
  * the time a mouse button is released), not on `click` — see
  * @radix-ui/react-dropdown-menu's DropdownMenuTrigger.
@@ -153,35 +167,6 @@ describe('DetectionDetailView "More" menu', () => {
     expect(menuItem('Delete detection')).toBeNull();
   });
 
-  it('leaves the trigger inert for a library detection, even with both callbacks supplied', () => {
-    // A library pack is edited by publishing a new version, never in place —
-    // origin gates the menu ahead of whichever callbacks the host wired.
-    mount(
-      <DetectionDetailView
-        d={detection({ origin: 'library' })}
-        onOpenRule={() => undefined}
-        onEditRules={vi.fn()}
-        onDelete={vi.fn()}
-      />,
-    );
-
-    // A real Radix trigger always carries aria-haspopup; its absence is the
-    // proof this rendered the plain fallback button, not a disabled menu.
-    expect(trigger().getAttribute('aria-haspopup')).toBeNull();
-
-    open();
-    expect(document.querySelector('[role="menu"]')).toBeNull();
-  });
-
-  it('renders no menu at all when a custom detection has neither callback', () => {
-    mount(<DetectionDetailView d={detection({ origin: 'custom' })} onOpenRule={() => undefined} />);
-
-    expect(trigger().getAttribute('aria-haspopup')).toBeNull();
-
-    open();
-    expect(document.querySelector('[role="menu"]')).toBeNull();
-  });
-
   it('offers Delete detection alone, with no Edit rules item and no separator', () => {
     // The mirror of "offers only the action the host actually wired" above:
     // proves the single-item case works with the OTHER item present too, and
@@ -211,7 +196,9 @@ describe('DetectionDetailView "More" menu', () => {
     expect(onDelete).toHaveBeenCalledTimes(1);
   });
 
-  it('disables the fallback trigger for a library detection, with its own reason', () => {
+  it('falls back to a focusable, described trigger for a library detection, even with both callbacks supplied', () => {
+    // A library pack is edited by publishing a new version, never in place —
+    // origin gates the menu ahead of whichever callbacks the host wired.
     mount(
       <DetectionDetailView
         d={detection({ origin: 'library' })}
@@ -221,15 +208,23 @@ describe('DetectionDetailView "More" menu', () => {
       />,
     );
 
-    expect(trigger().disabled).toBe(true);
-    expect(trigger().getAttribute('title')).toBe('Library detections are managed from the library');
+    // A real Radix trigger always carries aria-haspopup; its absence is the
+    // proof this rendered the plain fallback button, not a disabled menu.
+    expect(trigger().getAttribute('aria-haspopup')).toBeNull();
+    // aria-, not native: a natively disabled control drops out of the tab
+    // order and hides its own `title` (Button's `disabled:pointer-events-none`).
+    expect(trigger().disabled).toBe(false);
+    expect(trigger().getAttribute('aria-disabled')).toBe('true');
+    expect(describedReason(trigger())).toBe('Library detections are not edited in place');
   });
 
-  it('disables the fallback trigger for a custom detection with no callback wired, with its own reason', () => {
+  it('falls back to a focusable, described trigger for a custom detection with no callback wired', () => {
     mount(<DetectionDetailView d={detection({ origin: 'custom' })} onOpenRule={() => undefined} />);
 
-    expect(trigger().disabled).toBe(true);
-    expect(trigger().getAttribute('title')).toBe('Detection actions are not available here');
+    expect(trigger().getAttribute('aria-haspopup')).toBeNull();
+    expect(trigger().disabled).toBe(false);
+    expect(trigger().getAttribute('aria-disabled')).toBe('true');
+    expect(describedReason(trigger())).toBe('Detection actions are not available here');
   });
 });
 
@@ -253,12 +248,21 @@ describe('DetectionDetailView "Add rule" button, live', () => {
   it('refuses the click for a custom detection with no write path wired', () => {
     mount(<DetectionDetailView d={detection({ origin: 'custom' })} onOpenRule={() => undefined} />);
 
-    expect(addRuleButton().disabled).toBe(true);
+    const button = addRuleButton();
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    expect(describedReason(button)).toBe('Rule authoring is not available here');
+    // A click is safe even with no host handler wired at all.
+    act(() => {
+      button.click();
+    });
   });
 
-  it('refuses the click for a library detection even when onAddRule is supplied', () => {
+  it('refuses a real click for a library detection even when onAddRule is supplied', () => {
     // A library pack is edited by publishing a new version, never in place —
-    // so the callback being wired changes nothing for it.
+    // so the callback being wired changes nothing for it. The button is
+    // focusable and NOT natively disabled, so this is a genuine click, not
+    // one a native `disabled` attribute would have blocked anyway.
     const onAddRule = vi.fn();
     mount(
       <DetectionDetailView
@@ -268,9 +272,13 @@ describe('DetectionDetailView "Add rule" button, live', () => {
       />,
     );
 
-    expect(addRuleButton().disabled).toBe(true);
+    const button = addRuleButton();
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    expect(describedReason(button)).toBe('Library rules are not edited in place');
+
     act(() => {
-      addRuleButton().click();
+      button.click();
     });
     expect(onAddRule).not.toHaveBeenCalled();
   });

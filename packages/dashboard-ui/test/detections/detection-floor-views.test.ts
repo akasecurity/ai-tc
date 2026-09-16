@@ -70,10 +70,12 @@ function detail(props: Partial<Parameters<typeof DetectionDetailView>[0]> = {}):
 /**
  * The opening tags of every <button> in a rendering.
  *
- * The assertions below are about ONE control, and the pane also carries
- * ordinarily-disabled buttons of its own (the "Add rule" placeholder), so
- * searching the whole document for `disabled=""` would answer about the wrong
- * element and pass whatever the picker emitted.
+ * The assertions below are about ONE control, and the pane carries other
+ * buttons of its own that render `aria-disabled` rather than natively
+ * `disabled` on the default fixture — the "Add rule" placeholder and the "⋮"
+ * fallback (see DetectionDetailView's onAddRule JSDoc) — so a blind search of
+ * the whole document would answer about the wrong element and pass whatever
+ * one of them emitted.
  */
 function buttonTags(html: string): string[] {
   return html
@@ -156,7 +158,13 @@ describe('DetectionDetailView under a control-plane floor', () => {
     const html = detail({ policyFloor: WARN_FLOOR });
     expect(html).toContain('data-slot="policy-unavailable-reason"');
     expect(html).toContain(policyFloorReason(WARN_FLOOR));
-    const describedBy = /aria-describedby="([^"]+)"/.exec(html);
+    // Scoped to the restricted option's OWN tag: the default fixture also
+    // renders the Add rule and "More" fallback aria-describedby'd (see
+    // DetectionDetailView's onAddRule JSDoc), and an unscoped search of the
+    // whole document could match one of theirs instead and pass regardless.
+    const restricted = buttonTags(html).find((tag) => tag.includes('data-unavailable'));
+    expect(restricted, 'no restricted option rendered').toBeDefined();
+    const describedBy = /aria-describedby="([^"]+)"/.exec(restricted ?? '');
     expect(describedBy, 'the restricted option describes nothing').not.toBeNull();
     expect(html).toContain(`id="${describedBy?.[1] ?? ''}"`);
   });
@@ -324,24 +332,33 @@ describe('the Add rule button', () => {
     const html = detail({ d: CUSTOM_DETAIL, onAddRule: () => undefined });
     const tag = addRuleTag(html);
     expect(tag).not.toContain(' disabled=""');
+    expect(tag).not.toContain('aria-disabled');
     expect(tag).not.toContain('title=');
   });
 
   it('disables a custom detection whose host offers no write path, with a reason', () => {
     const html = detail({ d: CUSTOM_DETAIL });
     const tag = addRuleTag(html);
-    expect(tag).toContain(' disabled=""');
+    // aria-, not native: a natively disabled control drops out of the tab
+    // order and hides its own `title` (see onAddRule's JSDoc).
+    expect(tag).not.toContain(' disabled=""');
+    expect(tag).toContain('aria-disabled="true"');
     expect(tag).toContain('title="Rule authoring is not available here"');
+    const describedBy = /aria-describedby="([^"]+)"/.exec(tag);
+    expect(describedBy, 'the refused button describes nothing').not.toBeNull();
+    expect(html).toContain(`id="${describedBy?.[1] ?? ''}"`);
   });
 
   it('disables a library detection regardless of the callback, with its own reason', () => {
     // A library pack is edited by publishing a new version, never in place —
-    // so onAddRule being supplied changes nothing for it.
+    // so onAddRule being supplied changes nothing for it. The copy names the
+    // DETECTION, not this host's registry or library surface.
     const withCallback = addRuleTag(detail({ onAddRule: () => undefined }));
     const without = addRuleTag(detail());
     for (const tag of [withCallback, without]) {
-      expect(tag).toContain(' disabled=""');
-      expect(tag).toContain('title="Library rules are the registry&#x27;s published snapshot"');
+      expect(tag).not.toContain(' disabled=""');
+      expect(tag).toContain('aria-disabled="true"');
+      expect(tag).toContain('title="Library rules are not edited in place"');
     }
   });
 });

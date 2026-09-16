@@ -38,15 +38,15 @@ change the task list.
 These are done and must not be re-done — but three of them carry a **trap** when Phase B
 lands:
 
-| Seam | State | Trap |
-| --- | --- | --- |
-| `EXPECTED_WORKSPACE_PACKAGE_NAMES` (`effective-config.test.js:286`) | present | — |
-| `EXPECTED_VITEST_PACKAGES` (`no-network-runtime.test.js:188`) | present | — |
-| `COVERAGE_FLOORS` (`test/vitest/coverage.ts:114`) | `99` | **placeholder, must be RE-MEASURED and lowered.** Siblings measure 58–71. |
-| `package-walls.test.js:70` | probe file pinned as `src/identity.ts` | keep that file exporting something |
-| `required-checks.test.js:808` | Windows `--filter` pinned **temporarily** because `private: true` | unsetting `private` moves it into the derived set; the temporary pin and the 40-line `ci.yml` prose block that explains it both become **false** |
-| `turbo.json:361` | `!$TURBO_ROOT$/plugins/copilot/scripts/**` already excluded | — |
-| `ci.yml:896` | `--filter=@akasecurity/ai-tc-copilot` on the Windows leg | — |
+| Seam                                                                | State                                                             | Trap                                                                                                                                             |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `EXPECTED_WORKSPACE_PACKAGE_NAMES` (`effective-config.test.js:286`) | present                                                           | —                                                                                                                                                |
+| `EXPECTED_VITEST_PACKAGES` (`no-network-runtime.test.js:188`)       | present                                                           | —                                                                                                                                                |
+| `COVERAGE_FLOORS` (`test/vitest/coverage.ts:114`)                   | `99`                                                              | **placeholder, must be RE-MEASURED and lowered.** Siblings measure 58–71.                                                                        |
+| `package-walls.test.js:70`                                          | probe file pinned as `src/identity.ts`                            | keep that file exporting something                                                                                                               |
+| `required-checks.test.js:808`                                       | Windows `--filter` pinned **temporarily** because `private: true` | unsetting `private` moves it into the derived set; the temporary pin and the 40-line `ci.yml` prose block that explains it both become **false** |
+| `turbo.json:361`                                                    | `!$TURBO_ROOT$/plugins/copilot/scripts/**` already excluded       | —                                                                                                                                                |
+| `ci.yml:896`                                                        | `--filter=@akasecurity/ai-tc-copilot` on the Windows leg          | —                                                                                                                                                |
 
 ### Wire vocabulary — half landed
 
@@ -62,7 +62,7 @@ lands:
 
 Note for `TITLE_NEEDLES`: the rows are `stripSeparators(SOURCE_TOOL.X)`, which lowercases
 and strips `[\s-]`. Copilot's needle is therefore **`githubcopilot`**, not `copilot` — and
-a bare `copilot` needle would also match a title containing "GitHub Copilot CLI" *and*
+a bare `copilot` needle would also match a title containing "GitHub Copilot CLI" _and_
 anything else with the word in it. Use the `stripSeparators` form like every other row.
 
 ### Runtime seams the adapter calls
@@ -93,27 +93,27 @@ job: the hooks layer is perhaps a fifth of the file count.
 
 Extend these; invent nothing new where one exists.
 
-| Need | Existing pattern to copy | Path |
-| --- | --- | --- |
-| Explicit-allow wrapper | `runHookFailOpen(main, failOpen, watchdogMs)` | `plugins/antigravity/src/hooks/shared.ts` |
-| Silent hook entry | `try { await main() } catch {} process.exit(0)` | `plugins/codex/src/hooks/session-start.ts` |
-| Narrowed `emit` union + two-direction compile pins | `HookOutput` + `SHAPE_FIELD_BY_EVENT` | `plugins/claude-code/test/hook-output-shapes.test.ts` |
-| Scannable-field table | `Record<string, readonly ScannableField[]>`, `{field, executable}` | `plugins/codex/src/hooks/pre-tool-use-decision.ts` |
-| Pointer deny before the store opens | `decideInputPointerDeny` | same file |
-| Redact escalation | read `result.redactDegradedTo`, never re-derive | same file |
-| Input rewrite | `updatedInput` variant of `PreToolUseOutput` | same file |
-| Response scan loop | `scan-response.ts` + `tool-response.ts` | `plugins/codex/src/hooks/` |
-| Judge, stdin prompt, `planBareCommand` | `spawnCodex` / `spawnAgy` | `plugins/*/src/triage/judge.ts` |
-| Throwaway state cleaned in `finally` | `mkdtempSync` + `finally` (codex) / `brainConversationIds` + `cleanupConversation` (antigravity) | same |
-| Transcript adapter | `transcriptsDir` / `iterateHistory` / `peekSessionOriginator` | `plugins/*/src/history/transcripts.ts` |
-| Fail-open e2e, both halves | fault rows + enforcement rows | `plugins/antigravity/test/e2e/fail-open.e2e.test.ts` |
-| Wrapper unit suite | `test/hooks/fail-open-wrapper.test.ts` | antigravity only |
-| PATH shim (peer copy per plugin) | `helpers/path-shim.ts` + `path-shim.test.ts` | both |
-| No-echo (peer copy per plugin) | `helpers/no-echo.ts` + `no-echo.test.ts` | both |
-| Build entry emitting `scripts/*.js` + `scan-worker.js` | `tsup.config.ts` with `normalizeSqliteSpecifier` | both |
-| One-shot build before the suite | `globalSetup: ['./test/global-setup.ts']` | both |
-| Release workflow | `release-plugin-antigravity.yml` | `.github/workflows/` |
-| Registry entry with no automated install | the `antigravity` entry (`installHint`, no `cliBin`) | `packages/local-ops/src/registry.ts` |
+| Need                                                   | Existing pattern to copy                                                                         | Path                                                  |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| Explicit-allow wrapper                                 | `runHookFailOpen(main, failOpen, watchdogMs)`                                                    | `plugins/antigravity/src/hooks/shared.ts`             |
+| Silent hook entry                                      | `try { await main() } catch {} process.exit(0)`                                                  | `plugins/codex/src/hooks/session-start.ts`            |
+| Narrowed `emit` union + two-direction compile pins     | `HookOutput` + `SHAPE_FIELD_BY_EVENT`                                                            | `plugins/claude-code/test/hook-output-shapes.test.ts` |
+| Scannable-field table                                  | `Record<string, readonly ScannableField[]>`, `{field, executable}`                               | `plugins/codex/src/hooks/pre-tool-use-decision.ts`    |
+| Pointer deny before the store opens                    | `decideInputPointerDeny`                                                                         | same file                                             |
+| Redact escalation                                      | read `result.redactDegradedTo`, never re-derive                                                  | same file                                             |
+| Input rewrite                                          | `updatedInput` variant of `PreToolUseOutput`                                                     | same file                                             |
+| Response scan loop                                     | `scan-response.ts` + `tool-response.ts`                                                          | `plugins/codex/src/hooks/`                            |
+| Judge, stdin prompt, `planBareCommand`                 | `spawnCodex` / `spawnAgy`                                                                        | `plugins/*/src/triage/judge.ts`                       |
+| Throwaway state cleaned in `finally`                   | `mkdtempSync` + `finally` (codex) / `brainConversationIds` + `cleanupConversation` (antigravity) | same                                                  |
+| Transcript adapter                                     | `transcriptsDir` / `iterateHistory` / `peekSessionOriginator`                                    | `plugins/*/src/history/transcripts.ts`                |
+| Fail-open e2e, both halves                             | fault rows + enforcement rows                                                                    | `plugins/antigravity/test/e2e/fail-open.e2e.test.ts`  |
+| Wrapper unit suite                                     | `test/hooks/fail-open-wrapper.test.ts`                                                           | antigravity only                                      |
+| PATH shim (peer copy per plugin)                       | `helpers/path-shim.ts` + `path-shim.test.ts`                                                     | both                                                  |
+| No-echo (peer copy per plugin)                         | `helpers/no-echo.ts` + `no-echo.test.ts`                                                         | both                                                  |
+| Build entry emitting `scripts/*.js` + `scan-worker.js` | `tsup.config.ts` with `normalizeSqliteSpecifier`                                                 | both                                                  |
+| One-shot build before the suite                        | `globalSetup: ['./test/global-setup.ts']`                                                        | both                                                  |
+| Release workflow                                       | `release-plugin-antigravity.yml`                                                                 | `.github/workflows/`                                  |
+| Registry entry with no automated install               | the `antigravity` entry (`installHint`, no `cliBin`)                                             | `packages/local-ops/src/registry.ts`                  |
 
 **The one thing with no pattern:** nothing in `local-ops` writes a config file into a host's
 directory. Every install today is either a delegated host-CLI spawn (`claude`, `codex`) or a
@@ -139,13 +139,13 @@ a gate into an optimisation.
 8 s under 10 s ratio, with the margin reserved for `emit`'s awaited flush — which sits
 **outside** the race by design and is therefore unbounded on a stalled pipe. Restate
 `runHookFailOpen`'s limit verbatim in the module header rather than softening it: it covers
-everything that *yields*; it cannot preempt synchronous `node:sqlite` (`busy_timeout = 2000`
+everything that _yields_; it cannot preempt synchronous `node:sqlite` (`busy_timeout = 2000`
 charged **per contended statement**) or an in-process `scan()`. 30 s is more headroom than
 Antigravity's 10 s, not a different property.
 
 **The fast path must still print.** Codex bails silently when the tool name is not in
 `SCANNABLE_FIELDS`. Here that would be a wedge on a fail-closed reading. The unknown-tool
-exit is `emit(ALLOW)` then exit 0 — *before* `loadConfig`, *before* the store opens. VS Code
+exit is `emit(ALLOW)` then exit 0 — _before_ `loadConfig`, _before_ the store opens. VS Code
 spawns the hook for every tool call (matchers are parsed and ignored), so this path is the
 common one, not the rare one.
 
@@ -241,7 +241,7 @@ throws rather than returning undefined). §4 gains a numbered egress item.
 
 **Decide deliberately, do not assume:** whether `EGRESS_PATHS` in
 `plugins/claude-code/test/privacy-claims.test.ts` gains a **row**. It has four today, keyed
-by *class* (`update notice`, `package-manager install`, `setup calibration`, `attached
+by _class_ (`update notice`, `package-manager install`, `setup calibration`, `attached
 control plane`), and its `COUNT_WORDS`/`ORDINAL_WORDS` derive the footnote's spelled count.
 A fourth judge is arguably another instance of the existing `setup calibration` class rather
 than a fifth class. Whichever way it goes, `privacy-claim-coverage.test.js` will require the
@@ -254,6 +254,7 @@ new plugin README to be classified, so that row is owed regardless.
 ### Create — `plugins/copilot/`
 
 **Build and manifest**
+
 - `tsup.config.ts` — copy the sibling verbatim (`noExternal: [/^@akasecurity\//, 'zod']`,
   `normalizeSqliteSpecifier('scripts')`, the `triage-rubric.md` copy in `onSuccess`), entries
   for every hook script plus `scan-worker`, `reconcile`, `sync`, `history-sync`,
@@ -265,6 +266,7 @@ new plugin README to be classified, so that row is owed regardless.
 - `test/global-setup.ts` — the one-shot `tsup` the siblings use.
 
 **Hooks layer — `src/hooks/`**
+
 - `shared.ts` — `readStdin`, `parseJson`, `getString`, `emit(output: HookOutput)`,
   `HookOutput`, `runHookFailOpen`, `baseMetadata`, `WATCHDOG_MS`.
 - `event-name.ts` — argv[2] → validated event name.
@@ -282,7 +284,7 @@ new plugin README to be classified, so that row is owed regardless.
 `exception-guidance.ts`, `filescan.ts`, `firstrun-core.ts`, `firstrun.ts`,
 `history-sync.ts`, `intro.ts`, `onboard.ts`, `posture.ts`, `present.ts`, `query.ts`,
 `reconcile.ts`, `render.ts`, `scan-worker.ts`, `setup-frame-json.ts`, `setup-show.ts`,
-`skills-registry.ts`, `start-light.ts`, `sync.ts`, `capabilities.ts` *(new to this plugin)*,
+`skills-registry.ts`, `start-light.ts`, `sync.ts`, `capabilities.ts` _(new to this plugin)_,
 `history/{reconcile-trigger,scan,tail,transcripts,usage}.ts`,
 `remediation/{entry,findings,redact,render,surfaced-redact}.ts`,
 `triage/{consent,judge,presenter}.ts`.
@@ -372,7 +374,7 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 
 - [x] C1. Write `src/hooks/shared.ts`: `readStdin`, `parseJson`, `getString`, `baseMetadata`,
       `emit(output: HookOutput)`, and `runHookFailOpen(main, failOpen, watchdogMs =
-      WATCHDOG_MS)` ported from Antigravity. Restate the blocking-body limit in the header.
+    WATCHDOG_MS)` ported from Antigravity. Restate the blocking-body limit in the header.
 - [x] C2. Define the `HookOutput` union spanning both dialects.
 - [x] C3. Write `src/hooks/event-name.ts` (argv[2], validated, `undefined` on anything else).
 - [x] C4. Write `src/hooks/dialect.ts` (`hook_event_name` first, `sessionId`/`session_id`
@@ -407,9 +409,9 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 ### E. The remaining events
 
 - [ ] E1. `src/hooks/session-start.ts` — `handleSessionStart({ tool: SOURCE_TOOL.Copilot,
-      harnessVersion, harnessInterface })`, provider recorded `unknown` with the model id.
+    harnessVersion, harnessInterface })`, provider recorded `unknown` with the model id.
       The once-per-session pass must tolerate running **after** the session's first prompt
-      (the recordings show `userPromptSubmitted` 20 ms *before* `sessionStart`); add a case
+      (the recordings show `userPromptSubmitted` 20 ms _before_ `sessionStart`); add a case
       that drives that order.
 - [ ] E2. `src/hooks/user-prompt-submit.ts` — capture from `userPromptSubmitted.prompt`;
       record `userPromptTransformed.transformedPrompt` **separately**, never conflated.
@@ -463,15 +465,15 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 ### H. Skills, wizard and presentation
 
 - [ ] H1. Copy the ten `skills/*/SKILL.md` from `plugins/codex`, changing host wording.
-- [ ] H2. `src/capabilities.ts` — the typed matrix with its `verified` column.
+- [x] H2. `src/capabilities.ts` — the typed matrix with its `verified` column.
 - [ ] H3. `skills/setup/SKILL.md` Known limitations rendered from the matrix, stating plainly
       that VS Code enforcement is built to the published contract and **not confirmed against
       a live install**.
-- [ ] H4. `test/capability-matrix.test.ts` — fails when matrix and `SKILL.md` disagree.
+- [x] H4. `test/capability-matrix.test.ts` — fails when matrix and `SKILL.md` disagree.
 - [ ] H5. `src/{present,render,setup-show,setup-frame-json,intro,start-light,firstrun,
-      firstrun-core,posture,calibration,onboard,query,dashboard,dashboard-launch,
-      skills-registry,exception-guidance,filescan,apply-suppressions,sync,history-sync,
-      content-retention,reconcile,scan-worker}.ts` and `src/remediation/*` from the Codex
+    firstrun-core,posture,calibration,onboard,query,dashboard,dashboard-launch,
+    skills-registry,exception-guidance,filescan,apply-suppressions,sync,history-sync,
+    content-retention,reconcile,scan-worker}.ts` and `src/remediation/*` from the Codex
       siblings, plus their suites.
 
 ### I. Fixtures and provenance
@@ -517,9 +519,9 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
       antigravity template, tag-vs-manifest version gate included. Its smoke test feeds junk
       to `preToolUse` and requires an **explicit allow**, and junk to every other hook and
       requires **silence**.
-- [ ] K7. `CLAUDE.md`: hook-contract bullets (*Copilot CLI: `preToolUse` denies on crash,
+- [ ] K7. `CLAUDE.md`: hook-contract bullets (_Copilot CLI: `preToolUse` denies on crash,
       allows on timeout, other events fail open — documentation until the two probes run;
-      VS Code Local: exit 2 blocks, everything else fails open, matchers ignored*), the
+      VS Code Local: exit 2 blocks, everything else fails open, matchers ignored_), the
       package-dependency graph, the repository-layout block, and the releasing section's
       bundling rules.
 - [ ] K8. Full green: `pnpm lint && pnpm typecheck && pnpm turbo run test` on macOS and
@@ -591,7 +593,7 @@ Three hard ordering facts:
   `pull_request` runs against a stale merge commit, and this is precisely the class
   `CLAUDE.md` warns reds `main` from an innocent diff.
 - **The VS Code half is doc-derived by operator decision.** Every enforcement claim there is
-  unverified. The risk is not that it is wrong — it is that it stops *reading* as unverified
+  unverified. The risk is not that it is wrong — it is that it stops _reading_ as unverified
   once it is shipping code. The separate fixture directory, the `verified` column and the
   `SKILL.md` sentence are the three things that keep it honest; weakening any one of them
   loses the property.
@@ -606,7 +608,7 @@ Three hard ordering facts:
   no deadline, and `process.exit(0)` on that path is unreachable. Same limit as Antigravity;
   do not describe the explicit allow as unconditional.
 - **The coverage floor is a placeholder at 99.** A real suite will not hit it. Re-measuring
-  is a task (K5), not an afterthought — and the number goes *down*, which is a deliberate
+  is a task (K5), not an afterthought — and the number goes _down_, which is a deliberate
   edit `coverage-config.test.js` pins as an exact set.
 - **Double capture with the Claude Code plugin** when `chat.useClaudeHooks` is on. Shipped
   default is false; detect and dedupe rather than assuming it away.
@@ -627,7 +629,7 @@ Three hard ordering facts:
   own hooks unless the throwaway home suppresses them.
 - A 1 MB minified file through `apply_patch` reaches `extractFileEgress`, which §5 requires
   to be **linear in file length**, not merely free of catastrophic regexes.
-- An explicit allow becomes a *policy weakening* if a future CLI build reads it as overriding
+- An explicit allow becomes a _policy weakening_ if a future CLI build reads it as overriding
   a user's own deny rule. The e2e **enforcement** rows would catch that; the fault rows
   would not.
 
@@ -679,7 +681,7 @@ host verb ever gets spelled outside the table).
   (`SCAN_COVERAGE`), `required-checks` and `coverage-config` (K3–K5).
 
 **Not** a timing gate. The watchdog property is drivable in milliseconds because
-`watchdogMs` is a parameter; assert the *outcome*, never an elapsed wall clock.
+`watchdogMs` is a parameter; assert the _outcome_, never an elapsed wall clock.
 
 ---
 

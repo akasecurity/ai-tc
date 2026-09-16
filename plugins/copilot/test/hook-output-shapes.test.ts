@@ -21,9 +21,13 @@
  * going through `emit` — that is `test/e2e/fail-open.e2e.test.ts`'s ground,
  * which reads what the built scripts really print.
  *
- * The sentence lives in `src/hooks/shared.ts` rather than in `CLAUDE.md`
- * because this adapter's two dialects are not yet described there; when the
- * hook-contract bullets land, this reads them as well.
+ * The sentence lives in `src/hooks/shared.ts` rather than in `CLAUDE.md`: this
+ * union spans two dialects and is a property of this package, and the Claude
+ * Code sibling's §1 sentence is about that host's shapes. What `CLAUDE.md` DOES
+ * carry for this host is the failure convention, and the block of assertions at
+ * the bottom of this file holds that bullet to what the code does — because a
+ * hook-contract bullet that drifted is the same defect one level up, and the
+ * drift the sibling file exists to catch was exactly that.
  */
 import { readFileSync } from 'node:fs';
 
@@ -175,5 +179,80 @@ describe(`${SOURCE_FILE}'s emit() shape enumeration`, () => {
     expect(flat).toMatch(/CLI's `permissionDecision`, `modifiedArgs` and `modifiedResult`/u);
     expect(flat).toMatch(/VS Code's `hookSpecificOutput` and `decision`/u);
     expect(flat).toMatch(/`systemMessage` both dialects share/u);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The other half of the doc: CLAUDE.md's hook-contract bullet for this host
+// ---------------------------------------------------------------------------
+
+const CONVENTIONS = readFileSync(new URL('../../../CLAUDE.md', import.meta.url), 'utf8');
+
+/**
+ * The bullet, sliced out by its own bold lead. Throws unless it occurs exactly
+ * once — a reworded bullet this cannot find is a guard that would otherwise
+ * assert nothing and pass.
+ */
+function copilotBullet(): string {
+  const lead = '- **GitHub Copilot is TWO hosts behind one package';
+  const at = CONVENTIONS.indexOf(lead);
+  if (at === -1 || CONVENTIONS.slice(at + 1).includes(lead)) {
+    throw new Error(
+      'CLAUDE.md: expected exactly one GitHub Copilot hook-contract bullet. It was reworded, ' +
+        'removed or duplicated, and this guard cannot read what it is meant to be asserting.',
+    );
+  }
+  const rest = CONVENTIONS.slice(at + lead.length);
+  const end = rest.indexOf('\n- **');
+  return (end === -1 ? rest : rest.slice(0, end)).replace(/\s+/gu, ' ');
+}
+
+describe("CLAUDE.md's hook-contract bullet for this host", () => {
+  const BULLET = copilotBullet();
+
+  it('reads a bullet that is really there', () => {
+    expect(BULLET.length).toBeGreaterThan(0);
+  });
+
+  it('states the CLI convention the explicit allow exists for', () => {
+    // Each half is a separate claim a reader acts on, so each is matched
+    // separately rather than as one sentence a reflow could break.
+    expect(BULLET).toMatch(/exits non-zero or crashes is read as a \*\*deny\*\*/u);
+    expect(BULLET).toMatch(/timed-out one allows/u);
+    expect(BULLET).toMatch(/every other event fails open/u);
+  });
+
+  it('says the empty-stdout case is UNMEASURED rather than settled', () => {
+    // The load-bearing honesty in the whole bullet. If this ever reads as
+    // settled, the explicit allow stops being a hedge and starts being a claim
+    // — and the fixture README it points at is the only evidence either way.
+    expect(BULLET).toMatch(/unmeasured/iu);
+    expect(BULLET).toContain('test/fixtures/cli/README.md');
+  });
+
+  it('states VS Code’s opposite convention and its ignored matchers', () => {
+    expect(BULLET).toMatch(/exit 2 blocks/u);
+    expect(BULLET).toMatch(/parses matchers and ignores them/u);
+  });
+
+  it('describes the answer this package actually implements', () => {
+    // Held to the code rather than to itself: `allowFor` really does spell both
+    // dialects' allow, and the bullet really does claim it prints one on every
+    // path. A bullet promising something the module does not do is the drift.
+    expect(BULLET).toMatch(/explicit allow on every `preToolUse` path/u);
+    expect(BULLET).toMatch(/No path exits non-zero and none exits 2/u);
+    expect(SOURCE).toContain('process.exit(0)');
+    expect(SOURCE).not.toMatch(/process\.exit\(\s*[^0)]/u);
+  });
+
+  it('says the VS Code half is confirmed against no live install', () => {
+    expect(BULLET).toMatch(/confirmed against no live install/u);
+    expect(BULLET).toContain('test/fixtures/vscode-provisional/');
+    // And the directory it names is really there, with the README that carries
+    // the disclaimer — a bullet pointing at a path nobody created would read
+    // exactly like one pointing at real evidence.
+    expect(
+      readFileSync(new URL('./fixtures/vscode-provisional/README.md', import.meta.url), 'utf8'),
+    ).toMatch(/No live VS Code session produced any file/u);
   });
 });

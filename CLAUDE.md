@@ -729,6 +729,13 @@ cli               → @akasecurity/schema, persistence, local-ops, detections,
 plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
 plugins/codex        → @akasecurity/plugin-runtime, plugin-sdk
 plugins/antigravity  → @akasecurity/plugin-runtime, plugin-sdk
+plugins/copilot      → @akasecurity/plugin-runtime, plugin-sdk (GitHub Copilot: the
+                     Copilot CLI and VS Code agent mode, and the cloud coding
+                     agent, which speaks the CLI's protocol. ONE package, TWO
+                     payload dialects — the CLI's flat camelCase envelope and VS
+                     Code's flat snake_case one — sniffed per payload in
+                     src/hooks/dialect.ts and carried as a parameter from there
+                     down, so the two scannable-field tables are never merged)
 plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the native-messaging
                      host only — Node side); the browser-side content script bundles just
                      `@akasecurity/plugin-sdk/browser` (mask.ts's Node-API-free slice) and
@@ -798,7 +805,7 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      harness plugins share this without forking it.)
 ```
 
-All three CLI plugin packages bundle the SAME `plugin-runtime`/`plugin-sdk` core and differ
+All four CLI plugin packages bundle the SAME `plugin-runtime`/`plugin-sdk` core and differ
 only in their own thin hook-entrypoint layer (stdin/stdout glue matched to each host's hook
 contract) plus the harness-specific bits `plugin-sdk` deliberately keeps file-scoped (provider
 resolution, tool-name → scannable-field tables).
@@ -824,6 +831,23 @@ changes. The gaps that exist today:
   `PostToolUse` receives **no tool
   result at all**, so there is no live response scanning and no `tool-response.ts` /
   `scan-response.ts` counterpart in that package.
+- **GitHub Copilot is TWO hosts behind one package, and they disagree about failure.** On
+  the **Copilot CLI** (and the cloud coding agent, which speaks its protocol) a `preToolUse`
+  hook that exits non-zero or crashes is read as a **deny**, a timed-out one allows, and
+  every other event fails open. Whether exit 0 with EMPTY STDOUT allows or denies is
+  **unmeasured** — the probe that would settle it has not run, and
+  `plugins/copilot/test/fixtures/cli/README.md` says so under "Not measured". On **VS Code
+  agent mode** exit 2 blocks and everything else — any other non-zero exit, invalid JSON, a
+  timeout — is a non-blocking warning, so that host fails open; it also **parses matchers and
+  ignores them**, so the hook is spawned for every tool call and the unknown-tool exit is the
+  common path rather than the rare one. The adapter's answer to the disagreement is to print
+  an **explicit allow on every `preToolUse` path** in whichever dialect the event token
+  names, which is correct under both readings of the unmeasured case, and to stay silent on
+  every other event. No path exits non-zero and none exits 2. The VS Code half is built to
+  the published contract and **confirmed against no live install**: its fixtures live in a
+  separate `test/fixtures/vscode-provisional/` directory, every capability it claims is
+  marked unverified, and `plugins/copilot/test/fixture-provenance.test.ts` is what keeps a
+  doc-derived specimen from being filed among the recordings.
 - **Antigravity also fails CLOSED**, which inverts this repo's §1 rule at the boundary: a
   hook that exits non-zero, is killed on timeout, or prints nothing is read as a `deny` on
   every tool call. "Fail-open" there therefore means _always printing an explicit_
@@ -1008,6 +1032,8 @@ web-ui/               the OSS Next.js dashboard (Server Components read ~/.aka; 
 plugins/claude-code/  the Claude Code plugin (hooks + commands; self-contained npm bundle)
 plugins/codex/        the Codex CLI plugin (hooks + skills; self-contained npm bundle)
 plugins/antigravity/  the Antigravity plugin (hooks + skills; self-contained npm bundle)
+plugins/copilot/      the GitHub Copilot plugin — the Copilot CLI, VS Code agent mode and
+                      the cloud coding agent, one package over two payload dialects
 plugins/browser-extension/  the Chrome extension for ChatGPT + Claude.ai web chat (MV3
                       content scripts + a native-messaging host; private — bundled into
                       the CLI by `bundle:extension`, installed via `aka extension install`)
@@ -1261,6 +1287,13 @@ changes the shipped artifact **even when the app's own `src/` is untouched**:
 - **`cli`** bundles the same `@akasecurity/*` packages **and** ships the OSS web-ui
   (`web-ui` is `external` to the CLI JS but copied in by `prepack`'s `bundle:web-ui` and
   spawned as a separate Next server). So a web-ui change — or any bundled-package change — changes the CLI.
+- **`plugins/copilot` bundles the same core and is NOT one of the four.** It builds
+  `scripts/*.js` through the same `tsup` config and inlines the same `@akasecurity/*`
+  packages, but it is still `"private": true` and publishes nowhere, so it moves on no
+  version line and belongs in no bump above. That sentence stops being true the moment
+  `private` is unset — which is also what moves `required-checks.test.js`'s temporary
+  Windows pin and the `ci.yml` prose that justifies it, so all three change together or
+  `main` reds on a diff that looks innocent.
 
 When a change touches the web-ui or any bundled package and the user wants to publish:
 

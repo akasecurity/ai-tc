@@ -251,3 +251,59 @@ rows" pin moves with it.
 - `packages/persistence/test/repositories`: 678 passed / 31 files.
 - workspace `turbo run typecheck`: 26/26.
 - Coverage floor now `60` against a measured `61.11`.
+
+### K7 (partial) — `CLAUDE.md`
+
+Four blocks moved, all in the same commit:
+
+- the **package-dependency graph** gains `plugins/copilot`, naming the three surfaces and
+  the two dialects;
+- "All **three** CLI plugin packages bundle the SAME core" → **four**;
+- a new **hook-contract bullet** for this host, stating both conventions, saying plainly
+  that the empty-stdout case is **unmeasured** and pointing at the fixture README that says
+  so, and recording that the VS Code half is confirmed against no live install;
+- the **repository-layout** block;
+- and a bullet in the releasing section saying `plugins/copilot` is **not** one of the four
+  shippable artifacts because it is still `private` — with the note that unsetting `private`
+  is what makes that sentence, the `required-checks` Windows pin and the `ci.yml` prose all
+  false at once.
+
+`test/hook-output-shapes.test.ts` now reads that bullet as the Claude Code sibling reads §1:
+it slices the bullet out by its own bold lead (throwing if it is not there exactly once) and
+holds each claim separately — the CLI's deny-on-crash, the allow-on-timeout, the unmeasured
+empty-stdout case, VS Code's exit 2 and its ignored matchers, the explicit-allow answer, and
+the no-non-zero-exit promise, that last one checked against the module's own text.
+
+**Not done in K7:** the `§3` eleventh row and the `§4` egress item, which belong to G (the
+judge) and have no code behind them yet — adding either now would put a row in a table
+describing a `process.env` read this package does not make.
+
+### H2–H4 — the capability matrix
+
+`src/capabilities.ts` exports `CAPABILITY_MATRIX` (surface × event × subject → `channel` +
+`verified` + a note), `capabilitiesFor` and `surfaceIsVerified`. `skills/setup/SKILL.md`
+renders it as a table under a Known limitations section, and
+`test/capability-matrix.test.ts` holds the two together — row for row, in order, as CELLS
+rather than as lines, because prettier owns that file's column padding and a line comparison
+would pin today's widths rather than today's claims.
+
+Three prose claims are cross-checked against the data rather than merely present: "only the
+pre-tool-use event is wired" (every acting row is a pre-tool-use row), "command text is
+never masked in place" (no `rewrite` row names a command field), and "the calibration wizard
+is not wired on this host yet". The CLI surface is asserted VERIFIED as the control on the
+`verified` column — with nothing verified anywhere it would be a constant, and every
+assertion about it would hold trivially.
+
+**Deviation:** H1 (copying the ten sibling `SKILL.md` files) is NOT done, and
+`skills/setup/SKILL.md` says in its own body that the calibration wizard is not wired here.
+The sibling skills drive scripts this package does not build yet (`query`, `onboard`,
+`start-light`, `firstrun`, …); copying them would ship ten skills naming entry points that
+do not exist, which is worse than shipping none. H3's Known-limitations half is done because
+it describes the enforcement that IS wired.
+
+### Verification for K7 and H
+
+- `plugins/copilot`: **205 passed / 16 files**, lint, typecheck, prettier green.
+- `packages/eslint-config`: 1531 passed / 23 files — including `claude-md.test.js`, which
+  parses §3's table and count word and the §4 opt-out tables.
+- Coverage floor `60` against a measured `61.56`.

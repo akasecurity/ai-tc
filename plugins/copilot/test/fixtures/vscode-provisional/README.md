@@ -2,7 +2,7 @@
 
 **No live VS Code session produced any file in this directory.** Every one of
 them was written from vendor documentation and from the Copilot Chat extension's
-published behaviour, and is a statement of what the payload is *believed* to look
+published behaviour, and is a statement of what the payload is _believed_ to look
 like. That is why this directory sits beside `../cli/` rather than inside it:
 those eight files are recordings from a real session on Copilot CLI 1.0.83, and a
 doc-derived specimen filed among them would be read as one.
@@ -41,10 +41,10 @@ Replacing a file here with a recording is what earns a `verified: true`.
 Read this list as the scope of what a live recording would settle. Nothing here
 is asserted by the adapter beyond "if it is present and a string, scan it".
 
-- **`session_id`** — documented as sent *only when known*, so its absence is
+- **`session_id`** — documented as sent _only when known_, so its absence is
   expected on some events and is not an error. `detectDialect` places a payload
   without it on `hook_event_name` alone for this reason.
-- **`cwd`** — documented as sent *only when the hook entry declares one*. The
+- **`cwd`** — documented as sent _only when the hook entry declares one_. The
   spawn's own working directory defaults to the **home directory**, so the
   adapter deliberately does not fall back to `process.cwd()` on this host.
 - **`transcript_path`** — documented as unstable, pointing under

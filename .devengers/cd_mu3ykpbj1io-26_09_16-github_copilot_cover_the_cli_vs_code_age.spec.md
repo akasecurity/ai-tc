@@ -89,15 +89,15 @@ Claude Code, Codex and Antigravity — that:
 This is the load-bearing design decision and it is the same on both dialects, which is worth
 saying plainly because it looks like it should not be.
 
-| Host reading of "exit 0, empty stdout" | Explicit allow is | Silence is |
-| --- | --- | --- |
-| allow (fail-open, Claude-Code-like) | correct | correct |
-| deny (fail-closed, Antigravity-like) | correct | a wedged session |
+| Host reading of "exit 0, empty stdout" | Explicit allow is | Silence is       |
+| -------------------------------------- | ----------------- | ---------------- |
+| allow (fail-open, Claude-Code-like)    | correct           | correct          |
+| deny (fail-closed, Antigravity-like)   | correct           | a wedged session |
 
 Printing an explicit `{"permissionDecision":"allow"}` is correct under **both** readings.
 Silence is correct under only one. Since the CLI's reading is unmeasured and VS Code's
 depends on an unidentified harness, the adapter prints. This resolves the blocked probes from
-a gate into an optimization: confirming that CLI silence means allow would *permit* the
+a gate into an optimization: confirming that CLI silence means allow would _permit_ the
 silent shape, and nothing in this card depends on it.
 
 The corollary is that `plugins/copilot`'s `src/hooks/shared.ts` follows **Antigravity's**
@@ -117,17 +117,17 @@ more headroom, not a different property.
 
 Detected from the stdin envelope, not from argv:
 
-| | Copilot CLI / cloud | VS Code Local |
-| --- | --- | --- |
-| Session key | `sessionId` | `session_id` (only when known) |
-| Event name in payload | absent (except `permissionRequest.hookName`) | `hook_event_name`, always |
-| Casing | camelCase (one exception: top-level `stop_hook_active`) | snake_case envelope, camelCase `tool_input` |
-| Tool name key | `toolName` | `tool_name` |
-| Tool args key | `toolArgs` | `tool_input` |
-| Workspace | `cwd` | `cwd`, only when the hook entry declares one |
-| Deny shape | top-level `permissionDecision` + `permissionDecisionReason` | `hookSpecificOutput.permissionDecision` |
-| Input rewrite | `modifiedArgs` | `hookSpecificOutput.updatedInput` (last hook wins) |
-| Output rewrite | `modifiedResult` | none — `decision: 'block'` + `additionalContext` only |
+|                       | Copilot CLI / cloud                                         | VS Code Local                                         |
+| --------------------- | ----------------------------------------------------------- | ----------------------------------------------------- |
+| Session key           | `sessionId`                                                 | `session_id` (only when known)                        |
+| Event name in payload | absent (except `permissionRequest.hookName`)                | `hook_event_name`, always                             |
+| Casing                | camelCase (one exception: top-level `stop_hook_active`)     | snake_case envelope, camelCase `tool_input`           |
+| Tool name key         | `toolName`                                                  | `tool_name`                                           |
+| Tool args key         | `toolArgs`                                                  | `tool_input`                                          |
+| Workspace             | `cwd`                                                       | `cwd`, only when the hook entry declares one          |
+| Deny shape            | top-level `permissionDecision` + `permissionDecisionReason` | `hookSpecificOutput.permissionDecision`               |
+| Input rewrite         | `modifiedArgs`                                              | `hookSpecificOutput.updatedInput` (last hook wins)    |
+| Output rewrite        | `modifiedResult`                                            | none — `decision: 'block'` + `additionalContext` only |
 
 The presence of `hook_event_name` is the primary discriminator and is the one field VS Code
 is documented to send on every event. `sessionId` versus `session_id` is the secondary one,
@@ -203,8 +203,7 @@ deleted in a `finally`.
 
 ### Hook entries and the fail convention
 
-- Every `preToolUse` entry MUST print exactly one JSON object on every exit path and MUST exit
-  0. When no opinion was reached that object MUST be `{"permissionDecision":"allow"}` (CLI
+- Every `preToolUse` entry MUST print exactly one JSON object on every exit path and MUST exit 0. When no opinion was reached that object MUST be `{"permissionDecision":"allow"}` (CLI
   dialect) or `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}`
   (VS Code dialect).
 - Every other event's hook MUST fall back to **silence** — exit 0, empty stdout — since both
@@ -226,7 +225,7 @@ deleted in a `finally`.
   spelling second. An envelope matching neither MUST be treated as no opinion (explicit allow
   on `preToolUse`, silence elsewhere).
 - Two `SCANNABLE_FIELDS` tables MUST exist, one per dialect, each `Record<string, readonly
-  ScannableField[]>` with `{ field, executable }` entries, following the Codex and Antigravity
+ScannableField[]>` with `{ field, executable }` entries, following the Codex and Antigravity
   template. They MUST NOT be merged into one table with aliases; the tool vocabularies do not
   overlap.
 - The CLI table MUST cover at minimum `bash.command` (executable) and `apply_patch` (not
@@ -256,13 +255,13 @@ deleted in a `finally`.
 ### Session, stop and provider
 
 - `session-start.ts` MUST call `handleSessionStart({ tool: SOURCE_TOOL.Copilot, harnessVersion,
-  harnessInterface })` with `harnessInterface` ∈ `cli | vscode | cloud | jetbrains` as opaque
+harnessInterface })` with `harnessInterface` ∈ `cli | vscode | cloud | jetbrains` as opaque
   strings. `harnessInterface` has no Zod schema and is validated only as a string; it lands in
   the attribute bag and is deliberately not part of the content-addressed identity key.
 - `harnessVersion` MUST come from `copilotVersion` in the session store's `session.start` event
   (CLI) or the built-in extension's `package.json` (VS Code).
 - The once-per-session pass MUST tolerate running **after** the session's first prompt. The
-  recordings show `userPromptSubmitted` and `userPromptTransformed` stamped 20 ms *before*
+  recordings show `userPromptSubmitted` and `userPromptTransformed` stamped 20 ms _before_
   `sessionStart`. A pass that assumes it runs first will miss that prompt's inventory context.
 - Provider resolution MUST record `unknown` with the model id taken from the event stream,
   until the provider seam is widened (D7).
@@ -370,9 +369,9 @@ Per operator decision, both channels, with file-drop as the floor.
 
 ### Guards and disclosure
 
-- `CLAUDE.md`'s hook-contract bullets MUST gain: *Copilot CLI: `preToolUse` denies on crash,
+- `CLAUDE.md`'s hook-contract bullets MUST gain: _Copilot CLI: `preToolUse` denies on crash,
   allows on timeout, other events fail open; VS Code Local: exit 2 blocks, everything else
-  fails open, matchers ignored* — with the CLI half marked as documentation until the two
+  fails open, matchers ignored_ — with the CLI half marked as documentation until the two
   probes run.
 - The package MUST wire `test/setup/no-network.ts` (already done) and, once it takes a
   `persistence` dependency, `test/setup/no-managed-settings.ts`. The derived guard will name

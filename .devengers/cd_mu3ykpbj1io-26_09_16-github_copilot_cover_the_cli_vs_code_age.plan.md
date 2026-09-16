@@ -352,7 +352,7 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
       to `TIMEOUTS` in `packages/eslint-config/test/hook-timeout-ratchet.test.js`.
 - [x] A5. Copy `src/build-info.ts` with the manifest read moved from `argv[2]` to
       **`argv[3]`**; add `test/build-info.test.ts` pinning that offset explicitly.
-- [ ] A6. Write `plugin.json` and `hooks.json` (one entry per event, event name as a literal
+- [x] A6. Write `plugin.json` and `hooks.json` (one entry per event, event name as a literal
       argv token, `timeoutSec: 30`). Add a test asserting every command in `hooks.json`
       resolves to an emitted `scripts/*.js` and carries a valid event token.
 
@@ -365,7 +365,7 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 - [x] B3. Add the `TITLE_NEEDLES` row as `stripSeparators(SOURCE_TOOL.Copilot)`.
 - [x] B4. Add the `resolveHarnessId` dispatch line by hand — **the compiler will not ask for
       it** — and a test that drives a Copilot harness row end to end through it.
-- [ ] B5. Flip `SCAN_COVERAGE`'s Copilot row to a justified number with the argument in a
+- [x] B5. Flip `SCAN_COVERAGE`'s Copilot row to a justified number with the argument in a
       comment beside it (see Risks: this is open question 3).
 
 ### C. The wrapper and the wire (the load-bearing half)
@@ -388,20 +388,20 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 
 ### D. PreToolUse
 
-- [ ] D1. `src/hooks/pre-tool-use-decision.ts`: `ScannableField`, the **two**
+- [x] D1. `src/hooks/pre-tool-use-decision.ts`: `ScannableField`, the **two**
       `SCANNABLE_FIELDS` tables (CLI: `bash.command` executable, `bash.description`
       non-executable, `apply_patch` non-executable; VS Code: the tool ids from the
       provisional fixtures), `decideInputPointerDeny`, `decidePreToolUse` returning the
       dialect-correct output.
-- [ ] D2. Wire the redact channel: CLI `modifiedArgs`; VS Code
+- [x] D2. Wire the redact channel: CLI `modifiedArgs`; VS Code
       `hookSpecificOutput.updatedInput` carrying the **full** camelCase object for the exact
       tool id. Read `result.redactDegradedTo`; never re-derive.
-- [ ] D3. `src/hooks/pre-tool-use.ts`: read argv event → parse stdin → detect dialect →
+- [x] D3. `src/hooks/pre-tool-use.ts`: read argv event → parse stdin → detect dialect →
       unknown tool ⇒ **`emit(ALLOW)` and exit, before `loadConfig`** → pointer deny before
       the store opens → `loadConfig` → gateway → per-field `runtime.capture` with
       `rewritable: !spec.executable` → `decidePreToolUse` → return the output to
       `runHookFailOpen`.
-- [ ] D4. `test/hooks/pre-tool-use-decision.test.ts` covering both dialects at block, redact,
+- [x] D4. `test/hooks/pre-tool-use-decision.test.ts` covering both dialects at block, redact,
       redact-on-executable (degraded), warn and monitor.
 
 ### E. The remaining events
@@ -476,9 +476,9 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 
 ### I. Fixtures and provenance
 
-- [ ] I1. Create `test/fixtures/vscode-provisional/` with one file per VS Code event and a
+- [x] I1. Create `test/fixtures/vscode-provisional/` with one file per VS Code event and a
       README naming the vendor pages and every unverified field.
-- [ ] I2. `test/fixture-provenance.test.ts` — a file in `cli/` with no README paragraph
+- [x] I2. `test/fixture-provenance.test.ts` — a file in `cli/` with no README paragraph
       describing its capture fails.
 - [ ] I3. Extend `test/cli-fixture-shapes.test.ts` for any new recording.
 
@@ -499,7 +499,7 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 
 ### K. Ship gates
 
-- [ ] K1. `test/e2e/fail-open.e2e.test.ts` against the **built** scripts. Fault rows (empty,
+- [x] K1. `test/e2e/fail-open.e2e.test.ts` against the **built** scripts. Fault rows (empty,
       malformed, truncated, scalar, null, binary, oversized stdin, unopenable store) prove
       `preToolUse` emits exactly one explicit allow and every other hook emits nothing.
       Enforcement rows prove block, redact, warn and monitor each emit the shape their cell

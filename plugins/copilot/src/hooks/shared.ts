@@ -98,6 +98,7 @@ export interface CliPermissionDecisionOutput {
   // first. A policy that wants a deny emits one.
   permissionDecision: 'allow' | 'deny';
   permissionDecisionReason?: string;
+  systemMessage?: string;
 }
 
 /** The CLI's input rewrite. Observed to replace the executed shell command. */
@@ -167,11 +168,20 @@ export type HookOutput =
  * This is the one thing on this host that must never be silence. It is a
  * FUNCTION rather than two frozen constants so a caller cannot hold a reference
  * to the object that goes on the wire and mutate it.
+ *
+ * `systemMessage` rides WITH the allow rather than replacing it. That is not a
+ * convenience: a degradation notice returned on its own is a payload carrying
+ * no verdict, which on this event is the silence the whole adapter is arranged
+ * to avoid. Anything this hook wants to say, it says while allowing.
  */
-export function allowFor(dialect: Dialect | undefined): HookOutput {
+export function allowFor(dialect: Dialect | undefined, systemMessage?: string): HookOutput {
+  const message = systemMessage === undefined ? {} : { systemMessage };
   return dialect === 'vscode'
-    ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } }
-    : { permissionDecision: 'allow' };
+    ? {
+        hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
+        ...message,
+      }
+    : { permissionDecision: 'allow', ...message };
 }
 
 // Hook output protocol: write one JSON object to stdout and exit 0.

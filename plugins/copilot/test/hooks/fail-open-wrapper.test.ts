@@ -22,6 +22,8 @@
 // not would pass every one of them. The `emit` describe block near the bottom
 // withholds that callback instead, and is the only thing here covering that
 // property.
+import { readFileSync } from 'node:fs';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { HookOutput } from '../../src/hooks/shared.ts';
@@ -318,13 +320,27 @@ describe('WATCHDOG_MS — the shipped default has to be beatable', () => {
     // value: a default at or past the host's own timeout means the host kills
     // the hook first and the watchdog never emits anything at all.
     //
-    // 30s is the Copilot CLI's documented default and what `hooks.json`
-    // registers. Once that manifest lands this reads the number out of it; the
-    // literal here is the same number and the same claim.
-    expect(WATCHDOG_MS).toBeLessThan(30 * 1000);
+    // Read out of the manifest rather than restated, so a `timeoutSec` lowered
+    // there without moving the watchdog is a failure here. (`hooks-manifest.
+    // test.ts` asserts the same relation from the other side; this is the half
+    // that belongs next to the constant.)
+    const timeouts = collectTimeouts(
+      JSON.parse(readFileSync(new URL('../../hooks.json', import.meta.url), 'utf8')),
+    );
+    expect(timeouts.length).toBeGreaterThan(0);
+    for (const seconds of timeouts) expect(WATCHDOG_MS).toBeLessThan(seconds * 1000);
     // And a positive control on the other side: a watchdog of nearly nothing
     // would satisfy the bound above while firing before any real body could
     // finish, which is a hook that never decides anything.
     expect(WATCHDOG_MS).toBeGreaterThan(10 * 1000);
   });
 });
+
+/** Every `timeoutSec` registered anywhere in the hooks manifest. */
+function collectTimeouts(node: unknown): number[] {
+  if (Array.isArray(node)) return node.flatMap(collectTimeouts);
+  if (typeof node !== 'object' || node === null) return [];
+  const record = node as Record<string, unknown>;
+  const here = typeof record.timeoutSec === 'number' ? [record.timeoutSec] : [];
+  return [...here, ...Object.values(record).flatMap(collectTimeouts)];
+}

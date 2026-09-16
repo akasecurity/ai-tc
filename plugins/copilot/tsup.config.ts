@@ -46,6 +46,9 @@ export default defineConfig({
   // Named entries keep the output flat in scripts/ — hooks.json paths depend on it
   entry: {
     // Hook entries land here as each one is written; the map grows with them.
+    // `hooks.json` names each emitted script by the key it is registered under,
+    // and `test/hooks-manifest.test.ts` holds the two to each other.
+    'pre-tool-use': 'src/hooks/pre-tool-use.ts',
     // The isolated scan's worker thread. No hook names it — plugin-sdk starts it
     // by path from whichever hook script is running, so the emitted script has to
     // land in this same directory. See src/scan-worker.ts.

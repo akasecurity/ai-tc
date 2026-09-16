@@ -177,3 +177,77 @@ K5 re-measures once the adapter is complete; this is not that step and is not ti
 
 Verified: `plugins/copilot` 72 passed / 7 files, lint, typecheck and `prettier --check`
 green; `packages/eslint-config`'s `coverage-config.test.js` 17 passed.
+
+### I1–I2 — the provisional fixtures and their provenance guard
+
+`test/fixtures/vscode-provisional/` carries one file per VS Code event plus a README that
+says, in as many words, that **no live VS Code session produced any of them**, names the
+vendor sources, and enumerates every field whose presence, casing or type is unverified.
+`test/fixture-provenance.test.ts` holds both directories to their own contract: every
+recording under `cli/` must be described by name in that directory's README (the shape a
+doc-derived specimen moved across would fail), the two directories may not carry the same
+event, and the provisional README must keep its disclaimer, its sources and its unverified
+list. I3 is nothing to do: no new recording was captured on this branch.
+
+### D1–D4 — pre-tool-use
+
+`src/hooks/pre-tool-use-decision.ts` carries **two** field tables and a `denyOutput`/
+`decidePreToolUse` pair that takes the dialect as a parameter all the way down. CLI:
+`bash.command` executable, `bash.description` rewritable, `apply_patch.input` rewritable.
+VS Code: `run_in_terminal.{command,explanation}`, `create_file.content`,
+`replace_string_in_file.newString`, `insert_edit_into_file.code`, `apply_patch.input` — every
+row doc-derived, written FROM the provisional fixtures.
+
+`src/hooks/pre-tool-use.ts` is the entry: event token → stdin → dialect → **unknown tool
+returns before `loadConfig` and before the store opens** → pointer deny → gateway → per-field
+`runtime.capture` with `rewritable: !spec.executable` → `decidePreToolUse`.
+
+Two things the tests forced:
+
+- **The redact channel carries the WHOLE argument object** in both dialects, not the changed
+  field alone. `modifiedArgs` replaces the call's arguments; `updatedInput` is validated
+  against the tool's own input schema, which a partial object fails.
+- **The store-unavailable notice rides the allow.** It was returned on its own at first, and
+  the e2e caught it: a message with no verdict is exactly the silence this event may not
+  produce. `allowFor` now takes an optional `systemMessage` for that reason, and the reason
+  is written beside it.
+
+The pointer block needed a positive control before it meant anything — the first version used
+a hand-written token that `pointerTokenScanner` does not match, which made the deny cases
+fail and the null cases pass. The token is built from the schema's own pattern now and
+asserted against `POINTER_TOKEN_ANCHORED` first.
+
+### A6 — the hook manifest
+
+`hooks.json` registers `preToolUse` and `PreToolUse` at `timeoutSec: 30`, each command
+passing its own event name as the argv token and the plugin manifest after it.
+`test/hooks-manifest.test.ts` drives every column: the event is one this build accepts, the
+script is a tsup entry **and** was really emitted (globalSetup has built by then), the token
+matches the event it is registered under, the manifest lands on `MANIFEST_ARGV_INDEX`, and
+the timeout strictly exceeds `WATCHDOG_MS`. The wrapper suite reads the same relation from
+the other side, out of the manifest rather than from a literal.
+
+### K1 — the built-script e2e
+
+`test/e2e/fail-open.e2e.test.ts` drives the **built** `scripts/pre-tool-use.js` in both
+dialects. Fault rows: empty, malformed, truncated, scalar, null, array, binary, an envelope
+matching neither dialect, an oversized payload past the pipe buffer, an unknown tool, and an
+unopenable store — each asserting exit 0 and exactly one JSON object equal to that dialect's
+explicit allow. Enforcement rows: block (names the rule), redact-on-executable (goes
+through under the shipped `warn` fallback, with no rewrite in the payload), warn, monitor
+(the bare allow), and a clean command under the block policy so the block row is not vacuous.
+
+### B5 — `SCAN_COVERAGE`, now that it is true
+
+Copilot moves from `{0,false}` to `{30,true}`, strictly **below** Antigravity's 60, with the
+argument in a comment beside it and pinned by a named case in `security.test.ts`: the host's
+contract is the richest of the terminal harnesses, but only the pre-tool-use event is wired,
+so prompts, tool results and the backfill are covered by nothing. The "still-unsupported
+rows" pin moves with it.
+
+### Verification for I, D, A6, K1, B5
+
+- `plugins/copilot`: **191 passed / 15 files**, lint, typecheck, prettier green.
+- `packages/persistence/test/repositories`: 678 passed / 31 files.
+- workspace `turbo run typecheck`: 26/26.
+- Coverage floor now `60` against a measured `61.11`.

@@ -15,13 +15,21 @@ const noManagedSettingsGuard = fileURLToPath(
   new URL('../../test/setup/no-managed-settings.ts', import.meta.url),
 );
 
+// globalSetup builds scripts/*.js once, in the main process, before any worker
+// runs — the e2e suites drive those built scripts.
+//
+// Those tests spawn the built scripts as real child processes, which runs
+// slowly under Turbo's parallel task load, so raise the per-test AND per-hook
+// timeouts above vitest's 5s/10s defaults (mirrors plugins/codex and
+// plugins/antigravity). The pair is pinned as an exact map by
+// packages/eslint-config/test/hook-timeout-ratchet.test.js.
 export default defineConfig({
   test: {
     setupFiles: [noNetworkGuard, noManagedSettingsGuard],
     coverage: coverageOptions(import.meta.url),
-    // No timeout overrides: this suite is synchronous assertions with no child
-    // process, no store and no migration template, so it runs on vitest's own
-    // defaults — which is why the package is absent from the ratchet's TIMEOUTS.
     environment: 'node',
+    globalSetup: ['./test/global-setup.ts'],
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
   },
 });

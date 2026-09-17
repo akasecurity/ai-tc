@@ -372,44 +372,44 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 
 ### C. The wrapper and the wire (the load-bearing half)
 
-- [ ] C1. Write `src/hooks/shared.ts`: `readStdin`, `parseJson`, `getString`, `baseMetadata`,
+- [x] C1. Write `src/hooks/shared.ts`: `readStdin`, `parseJson`, `getString`, `baseMetadata`,
       `emit(output: HookOutput)`, and `runHookFailOpen(main, failOpen, watchdogMs =
-  WATCHDOG_MS)` ported from Antigravity. Restate the blocking-body limit in the header.
-- [ ] C2. Define the `HookOutput` union spanning both dialects.
-- [ ] C3. Write `src/hooks/event-name.ts` (argv[2], validated, `undefined` on anything else).
-- [ ] C4. Write `src/hooks/dialect.ts` (`hook_event_name` first, `sessionId`/`session_id`
+WATCHDOG_MS)` ported from Antigravity. Restate the blocking-body limit in the header.
+- [x] C2. Define the `HookOutput` union spanning both dialects.
+- [x] C3. Write `src/hooks/event-name.ts` (argv[2], validated, `undefined` on anything else).
+- [x] C4. Write `src/hooks/dialect.ts` (`hook_event_name` first, `sessionId`/`session_id`
       second, `undefined` third) plus the per-dialect envelope readers.
-- [ ] C5. `test/hooks/fail-open-wrapper.test.ts` — throw, undecided body, watchdog win, a
+- [x] C5. `test/hooks/fail-open-wrapper.test.ts` — throw, undecided body, watchdog win, a
       late rejection that must not surface as an unhandled rejection, the synchronous-block
       limit pinned as behaviour, and **exactly one JSON object** on stdout (two concatenated
       objects do not parse).
-- [ ] C6. `test/hooks/{event-name,dialect}.test.ts` — including an envelope matching neither
+- [x] C6. `test/hooks/{event-name,dialect}.test.ts` — including an envelope matching neither
       dialect.
-- [ ] C7. `test/hook-output-shapes.test.ts` — both compile-direction pins, the
+- [x] C7. `test/hook-output-shapes.test.ts` — both compile-direction pins, the
       `emit`-narrows pin, and the read of `CLAUDE.md`'s bullets.
 
 ### D. PreToolUse
 
-- [ ] D1. `src/hooks/pre-tool-use-decision.ts`: `ScannableField`, the **two**
+- [x] D1. `src/hooks/pre-tool-use-decision.ts`: `ScannableField`, the **two**
       `SCANNABLE_FIELDS` tables (CLI: `bash.command` executable, `bash.description`
       non-executable, `apply_patch` non-executable; VS Code: the tool ids from the
       provisional fixtures), `decideInputPointerDeny`, `decidePreToolUse` returning the
       dialect-correct output.
-- [ ] D2. Wire the redact channel: CLI `modifiedArgs`; VS Code
+- [x] D2. Wire the redact channel: CLI `modifiedArgs`; VS Code
       `hookSpecificOutput.updatedInput` carrying the **full** camelCase object for the exact
       tool id. Read `result.redactDegradedTo`; never re-derive.
-- [ ] D3. `src/hooks/pre-tool-use.ts`: read argv event → parse stdin → detect dialect →
+- [x] D3. `src/hooks/pre-tool-use.ts`: read argv event → parse stdin → detect dialect →
       unknown tool ⇒ **`emit(ALLOW)` and exit, before `loadConfig`** → pointer deny before
       the store opens → `loadConfig` → gateway → per-field `runtime.capture` with
       `rewritable: !spec.executable` → `decidePreToolUse` → return the output to
       `runHookFailOpen`.
-- [ ] D4. `test/hooks/pre-tool-use-decision.test.ts` covering both dialects at block, redact,
+- [x] D4. `test/hooks/pre-tool-use-decision.test.ts` covering both dialects at block, redact,
       redact-on-executable (degraded), warn and monitor.
 
 ### E. The remaining events
 
 - [ ] E1. `src/hooks/session-start.ts` — `handleSessionStart({ tool: SOURCE_TOOL.Copilot,
-  harnessVersion, harnessInterface })`, provider recorded `unknown` with the model id.
+harnessVersion, harnessInterface })`, provider recorded `unknown` with the model id.
       The once-per-session pass must tolerate running **after** the session's first prompt
       (the recordings show `userPromptSubmitted` 20 ms _before_ `sessionStart`); add a case
       that drives that order.
@@ -471,9 +471,9 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
       a live install**.
 - [ ] H4. `test/capability-matrix.test.ts` — fails when matrix and `SKILL.md` disagree.
 - [ ] H5. `src/{present,render,setup-show,setup-frame-json,intro,start-light,firstrun,
-  firstrun-core,posture,calibration,onboard,query,dashboard,dashboard-launch,
-  skills-registry,exception-guidance,filescan,apply-suppressions,sync,history-sync,
-  content-retention,reconcile,scan-worker}.ts` and `src/remediation/*` from the Codex
+firstrun-core,posture,calibration,onboard,query,dashboard,dashboard-launch,
+skills-registry,exception-guidance,filescan,apply-suppressions,sync,history-sync,
+content-retention,reconcile,scan-worker}.ts` and `src/remediation/*` from the Codex
       siblings, plus their suites.
 
 ### I. Fixtures and provenance
@@ -512,7 +512,7 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 - [ ] K4. Retire or re-justify the temporary Windows pin in `required-checks.test.js`, and
       **rewrite the `ci.yml` comment block at :485–:528**, whose prose claims copilot is
       private and pinned for that reason.
-- [ ] K5. Measure the real coverage number and lower `COVERAGE_FLOORS` from the `99`
+- [x] K5. Measure the real coverage number and lower `COVERAGE_FLOORS` from the `99`
       placeholder to one point below what the suite reports, with the measurement in the
       comment beside it.
 - [ ] K6. `.github/workflows/release-plugin-copilot.yml` on `plugin-copilot-v*`, from the

@@ -45,6 +45,7 @@ function normalizeSqliteSpecifier(outDir: string): void {
 export default defineConfig({
   // Named entries keep the output flat in scripts/ — hooks.json paths depend on it
   entry: {
+    'pre-tool-use': 'src/hooks/pre-tool-use.ts',
     // The isolated scan's worker thread. No hook names it — plugin-sdk starts it
     // by path from whichever hook script is running, so the emitted script has to
     // land in this same directory. See src/scan-worker.ts.

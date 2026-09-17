@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "preToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${AKA_COPILOT_ROOT:-$HOME/.copilot/plugins/aka-copilot}/scripts/pre-tool-use.js\" preToolUse",
+            "timeoutSec": 30
+          }
+        ]
+      }
+    ]
+  }
+}

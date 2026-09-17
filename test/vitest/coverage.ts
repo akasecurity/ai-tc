@@ -111,7 +111,6 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/local-ops': 65, //                  66.75
   '@akasecurity/audit-gate': 61, //                 62.88
   '@akasecurity/ai-tc-antigravity': 59, //          60.96
-  '@akasecurity/ai-tc-copilot': 99, //              100 (placeholder only — RE-MEASURE when real source lands)
   '@akasecurity/ai-tc-codex': 58, //                59.78
   '@akasecurity/plugin-browser-extension': 81, //   82.44
   '@akasecurity/cli': 51, //                        52.66
@@ -125,6 +124,23 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   // example of getting that wrong. Raising these to 54 on one platform's
   // reading is a one-line change for whoever has a Windows or Linux number to
   // set it from; guessing at it fails that leg with every test passing.
+  // The placeholder that used to sit beside the other plugins at 99 — a number
+  // nothing had measured, written when the package shipped one exported
+  // constant and a fixture-shapes test. It is measured now and the measurement
+  // is 30.95, so it moves DOWN, which is the direction the plan predicted.
+  //
+  // Read it as a floor over a package that is PART-BUILT rather than as this
+  // adapter's steady state. What the suite drives today is the wrapper, the two
+  // envelope readers and the whole preToolUse decision surface; what it does
+  // not is the hook ENTRY (hook entries run main() on import and can never be
+  // imported by a test — only the built-script e2e reaches them) or the four
+  // modules copied from the Codex sibling to satisfy the decision module's
+  // imports. The three sibling plugins read 59-72 with their full hook sets and
+  // their e2e suites, and this rises toward them as those land. Re-take it then
+  // rather than raising it on faith. Node 24 was unavailable where this was
+  // measured (the container ships 22.23); the reading is not platform-sensitive
+  // in the way the keychain-backed packages below are, but it is one platform's.
+  '@akasecurity/ai-tc-copilot': 29, //              30.95
   '@akasecurity/dashboard-ui': 23, //               55.55 (macOS)
   '@akasecurity/web-ui': 23, //                     56.78 (macOS)
   '@akasecurity/ui-kit': 1, //                       2.13

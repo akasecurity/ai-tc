@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertRawFree,
+  edgeTruncatedSpans,
   maskContextSlice,
   RawEgressError,
   safeMaskedMatch,
@@ -325,5 +326,90 @@ describe('assertRawFree', () => {
   // pin a real measurement and a constant are indistinguishable.
   it('reports the sentinel for the whole-value form it replaced', () => {
     expect(shortestRejectedRun(RAW, wholeValueRejects)).toBe(RAW.length);
+  });
+});
+
+// A fixed-radius context window cuts whatever straddles its edge, so a value
+// present only as a bare prefix or suffix of itself is the ONE occurrence a
+// caller's `indexOf` pass cannot find — there is no whole value to search for.
+// That was inert while the verifier matched whole values; run by run it is the
+// case the verifier rejects, so leaving it unspanned turns every such window
+// into a guaranteed refusal.
+describe('edgeTruncatedSpans', () => {
+  const OTHER = 'Wk4Pq8Zn2Vb6Hm3Xr9Ts5Ld7Gc1Fj0A';
+
+  it('spans a value the RIGHT edge cut, which indexOf cannot find', () => {
+    const cut = OTHER.slice(0, 14);
+    const text = `trailing ${cut}`;
+    expect(text.indexOf(OTHER)).toBe(-1); // the premise: nothing whole to find
+    const spans = edgeTruncatedSpans(text, [OTHER]);
+    expect(spans).toHaveLength(1);
+    expect(text.slice(spans[0]?.span.start, spans[0]?.span.end)).toBe(cut);
+  });
+
+  it('spans a value the LEFT edge cut', () => {
+    const cut = OTHER.slice(10);
+    const text = `${cut} leading`;
+    expect(text.indexOf(OTHER)).toBe(-1);
+    const spans = edgeTruncatedSpans(text, [OTHER]);
+    expect(spans).toHaveLength(1);
+    expect(text.slice(spans[0]?.span.start, spans[0]?.span.end)).toBe(cut);
+  });
+
+  it('spans nothing for a clipped run too short to fill a window', () => {
+    // Seven characters cannot fill an eight-character window, so the verifier
+    // does not reject it and spanning it would be over-redaction.
+    const text = `tail ${OTHER.slice(0, 7)}`;
+    expect(edgeTruncatedSpans(text, [OTHER])).toHaveLength(0);
+  });
+
+  it('spans nothing when the boundary shares no run with the value', () => {
+    expect(edgeTruncatedSpans('nothing in common here at all', [OTHER])).toHaveLength(0);
+  });
+
+  // The whole point, driven at the shape the join builder really has: masking
+  // spans this window's own hits, and the join-level check then reads the result
+  // against EVERY value in the run. A neighbour the window clipped is in that
+  // second list and in no span, so without these extra spans the pair refuses.
+  it('is what lets the join-level check accept an edge-clipped neighbour', () => {
+    const cut = OTHER.slice(0, 14);
+    const text = `${RAW} then ${cut}`;
+    const all = [RAW, OTHER];
+    const whole = [{ rawMatch: RAW, span: { start: 0, end: RAW.length } }];
+
+    // Without the edge spans: masking is clean, and the join-level read refuses.
+    expect(() => assertRawFree(maskContextSlice(text, 0, whole), all)).toThrow(RawEgressError);
+
+    // With them, the clipped run is covered and the same pair goes through.
+    const withEdges = [...whole, ...edgeTruncatedSpans(text, all)];
+    const masked = assertRawFree(maskContextSlice(text, 0, withEdges), all);
+    expect(masked).not.toContain(cut);
+  });
+
+  // The throw carries the text masking had already produced, so a caller that
+  // must not propagate it can blunt-redact THAT instead of starting over from
+  // the raw input — which would discard every span the masker did cover.
+  it('leaves the refusal carrying the partially masked text', () => {
+    // A span that covers only part of its value is what this backstop is for.
+    // The second hit's span lands correctly, so the masked text it produced is
+    // worth strictly more than the raw input — which is why the error carries it.
+    const text = `${RAW} then ${OTHER}`;
+    const hits = [
+      { rawMatch: RAW, span: { start: 0, end: 10 } }, // misaligned: leaves a run
+      { rawMatch: OTHER, span: { start: text.indexOf(OTHER), end: text.length } },
+    ];
+    let err: unknown = null;
+    try {
+      maskContextSlice(text, 0, hits);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(RawEgressError);
+    const masked = (err as RawEgressError).masked;
+    expect(masked).toBeDefined();
+    // The span that DID land is preserved — the whole reason to blunt-redact
+    // this rather than start over from the raw input.
+    expect(masked).not.toContain(OTHER);
+    expect(masked).toContain(RAW.slice(10)); // the live run it refused over
   });
 });

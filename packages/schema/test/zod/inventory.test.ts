@@ -137,15 +137,20 @@ describe('HarnessEventKind enum', () => {
 });
 
 describe('HarnessId enum', () => {
-  it('accepts claudecode, cursor, codex, antigravity', () => {
-    for (const v of ['claudecode', 'cursor', 'codex', 'antigravity']) {
+  it('accepts claudecode, cursor, codex, antigravity, copilot', () => {
+    for (const v of ['claudecode', 'cursor', 'codex', 'antigravity', 'copilot']) {
       expect(HarnessId.safeParse(v).success).toBe(true);
     }
   });
 
   it('rejects invalid values', () => {
-    expect(HarnessId.safeParse('copilot').success).toBe(false);
+    // Both of these are the WIRE spelling (SOURCE_TOOL), not the display
+    // spelling this enum carries. They are the discriminating negatives: each
+    // names a harness the enum DOES extract, so a subset that started
+    // accepting either one would be accepting the wrong vocabulary rather
+    // than an unknown tool.
     expect(HarnessId.safeParse('claude-code').success).toBe(false);
+    expect(HarnessId.safeParse('github-copilot').success).toBe(false);
   });
 });
 

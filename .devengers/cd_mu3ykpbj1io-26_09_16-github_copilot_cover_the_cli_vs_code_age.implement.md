@@ -69,3 +69,46 @@ does not touch.
 
 Verified: `hook-timeout-ratchet.test.js` 3/3 green; the copilot suite 14/14 green with the
 build now running as globalSetup.
+
+### B1–B4 — wire vocabulary (one commit)
+
+B1 is the compile gate and B2–B4 are its fallout, so they land together: the tree
+does not typecheck between B1 and B3.
+
+- `packages/schema/src/zod/inventory.ts` — `HarnessId` extracts `'Copilot'`. Running
+  `tsc --noEmit` in `packages/persistence` then named **exactly** the two sites the plan
+  predicted (TS2741 at `inventory-assets.ts:106` and `:165`) and nothing else in the
+  workspace: `HarnessId` has only eight importers and the other six are tests or fixtures.
+- `packages/persistence/src/repositories/inventory-assets.ts` — `HARNESS_LABELS` gains
+  `[HARNESS.Copilot]: 'GitHub Copilot'` (computed member key, per the vocabulary rule);
+  `TITLE_NEEDLES` gains `Copilot: stripSeparators(SOURCE_TOOL.Copilot)`, which is
+  **`githubcopilot`** rather than `copilot` — the needle is the stripped WIRE id, and a
+  bare `copilot` would match any title merely containing the word. The reason is written
+  beside the row rather than left to this journal.
+- `resolveHarnessId`'s dispatch line, added by hand. The compiler does not ask for it.
+
+**B4's test already existed, and is stronger than a hand-written one.**
+`packages/persistence/test/repositories/inventory-harness-resolution.test.ts` derives its
+case set from `Object.keys(HarnessId.enum)` and seeds one scanned harness row per member
+through the real capture-path writer, so extending the enum extended the test with no edit.
+Rather than take that on trust I mutated it: commenting out the new dispatch line reds that
+file with `expected [ 'antigravity', 'claudecode', …(2) ] to deeply equal […(3) ]`, and
+restoring it greens it again. So the silent gap the plan and the spec both name is covered
+by a guard that cannot be satisfied by adding an enum member alone. No redundant per-harness
+test was written.
+
+- `packages/schema/test/zod/inventory.test.ts` — one existing case asserted
+  `HarnessId.safeParse('copilot').success === false`, which is precisely the fact that had
+  to move. Its accept list gains `copilot`; its reject list keeps `claude-code` and gains
+  `github-copilot`, so **both** negatives are now the WIRE spelling of a harness the enum
+  really does extract. That is the discriminating shape: a subset drifting onto the wrong
+  vocabulary reds, where an arbitrary unknown string would not.
+
+Verified: `packages/schema` 1110/1110 green (was 1 failed before the test edit),
+`inventory-harness-resolution.test.ts` 3/3, `packages/persistence` typecheck clean.
+
+**B5 is deliberately NOT ticked.** It flips `SCAN_COVERAGE`'s Copilot row off
+`{ coverage: 0, supported: false }`, and that number is a claim about what the shipped
+plugin scans. No hook exists yet, so any non-zero value would be false on the day it
+landed. It is owed once the `preToolUse` path is real (section D), and the plan's own
+Definition of Done #8 is what will collect it.

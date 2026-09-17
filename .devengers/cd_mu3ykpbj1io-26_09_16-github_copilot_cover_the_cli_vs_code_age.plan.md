@@ -360,12 +360,12 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 
 ### B. Wire vocabulary (independent of A; do early so types settle)
 
-- [ ] B1. Extend `HarnessId` in `packages/schema/src/zod/inventory.ts` with `'Copilot'` and
+- [x] B1. Extend `HarnessId` in `packages/schema/src/zod/inventory.ts` with `'Copilot'` and
       run `pnpm typecheck` — the `Record<HarnessId, …>` tables will name every site that
       must now decide.
-- [ ] B2. Add the `HARNESS_LABELS` row.
-- [ ] B3. Add the `TITLE_NEEDLES` row as `stripSeparators(SOURCE_TOOL.Copilot)`.
-- [ ] B4. Add the `resolveHarnessId` dispatch line by hand — **the compiler will not ask for
+- [x] B2. Add the `HARNESS_LABELS` row.
+- [x] B3. Add the `TITLE_NEEDLES` row as `stripSeparators(SOURCE_TOOL.Copilot)`.
+- [x] B4. Add the `resolveHarnessId` dispatch line by hand — **the compiler will not ask for
       it** — and a test that drives a Copilot harness row end to end through it.
 - [ ] B5. Flip `SCAN_COVERAGE`'s Copilot row to a justified number with the argument in a
       comment beside it (see Risks: this is open question 3).
@@ -374,7 +374,7 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 
 - [ ] C1. Write `src/hooks/shared.ts`: `readStdin`, `parseJson`, `getString`, `baseMetadata`,
       `emit(output: HookOutput)`, and `runHookFailOpen(main, failOpen, watchdogMs =
-    WATCHDOG_MS)` ported from Antigravity. Restate the blocking-body limit in the header.
+  WATCHDOG_MS)` ported from Antigravity. Restate the blocking-body limit in the header.
 - [ ] C2. Define the `HookOutput` union spanning both dialects.
 - [ ] C3. Write `src/hooks/event-name.ts` (argv[2], validated, `undefined` on anything else).
 - [ ] C4. Write `src/hooks/dialect.ts` (`hook_event_name` first, `sessionId`/`session_id`
@@ -409,7 +409,7 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 ### E. The remaining events
 
 - [ ] E1. `src/hooks/session-start.ts` — `handleSessionStart({ tool: SOURCE_TOOL.Copilot,
-    harnessVersion, harnessInterface })`, provider recorded `unknown` with the model id.
+  harnessVersion, harnessInterface })`, provider recorded `unknown` with the model id.
       The once-per-session pass must tolerate running **after** the session's first prompt
       (the recordings show `userPromptSubmitted` 20 ms _before_ `sessionStart`); add a case
       that drives that order.
@@ -471,9 +471,9 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
       a live install**.
 - [ ] H4. `test/capability-matrix.test.ts` — fails when matrix and `SKILL.md` disagree.
 - [ ] H5. `src/{present,render,setup-show,setup-frame-json,intro,start-light,firstrun,
-    firstrun-core,posture,calibration,onboard,query,dashboard,dashboard-launch,
-    skills-registry,exception-guidance,filescan,apply-suppressions,sync,history-sync,
-    content-retention,reconcile,scan-worker}.ts` and `src/remediation/*` from the Codex
+  firstrun-core,posture,calibration,onboard,query,dashboard,dashboard-launch,
+  skills-registry,exception-guidance,filescan,apply-suppressions,sync,history-sync,
+  content-retention,reconcile,scan-worker}.ts` and `src/remediation/*` from the Codex
       siblings, plus their suites.
 
 ### I. Fixtures and provenance

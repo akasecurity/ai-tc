@@ -2485,6 +2485,27 @@ newly written or newly touched** in a package carrying the helper — `cli/test/
 editing a file means its in-class assertions come along rather than being left beside converted
 ones.
 
+**The same rule holds in PRODUCT code, and one module is where it is enforced.**
+`packages/plugin-sdk/src/raw-egress.ts` is the boundary every raw value crosses on its way out
+of the triage path — its callers route a model's `reasoning` and `notes`, a downstream error
+message bound for the parent command's stderr, the serialized plan document, a masked context
+window and a file path through it. `assertRawFree` and `maskContextSlice` reject **run by run**
+against `RAW_RUN_LEN`, for the reason the paragraph above gives: `text.includes(raw)` matches
+only if the ENTIRE value survives, so a truncated echo passes it, and truncating is exactly what
+a model does to a long token it quotes back. A partial echo there does not merely print —
+`planTriageWriteback` writes `reasoning` into a suppression grant's `justification`, so it lands
+at rest. `RAW_RUN_LEN` is the same number the `no-echo` helpers use, but they sit across a
+package wall and are INDEPENDENT copies: neither pins the other, and each is held by its own
+suite. The product side's pin is DERIVED (it measures the shortest run the boundary really
+refuses, and carries a calibration case so a constant cannot stand in for a measurement), so it
+goes red on the first character of drift in either direction.
+
+`safeMaskedMatch` is the deliberate exception and must stay whole-value. It verifies a preview
+built to REVEAL a fragment on purpose, so a surviving run is the feature rather than the leak:
+`maskMatch`'s email branch discloses the whole domain, which is a run far past the window, and
+tightening it in step with its two siblings would collapse every email preview to `'***'`. The
+reason is stated at the function and pinned by a case that fails if somebody tightens it.
+
 **Older assertions are a backlog, not a clean tree.** `plugins/claude-code` still carries around
 twenty whole-value raw-value assertions in files this convention has not reached —
 `history/`, `journey/`, `remediation/`, `render.test.ts`, `triage/plan-file.test.ts`,

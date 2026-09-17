@@ -43,19 +43,30 @@ export function hookFailOpensPath(dataDir: string): string {
  * READ-MODIFY-WRITE with no lock, and that is a known imprecision rather than
  * an oversight: two hooks can fail open at once and lose an increment, exactly
  * as the forward drop tally can. The renderer says "at least" for that reason.
- * A lock would be the wrong trade on a path whose whole contract is that
- * nothing can delay or fail the exit.
+ * A lock would be the wrong trade on an exit path that must stay as short as
+ * possible and must never fail.
  *
  * NEVER THROWS. It is called from inside a fail-open catch, where a throw would
  * escape as an uncaught exception and turn a silent allow into a non-zero exit
  * — the one outcome that catch exists to prevent.
+ *
+ * SYNCHRONOUS, and nothing can interrupt it: each call is a short run of
+ * blocking filesystem work, and it creates the data dir when a machine has none
+ * yet, as the success path would have. A wedged home — a hard NFS mount, an
+ * unresponsive network drive — therefore stalls the exit until the host gives
+ * up. Where the host reads a silent or timed-out hook as "no opinion", that is
+ * a stall inside a catch whose scan was already skipped. Where the host reads
+ * silence or a timeout as a DENY, the same stall is a denial, so this must not
+ * sit unbounded on that host's exit path.
  */
 export function recordHookFailOpen(dataDir: string, nowMs: number): void {
   try {
     ensureDataDirSync(dataDir);
     const previous = readHookFailOpens(dataDir);
     const next: HookFailOpens = {
-      failOpens: (previous?.failOpens ?? 0) + 1,
+      // Saturates at the largest count the reader accepts: one past it would
+      // read back as nothing recorded and restart the tally from one.
+      failOpens: Math.min((previous?.failOpens ?? 0) + 1, Number.MAX_SAFE_INTEGER),
       lastAtMs: nowMs,
     };
     writeOwnerOnlyFileSync(hookFailOpensPath(dataDir), `${JSON.stringify(next)}\n`);
@@ -69,19 +80,24 @@ export function recordHookFailOpen(dataDir: string, nowMs: number): void {
  *
  * Validated rather than trusted: these values are rendered, and a hand-edited
  * or truncated file must read as "nothing recorded" rather than put an
- * arbitrary value into the status block. A corrupt tally restarts from one on
- * the next exit rather than refusing to count.
+ * arbitrary value into the status block — so both fields must be positive safe
+ * integers, which refuses a fraction, a count past 2^53 and a clock at or
+ * before the epoch as well as anything non-numeric. A corrupt tally restarts
+ * from one on the next exit rather than refusing to count.
  */
 export function readHookFailOpens(dataDir: string): HookFailOpens | null {
   try {
     const parsed: unknown = JSON.parse(readFileSync(hookFailOpensPath(dataDir), 'utf8'));
     if (typeof parsed !== 'object' || parsed === null) return null;
     const record = parsed as { failOpens?: unknown; lastAtMs?: unknown };
-    if (typeof record.failOpens !== 'number' || !Number.isFinite(record.failOpens)) return null;
-    if (record.failOpens <= 0) return null;
-    if (typeof record.lastAtMs !== 'number' || !Number.isFinite(record.lastAtMs)) return null;
+    if (!isPositiveSafeInteger(record.failOpens)) return null;
+    if (!isPositiveSafeInteger(record.lastAtMs)) return null;
     return { failOpens: record.failOpens, lastAtMs: record.lastAtMs };
   } catch {
     return null;
   }
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }

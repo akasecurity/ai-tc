@@ -479,8 +479,12 @@ properties are load-bearing:
   exemption is the BLAST RADIUS rather than the duration — nothing on the hook path
   reads that file, so a stale value costs a wrong line on `aka status` and
   /aka:health, pull surfaces somebody is reading because they are already debugging.
-  A fourth writer does not inherit that by being on this list, and a file any
-  enforcement path READS would not qualify for it at all. The first MINT
+  `plugin-sdk`'s `hook-fail-opens.ts` (`data/hook-fail-opens.json`) is a fourth, and it
+  holds the same exemption on its own account rather than by being listed here: it is
+  written only after a hook has already failed open, and nothing but `aka status` renders
+  it, as a count that already says "at least". A fifth writer does not inherit that by
+  being on this list, and a file any enforcement path READS would not qualify for it at
+  all. The first MINT
   is no longer one of them, and it was not fixed with a lock: `createKeyFile` publishes through
   `createOwnerOnlyFileSync`, which links an already-complete tmp into place, so exactly one
   caller wins and every loser reads the file back and ADOPTS the winner's key. That works only

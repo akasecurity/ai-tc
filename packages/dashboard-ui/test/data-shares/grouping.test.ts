@@ -55,7 +55,7 @@ describe('groupByProvider', () => {
           endpointCount: 3,
           callSiteCount: 7,
           transports: ['https', 'http'],
-          dataClasses: ['source', 'pii'],
+          dataClasses: ['pii', 'source'],
           lastSeen: '2026-07-05T00:00:00.000Z',
           insecure: true,
         },
@@ -86,6 +86,20 @@ describe('groupByProvider', () => {
     if (row?.type !== 'provider') throw new Error('expected a provider row');
     expect(row.group.transports).toEqual(['https', 'http']);
     expect(row.group.dataClasses).toEqual(['pii', 'source']);
+  });
+
+  it('orders the folded data classes most-sensitive first, whichever host contributes them', () => {
+    const first = destination({
+      id: 'first',
+      providerId: 'p',
+      dataClasses: ['customer', 'source', 'telemetry'],
+    });
+    const last = destination({ id: 'last', providerId: 'p', dataClasses: ['secrets'] });
+
+    const [row] = groupByProvider([first, last]);
+
+    if (row?.type !== 'provider') throw new Error('expected a provider row');
+    expect(row.group.dataClasses).toEqual(['secrets', 'customer', 'source', 'telemetry']);
   });
 
   it('leaves a lone provider host as a plain destination row', () => {

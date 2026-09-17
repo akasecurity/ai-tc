@@ -35,7 +35,7 @@ import {
 import type { PreToolUseOutput, ScannedField } from './pre-tool-use-decision.ts';
 import { decidePreToolUse } from './pre-tool-use-decision.ts';
 import { inputEventKind, inputFilePath, scannableInputFields } from './pre-tool-use-fields.ts';
-import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
+import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
 import {
   claimStoreUnavailableWarning,
   openGatewayOrNull,
@@ -345,6 +345,8 @@ function withProtocolNotes(
 try {
   await main();
 } catch {
-  // Fail-open: never break the user's session
+  // Fail-open: never break the user's session — but count the exit, so
+  // `aka status` can say the hooks have been failing open on this machine.
+  countFailOpen();
 }
 process.exit(0);

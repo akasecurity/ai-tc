@@ -1,6 +1,9 @@
+import type { ConnectionRefusal } from '@akasecurity/schema';
+import { connectionRefusalMessage } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
+  connectionRefusal,
   malformedInput,
   managedRefusal,
   SETTINGS_WRITE_ERROR,
@@ -51,6 +54,26 @@ describe('malformedInput', () => {
     for (const wrongType of [true, false]) {
       expectNoEchoOf(malformedInput({ field: 'vaultConsent', wrongType }), secretish);
     }
+  });
+});
+
+describe('connectionRefusal', () => {
+  // An attach or detach refused because an administrator holds the connection.
+  // The decision is worded once, for the terminal and this page alike.
+  it.each<ConnectionRefusal>([
+    { reason: 'held-standalone', organization: 'Example Org' },
+    { reason: 'pinned-endpoint', organization: 'Example Org', endpoint: 'https://pinned.example' },
+    { reason: 'pinned-label', organization: 'Example Org' },
+    { reason: 'held-attached', organization: 'Example Org', endpoint: 'https://pinned.example' },
+  ])('says what `aka attach` / `aka detach` say for %o', (refusal) => {
+    expect(connectionRefusal(refusal)).toBe(connectionRefusalMessage(refusal));
+  });
+
+  it('adds how to keep the name on this page, where an attach left it off', () => {
+    // The terminal names its flag for this; the page names its own field.
+    expect(connectionRefusal({ reason: 'label-required', organization: 'Example Org' })).toBe(
+      'Example Org manages this machine name, so it cannot be renamed here. Attach with the name it already has, as this page shows it.',
+    );
   });
 });
 

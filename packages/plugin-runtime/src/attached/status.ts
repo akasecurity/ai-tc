@@ -1,4 +1,5 @@
 import { readControlPlaneCredentialFile, readWorkspaceSettings } from '@akasecurity/persistence';
+import { readHookFailOpens } from '@akasecurity/plugin-sdk';
 import type { WorkspaceSettings } from '@akasecurity/schema';
 import {
   controlPlaneName,
@@ -8,10 +9,12 @@ import {
 } from '@akasecurity/schema';
 
 import { readForwardDrops } from './forward-drops.ts';
+import type { ForwardFailureReason } from './forward-policy.ts';
 import { readForwardHealth } from './forward-policy.ts';
 import { readHistorySyncState } from './history-state.ts';
 import { createPolicyStore } from './policy-store.ts';
 import type { PolicySyncOutcome } from './policy-sync.ts';
+import { readPostureReportState } from './posture-report-state.ts';
 import { readSyncState } from './sync-state.ts';
 
 /**
@@ -107,7 +110,11 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
     const nowMs = (deps.now ?? (() => Date.now()))();
     const settings = readWorkspaceSettings(deps.base);
     if (!isAttached(settings) || settings.controlPlane === undefined) {
-      return ['AKA: standalone (not attached)', '  no control plane configured'].join('\n');
+      return [
+        'AKA: standalone (not attached)',
+        '  no control plane configured',
+        ...failOpenLines(deps.dataDir, nowMs),
+      ].join('\n');
     }
     const connection = settings.controlPlane;
     // The WIDE read: this block prints `keyPrefix`, which the narrow state
@@ -155,7 +162,9 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
       ...lines,
       ...policyLines(deps.dataDir, nowMs),
       ...forwardLines(deps.dataDir, nowMs),
+      ...postureLines(deps.dataDir, nowMs),
       ...historyLines(deps.dataDir, settings, connection.endpoint, nowMs),
+      ...failOpenLines(deps.dataDir, nowMs),
     ].join('\n');
   } catch {
     // A status renderer that throws is worse than one that says little.
@@ -355,6 +364,84 @@ function forwardLines(dataDir: string, nowMs: number): string[] {
     lines.push(`             ${REFUSAL_LINES[lastFailure]}`);
   }
   return [...lines, ...drops];
+}
+
+/**
+ * Whether this device's hourly posture self-report is LANDING — the thing the
+ * control plane actually grades a device on, and until now the one send whose
+ * outcome nothing on the machine wrote down.
+ *
+ * The send goes through the forward breaker, so a refusal moves the breaker's
+ * file too — but that file is rewritten by every forward and cleared by the
+ * next success, so a posture send refused an hour ago is "disproved" by a tool
+ * call that landed a minute ago. The outcome is therefore recorded on its own
+ * and rendered with its own age. The age is the point: the plane grades on
+ * freshness, and a line that only said "reported" would read healthy on a
+ * machine whose last landed report is days old.
+ *
+ * Same remediation split as the sync and forward lines, and for the same
+ * reason: a 401 is fixed by `attach`, a 403 is not, and a wrong instruction is
+ * worse than none. The other five name what was observed and stop, because
+ * re-attaching fixes none of them. `rejected` is the deployment ANSWERING — a
+ * 4xx body refusal, this build's snapshot shape not being one it accepts — so
+ * it is not folded into `unreachable`; a 404 on the posture route carries no
+ * verdict and reads as `unreachable`. `route-absent` and `invalid-request` are
+ * named because the policy can return them, not because today's posture send
+ * raises either.
+ *
+ * An exhaustive Record, not a switch with a default: a reason added to the
+ * policy that this table does not name fails typecheck instead of rendering a
+ * line with a hole in it.
+ */
+const POSTURE_FAILURE_LINES: Record<ForwardFailureReason, string> = {
+  unauthorized: 'key rejected',
+  forbidden: 'access refused',
+  unreachable: 'control plane unreachable',
+  'breaker-open': 'skipped while the forward breaker was open',
+  'invalid-request': 'this build refused to send its own snapshot',
+  'route-absent': 'that deployment has no posture route',
+  rejected: 'that deployment refused this snapshot',
+};
+
+function postureLines(dataDir: string, nowMs: number): string[] {
+  const state = readPostureReportState(dataDir);
+  // No file is also what a freshly attached device looks like for its first
+  // session, and a device whose hourly attempt has not fired yet. Phrased as
+  // what is known, never as health.
+  if (!state) return ['  posture    no report recorded yet'];
+  const age = ageLine(state.atMs, nowMs);
+  if (state.outcome === 'ok') return [`  posture    reported (${age})`];
+  const lines = [
+    `  posture    NOT REPORTED — ${POSTURE_FAILURE_LINES[state.outcome]} (last tried ${age})`,
+  ];
+  if (state.outcome === 'unauthorized' || state.outcome === 'forbidden') {
+    lines.push(`             ${REFUSAL_LINES[state.outcome]}`);
+  }
+  return lines;
+}
+
+/**
+ * How often a hook has thrown and fallen open on this machine, if ever.
+ *
+ * A fail-open is silent by contract — no output, exit 0, the session never
+ * notices — so a machine whose hooks throw on every call reads exactly like
+ * one whose hooks run: nothing is scanned, nothing is forwarded, and every
+ * other line here describes a control plane that is simply not being asked.
+ * The count the catch writes is the one local trace. Rendered in the attached
+ * AND the standalone block, because the guarantee it describes holds on both,
+ * and read from the SDK's own file rather than plumbed a value, because the
+ * process that failed open exited long before anyone ran `aka status`.
+ *
+ * "at least", because concurrent hooks increment without a lock — the same
+ * floor the forward drop tally states.
+ */
+function failOpenLines(dataDir: string, nowMs: number): string[] {
+  const tally = readHookFailOpens(dataDir);
+  if (!tally) return [];
+  return [
+    `  hooks      failed open at least ${String(tally.failOpens)} time(s), ` +
+      `last ${ageLine(tally.lastAtMs, nowMs)}`,
+  ];
 }
 
 /**

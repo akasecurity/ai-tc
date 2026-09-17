@@ -22,7 +22,10 @@
 //     Claude Code and Codex send flat snake_case (`tool_name`, `tool_input`,
 //     `session_id`, `cwd`). `workspacePaths` is an ARRAY — there is no `cwd`.
 
-import { dataDir, recordHookFailOpen, resolveRepo } from '@akasecurity/plugin-sdk';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+import { resolveRepo } from '@akasecurity/plugin-sdk';
 import type { EventMetadata } from '@akasecurity/schema';
 
 // The host kills a hook that outruns its `timeout` (SIGTERM) and aborts the
@@ -35,6 +38,16 @@ const WATCHDOG_MS = 8_000;
 // body that resolves `undefined` (declining to decide) is never mistaken for
 // one that ran out of time.
 const WATCHDOG_FIRED: unique symbol = Symbol('watchdog fired');
+
+/**
+ * The built fail-open counting child's filename, resolved as a sibling of the
+ * running hook script.
+ *
+ * Exported so the spawn and the build check read one string. The published
+ * plugin ships `scripts/` only, so this resolves against the bundle rather than
+ * the source tree.
+ */
+export const FAIL_OPEN_COUNT_SCRIPT_NAME = 'fail-open-count.js';
 
 export async function readStdin(): Promise<string> {
   return new Promise<string>((resolve) => {
@@ -161,10 +174,14 @@ export function emit(output: unknown): Promise<void> {
  *
  * Two of those three are failures, and only those two are counted for
  * `aka status`: a body that threw or outran the watchdog. Declining to decide
- * is an ordinary answer and is not counted. The count is taken once per run,
- * after `emit` has settled and before `process.exit(0)`, so it never delays the
- * payload; it is a small synchronous write beside the store, not through it, so
- * no store lock can hold it.
+ * is an ordinary answer and is not counted. The count is asked for once per
+ * run, after `emit` has settled and before `process.exit(0)`, so it never
+ * delays the payload — and it is taken by a DETACHED CHILD, so the exit never
+ * waits on it either. The tally write is synchronous filesystem work nothing
+ * can interrupt; on a wedged home it would hold this process past the host's
+ * timeout, which is a deny. Neither a worker thread nor async `fs` would bound
+ * that, since exiting waits on both, so the write happens in a process this
+ * one does not wait for.
  *
  * THE BOUND IS WHAT YIELDS, and it is not a detail — a path it does not cover
  * is a denied tool call. The watchdog is a `setTimeout`, so it fires only when
@@ -191,7 +208,8 @@ export function emit(output: unknown): Promise<void> {
  * own argument — not a longer timer here.
  *
  * `watchdogMs` is a parameter so those timing properties can be driven in
- * milliseconds rather than seconds; every shipped hook takes the default.
+ * milliseconds rather than seconds, and `countFailOpen` so the counting can be
+ * observed without starting a process; every shipped hook takes both defaults.
  *
  * Never rejects, and never returns to its caller.
  */
@@ -199,6 +217,7 @@ export async function runHookFailOpen(
   main: () => Promise<unknown>,
   failOpen: unknown,
   watchdogMs: number = WATCHDOG_MS,
+  countFailOpen: () => void = spawnFailOpenCount,
 ): Promise<never> {
   let output: unknown = failOpen;
   let failed = false;
@@ -227,24 +246,47 @@ export async function runHookFailOpen(
   } catch {
     // stdout is gone; exiting 0 is all that is left to try.
   }
-  if (failed) countFailOpen();
+  if (failed) {
+    // Guarded here as well as inside the default: a throw at this point would
+    // skip the exit below and reject the entry's top-level await, which exits
+    // non-zero — a deny on this host.
+    try {
+      countFailOpen();
+    } catch {
+      // A fail-open that cannot be counted is still a fail-open.
+    }
+  }
   process.exit(0);
 }
 
-// Counts one fail-open exit, so `aka status` can say the hooks have been
-// failing open on this machine. Nothing here may throw: it runs between `emit`
-// and `process.exit(0)`, and a throw there would skip the exit and reject the
-// entry's top-level await — a non-zero exit, which this host reads as a deny.
-// `recordHookFailOpen` swallows every fs error by contract, but the home
-// directory is resolved before it is called — and `os.homedir()` throws when
-// the platform cannot name one — so the whole body is guarded here as well.
-// Resolved from the layout rather than from a config read, because a settings
-// read is one more thing that could be what threw.
-function countFailOpen(): void {
+/**
+ * Start the detached child that counts one fail-open exit, and return without
+ * waiting on it.
+ *
+ * `detached` + `unref()` is what lets the child outlive a hook that exits on
+ * the next line. The child resolves the home and writes the tally itself, so
+ * nothing that can stall runs in the hook process.
+ *
+ * NEVER THROWS. It runs between the payload and the exit.
+ */
+export function spawnFailOpenCount(
+  scriptUrl: URL = new URL(FAIL_OPEN_COUNT_SCRIPT_NAME, import.meta.url),
+): void {
   try {
-    recordHookFailOpen(dataDir(), Date.now());
+    const child = spawn(process.execPath, [fileURLToPath(scriptUrl)], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    // MANDATORY, not defensive. libuv reports some spawn failures (EAGAIN,
+    // EMFILE, EACCES, ENOENT) by emitting 'error' on a LATER tick rather than by
+    // throwing, and an unhandled 'error' on an EventEmitter is rethrown as an
+    // uncaughtException — a non-zero exit, and so a deny, if it lands first.
+    child.on('error', () => {
+      // Nothing to do about a count that could not be started.
+    });
+    child.unref();
   } catch {
-    // A fail-open exit that cannot even be located is still a fail-open exit.
+    // A count that cannot be started is a lost count, never a denied call.
   }
 }
 

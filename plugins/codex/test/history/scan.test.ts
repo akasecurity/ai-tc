@@ -161,6 +161,37 @@ describe('scanHistory', () => {
 });
 
 describe('buildTriageHit', () => {
+  // The fallback is the path a same-value second hit forces: masking leaves this
+  // hit's own match legible, the run check sees that value in `others`, and the
+  // throw is caught by redactOverlapping. Under it, a neighbour the window cut in
+  // half is covered ONLY by the spans the guarded pass already clipped — so a
+  // fallback that restarts from `rawContext` and splits on whole values hands the
+  // clipped run straight to the judge payload. Revert that line to
+  // `let safe = rawContext;` and this case, alone in test/history/, goes red.
+  it('keeps a clipped neighbour redacted when the blunt fallback runs', () => {
+    const A = 'Qz7Lm2Xv9Kp4Hn8Rt3Wd6Yb1Fc5Gj0S';
+    const B = 'Wk4Pq8Zn2Vb6Hm3Xr9Ts5Ld7Gc1Fj0A';
+    const finding = (raw: string, start: number) => ({
+      ruleId: 'probe/rule',
+      category: 'secret' as const,
+      severity: 'high' as const,
+      rawMatch: raw,
+      span: { start, end: start + raw.length },
+      confidence: 1,
+    });
+    const pad = ' '.repeat(103);
+    const text = `${B}${pad} ${A} ${A}`;
+    const aStart = B.length + pad.length + 1; // the window opens inside B, clipping it
+    const fragment = B.slice(aStart - 120);
+    const hit = buildTriageHit(text, finding(A, aStart), [
+      finding(A, aStart + A.length + 1),
+      finding(B, 0),
+    ]);
+    expect(hit.context).not.toContain(A); // positive control: the fallback ran
+    expect(hit.context).toContain('[REDACTED]');
+    expect(hit.context).not.toContain(fragment); // the claim under test
+  });
+
   it('slices the correct context window and carries safeMaskedMatch(rawMatch) as maskedMatch', () => {
     const text = `padding before the leak ${BACKFILL_SECRET} padding after the leak`;
     const start = text.indexOf(BACKFILL_SECRET);

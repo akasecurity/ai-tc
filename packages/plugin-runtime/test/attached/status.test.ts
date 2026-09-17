@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   applyOnboarding,
+  clearAttachmentDerivedState,
   controlPlaneCredentialPath,
   dataDir as dataDirOf,
   settingsDir as settingsDirOf,
@@ -16,6 +17,7 @@ import { recordForwardDrops } from '../../src/attached/forward-drops.ts';
 import { createPolicyStore } from '../../src/attached/policy-store.ts';
 import {
   postureReportStatePath,
+  readPostureReportState,
   writePostureReportState,
 } from '../../src/attached/posture-report-state.ts';
 import { renderAttachedStatus, renderPolicyLine } from '../../src/attached/status.ts';
@@ -393,6 +395,22 @@ describe('renderAttachedStatus — the posture half', () => {
     attach();
     const out = renderAttachedStatus({ base: root, settingsDir, dataDir });
     expect(out).toContain('posture    no report recorded yet');
+  });
+
+  it('is cleared on detach, so a re-attach does not open on a stale refusal', () => {
+    // Both detach surfaces clear the attachment's derived files through
+    // clearAttachmentDerivedState. The recorded outcome describes a deployment
+    // the machine has left, so it has to be on that list: left behind, a later
+    // re-attach would open with the old NOT REPORTED line.
+    attach();
+    writePostureReportState(dataDir, { outcome: 'unauthorized', atMs: 1_000_000 - 60_000 });
+    // The positive control: the record is there before the clear.
+    expect(readPostureReportState(dataDir)).not.toBeNull();
+    clearAttachmentDerivedState(dataDir);
+    expect(readPostureReportState(dataDir)).toBeNull();
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
+    expect(out).toContain('posture    no report recorded yet');
+    expect(out).not.toContain('NOT REPORTED');
   });
 
   it('reports a landed send with its AGE — freshness is what the plane grades on', () => {

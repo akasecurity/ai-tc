@@ -352,7 +352,7 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
       the comment there that says the package has no timeout overrides.
 - [x] A4. Add `'@akasecurity/ai-tc-copilot': { testTimeout: 20_000, hookTimeout: 20_000 }`
       to `TIMEOUTS` in `packages/eslint-config/test/hook-timeout-ratchet.test.js`.
-- [ ] A5. Copy `src/build-info.ts` with the manifest read moved from `argv[2]` to
+- [x] A5. Copy `src/build-info.ts` with the manifest read moved from `argv[2]` to
       **`argv[3]`**; add `test/build-info.test.ts` pinning that offset explicitly.
 - [ ] A6. Write `plugin.json` and `hooks.json` (one entry per event, event name as a literal
       argv token, `timeoutSec: 30`). Add a test asserting every command in `hooks.json`

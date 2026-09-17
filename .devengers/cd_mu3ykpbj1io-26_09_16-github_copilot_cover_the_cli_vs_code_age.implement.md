@@ -231,3 +231,37 @@ says so in its own section and the guard suite asserts that sentence is still th
 honest reading: these fixtures and that table agree, their agreement is evidence of nothing,
 and what they buy is a fixed point — a change to either now has to move the other. Anyone
 re-deriving the table should re-derive it from a live recording, not from these files.
+
+### A5 — `build-info.ts` at argv offset 3
+
+One deviation from the plan's wording, and it is a correction rather than a shortcut. A5
+says to copy `src/build-info.ts` "with the manifest read moved from `argv[2]` to `argv[3]`".
+The sibling `build-info.ts` reads **no argv at all** — it resolves a relative manifest URL —
+and the argv read the plan means lives in `session-start.ts`'s local `harnessVersion()`.
+Copying the sibling verbatim would therefore have produced a file with no offset in it to
+move.
+
+So the argv reader is written here, as `harnessVersionFromArgv(argv = process.argv)`,
+which is where the plan wants it and where it is testable without a hook process.
+`session-start.ts` will call it when section E lands.
+
+- `MANIFEST_URL` is `'../plugin.json'` with no dotted directory segment: Copilot reads a
+  FLAT root manifest like Antigravity, unlike Claude Code's `.claude-plugin/` and Codex's
+  `.codex-plugin/`. One relative path resolves it from both layouts (`scripts/<entry>.js`
+  installed, `src/` in the repo).
+- The path is turned into a URL with `pathToFileURL`, not a `file://` template. The
+  template mangles a path carrying a space and produces an invalid URL for a Windows drive
+  letter, and both land in `readManifestBuild`'s best-effort catch as a silently missing
+  version.
+- `PLUGIN_PACKAGE` is re-exported from `src/identity.ts` rather than respelled, so the
+  package name has one definition. `identity.ts`'s comment now says why the module exists
+  (`package-walls.test.js` pins that path as this package's import probe) instead of calling
+  itself a placeholder, which it no longer is.
+
+`test/build-info.test.ts` pins the offset with a discriminating case: a manifest path at
+`argv[2]` must answer `undefined`. Every other case in the file would pass a reader that
+looked at both slots. Each case writes its manifest to a temp directory of its own, because
+`readManifestBuild` memoises per URL **including misses** — a shared path would have the
+second case reading the first one's answer.
+
+Verified: `plugins/copilot` 107/107 across 10 files, lint and typecheck clean.

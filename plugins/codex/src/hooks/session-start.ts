@@ -33,7 +33,7 @@ import { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { peekSessionOriginator } from '../history/transcripts.ts';
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { standingBrief } from '../protocol/notes.ts';
-import { emit, getString, parseJson, readStdin } from './shared.ts';
+import { countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 
 // The plugin's own version, read from the manifest the hook command passes as
@@ -136,6 +136,8 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch {
-  // Fail-open: never break the user's session
+  // Fail-open: never break the user's session — but count the exit, so
+  // `aka status` can say the hooks have been failing open on this machine.
+  countFailOpen();
 }
 process.exit(0);

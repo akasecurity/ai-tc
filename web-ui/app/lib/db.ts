@@ -1,6 +1,11 @@
 import 'server-only';
 
-import { dataDir, type LocalDatabase, openLocalDatabase } from '@akasecurity/persistence';
+import {
+  dataDir,
+  type LocalDatabase,
+  openLocalDatabase,
+  StoreAheadOfBuildError,
+} from '@akasecurity/persistence';
 
 // The local store the plugin/CLI write — ~/.aka/data/aka.db, resolved by the
 // shared ~/.aka layout module in @akasecurity/persistence (the same one the plugin SDK
@@ -24,6 +29,51 @@ export function db(): LocalDatabase {
   database.purgeSampleData();
   store.__akaDb = database;
   return database;
+}
+
+/**
+ * What a reader may be told about a store written by a NEWER AKA build.
+ *
+ * EVERY FIELD IS SCHEMA-DERIVED, and that is the whole point of the shape. A
+ * store-open failure arrives as an Error whose message can quote the statement
+ * that failed, and these pages read a store holding scanned content — which is
+ * why `app/(app)/error.tsx` renders the digest and never `error.message`. A
+ * migration tag and two ledger counts come from this build's own source and the
+ * store's `migration_ledger`; none of them can carry a captured value. So this
+ * is the only part of such a failure that may reach a page.
+ */
+export interface StoreVersionSkew {
+  readonly unknownTags: readonly string[];
+  readonly storeVersion: number;
+  readonly buildVersion: number;
+}
+
+/**
+ * Is the store this dashboard reads newer than this dashboard?
+ *
+ * The dashboard is the one surface where the store-open failure cannot speak
+ * for itself. A hook writes to a terminal and the CLI prints `err.message`, but
+ * a throw inside a Server Component renders the error boundary — which shows a
+ * digest by design, and which in production receives a redacted message anyway.
+ * A user whose dashboard is a stale binary would see "Something went wrong" and
+ * an opaque digest, with nothing to act on and no hint that the store is fine.
+ *
+ * Returns `null` for a healthy store AND for every failure that is not skew, so
+ * an unreadable store still reaches the ordinary boundary: this narrows what is
+ * reported, it does not become a catch-all that swallows real faults.
+ */
+export function storeVersionSkew(): StoreVersionSkew | null {
+  try {
+    db();
+    return null;
+  } catch (err) {
+    if (!(err instanceof StoreAheadOfBuildError)) return null;
+    return {
+      unknownTags: [...err.unknownTags],
+      storeVersion: err.storeVersion,
+      buildVersion: err.buildVersion,
+    };
+  }
 }
 
 /**

@@ -68,6 +68,10 @@ export default defineConfig({
     // triggerHistorySync resolves it from.
     'history-sync': 'src/history-sync.ts',
     'content-retention': 'src/content-retention.ts',
+    // The detached fail-open counting child, started by runHookFailOpen once a
+    // hook has written its fail-open payload. Lands flat in scripts/ beside the
+    // hooks, because that is where the wrapper resolves it from.
+    'fail-open-count': 'src/fail-open-count.ts',
     // Read surface (aka:health · aka:findings · aka:recommend · aka:audit) + onboarding (aka:setup)
     query: 'src/query.ts',
     // aka:dashboard — launches the web dashboard via the `aka` CLI

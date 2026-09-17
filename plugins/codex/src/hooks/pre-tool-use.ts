@@ -32,8 +32,8 @@ import {
 import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
 import {
   claimStoreUnavailableWarning,
-  openGatewayOrNull,
-  storeUnavailableMessage,
+  openGateway,
+  storeDegradedMessage,
   warnIfStoreRedirected,
 } from './store-health.ts';
 
@@ -65,13 +65,14 @@ async function main(): Promise<void> {
   // A symlinked store path redirects the corpus without failing anything;
   // say so once per session (stderr, so the stdout contract is untouched).
   warnIfStoreRedirected(config, getString(input, 'session_id'));
-  const gateway = openGatewayOrNull(config);
-  if (gateway === null) {
+  const opened = openGateway(config);
+  if (opened.gateway === null) {
     if (claimStoreUnavailableWarning(config.dataDir, getString(input, 'session_id'))) {
-      await emit({ systemMessage: storeUnavailableMessage(config.dbPath) });
+      await emit({ systemMessage: storeDegradedMessage(config.dbPath, opened.error) });
     }
     return;
   }
+  const gateway = opened.gateway;
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
 
   const toolInput = { ...(rawToolInput as Record<string, unknown>) };

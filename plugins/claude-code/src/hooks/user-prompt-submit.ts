@@ -48,8 +48,8 @@ import { ONBOARDING_NUDGE } from './onboarding-nudge.ts';
 import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
 import {
   claimStoreUnavailableWarning,
-  openGatewayOrNull,
-  storeUnavailableMessage,
+  openGateway,
+  storeDegradedMessage,
   warnIfStoreRedirected,
 } from './store-health.ts';
 import { decideUserPromptSubmit } from './user-prompt-submit-decision.ts';
@@ -72,13 +72,14 @@ async function main(): Promise<void> {
   // failure is observable: still allow — fail-open — but tell the user once
   // per session that nothing is being scanned, instead of staying silent (or
   // worse, nudging "AKA is active and monitoring" below).
-  const gateway = openGatewayOrNull(config);
-  if (gateway === null) {
+  const opened = openGateway(config);
+  if (opened.gateway === null) {
     if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
-      await emit({ systemMessage: storeUnavailableMessage(config.dbPath) });
+      await emit({ systemMessage: storeDegradedMessage(config.dbPath, opened.error) });
     }
     return;
   }
+  const gateway = opened.gateway;
   // PROHIBITED-MODEL CONTAINMENT, ahead of the scan on purpose. It is the
   // cheaper verdict (two small local reads against a detection pass over the
   // whole prompt) and the stronger one: if this turn cannot run at all, what the

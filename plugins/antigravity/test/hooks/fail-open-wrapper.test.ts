@@ -11,8 +11,10 @@
 //
 // `runHookFailOpen` ends in `process.exit(0)`, so both process-level seams are
 // stubbed: `exit` (which would otherwise kill the vitest worker) and
-// `stdout.write` (the channel under assertion). Nothing else is faked — the
-// real `emit`, the real race, and the real watchdog all run.
+// `stdout.write` (the channel under assertion). `os.homedir()` is pointed at a
+// throwaway home per case, so the fail-open count the wrapper writes lands
+// there and never in the real one. Nothing else is faked — the real `emit`,
+// the real race, the real watchdog and the real count all run.
 //
 // One consequence is worth stating because it cost a hole once. `driveWrapper`
 // invokes the write callback IMMEDIATELY, which collapses "handed to the
@@ -20,17 +22,48 @@
 // see whether `emit` awaits the flush, and a version that did not would pass
 // every one of them. The `emit` describe block near the bottom withholds that
 // callback instead, and is the only thing here covering that property.
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import type * as NodeOs from 'node:os';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import type { HookFailOpens } from '@akasecurity/plugin-sdk';
+import { readHookFailOpens } from '@akasecurity/plugin-sdk';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { emit, runHookFailOpen } from '../../src/hooks/shared.ts';
 
+// The wrapper resolves the home it counts under through `os.homedir()`, as a
+// shipped hook does. Each case sets `dir` to a throwaway home, and a lookup with
+// none set throws rather than falling through to the real home. `refuse` makes
+// the lookup throw on purpose: `os.homedir()` does that when the platform cannot
+// name a home, and it is asked before the tally's own guard runs.
+const osHome = vi.hoisted(() => ({ dir: '', refuse: false }));
+vi.mock('node:os', async (importActual) => {
+  const actual = await importActual<typeof NodeOs>();
+  return {
+    ...actual,
+    homedir: () => {
+      if (osHome.refuse || osHome.dir === '') throw new Error('no home directory');
+      return osHome.dir;
+    },
+  };
+});
+
 const ALLOW = { decision: 'allow' } as const;
+
+/** The fail-open count this case's home holds, read from the path by hand. */
+function failOpenTally(): HookFailOpens | null {
+  return readHookFailOpens(join(osHome.dir, '.aka', 'data'));
+}
 
 interface WrapperRun {
   /** Every chunk handed to stdout, in order. */
   writes: string[];
   /** Exit codes passed to `process.exit`, in order. */
   exits: (number | undefined)[];
+  /** The fail-open count on disk at the moment of each write, 0 for none. */
+  countedAtWrite: number[];
 }
 
 /**
@@ -52,6 +85,7 @@ async function driveWrapper(
 ): Promise<WrapperRun> {
   const writes: string[] = [];
   const exits: (number | undefined)[] = [];
+  const countedAtWrite: number[] = [];
 
   // `process.exit` is declared to return `never`, which no stub can satisfy —
   // the cast is to a concrete signature rather than to `any`, so the argument
@@ -69,6 +103,7 @@ async function driveWrapper(
     .spyOn(process.stdout, 'write')
     .mockImplementation((chunk: string | Uint8Array, cb?: unknown): boolean => {
       writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString());
+      countedAtWrite.push(failOpenTally()?.failOpens ?? 0);
       if (typeof cb === 'function') (cb as () => void)();
       return true;
     });
@@ -80,7 +115,7 @@ async function driveWrapper(
     writeSpy.mockRestore();
     exitSpy.mockRestore();
   }
-  return { writes, exits };
+  return { writes, exits, countedAtWrite };
 }
 
 /**
@@ -96,8 +131,15 @@ function soleDecision(run: WrapperRun): unknown {
   return JSON.parse(run.writes[0] ?? '') as unknown;
 }
 
+beforeEach(() => {
+  osHome.dir = mkdtempSync(join(tmpdir(), 'aka-agy-fail-open-wrapper-'));
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
+  rmSync(osHome.dir, { recursive: true, force: true });
+  osHome.dir = '';
+  osHome.refuse = false;
 });
 
 describe('runHookFailOpen — every path produces bytes, because silence is a deny here', () => {
@@ -189,6 +231,89 @@ describe('runHookFailOpen — every path produces bytes, because silence is a de
     } finally {
       process.off('unhandledRejection', onUnhandled);
     }
+  });
+});
+
+describe('runHookFailOpen — counts a failed body once, after its payload', () => {
+  // `aka status` renders this count, so it has to mean a body that FAILED — one
+  // that threw or outran the watchdog — and nothing else. The payload comes
+  // first: the count is written only once the allow has been handed over, so
+  // counting cannot delay it. And the count cannot throw: anything thrown after
+  // `emit` would skip `process.exit(0)` and reject the entry's top-level await,
+  // which exits non-zero, and non-zero is a deny on this host.
+
+  it('counts a body that throws, after its payload is written', async () => {
+    const before = Date.now();
+    const run = await driveWrapper(() => Promise.reject(new Error('boom')), ALLOW);
+    const after = Date.now();
+
+    expect(soleDecision(run)).toEqual(ALLOW);
+    // Nothing was on disk when the payload went out; the count landed after.
+    expect(run.countedAtWrite).toEqual([0]);
+    const tally = failOpenTally();
+    expect(tally?.failOpens).toBe(1);
+    expect(tally?.lastAtMs).toBeGreaterThanOrEqual(before);
+    expect(tally?.lastAtMs).toBeLessThanOrEqual(after);
+  });
+
+  it('counts a body that throws synchronously', async () => {
+    const run = await driveWrapper(() => {
+      throw new Error('sync boom');
+    }, ALLOW);
+    expect(soleDecision(run)).toEqual(ALLOW);
+    expect(failOpenTally()?.failOpens).toBe(1);
+  });
+
+  it('counts a body that outruns the watchdog, after its payload is written', async () => {
+    const run = await driveWrapper(() => new Promise<never>(() => undefined), ALLOW, 5);
+    expect(soleDecision(run)).toEqual(ALLOW);
+    expect(run.countedAtWrite).toEqual([0]);
+    expect(failOpenTally()?.failOpens).toBe(1);
+  });
+
+  it('counts once when the body rejects after losing to the watchdog', async () => {
+    // The run was counted when the watchdog won. The late rejection is the same
+    // failure arriving a second time, and counting it too would count every
+    // hook that hangs and then errors twice.
+    let fail!: (e: Error) => void;
+    const pending = new Promise<never>((_resolve, reject) => {
+      fail = reject;
+    });
+    const run = await driveWrapper(
+      () => pending,
+      ALLOW,
+      5,
+      async () => {
+        fail(new Error('late boom'));
+        await pending.catch(() => undefined);
+        await new Promise((r) => setImmediate(r));
+      },
+    );
+    expect(soleDecision(run)).toEqual(ALLOW);
+    expect(failOpenTally()?.failOpens).toBe(1);
+  });
+
+  it('does not count a body that returns its own decision', async () => {
+    // A negative control: a wrapper that counted every run would satisfy each
+    // counting case above.
+    const deny = { decision: 'deny', reason: 'pointer' };
+    const run = await driveWrapper(() => Promise.resolve(deny), ALLOW);
+    expect(soleDecision(run)).toEqual(deny);
+    expect(failOpenTally()).toBeNull();
+  });
+
+  it('does not count a body that declines to decide', async () => {
+    // Declining is an ordinary answer — the event's own "carry on" — not a
+    // failure, even though it writes the same payload a failure does.
+    const run = await driveWrapper(() => Promise.resolve(undefined), ALLOW);
+    expect(soleDecision(run)).toEqual(ALLOW);
+    expect(failOpenTally()).toBeNull();
+  });
+
+  it('still writes one payload and exits 0 when the home directory cannot be resolved', async () => {
+    osHome.refuse = true;
+    const run = await driveWrapper(() => Promise.reject(new Error('boom')), ALLOW);
+    expect(soleDecision(run)).toEqual(ALLOW);
   });
 });
 

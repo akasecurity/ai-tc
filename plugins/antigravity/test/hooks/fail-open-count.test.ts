@@ -5,8 +5,9 @@
 // Two properties are pinned. The spawn returns without waiting on its child:
 // the hook exits right after it, and on this host a hook still running at its
 // timeout is a deny, so a count that stalls must stall the child and never the
-// hook. And the spawn never throws, since it runs between the payload and the
-// exit.
+// hook. And a spawn that fails costs nothing, whether the failure is thrown
+// from the call or reported on a later tick, since it runs between the payload
+// and the exit.
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -58,5 +59,34 @@ describe('spawnFailOpenCount', () => {
     expect(() => {
       spawnFailOpenCount(pathToFileURL(join(dir, `fail-open-count${nul}.js`)));
     }).not.toThrow();
+  });
+
+  it('swallows a spawn failure reported on a later tick', async () => {
+    // Some spawn failures (ENOENT, EACCES, EAGAIN, EMFILE) are not thrown:
+    // `spawn` returns, and the child emits 'error' a tick later. Unheard, that
+    // event is rethrown as an uncaught exception — a non-zero exit, and so a
+    // deny, for a hook about to exit 0. A missing SCRIPT cannot reach it, since
+    // node itself starts and only the child fails, so the executable is what
+    // goes missing here. Without the `error` listener this case fails on the
+    // uncaught event, and so does the run.
+    const seen: unknown[] = [];
+    const onUncaught = (error: unknown): void => {
+      seen.push(error);
+    };
+    process.on('uncaughtException', onUncaught);
+    try {
+      const realExecPath = process.execPath;
+      process.execPath = join(dir, 'missing-node-binary');
+      try {
+        spawnFailOpenCount(pathToFileURL(join(dir, 'never-started.mjs')));
+      } finally {
+        process.execPath = realExecPath;
+      }
+      // The failure arrives after the call has returned, so give it that turn.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(seen).toEqual([]);
+    } finally {
+      process.off('uncaughtException', onUncaught);
+    }
   });
 });

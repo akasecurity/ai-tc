@@ -52,6 +52,7 @@ const PORT_METHODS = [
   'tokenReports',
   'knownContentHashes',
   'scanLedger',
+  'scanLedgerPaths',
   'recordScanned',
   'getRuleProbeVerdict',
   'setRuleProbeVerdict',
@@ -116,6 +117,7 @@ function makeLocal(
       if (name === 'ensureInventory') return Promise.resolve({});
       if (name === 'knownContentHashes') return Promise.resolve(new Set<string>());
       if (name === 'scanLedger') return Promise.resolve(new Map());
+      if (name === 'scanLedgerPaths') return Promise.resolve([]);
       if (name === 'getPolicyBundle')
         return Promise.resolve({
           version: 'local',

@@ -518,6 +518,27 @@ describe('StandaloneDataGateway — scan ledger', () => {
     expect((await gw.scanLedger('rs2')).size).toBe(0);
     await gw.close();
   });
+
+  it('lists ledgered paths regardless of ruleset hash', async () => {
+    const gw = new StandaloneDataGateway(dir);
+    await gw.recordScanned([
+      {
+        path: '/repo/a.ts',
+        mtime: '2026-07-02T10:00:00.000Z',
+        contentHash: 'h1',
+        rulesetHash: 'rs1',
+      },
+      {
+        path: '/repo/b.ts',
+        mtime: '2026-07-02T10:00:00.000Z',
+        contentHash: 'h2',
+        rulesetHash: 'rs2',
+      },
+    ]);
+
+    expect((await gw.scanLedgerPaths()).sort()).toEqual(['/repo/a.ts', '/repo/b.ts']);
+    await gw.close();
+  });
 });
 
 describe('rule probe verdict', () => {

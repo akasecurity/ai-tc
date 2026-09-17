@@ -105,6 +105,7 @@ function makeLocalStore(opts: {
     tokenReports: () => Promise.resolve([]),
     knownContentHashes: () => Promise.resolve(new Set<string>()),
     scanLedger: () => Promise.resolve(new Map()),
+    scanLedgerPaths: () => Promise.resolve([]),
     recordScanned: () => Promise.resolve(),
     getRuleProbeVerdict: () => Promise.resolve(undefined),
     setRuleProbeVerdict: () => Promise.resolve(),

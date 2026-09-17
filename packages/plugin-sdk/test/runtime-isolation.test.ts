@@ -248,6 +248,7 @@ function fakeGateway(b: PolicyBundle, verdicts = new Map<string, RuleProbeVerdic
     tokenReports: () => Promise.resolve([]),
     knownContentHashes: () => Promise.resolve(new Set<string>()),
     scanLedger: () => Promise.resolve(new Map()),
+    scanLedgerPaths: () => Promise.resolve([]),
     recordScanned: () => Promise.resolve(),
     getRuleProbeVerdict: (key: string) => Promise.resolve(verdicts.get(key)),
     setRuleProbeVerdict: (key: string, verdict: RuleProbeVerdict, worstProbeMs: number) => {

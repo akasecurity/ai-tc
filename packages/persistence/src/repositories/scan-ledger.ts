@@ -24,12 +24,14 @@ export interface ScanLedgerState {
  * worktree scanner has processed — including clean ones, which never become
  * events — so a re-run skips unchanged files instead of re-reading the whole
  * tree. One row per path (latest scan wins); rows written under a different
- * ruleset are excluded from reads, so adding a detection rule rescans
- * everything. Every query reads the whole store — no row carries an owner column to scope by.
+ * ruleset are excluded from `entriesForRuleset`, so adding a detection rule
+ * rescans everything, while `allPaths` still lists them for the deletion
+ * sweep. Every query reads the whole store — no row carries an owner column to scope by.
  */
 export class SqliteScanLedgerRepository {
   private readonly upsertStmt: StatementSync;
   private readonly readStmt: StatementSync;
+  private readonly pathsStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
     this.upsertStmt = db.prepare(
@@ -45,6 +47,7 @@ export class SqliteScanLedgerRepository {
       `SELECT path, mtime, content_hash AS contentHash
        FROM scan_ledger WHERE ruleset_hash = :rulesetHash`,
     );
+    this.pathsStmt = db.prepare(`SELECT path FROM scan_ledger`);
   }
 
   // Previously scanned files under THIS ruleset, keyed by path. Rows from an
@@ -54,6 +57,14 @@ export class SqliteScanLedgerRepository {
       rulesetHash,
     });
     return new Map(rows.map((r) => [r.path, { mtime: r.mtime, contentHash: r.contentHash }]));
+  }
+
+  // Every ledgered path, whatever ruleset it was scanned under — the set a
+  // deletion sweep checks against disk. A file deleted before a ruleset change
+  // keeps a row under the old hash forever, so reading only the current hash
+  // would never notice it is gone.
+  allPaths(): string[] {
+    return allRows<{ path: string }>(this.pathsStmt).map((r) => r.path);
   }
 
   upsertEntries(entries: ScanLedgerEntry[]): void {

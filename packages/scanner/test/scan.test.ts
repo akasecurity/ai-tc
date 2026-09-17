@@ -15,6 +15,7 @@ const {
   rulesetFingerprint,
   scanIsolationDegraded,
   scanLedger,
+  scanLedgerPaths,
   recordScanned,
   openAtRestKeysForPath,
   resolvedAtRestKeysForPath,
@@ -27,6 +28,7 @@ const {
   rulesetFingerprint: vi.fn(),
   scanIsolationDegraded: vi.fn(() => false),
   scanLedger: vi.fn(),
+  scanLedgerPaths: vi.fn(),
   recordScanned: vi.fn(),
   openAtRestKeysForPath: vi.fn(),
   resolvedAtRestKeysForPath: vi.fn(),
@@ -38,6 +40,7 @@ vi.mock('@akasecurity/plugin-runtime', () => ({
   resolveDataGateway: vi.fn(() => ({
     knownContentHashes,
     scanLedger,
+    scanLedgerPaths,
     recordScanned,
     openAtRestKeysForPath,
     resolvedAtRestKeysForPath,
@@ -92,6 +95,7 @@ beforeEach(() => {
   // The healthy default: isolation intact, so the ledger advances as usual.
   scanIsolationDegraded.mockReturnValue(false);
   scanLedger.mockResolvedValue(new Map());
+  scanLedgerPaths.mockResolvedValue([]);
   recordScanned.mockResolvedValue(undefined);
   recordProjectEgress.mockResolvedValue({
     destinations: 0,
@@ -346,6 +350,7 @@ describe('scanWorktree — re-scan resolver', () => {
     scanLedger.mockResolvedValue(
       new Map([[gonePath, { mtime: '2020-01-01T00:00:00.000Z', contentHash: 'deadbeef' }]]),
     );
+    scanLedgerPaths.mockResolvedValue([gonePath]);
     openAtRestKeysForPath.mockImplementation((path: string) =>
       Promise.resolve(path === gonePath ? ['key-b'] : []),
     );
@@ -362,6 +367,22 @@ describe('scanWorktree — re-scan resolver', () => {
     });
     const evidence = JSON.parse(call?.evidence ?? '{}') as { deleted?: boolean };
     expect(evidence).toEqual({ deleted: true });
+  });
+
+  it("resolves a deleted file's prior finding even when its ledger row predates the current ruleset", async () => {
+    const gonePath = join(tmp, 'src/gone.ts');
+    // The current ruleset has no row for the file; only the path read does.
+    scanLedger.mockResolvedValue(new Map());
+    scanLedgerPaths.mockResolvedValue([gonePath]);
+    openAtRestKeysForPath.mockImplementation((path: string) =>
+      Promise.resolve(path === gonePath ? ['key-old'] : []),
+    );
+
+    await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+
+    expect(insertedResolutions()).toEqual([
+      expect.objectContaining({ findingKey: 'key-old', status: 'resolved' }),
+    ]);
   });
 
   it('rotation: resolves the old key and never resolves the newly opened key', async () => {

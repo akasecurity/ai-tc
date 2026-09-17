@@ -79,9 +79,11 @@ export interface MultiRepoScanSummary {
 }
 
 // The previously scanned state loaded once per scan (already filtered to the
-// current ruleset by the gateway) plus the fingerprint new entries record under.
+// current ruleset by the gateway), every ledgered path whatever its ruleset
+// (what the deletion sweep checks), and the fingerprint new entries record under.
 interface LedgerContext {
   previous: Map<string, ScanLedgerState>;
+  paths: string[];
   rulesetHash: string;
 }
 
@@ -101,7 +103,11 @@ async function loadLedger(
   const rulesetHash = contentHashOf(
     `${await runtime.rulesetFingerprint()}:${contentHashOf(egressMaterial)}`,
   );
-  return { previous: await gateway.scanLedger(rulesetHash), rulesetHash };
+  return {
+    previous: await gateway.scanLedger(rulesetHash),
+    paths: await gateway.scanLedgerPaths(),
+    rulesetHash,
+  };
 }
 
 // The project identity every recorded egress row is keyed and relativized on.
@@ -262,8 +268,8 @@ async function reopenRedetectedFindings(
 }
 
 // True when `path` (absolute) sits under `rootDir` — scopes the deletion sweep
-// to the repo currently being scanned, since `ledger.previous` (loaded once)
-// may span every repo in a --discover sweep.
+// to the repo currently being scanned, since `ledger.paths` (loaded once) may
+// span every repo in a --discover sweep.
 function isUnderRoot(path: string, rootDir: string): boolean {
   const rel = relative(rootDir, path);
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
@@ -271,15 +277,17 @@ function isUnderRoot(path: string, rootDir: string): boolean {
 
 // Deleted files never appear in the walk (it only yields files that exist), so
 // they need their own sweep: any path this repo previously ledgered that no
-// longer exists on disk is resolved with an empty current-keys set. Returns the
+// longer exists on disk is resolved with an empty current-keys set. The sweep
+// reads every ledgered path, not only the current ruleset's: a file deleted
+// just before a ruleset change keeps its row under the old hash. Returns the
 // absolute paths it swept, so the egress write can clear their stored rows too.
 async function sweepDeletedFiles(
   gateway: DataGateway,
   rootDir: string,
-  previous: Map<string, ScanLedgerState>,
+  paths: string[],
 ): Promise<string[]> {
   const deleted: string[] = [];
-  for (const path of previous.keys()) {
+  for (const path of paths) {
     if (!isUnderRoot(path, rootDir) || existsSync(path)) continue;
     deleted.push(path);
     await resolveRemovedFindings(gateway, path, [], { deleted: true });
@@ -416,7 +424,7 @@ async function scanDir(
   // and never go through capture — they are egress evidence, not code to scan.
   if (egress) scanManifests(egress, ledger, updates, rootDir);
 
-  const deleted = await sweepDeletedFiles(gateway, rootDir, ledger.previous);
+  const deleted = await sweepDeletedFiles(gateway, rootDir, ledger.paths);
   if (egress) {
     for (const path of deleted) {
       const key = egressKey(egress.project.root, path);

@@ -405,6 +405,26 @@ describe('DataSharesTableView', () => {
       expect(html).not.toContain('2 hosts');
     });
 
+    it('keeps the most sensitive data class visible on a collapsed provider row', () => {
+      const folded = group({
+        items: [
+          destination({
+            id: 'gh-a',
+            providerId: 'github',
+            dataClasses: ['customer', 'source', 'telemetry'],
+          }),
+          destination({ id: 'gh-b', providerId: 'github', dataClasses: ['secrets'] }),
+        ],
+      });
+      const html = render({ group: folded, groupByProvider: true });
+      expect(html).toContain('2 hosts');
+      // Three chips and "+1" either way, so the chip that is shown is what
+      // matters: the class past the third is the least sensitive, not Secrets.
+      expect(html).toContain('Secrets');
+      expect(html).not.toContain('Telemetry');
+      expect(html).toContain('+1');
+    });
+
     it('shows Mixed for trust/status once the folded hosts disagree', () => {
       const mixed = group({
         items: [

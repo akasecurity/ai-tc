@@ -415,6 +415,50 @@ describe('egress acceptance corpus — reconciliation', () => {
   });
 });
 
+describe('egress acceptance corpus — documentation-host requests', () => {
+  // The URL sits in a constant and the verb in another statement, so the
+  // extractor reports REF. The destination must be recorded, and must still
+  // be there, decision and all, when the unchanged source is scanned again.
+  it('keeps a documentation-host destination and its decision across a rescan', async () => {
+    const project = mkdtempSync(join(tmpdir(), 'aka-docs-host-'));
+    try {
+      mkdirSync(join(project, 'src'));
+      writeFileSync(
+        join(project, 'src', 'search.ts'),
+        "const DOCS_SEARCH = 'https://docs.github.com/search?q=default';\n" +
+          'export const search = (payload: unknown) => axios.post(DOCS_SEARCH, payload);\n',
+      );
+
+      await scanAndRecord(db, project, base);
+      expect(await readLedger(db)).toEqual([
+        {
+          host: 'docs.github.com',
+          kind: 'provider',
+          trust: 'recognized',
+          name: 'GitHub',
+          category: 'Developer platform',
+          transports: ['https'],
+          dataClasses: ['source'],
+          endpoints: ['REF https https://docs.github.com/search x1'],
+        },
+      ]);
+
+      const { groups } = await db.shares.listDestinations({
+        groupBy: 'destination',
+        review: false,
+      });
+      const id = groups.flatMap((g) => g.items)[0]?.id ?? '';
+      expect(db.shares.setEgressDecision(id, 'block')).toBe(true);
+
+      await scanAndRecord(db, project, base);
+
+      expect((await db.shares.getDestination(id))?.status).toBe('blocked');
+    } finally {
+      removeTree(project);
+    }
+  });
+});
+
 describe('egress acceptance corpus — plaintext posture covers ws', () => {
   // The corpus's ws endpoint shares a destination with an http one, so it
   // cannot on its own prove that 'ws' is in the plaintext predicate. This case

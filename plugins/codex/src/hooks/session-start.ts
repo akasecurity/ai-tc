@@ -11,19 +11,29 @@
  * and the project, upsert them, and open the Session audit-event root. All the
  * logic lives in @akasecurity/plugin-runtime; this script is just Codex CLI stdio glue.
  *
- * Emits nothing (SessionStart has no decision to make). Fully fail-open: any error
- * → no output, exit 0.
+ * Emits nothing (SessionStart has no decision to make) — except when the user
+ * has granted vault consent, in which case it injects the standing vault
+ * protocol brief as additionalContext, same as Claude Code's sibling hook.
+ * This plugin has no vault wiring of its own (see pre-tool-use-decision.ts) —
+ * it never MINTS a pointer — but `~/.aka` is one home shared by every AKA
+ * surface on the machine, so a pointer minted by the Claude Code plugin's
+ * vault or the setup wizard's history scrub can still surface in a Codex
+ * session's context (a file read, a git diff, prior session history), and
+ * without this brief the model has no idea what `[[aka:<category>:...]]` is.
+ * Fully fail-open: any error → no output, exit 0.
  */
 import { readFileSync } from 'node:fs';
 
 import { handleSessionStart } from '@akasecurity/plugin-runtime';
 import { loadConfig, resolveCodexProvider } from '@akasecurity/plugin-sdk';
-import { SOURCE_TOOL } from '@akasecurity/schema';
+import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 
 import { PLUGIN_PACKAGE, pluginBuild } from '../build-info.ts';
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
 import { peekSessionOriginator } from '../history/transcripts.ts';
-import { getString, parseJson, readStdin } from './shared.ts';
+import { sessionProtocolMarker } from '../protocol/marker.ts';
+import { standingBrief } from '../protocol/notes.ts';
+import { emit, getString, parseJson, readStdin } from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 
 // The plugin's own version, read from the manifest the hook command passes as
@@ -93,6 +103,33 @@ async function main(): Promise<void> {
   // best-effort — a missing path or any error just skips it, the Stop path covers it.
   if (sessionId !== undefined && transcriptPath !== undefined) {
     triggerReconcile(config.dataDir, sessionId, transcriptPath);
+  }
+
+  // Standing vault-protocol brief: only when the user has granted vault
+  // consent does this hook emit anything at all — the brief teaches the model
+  // what a pointer is and carries a per-session authenticity marker.
+  // Without consent the vault is inert and SessionStart stays silent.
+  //
+  // The marker is minted with `sessionId` deliberately OMITTED, so it is
+  // never persisted to the shared `protocol-marker` file: that file is keyed
+  // by session id and overwritten on every mismatch, and Claude Code's
+  // pre-tool-use/post-tool-use hooks re-read it on every vaulted event, so a
+  // Codex session persisting its own marker there (SessionStart also fires on
+  // resume/compact) would silently break a concurrent Claude Code session's
+  // marker chain — the exact "authentic note reads as a forgery" degrade
+  // protocol/marker.ts describes. Nothing is lost by not persisting: no
+  // Codex hook emits a per-event note today (eventNote has no caller here),
+  // so this marker is only ever read back from the brief text itself.
+  if (isVaultConsentValid(config.settings.vaultConsent)) {
+    await emit({
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: standingBrief({
+          marker: sessionProtocolMarker(config.dataDir, undefined),
+          inlineReveal: config.settings.vaultInlineReveal,
+        }),
+      },
+    });
   }
 }
 

@@ -8,7 +8,7 @@ import type { HttpMethod, ResolvedEgressHit } from '@akasecurity/schema';
 
 import type { RawEndpointHit } from './extract.ts';
 import type { ManifestSdkHit } from './manifests.ts';
-import { resolveHost, resolveSdk } from './registry.ts';
+import { isNonDataHost, resolveHost, resolveSdk } from './registry.ts';
 
 /** One file's raw extraction output, ready for resolution. */
 export interface FileEgressHits {
@@ -24,11 +24,12 @@ const VERB_METHODS: ReadonlySet<HttpMethod> = new Set(['GET', 'POST', 'PUT', 'DE
 /**
  * Resolve every file's raw URL/IP and SDK hits into fully resolved egress
  * observations, ready for the store writer. A URL/IP hit whose host
- * `resolveHost` excludes, or an SDK hit for a package `resolveSdk` does not
- * recognize, is dropped. The remaining hits are then deduplicated: exact
- * `(host, method, url, file, line)` duplicates collapse, and a `REF` hit is
- * dropped when a verb-method hit shares its `(host, url)` anywhere in the
- * batch.
+ * `resolveHost` excludes, a `REF` hit (no method evidence) against a
+ * documentation/help host `isNonDataHost` recognizes, or an SDK hit for a
+ * package `resolveSdk` does not recognize, is dropped. The remaining hits
+ * are then deduplicated: exact `(host, method, url, file, line)` duplicates
+ * collapse, and a `REF` hit is dropped when a verb-method hit shares its
+ * `(host, url)` anywhere in the batch.
  */
 export function resolveEgress(
   files: FileEgressHits[],
@@ -53,12 +54,19 @@ export function resolveEgress(
 // A URL/IP hit's host decides kind/trust/name/category via the registry.
 // Provider hits take the registry's most-sensitive default data class and
 // carry no network shape; every other kind carries the observed port with no
-// geo/PTR enrichment (this pass performs no DNS or geo lookup).
+// geo/PTR enrichment (this pass performs no DNS or geo lookup). A `REF` hit
+// — no method evidence of its own — against a documentation/help host is
+// dropped before resolution: it names a page a developer read, not a
+// destination anything was sent to. A hit carrying verb evidence
+// (GET/POST/PUT/DELETE) against the same host is a real observed request and
+// resolves under that host's provider like any other call.
 function resolveEndpointHit(
   file: FileEgressHits,
   endpoint: RawEndpointHit,
   opts?: { internalDomains?: string[] },
 ): ResolvedEgressHit | null {
+  if (endpoint.method === 'REF' && isNonDataHost(endpoint.host)) return null;
+
   const resolution = resolveHost(endpoint.host, opts);
   if (resolution === null) return null;
 
@@ -68,6 +76,7 @@ function resolveEndpointHit(
     kind: resolution.kind,
     name: resolution.name,
     category: resolution.category,
+    providerId: resolution.providerId,
     trust: resolution.trust,
     network: isProvider ? null : { port: endpoint.port, geo: null, ptr: null },
     method: endpoint.method,
@@ -97,6 +106,7 @@ function resolveSdkHit(file: FileEgressHits, sdkHit: ManifestSdkHit): ResolvedEg
     kind: 'provider',
     name: entry.name,
     category: entry.category,
+    providerId: entry.id,
     trust: 'recognized',
     network: null,
     method: 'SDK',

@@ -197,6 +197,64 @@ describe('planTriageWriteback', () => {
     expect(plan.entries).toHaveLength(1);
   });
 
+  // The two most exposed callers of the raw-egress boundary: both scrub text the
+  // MODEL wrote, and truncating is exactly what a model does to a long token it
+  // quotes back. Each shape below is a live run that the whole-value form hands
+  // straight through — and for `reasoning` that is not merely printed, since it
+  // becomes a suppression grant's `justification` and lands at rest.
+  const partialEchoes: { name: string; text: string }[] = [
+    { name: 'a truncated tail run', text: `the ${RAW.slice(-16)} key is fake` },
+    { name: 'a truncated prefix run', text: `looks like ${RAW.slice(0, 12)}... to me` },
+    { name: 'an interior run', text: `near ${RAW.slice(4, 12)} in the file` },
+  ];
+
+  for (const echo of partialEchoes) {
+    it(`rejects a category whose reasoning carries ${echo.name}`, () => {
+      const plan = planTriageWriteback([hit()], rec([{ reasoning: echo.text }]));
+
+      // Fail-secure, exactly as for a whole-value echo: no grant, no posture.
+      expect(plan.entries).toEqual([]);
+      expect(plan.posture).toEqual({});
+      expect(plan.skipped).toEqual([expect.objectContaining({ category: 'secret' })]);
+      expect(plan.skipped[0]?.reason).toMatch(/raw/i);
+
+      // The showcase is the other surface this reasoning would have reached.
+      expect(plan.showcase).toEqual([]);
+
+      // No run survives anywhere in the plan — the `justification` a grant would
+      // have carried included. Serialize the WHOLE plan, not `entries` alone:
+      // `entries` is asserted empty one line up, and `expectNoEchoOf` passes on
+      // empty bytes, so pointing it there asserts nothing at all. The whole plan
+      // still holds the join entries, the notes and the skip record, so the
+      // positive control below is what keeps this from going vacuous again.
+      const serialized = JSON.stringify(plan);
+      expect(serialized).toContain('fail-secure');
+      expectNoEchoOf(serialized, RAW);
+    });
+
+    it(`scrubs model notes carrying ${echo.name}`, () => {
+      const plan = planTriageWriteback([hit()], rec([{}], echo.text));
+      expect(plan.notes).toBe(SCRUBBED_NOTES);
+      // A poisoned notes field still does not cost the clean category its grant.
+      expect(plan.entries).toHaveLength(1);
+      // Over the whole plan rather than over `notes`, which the line above has
+      // already pinned to a constant — the grant this case DOES produce is the
+      // part worth searching, and it is live bytes rather than empty ones.
+      const serialized = JSON.stringify(plan);
+      expect(serialized).toContain('justification'); // the grant really is in there
+      expectNoEchoOf(serialized, RAW);
+    });
+  }
+
+  it('leaves those partial echoes untouched by a whole-value check (control)', () => {
+    // Without this the cases above cannot say they are stronger than the form
+    // they replaced: every shape here passes `not.toContain`, which is exactly
+    // why each one used to become a `justification` at rest.
+    for (const echo of partialEchoes) {
+      expect(echo.text).not.toContain(RAW);
+    }
+  });
+
   it('RELAX: an fpCount mismatch resolves the mappable ids and surfaces the discrepancy', () => {
     // fpCount 2 but a single listed+resolvable id: the category is NOT dropped
     // wholesale anymore (the human gate is the fail-secure guard). The one id
@@ -276,6 +334,29 @@ describe('performTriageWriteback', () => {
       },
     };
   }
+
+  it('writes no grant at all when the reasoning carried a truncated raw run', async () => {
+    // The at-rest half of the same property. `planTriageWriteback` writes
+    // `reasoning` into a suppression grant's `justification`, so a partial echo
+    // that survives the boundary does not merely print — it is persisted. Drive
+    // the real writer and assert nothing carrying a run ever reaches it.
+    const poisoned = `the ${RAW.slice(-16)} key is fake`;
+    expect(poisoned).not.toContain(RAW); // control: a whole-value check passes this
+
+    const plan = planTriageWriteback([hit()], rec([{ reasoning: poisoned }]));
+    const fake = fakeWriters();
+    const res = await performTriageWriteback(plan, fake.writers, { createdBy: 'me', now: 0 });
+
+    expect(res.written).toBe(0);
+    expect(fake.created).toEqual([]);
+    expect(fake.posture).toEqual({});
+    // `fake.created` is empty by the assertion above, and expectNoEchoOf passes
+    // on empty bytes — so search the PLAN the writer was handed instead, which
+    // is where a surviving justification would have come from.
+    const serialized = JSON.stringify(plan);
+    expect(serialized).toContain('fail-secure');
+    expectNoEchoOf(serialized, RAW);
+  });
 
   it('writes posture (overwrite) and one suppression per entry', async () => {
     const plan = planTriageWriteback([hit()], rec([{ action: 'redact' }]));

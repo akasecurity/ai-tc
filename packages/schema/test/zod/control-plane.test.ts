@@ -15,6 +15,7 @@ import {
   DeviceCommand,
   DeviceCommandAckBody,
   DeviceCommandPollResponse,
+  EgressIngestHit,
   IngestAck,
   isSafeEndpoint,
   originOnly,
@@ -334,6 +335,38 @@ describe('RecordAuditEventRequest', () => {
         inspections: [{ ...inspection, ruleVersion: '3' }],
       }).success,
     ).toBe(true);
+  });
+});
+
+describe('EgressIngestHit', () => {
+  const hit = {
+    host: 'api.github.com',
+    kind: 'provider',
+    name: 'GitHub',
+    category: 'Source control',
+    providerId: 'github',
+    trust: 'recognized',
+    network: null,
+    method: 'GET',
+    transport: 'https',
+    url: 'https://api.github.com/repos/octocat/hello-world',
+    template: false,
+    dataClass: 'none',
+    site: { file: 'src/client.ts', line: 12, dynamic: false, vendored: false },
+  };
+
+  it('parses a valid hit with a populated providerId', () => {
+    expect(EgressIngestHit.safeParse(hit).success).toBe(true);
+  });
+
+  it('parses a valid hit with a null providerId', () => {
+    expect(EgressIngestHit.safeParse({ ...hit, providerId: null }).success).toBe(true);
+  });
+
+  it('accepts a hit without providerId, as a sender built before the field posts it', () => {
+    const { providerId, ...rest } = hit;
+    void providerId;
+    expect(EgressIngestHit.safeParse(rest).success).toBe(true);
   });
 });
 

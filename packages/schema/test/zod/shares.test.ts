@@ -271,6 +271,7 @@ const validSummary = {
   kind: 'provider',
   name: 'New Relic',
   host: 'newrelic.com',
+  providerId: 'newrelic',
   category: 'Observability',
   trust: 'recognized',
   status: 'allowed',
@@ -297,6 +298,7 @@ describe('ShareDestinationSummary', () => {
       kind: 'ip',
       name: '203.0.113.6',
       host: '203.0.113.6',
+      providerId: null,
       category: 'Unresolved host',
       trust: 'ip',
       status: 'review',
@@ -314,6 +316,7 @@ describe('ShareDestinationSummary', () => {
       kind: 'external',
       name: 'api.acme-partner.com',
       host: 'api.acme-partner.com',
+      providerId: null,
       category: 'External domain',
       trust: 'unverified',
       status: 'review',
@@ -327,6 +330,18 @@ describe('ShareDestinationSummary', () => {
     expect(
       ShareDestinationSummary.safeParse({ ...validSummary, trust: 'known-good' }).success,
     ).toBe(false);
+  });
+
+  it('accepts a null providerId', () => {
+    expect(ShareDestinationSummary.safeParse({ ...validSummary, providerId: null }).success).toBe(
+      true,
+    );
+  });
+
+  it('rejects a missing providerId', () => {
+    const { providerId, ...rest } = validSummary;
+    void providerId;
+    expect(ShareDestinationSummary.safeParse(rest).success).toBe(false);
   });
 });
 
@@ -359,6 +374,7 @@ describe('ReviewDestination', () => {
       kind: 'ip',
       name: '198.51.100.23',
       host: '198.51.100.23',
+      providerId: null,
       trust: 'ip',
       status: 'review',
       review: { needsReview: true, reasons: ['raw_ip'] },
@@ -367,6 +383,39 @@ describe('ReviewDestination', () => {
       lastSeen: '2026-07-03T17:00:00Z',
     };
     expect(ReviewDestination.safeParse(item).success).toBe(true);
+  });
+
+  it('accepts a provider review-mode item with a populated providerId', () => {
+    const item = {
+      id: 'newrelic',
+      kind: 'provider',
+      name: 'New Relic',
+      host: 'newrelic.com',
+      providerId: 'newrelic',
+      trust: 'recognized',
+      status: 'review',
+      review: { needsReview: true, reasons: ['unverified_domain'] },
+      topDataClass: 'logs',
+      callSiteCount: 2,
+      lastSeen: '2026-07-03T17:00:00Z',
+    };
+    expect(ReviewDestination.safeParse(item).success).toBe(true);
+  });
+
+  it('rejects a missing providerId', () => {
+    const item = {
+      id: 'ip-198-51-100-23',
+      kind: 'ip',
+      name: '198.51.100.23',
+      host: '198.51.100.23',
+      trust: 'ip',
+      status: 'review',
+      review: { needsReview: true, reasons: ['raw_ip'] },
+      topDataClass: 'customer',
+      callSiteCount: 1,
+      lastSeen: '2026-07-03T17:00:00Z',
+    };
+    expect(ReviewDestination.safeParse(item).success).toBe(false);
   });
 });
 

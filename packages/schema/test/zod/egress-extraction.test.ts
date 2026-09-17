@@ -103,6 +103,7 @@ const validHit = {
   kind: 'provider',
   name: 'Stripe',
   category: 'Payments',
+  providerId: 'stripe',
   trust: 'recognized',
   network: null,
   method: 'POST',
@@ -125,6 +126,7 @@ describe('ResolvedEgressHit', () => {
       kind: 'external',
       name: 'api.acme-partner.com',
       category: 'External domain',
+      providerId: null,
       trust: 'unverified',
       dataClass: 'none',
     };
@@ -153,6 +155,7 @@ describe('ResolvedEgressHit', () => {
       kind: 'ip',
       name: '203.0.113.6',
       category: 'Unresolved host',
+      providerId: null,
       trust: 'ip',
       network: { port: 8080, geo: null, ptr: null },
     };
@@ -161,6 +164,16 @@ describe('ResolvedEgressHit', () => {
 
   it('rejects a kind outside DestinationKind', () => {
     expect(ResolvedEgressHit.safeParse({ ...validHit, kind: 'saas' }).success).toBe(false);
+  });
+
+  it('accepts a null providerId', () => {
+    expect(ResolvedEgressHit.safeParse({ ...validHit, providerId: null }).success).toBe(true);
+  });
+
+  it('rejects a missing providerId', () => {
+    const { providerId, ...rest } = validHit;
+    void providerId;
+    expect(ResolvedEgressHit.safeParse(rest).success).toBe(false);
   });
 });
 

@@ -41,6 +41,7 @@ interface HitOptions {
   kind?: DestinationKind;
   name?: string;
   category?: string;
+  providerId?: string | null;
   trust?: ShareTrustLevel;
   network?: DestinationNetwork | null;
   method?: HttpMethod;
@@ -71,6 +72,7 @@ function hit(o: HitOptions = {}): ResolvedEgressHit {
       method: o.method,
       transport: o.transport,
       template: o.template,
+      providerId: o.providerId,
     }).filter(([, value]) => value !== undefined),
   ) as Partial<ResolvedEgressHit>;
   return resolvedHit({
@@ -706,6 +708,103 @@ describe('recordProjectEgress — payload refresh', () => {
     walk('git:alpha', [hit({ file: 'a.ts', line: 1 })], '', 'proj-2');
 
     expect(projectIds('git:alpha')).toEqual(['proj-2']);
+  });
+});
+
+// ─── providerId ──────────────────────────────────────────────────────────────
+
+describe('recordProjectEgress — providerId', () => {
+  it('records providerId for a provider hit and null for a non-provider hit', async () => {
+    walk('git:alpha', [
+      hit({ providerId: 'stripe' }),
+      hit({
+        host: 'api.acme-partner.com',
+        kind: 'external',
+        name: 'api.acme-partner.com',
+        category: 'External domain',
+        providerId: null,
+        trust: 'unverified',
+        url: 'https://api.acme-partner.com/v1/orders',
+      }),
+    ]);
+
+    const stripe = await shares.getDestination(destinationId('api.stripe.com'));
+    expect(stripe?.providerId).toBe('stripe');
+    const external = await shares.getDestination(destinationId('api.acme-partner.com'));
+    expect(external?.providerId).toBeNull();
+  });
+
+  it('gives two hosts of the same provider their own row, both carrying that providerId', async () => {
+    walk('git:alpha', [
+      hit({
+        host: 'github.com',
+        name: 'GitHub',
+        category: 'Developer platform',
+        providerId: 'github',
+        url: 'https://github.com/octocat/hello-world',
+      }),
+      hit({
+        host: 'api.github.com',
+        name: 'GitHub',
+        category: 'Developer platform',
+        providerId: 'github',
+        url: 'https://api.github.com/repos/octocat/hello-world',
+      }),
+    ]);
+
+    // Row identity stays per-host: the conflict target is (host), never provider_id.
+    expect(hosts()).toEqual(['api.github.com', 'github.com']);
+    const github = await shares.getDestination(destinationId('github.com'));
+    const apiGithub = await shares.getDestination(destinationId('api.github.com'));
+    expect(github?.providerId).toBe('github');
+    expect(apiGithub?.providerId).toBe('github');
+  });
+
+  it('surfaces providerId on listDestinations and needsReview, matching getDestination', async () => {
+    walk('git:alpha', [
+      hit({
+        host: 'api.acme-partner.com',
+        kind: 'external',
+        name: 'api.acme-partner.com',
+        category: 'External domain',
+        providerId: null,
+        trust: 'unverified',
+        url: 'https://api.acme-partner.com/v1/orders',
+      }),
+    ]);
+
+    const { groups } = await shares.listDestinations({ groupBy: 'destination', review: false });
+    const external = groups.find((g) => g.kind === 'external');
+    expect(external?.items[0]?.providerId).toBeNull();
+
+    const { items } = await shares.needsReview();
+    expect(items[0]?.providerId).toBeNull();
+
+    const detail = await shares.getDestination(destinationId('api.acme-partner.com'));
+    expect(detail?.providerId).toBeNull();
+  });
+
+  it('updates providerId in place on a re-scan that resolves a host to a different provider, adding no row', async () => {
+    walk('git:alpha', [
+      hit({
+        host: 'shared.saas-host.io',
+        name: 'First Co',
+        category: 'Cat A',
+        providerId: 'first-co',
+      }),
+    ]);
+    walk('git:alpha', [
+      hit({
+        host: 'shared.saas-host.io',
+        name: 'Second Co',
+        category: 'Cat B',
+        providerId: 'second-co',
+      }),
+    ]);
+
+    expect(hosts()).toEqual(['shared.saas-host.io']);
+    const detail = await shares.getDestination(destinationId('shared.saas-host.io'));
+    expect(detail?.providerId).toBe('second-co');
   });
 });
 

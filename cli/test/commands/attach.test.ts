@@ -6,9 +6,11 @@ import {
   controlPlaneCredentialPath,
   dataDir as dataDirOf,
   openLocalDatabase,
+  readEffectiveSettings,
   readWorkspaceSettings,
   settingsDir as settingsDirOf,
 } from '@akasecurity/persistence';
+import type { ManagedSettings } from '@akasecurity/schema';
 import { HISTORY_SYNC_PAYLOAD_VERSION, isHistorySyncConsentValid } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -419,6 +421,485 @@ describe('detach', () => {
       exit: (code: number) => exits.push(code),
     });
     expect(seen).toEqual([base]);
+  });
+});
+
+/**
+ * A pinned overlay with NO lock — the shape a fleet kit ships, so that no save
+ * of the user's is ever refused by the writer. The writer indeed refuses
+ * nothing, and that was the defect: `aka detach` cleared the user's file and
+ * printed "Detached.", and `aka attach --url <other>` stored a credential for
+ * another deployment — while every later read overlaid the pin straight back,
+ * leaving a machine that reads attached to the pinned deployment holding a
+ * credential that is not for it, or none at all. Both verbs now decide against
+ * what the machine will READ, not against what the writer would take.
+ *
+ * `readWorkspaceSettings(base)` below is the user's OWN file: the overlay under
+ * test reaches the verbs through `managedSettings` only, and the process-wide
+ * guard in test/setup/no-managed-settings.ts reads no administrator's file.
+ */
+describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
+  const PINNED = 'https://pinned.example-org.internal';
+  const OTHER = 'https://other.example-org.internal';
+  const overlay: ManagedSettings = {
+    specVersion: 1,
+    organization: 'Example Org',
+    values: { runMode: 'attached', controlPlane: { endpoint: PINNED, label: 'example-prod' } },
+    lockedFields: [],
+  };
+  const pinnedDeps = (io: ReturnType<typeof scriptedPrompter>) => ({
+    ...deps(io),
+    managedSettings: overlay,
+  });
+  const credential = (): unknown => {
+    const parsed: unknown = JSON.parse(
+      readFileSync(controlPlaneCredentialPath(settingsDirOf(base)), 'utf8'),
+    );
+    return parsed;
+  };
+  const boundaryFrozen = (): boolean => {
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      return db.historySync.deployment().backlogBefore !== undefined;
+    } finally {
+      db.close();
+    }
+  };
+  const freezeBoundary = (): void => {
+    const db = openLocalDatabase(dataDirOf(base));
+    try {
+      db.historySync.rearmFor('some-fingerprint', Date.parse('2026-08-01T00:00:00.000Z'));
+    } finally {
+      db.close();
+    }
+  };
+
+  it('still attaches to the pinned endpoint — that is the enrolment path', async () => {
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', PINNED, '--no-sync-history'], pinnedDeps(io));
+    expect(exits).toEqual([]);
+    expect(io.output()).toContain('Attached to');
+    expect(credential()).toMatchObject({ endpoint: PINNED });
+  });
+
+  // What of the connection lands in the user's own file is the writer's
+  // decision, pinned in the persistence suite; these are the verb reaching it.
+  // The pin supplies the deployment and the mode but not the time, so the
+  // enrolment's own stamp is kept and the mode it echoes is not — whether the
+  // attach repeats the pinned name exactly or leaves the name to the pin.
+  it.each([
+    ['repeats the pinned name', ['--label', 'example-prod']],
+    ['leaves the name to the pin', []],
+  ])(
+    'records when an enrolment that %s happened, without carrying the pinned mode',
+    async (_how, named) => {
+      const before = Date.now();
+      await runAttach(
+        ['--url', PINNED, ...named, '--no-sync-history'],
+        pinnedDeps(scriptedPrompter({ interactive: true, answers: [KEY] })),
+      );
+      const after = Date.now();
+      expect(exits).toEqual([]);
+
+      const own = readWorkspaceSettings(base);
+      expect(own.controlPlane?.endpoint).toBe(PINNED);
+      const stamped = Date.parse(own.controlPlane?.attachedAt ?? '');
+      expect(stamped).toBeGreaterThanOrEqual(before);
+      expect(stamped).toBeLessThanOrEqual(after);
+      expect(own.runMode).toBe('standalone');
+      // …and it is the time every read under the pin reports.
+      expect(readEffectiveSettings(base, overlay).settings.controlPlane?.attachedAt).toBe(
+        own.controlPlane?.attachedAt,
+      );
+    },
+  );
+
+  it('refuses to attach elsewhere, naming who pinned it and to what, before any key is sent', async () => {
+    let verified = false;
+    let granted = false;
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', OTHER, '--no-sync-history'], {
+      ...pinnedDeps(io),
+      verify: () => {
+        verified = true;
+        return verify();
+      },
+      deviceAttach: () => {
+        granted = true;
+        return notOffered();
+      },
+    });
+    expect(exits).toEqual([2]);
+    expect(verified).toBe(false);
+    expect(granted).toBe(false);
+    // A decision the user can act on: whose, and to where.
+    expect(io.errors()).toContain('Example Org');
+    expect(io.errors()).toContain(PINNED);
+    expect(io.output()).toBe('');
+    // Nothing was written: no credential, and the user's own file untouched.
+    expect(() => credential()).toThrow();
+    expect(readWorkspaceSettings(base).runMode).toBe('standalone');
+  });
+
+  it('refuses the unattended key path too, and never reaches the wire', async () => {
+    // The pre-flight used to run only ahead of the browser flow, so
+    // `--key-stdin` sailed past it to the write — which under a pin lands.
+    let verified = false;
+    const io = scriptedPrompter({ interactive: false, stdin: `${KEY}\n` });
+    await runAttach(['--url', OTHER, '--key-stdin'], {
+      ...pinnedDeps(io),
+      verify: () => {
+        verified = true;
+        return verify();
+      },
+    });
+    expect(exits).toEqual([2]);
+    expect(verified).toBe(false);
+    expect(io.errors()).toContain(PINNED);
+    expectNoEchoOf(io.errors(), KEY);
+    expect(() => credential()).toThrow();
+  });
+
+  it('refuses to detach, naming who pinned it and to what, and leaves both halves in place', async () => {
+    await runAttach(
+      ['--url', PINNED, '--no-sync-history'],
+      pinnedDeps(scriptedPrompter({ interactive: true, answers: [KEY] })),
+    );
+    const before = readWorkspaceSettings(base);
+
+    const off = scriptedPrompter({ interactive: true });
+    runDetach([], pinnedDeps(off));
+    expect(exits).toEqual([1]);
+    expect(off.errors()).toContain('Example Org');
+    expect(off.errors()).toContain(PINNED);
+    // Not "Detached." — the line this refusal replaces.
+    expect(off.output()).toBe('');
+    expect(credential()).toMatchObject({ endpoint: PINNED });
+    expect(readWorkspaceSettings(base)).toEqual(before);
+  });
+
+  it('refuses to detach a machine that never attached, since the pin is what it reads', () => {
+    // No credential, nothing in the user's file — and every read still reports
+    // the machine attached to the pin. "Nothing to do" would be true of the
+    // file and false of the machine.
+    const off = scriptedPrompter({ interactive: true });
+    runDetach([], pinnedDeps(off));
+    expect(exits).toEqual([1]);
+    expect(off.errors()).toContain(PINNED);
+    expect(off.output()).toBe('');
+  });
+
+  it('refuses before the history boundary is released, so a refused detach changes nothing', async () => {
+    await runAttach(
+      ['--url', PINNED, '--sync-history'],
+      pinnedDeps(scriptedPrompter({ interactive: true, answers: [KEY] })),
+    );
+    freezeBoundary();
+    expect(boundaryFrozen()).toBe(true);
+
+    runDetach([], pinnedDeps(scriptedPrompter({ interactive: true })));
+    expect(exits).toEqual([1]);
+    expect(boundaryFrozen()).toBe(true);
+  });
+
+  it('a lock with no pin is refused the same way, ahead of the write', async () => {
+    // The lock already refused, but from the writer — AFTER the history window
+    // had been closed for a detach that then did not happen. Attached
+    // unmanaged first, because a lock with no value freezes whatever the user
+    // last chose.
+    const locked: ManagedSettings = {
+      specVersion: 1,
+      organization: 'Example Org',
+      values: {},
+      lockedFields: ['runMode'],
+    };
+    await runAttach(
+      ['--url', ENDPOINT, '--sync-history'],
+      deps(scriptedPrompter({ interactive: true, answers: [KEY] })),
+    );
+    freezeBoundary();
+
+    const off = scriptedPrompter({ interactive: true });
+    runDetach([], { ...deps(off), managedSettings: locked });
+    expect(exits).toEqual([1]);
+    expect(off.errors()).toContain('Example Org');
+    expect(off.errors()).toContain(ENDPOINT);
+    expect(off.output()).toBe('');
+    expect(readWorkspaceSettings(base).runMode).toBe('attached');
+    expect(boundaryFrozen()).toBe(true);
+  });
+
+  it('a pin on the descriptor alone leaves the mode the user’s, so a detach still lands', async () => {
+    // The refusal is about what the next read will UNDO. With `runMode`
+    // neither pinned nor locked, a cleared file reads back as standalone —
+    // the dangling pinned descriptor is not an attachment without the mode —
+    // so this detach takes effect and is the user's to make.
+    const planeOnly: ManagedSettings = {
+      specVersion: 1,
+      organization: 'Example Org',
+      values: { controlPlane: { endpoint: PINNED, label: 'example-prod' } },
+      lockedFields: [],
+    };
+    await runAttach(['--url', PINNED, '--no-sync-history'], {
+      ...deps(scriptedPrompter({ interactive: true, answers: [KEY] })),
+      managedSettings: planeOnly,
+    });
+    expect(readWorkspaceSettings(base).runMode).toBe('attached');
+
+    const off = scriptedPrompter({ interactive: true });
+    runDetach([], { ...deps(off), managedSettings: planeOnly });
+    expect(exits).toEqual([]);
+    expect(off.output()).toContain('Detached');
+    expect(readWorkspaceSettings(base).runMode).toBe('standalone');
+  });
+
+  it.each<[string, ManagedSettings]>([
+    [
+      'pinned',
+      {
+        specVersion: 1,
+        organization: 'Example Org',
+        values: { runMode: 'standalone' },
+        lockedFields: [],
+      },
+    ],
+    [
+      'locked',
+      { specVersion: 1, organization: 'Example Org', values: {}, lockedFields: ['runMode'] },
+    ],
+  ])(
+    'refuses an attach on a machine whose mode is %s to standalone, before any key is sent',
+    async (_how, standalone) => {
+      // Either way the attach would be written and then read back as
+      // standalone, so it is refused where nobody has been sent anywhere yet.
+      let verified = false;
+      let granted = false;
+      const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+      await runAttach(['--url', PINNED, '--no-sync-history'], {
+        ...deps(io),
+        managedSettings: standalone,
+        verify: () => {
+          verified = true;
+          return verify();
+        },
+        deviceAttach: () => {
+          granted = true;
+          return notOffered();
+        },
+      });
+      expect(exits).toEqual([2]);
+      expect(verified).toBe(false);
+      expect(granted).toBe(false);
+      expect(io.errors()).toContain(
+        'Example Org manages this machine and has set it to standalone, so it cannot be attached here.',
+      );
+      expect(io.output()).toBe('');
+      expect(() => credential()).toThrow();
+    },
+  );
+
+  it('refuses a --label that differs from the pinned one, before any key is sent', async () => {
+    // A label-only difference is still a change to the pinned descriptor, and
+    // the next read would overlay the administrator's label straight back.
+    let verified = false;
+    let granted = false;
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', PINNED, '--label', 'renamed-here', '--no-sync-history'], {
+      ...pinnedDeps(io),
+      verify: () => {
+        verified = true;
+        return verify();
+      },
+      deviceAttach: () => {
+        granted = true;
+        return notOffered();
+      },
+    });
+    expect(exits).toEqual([2]);
+    expect(verified).toBe(false);
+    expect(granted).toBe(false);
+    expect(io.errors()).toContain(
+      'Example Org manages this machine name, so it cannot be renamed here.',
+    );
+    expect(io.output()).toBe('');
+    expect(() => credential()).toThrow();
+  });
+
+  it('accepts a --label equal to the pinned one — the refusal is about the difference', async () => {
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(
+      ['--url', PINNED, '--label', 'example-prod', '--no-sync-history'],
+      pinnedDeps(io),
+    );
+    expect(exits).toEqual([]);
+    expect(io.output()).toContain('Attached to');
+    expect(credential()).toMatchObject({ endpoint: PINNED });
+  });
+
+  describe('a pin that names the deployment but not what to call it', () => {
+    const unnamed: ManagedSettings = {
+      specVersion: 1,
+      organization: 'Example Org',
+      values: { controlPlane: { endpoint: PINNED } },
+      lockedFields: [],
+    };
+    const unnamedDeps = (io: ReturnType<typeof scriptedPrompter>) => ({
+      ...deps(io),
+      managedSettings: unnamed,
+    });
+
+    it('shows the name --label gave it, as `aka attach` said it would', async () => {
+      const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+      await runAttach(['--url', PINNED, '--label', 'MyBox', '--no-sync-history'], unnamedDeps(io));
+      expect(exits).toEqual([]);
+      expect(io.output()).toContain('Attached to MyBox.');
+      // What status and the dashboard read: the overlay applied.
+      expect(readEffectiveSettings(base, unnamed).settings.controlPlane?.label).toBe('MyBox');
+    });
+
+    it('lets the user rename it, since the name is theirs rather than the pin’s', async () => {
+      // Once the user's own name is on screen, comparing a new --label against
+      // it would refuse every rename. Only a name the administrator pinned is
+      // one the next read would put back.
+      await runAttach(
+        ['--url', PINNED, '--label', 'MyBox', '--no-sync-history'],
+        unnamedDeps(scriptedPrompter({ interactive: true, answers: [KEY] })),
+      );
+      const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+      await runAttach(
+        ['--url', PINNED, '--label', 'Renamed', '--no-sync-history'],
+        unnamedDeps(io),
+      );
+      expect(exits).toEqual([]);
+      expect(io.output()).toContain('Attached to Renamed.');
+      expect(readEffectiveSettings(base, unnamed).settings.controlPlane?.label).toBe('Renamed');
+    });
+  });
+
+  it('lets a detach through as a no-op where the overlay holds the machine standalone', () => {
+    // The detach refusal exists for a detach the next read would UNDO. A
+    // machine pinned standalone reads as not attached — even with a deployment
+    // named beside the mode — so there is nothing to undo, and the command says
+    // so instead of refusing.
+    const standalone: ManagedSettings = {
+      specVersion: 1,
+      organization: 'Example Org',
+      values: { runMode: 'standalone', controlPlane: { endpoint: PINNED, label: 'example-prod' } },
+      lockedFields: [],
+    };
+    const off = scriptedPrompter({ interactive: true });
+    runDetach([], { ...deps(off), managedSettings: standalone });
+    expect(exits).toEqual([]);
+    expect(off.output()).toContain('This machine was not attached; nothing to do.');
+  });
+
+  it('an unmanaged machine may still re-attach to a different deployment', async () => {
+    // The positive control: the pre-flight reads the overlay, not the user's
+    // own descriptor, so moving between deployments stays the user's to do.
+    await runAttach(
+      ['--url', ENDPOINT, '--no-sync-history'],
+      deps(scriptedPrompter({ interactive: true, answers: [KEY] })),
+    );
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(['--url', OTHER, '--no-sync-history'], deps(io));
+    expect(exits).toEqual([]);
+    expect(io.output()).toContain('Attached to');
+    expect(readWorkspaceSettings(base).controlPlane?.endpoint).toBe(OTHER);
+    expect(credential()).toMatchObject({ endpoint: OTHER });
+  });
+});
+
+/**
+ * A lock on the connection freezes the name it already has, and the writer
+ * refuses any change to it — so the attach pre-flight has to refuse the same
+ * attaches, before a browser approval or a key round trip.
+ */
+describe('a lock on the connection, and the name it freezes', () => {
+  const locked: ManagedSettings = {
+    specVersion: 1,
+    organization: 'Example Org',
+    values: {},
+    lockedFields: ['runMode'],
+  };
+  // Attached and named unmanaged first, because a lock with no value freezes
+  // whatever the user last chose.
+  const attachNamed = () =>
+    runAttach(
+      ['--url', ENDPOINT, '--label', 'Old', '--no-sync-history'],
+      deps(scriptedPrompter({ interactive: true, answers: [KEY] })),
+    );
+  const attachUnder = async (managedSettings: ManagedSettings, argv: string[]) => {
+    let verified = false;
+    const io = scriptedPrompter({ interactive: true, answers: [KEY] });
+    await runAttach(argv, {
+      ...deps(io),
+      managedSettings,
+      verify: () => {
+        verified = true;
+        return verify();
+      },
+    });
+    return { io, verified };
+  };
+
+  it('refuses a rename before any key is sent', async () => {
+    await attachNamed();
+    const { io, verified } = await attachUnder(locked, [
+      '--url',
+      ENDPOINT,
+      '--label',
+      'New',
+      '--no-sync-history',
+    ]);
+    expect(exits).toEqual([2]);
+    expect(verified).toBe(false);
+    expect(io.errors()).toContain(
+      'Example Org manages this machine name, so it cannot be renamed here.',
+    );
+  });
+
+  it('refuses leaving --label off before any key is sent, since that drops the name', async () => {
+    // The writer counts a descriptor without the name as a change, so under a
+    // lock it refuses — after the browser approval and the key round trip, if
+    // nothing refused it sooner.
+    await attachNamed();
+    const { io, verified } = await attachUnder(locked, ['--url', ENDPOINT, '--no-sync-history']);
+    expect(exits).toEqual([2]);
+    expect(verified).toBe(false);
+    expect(io.errors()).toContain('--label');
+    expect(io.output()).toBe('');
+    expect(readWorkspaceSettings(base).controlPlane?.label).toBe('Old');
+  });
+
+  it('reads an empty --label as leaving it off, not as a rename', async () => {
+    // A stored name cannot be empty, so `--label ''` names nothing: it gets the
+    // refusal that says how to keep the name, before any key is sent.
+    await attachNamed();
+    const { io, verified } = await attachUnder(locked, [
+      '--url',
+      ENDPOINT,
+      '--label',
+      '',
+      '--no-sync-history',
+    ]);
+    expect(exits).toEqual([2]);
+    expect(verified).toBe(false);
+    expect(io.errors()).toContain('--label');
+    expect(io.output()).toBe('');
+  });
+
+  it('refuses leaving off a name the user gave a pinned deployment, before any key is sent', async () => {
+    // The same refusal where an endpoint-only pin sits beside the lock: the
+    // user's own name is what every read shows there, so the lock freezes it.
+    const lockedPin: ManagedSettings = {
+      ...locked,
+      values: { controlPlane: { endpoint: ENDPOINT } },
+    };
+    await attachNamed();
+    const { verified } = await attachUnder(lockedPin, ['--url', ENDPOINT, '--no-sync-history']);
+    expect(exits).toEqual([2]);
+    expect(verified).toBe(false);
+    expect(readEffectiveSettings(base, lockedPin).settings.controlPlane?.label).toBe('Old');
   });
 });
 

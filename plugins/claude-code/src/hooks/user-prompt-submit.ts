@@ -45,7 +45,7 @@ import { isVaultConsentValid, SOURCE_TOOL } from '@akasecurity/schema';
 import { writeClipboard } from './clipboard.ts';
 import { handleProhibitedTurn } from './model-guard.ts';
 import { ONBOARDING_NUDGE } from './onboarding-nudge.ts';
-import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
+import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
 import {
   claimStoreUnavailableWarning,
   openGatewayOrNull,
@@ -145,6 +145,8 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch {
-  // Fail-open: never break the user's session
+  // Fail-open: never break the user's session — but count the exit, so
+  // `aka status` can say the hooks have been failing open on this machine.
+  countFailOpen();
 }
 process.exit(0);

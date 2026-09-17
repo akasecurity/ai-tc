@@ -70,10 +70,11 @@ function detail(props: Partial<Parameters<typeof DetectionDetailView>[0]> = {}):
 /**
  * The opening tags of every <button> in a rendering.
  *
- * The assertions below are about ONE control, and the pane also carries
- * ordinarily-disabled buttons of its own (the "Add rule" placeholder), so
- * searching the whole document for `disabled=""` would answer about the wrong
- * element and pass whatever the picker emitted.
+ * The assertions below are about ONE control, and the pane carries other
+ * buttons of its own that may render `aria-disabled` depending on props —
+ * the "Add rule" button and the "⋮" fallback (see DetectionDetailView's
+ * onAddRule JSDoc) — so a blind search of the whole document would answer
+ * about the wrong element and pass whatever one of them emitted.
  */
 function buttonTags(html: string): string[] {
   return html
@@ -98,6 +99,40 @@ function switchTag(html: string): string {
 function toggleable(props: Partial<Parameters<typeof DetectionDetailView>[0]> = {}): string {
   return detail({ onToggleEnabled: () => undefined, ...props });
 }
+
+/**
+ * The opening tag of the "Add rule" button, picked out by its own slot rather
+ * than position — the same reasoning as switchTag above.
+ */
+function addRuleTag(html: string): string {
+  const tag = buttonTags(html).find((t) => t.includes('data-slot="add-rule"'));
+  expect(tag, 'the pane rendered no Add rule button').toBeDefined();
+  return tag ?? '';
+}
+
+/**
+ * The opening tag of the "⋮" fallback button. It carries no data-slot of its
+ * own (unlike Add rule), so it is picked out by its `aria-label` instead —
+ * still unique among the pane's buttons.
+ */
+function moreTag(html: string): string {
+  const tag = buttonTags(html).find((t) => t.includes('aria-label="More"'));
+  expect(tag, 'the pane rendered no "More" button').toBeDefined();
+  return tag ?? '';
+}
+
+/**
+ * The `hover:bg-*`/`hover:text-*` class tokens on a button's opening tag —
+ * the ones a refused control must neutralise itself, or Button's own
+ * variant/tone hover classes (see ui-kit's button.tsx) would still paint a
+ * background or text-color change while the control is inert.
+ */
+function hoverTokens(tag: string): string[] {
+  const classAttr = /class="([^"]*)"/.exec(tag)?.[1] ?? '';
+  return classAttr.split(/\s+/).filter((token) => /^hover:(bg|text)-/.test(token));
+}
+
+const CUSTOM_DETAIL: DetectionDetail = { ...DETAIL, origin: 'custom' };
 
 function list(floorsById?: ReadonlyMap<string, DetectionPolicyFloor>): string {
   return renderToStaticMarkup(
@@ -144,7 +179,13 @@ describe('DetectionDetailView under a control-plane floor', () => {
     const html = detail({ policyFloor: WARN_FLOOR });
     expect(html).toContain('data-slot="policy-unavailable-reason"');
     expect(html).toContain(policyFloorReason(WARN_FLOOR));
-    const describedBy = /aria-describedby="([^"]+)"/.exec(html);
+    // Scoped to the restricted option's OWN tag: the default fixture also
+    // renders the Add rule and "More" fallback aria-describedby'd (see
+    // DetectionDetailView's onAddRule JSDoc), and an unscoped search of the
+    // whole document could match one of theirs instead and pass regardless.
+    const restricted = buttonTags(html).find((tag) => tag.includes('data-unavailable'));
+    expect(restricted, 'no restricted option rendered').toBeDefined();
+    const describedBy = /aria-describedby="([^"]+)"/.exec(restricted ?? '');
     expect(describedBy, 'the restricted option describes nothing').not.toBeNull();
     expect(html).toContain(`id="${describedBy?.[1] ?? ''}"`);
   });
@@ -304,5 +345,89 @@ describe('DetectionsListView under a control-plane floor', () => {
   it('leaves a row whose choice already satisfies the floor unmarked', () => {
     const html = list(new Map([[ITEM.id, { floor: 'monitor', locked: false }]]));
     expect(html).toBe(list());
+  });
+});
+
+describe('the Add rule button', () => {
+  it('enables it for a custom detection whose host wired the write path', () => {
+    const html = detail({ d: CUSTOM_DETAIL, onAddRule: () => undefined });
+    const tag = addRuleTag(html);
+    expect(tag).not.toContain(' disabled=""');
+    expect(tag).not.toContain('aria-disabled');
+    expect(tag).not.toContain('title=');
+  });
+
+  it('disables a custom detection whose host offers no write path, with a reason scoped to adding', () => {
+    // "Adding rules" rather than "Rule authoring" — a custom detection with
+    // only onEditRules/onDelete wired has a live "Edit rules" item right
+    // beside this button, and the old copy ("authoring is not available
+    // here") would have contradicted it.
+    const html = detail({ d: CUSTOM_DETAIL });
+    const tag = addRuleTag(html);
+    // aria-, not native: a natively disabled control drops out of the tab
+    // order and hides its own `title` (see onAddRule's JSDoc).
+    expect(tag).not.toContain(' disabled=""');
+    expect(tag).toContain('aria-disabled="true"');
+    expect(tag).toContain('title="Adding rules is not available here"');
+    const describedBy = /aria-describedby="([^"]+)"/.exec(tag);
+    expect(describedBy, 'the refused button describes nothing').not.toBeNull();
+    // Visible prose, not sr-only — a tooltip alone is invisible on touch,
+    // the same reasoning the Switch's staysOn reason and PolicyPicker's
+    // per-option one already follow. Found by its own data-slot rather than
+    // a second aria-describedby regex over the whole document.
+    expect(html).toMatch(
+      new RegExp(`id="${describedBy?.[1] ?? ''}"[^>]*data-slot="add-rule-reason"`),
+    );
+    expect(html).toContain('Adding rules is not available here');
+  });
+
+  it('disables a library detection regardless of the callback, with its own reason', () => {
+    // A library pack is edited by publishing a new version, never in place —
+    // so onAddRule being supplied changes nothing for it. The copy names the
+    // DETECTION, not this host's registry or library surface.
+    const withCallback = addRuleTag(detail({ onAddRule: () => undefined }));
+    const without = addRuleTag(detail());
+    for (const tag of [withCallback, without]) {
+      expect(tag).not.toContain(' disabled=""');
+      expect(tag).toContain('aria-disabled="true"');
+      expect(tag).toContain('title="Library rules are not edited in place"');
+    }
+  });
+
+  it('neutralises its own hover state while refused, on both Add rule and the "⋮" fallback', () => {
+    // cursor-not-allowed alone does not read as inert if hovering ALSO still
+    // paints a background or text-color change — Button's own variant/tone
+    // hover classes (ui-kit's button.tsx) do exactly that unless a refused
+    // control overrides them (see shared/Refusal.tsx's `neutralizeHover`).
+    // Both controls are refused on the default (library, no callbacks)
+    // fixture, so one rendering covers both.
+    const html = detail();
+
+    // Add rule is outline/neutral, which hovers via `hover:bg-surface-2`
+    // alone — the refused state must override that ONE token with the
+    // non-hover value, and add nothing else.
+    expect(hoverTokens(addRuleTag(html))).toEqual(['hover:bg-surface']);
+
+    // The "⋮" fallback is ghost/neutral, which hovers via a background AND
+    // a text color — both must be neutralised, or one surviving alone would
+    // still read as "this does something."
+    expect(hoverTokens(moreTag(html)).sort()).toEqual([
+      'hover:bg-transparent',
+      'hover:text-text-3',
+    ]);
+  });
+});
+
+describe('a library detection ignores every authoring callback', () => {
+  it('renders identically with all three supplied as with none', () => {
+    // Origin decides, never the presence of a handler — proven end to end
+    // rather than per-control, so a future control added to this trio cannot
+    // reintroduce the bug by skipping its own version of this case.
+    const withAll = detail({
+      onAddRule: () => undefined,
+      onEditRules: () => undefined,
+      onDelete: () => undefined,
+    });
+    expect(withAll).toBe(detail());
   });
 });

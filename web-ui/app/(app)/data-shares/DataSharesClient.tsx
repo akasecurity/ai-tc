@@ -4,6 +4,7 @@ import {
   DataShareDetailView,
   DataSharesKindTabsView,
   DataSharesTableView,
+  foldedProviderRowId,
   NeedsReviewListView,
   NeedsReviewStripView,
   SearchField,
@@ -23,6 +24,7 @@ import {
   SheetDescription,
   SheetHeader,
   SheetTitle,
+  Switch,
   Tabs,
   TabsContent,
 } from '@akasecurity/ui-kit';
@@ -86,6 +88,11 @@ export function DataSharesClient({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [reviewOpen, setReviewOpen] = useState(false);
   const [activeKind, setActiveKind] = useState<DestinationKind | null>(null);
+  // Folds a provider's hosts into one expandable row (see @akasecurity/dashboard-ui's
+  // grouping.ts) — on by default, since it's the more readable shape once a
+  // provider has more than one host. Expansion state already keys on ids
+  // ('provider:<id>' included), so toggling this needs no state of its own.
+  const [groupByProvider, setGroupByProvider] = useState(true);
   const [isSettingDecision, startTransition] = useTransition();
   // Surface a failed egress write instead of silently keeping the old toggle —
   // this is a security-posture control, so a silent no-op is the worst mode.
@@ -125,6 +132,25 @@ export function DataSharesClient({
   // this falls back to the first remaining group without an extra render.
   // Undefined (not just an empty groups[]) whenever there's nothing to tab.
   const activeGroup = groups.find((g) => g.kind === activeKind) ?? groups[0];
+
+  // Pins a selection's provider row open once it resolves to a folded host.
+  // DataSharesTableView's own `holdsSelection` holds the row only while the
+  // drawer shows that host, so the pin lives in state and outlives the close
+  // (Review from the needs-review sheet, or a `?dest=…` load). The state is
+  // adjusted during render, keyed on the previous `selectedDest`, and starts
+  // at `null` so a page loaded with `?dest=…` already set pins on its first
+  // render too.
+  const [prevSelectedDest, setPrevSelectedDest] = useState<string | null>(null);
+  if (selectedDest !== prevSelectedDest) {
+    setPrevSelectedDest(selectedDest);
+    if (selectedDest !== null) {
+      const key = foldedProviderRowId(
+        groups.flatMap((g) => g.items),
+        selectedDest,
+      );
+      if (key !== null) setExpanded((m) => (m[key] ? m : { ...m, [key]: true }));
+    }
+  }
 
   const openDest = makeOpenDestHandler(push, q);
   const closeDrawer = makeCloseDrawerHandler(push, q, setDecisionError);
@@ -196,6 +222,14 @@ export function DataSharesClient({
               surface="canvas"
               className="h-9 min-w-48 max-w-80 flex-1"
             />
+            <div className="flex shrink-0 items-center gap-2">
+              <span className="text-xs font-semibold text-text-2">Group by provider</span>
+              <Switch
+                checked={groupByProvider}
+                onCheckedChange={setGroupByProvider}
+                aria-label="Group by provider"
+              />
+            </div>
           </div>
           <Card className="flex min-h-112 flex-1 flex-col overflow-hidden">
             {activeGroup ? (
@@ -213,6 +247,7 @@ export function DataSharesClient({
                   onToggle={makeExpandToggleHandler(setExpanded)}
                   onOpenDest={openDest}
                   onOpenEndpoint={makeOpenEndpointHandler(push, q)}
+                  groupByProvider={groupByProvider}
                 />
               </TabsContent>
             ) : (

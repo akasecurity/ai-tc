@@ -479,8 +479,12 @@ properties are load-bearing:
   exemption is the BLAST RADIUS rather than the duration — nothing on the hook path
   reads that file, so a stale value costs a wrong line on `aka status` and
   /aka:health, pull surfaces somebody is reading because they are already debugging.
-  A fourth writer does not inherit that by being on this list, and a file any
-  enforcement path READS would not qualify for it at all. The first MINT
+  `plugin-sdk`'s `hook-fail-opens.ts` (`data/hook-fail-opens.json`) is a fourth, and it
+  holds the same exemption on its own account rather than by being listed here: it is
+  written only after a hook has already failed open, and nothing but `aka status` renders
+  it, as a count that already says "at least". A fifth writer does not inherit that by
+  being on this list, and a file any enforcement path READS would not qualify for it at
+  all. The first MINT
   is no longer one of them, and it was not fixed with a lock: `createKeyFile` publishes through
   `createOwnerOnlyFileSync`, which links an already-complete tmp into place, so exactly one
   caller wins and every loser reads the file back and ADOPTS the winner's key. That works only
@@ -496,7 +500,20 @@ properties are load-bearing:
   plus the locked set — and writes it never. Making AKA a writer of it would be the third
   `settings.json`-class writer this section exists to prevent, on a file the lock does not cover.
   Three consequences. A pinned VALUE and a LOCK are separable: a value with no lock is a default
-  the user may still change, a lock with no value freezes whatever they last chose. A locked field
+  the user may still change, a lock with no value freezes whatever they last chose — with one
+  exception the writer cannot see: a pinned CONNECTION (`runMode` / `controlPlane`) is written
+  through and then overlaid straight back on the next read, so both surfaces that change it —
+  `aka attach` / `aka detach` and the dashboard's attach and detach Settings actions — refuse to
+  move away from it ahead of every side effect, deciding against the effective settings rather
+  than the lock list. That decision is ONE copy, `packages/persistence/src/managed-connection.ts`,
+  worded by `connectionRefusalMessage` in `@akasecurity/schema`, and the Settings page withholds
+  the controls it would refuse from the same call. What an attach under such a pin leaves in the
+  user's file is judged one half at a time: an echo of the pinned mode is stripped like any other
+  echo, but the descriptor the attach writes is kept even where it matches the pin, because it
+  records what the pin cannot — when this machine enrolled, and what the user called the
+  deployment. A descriptor without the mode is not an attachment, so once the pin is gone the
+  machine is in the mode the user last chose, holding that record — never attached on the
+  strength of an echo. A locked field
   is refused inside the lock (`ManagedFieldError`), by THROWING rather than dropping the key and
   writing the rest — a half-applied save reports success while losing the answer the user cared
   about, which is this section's whole failure mode. And a damaged managed file leaves the machine
@@ -2517,6 +2534,27 @@ newly written or newly touched** in a package carrying the helper — `cli/test/
 `not.toContain(rawValue)` in a new or edited assertion is a defect, not a style choice, and
 editing a file means its in-class assertions come along rather than being left beside converted
 ones.
+
+**The same rule holds in PRODUCT code, and one module is where it is enforced.**
+`packages/plugin-sdk/src/raw-egress.ts` is the boundary every raw value crosses on its way out
+of the triage path — its callers route a model's `reasoning` and `notes`, a downstream error
+message bound for the parent command's stderr, the serialized plan document, a masked context
+window and a file path through it. `assertRawFree` and `maskContextSlice` reject **run by run**
+against `RAW_RUN_LEN`, for the reason the paragraph above gives: `text.includes(raw)` matches
+only if the ENTIRE value survives, so a truncated echo passes it, and truncating is exactly what
+a model does to a long token it quotes back. A partial echo there does not merely print —
+`planTriageWriteback` writes `reasoning` into a suppression grant's `justification`, so it lands
+at rest. `RAW_RUN_LEN` is the same number the `no-echo` helpers use, but they sit across a
+package wall and are INDEPENDENT copies: neither pins the other, and each is held by its own
+suite. The product side's pin is DERIVED (it measures the shortest run the boundary really
+refuses, and carries a calibration case so a constant cannot stand in for a measurement), so it
+goes red on the first character of drift in either direction.
+
+`safeMaskedMatch` is the deliberate exception and must stay whole-value. It verifies a preview
+built to REVEAL a fragment on purpose, so a surviving run is the feature rather than the leak:
+`maskMatch`'s email branch discloses the whole domain, which is a run far past the window, and
+tightening it in step with its two siblings would collapse every email preview to `'***'`. The
+reason is stated at the function and pinned by a case that fails if somebody tightens it.
 
 **Older assertions are a backlog, not a clean tree.** `plugins/claude-code` still carries around
 twenty whole-value raw-value assertions in files this convention has not reached —

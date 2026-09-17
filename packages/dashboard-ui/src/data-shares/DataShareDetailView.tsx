@@ -77,7 +77,7 @@ function DestDetail({
   return (
     <>
       <div className="flex items-start gap-3">
-        <DestMark kind={d.kind} trust={d.trust} name={d.name} host={d.host} size={44} />
+        <DestMark kind={d.kind} trust={d.trust} name={d.name} size={44} />
         <div className="min-w-0">
           <div
             className={cn(
@@ -87,6 +87,7 @@ function DestDetail({
           >
             {d.name}
           </div>
+          {d.host !== d.name && <div className="text-xs text-text-3">{d.host}</div>}
           <div className="mt-0.5 text-xs text-text-3">
             {d.category} · {d.endpoints.length} endpoints · {callSites} call sites
           </div>
@@ -174,7 +175,7 @@ function EndpointDetail({
       <div>
         <div className="mb-2 flex items-center gap-2.5">
           <MethodTag method={ep.method} />
-          <DestMark kind={d.kind} trust={d.trust} name={d.name} host={d.host} size={22} />
+          <DestMark kind={d.kind} trust={d.trust} name={d.name} size={22} />
           <span className="text-xs font-semibold text-text-3">{d.name}</span>
         </div>
         <div className="rounded-lg border border-border bg-surface-2 px-3 py-2.5">

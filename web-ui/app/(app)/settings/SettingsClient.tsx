@@ -10,12 +10,16 @@ export function SettingsClient({
   settings,
   managed,
   credentialState,
+  connectionHeld,
 }: {
   settings: WorkspaceSettings;
   managed: ManagedContext;
   // Read on the server (page.tsx) and forwarded verbatim. Carries a verdict and,
   // on a mismatch, the two endpoints — never the key itself.
   credentialState: CredentialState;
+  // Decided on the server (page.tsx) by the rule the attach and detach actions
+  // refuse on, and forwarded verbatim.
+  connectionHeld: boolean;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -48,6 +52,7 @@ export function SettingsClient({
       settings={settings}
       managed={managed}
       credentialState={credentialState}
+      connectionHeld={connectionHeld}
       busy={busy}
       error={error}
       saved={saved}

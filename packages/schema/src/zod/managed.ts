@@ -215,3 +215,60 @@ export function isFieldManaged(context: ManagedContext, key: ManagedSettingKey):
 export function managedByLabel(context: ManagedContext): string {
   return `Managed by ${context.organization ?? 'your organization'}`;
 }
+
+/**
+ * Why an attach or a detach is refused because an administrator decides where
+ * this machine's connection stays.
+ *
+ * A LOCK on `runMode` makes the settings writer refuse any change to the
+ * connection. A PINNED `runMode` or `controlPlane` with no lock does not: the
+ * write lands, and every later read overlays the pin straight back over it. So
+ * the surfaces that change the connection decide against the settings in force
+ * instead, before anything is sent or written, and report one of these.
+ *
+ * `organization` is the administrator's own name for themselves, when their
+ * file carries one.
+ */
+export type ConnectionRefusal =
+  /** The mode is locked or pinned, and the machine reads as standalone. */
+  | { reason: 'held-standalone'; organization?: string }
+  /** The descriptor is locked or pinned to a different endpoint. */
+  | { reason: 'pinned-endpoint'; organization?: string; endpoint: string }
+  /** The descriptor is locked or pinned under a different label. */
+  | { reason: 'pinned-label'; organization?: string }
+  /**
+   * The descriptor is locked with a name, and the attach leaves the name off —
+   * which would drop it. Worded as a rename; the surface says how to keep it.
+   */
+  | { reason: 'label-required'; organization?: string }
+  /** The mode is locked or pinned, and the machine reads as attached. */
+  | { reason: 'held-attached'; organization?: string; endpoint: string };
+
+/**
+ * The sentence a connection refusal is reported with. One function for the
+ * terminal and the page alike, for the reason `managedByLabel` is one function:
+ * a decision worded two ways reads as two decisions.
+ *
+ * `label-required` is worded as the rename it amounts to. What keeps the name is
+ * a flag in a terminal and a field on the page, so each surface appends that.
+ */
+export function connectionRefusalMessage(refusal: ConnectionRefusal): string {
+  const who = refusal.organization ?? 'Your organization';
+  switch (refusal.reason) {
+    case 'held-standalone':
+      return `${who} manages this machine and has set it to standalone, so it cannot be attached here.`;
+    case 'pinned-endpoint':
+      return (
+        `${who} manages this machine and has pinned it to ${refusal.endpoint}. ` +
+        'Attach to that endpoint, or ask them to change it.'
+      );
+    case 'pinned-label':
+    case 'label-required':
+      return `${who} manages this machine name, so it cannot be renamed here.`;
+    case 'held-attached':
+      return (
+        `${who} manages this machine's attachment to ${refusal.endpoint}, ` +
+        'so it cannot be detached here. Ask them to change it.'
+      );
+  }
+}

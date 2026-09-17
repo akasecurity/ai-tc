@@ -502,14 +502,18 @@ properties are load-bearing:
   Three consequences. A pinned VALUE and a LOCK are separable: a value with no lock is a default
   the user may still change, a lock with no value freezes whatever they last chose — with one
   exception the writer cannot see: a pinned CONNECTION (`runMode` / `controlPlane`) is written
-  through and then overlaid straight back on the next read, so `aka attach` and `aka detach`
-  refuse to move away from it ahead of the write, deciding against the effective settings rather
-  than the lock list. What an attach under such a pin leaves in the user's file is judged one half
-  at a time: an echo of the pinned mode is stripped like any other echo, but the descriptor the
-  attach writes is kept even where it matches the pin, because it records what the pin cannot —
-  when this machine enrolled, and what the user called the deployment. A descriptor without the
-  mode is not an attachment, so once the pin is gone the machine is in the mode the user last
-  chose, holding that record — never attached on the strength of an echo. A locked field
+  through and then overlaid straight back on the next read, so both surfaces that change it —
+  `aka attach` / `aka detach` and the dashboard's attach and detach Settings actions — refuse to
+  move away from it ahead of every side effect, deciding against the effective settings rather
+  than the lock list. That decision is ONE copy, `packages/persistence/src/managed-connection.ts`,
+  worded by `connectionRefusalMessage` in `@akasecurity/schema`, and the Settings page withholds
+  the controls it would refuse from the same call. What an attach under such a pin leaves in the
+  user's file is judged one half at a time: an echo of the pinned mode is stripped like any other
+  echo, but the descriptor the attach writes is kept even where it matches the pin, because it
+  records what the pin cannot — when this machine enrolled, and what the user called the
+  deployment. A descriptor without the mode is not an attachment, so once the pin is gone the
+  machine is in the mode the user last chose, holding that record — never attached on the
+  strength of an echo. A locked field
   is refused inside the lock (`ManagedFieldError`), by THROWING rather than dropping the key and
   writing the rest — a half-applied save reports success while losing the answer the user cared
   about, which is this section's whole failure mode. And a damaged managed file leaves the machine

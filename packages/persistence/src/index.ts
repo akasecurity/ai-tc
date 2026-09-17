@@ -87,6 +87,11 @@ export {
   settingsDir,
 } from './local-layout.ts';
 export {
+  managedAttachRefusal,
+  managedConnectionHold,
+  managedDetachRefusal,
+} from './managed-connection.ts';
+export {
   lockedAmong,
   managedContextOf,
   managedSettingsPaths,

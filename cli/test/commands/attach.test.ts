@@ -486,6 +486,7 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
 
   it('refuses to attach elsewhere, naming who pinned it and to what, before any key is sent', async () => {
     let verified = false;
+    let granted = false;
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
     await runAttach(['--url', OTHER, '--no-sync-history'], {
       ...pinnedDeps(io),
@@ -493,9 +494,14 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
         verified = true;
         return verify();
       },
+      deviceAttach: () => {
+        granted = true;
+        return notOffered();
+      },
     });
     expect(exits).toEqual([2]);
     expect(verified).toBe(false);
+    expect(granted).toBe(false);
     // A decision the user can act on: whose, and to where.
     expect(io.errors()).toContain('Example Org');
     expect(io.errors()).toContain(PINNED);
@@ -637,6 +643,7 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
       // Either way the attach would be written and then read back as
       // standalone, so it is refused where nobody has been sent anywhere yet.
       let verified = false;
+      let granted = false;
       const io = scriptedPrompter({ interactive: true, answers: [KEY] });
       await runAttach(['--url', PINNED, '--no-sync-history'], {
         ...deps(io),
@@ -645,9 +652,14 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
           verified = true;
           return verify();
         },
+        deviceAttach: () => {
+          granted = true;
+          return notOffered();
+        },
       });
       expect(exits).toEqual([2]);
       expect(verified).toBe(false);
+      expect(granted).toBe(false);
       expect(io.errors()).toContain(
         'Example Org manages this machine and has set it to standalone, so it cannot be attached here.',
       );
@@ -660,6 +672,7 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
     // A label-only difference is still a change to the pinned descriptor, and
     // the next read would overlay the administrator's label straight back.
     let verified = false;
+    let granted = false;
     const io = scriptedPrompter({ interactive: true, answers: [KEY] });
     await runAttach(['--url', PINNED, '--label', 'renamed-here', '--no-sync-history'], {
       ...pinnedDeps(io),
@@ -667,9 +680,14 @@ describe('a pinned overlay with no lock, as a fleet kit ships it', () => {
         verified = true;
         return verify();
       },
+      deviceAttach: () => {
+        granted = true;
+        return notOffered();
+      },
     });
     expect(exits).toEqual([2]);
     expect(verified).toBe(false);
+    expect(granted).toBe(false);
     expect(io.errors()).toContain(
       'Example Org manages this machine name, so it cannot be renamed here.',
     );

@@ -357,6 +357,29 @@ describe('overlayManagedSettings — what an administrator can pin', () => {
       expect(out.controlPlane?.attachedAt).toBe('2024-05-05T00:00:00.000Z');
     });
 
+    it('keeps the pinned label over the user’s own on the same endpoint', () => {
+      // The pin wins for the label as it does for the endpoint: only the attach
+      // time is the user's record. Nothing else asserts the label half.
+      const managed: ManagedSettings = {
+        specVersion: 1,
+        values: { controlPlane: { endpoint: 'https://two.internal', label: 'Corp' } },
+        lockedFields: [],
+      };
+      const out = overlayManagedSettings(
+        settings({
+          controlPlane: {
+            endpoint: 'https://two.internal',
+            label: 'Mine',
+            attachedAt: '2024-05-05T00:00:00.000Z',
+          },
+        }),
+        managed,
+        CLOCK,
+      );
+      expect(out.controlPlane?.label).toBe('Corp');
+      expect(out.controlPlane?.attachedAt).toBe('2024-05-05T00:00:00.000Z');
+    });
+
     it('keeps the user’s own attach time when the administrator MOVED the endpoint', () => {
       // The administrator pinned WHICH deployment, not WHEN this machine joined
       // one: the endpoint is the pin's, the time stays the user's record.

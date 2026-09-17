@@ -605,9 +605,10 @@ async function verifyWithControlPlane(
  * bundle merges over the local one RAISE-ONLY, so one left behind keeps
  * escalating enforcement on a machine nothing manages any more — and nothing
  * would ever refresh or clear it, because the sync that wrote it runs only
- * while attached. The recorded sync outcome goes for the same reason: it
- * describes a deployment this machine is no longer talking to, and leaving it
- * would have status report a stale refusal after a later re-attach.
+ * while attached. The recorded sync and posture outcomes go for the same
+ * reason: each describes a deployment this machine is no longer talking to,
+ * and leaving either would have status report a stale refusal after a later
+ * re-attach.
  */
 export function runDetach(argv: string[], deps: AttachDeps = {}): void {
   const io = deps.prompter ?? terminalPrompter();
@@ -671,10 +672,10 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
 /**
  * Everything derived from an attachment: the cached bundle, the recorded sync
  * outcome, the forward breaker's state, the count of events the batch budget
- * discarded, and how far the history drain had got. All five are meaningless
- * without one, and all five MISLEAD if they survive it — the drop tally most legibly, since a freshly attached machine
- * would otherwise open by reporting events it lost to a deployment it no longer
- * talks to.
+ * discarded, the last posture send's outcome, and how far the history drain had
+ * got. All six are meaningless without one, and all six MISLEAD if they survive
+ * it — the drop tally most legibly, since a freshly attached machine would
+ * otherwise open by reporting events it lost to a deployment it no longer talks to.
  *
  * The breaker file is the one whose survival is more than cosmetic. Left
  * behind, a re-attach against a healthy plane opens with a stale `openedAtMs`,

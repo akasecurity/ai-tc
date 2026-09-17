@@ -11,6 +11,7 @@ import {
 } from '@akasecurity/persistence';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { dbPath as dbPathOf, resolveInventoryContext } from '@akasecurity/plugin-sdk';
+import type * as RemoteModule from '@akasecurity/remote';
 import type { PolicyBundle, StorePostureSnapshot } from '@akasecurity/schema';
 import {
   SOURCE_TOOL,
@@ -20,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveGatewayForConfig } from '../../src/attached/factory.ts';
 import { createPolicyStore } from '../../src/attached/policy-store.ts';
+import { readPostureReportState } from '../../src/attached/posture-report-state.ts';
 
 // What the posture channel actually SENDS once a machine is attached — the
 // factory's own wiring, driven through the real gateway, the real posture
@@ -29,15 +31,23 @@ import { createPolicyStore } from '../../src/attached/policy-store.ts';
 // cache the sync child writes, and only this seam sees the two composed.
 
 const reported: StorePostureSnapshot[] = [];
+// What the faked plane answers a posture send with; a test overrides it to
+// drive the refusal path through the real breaker and the real recorder.
+let reportResponse: () => Promise<unknown> = () => Promise.resolve({ ok: true });
 
-vi.mock('@akasecurity/remote', () => ({
+// The real module with only the client replaced: the forward policy classifies
+// a refused send with the transport's own `statusOf` and `classifyRemoteFailure`,
+// and a bare factory would leave both undefined — every refusal would then
+// reject out of `forward.run` and be recorded as `unreachable`.
+vi.mock('@akasecurity/remote', async (importOriginal) => ({
+  ...(await importOriginal<typeof RemoteModule>()),
   createRemoteClient: () => ({
     ingestEvents: () => Promise.resolve({ accepted: 1, duplicates: 0 }),
     ingestInventory: () => Promise.resolve({}),
     recordAuditEvent: () => Promise.resolve(),
     reportStorePosture: (snapshot: StorePostureSnapshot) => {
       reported.push(snapshot);
-      return Promise.resolve({ ok: true });
+      return reportResponse();
     },
   }),
 }));
@@ -98,6 +108,7 @@ beforeEach(() => {
     '[remote "origin"]\n\turl = git@github.com:org/payments-api.git\n',
   );
   reported.length = 0;
+  reportResponse = () => Promise.resolve({ ok: true });
 });
 
 afterEach(async () => {
@@ -153,5 +164,36 @@ describe('the attached factory wires the posture plugin block', () => {
 
     expect(reported).toHaveLength(1);
     expect(reported[0]).not.toHaveProperty('plugin');
+  });
+});
+
+describe('the attached factory records what the posture send did', () => {
+  // The reporter never sees the raw error — `forward.run` classifies it — and
+  // the factory is the only place the classified result meets the recorder.
+  // `ensureInventory` awaits the send inside its own timeout, so the record is
+  // on disk by the time the pass resolves.
+  it('writes ok beside the breaker state after a landed report', async () => {
+    attach(home);
+    const gateway = resolveGatewayForConfig(configFor(home));
+    opened.push(gateway);
+    await runInventoryPass(gateway);
+
+    expect(reported).toHaveLength(1);
+    const state = readPostureReportState(dataDirOf(home));
+    expect(state?.outcome).toBe('ok');
+    expect(state?.atMs).toBeGreaterThan(0);
+  });
+
+  it("writes the breaker's own classification when the plane refuses the send", async () => {
+    // A 403 is read structurally off `status` (see failure.ts) and lands in
+    // `classifyFailure`, not the 4xx-body `rejected` arm.
+    reportResponse = () => Promise.reject(Object.assign(new Error('refused'), { status: 403 }));
+    attach(home);
+    const gateway = resolveGatewayForConfig(configFor(home));
+    opened.push(gateway);
+    await runInventoryPass(gateway);
+
+    expect(reported).toHaveLength(1);
+    expect(readPostureReportState(dataDirOf(home))?.outcome).toBe('forbidden');
   });
 });

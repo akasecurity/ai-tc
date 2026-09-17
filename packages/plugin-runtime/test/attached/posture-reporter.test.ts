@@ -1,7 +1,12 @@
 import { StorePostureSnapshot } from '@akasecurity/schema';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { PostureReporter, PostureReporterDeps } from '../../src/attached/posture-reporter.ts';
+import type { ForwardResult } from '../../src/attached/forward-policy.ts';
+import type {
+  PostureReporter,
+  PostureReporterDeps,
+  PostureReportOutcome,
+} from '../../src/attached/posture-reporter.ts';
 import {
   createPostureReporter,
   POSTURE_REPORT_INTERVAL_MS,
@@ -59,9 +64,18 @@ function emptyReadoutFixture(): StoreReadout {
 }
 
 // The explicit generic keeps `.mock.calls[n][0]` typed as StorePostureSnapshot
-// without declaring an unused parameter on the implementation itself.
-function mockReport(impl: () => Promise<unknown> = () => Promise.resolve({ ok: true })) {
-  return vi.fn<(snapshot: StorePostureSnapshot) => Promise<unknown>>(impl);
+// without declaring an unused parameter on the implementation itself. The
+// default answers the way `forward.run` does on success — a RESULT, not a bare
+// value — because that result is what `send` writes down.
+function mockReport(
+  impl: () => Promise<ForwardResult<unknown>> = () =>
+    Promise.resolve<ForwardResult<unknown>>({ ok: true, value: undefined }),
+) {
+  return vi.fn<(snapshot: StorePostureSnapshot) => Promise<ForwardResult<unknown>>>(impl);
+}
+
+function mockRecordOutcome() {
+  return vi.fn<(outcome: PostureReportOutcome, atMs: number) => void>();
 }
 
 function mockMarkAttempted(onCall?: (atMs: number) => void) {
@@ -380,5 +394,70 @@ describe('createPostureReporter', () => {
       });
     await run(createPostureReporter(deps));
     expect(report).toHaveBeenCalledTimes(1);
+  });
+
+  it('records ok after a landed send, stamped with the reporter clock', async () => {
+    // The outcome used to end in `send()`'s catch and nowhere else, so nothing
+    // on the machine could say whether the hourly report was landing.
+    const recordOutcome = mockRecordOutcome();
+    await run(createPostureReporter(makeDeps({ recordOutcome })));
+    expect(recordOutcome).toHaveBeenCalledWith('ok', 1_780_000_000_000);
+  });
+
+  // Every member of ForwardFailureReason, spelled out: the reporter passes the
+  // policy's classification through untouched, and a reason the policy can
+  // return that the reporter could not record would read as "no report
+  // recorded yet" in status about a send that did happen.
+  it.each([
+    'unauthorized',
+    'forbidden',
+    'unreachable',
+    'breaker-open',
+    'invalid-request',
+    'route-absent',
+    'rejected',
+  ] as const)(
+    "records the forward policy's own reason when the send returns %s",
+    async (reason) => {
+      // The policy classified the failure once; the reporter writes that
+      // classification down rather than re-deriving anything from an error.
+      const recordOutcome = mockRecordOutcome();
+      const deps = makeDeps({
+        report: mockReport(() => Promise.resolve<ForwardResult<unknown>>({ ok: false, reason })),
+        recordOutcome,
+      });
+      await run(createPostureReporter(deps));
+      expect(recordOutcome).toHaveBeenCalledWith(reason, 1_780_000_000_000);
+    },
+  );
+
+  it('records unreachable when report() rejects outright, and still resolves', async () => {
+    // A `report` that threw rather than answering carries no verdict to name.
+    const recordOutcome = mockRecordOutcome();
+    const deps = makeDeps({
+      report: mockReport(() => Promise.reject(new Error('ECONNREFUSED'))),
+      recordOutcome,
+    });
+    await expect(run(createPostureReporter(deps))).resolves.toBeUndefined();
+    expect(recordOutcome).toHaveBeenCalledWith('unreachable', 1_780_000_000_000);
+  });
+
+  it('records nothing when nothing was sent — the record says what the last SEND did', async () => {
+    const recordOutcome = mockRecordOutcome();
+    const deps = makeDeps({
+      readStore: () => ({ ...emptyReadoutFixture(), readError: true }),
+      recordOutcome,
+    });
+    await run(createPostureReporter(deps));
+    expect(recordOutcome).not.toHaveBeenCalled();
+  });
+
+  it('a recorder that throws costs the record, never the contract that send() resolves', async () => {
+    const deps = makeDeps({
+      recordOutcome: () => {
+        throw new Error('EROFS');
+      },
+    });
+    await expect(run(createPostureReporter(deps))).resolves.toBeUndefined();
   });
 });

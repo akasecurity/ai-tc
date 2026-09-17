@@ -413,6 +413,19 @@ describe('renderAttachedStatus — the posture half', () => {
     expect(out).not.toContain('NOT REPORTED');
   });
 
+  it('reads a clock that is not a finite number as no report at all', () => {
+    // JSON has no NaN, but 1e999 parses as Infinity, and no age can be
+    // rendered from it; the reader refuses the record instead of the line
+    // printing a nonsense age.
+    attach();
+    writeFileSync(postureReportStatePath(dataDir), '{"outcome":"ok","atMs":1e999}', {
+      mode: 0o600,
+    });
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
+    expect(out).toContain('posture    no report recorded yet');
+    expect(out).not.toContain('reported (');
+  });
+
   it('reports a landed send with its AGE — freshness is what the plane grades on', () => {
     attach();
     writePostureReportState(dataDir, { outcome: 'ok', atMs: 1_000_000 - 3 * 60 * 60_000 });

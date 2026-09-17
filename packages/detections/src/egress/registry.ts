@@ -13,10 +13,10 @@ import type {
 
 // Covers every resolution/matching rule below and every field a resolution
 // derives from them (kind, trust, name, category, providerId). The registry
-// data and the exclusion lists are covered separately, by EGRESS_VERSION_MATERIAL
-// embedding PROVIDER_REGISTRY, EXCLUDED_HOST_SUFFIXES and NON_DATA_HOST_SUFFIXES
+// data and the excluded-host list are covered separately, by
+// EGRESS_VERSION_MATERIAL embedding PROVIDER_REGISTRY and EXCLUDED_HOST_SUFFIXES
 // verbatim.
-const EXTRACTOR_VERSION = '2';
+const EXTRACTOR_VERSION = '3';
 
 // One row per known provider. `hostSuffixes` are suffix-matched (see
 // hostMatchesSuffix): 'stripe.com' matches 'api.stripe.com' but never
@@ -599,58 +599,16 @@ export const EXCLUDED_HOST_SUFFIXES = [
   'maven.apache.org',
 ];
 
-// Documentation/help hosts a registered provider owns but that receive no
-// application data. A host here matches a registry entry's hostSuffixes —
-// without this list, e.g. 'docs.github.com' would resolve to GitHub purely
-// because 'github.com' is GitHub's suffix — so `isNonDataHost` is checked
-// only against a `REF` hit: a bare URL reference to one of these hosts names
-// a page a developer read, not a destination anything was sent to, and is
-// dropped. A call carrying verb evidence (GET/POST/PUT/DELETE) to the same
-// host is a real observed request, so it is still recorded under that host's
-// provider. Each of these is confirmed to be a static/reference-only host for
-// its provider, distinct from that provider's real API or ingest host.
-export const NON_DATA_HOST_SUFFIXES = [
-  'docs.github.com',
-  'help.github.com',
-  'docs.stripe.com',
-  'docs.anthropic.com',
-  'docs.datadoghq.com',
-  'docs.sentry.io',
-  'docs.gitlab.com',
-  'docs.newrelic.com',
-  'docs.honeycomb.io',
-  'docs.splunk.com',
-  'help.splunk.com',
-  'docs.cohere.com',
-  'docs.mistral.ai',
-  'docs.mixpanel.com',
-  'docs.mongodb.com',
-];
-
 // Exact match or dotted-suffix match — 'stripe.com' matches 'api.stripe.com'
 // but never 'evilstripe.com' (no dot boundary).
 function hostMatchesSuffix(host: string, suffix: string): boolean {
   return host === suffix || host.endsWith(`.${suffix}`);
 }
 
-/**
- * True when `host` matches one of `NON_DATA_HOST_SUFFIXES` — a documentation
- * or help host a registered provider owns. Lowercases before matching, and
- * matches by exact host or dotted suffix (see `hostMatchesSuffix`), so
- * 'developer.docs.github.com' matches 'docs.github.com' while
- * 'evildocs.github.com' does not (no dot boundary). Used by
- * `resolveEndpointHit` to drop only the `REF` hits against these hosts,
- * never a hit carrying verb evidence.
- */
-export function isNonDataHost(host: string): boolean {
-  const h = host.toLowerCase();
-  return NON_DATA_HOST_SUFFIXES.some((suffix) => hostMatchesSuffix(h, suffix));
-}
-
 // The scanner's ledger key material: this changes whenever the registry
-// data, the exclusion lists, or the resolution rules change, forcing a
+// data, the excluded-host list, or the resolution rules change, forcing a
 // one-time re-extraction.
-export const EGRESS_VERSION_MATERIAL = `${EXTRACTOR_VERSION}\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify(EXCLUDED_HOST_SUFFIXES)}\n${JSON.stringify(NON_DATA_HOST_SUFFIXES)}`;
+export const EGRESS_VERSION_MATERIAL = `${EXTRACTOR_VERSION}\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify(EXCLUDED_HOST_SUFFIXES)}`;
 
 /**
  * The registry entry whose hostSuffixes best matches `host`, among the given
@@ -779,11 +737,6 @@ function ipv4MappedAddress(host: string): string | null {
  * host containing ':' never qualifies for the single-label internal rule, so
  * an IPv6-shaped literal that fails every literal check above still resolves
  * external/unverified — never the trusted-internal fallback.
- *
- * This function has no notion of a hit's method, so it does NOT apply
- * `isNonDataHost` — a documentation host still resolves to its provider
- * here. That exclusion is scoped to `REF` hits and applied by the caller
- * (`resolveEndpointHit`), which does see the method.
  */
 export function resolveHost(
   host: string,

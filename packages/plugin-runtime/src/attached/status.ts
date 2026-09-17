@@ -1,4 +1,5 @@
 import { readControlPlaneCredentialFile, readWorkspaceSettings } from '@akasecurity/persistence';
+import { readHookFailOpens } from '@akasecurity/plugin-sdk';
 import type { WorkspaceSettings } from '@akasecurity/schema';
 import {
   controlPlaneName,
@@ -109,7 +110,11 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
     const nowMs = (deps.now ?? (() => Date.now()))();
     const settings = readWorkspaceSettings(deps.base);
     if (!isAttached(settings) || settings.controlPlane === undefined) {
-      return ['AKA: standalone (not attached)', '  no control plane configured'].join('\n');
+      return [
+        'AKA: standalone (not attached)',
+        '  no control plane configured',
+        ...failOpenLines(deps.dataDir, nowMs),
+      ].join('\n');
     }
     const connection = settings.controlPlane;
     // The WIDE read: this block prints `keyPrefix`, which the narrow state
@@ -159,6 +164,7 @@ export function renderAttachedStatus(deps: RenderAttachedStatusDeps): string {
       ...forwardLines(deps.dataDir, nowMs),
       ...postureLines(deps.dataDir, nowMs),
       ...historyLines(deps.dataDir, settings, connection.endpoint, nowMs),
+      ...failOpenLines(deps.dataDir, nowMs),
     ].join('\n');
   } catch {
     // A status renderer that throws is worse than one that says little.
@@ -412,6 +418,30 @@ function postureLines(dataDir: string, nowMs: number): string[] {
     lines.push(`             ${REFUSAL_LINES[state.outcome]}`);
   }
   return lines;
+}
+
+/**
+ * How often a hook has thrown and fallen open on this machine, if ever.
+ *
+ * A fail-open is silent by contract — no output, exit 0, the session never
+ * notices — so a machine whose hooks throw on every call reads exactly like
+ * one whose hooks run: nothing is scanned, nothing is forwarded, and every
+ * other line here describes a control plane that is simply not being asked.
+ * The count the catch writes is the one local trace. Rendered in the attached
+ * AND the standalone block, because the guarantee it describes holds on both,
+ * and read from the SDK's own file rather than plumbed a value, because the
+ * process that failed open exited long before anyone ran `aka status`.
+ *
+ * "at least", because concurrent hooks increment without a lock — the same
+ * floor the forward drop tally states.
+ */
+function failOpenLines(dataDir: string, nowMs: number): string[] {
+  const tally = readHookFailOpens(dataDir);
+  if (!tally) return [];
+  return [
+    `  hooks      failed open at least ${String(tally.failOpens)} time(s), ` +
+      `last ${ageLine(tally.lastAtMs, nowMs)}`,
+  ];
 }
 
 /**

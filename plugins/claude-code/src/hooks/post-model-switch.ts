@@ -23,7 +23,7 @@
 import { loadConfig } from '@akasecurity/plugin-sdk';
 
 import { runPostModelSwitch } from './model-switch-run.ts';
-import { getString, parseJson, readStdin } from './shared.ts';
+import { countFailOpen, getString, parseJson, readStdin } from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 
 async function main(): Promise<void> {
@@ -38,6 +38,8 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch {
-  // Fail-open: never break the user's session
+  // Fail-open: never break the user's session — but count the exit, so
+  // `aka status` can say the hooks have been failing open on this machine.
+  countFailOpen();
 }
 process.exit(0);

@@ -10,6 +10,7 @@ import {
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
+import { hookFailOpensPath, recordHookFailOpen } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { recordForwardDrops } from '../../src/attached/forward-drops.ts';
@@ -462,6 +463,39 @@ describe('renderAttachedStatus — the posture half', () => {
     const out = renderAttachedStatus({ base: root, settingsDir, dataDir });
     expect(out).not.toContain(SECRET);
     expect(out).toContain('no report recorded yet');
+  });
+});
+
+describe('renderAttachedStatus — hook fail-opens', () => {
+  // Failing open is the absence of output, so a hook that throws on every
+  // call leaves no trace anywhere else in this block: nothing is scanned,
+  // nothing is forwarded, and every other line describes a plane that is
+  // simply not being asked. The catch counts the exit; this is where it shows.
+  it('shows no hooks line while nothing has failed open', () => {
+    attach();
+    expect(renderAttachedStatus({ base: root, settingsDir, dataDir })).not.toContain('failed open');
+  });
+
+  it('counts the exits on an attached machine, with the age of the last one', () => {
+    attach();
+    recordHookFailOpen(dataDir, 900_000);
+    recordHookFailOpen(dataDir, 940_000);
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
+    // "at least", because concurrent hooks increment without a lock.
+    expect(out).toContain('hooks      failed open at least 2 time(s), last 1m ago');
+  });
+
+  it('counts them on a standalone machine too — the guarantee holds on both', () => {
+    recordHookFailOpen(dataDir, 900_000);
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
+    expect(out).toContain('not attached');
+    expect(out).toContain('failed open at least 1 time(s)');
+  });
+
+  it('renders nothing for a corrupt tally', () => {
+    attach();
+    writeFileSync(hookFailOpensPath(dataDir), '{"failOpens":', { mode: 0o600 });
+    expect(renderAttachedStatus({ base: root, settingsDir, dataDir })).not.toContain('failed open');
   });
 });
 

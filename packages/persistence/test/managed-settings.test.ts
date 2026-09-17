@@ -357,7 +357,9 @@ describe('overlayManagedSettings — what an administrator can pin', () => {
       expect(out.controlPlane?.attachedAt).toBe('2024-05-05T00:00:00.000Z');
     });
 
-    it('stamps a fresh attach time when the administrator MOVED the endpoint', () => {
+    it('keeps the user’s own attach time when the administrator MOVED the endpoint', () => {
+      // The administrator pinned WHICH deployment, not WHEN this machine joined
+      // one: the endpoint is the pin's, the time stays the user's record.
       const managed: ManagedSettings = {
         specVersion: 1,
         values: { controlPlane: { endpoint: 'https://two.internal' } },
@@ -373,6 +375,43 @@ describe('overlayManagedSettings — what an administrator can pin', () => {
         managed,
         CLOCK,
       );
+      expect(out.controlPlane?.endpoint).toBe('https://two.internal');
+      expect(out.controlPlane?.attachedAt).toBe('2024-05-05T00:00:00.000Z');
+    });
+
+    it('reports the same attach time on every read, whatever the clock says', () => {
+      // The re-stamp this replaced: a user record for any OTHER endpoint minted
+      // a fresh time on every read, so the machine reported having attached
+      // "just now" for ever.
+      const managed: ManagedSettings = {
+        specVersion: 1,
+        values: { controlPlane: { endpoint: 'https://two.internal' } },
+        lockedFields: [],
+      };
+      const user = settings({
+        controlPlane: { endpoint: 'https://one.internal', attachedAt: '2024-05-05T00:00:00.000Z' },
+      });
+      const first = overlayManagedSettings(user, managed, CLOCK);
+      const later = overlayManagedSettings(
+        user,
+        managed,
+        () => new Date('2027-01-01T00:00:00.000Z'),
+      );
+      expect(later.controlPlane?.attachedAt).toBe(first.controlPlane?.attachedAt);
+    });
+
+    it('mints a time only where the user holds no record at all', () => {
+      // The descriptor's shape requires one and nothing else on this path can
+      // supply it. Pinned so the residual mint is a decision on record rather
+      // than a leftover: a cleared file, or an enrolment whose write was an
+      // exact echo of the pin (which the writer strips rather than persists),
+      // still reads the moment of reading here.
+      const managed: ManagedSettings = {
+        specVersion: 1,
+        values: { controlPlane: { endpoint: 'https://two.internal' } },
+        lockedFields: [],
+      };
+      const out = overlayManagedSettings(settings(), managed, CLOCK);
       expect(out.controlPlane?.endpoint).toBe('https://two.internal');
       expect(out.controlPlane?.attachedAt).toBe('2026-03-04T05:06:07.000Z');
     });

@@ -203,14 +203,32 @@ export function overlayManagedSettings(
   if (values.controlPlane !== undefined) {
     merged.controlPlane = {
       ...values.controlPlane,
-      // The administrator pinned WHICH deployment, not WHEN this machine
-      // joined it. Keep the user's own attach time when the endpoint is
-      // unchanged, so a managed machine does not appear to re-attach on every
-      // read; stamp a fresh one when the administrator moved it.
-      attachedAt:
-        settings.controlPlane?.endpoint === values.controlPlane.endpoint
-          ? settings.controlPlane.attachedAt
-          : now().toISOString(),
+      // The administrator pinned WHICH deployment, never WHEN this machine
+      // joined one, so the attach time is the user's own record — the one
+      // `aka attach` stamped into their file — whether the pin names that same
+      // endpoint or has since moved. Minting one here whenever the endpoints
+      // differed made every read of a moved or cleared descriptor report a
+      // machine that had attached "just now", for ever.
+      //
+      // A machine holding NO record still gets a time minted per read, because
+      // the descriptor's shape requires one and nothing else on this path can
+      // supply it. That is the shape of a descriptor the user cleared, and of
+      // an enrolment whose write was an exact echo of the pin — endpoint and
+      // label alike — which the writer strips rather than persists (see
+      // withoutManagedKeys in settings.ts). There the status line and the
+      // history drain's first boundary read the moment of reading, as they
+      // did before this change; closing that needs a time the pin cannot
+      // carry, and is not attempted here.
+      //
+      // Stripping an echo also leaves an OLDER record standing. A file that
+      // still names the deployment this machine attached to before the pin
+      // named another keeps that earlier time through an enrolment that echoes
+      // the pin, and the history drain freezes the new deployment's first
+      // boundary at it — so activity recorded between that attach and the
+      // enrolment falls on the live side for a deployment that never received
+      // it live. Closing that needs the same time, and is not attempted here
+      // either.
+      attachedAt: settings.controlPlane?.attachedAt ?? now().toISOString(),
     };
   }
   if (values.historicalAccess !== undefined) merged.historicalAccess = values.historicalAccess;

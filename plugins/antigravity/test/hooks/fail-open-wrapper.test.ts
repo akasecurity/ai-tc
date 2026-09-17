@@ -11,8 +11,11 @@
 //
 // `runHookFailOpen` ends in `process.exit(0)`, so both process-level seams are
 // stubbed: `exit` (which would otherwise kill the vitest worker) and
-// `stdout.write` (the channel under assertion). Nothing else is faked — the
-// real `emit`, the real race, and the real watchdog all run.
+// `stdout.write` (the channel under assertion). The fail-open counter is
+// injected too, so no case starts the detached child a shipped hook starts —
+// that child and its spawn are covered by `fail-open-count.test.ts` and the
+// bundle e2e. Nothing else is faked — the real `emit`, the real race, and the
+// real watchdog all run.
 //
 // One consequence is worth stating because it cost a hole once. `driveWrapper`
 // invokes the write callback IMMEDIATELY, which collapses "handed to the
@@ -31,6 +34,8 @@ interface WrapperRun {
   writes: string[];
   /** Exit codes passed to `process.exit`, in order. */
   exits: (number | undefined)[];
+  /** Every write, fail-open count and exit, in the order the wrapper made them. */
+  sequence: ('write' | 'count' | 'exit')[];
 }
 
 /**
@@ -43,15 +48,19 @@ interface WrapperRun {
  * the test stopped the clock rather than because the wrapper holds the line.
  *
  * `settle` lets a case wait for work the wrapper deliberately does not await.
+ * `count` stands in for the fail-open counter; whatever it does, the call is
+ * recorded first.
  */
 async function driveWrapper(
   main: () => Promise<unknown>,
   failOpen: unknown,
   watchdogMs?: number,
   settle: () => Promise<void> = () => Promise.resolve(),
+  count: () => void = () => undefined,
 ): Promise<WrapperRun> {
   const writes: string[] = [];
   const exits: (number | undefined)[] = [];
+  const sequence: WrapperRun['sequence'] = [];
 
   // `process.exit` is declared to return `never`, which no stub can satisfy —
   // the cast is to a concrete signature rather than to `any`, so the argument
@@ -60,6 +69,7 @@ async function driveWrapper(
     code?: string | number | null,
   ): undefined => {
     exits.push(typeof code === 'number' ? code : undefined);
+    sequence.push('exit');
     return undefined;
   }) as unknown as (code?: string | number | null) => never);
 
@@ -69,18 +79,22 @@ async function driveWrapper(
     .spyOn(process.stdout, 'write')
     .mockImplementation((chunk: string | Uint8Array, cb?: unknown): boolean => {
       writes.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString());
+      sequence.push('write');
       if (typeof cb === 'function') (cb as () => void)();
       return true;
     });
 
   try {
-    await runHookFailOpen(main, failOpen, watchdogMs);
+    await runHookFailOpen(main, failOpen, watchdogMs, () => {
+      sequence.push('count');
+      count();
+    });
     await settle();
   } finally {
     writeSpy.mockRestore();
     exitSpy.mockRestore();
   }
-  return { writes, exits };
+  return { writes, exits, sequence };
 }
 
 /**
@@ -189,6 +203,88 @@ describe('runHookFailOpen — every path produces bytes, because silence is a de
     } finally {
       process.off('unhandledRejection', onUnhandled);
     }
+  });
+});
+
+describe('runHookFailOpen — counts a failed body once, between its payload and its exit', () => {
+  // `aka status` renders this count, so it has to mean a body that FAILED — one
+  // that threw or outran the watchdog — and nothing else. It is asked for only
+  // once the payload has been written, so counting cannot delay the allow, and
+  // before the exit, since nothing runs after it. And asking can never cost the
+  // exit: anything thrown past `emit` would skip `process.exit(0)` and reject
+  // the entry's top-level await, which exits non-zero, a deny on this host.
+
+  it('counts a body that throws, after its payload and before its exit', async () => {
+    const run = await driveWrapper(() => Promise.reject(new Error('boom')), ALLOW);
+    expect(soleDecision(run)).toEqual(ALLOW);
+    expect(run.sequence).toEqual(['write', 'count', 'exit']);
+  });
+
+  it('counts a body that throws synchronously', async () => {
+    const run = await driveWrapper(() => {
+      throw new Error('sync boom');
+    }, ALLOW);
+    expect(soleDecision(run)).toEqual(ALLOW);
+    expect(run.sequence).toEqual(['write', 'count', 'exit']);
+  });
+
+  it('counts a body that outruns the watchdog, after its payload and before its exit', async () => {
+    const run = await driveWrapper(() => new Promise<never>(() => undefined), ALLOW, 5);
+    expect(soleDecision(run)).toEqual(ALLOW);
+    expect(run.sequence).toEqual(['write', 'count', 'exit']);
+  });
+
+  it('counts once when the body rejects after losing to the watchdog', async () => {
+    // The run was counted when the watchdog won. The late rejection is the same
+    // failure arriving a second time, and counting it too would count every
+    // hook that hangs and then errors twice.
+    let fail!: (e: Error) => void;
+    const pending = new Promise<never>((_resolve, reject) => {
+      fail = reject;
+    });
+    const run = await driveWrapper(
+      () => pending,
+      ALLOW,
+      5,
+      async () => {
+        fail(new Error('late boom'));
+        await pending.catch(() => undefined);
+        await new Promise((r) => setImmediate(r));
+      },
+    );
+    expect(soleDecision(run)).toEqual(ALLOW);
+    expect(run.sequence).toEqual(['write', 'count', 'exit']);
+  });
+
+  it('does not count a body that returns its own decision', async () => {
+    // A negative control: a wrapper that counted every run would satisfy each
+    // counting case above.
+    const deny = { decision: 'deny', reason: 'pointer' };
+    const run = await driveWrapper(() => Promise.resolve(deny), ALLOW);
+    expect(soleDecision(run)).toEqual(deny);
+    expect(run.sequence).toEqual(['write', 'exit']);
+  });
+
+  it('does not count a body that declines to decide', async () => {
+    // Declining is an ordinary answer — the event's own "carry on" — not a
+    // failure, even though it writes the same payload a failure does.
+    const run = await driveWrapper(() => Promise.resolve(undefined), ALLOW);
+    expect(soleDecision(run)).toEqual(ALLOW);
+    expect(run.sequence).toEqual(['write', 'exit']);
+  });
+
+  it('still exits 0 after one payload when the count cannot be taken', async () => {
+    const run = await driveWrapper(
+      () => Promise.reject(new Error('boom')),
+      ALLOW,
+      undefined,
+      undefined,
+      () => {
+        throw new Error('spawn refused');
+      },
+    );
+    expect(soleDecision(run)).toEqual(ALLOW);
+    expect(run.sequence).toEqual(['write', 'count', 'exit']);
   });
 });
 

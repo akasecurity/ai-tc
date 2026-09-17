@@ -12,6 +12,7 @@ import type { TriageHit } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildTriageHit, scanHistory } from '../../src/history/scan.ts';
+import { expectNoEchoOf } from '../helpers/no-echo.ts';
 
 // In standalone mode the effective ruleset is the store's INSTALLED snapshot
 // (seeded from bundledDetections() by resolveDataGateway), not ad-hoc packs
@@ -187,9 +188,9 @@ describe('buildTriageHit', () => {
       finding(A, aStart + A.length + 1),
       finding(B, 0),
     ]);
-    expect(hit.context).not.toContain(A); // positive control: the fallback ran
+    expectNoEchoOf(hit.context, A); // positive control: the fallback ran
     expect(hit.context).toContain('[REDACTED]');
-    expect(hit.context).not.toContain(fragment); // the claim under test
+    expectNoEchoOf(hit.context, fragment); // the claim under test
   });
 
   it('slices the correct context window and carries safeMaskedMatch(rawMatch) as maskedMatch', () => {

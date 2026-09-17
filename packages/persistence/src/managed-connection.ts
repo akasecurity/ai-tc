@@ -115,6 +115,10 @@ function modeHold(governed: GovernedConnection): ConnectionRefusal | null {
  * enrolment path — so long as it keeps whatever name a lock freezes. Under a lock
  * with no pin the descriptor held is the user's own last choice, which is exactly
  * what the lock freezes.
+ *
+ * An EMPTY label is read as no label. A stored name cannot be empty
+ * (`ControlPlaneConnection.label` is `min(1)`), so an empty one names nothing,
+ * and deciding that here means no surface has to normalise it first.
  */
 export function managedAttachRefusal(
   request: { endpoint: string; label?: string | undefined },
@@ -124,6 +128,7 @@ export function managedAttachRefusal(
   const governed = readGovernedConnection(base, managedOverride);
   if (governed === null) return null;
   const { who, settings, frozen, planePinned, pinnedLabel } = governed;
+  const label = request.label === '' ? undefined : request.label;
 
   const held = modeHold(governed);
   if (held?.reason === 'held-standalone') return held;
@@ -138,20 +143,15 @@ export function managedAttachRefusal(
   // the administrator's — so a different label is refused, and so is leaving it
   // off, which trades the name for the endpoint. Both would otherwise be refused
   // only after the key had been sent.
-  if (frozen && current !== undefined && request.label !== current.label) {
-    return request.label === undefined
+  if (frozen && current !== undefined && label !== current.label) {
+    return label === undefined
       ? { reason: 'label-required', ...who }
       : { reason: 'pinned-label', ...who };
   }
   // Under a pin with no lock, only a name the ADMINISTRATOR gave is put back by
   // the next read. A name the user gave the pinned deployment is theirs, and
   // renaming it is not refused.
-  if (
-    planePinned &&
-    pinnedLabel !== undefined &&
-    request.label !== undefined &&
-    request.label !== pinnedLabel
-  ) {
+  if (planePinned && pinnedLabel !== undefined && label !== undefined && label !== pinnedLabel) {
     return { reason: 'pinned-label', ...who };
   }
   return null;

@@ -193,6 +193,25 @@ describe('managedAttachRefusal — the name a governed connection keeps', () => 
     });
   });
 
+  // A stored name cannot be empty (`ControlPlaneConnection.label` is `min(1)`), so
+  // an empty one is no name at all, whichever surface passes it through.
+  it('reads an empty name under a lock as leaving the name off, not as a rename', () => {
+    attachOwnFile(OWN, 'Old');
+    expect(managedAttachRefusal({ endpoint: OWN, label: '' }, store.home, lockOnly)).toEqual({
+      reason: 'label-required',
+      organization: 'Example Org',
+    });
+  });
+
+  it('lets an empty name through under a lock on a deployment that has none', () => {
+    attachOwnFile(OWN);
+    expect(managedAttachRefusal({ endpoint: OWN, label: '' }, store.home, lockOnly)).toBeNull();
+  });
+
+  it('lets an empty name through under a pin that names the deployment', () => {
+    expect(managedAttachRefusal({ endpoint: PINNED, label: '' }, store.home, fleet)).toBeNull();
+  });
+
   it('under a pin that names no label, leaves renaming the user’s own name to the user', () => {
     attachOwnFile(PINNED, 'MyBox');
     const unnamed: ManagedSettings = {

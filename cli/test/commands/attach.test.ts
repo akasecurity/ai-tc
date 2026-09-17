@@ -871,6 +871,23 @@ describe('a lock on the connection, and the name it freezes', () => {
     expect(readWorkspaceSettings(base).controlPlane?.label).toBe('Old');
   });
 
+  it('reads an empty --label as leaving it off, not as a rename', async () => {
+    // A stored name cannot be empty, so `--label ''` names nothing: it gets the
+    // refusal that says how to keep the name, before any key is sent.
+    await attachNamed();
+    const { io, verified } = await attachUnder(locked, [
+      '--url',
+      ENDPOINT,
+      '--label',
+      '',
+      '--no-sync-history',
+    ]);
+    expect(exits).toEqual([2]);
+    expect(verified).toBe(false);
+    expect(io.errors()).toContain('--label');
+    expect(io.output()).toBe('');
+  });
+
   it('refuses leaving off a name the user gave a pinned deployment, before any key is sent', async () => {
     // The same refusal where an endpoint-only pin sits beside the lock: the
     // user's own name is what every read shows there, so the lock freezes it.

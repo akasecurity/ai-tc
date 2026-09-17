@@ -265,3 +265,82 @@ looked at both slots. Each case writes its manifest to a temp directory of its o
 second case reading the first one's answer.
 
 Verified: `plugins/copilot` 107/107 across 10 files, lint and typecheck clean.
+
+---
+
+## Where this attempt stopped, and what the next one should do
+
+**The plan is NOT fully implemented, and no pull request was opened.** 22 of its ~60 steps
+are landed, tested and pushed. The rest are untouched. Per the contract a partially
+implemented plan does not get a PR, so the work sits on
+`devengers/github-copilot-cover-the-cli-vs-code-agent-mode-cd_mu3ykpbj1io` for the next
+attempt to build on.
+
+### Landed and verified
+
+| Step   | State                                                                     |
+| ------ | ------------------------------------------------------------------------- |
+| A1–A5  | done                                                                      |
+| A6     | **partial** — manifest + guard exist, but only `preToolUse` is registered |
+| B1–B4  | done                                                                      |
+| B5     | **not done, deliberately** — see below                                    |
+| C1–C7  | done                                                                      |
+| D1–D4  | done                                                                      |
+| I1, I2 | done, with the ordering violation recorded                                |
+| K5     | done early, out of order, because it had to be                            |
+
+Everything else — E, F, G, H, I3, J, K1–K4, K6–K8, L — is untouched.
+
+### Verification as of the last commit
+
+- `plugins/copilot`: 107 tests, 10 files, green. `eslint src test *.config.*` clean,
+  `tsc --noEmit` clean, coverage above its measured floor.
+- `packages/eslint-config`: 1531 tests, 23 files, green — this is the suite carrying
+  `effective-config`, `no-network`, `no-network-runtime`, `coverage-config`,
+  `hook-timeout-ratchet`, `package-walls`, `required-checks`, `claude-md`,
+  `test-only-seam` and `inline-disables`, so the cross-cutting guards all saw this diff.
+- `packages/persistence/test/repositories`: 676 tests, 31 files, green.
+- `packages/schema`: 1110 tests green.
+
+Two verifications were **not** possible here and the next attempt should not assume them:
+
+1. **`pnpm lint` over the whole workspace did not complete.** `web-ui:lint` is OOM-killed
+   in this container (exit 137). Every package this diff touches was linted individually
+   and is clean; `web-ui` is untouched by it.
+2. **Nothing ran on Node 24.** See the Environment note at the top.
+
+### Two decisions the next attempt inherits
+
+**B5 (`SCAN_COVERAGE`) is deliberately left at `{ coverage: 0, supported: false }`.** That
+number is a claim about what the shipped plugin scans. One hook exists and it covers one
+event, so any non-zero value would be false today. It is owed once section E lands — and
+when it does, the argument the plan asks for has to account for the asymmetry between the
+two surfaces this one row covers: the CLI has prompt capture plus input AND output rewrite
+(richer than Antigravity's 60), while VS Code Local has no output rewrite at all and every
+one of its rows is unverified. One number over two surfaces of different strength is the
+open question, not the number itself.
+
+**A6 registers one event.** Adding entries for events whose scripts do not exist would
+fail at spawn, which on this host is a deny — strictly worse than a missing entry. The
+manifest guard (`test/hooks-manifest.test.ts`) checks each command against the BUILT
+`scripts/` directory, so it will refuse an entry added ahead of its script.
+
+### The shortest path back in
+
+Sections E and F are next and are ordinary work: each remaining hook is a Codex sibling
+plus the dialect parameter this package already threads everywhere. Three traps the plan
+names are still unpaid, and all three are in E:
+
+- **E1**: the recordings show `userPromptSubmitted` stamped 20 ms BEFORE `sessionStart`, so
+  the once-per-session pass must tolerate running after the session's first prompt. Drive
+  the recorded order, not the intuitive one.
+- **E3**: `postToolUse.toolResult.resultType` is `"success"` for a command that exited 1.
+  Anything reading it as an exit status is wrong and will look right. The fixture that
+  proves it is already in the tree (`postToolUse.json`, the `false` command).
+- **E4**: `preToolUse` and `permissionRequest` both fire for one call. Scan on `preToolUse`
+  only — `permissionRequest.toolInput` holds `command` alone and scanning it would silently
+  skip `description`, which this package's CLI field table does scan.
+
+After E, the tsup `entry` map and `hooks.json` grow together, and K1's e2e becomes
+writable — which is the gate that turns every absence assertion in this package from a
+claim into a check.

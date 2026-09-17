@@ -4,7 +4,7 @@
 // plugins/claude-code/src/hooks/shared.ts — Codex's hook stdin/stdout
 // contract is the same JSON-over-stdio shape.
 
-import { resolveRepo } from '@akasecurity/plugin-sdk';
+import { dataDir, recordHookFailOpen, resolveRepo } from '@akasecurity/plugin-sdk';
 import type { EventMetadata } from '@akasecurity/schema';
 
 export async function readStdin(): Promise<string> {
@@ -91,4 +91,27 @@ export function baseMetadata(input: Record<string, unknown>): EventMetadata | un
   const repo = resolveRepo(getString(input, 'cwd') ?? process.cwd());
   if (repo) metadata.repo = repo;
   return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
+// The one thing a hook does on its way out of its fail-open catch: count the
+// exit, so `aka status` can say the hooks have been failing open on this
+// machine. Nothing here may throw: a throw from inside that catch would escape
+// as an uncaught exception and turn a silent allow into a non-zero exit, which
+// is the one outcome the catch exists to prevent. `recordHookFailOpen`
+// swallows every fs error by contract, but the home directory is resolved
+// before it is called — and `os.homedir()` throws when the platform cannot
+// name one — so the whole body is guarded here as well. Stdout is untouched,
+// so the silence Codex reads as "no opinion" is preserved exactly.
+//
+// `base` is the ~/.aka root and exists for tests; a hook passes nothing and
+// resolves the same home `loadConfig` does (`homedir()`, which honours the
+// HOME the e2e matrix injects). Resolved from the layout rather than from a
+// config read, because a settings read is one more thing that could be what
+// threw.
+export function countFailOpen(base?: string): void {
+  try {
+    recordHookFailOpen(dataDir(base), Date.now());
+  } catch {
+    // A fail-open exit that cannot even be located is still a fail-open exit.
+  }
 }

@@ -1,17 +1,44 @@
 import type { StorePosturePlugin, StorePostureSnapshot } from '@akasecurity/schema';
 
+import type { ForwardFailureReason, ForwardResult } from './forward-policy.ts';
 import type { StoreReadout } from './posture-snapshot.ts';
 import type { PostureStore } from './posture-store.ts';
 import { REQUEST_TIMEOUT_MS, withTimeout } from './with-timeout.ts';
 
 export const POSTURE_REPORT_INTERVAL_MS = 60 * 60 * 1000;
 
+/**
+ * What one posture send did, as `aka status` renders it: `ok`, or the forward
+ * policy's own reason for the send not landing. The same closed enum the
+ * breaker file carries, so the two lines in status cannot disagree about what
+ * a 403 is called — and nothing else: no error text, no endpoint, nothing a
+ * rendered line could leak.
+ */
+export type PostureReportOutcome = 'ok' | ForwardFailureReason;
+
 export interface PostureReporterDeps {
-  report(snapshot: StorePostureSnapshot): Promise<unknown>; // client.reportStorePosture
+  /**
+   * The send, through the forward breaker:
+   * `forward.run(() => client.reportStorePosture(snapshot))`. What it resolves
+   * with is what `send` writes down — the breaker has already classified a
+   * refusal, an open breaker or a body this build refused to send, and the
+   * reporter never re-derives from an error what the policy has decided.
+   */
+  report(snapshot: StorePostureSnapshot): Promise<ForwardResult<unknown>>;
   store: PostureStore;
   readStore(): StoreReadout; // () => readStorePosture(config.dbPath)
   hostname(): string; // os.hostname
   now(): number; // Date.now
+  /**
+   * Where `send` records what the last send did, for `aka status` to render.
+   * Optional because an embedder or a test may have nowhere to record it, and
+   * the snapshot is worth sending either way. Called AFTER the send has
+   * settled, never before: the record says what the last send DID, and a stamp
+   * written ahead of the answer would report an outcome nobody has observed.
+   * Best-effort — a recorder that throws costs the record, never the contract
+   * that `send` resolves.
+   */
+  recordOutcome?(outcome: PostureReportOutcome, atMs: number): void;
   /**
    * The reporting plugin's identity and policy freshness, or `undefined` when
    * this build does not know it (an embedder, or a test). The factory wires
@@ -50,12 +77,18 @@ export interface PostureReporter {
    * maybeReportPosture call was.
    */
   prepare(): Promise<StorePostureSnapshot | null>;
-  /** Phase 2: the network send of a prepared snapshot. Fail-open: any error is silence. */
+  /**
+   * Phase 2: the network send of a prepared snapshot. Fail-open: any error is
+   * silence to the SESSION. It is not silence to `aka status` — what the send
+   * did is handed to `recordOutcome`, which is the one trace a refused or
+   * unreachable report leaves on the machine.
+   */
   send(snapshot: StorePostureSnapshot): Promise<void>;
 }
 
 /**
- * Throttled posture self-report. Fail-open discipline: any error is silence.
+ * Throttled posture self-report. Fail-open discipline: any error is silence to
+ * the session, and one line in `aka status` (see `PostureReporterDeps.recordOutcome`).
  *
  * The throttle advances on ATTEMPT, not on success. It reads as the more
  * forgiving choice to retry a failed send next session instead of waiting out
@@ -142,9 +175,21 @@ export function createPostureReporter(deps: PostureReporterDeps): PostureReporte
 
   async function send(snapshot: StorePostureSnapshot): Promise<void> {
     try {
-      await deps.report(snapshot);
+      let outcome: PostureReportOutcome;
+      try {
+        const result = await deps.report(snapshot);
+        outcome = result.ok ? 'ok' : result.reason;
+      } catch {
+        // A `report` that rejected rather than answering carries no verdict to
+        // name, which is the bucket `unreachable` exists for. The factory's
+        // `report` is `forward.run`, which never rejects; this arm is for an
+        // embedder's.
+        outcome = 'unreachable';
+      }
+      deps.recordOutcome?.(outcome, deps.now());
     } catch {
-      // fail-open: posture is telemetry; the session must never notice
+      // fail-open: posture is telemetry; the session must never notice. A
+      // recorder that throws lands here too, and costs only the record.
     }
   }
 

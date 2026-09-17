@@ -3,6 +3,7 @@ export {
   ATTACHED_FORWARD_DROPS_FILENAME,
   ATTACHED_FORWARD_STATE_FILENAME,
   ATTACHED_HISTORY_SYNC_STATE_FILENAME,
+  ATTACHED_POSTURE_REPORT_FILENAME,
   ATTACHED_SYNC_STATE_FILENAME,
   clearAttachmentDerivedState,
   POLICY_CACHE_FILENAME,
@@ -85,6 +86,11 @@ export {
   migrateLegacyLayout,
   settingsDir,
 } from './local-layout.ts';
+export {
+  managedAttachRefusal,
+  managedConnectionHold,
+  managedDetachRefusal,
+} from './managed-connection.ts';
 export {
   lockedAmong,
   managedContextOf,

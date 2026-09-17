@@ -1,0 +1,13 @@
+{
+  "hook_event_name": "PostToolUse",
+  "timestamp": 1788547866546,
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "cwd": "/Users/dev/ai-tc",
+  "tool_name": "run_in_terminal",
+  "tool_input": {
+    "command": "false",
+    "explanation": "Run the requested false command",
+    "isBackground": false
+  },
+  "tool_response": "\n<shellId: 0 completed with exit code 1>"
+}

@@ -201,3 +201,33 @@ suites. It is a floor over a part-built package, not this adapter's steady state
 
 Verified: `plugins/copilot` 90/90 green across 8 files, `eslint src test *.config.*` clean,
 `tsc --noEmit` clean, `coverage-config.test.js` 17/17.
+
+### I1 + I2 — the provisional fixtures and the provenance guard
+
+- `test/fixtures/vscode-provisional/` — eight payloads, one per VS Code event, plus a
+  README that opens by saying no live session produced any of them. The unverified fields
+  are grouped by **how badly a wrong guess would hurt** rather than by confidence: "would
+  silently scan nothing", "would silently mis-route the decision", "would change the
+  failure convention". The vendor's self-contradiction on tool ids
+  (`runTerminalCommand`/`editFiles` in the hook samples against
+  `run_in_terminal`/`create_file` in the compatibility note) is written down with the
+  consequence attached — if the samples are right, every VS Code enforcement row in this
+  package is inert.
+- `test/fixture-provenance.test.ts` — holds each directory to its own README, and holds the
+  READMEs to saying the opposite things they exist to say. A recording the `cli/` README
+  does not describe fails; a `vscode-provisional/` README with the "nothing here was
+  recorded" sentence softened fails. The `cli/` case carries a positive control (the README
+  must name the CLI version and the isolated home) so a README emptied to a filename list
+  could not satisfy the containment check vacuously. Two further cases catch a file
+  physically moved between the directories, since a payload's dialect is a property of its
+  bytes rather than of its path.
+
+**The plan's ordering fact 3 was NOT followed, and it is recorded rather than glossed.**
+The plan requires I1 before D1 — the VS Code `SCANNABLE_FIELDS` table written FROM the
+fixtures, "otherwise the fixtures get written to match the table and prove nothing". The
+table was written first, from the same vendor pages, and the fixtures afterwards. That is
+exactly the failure the ordering existed to prevent, so the fixtures directory's README
+says so in its own section and the guard suite asserts that sentence is still there. The
+honest reading: these fixtures and that table agree, their agreement is evidence of nothing,
+and what they buy is a fixed point — a change to either now has to move the other. Anyone
+re-deriving the table should re-derive it from a live recording, not from these files.

@@ -478,9 +478,9 @@ content-retention,reconcile,scan-worker}.ts` and `src/remediation/*` from the Co
 
 ### I. Fixtures and provenance
 
-- [ ] I1. Create `test/fixtures/vscode-provisional/` with one file per VS Code event and a
+- [x] I1. Create `test/fixtures/vscode-provisional/` with one file per VS Code event and a
       README naming the vendor pages and every unverified field.
-- [ ] I2. `test/fixture-provenance.test.ts` — a file in `cli/` with no README paragraph
+- [x] I2. `test/fixture-provenance.test.ts` — a file in `cli/` with no README paragraph
       describing its capture fails.
 - [ ] I3. Extend `test/cli-fixture-shapes.test.ts` for any new recording.
 

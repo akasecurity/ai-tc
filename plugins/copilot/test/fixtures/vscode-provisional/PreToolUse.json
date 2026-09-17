@@ -1,0 +1,13 @@
+{
+  "hook_event_name": "PreToolUse",
+  "timestamp": 1788547866483,
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "cwd": "/Users/dev/ai-tc",
+  "transcript_path": "/Users/dev/Library/Application Support/Code/User/workspaceStorage/0000/GitHub.copilot-chat/transcripts/00000000-0000-4000-8000-000000000000.jsonl",
+  "tool_name": "run_in_terminal",
+  "tool_input": {
+    "command": "false",
+    "explanation": "Run the requested false command",
+    "isBackground": false
+  }
+}

@@ -73,6 +73,7 @@ import { SqliteSecurityRepository } from './repositories/security.ts';
 import { SqliteSharesRepository } from './repositories/shares.ts';
 import { SqliteSourceProjectRepository } from './repositories/source-project.ts';
 import { purgeSampleData } from './sample-purge.ts';
+import { describeStoreSkew, StoreAheadOfBuildError } from './store-skew.ts';
 
 // InventoryContext / ResolvedInventory / InventoryFacets are the cross-mode
 // shapes — they live in @akasecurity/schema (the contract spine) so the resolver
@@ -379,6 +380,10 @@ function backupLegacyStore(db: DatabaseSync, file: string): string {
  * read-only disk. Guarding only some of those leaves the rest leaking the
  * handle, which is the Windows file lock this exists to prevent — so the guard
  * is one window over the whole sequence rather than one per known thrower.
+ *
+ * That newer-binary case is the one failure here whose remedy is not the store,
+ * so it is the one the guard re-describes rather than re-throwing: see
+ * `describeStoreSkew`. Everything else propagates exactly as it arrived.
  */
 function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<string>) {
   let db = openWithPragmas(file);
@@ -442,8 +447,11 @@ function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<st
     policies.seedDefaults();
     return { db, ...repositories };
   } catch (err) {
+    // Asked BEFORE the close, so it reads the handle that failed rather than
+    // opening a second one on a store that has already refused once.
+    const skew = describeStoreSkew(db);
     closeQuietly(db);
-    throw err;
+    throw skew === null ? err : new StoreAheadOfBuildError(skew, err);
   }
 }
 

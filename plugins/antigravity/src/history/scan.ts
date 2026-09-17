@@ -11,6 +11,7 @@ import {
   contentHashOf,
   createPluginRuntime,
   maskContextSlice,
+  RawEgressError,
   safeMaskedMatch,
 } from '@akasecurity/plugin-sdk';
 import type { DetectionCategory, Severity, Span, TriageHit } from '@akasecurity/schema';
@@ -48,8 +49,13 @@ function redactOverlapping(
   if (others.length === 0) return rawContext;
   try {
     return maskContextSlice(rawContext, contextStart, others);
-  } catch {
-    let safe = rawContext;
+  } catch (err) {
+    // Blunt-redact the text as far as masking GOT it, not the raw input. The
+    // guarded pass clips each span to this window, so it is the only thing that
+    // ever covers a value the window cut in half — and the split below removes
+    // whole values only, so starting over from `rawContext` would hand back a
+    // clipped neighbour the guarded pass had already masked.
+    let safe = (err instanceof RawEgressError ? err.masked : undefined) ?? rawContext;
     for (const other of others) {
       if (other.rawMatch.length > 0) safe = safe.split(other.rawMatch).join('[REDACTED]');
     }

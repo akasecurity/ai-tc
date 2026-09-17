@@ -124,6 +124,7 @@ const PUBLIC_VALUE_EXPORTS = [
   'detectPostureChanges',
   'detokenizeText',
   'dropShieldedFindings',
+  'edgeTruncatedSpans',
   'ensureDataDir',
   'ensureDataDirSync',
   'evaluateConfigPosture',

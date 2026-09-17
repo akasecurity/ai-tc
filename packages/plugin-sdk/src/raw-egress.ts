@@ -6,9 +6,18 @@ import type { Span } from '@akasecurity/schema';
 // isolated scan/judge process toward the interactive session or a persisted
 // exceptions row. maskMatch/redact are re-verified here, not trusted directly.
 export class RawEgressError extends Error {
-  constructor(message: string) {
+  // The text as far as masking got it, when the throw came from a verifier that
+  // had already produced one. A caller that must not propagate the throw (the
+  // history walk) blunt-redacts THIS rather than the raw input: starting over
+  // from the raw text discards every span the masker did cover, which for a
+  // value clipped by the window edge is the only redaction it was ever going to
+  // get — the blunt pass splits on whole values and cannot remove a partial run.
+  readonly masked?: string;
+
+  constructor(message: string, masked?: string) {
     super(message);
     this.name = 'RawEgressError';
+    if (masked !== undefined) this.masked = masked;
   }
 }
 
@@ -72,7 +81,12 @@ const RAW_RUN_LEN = 8;
 // pays for no masking at all.
 function carriesRawRun(text: string, rawValues: readonly string[]): boolean {
   let windows: Set<string> | null = null;
-  for (const raw of rawValues) {
+  // Deduped: callers build this as `hits.map((h) => h.rawMatch)`, and one
+  // credential detected across many messages puts the same value in it many
+  // times. The answer is a boolean over the whole list, so collapsing repeats
+  // cannot change it — it only stops the window walk and the preview being
+  // recomputed per copy, inside a function already called once per hit.
+  for (const raw of new Set(rawValues)) {
     if (raw.length < MIN_RAW_LEN) continue;
     // Shorter than one window: checked whole, exactly as before.
     if (raw.length < RAW_RUN_LEN) {
@@ -99,6 +113,62 @@ function carriesRawRun(text: string, rawValues: readonly string[]): boolean {
     }
   }
   return false;
+}
+
+// Spans for a raw value CLIPPED BY THE TEXT BOUNDARY — the one occurrence a
+// caller's own `indexOf` pass structurally cannot find, because only part of the
+// value is present to search for.
+//
+// A fixed-radius context window cuts whatever straddles its edge, so a
+// neighbouring finding routinely appears as a bare prefix or suffix of itself.
+// That was harmless while the verifier below matched whole values only; it is
+// not harmless now that it rejects run by run, because the clipped run is
+// exactly what it rejects and nothing spans it. Unspanned, the join builder
+// throws where nothing catches, and the history walk falls back to a blunt pass
+// that splits on whole values and so cannot remove a partial run either.
+//
+// The floor is RAW_RUN_LEN and not MIN_RAW_LEN, which makes this exactly as wide
+// as the rejection it feeds: a clipped run shorter than one window fills none,
+// and a value shorter than one window is checked whole — so `indexOf` has
+// already found every occurrence that could matter. `k` stops one short of the
+// whole value for the same reason: a whole occurrence at the edge is not
+// clipped, and the caller has spanned it.
+//
+// Both edges are guarded by a single native substring test before the descent.
+// Without it this is quadratic in the value length per value per call, which on
+// the per-hit caller compounds to the size of the run squared; with it the
+// common case — a boundary sharing no window with the value — costs two
+// searches and stops.
+export function edgeTruncatedSpans(text: string, rawValues: readonly string[]): EgressHit[] {
+  const spans: EgressHit[] = [];
+  if (text.length < RAW_RUN_LEN) return spans;
+  const head = text.slice(0, RAW_RUN_LEN);
+  const tail = text.slice(text.length - RAW_RUN_LEN);
+  for (const raw of rawValues) {
+    if (raw.length < RAW_RUN_LEN) continue;
+    const maxK = Math.min(raw.length - 1, text.length);
+    // Cut by the LEFT edge: the text opens mid-value, so it starts with a proper
+    // suffix of it. Longest first — the widest clipped run is the one to cover.
+    if (raw.includes(head)) {
+      for (let k = maxK; k >= RAW_RUN_LEN; k -= 1) {
+        if (text.startsWith(raw.slice(raw.length - k))) {
+          spans.push({ rawMatch: raw, span: { start: 0, end: k } });
+          break;
+        }
+      }
+    }
+    // Cut by the RIGHT edge: the text stops mid-value, ending with a proper
+    // prefix of it.
+    if (raw.includes(tail)) {
+      for (let k = maxK; k >= RAW_RUN_LEN; k -= 1) {
+        if (text.endsWith(raw.slice(0, k))) {
+          spans.push({ rawMatch: raw, span: { start: text.length - k, end: text.length } });
+          break;
+        }
+      }
+    }
+  }
+  return spans;
 }
 
 // Mask a context window: redact every hit overlapping the slice, with each
@@ -130,16 +200,23 @@ export function maskContextSlice(
   const masked = findings.length > 0 ? redact(slice, findings) : slice;
   // Run-by-run, with assertRawFree below: this backstop exists to catch a span
   // that did not cover its value, and a span covering only PART of one leaves a
-  // live run behind exactly as a missing span leaves the whole value. Neither
-  // caller is destabilised by the tightening, but for different reasons. The
-  // join builder hands the same text to assertRawFree on the very next line, so
-  // the run check runs there regardless. The history walk only CATCHES this
-  // throw — it must never throw on a user's transcript — and its fallback splits
-  // on the whole value, so it cannot remove a partial run; that path is no worse
-  // than before the tightening, not made safe by it.
+  // live run behind exactly as a missing span leaves the whole value.
+  //
+  // The tightening DOES destabilise both callers, and each needed an answer.
+  // What it added is a refusal for the run a caller could not span, and the one
+  // occurrence neither caller can span with `indexOf` is the value a fixed-radius
+  // window clipped — there is no whole value left to search for. The join builder
+  // therefore spans those separately (`edgeTruncatedSpans`) before calling in;
+  // without that it threw where nothing catches, on any window holding a
+  // neighbour cut by its edge. The history walk only CATCHES this throw — it must
+  // never throw on a user's transcript — but its fallback splits on whole values
+  // and so cannot remove a partial run: the error carries `masked` so that
+  // fallback blunt-redacts the text masking reached rather than starting over
+  // from the raw input, which would discard the clipped spans this pass did
+  // cover.
   const rawValues = hits.map((h) => h.rawMatch);
   if (carriesRawRun(masked, rawValues)) {
-    throw new RawEgressError('raw match survived context masking');
+    throw new RawEgressError('raw match survived context masking', masked);
   }
   return masked;
 }

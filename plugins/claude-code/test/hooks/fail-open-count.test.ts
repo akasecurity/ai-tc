@@ -2,7 +2,19 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
+
+import type * as Shared from '../../src/hooks/shared.ts';
+
+// The fail-open path, run in-process: every entry's main() starts by reading
+// stdin, so a read that rejects sends each entry straight into its top-level
+// catch. countFailOpen is replaced by a spy so the case can see the call.
+const failOpen = vi.hoisted(() => ({ count: vi.fn() }));
+vi.mock('../../src/hooks/shared.ts', async (importOriginal) => ({
+  ...(await importOriginal<typeof Shared>()),
+  readStdin: () => Promise.reject(new Error('stdin unavailable')),
+  countFailOpen: failOpen.count,
+}));
 
 // test/hooks -> plugins/claude-code
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -57,5 +69,28 @@ describe('every hook entry counts its fail-open exit', () => {
     const guard = FAIL_OPEN_GUARD.exec(source);
     expect(guard, `${name}.ts must end in the try { await main() } catch guard`).not.toBeNull();
     expect(guard?.[1]).toMatch(/\bcountFailOpen\(\);/);
+  });
+});
+
+describe('every hook entry counts its fail-open exit when main() throws', () => {
+  // The source-shape cases above pin WHERE the call sits; these run it. Each
+  // entry is imported once, which executes its top-level try/catch with a stdin
+  // read that rejects, so the only way to satisfy the spy is the real catch body.
+  const entries = hookEntries();
+  let exit: MockInstance<typeof process.exit>;
+
+  beforeEach(() => {
+    failOpen.count.mockClear();
+    exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as typeof process.exit);
+  });
+
+  afterEach(() => {
+    exit.mockRestore();
+  });
+
+  it.each(entries)('%s counts one exit and still exits 0', async (name) => {
+    await import(`../../src/hooks/${name}.ts`);
+    expect(failOpen.count).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
   });
 });

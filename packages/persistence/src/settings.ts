@@ -323,7 +323,11 @@ function pinnedKeys(managed: ManagedSettings | null): ManagedSettingKey[] {
 // file was removed, reading as the user's own choice. A descriptor without the
 // mode is not an attachment, so once the pin is gone the machine is in the mode
 // the user last chose, holding a record of the enrolment that a detach clears
-// and the next attach replaces.
+// and the next attach replaces. Until that detach the record also holds local
+// body expiry off the sync lane, as a history-sync grant does — canSweepSyncLane
+// wants no descriptor on file — so a machine that enrolled without a grant keeps
+// those bodies after its pin is removed: no body expires while a record that
+// could claim it still stands.
 function withoutManagedKeys(
   applied: Partial<WorkspaceSettings>,
   managed: ManagedContext,

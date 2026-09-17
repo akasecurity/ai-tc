@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { ManagedSettings, SimpleDetectionPolicy } from '@akasecurity/schema';
-import { isAttached } from '@akasecurity/schema';
+import { canSweepSyncLane, isAttached } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { applyOnboarding, readEffectiveSettings, readWorkspaceSettings } from '../src/settings.ts';
@@ -379,5 +379,27 @@ describe('applyOnboarding (an attach under a pinned connection)', () => {
     );
     applyOnboarding({ runMode: 'standalone', controlPlane: undefined }, base, moved);
     expect(readEffectiveSettings(base, null).settings.controlPlane).toBeUndefined();
+  });
+
+  it('holds body expiry off the sync lane while the kept record stands, until a detach', () => {
+    // An enrolment with no history-sync grant, and then the administrator gone:
+    // the machine reads standalone, and the record it kept is still enough to
+    // keep the sync lane's bodies, as a grant would. A detach releases them.
+    applyOnboarding(
+      { runMode: 'attached', controlPlane: { endpoint: PINNED, attachedAt: ENROLLED_AT } },
+      base,
+      fleet,
+    );
+    const own = readEffectiveSettings(base, null).settings;
+    expect(isAttached(own)).toBe(false);
+    expect(own.historySyncConsent).toBeUndefined();
+    expect(canSweepSyncLane(own)).toBe(false);
+
+    applyOnboarding(
+      { runMode: 'standalone', controlPlane: undefined, historySyncConsent: undefined },
+      base,
+      null,
+    );
+    expect(canSweepSyncLane(readEffectiveSettings(base, null).settings)).toBe(true);
   });
 });

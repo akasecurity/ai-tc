@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { RawEgressError } from '@akasecurity/plugin-sdk';
+import { RawEgressError, safeMaskedMatch } from '@akasecurity/plugin-sdk';
 import type { TriageHit } from '@akasecurity/schema';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -105,6 +105,81 @@ describe('plan-file raw safety', () => {
       skipped: [],
     };
     expect(() => writePlanFile(poisoned, {}, [RAW])).toThrow(RawEgressError);
+  });
+});
+
+describe('plan-file — a masked preview is not a leak of its own value', () => {
+  // The plan document is where a masked preview meets its OWN raw value:
+  // `join-file` puts `safeMaskedMatch(rawMatch)` into `maskedMatch`, `resolve`
+  // copies it to `maskedValue`, and `writePlanFile` then asserts the whole
+  // document against the raw values. `maskMatch`'s email branch reveals the WHOLE
+  // domain, so that preview holds a run of its own raw.
+  //
+  // Nothing in this tree drove an @-bearing raw through here, which is how a
+  // run-by-run backstop could refuse every email hit with the suite still green.
+  // When this write throws, the whole `/aka:setup` preview aborts.
+  const EMAIL = 'deploy@example.com';
+  const CONN = ['smtp://alice', 'hunter2pass@mail.example.com'].join(':');
+
+  const atHit = (raw: string, ruleId: string, category: 'pii' | 'secret'): TriageHit =>
+    hit({
+      ruleId,
+      category,
+      severity: 'medium',
+      maskedMatch: safeMaskedMatch(raw),
+      rawMatch: raw,
+      context: `contact ${raw} for access`,
+    });
+
+  const recFor = (category: 'pii' | 'secret') => ({
+    perCategory: [
+      {
+        category,
+        action: 'warn' as const,
+        reasoning: 'internal distribution list',
+        genuineCount: 0,
+        fpCount: 1,
+        fpIds: ['0'],
+      },
+    ],
+    notes: '',
+  });
+
+  for (const [label, raw, ruleId, category] of [
+    ['an email', EMAIL, 'core-pii/email', 'pii'],
+    ['a user:pass@host secret', CONN, 'secrets/conn-string', 'secret'],
+  ] as const) {
+    it(`writes a plan for ${label} instead of refusing the document`, () => {
+      const plan = planTriageWriteback([atHit(raw, ruleId, category)], recFor(category));
+
+      // Precondition: the preview really does disclose a run of its own raw.
+      // Against a mask that revealed nothing this case would pass for a
+      // different reason entirely.
+      const preview = safeMaskedMatch(raw);
+      expect(preview).not.toBe('***');
+      expect(preview).toContain('@');
+      expect(plan.entries[0]?.maskedValue).toBe(preview);
+
+      const path = writePlanFile(plan, {}, [raw]);
+      cleanup.push(path);
+
+      const onDisk = readFileSync(path, 'utf8');
+      expect(onDisk).toContain(preview); // the preview is persisted, on purpose
+      expect(onDisk).not.toContain(raw); // the raw value is not
+    });
+  }
+
+  it('still refuses a document carrying the part the preview hides', () => {
+    // The exemption is scoped to the preview, not to the value: a note echoing
+    // the local part — which the preview masks — must still abort the write.
+    const plan = planTriageWriteback([atHit(EMAIL, 'core-pii/email', 'pii')], recFor('pii'));
+    const poisoned: TriageWritebackPlan = {
+      ...plan,
+      notes: `see ${EMAIL.slice(0, 10)} in the log`,
+    };
+
+    expect(poisoned.notes).not.toContain(EMAIL); // a whole-value check passes this
+    expect(() => writePlanFile(poisoned, {}, [EMAIL])).toThrow(RawEgressError);
   });
 });
 

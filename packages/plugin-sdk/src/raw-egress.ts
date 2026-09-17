@@ -44,7 +44,8 @@ const RAW_RUN_LEN = 8;
 // Does `text` carry any run of any value in `rawValues` long enough to be a
 // disclosure? Mirrors the test-side `expectNoEchoOf`: the two window sets are
 // compared for an intersection, so any RAW_RUN_LEN-long slice of any raw value
-// that survives into `text` is a rejection.
+// that survives into `text` is a rejection — EXCEPT the slices that make up the
+// value's own masked preview, which the paragraph below explains.
 //
 // The index is built over `text` rather than over `rawValues`, and the asymmetry
 // is deliberate. A search per window is quadratic in the size of a real triage
@@ -53,7 +54,22 @@ const RAW_RUN_LEN = 8;
 // calls this once per hit with every hit's value against a short context window.
 // Indexing `text` bounds the set by the text instead, builds it lazily (a run of
 // values all below the window length never builds one at all), and leaves the
-// large-text plan-document caller unchanged.
+// large-text plan-document caller unchanged. The index costs roughly one 8-char
+// string per position: a 1 MB document measures ~36 MB of heap, and nothing here
+// bounds the document, so a caller that can reach that size pays it.
+//
+// A window that also appears in the value's own `safeMaskedMatch` preview is NOT
+// a rejection. That preview is the one fragment of a raw value the product
+// reveals on purpose, so its presence is a disclosure already made rather than a
+// leak to catch — and `maskMatch`'s email branch reveals the whole domain, which
+// is a run far past RAW_RUN_LEN. Without this, a text carrying BOTH a value's
+// preview and that value in `rawValues` is refused: exactly what the plan
+// document is, since `join-file` puts the preview in `maskedMatch`, `resolve`
+// copies it to `maskedValue`, and `plan-file` then asserts the whole document
+// against the raw values. Every window OUTSIDE the preview still rejects, so the
+// whole value, its local part, and a connection string's password are all caught.
+// The preview is computed only once a window has already matched, so a clean run
+// pays for no masking at all.
 function carriesRawRun(text: string, rawValues: readonly string[]): boolean {
   let windows: Set<string> | null = null;
   for (const raw of rawValues) {
@@ -74,8 +90,12 @@ function carriesRawRun(text: string, rawValues: readonly string[]): boolean {
     // one rather than returning: an early exit here would let a short raw that
     // does appear in `text` through whenever a long one happened to come first.
     if (windows.size === 0) continue;
+    let preview: string | null = null;
     for (let i = 0; i + RAW_RUN_LEN <= raw.length; i += 1) {
-      if (windows.has(raw.slice(i, i + RAW_RUN_LEN))) return true;
+      const window = raw.slice(i, i + RAW_RUN_LEN);
+      if (!windows.has(window)) continue;
+      preview ??= safeMaskedMatch(raw);
+      if (!preview.includes(window)) return true;
     }
   }
   return false;

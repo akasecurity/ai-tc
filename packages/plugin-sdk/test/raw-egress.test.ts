@@ -46,6 +46,20 @@ function shortestRejectedRun(raw: string, reject: (text: string, raw: string) =>
   return raw.length; // sentinel: no partial run is refused at all
 }
 
+// The longest contiguous run of `raw` that `text` holds, derived rather than read
+// off a literal — a hand-written number here would pin this file's arithmetic
+// instead of what the mask really discloses.
+function longestRunShared(text: string, raw: string): number {
+  let longest = 0;
+  for (let i = 0; i < raw.length; i += 1) {
+    for (let len = longest + 1; i + len <= raw.length; len += 1) {
+      if (!text.includes(raw.slice(i, i + len))) break;
+      longest = len;
+    }
+  }
+  return longest;
+}
+
 // The boundary under test, as a predicate.
 const boundaryRejects = (text: string, raw: string): boolean => refuses(text, [raw]);
 
@@ -141,14 +155,41 @@ describe('safeMaskedMatch', () => {
   // because it verifies a preview built to reveal a fragment ON PURPOSE. The
   // email branch reveals the whole domain, which is a run far past the window —
   // so tightening it in step with the others would collapse every email preview
-  // to '***'. The second assertion is what makes that a measurement rather than
-  // a claim: the same preview IS refused by the run-by-run sibling.
-  it('keeps an email preview that the run-by-run siblings would refuse', () => {
+  // to '***'.
+  //
+  // Read the second assertion as a CONSTRAINT on the run check, not as a settled
+  // decision: it says the preview holds a window of its own raw, so any text
+  // carrying BOTH the preview and that raw in `rawValues` would be refused. An
+  // earlier version of this file stopped here and called it a decision, which is
+  // how the plan document — which is exactly such a text — shipped refusing every
+  // email hit. `carriesRawRun` now exempts a value's own preview, so the case
+  // below asserts the boundary honours the constraint rather than tripping on it.
+  it('reveals a window of its own raw — the constraint the run check honours', () => {
     const EMAIL = 'user@example.com';
     const preview = safeMaskedMatch(EMAIL);
 
     expect(preview).toBe('u***@example.com');
-    expect(refuses(preview, [EMAIL])).toBe(true);
+    // The preview holds a run of the raw — measured, not assumed.
+    expect(longestRunShared(preview, EMAIL)).toBeGreaterThanOrEqual(8);
+    // ...and the boundary does NOT refuse a document carrying it.
+    expect(refuses(preview, [EMAIL])).toBe(false);
+  });
+
+  // The whole point of the exemption being SCOPED: a preview is not a licence to
+  // carry the value it previews. Everything outside the preview still rejects.
+  it('still refuses the local part a preview does not reveal', () => {
+    const EMAIL = 'deploy@example.com';
+    expect(refuses(`contact ${EMAIL} now`, [EMAIL])).toBe(true);
+    expect(refuses(`near ${EMAIL.slice(0, 10)}`, [EMAIL])).toBe(true);
+  });
+
+  // A connection string takes the same email branch, so its preview reveals the
+  // host — but never the password, which must still reject.
+  it('still refuses a connection string password the preview hides', () => {
+    const conn = ['smtp://alice', 'hunter2pass@mail.example.com'].join(':');
+    expect(refuses(safeMaskedMatch(conn), [conn])).toBe(false); // the preview passes
+    expect(refuses(`url ${conn}`, [conn])).toBe(true); // the whole value does not
+    expect(refuses(`pw ${conn.slice(12, 24)}`, [conn])).toBe(true); // nor the password
   });
 
   // The other half of the same decision: a generic secret's preview reveals its
@@ -226,24 +267,39 @@ describe('assertRawFree', () => {
     expect(refuses('claude -p judge subprocess failed (exit 1)', [RAW])).toBe(false);
   });
 
-  // The cost of the tightening, recorded rather than discovered later. A raw
-  // value that shares a window with LEGITIMATE surrounding text is refused, and
-  // for a low-entropy value that is reachable: an email hit's domain can appear
-  // in a context window on its own, outside any occurrence of the address, so it
-  // survives masking and trips this check where the whole-value form passed.
+  // Where the exemption draws the line, which is also what is left of the
+  // tightening's false-positive cost. The preview is what the product discloses,
+  // so text sharing a run with the DISCLOSED part is accepted and text sharing
+  // one with the rest is refused.
   //
-  // That is the fail-safe direction and it is the intended trade-off — a refused
-  // preview beats a leaked prefix — but it is a behaviour change, so it is
-  // pinned here rather than left to be met as a bug report. It is also the
-  // argument for keeping RAW_RUN_LEN at 8 rather than lowering it: every
-  // character off the window makes this collision likelier.
-  it('refuses text sharing a window with a LOW-ENTROPY value — the accepted cost', () => {
+  // An earlier version of this case asserted the opposite of the first
+  // assertion below — it pinned an unrelated domain mention as refused, and
+  // called that the accepted cost. That was the plan-document defect wearing a
+  // context-window costume: the same disclosure that makes this acceptable here
+  // is what made the plan write throw for every email hit.
+  it('accepts a run the preview discloses and refuses one it does not', () => {
     const email = 'deploy@example.com';
     const unrelated = 'see example.com/docs for the runbook';
 
-    expect(unrelated).not.toContain(email); // no occurrence to mask
-    expect(refuses(unrelated, [email])).toBe(true);
-    expect(wholeValueRejects(unrelated, email)).toBe(false); // the form this replaced passed
+    expect(unrelated).not.toContain(email); // no occurrence of the address itself
+    // The domain is revealed by the preview, so its appearance discloses nothing
+    // the product has not already shown.
+    expect(safeMaskedMatch(email)).toContain('example.com');
+    expect(refuses(unrelated, [email])).toBe(false);
+
+    // The local part is NOT revealed, so a run covering it still rejects — and
+    // the whole-value form this replaced passes it, which is the leak.
+    const localRun = `audit trail for ${email.slice(0, 10)}`;
+    expect(refuses(localRun, [email])).toBe(true);
+    expect(wholeValueRejects(localRun, email)).toBe(false);
+  });
+
+  // A high-entropy secret keeps the strict behaviour end to end: its preview
+  // reveals two non-adjacent characters, so essentially every window is outside
+  // it and the exemption buys an attacker nothing.
+  it('exempts almost nothing for a high-entropy value', () => {
+    expect(refuses(`near ${RAW.slice(3, 11)}`, [RAW])).toBe(true);
+    expect(shortestRejectedRun(RAW, boundaryRejects)).toBe(8);
   });
 
   // The pin. It is DERIVED from the boundary, so it moves only when the boundary

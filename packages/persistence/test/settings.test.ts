@@ -11,10 +11,11 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { SimpleDetectionPolicy } from '@akasecurity/schema';
+import type { ManagedSettings, SimpleDetectionPolicy } from '@akasecurity/schema';
+import { isAttached } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { applyOnboarding, readWorkspaceSettings } from '../src/settings.ts';
+import { applyOnboarding, readEffectiveSettings, readWorkspaceSettings } from '../src/settings.ts';
 
 let base: string;
 
@@ -237,5 +238,146 @@ describe('applyOnboarding (derived answers)', () => {
     expect(readWorkspaceSettings(base).policy).toBe('warn');
     // And the lock is released, so the next writer is not left waiting it out.
     expect(applyOnboarding({ historicalAccess: 'full' }, base).historicalAccess).toBe('full');
+  });
+});
+
+// What an attach leaves in the user's own file when an administrator pinned the
+// connection it names. The pin says which deployment and in which mode; it cannot
+// say when this machine joined, or what the user called it. Every case injects
+// its overlay, and `readEffectiveSettings(base, null)` reads the user's own file
+// as it would stand with the administrator gone.
+describe('applyOnboarding (an attach under a pinned connection)', () => {
+  const PINNED = 'https://pinned.internal';
+  const EARLIER = 'https://earlier.internal';
+  const ENROLLED_AT = '2026-02-02T00:00:00.000Z';
+  // The shape a fleet ships: the mode and the deployment pinned, nothing locked.
+  const fleet: ManagedSettings = {
+    specVersion: 1,
+    values: { runMode: 'attached', controlPlane: { endpoint: PINNED } },
+    lockedFields: [],
+  };
+  // A pin that moved the machine and left the mode the user's own.
+  const moved: ManagedSettings = {
+    specVersion: 1,
+    values: { controlPlane: { endpoint: PINNED } },
+    lockedFields: [],
+  };
+
+  it('keeps the time an enrolment stamps where its connection echoes the pin', () => {
+    // Endpoint and mode both equal what the pin supplies, so the only thing
+    // this write says that the pin does not is WHEN. Dropped, the machine would
+    // read as attached "just now" on every read.
+    applyOnboarding(
+      { runMode: 'attached', controlPlane: { endpoint: PINNED, attachedAt: ENROLLED_AT } },
+      base,
+      fleet,
+    );
+    expect(readEffectiveSettings(base, fleet).settings.controlPlane?.attachedAt).toBe(ENROLLED_AT);
+  });
+
+  it('replaces an earlier deployment’s attach time with the enrolment’s own', () => {
+    // The history drain freezes a new deployment's first boundary at this
+    // time. Left at the earlier attachment's, activity recorded between that
+    // attach and this enrolment would reach neither the drain nor the live path.
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: EARLIER, attachedAt: '2026-01-01T00:00:00.000Z' },
+      },
+      base,
+      null,
+    );
+    applyOnboarding(
+      { runMode: 'attached', controlPlane: { endpoint: PINNED, attachedAt: ENROLLED_AT } },
+      base,
+      moved,
+    );
+    expect(readEffectiveSettings(base, moved).settings.controlPlane?.attachedAt).toBe(ENROLLED_AT);
+  });
+
+  it('does not carry the pinned mode it echoes into the user’s own file', () => {
+    // The mode is what makes a machine forward, and the pin already supplies
+    // it. Written into the user's file it would keep the machine attached after
+    // the managed file was removed, reading as the user's own choice.
+    applyOnboarding(
+      { runMode: 'attached', controlPlane: { endpoint: PINNED, attachedAt: ENROLLED_AT } },
+      base,
+      fleet,
+    );
+    const own = readEffectiveSettings(base, null).settings;
+    expect(own.runMode).toBe('standalone');
+    expect(isAttached(own)).toBe(false);
+  });
+
+  it('does not persist a pinned descriptor echoed back with the time already on file', () => {
+    // A surface that posts back what every read shows carries the attach time
+    // the user's file already holds. That is an echo, not an enrolment, and it
+    // must not overwrite the user's own record with the pinned deployment.
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: EARLIER, attachedAt: '2026-01-01T00:00:00.000Z' },
+      },
+      base,
+      null,
+    );
+    const shown = readEffectiveSettings(base, moved).settings;
+    expect(shown.controlPlane?.endpoint).toBe(PINNED);
+
+    applyOnboarding({ runMode: shown.runMode, controlPlane: shown.controlPlane }, base, moved);
+
+    expect(readEffectiveSettings(base, null).settings.controlPlane?.endpoint).toBe(EARLIER);
+  });
+
+  it('keeps a name given under a pinned mode without carrying the mode', () => {
+    // The mode and the descriptor are judged apart. A rename changes the
+    // descriptor alone, so the mode it echoes is dropped like any other echo.
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: PINNED, label: 'MyBox', attachedAt: ENROLLED_AT },
+      },
+      base,
+      fleet,
+    );
+    const own = readEffectiveSettings(base, null).settings;
+    expect(own.controlPlane?.label).toBe('MyBox');
+    expect(own.runMode).toBe('standalone');
+  });
+
+  it('keeps a re-attach’s own time under a lock, which freezes the deployment but not when', () => {
+    // A lock refuses a change of deployment or name, and a re-attach that
+    // changes neither is let through. What it stamps is this machine's record,
+    // exactly as an unmanaged re-attach's is.
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: PINNED, label: 'Same', attachedAt: '2026-01-01T00:00:00.000Z' },
+      },
+      base,
+      null,
+    );
+    const locked: ManagedSettings = { specVersion: 1, values: {}, lockedFields: ['runMode'] };
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint: PINNED, label: 'Same', attachedAt: ENROLLED_AT },
+      },
+      base,
+      locked,
+    );
+    expect(readEffectiveSettings(base, locked).settings.controlPlane?.attachedAt).toBe(ENROLLED_AT);
+  });
+
+  it('clears the kept record on a detach', () => {
+    // Where the mode is the user's to change, a detach takes the enrolment's
+    // record with it, so nothing names the deployment once the pin is gone.
+    applyOnboarding(
+      { runMode: 'attached', controlPlane: { endpoint: PINNED, attachedAt: ENROLLED_AT } },
+      base,
+      moved,
+    );
+    applyOnboarding({ runMode: 'standalone', controlPlane: undefined }, base, moved);
+    expect(readEffectiveSettings(base, null).settings.controlPlane).toBeUndefined();
   });
 });

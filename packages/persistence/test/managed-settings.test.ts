@@ -426,9 +426,8 @@ describe('overlayManagedSettings — what an administrator can pin', () => {
     it('mints a time only where the user holds no record at all', () => {
       // The descriptor's shape requires one and nothing else on this path can
       // supply it. Pinned so the residual mint is a decision on record rather
-      // than a leftover: a cleared file, or an enrolment whose write was an
-      // exact echo of the pin (which the writer strips rather than persists),
-      // still reads the moment of reading here.
+      // than a leftover: a cleared file, or an enrolment an earlier release
+      // stripped, still reads the moment of reading here.
       const managed: ManagedSettings = {
         specVersion: 1,
         values: { controlPlane: { endpoint: 'https://two.internal' } },
@@ -437,6 +436,76 @@ describe('overlayManagedSettings — what an administrator can pin', () => {
       const out = overlayManagedSettings(settings(), managed, CLOCK);
       expect(out.controlPlane?.endpoint).toBe('https://two.internal');
       expect(out.controlPlane?.attachedAt).toBe('2026-03-04T05:06:07.000Z');
+    });
+
+    it('carries the user’s own name for the pinned deployment when the pin gives it none', () => {
+      // An endpoint-only pin decides WHICH deployment and leaves its name open,
+      // so the name the user gave that same deployment is the one every read
+      // shows — not the endpoint `aka attach --label` was told to replace.
+      const managed: ManagedSettings = {
+        specVersion: 1,
+        values: { controlPlane: { endpoint: 'https://one.internal' } },
+        lockedFields: [],
+      };
+      const out = overlayManagedSettings(
+        settings({
+          controlPlane: {
+            endpoint: 'https://one.internal',
+            label: 'MyBox',
+            attachedAt: '2024-05-05T00:00:00.000Z',
+          },
+        }),
+        managed,
+        CLOCK,
+      );
+      expect(out.controlPlane?.endpoint).toBe('https://one.internal');
+      expect(out.controlPlane?.label).toBe('MyBox');
+    });
+
+    it('does not carry a name the user gave a different deployment', () => {
+      // A label names the deployment it was given for. Lending it to the one an
+      // administrator moved the machine to would put the old name on screen
+      // beside the new endpoint.
+      const managed: ManagedSettings = {
+        specVersion: 1,
+        values: { controlPlane: { endpoint: 'https://two.internal' } },
+        lockedFields: [],
+      };
+      const out = overlayManagedSettings(
+        settings({
+          controlPlane: {
+            endpoint: 'https://one.internal',
+            label: 'MyBox',
+            attachedAt: '2024-05-05T00:00:00.000Z',
+          },
+        }),
+        managed,
+        CLOCK,
+      );
+      expect(out.controlPlane?.endpoint).toBe('https://two.internal');
+      expect(out.controlPlane?.label).toBeUndefined();
+    });
+
+    it('still shows a pinned name over the user’s own', () => {
+      // The positive control for the two cases above: carrying the user's name
+      // must not let it win where the administrator named the deployment too.
+      const managed: ManagedSettings = {
+        specVersion: 1,
+        values: { controlPlane: { endpoint: 'https://one.internal', label: 'Pinned' } },
+        lockedFields: [],
+      };
+      const out = overlayManagedSettings(
+        settings({
+          controlPlane: {
+            endpoint: 'https://one.internal',
+            label: 'MyBox',
+            attachedAt: '2024-05-05T00:00:00.000Z',
+          },
+        }),
+        managed,
+        CLOCK,
+      );
+      expect(out.controlPlane?.label).toBe('Pinned');
     });
   });
 });

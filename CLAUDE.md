@@ -504,7 +504,12 @@ properties are load-bearing:
   exception the writer cannot see: a pinned CONNECTION (`runMode` / `controlPlane`) is written
   through and then overlaid straight back on the next read, so `aka attach` and `aka detach`
   refuse to move away from it ahead of the write, deciding against the effective settings rather
-  than the lock list. A locked field
+  than the lock list. What an attach under such a pin leaves in the user's file is judged one half
+  at a time: an echo of the pinned mode is stripped like any other echo, but the descriptor the
+  attach writes is kept even where it matches the pin, because it records what the pin cannot —
+  when this machine enrolled, and what the user called the deployment. A descriptor without the
+  mode is not an attachment, so once the pin is gone the machine is in the mode the user last
+  chose, holding that record — never attached on the strength of an echo. A locked field
   is refused inside the lock (`ManagedFieldError`), by THROWING rather than dropping the key and
   writing the rest — a half-applied save reports success while losing the answer the user cared
   about, which is this section's whole failure mode. And a damaged managed file leaves the machine

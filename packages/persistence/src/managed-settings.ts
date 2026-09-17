@@ -201,34 +201,31 @@ export function overlayManagedSettings(
 
   if (values.runMode !== undefined) merged.runMode = values.runMode;
   if (values.controlPlane !== undefined) {
+    const pinned = values.controlPlane;
+    const own = settings.controlPlane;
+    // The administrator pinned WHICH deployment, and may have named it. The rest
+    // is the user's own record: WHEN this machine enrolled — an attach keeps that
+    // record even where its connection matches the pin, see withoutManagedKeys
+    // in settings.ts — and, where the pin names nothing, what the user called
+    // this same deployment. A name the user gave a different deployment stays
+    // with that one.
+    //
+    // Two records still misreport. A machine holding NONE — a cleared file, or
+    // an enrolment an earlier release stripped — gets a time minted per read,
+    // because the descriptor's shape requires one and nothing else on this path
+    // can supply it: the status line reads the moment of reading, and the
+    // history drain freezes its first boundary at its first pass. And a record
+    // naming a DIFFERENT deployment lends its time until this machine enrols
+    // with the pinned one; where an earlier release stripped that enrolment, the
+    // drain freezes the pinned deployment's first boundary at the other
+    // attachment's time, and activity recorded between the two reaches neither
+    // the drain nor the live path. Attaching again writes the record, but a
+    // boundary the drain has already frozen stays where it is.
+    const label = pinned.label ?? (own?.endpoint === pinned.endpoint ? own.label : undefined);
     merged.controlPlane = {
-      ...values.controlPlane,
-      // The administrator pinned WHICH deployment, never WHEN this machine
-      // joined one, so the attach time is the user's own record — the one
-      // `aka attach` stamped into their file — whether the pin names that same
-      // endpoint or has since moved. Minting one here whenever the endpoints
-      // differed made every read of a moved or cleared descriptor report a
-      // machine that had attached "just now", for ever.
-      //
-      // A machine holding NO record still gets a time minted per read, because
-      // the descriptor's shape requires one and nothing else on this path can
-      // supply it. That is the shape of a descriptor the user cleared, and of
-      // an enrolment whose write was an exact echo of the pin — endpoint and
-      // label alike — which the writer strips rather than persists (see
-      // withoutManagedKeys in settings.ts). There the status line and the
-      // history drain's first boundary read the moment of reading, as they
-      // did before this change; closing that needs a time the pin cannot
-      // carry, and is not attempted here.
-      //
-      // Stripping an echo also leaves an OLDER record standing. A file that
-      // still names the deployment this machine attached to before the pin
-      // named another keeps that earlier time through an enrolment that echoes
-      // the pin, and the history drain freezes the new deployment's first
-      // boundary at it — so activity recorded between that attach and the
-      // enrolment falls on the live side for a deployment that never received
-      // it live. Closing that needs the same time, and is not attempted here
-      // either.
-      attachedAt: settings.controlPlane?.attachedAt ?? now().toISOString(),
+      endpoint: pinned.endpoint,
+      ...(label === undefined ? {} : { label }),
+      attachedAt: own?.attachedAt ?? now().toISOString(),
     };
   }
   if (values.historicalAccess !== undefined) merged.historicalAccess = values.historicalAccess;

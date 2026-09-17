@@ -808,6 +808,8 @@ interface GovernedConnection {
   modePinned: boolean;
   /** The overlay supplies `controlPlane`. */
   planePinned: boolean;
+  /** The name the overlay gives the deployment, when it gives one. */
+  pinnedLabel: string | undefined;
 }
 
 /**
@@ -865,6 +867,7 @@ function governedConnection(
     frozen,
     modePinned,
     planePinned,
+    pinnedLabel: managed.values.controlPlane?.label,
   };
 }
 
@@ -881,7 +884,8 @@ function governedConnection(
  * only place the decision can be made.
  *
  * Attaching to the endpoint an administrator PINNED is the supported path and
- * is not refused here — that is the managed-enrolment case, not a conflict.
+ * is not refused here — that is the managed-enrolment case, not a conflict — so
+ * long as it keeps whatever name a lock freezes.
  */
 export function managedRefusal(
   base: string,
@@ -891,7 +895,7 @@ export function managedRefusal(
 ): string | null {
   const governed = governedConnection(base, managedOverride);
   if (governed === null) return null;
-  const { who, settings, frozen, modePinned, planePinned } = governed;
+  const { who, settings, frozen, modePinned, planePinned, pinnedLabel } = governed;
 
   // The mode: frozen while standalone, or pinned to standalone. Either way an
   // attach would be written and then read back as standalone.
@@ -908,16 +912,20 @@ export function managedRefusal(
       `Attach to that endpoint, or ask them to change it.`
     );
   }
-  // A label-only difference is still a change to a descriptor the administrator
-  // owns: under a lock the writer would refuse it after the browser approval
-  // rather than before, and under a pin the next read would overlay it away —
-  // so it is refused here, where nobody has been sent anywhere yet.
-  if (
-    (frozen || planePinned) &&
-    pinned?.label !== undefined &&
-    label !== undefined &&
-    pinned.label !== label
-  ) {
+  // The name, refused here where nobody has been sent anywhere yet. Under a lock
+  // the writer refuses any change to the descriptor, measured against the name
+  // every read shows — the user's own last choice or the administrator's — so a
+  // different --label is refused, and so is leaving it off, which trades the
+  // name for the endpoint. Under a pin with no lock only a name the
+  // ADMINISTRATOR gave is put back by the next read; a name the user gave the
+  // pinned deployment is theirs, and renaming it is not refused.
+  if (frozen && pinned !== undefined && label !== pinned.label) {
+    return label === undefined
+      ? `${who} manages this machine name, so it cannot be renamed here. ` +
+          'Attach with the --label it already has, as `aka status` shows it.'
+      : `${who} manages this machine name, so it cannot be renamed here.`;
+  }
+  if (planePinned && pinnedLabel !== undefined && label !== undefined && label !== pinnedLabel) {
     return `${who} manages this machine name, so it cannot be renamed here.`;
   }
   return null;

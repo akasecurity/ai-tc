@@ -186,27 +186,16 @@ export class ManagedFieldError extends Error {
 function lockableKeysTouched(
   current: WorkspaceSettings,
   applied: Partial<WorkspaceSettings>,
+  connection: ConnectionWrite,
 ): ManagedSettingKey[] {
   const keys: ManagedSettingKey[] = [];
   const changed = (key: keyof WorkspaceSettings): boolean =>
     key in applied && applied[key] !== current[key];
 
   // The connection is one lockable unit: clearing the descriptor detaches just
-  // as surely as clearing the mode (isAttached needs both), so either moving
-  // counts as touching `runMode`.
-  //
-  // The WHOLE descriptor is compared, not just the endpoint. withoutManagedKeys
-  // strips `controlPlane` entirely when runMode is locked, so a field this
-  // comparison ignores is one a caller can change without being refused and
-  // then have silently discarded — the write reporting success while the label
-  // it was asked to set went nowhere. `attachedAt` is excluded deliberately: it
-  // is stamped server-side on every attach, so including it would make an
-  // otherwise-identical re-attach read as a change.
-  const descriptorChanged =
-    'controlPlane' in applied &&
-    (applied.controlPlane?.endpoint !== current.controlPlane?.endpoint ||
-      applied.controlPlane?.label !== current.controlPlane?.label);
-  if (changed('runMode') || descriptorChanged) keys.push('runMode');
+  // as surely as clearing the mode (isAttached needs both), so either half
+  // moving counts as touching `runMode`.
+  if (connection.mode || connection.descriptor) keys.push('runMode');
 
   if (changed('historicalAccess')) keys.push('historicalAccess');
   if (changed('vaultKeyCustody')) keys.push('vaultKeyCustody');
@@ -249,6 +238,47 @@ function lockableKeysTouched(
   return keys;
 }
 
+/** How a write moves the connection, judged one half at a time. */
+interface ConnectionWrite {
+  /** The mode it asks for differs from the one in force. */
+  mode: boolean;
+  /** The deployment, or its name, differs from the one in force. */
+  descriptor: boolean;
+  /** It stamps an attach time the user's own file does not already hold. */
+  enrolment: boolean;
+}
+
+// The descriptor is compared WHOLE bar its attach time. A field this ignored is
+// one a caller could change under a lock without being refused and then have
+// discarded by withoutManagedKeys — the write reporting success while the label
+// it was asked to set went nowhere. The time is left out because every attach
+// stamps a fresh one, so counting it would refuse an otherwise-identical
+// re-attach on a locked machine.
+//
+// The time is what marks an ENROLMENT instead. Both attach verbs stamp one the
+// user's file does not hold, while a surface echoing the descriptor every read
+// shows carries the time already on file. It is compared against the user's OWN
+// file: where that holds no record, the time in force is minted during this
+// very write and can equal an attach's stamp to the millisecond. The same gap
+// is the rule's limit — an echo of a MINTED time reads as an enrolment — which
+// no writer reaches, since only the attach verbs write a descriptor and the
+// Settings save carries no connection at all.
+function connectionWrite(
+  effective: WorkspaceSettings,
+  own: WorkspaceSettings,
+  applied: Partial<WorkspaceSettings>,
+): ConnectionWrite {
+  const next = applied.controlPlane;
+  return {
+    mode: 'runMode' in applied && applied.runMode !== effective.runMode,
+    descriptor:
+      'controlPlane' in applied &&
+      (next?.endpoint !== effective.controlPlane?.endpoint ||
+        next?.label !== effective.controlPlane?.label),
+    enrolment: next !== undefined && next.attachedAt !== own.controlPlane?.attachedAt,
+  };
+}
+
 // Which keys an administrator supplied a VALUE for, whether or not they also
 // locked it. Derived from the file rather than from the lock list, because a
 // pin and a lock are deliberately separable.
@@ -277,25 +307,39 @@ function pinnedKeys(managed: ManagedSettings | null): ManagedSettingKey[] {
 // their choice. For `vaultConsent` that is a real recorded custody grant, with
 // an acknowledgedAt the user never gave.
 //
-// `touched` is passed in rather than recomputed so the strip and the refusal can
-// never disagree about what "changed" means. A LOCKED key reaching here is an
-// echo by construction — the refusal already rejected any real change — while a
-// PINNED key that genuinely changed is the user exercising a default, and is
-// written untouched.
+// `touched` and `connection` are passed in rather than recomputed so the strip
+// and the refusal can never disagree about what "changed" means. A LOCKED key
+// reaching here is an echo by construction — the refusal already rejected any
+// real change — while a PINNED key that genuinely changed is the user exercising
+// a default, and is written untouched.
+//
+// The connection is stripped one half at a time, and an ENROLMENT keeps its
+// descriptor even where that matches the pin. The pin says which deployment and
+// in which mode, so an echo of either discards nothing. It cannot say when this
+// machine enrolled, or what the user called the deployment, so dropping the
+// descriptor an attach writes would discard both. The mode is never kept on those
+// grounds: it is what makes a machine forward, and an echo of the pinned one
+// written into the user's file would keep the machine attached after the managed
+// file was removed, reading as the user's own choice. A descriptor without the
+// mode is not an attachment, so once the pin is gone the machine is in the mode
+// the user last chose, holding a record of the enrolment that a detach clears
+// and the next attach replaces.
 function withoutManagedKeys(
   applied: Partial<WorkspaceSettings>,
   managed: ManagedContext,
   pinned: readonly ManagedSettingKey[],
   touched: readonly ManagedSettingKey[],
+  connection: ConnectionWrite,
 ): Partial<WorkspaceSettings> {
   if (!managed.present) return applied;
-  const strip = (key: ManagedSettingKey): boolean =>
-    (managed.lockedFields.includes(key) || pinned.includes(key)) && !touched.includes(key);
+  const governed = (key: ManagedSettingKey): boolean =>
+    managed.lockedFields.includes(key) || pinned.includes(key);
+  const strip = (key: ManagedSettingKey): boolean => governed(key) && !touched.includes(key);
 
   const out = { ...applied };
-  if (strip('runMode')) {
-    delete out.runMode;
-    delete out.controlPlane;
+  if (governed('runMode')) {
+    if (!connection.mode) delete out.runMode;
+    if (!connection.descriptor && !connection.enrolment) delete out.controlPlane;
   }
   if (strip('historicalAccess')) delete out.historicalAccess;
   if (strip('vaultConsent')) delete out.vaultConsent;
@@ -337,7 +381,8 @@ export function applyOnboarding(
     // while a user posting their OWN value for a locked field matched the raw
     // file, counted as no change, and went through — the lock enforcing nothing.
     const effective = overlayManagedSettings(current, managedSettings);
-    const touched = lockableKeysTouched(effective, applied);
+    const connection = connectionWrite(effective, current, applied);
+    const touched = lockableKeysTouched(effective, applied, connection);
     const refused = lockedAmong(managed, touched);
     if (refused.length > 0) throw new ManagedFieldError(refused);
     const merged = WorkspaceSettingsSchema.parse({
@@ -346,8 +391,10 @@ export function applyOnboarding(
       // by the refusal above, an unchanged ECHO of the administrator's value —
       // so dropping it discards no answer of the user's, and writing it would
       // persist the pin into their file, where it would outlive the managed
-      // file and read as their own choice once the lock was gone.
-      ...withoutManagedKeys(applied, managed, pinnedKeys(managedSettings), touched),
+      // file and read as their own choice once the lock was gone. The one
+      // answer an echo can carry, an enrolment's record of the connection, is
+      // kept — see withoutManagedKeys.
+      ...withoutManagedKeys(applied, managed, pinnedKeys(managedSettings), touched, connection),
       // First setup stamps the time; later edits keep the original completion mark.
       onboardedAt: applied.onboardedAt ?? current.onboardedAt ?? new Date().toISOString(),
     });

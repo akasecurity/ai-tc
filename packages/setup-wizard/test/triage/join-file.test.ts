@@ -1,3 +1,4 @@
+import { safeMaskedMatch } from '@akasecurity/plugin-sdk';
 import type { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
@@ -18,6 +19,26 @@ const hit = (over: Partial<TriageHit>): TriageHit => ({
 });
 
 describe('buildJoinEntries', () => {
+  // An @-bearing raw, which nothing here drove before. `maskMatch`'s email branch
+  // reveals the whole host, so this entry's `maskedMatch` carries a run of its
+  // own raw — the shape that reaches `writePlanFile`'s whole-document backstop.
+  // This call site asserts only `maskedContext`, so it does not throw either way;
+  // what it pins is that the context is masked and the password reaches no field.
+  it('masks a user:pass@host secret and keeps its password out of every field', () => {
+    const conn = ['smtp://alice', 'hunter2pass@mail.example.com'].join(':');
+    const e = buildJoinEntries([
+      hit({ ruleId: 'secrets/conn-string', rawMatch: conn, context: `export URL=${conn} # prod` }),
+    ])[0];
+    if (!e) throw new Error('expected an entry');
+
+    expect(e.maskedContext).toBe('export URL=[REDACTED:SECRET] # prod');
+    expect(e.maskedMatch).toBe(safeMaskedMatch(conn));
+
+    const blob = JSON.stringify(e);
+    expect(blob).not.toContain(conn);
+    expect(blob).not.toContain('hunter2pass'); // the credential, in no field
+  });
+
   it('drops raw and masks context (no raw substring in any field)', () => {
     const e = buildJoinEntries([hit({})])[0];
     if (!e) throw new Error('expected an entry');

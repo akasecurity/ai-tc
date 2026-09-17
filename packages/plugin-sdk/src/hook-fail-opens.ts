@@ -13,6 +13,15 @@ import { ensureDataDirSync, writeOwnerOnlyFileSync } from '@akasecurity/persiste
  * every other file beside this one describes a control plane that is simply
  * not being written to. This tally is the trace.
  *
+ * It is a trace of a throw that ESCAPES a hook's main() — one the code did not
+ * anticipate — and of nothing softer. The fail-opens main() absorbs on its own
+ * are not counted: stdin that never arrives or does not parse, a store or
+ * runtime fault the hook's own handling already turns into a quiet allow. And
+ * the environmental faults that do throw out of main(), a data home that is
+ * not a directory or not writable, are the same ones that leave this file
+ * unwritable. So a count here is a floor on unexpected throws, not a measure of
+ * how often a machine scanned nothing.
+ *
  * In the DATA dir beside the forward tallies, and deliberately NOT in the
  * attachment's derived-file list: a hook that fails open on a standalone
  * machine is the same fault, and a detach must not zero a count that is not

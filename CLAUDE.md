@@ -500,7 +500,11 @@ properties are load-bearing:
   plus the locked set — and writes it never. Making AKA a writer of it would be the third
   `settings.json`-class writer this section exists to prevent, on a file the lock does not cover.
   Three consequences. A pinned VALUE and a LOCK are separable: a value with no lock is a default
-  the user may still change, a lock with no value freezes whatever they last chose. A locked field
+  the user may still change, a lock with no value freezes whatever they last chose — with one
+  exception the writer cannot see: a pinned CONNECTION (`runMode` / `controlPlane`) is written
+  through and then overlaid straight back on the next read, so `aka attach` and `aka detach`
+  refuse to move away from it ahead of the write, deciding against the effective settings rather
+  than the lock list. A locked field
   is refused inside the lock (`ManagedFieldError`), by THROWING rather than dropping the key and
   writing the rest — a half-applied save reports success while losing the answer the user cared
   about, which is this section's whole failure mode. And a damaged managed file leaves the machine

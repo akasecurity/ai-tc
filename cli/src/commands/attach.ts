@@ -9,7 +9,7 @@ import {
   readControlPlaneCredentialState,
   readEffectiveSettings,
   readLocalHistoryPreview,
-  readWorkspaceSettings,
+  readManagedSettings,
   removeControlPlaneCredential,
   seedCaptureBacklogOwed,
   settingsDir as settingsDirOf,
@@ -26,6 +26,7 @@ import type {
   HistorySyncConsent,
   ManagedSettings,
   UnsafeEndpointReason,
+  WorkspaceSettings,
 } from '@akasecurity/schema';
 import {
   HISTORY_SYNC_PAYLOAD_VERSION,
@@ -258,14 +259,20 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   let confirmed: { apiKey: string; identity: { tenantName: string; userEmail: string } } | null =
     null;
 
-  if (!args.keyStdin) {
-    const refusal = managedRefusal(base, endpoint, args.label, deps.managedSettings);
-    if (refusal !== null) {
-      io.err(refusal);
-      exit(2);
-      return;
-    }
+  // AHEAD OF BOTH PATHS, not only the interactive one. The key path used to
+  // skip this and let the writer decide, which under a pinned-but-unlocked
+  // overlay is no decision at all: the write lands, and the next read overlays
+  // the pin back over it. Both paths also reach a network before the write —
+  // a grant on one, `whoami` on the other — and neither should be asked about
+  // a deployment this machine was never going to keep.
+  const refusal = managedRefusal(base, endpoint, args.label, deps.managedSettings);
+  if (refusal !== null) {
+    io.err(refusal);
+    exit(2);
+    return;
+  }
 
+  if (!args.keyStdin) {
     const outcome = await (deps.deviceAttach ?? runDeviceAttach)({
       io,
       endpoint,
@@ -391,6 +398,9 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
         historySyncConsent: historyConsent,
       },
       base,
+      // The same overlay the pre-flight read — injected or real — so the writer
+      // and the pre-flight cannot disagree about who manages this machine.
+      deps.managedSettings,
     );
   } catch (err) {
     // Put back exactly what was there, rather than removing unconditionally.
@@ -622,13 +632,27 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
   }
   const base = deps.base ?? homeBase(args.home);
 
+  // AHEAD OF EVERYTHING THIS COMMAND TOUCHES, the history window included. The
+  // lock's refusal used to arrive from the writer, by which point the attached
+  // period had been handed to the live path and the drain's boundary released
+  // — for a detach that then did not happen. And under a pin with no lock the
+  // writer refuses nothing at all: see governedConnection.
+  const refusal = managedDetachRefusal(base, deps.managedSettings);
+  if (refusal !== null) {
+    io.err(refusal);
+    exit(1);
+    return;
+  }
+
   // THE DESCRIPTOR FIRST, and the credential only once it has actually gone.
   // The other order lets a refused detach still take effect in the way that
   // matters: an administrator can freeze `runMode`, so `applyOnboarding` throws
-  // — but the credential is already deleted, settings still say `attached`, and
-  // the machine silently stops forwarding while being told nothing happened.
-  // That would let any user end reporting on a machine their organization
-  // manages, by running a command that claims it did nothing.
+  // (the pre-flight above answers that first; the writer's own refusal is the
+  // last word only if the overlay appeared between the two reads) — but the
+  // credential is already deleted, settings still say `attached`, and the
+  // machine silently stops forwarding while being told nothing happened. That
+  // would let any user end reporting on a machine their organization manages,
+  // by running a command that claims it did nothing.
   const had = readControlPlaneCredentialState(settingsDirOf(base)).usable;
   // BEFORE the descriptor is cleared, because it is what says when this
   // attachment began. The period since then belonged to the live forward path;
@@ -636,7 +660,13 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
   // later re-attach to the same deployment freezes a new one and picks up the
   // window in which nothing was forwarding. Without it that window is delivered
   // by neither path and reported as outstanding by neither.
-  closeHistoryWindow(base, readWorkspaceSettings(base).controlPlane?.attachedAt);
+  //
+  // Through the same overlay the pre-flight read — injected or real — so this
+  // reads what the machine reads, and a suite reads what it injected.
+  closeHistoryWindow(
+    base,
+    readEffectiveSettings(base, deps.managedSettings).settings.controlPlane?.attachedAt,
+  );
   try {
     // The history grant goes with the attachment it named. `undefined` on an
     // optional key is how this writer records a REVOCATION, so the key leaves
@@ -645,6 +675,7 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
     applyOnboarding(
       { runMode: 'standalone', controlPlane: undefined, historySyncConsent: undefined },
       base,
+      deps.managedSettings,
     );
   } catch (err) {
     io.err(
@@ -762,14 +793,92 @@ export async function runStatus(argv: string[], deps: AttachDeps = {}): Promise<
 }
 
 /**
- * Why this machine may not be attached here, or null when it may.
+ * What an administrator has decided about this machine's connection, read the
+ * way every later read will see it — or null when the connection is the user's
+ * own to change.
+ */
+interface GovernedConnection {
+  /** Who decided, for the message. */
+  who: string;
+  /** The settings every read reports, overlay applied. */
+  settings: WorkspaceSettings;
+  /** `runMode` is locked: the writer refuses any change to the pair. */
+  frozen: boolean;
+  /** The overlay supplies `runMode`. */
+  modePinned: boolean;
+  /** The overlay supplies `controlPlane`. */
+  planePinned: boolean;
+}
+
+/**
+ * Read the overlay once — raw, for who pinned what, and applied, for what the
+ * machine will read — for both verbs' pre-flights.
+ *
+ * TWO MECHANISMS GOVERN THE CONNECTION, AND THE WRITER SEES ONLY ONE. A LOCK on
+ * `runMode` makes `applyOnboarding` throw on any change to the pair. A PINNED
+ * value with no lock — the shape a fleet overlay ships, so that no save of the
+ * user's is ever refused — is written through, and then every read overlays
+ * the pin straight back over what was written. So `aka detach` printed
+ * "Detached." on a machine whose next `aka status` showed it attached, and
+ * `aka attach --url <other>` stored a credential for a deployment the settings
+ * would never name again. Both verbs therefore decide against the EFFECTIVE
+ * settings, whichever mechanism produced them, before anything is written or
+ * sent.
+ *
+ * The lock and the two pins are reported apart because they govern different
+ * halves: a descriptor pinned on its own must still let a standalone machine
+ * attach to it — that is the managed-enrolment path, not a conflict — and only
+ * a locked or pinned MODE can put an attachment back after a detach.
+ *
+ * The overlay is injectable. It lives at ABSOLUTE SYSTEM paths on purpose — a
+ * lock inside `~` is removable by the party being locked — so a temp home
+ * cannot make a machine look managed, and cannot make a managed one look clean
+ * either. Without this seam a suite reads whatever the DEVELOPER'S machine is
+ * enrolled in, and a test asserting "not refused" passes or fails on who ran
+ * it. `null` means unmanaged; omitted means read the real paths.
+ *
+ * Neither read throws today — both fail open on a damaged file — and if one
+ * ever does, this fails in the same direction: UNMANAGED rather than unusable,
+ * because a typo in an MDM payload must not stop every machine attaching at
+ * once.
+ */
+function governedConnection(
+  base: string,
+  managedOverride: ManagedSettings | null | undefined,
+): GovernedConnection | null {
+  let managed: ManagedSettings | null;
+  let settings: WorkspaceSettings;
+  try {
+    managed = managedOverride === undefined ? readManagedSettings() : managedOverride;
+    settings = readEffectiveSettings(base, managed).settings;
+  } catch {
+    return null;
+  }
+  if (managed === null) return null;
+  const frozen = managed.lockedFields.includes('runMode');
+  const modePinned = managed.values.runMode !== undefined;
+  const planePinned = managed.values.controlPlane !== undefined;
+  if (!frozen && !modePinned && !planePinned) return null;
+  return {
+    who: managed.organization ?? 'your organization',
+    settings,
+    frozen,
+    modePinned,
+    planePinned,
+  };
+}
+
+/**
+ * Why this machine may not be attached to `endpoint`, or null when it may.
  *
  * RUN BEFORE ANY NETWORK CALL, which is the whole point of it being separate
  * from the write-time `ManagedFieldError` further down. An administrator who
- * froze `runMode`, or pinned a different endpoint, has already decided; asking
- * a deployment for a grant and walking someone through a browser approval
- * before telling them so wastes their time and leaves a decided grant behind on
- * a deployment they were never going to join.
+ * froze `runMode`, or pinned a deployment, has already decided; asking a
+ * deployment for a grant and walking someone through a browser approval before
+ * telling them so wastes their time and leaves a decided grant behind on a
+ * deployment they were never going to join. And under a pin with no lock the
+ * writer would not refuse at all — see governedConnection — so this is the
+ * only place the decision can be made.
  *
  * Attaching to the endpoint an administrator PINNED is the supported path and
  * is not refused here — that is the managed-enrolment case, not a conflict.
@@ -778,43 +887,33 @@ export function managedRefusal(
   base: string,
   endpoint: string,
   label: string | undefined,
-  // The overlay, injectable. It lives at ABSOLUTE SYSTEM paths on purpose — a
-  // lock inside `~` is removable by the party being locked — so a temp home
-  // cannot make a machine look managed, and cannot make a managed one look
-  // clean either. Without this seam a suite reads whatever the DEVELOPER'S
-  // machine is enrolled in, and a test asserting "not refused" passes or fails
-  // on who ran it.
   managedOverride?: ManagedSettings | null,
 ): string | null {
-  let effective: ReturnType<typeof readEffectiveSettings>;
-  try {
-    effective = readEffectiveSettings(base, managedOverride);
-  } catch {
-    // An unreadable managed overlay leaves the machine UNMANAGED rather than
-    // unusable — the same direction managed-settings.ts fails in, and for the
-    // same reason: a typo in an MDM payload must not stop every machine
-    // attaching at once.
-    return null;
-  }
-  const locked = new Set(effective.managed.lockedFields);
-  const org = effective.managed.organization;
-  const who = org ?? 'your organization';
+  const governed = governedConnection(base, managedOverride);
+  if (governed === null) return null;
+  const { who, settings, frozen, modePinned, planePinned } = governed;
 
-  if (locked.has('runMode') && effective.settings.runMode !== 'attached') {
+  // The mode: frozen while standalone, or pinned to standalone. Either way an
+  // attach would be written and then read back as standalone.
+  if ((frozen || modePinned) && settings.runMode !== 'attached') {
     return `${who} manages this machine and has set it to standalone, so it cannot be attached here.`;
   }
-  const pinned = effective.settings.controlPlane;
-  if (locked.has('runMode') && pinned !== undefined && pinned.endpoint !== endpoint) {
+  // The descriptor: frozen where the user last put it, or pinned somewhere.
+  // Under a lock with no pin this is the user's own last choice, which is
+  // exactly what the lock freezes.
+  const pinned = settings.controlPlane;
+  if ((frozen || planePinned) && pinned !== undefined && pinned.endpoint !== endpoint) {
     return (
       `${who} manages this machine and has pinned it to ${pinned.endpoint}. ` +
       `Attach to that endpoint, or ask them to change it.`
     );
   }
   // A label-only difference is still a change to a descriptor the administrator
-  // owns, and the writer would refuse it after the browser approval rather than
-  // before — so it is refused here, where nobody has been sent anywhere yet.
+  // owns: under a lock the writer would refuse it after the browser approval
+  // rather than before, and under a pin the next read would overlay it away —
+  // so it is refused here, where nobody has been sent anywhere yet.
   if (
-    locked.has('runMode') &&
+    (frozen || planePinned) &&
     pinned?.label !== undefined &&
     label !== undefined &&
     pinned.label !== label
@@ -822,6 +921,39 @@ export function managedRefusal(
     return `${who} manages this machine name, so it cannot be renamed here.`;
   }
   return null;
+}
+
+/**
+ * Why this machine may not be detached here, or null when it may.
+ *
+ * Decided against the same effective view as the attach pre-flight, and
+ * refused whenever a detach is one the next read would UNDO: the MODE is
+ * locked or pinned, and the machine reads as attached. Under a lock the writer
+ * would refuse too, but only after the history window had been closed; under a
+ * pin it would not refuse at all, and the read would put the attachment
+ * straight back. A pin on the descriptor alone is not refused — `runMode`
+ * stays the user's, a cleared file reads back as standalone, and a dangling
+ * pinned descriptor is not an attachment without the mode — and a governed
+ * machine that does not read as attached has nothing to detach and falls
+ * through to say so. The write-time `ManagedFieldError` stays as the lock's
+ * own last word, reached only if the overlay appeared between this read and
+ * the write.
+ */
+function managedDetachRefusal(
+  base: string,
+  managedOverride: ManagedSettings | null | undefined,
+): string | null {
+  const governed = governedConnection(base, managedOverride);
+  if (governed === null) return null;
+  const { who, settings, frozen, modePinned } = governed;
+  if (!frozen && !modePinned) return null;
+  // `isAttached`, spelled out so the endpoint is narrowed for the message.
+  const pinned = settings.controlPlane;
+  if (settings.runMode !== 'attached' || pinned === undefined) return null;
+  return (
+    `${who} manages this machine's attachment to ${pinned.endpoint}, ` +
+    'so it cannot be detached here. Ask them to change it.'
+  );
 }
 
 /**

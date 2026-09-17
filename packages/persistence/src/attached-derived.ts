@@ -1,10 +1,10 @@
 /**
  * The files an attachment LEAVES BEHIND, and the one way to clear them.
  *
- * These five are written by the attached runtime rather than by the attach
+ * These six are written by the attached runtime rather than by the attach
  * itself — a cached policy bundle, the sync outcome, the forward breaker's state,
- * its drop tally, and the history drain's progress. None of them is the
- * attachment; all of them describe one.
+ * its drop tally, the posture self-report's last outcome, and the history
+ * drain's progress. None of them is the attachment; all of them describe one.
  *
  * They live HERE rather than beside the code that writes them because clearing
  * them is a detach concern, and there are two detach surfaces: `aka detach` and
@@ -42,6 +42,9 @@ export const ATTACHED_FORWARD_STATE_FILENAME = 'attached-state.json';
 /** The tally of events the breaker dropped. */
 export const ATTACHED_FORWARD_DROPS_FILENAME = 'attached-forward-drops.json';
 
+/** What the last posture self-report send did, as `aka status` renders it. */
+export const ATTACHED_POSTURE_REPORT_FILENAME = 'attached-posture-report.json';
+
 /** How far the background drain of already-recorded activity has got. */
 export const ATTACHED_HISTORY_SYNC_STATE_FILENAME = 'attached-history-sync.json';
 
@@ -56,6 +59,7 @@ export const ATTACHED_DERIVED_FILENAMES: readonly string[] = [
   ATTACHED_SYNC_STATE_FILENAME,
   ATTACHED_FORWARD_STATE_FILENAME,
   ATTACHED_FORWARD_DROPS_FILENAME,
+  ATTACHED_POSTURE_REPORT_FILENAME,
   ATTACHED_HISTORY_SYNC_STATE_FILENAME,
 ];
 

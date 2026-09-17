@@ -1,4 +1,5 @@
-import type { ActionInputFailure, ManagedSettingKey } from '@akasecurity/schema';
+import type { ActionInputFailure, ConnectionRefusal, ManagedSettingKey } from '@akasecurity/schema';
+import { connectionRefusalMessage } from '@akasecurity/schema';
 
 // The refusal wording the settings Server Actions return.
 //
@@ -46,7 +47,24 @@ export function managedRefusal(fields: readonly ManagedSettingKey[]): string {
   return `Your organization manages ${fields.join(', ')} on this machine, so the change was not saved.`;
 }
 
-/** The store could not be written at all — a fault, unlike the two above. */
+/** How to keep a locked name on this page — see connectionRefusal. */
+const ATTACH_KEEP_NAME_HINT = 'Attach with the name it already has, as this page shows it.';
+
+/**
+ * An attach or detach refused before anything was sent or written, because an
+ * administrator locked or pinned where this machine's connection stays.
+ *
+ * The decision is worded by `connectionRefusalMessage`, the same sentence
+ * `aka attach` and `aka detach` refuse with. The one addition is this page's own:
+ * an attach that left the name off a connection whose name a lock freezes is
+ * told to keep it with the name field, where the terminal names its flag.
+ */
+export function connectionRefusal(refusal: ConnectionRefusal): string {
+  const sentence = connectionRefusalMessage(refusal);
+  return refusal.reason === 'label-required' ? `${sentence} ${ATTACH_KEEP_NAME_HINT}` : sentence;
+}
+
+/** The store could not be written at all — a fault, unlike the refusals above. */
 export const SETTINGS_WRITE_ERROR = 'Could not write settings.json.';
 
 /**

@@ -26,7 +26,7 @@ import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { warnIfHostBelowFloor } from './host-floor-notice.ts';
 import type { ResponseScanOutcome } from './scan-response.ts';
 import { responseEmitPayload, scanResponseFields } from './scan-response.ts';
-import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
+import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 import { scannableResponseFields } from './tool-response.ts';
 
@@ -132,6 +132,8 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch {
-  // Fail-open: never break the user's session
+  // Fail-open: never break the user's session — but count the exit, so
+  // `aka status` can say the hooks have been failing open on this machine.
+  countFailOpen();
 }
 process.exit(0);

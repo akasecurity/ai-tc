@@ -10,11 +10,16 @@ import {
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
 import { RemoteRequestError, RemoteRequestInvalid } from '@akasecurity/remote';
-import type { IngestEvent, RecordAuditEventRequest } from '@akasecurity/schema';
-import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
+import type {
+  IngestEvent,
+  ManagedSettingsValues,
+  RecordAuditEventRequest,
+} from '@akasecurity/schema';
+import { HISTORY_SYNC_PAYLOAD_VERSION, MANAGED_SETTINGS_FILENAME } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { UNSAFE_TEST_ONLY_setManagedSettingsPaths } from '../../../persistence/src/managed-settings.ts';
 import type { HistorySyncResult } from '../../src/attached/history-sync.ts';
 import { runHistorySync } from '../../src/attached/history-sync.ts';
 import { migratedStore } from '../helpers/store-templates.ts';
@@ -752,6 +757,98 @@ describe('runHistorySync — the backlog boundary', () => {
     });
 
     expect(sent).toEqual([]);
+  });
+});
+
+describe('runHistorySync — the backlog boundary under a pinned connection', () => {
+  // The drain reads the settings in force through the default managed read,
+  // which takes no override, so a pinned machine is simulated end to end: an
+  // administrator's file is written and the default read pointed at it. Where
+  // the file sits is immaterial once the read is pointed at it.
+  const pin = (values: ManagedSettingsValues): void => {
+    const file = join(home, MANAGED_SETTINGS_FILENAME);
+    writeFileSync(file, JSON.stringify({ specVersion: 1, values }));
+    UNSAFE_TEST_ONLY_setManagedSettingsPaths([file]);
+  };
+  // Back to no administrator, which is what the shared setup installs for
+  // every other case in the package.
+  afterEach(() => {
+    UNSAFE_TEST_ONLY_setManagedSettingsPaths([]);
+  });
+
+  const rootAt = (id: string, iso: string): void => {
+    const db = openLocalDatabase(dataDirOf(home));
+    try {
+      db.auditEvents.ensureSessionRoot(id, iso);
+    } finally {
+      db.close();
+    }
+  };
+
+  /** `aka attach --url <endpoint>` at `at`: settings first, then the credential. */
+  const enrol = (endpoint: string, at: string): void => {
+    applyOnboarding(
+      {
+        runMode: 'attached',
+        controlPlane: { endpoint, attachedAt: at },
+        historySyncConsent: {
+          acknowledgedAt: at,
+          payloadVersion: HISTORY_SYNC_PAYLOAD_VERSION,
+          endpoint,
+        },
+      },
+      home,
+    );
+    writeControlPlaneCredential(settingsDirOf(home), {
+      specVersion: 1,
+      endpoint,
+      apiKey: FIXTURE,
+      mintedAt: at,
+    });
+  };
+
+  const drainSending = async (): Promise<string[]> => {
+    const sent: string[] = [];
+    await run({
+      sendBatch: (events: readonly RecordAuditEventRequest[]) => {
+        for (const e of events) sent.push(e.id);
+        return Promise.resolve({ settled: events.length });
+      },
+    });
+    return sent;
+  };
+
+  it('starts a moved pin’s backlog at the enrolment, not at the earlier deployment’s attach', async () => {
+    // Attached to the first deployment at AT, with a pass under it on record.
+    attach({ grantFor: ENDPOINT });
+    await run({ sendBatch: sendBatchOk });
+
+    const enrolledAt = '2026-08-24T12:00:00.000Z';
+    // After the first attach and before the enrolment below: the new
+    // deployment has seen none of it, and no live path will send it there.
+    rootAt('s-between', '2026-08-24T11:00:00.000Z');
+    // After the enrolment: the new deployment's live path owns it.
+    rootAt('s-after', '2026-08-24T13:00:00.000Z');
+
+    // The administrator moves the fleet, and this machine enrols with the new
+    // deployment: its connection echoes the pin exactly.
+    pin({ runMode: 'attached', controlPlane: { endpoint: OTHER_ENDPOINT } });
+    enrol(OTHER_ENDPOINT, enrolledAt);
+
+    expect(await drainSending()).toEqual(['s-between']);
+  });
+
+  it('starts an enrolment’s backlog at the enrolment where its connection echoes the pin', async () => {
+    // A machine that was never attached, enrolling under a fleet pin. Without
+    // a kept record the first boundary lands wherever the first pass happens.
+    const enrolledAt = '2026-08-24T12:00:00.000Z';
+    rootAt('s-before', '2026-08-24T11:00:00.000Z');
+    rootAt('s-after', '2026-08-24T13:00:00.000Z');
+
+    pin({ runMode: 'attached', controlPlane: { endpoint: ENDPOINT } });
+    enrol(ENDPOINT, enrolledAt);
+
+    expect(await drainSending()).toEqual(['s-before']);
   });
 });
 

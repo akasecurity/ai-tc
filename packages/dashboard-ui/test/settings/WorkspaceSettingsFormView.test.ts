@@ -861,6 +861,53 @@ describe('the connection section', () => {
     expect(html).toContain('Acme');
     expect(html).toContain(DETACH_MANAGED_NOTICE);
   });
+
+  // A PINNED mode with no lock — the shape a fleet kit ships. Nothing in
+  // `lockedFields` says so, and the detach action refuses it all the same,
+  // because the next read would put the attachment straight back. The host
+  // reports that decision; the row has to withhold the button it would refuse.
+  const pinnedNoLock = { present: true, organization: 'Acme', lockedFields: [] };
+
+  it('withholds detach when the host reports the connection held, with nothing locked', () => {
+    const html = render({
+      settings: attached,
+      onAttach: () => undefined,
+      onDetach: () => undefined,
+      managed: pinnedNoLock,
+      connectionHeld: true,
+    });
+    expect(html).not.toContain('data-slot="detach-button"');
+    expect(html).not.toContain(DETACH_EXPLANATION);
+    expect(html).toContain('data-slot="connection-managed-notice"');
+    expect(html).toContain('Acme');
+    expect(html).toContain(DETACH_MANAGED_NOTICE);
+  });
+
+  it('withholds the attach form on a machine held standalone', () => {
+    const html = render({
+      onAttach: () => undefined,
+      onDetach: () => undefined,
+      managed: pinnedNoLock,
+      connectionHeld: true,
+    });
+    expect(html).not.toContain('data-slot="attach-form"');
+    expect(html).toContain('data-slot="connection-managed-notice"');
+    expect(html).toContain('Acme');
+  });
+
+  it('still offers detach on a managed machine whose connection is not held', () => {
+    // The positive control: a present administrator is not itself a hold — a pin
+    // on the deployment alone leaves the detach the user's.
+    const html = render({
+      settings: attached,
+      onAttach: () => undefined,
+      onDetach: () => undefined,
+      managed: pinnedNoLock,
+      connectionHeld: false,
+    });
+    expect(html).toContain('data-slot="detach-button"');
+    expect(html).not.toContain('data-slot="connection-managed-notice"');
+  });
 });
 
 // React server-renders attributes in its own order — `disabled` lands BEFORE

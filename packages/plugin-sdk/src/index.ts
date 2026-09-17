@@ -41,6 +41,13 @@ export {
 } from './fingerprint.ts';
 export type { GuardedScanner, GuardedScanOptions, GuardedScanPartition } from './guarded-scan.ts';
 export { createGuardedScanner } from './guarded-scan.ts';
+export type { HookFailOpens } from './hook-fail-opens.ts';
+export {
+  HOOK_FAIL_OPENS_FILENAME,
+  hookFailOpensPath,
+  readHookFailOpens,
+  recordHookFailOpen,
+} from './hook-fail-opens.ts';
 export type { HostFeature, HostFloorRow } from './host-floor.ts';
 export {
   BASELINE_HOOK_EVENTS,

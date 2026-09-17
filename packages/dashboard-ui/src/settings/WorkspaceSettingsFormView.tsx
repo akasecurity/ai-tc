@@ -675,6 +675,14 @@ export interface WorkspaceSettingsFormViewProps {
   // of being broken. Ignored entirely while standalone, where having no
   // credential is the ordinary state and not a fault.
   credentialState?: CredentialState;
+  // Whether an administrator holds this machine's connection where it is: its
+  // mode is locked or PINNED, so the next read would undo a detach from here —
+  // or an attach, on a machine held standalone. A pin with no lock leaves
+  // `managed.lockedFields` empty, so the row cannot see it for itself; the host
+  // reads it through the same decision its attach and detach actions refuse on,
+  // and the row withholds those controls exactly as it does under a lock.
+  // Absent reads as not held, and a lock on `runMode` withholds them either way.
+  connectionHeld?: boolean;
   // Where "Configure detections" points. Injected rather than hardcoded so this
   // package stays router-agnostic.
   detectionsHref?: string;
@@ -699,6 +707,7 @@ export function WorkspaceSettingsFormView({
   onAttach,
   onDetach,
   credentialState,
+  connectionHeld,
   detectionsHref = '/detections',
   busy,
   error,
@@ -847,7 +856,9 @@ export function WorkspaceSettingsFormView({
         <ConnectionRow
           settings={settings}
           credentialState={credentialState}
-          managedLabel={lockOn('runMode')}
+          managedLabel={
+            lockOn('runMode') ?? (connectionHeld === true ? managedByLabel(managed) : undefined)
+          }
           onAttach={onAttach}
           onDetach={onDetach}
           busy={busy}

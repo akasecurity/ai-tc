@@ -68,7 +68,14 @@ export type { PolicyStore, StoredPolicyBundle } from './policy-store.ts';
 export { createPolicyStore } from './policy-store.ts';
 export type { PolicySyncOutcome, PolicySyncResult } from './policy-sync.ts';
 export { pullPolicyBundle, runPolicySync, SYNC_REQUEST_TIMEOUT_MS } from './policy-sync.ts';
-export type { PostureReporterDeps } from './posture-reporter.ts';
+export type { PostureReportState } from './posture-report-state.ts';
+export {
+  POSTURE_REPORT_STATE_FILENAME,
+  postureReportStatePath,
+  readPostureReportState,
+  writePostureReportState,
+} from './posture-report-state.ts';
+export type { PostureReporterDeps, PostureReportOutcome } from './posture-reporter.ts';
 export { createPostureReporter, POSTURE_REPORT_INTERVAL_MS } from './posture-reporter.ts';
 export type { StoreReadout } from './posture-snapshot.ts';
 export { readStorePosture } from './posture-snapshot.ts';

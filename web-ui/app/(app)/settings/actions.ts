@@ -8,6 +8,8 @@ import {
   defaultDataDir,
   isForwardPaused,
   isSafeEndpoint,
+  managedAttachRefusal,
+  managedDetachRefusal,
   ManagedFieldError,
   openLocalDatabase,
   readControlPlaneCredentialFile,
@@ -55,6 +57,7 @@ import {
   ATTACH_KEY_MISSING,
   ATTACH_LABEL_INVALID,
   ATTACH_VERIFY_FAILED,
+  connectionRefusal,
   DETACH_CREDENTIAL_STUCK,
   malformedInput,
   managedRefusal,
@@ -90,7 +93,9 @@ export interface SaveSettingsResult {
 //
 // The refusal wording lives in ../../lib/action-refusals.ts: every export of a
 // 'use server' module must be an async Server Action, so a formatter defined
-// here would be testable only by driving the whole write it describes.
+// here would be testable only by driving the whole write it describes. A
+// connection an administrator holds is refused in the sentence `aka attach` /
+// `aka detach` use for the same decision; see connectionRefusal there.
 
 /**
  * The history-sync field of the merge, pulled out of the updater below so the
@@ -348,7 +353,12 @@ function nextWebChatCapture(
  * and forwarding silently does nothing because the runtime falls back to the
  * standalone gateway. Nothing reported an error, at attach time or after.
  *
- * The order below is the CLI's, and it is deliberate in the same two ways:
+ * The order below is the CLI's, and it is deliberate in the same three ways:
+ *
+ *   AN ADMINISTRATOR'S HOLD BEFORE THE KEY IS SENT. A connection whose mode or
+ *   deployment an administrator locked or pinned is refused here, not left to
+ *   the writer — which refuses a lock only after the key is stored, and a pin
+ *   not at all.
  *
  *   VERIFY BEFORE WRITING ANYTHING. A key that the deployment does not accept
  *   must leave the machine as it was, not attached-and-broken by a second route.
@@ -405,9 +415,24 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
   // address" is a wrong diagnosis pointing at a fix that will not help.
   if (!URL.canParse(endpoint)) return { ok: false, error: ATTACH_ENDPOINT_UNPARSEABLE };
   if (!isSafeEndpoint(endpoint)) return { ok: false, error: ATTACH_ENDPOINT_INSECURE };
+  const label = parsed.data.label?.trim();
+
+  // An administrator's decision, ahead of the key and of every side effect below,
+  // in the order `aka attach` makes it: after the endpoint is known to be one a
+  // key could be sent to, and before anything is. The settings writer refuses a
+  // LOCKED connection only, and only after the key has been verified and stored;
+  // a PINNED one it writes through, and the next read overlays the pin straight
+  // back — leaving a credential for a deployment the settings never name again.
+  // No key the caller could supply changes either answer, so a missing key is
+  // not reported first.
+  const refusal = managedAttachRefusal({
+    endpoint,
+    label: label === undefined || label === '' ? undefined : label,
+  });
+  if (refusal !== null) return { ok: false, error: connectionRefusal(refusal) };
+
   const accessKey = parsed.data.accessKey.trim();
   if (accessKey === '') return { ok: false, error: ATTACH_KEY_MISSING };
-  const label = parsed.data.label?.trim();
 
   try {
     await createRemoteClient({ endpoint, apiKey: accessKey }).whoami();
@@ -507,12 +532,21 @@ export async function attachToControlPlane(input: unknown): Promise<SaveSettings
  * would let a later hand edit of `runMode` alone silently re-attach to a
  * deployment the user thought they had left.
  *
- * Refused when an administrator has locked the connection — that refusal comes
- * from applyOnboarding, which decides it inside the write lock against the
- * managed file, so a user cannot win a race against it.
+ * Refused, ahead of everything below, when an administrator locked or pinned the
+ * MODE and the machine reads as attached — a detach the next read would undo.
+ * applyOnboarding still refuses a lock inside the write lock against the managed
+ * file, and that stays the last word for a lock that appears between the two
+ * reads; a pin it would write straight through.
  */
 // eslint-disable-next-line @typescript-eslint/require-await -- 'use server' exports must be async
 export async function detachFromControlPlane(): Promise<SaveSettingsResult> {
+  // FIRST, because every step below is a side effect a refused detach must not
+  // leave behind — the history window most of all, which is handed to the live
+  // path before the writer is ever asked. The decision is the one `aka detach`
+  // makes.
+  const refusal = managedDetachRefusal();
+  if (refusal !== null) return { ok: false, error: connectionRefusal(refusal) };
+
   // BEFORE the descriptor is cleared, because it is what says when this
   // attachment began. Hands the period since then to the live forward path and
   // releases the history drain's boundary, so a later re-attach to the same

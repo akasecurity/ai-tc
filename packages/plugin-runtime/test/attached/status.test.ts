@@ -5,15 +5,22 @@ import { fileURLToPath } from 'node:url';
 
 import {
   applyOnboarding,
+  clearAttachmentDerivedState,
   controlPlaneCredentialPath,
   dataDir as dataDirOf,
   settingsDir as settingsDirOf,
   writeControlPlaneCredential,
 } from '@akasecurity/persistence';
+import { hookFailOpensPath, recordHookFailOpen } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { recordForwardDrops } from '../../src/attached/forward-drops.ts';
 import { createPolicyStore } from '../../src/attached/policy-store.ts';
+import {
+  postureReportStatePath,
+  readPostureReportState,
+  writePostureReportState,
+} from '../../src/attached/posture-report-state.ts';
 import { renderAttachedStatus, renderPolicyLine } from '../../src/attached/status.ts';
 import { syncStatePath, writeSyncState } from '../../src/attached/sync-state.ts';
 
@@ -377,6 +384,149 @@ describe('renderAttachedStatus — the forward half', () => {
     const before = readFileSync(file, 'utf8');
     renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
     expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+});
+
+describe('renderAttachedStatus — the posture half', () => {
+  // The hourly self-report is what the control plane grades a device on, and
+  // its outcome used to be swallowed on the way out: `send()` caught every
+  // error and status had no line for it, so a machine the plane graded silent
+  // read healthy from the terminal it was sitting at.
+  it('says no report has been recorded before the first send', () => {
+    attach();
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir });
+    expect(out).toContain('posture    no report recorded yet');
+  });
+
+  it('is cleared on detach, so a re-attach does not open on a stale refusal', () => {
+    // Both detach surfaces clear the attachment's derived files through
+    // clearAttachmentDerivedState. The recorded outcome describes a deployment
+    // the machine has left, so it has to be on that list: left behind, a later
+    // re-attach would open with the old NOT REPORTED line.
+    attach();
+    writePostureReportState(dataDir, { outcome: 'unauthorized', atMs: 1_000_000 - 60_000 });
+    // The positive control: the record is there before the clear.
+    expect(readPostureReportState(dataDir)).not.toBeNull();
+    clearAttachmentDerivedState(dataDir);
+    expect(readPostureReportState(dataDir)).toBeNull();
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
+    expect(out).toContain('posture    no report recorded yet');
+    expect(out).not.toContain('NOT REPORTED');
+  });
+
+  it('reads a clock that is not a finite number as no report at all', () => {
+    // JSON has no NaN, but 1e999 parses as Infinity, and no age can be
+    // rendered from it; the reader refuses the record instead of the line
+    // printing a nonsense age.
+    attach();
+    writeFileSync(postureReportStatePath(dataDir), '{"outcome":"ok","atMs":1e999}', {
+      mode: 0o600,
+    });
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
+    expect(out).toContain('posture    no report recorded yet');
+    expect(out).not.toContain('reported (');
+  });
+
+  it('reports a landed send with its AGE — freshness is what the plane grades on', () => {
+    attach();
+    writePostureReportState(dataDir, { outcome: 'ok', atMs: 1_000_000 - 3 * 60 * 60_000 });
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
+    expect(out).toContain('posture    reported (3h ago)');
+    expect(out).not.toContain('NOT REPORTED');
+  });
+
+  it('sends a rejected KEY to `attach`, beside a forward line that reads healthy', () => {
+    // The shape this line exists for: every tool-call forward lands, so the
+    // breaker is closed and the forward line is healthy, while the one send
+    // the plane grades on is refused every hour.
+    attach();
+    writeFileSync(
+      join(dataDir, 'attached-state.json'),
+      JSON.stringify({ consecutiveFailures: 0, openedAtMs: null, lastFailure: null }),
+      { mode: 0o600 },
+    );
+    writePostureReportState(dataDir, { outcome: 'unauthorized', atMs: 1_000_000 - 60_000 });
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
+    expect(out).toContain('reporting normally');
+    expect(out).toContain('posture    NOT REPORTED — key rejected (last tried 1m ago)');
+    expect(out).toContain('KEY REJECTED');
+    expect(out).not.toContain('ACCESS REFUSED');
+  });
+
+  it('sends a ROLE refusal to an administrator, never to `attach`', () => {
+    attach();
+    writePostureReportState(dataDir, { outcome: 'forbidden', atMs: 1_000_000 - 60_000 });
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
+    expect(out).toContain('posture    NOT REPORTED — access refused');
+    expect(out).toContain('ACCESS REFUSED');
+    expect(out).not.toContain('KEY REJECTED');
+    expect(out).not.toMatch(/re-attach/i);
+  });
+
+  it.each([
+    ['unreachable', 'control plane unreachable'],
+    ['breaker-open', 'skipped while the forward breaker was open'],
+    ['invalid-request', 'this build refused to send its own snapshot'],
+    ['route-absent', 'that deployment has no posture route'],
+    ['rejected', 'that deployment refused this snapshot'],
+  ] as const)('states what it observed for %s and names no remediation', (outcome, phrase) => {
+    // None of these five is fixed by re-attaching or by an administrator, so
+    // the line says what happened and stops — the same silence the forward
+    // line keeps for `unreachable`. `rejected` is the deployment ANSWERING (a
+    // 4xx body refusal), which is why it is not folded into `unreachable`.
+    // `invalid-request` and `route-absent` are reasons the policy can return,
+    // so they are rendered too, even though today's posture send raises neither.
+    attach();
+    writePostureReportState(dataDir, { outcome, atMs: 1_000_000 - 60_000 });
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
+    expect(out).toContain(`posture    NOT REPORTED — ${phrase} (last tried 1m ago)`);
+    expect(out).not.toContain('REFUSED');
+    expect(out).not.toContain('KEY REJECTED');
+  });
+
+  it('does not leak a value smuggled into the posture state file', () => {
+    // The reader validates the enum rather than trusting the file, so a
+    // hand-edited state carrying the key renders nothing at all from it.
+    writeFileSync(postureReportStatePath(dataDir), JSON.stringify({ outcome: SECRET, atMs: 1 }), {
+      mode: 0o600,
+    });
+    attach();
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir });
+    expect(out).not.toContain(SECRET);
+    expect(out).toContain('no report recorded yet');
+  });
+});
+
+describe('renderAttachedStatus — hook fail-opens', () => {
+  // Failing open is the absence of output, so a hook that throws on every
+  // call leaves no trace anywhere else in this block: nothing is scanned,
+  // nothing is forwarded, and every other line describes a plane that is
+  // simply not being asked. The catch counts the exit; this is where it shows.
+  it('shows no hooks line while nothing has failed open', () => {
+    attach();
+    expect(renderAttachedStatus({ base: root, settingsDir, dataDir })).not.toContain('failed open');
+  });
+
+  it('counts the exits on an attached machine, with the age of the last one', () => {
+    attach();
+    recordHookFailOpen(dataDir, 900_000);
+    recordHookFailOpen(dataDir, 940_000);
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
+    // "at least", because concurrent hooks increment without a lock.
+    expect(out).toContain('hooks      failed open at least 2 time(s), last 1m ago');
+  });
+
+  it('counts them on a standalone machine too — the guarantee holds on both', () => {
+    recordHookFailOpen(dataDir, 900_000);
+    const out = renderAttachedStatus({ base: root, settingsDir, dataDir, now: () => 1_000_000 });
+    expect(out).toContain('not attached');
+    expect(out).toContain('failed open at least 1 time(s)');
+  });
+
+  it('renders nothing for a corrupt tally', () => {
+    attach();
+    writeFileSync(hookFailOpensPath(dataDir), '{"failOpens":', { mode: 0o600 });
+    expect(renderAttachedStatus({ base: root, settingsDir, dataDir })).not.toContain('failed open');
   });
 });
 

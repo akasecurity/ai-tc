@@ -360,19 +360,46 @@ describe('runApply — preview is a raw-free egress boundary by construction', (
     return undefined;
   };
 
-  it('withholds a raw value that a downstream throw interpolated into its message', async () => {
-    const thrown = await previewThrowing(() => {
-      // A future/unexpected throw that echoes a raw hit value — the exact leak the
-      // boundary must contain regardless of which throw site produced it.
-      throw new Error(`judge blew up near ${RAW} — export KEY=${RAW}`);
+  // The boundary's stated guarantee is that a FUTURE throw is covered too, so a
+  // case driven only by a whole-value echo does not exercise it: a whole-value
+  // check passes every truncated echo, and truncating is exactly what a
+  // well-meaning "say which value failed" change produces. Each shape below is a
+  // live run of the credential, and every one but the first is handed over
+  // verbatim by the whole-value form — so this table is what stops that gap
+  // reopening.
+  const echoShapes: { name: string; message: string }[] = [
+    { name: 'the whole value, twice', message: `judge blew up near ${RAW} — export KEY=${RAW}` },
+    { name: 'a truncated tail run', message: `judge blew up near ${RAW.slice(-16)}` },
+    { name: 'a truncated prefix run', message: `judge blew up near ${RAW.slice(0, 12)}...` },
+    { name: 'an interior run', message: `judge blew up near ${RAW.slice(4, 12)}` },
+  ];
+
+  for (const shape of echoShapes) {
+    it(`withholds a downstream throw whose message carries ${shape.name}`, async () => {
+      const thrown = await previewThrowing(() => {
+        // A future/unexpected throw that echoes a raw hit value — the exact leak
+        // the boundary must contain regardless of which throw site produced it.
+        throw new Error(shape.message);
+      });
+      expect(thrown).toBeInstanceOf(Error);
+      // Positive control first: the boundary really did replace the message, so
+      // the absence below is a property of the replacement rather than of an
+      // error that never carried anything. Then run by run — a boundary that
+      // withheld only PART of the value would still hand over a live prefix.
+      expect((thrown as Error).message).toMatch(/withheld/i);
+      expectNoEchoOf((thrown as Error).message, RAW);
     });
-    expect(thrown).toBeInstanceOf(Error);
-    // Positive control first: the boundary really did replace the message, so
-    // the absence below is a property of the replacement rather than of an
-    // error that never carried anything. Then run by run — a boundary that
-    // withheld only PART of the value would still hand over a live prefix.
-    expect((thrown as Error).message).toMatch(/withheld/i);
-    expectNoEchoOf((thrown as Error).message, RAW);
+  }
+
+  it('leaves the truncated shapes untouched by a whole-value check (control)', () => {
+    // Without this, the table above cannot say whether it is stronger than the
+    // form it replaced or merely also-red: every shape but the first passes
+    // `not.toContain`, which is precisely why each one used to cross the
+    // boundary intact.
+    for (const shape of echoShapes.slice(1)) {
+      expect(shape.message).not.toContain(RAW);
+    }
+    expect(echoShapes[0]?.message).toContain(RAW);
   });
 
   it('passes a raw-free error message through unchanged (keeps useful diagnostics)', async () => {

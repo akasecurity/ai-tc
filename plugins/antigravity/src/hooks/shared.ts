@@ -22,7 +22,7 @@
 //     Claude Code and Codex send flat snake_case (`tool_name`, `tool_input`,
 //     `session_id`, `cwd`). `workspacePaths` is an ARRAY — there is no `cwd`.
 
-import { resolveRepo } from '@akasecurity/plugin-sdk';
+import { dataDir, recordHookFailOpen, resolveRepo } from '@akasecurity/plugin-sdk';
 import type { EventMetadata } from '@akasecurity/schema';
 
 // The host kills a hook that outruns its `timeout` (SIGTERM) and aborts the
@@ -30,6 +30,11 @@ import type { EventMetadata } from '@akasecurity/schema';
 // hook races its own watchdog and emits the fail-open payload first. Kept
 // comfortably under the 10s registered in hooks.json.
 const WATCHDOG_MS = 8_000;
+
+// What the watchdog resolves the race with. A value no body can return, so a
+// body that resolves `undefined` (declining to decide) is never mistaken for
+// one that ran out of time.
+const WATCHDOG_FIRED: unique symbol = Symbol('watchdog fired');
 
 export async function readStdin(): Promise<string> {
   return new Promise<string>((resolve) => {
@@ -154,6 +159,13 @@ export function emit(output: unknown): Promise<void> {
  * the body outruns the watchdog. This is the fail-open rule (Architecture
  * principles §1) expressed for a host that fails CLOSED.
  *
+ * Two of those three are failures, and only those two are counted for
+ * `aka status`: a body that threw or outran the watchdog. Declining to decide
+ * is an ordinary answer and is not counted. The count is taken once per run,
+ * after `emit` has settled and before `process.exit(0)`, so it never delays the
+ * payload; it is a small synchronous write beside the store, not through it, so
+ * no store lock can hold it.
+ *
  * THE BOUND IS WHAT YIELDS, and it is not a detail — a path it does not cover
  * is a denied tool call. The watchdog is a `setTimeout`, so it fires only when
  * the event loop gets a turn, and a body that blocks this thread cannot be
@@ -189,19 +201,22 @@ export async function runHookFailOpen(
   watchdogMs: number = WATCHDOG_MS,
 ): Promise<never> {
   let output: unknown = failOpen;
+  let failed = false;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   try {
     const decided = await Promise.race([
       main(),
-      new Promise<undefined>((resolve) => {
+      new Promise<typeof WATCHDOG_FIRED>((resolve) => {
         watchdog = setTimeout(() => {
-          resolve(undefined);
+          resolve(WATCHDOG_FIRED);
         }, watchdogMs);
       }),
     ]);
-    if (decided !== undefined) output = decided;
+    if (decided === WATCHDOG_FIRED) failed = true;
+    else if (decided !== undefined) output = decided;
   } catch {
     // Fail-open: never break the user's session. `output` is still `failOpen`.
+    failed = true;
   } finally {
     // Cleared rather than left pending: a live timer would hold the event loop
     // open past the emit below on a fast path that never raced it.
@@ -212,7 +227,25 @@ export async function runHookFailOpen(
   } catch {
     // stdout is gone; exiting 0 is all that is left to try.
   }
+  if (failed) countFailOpen();
   process.exit(0);
+}
+
+// Counts one fail-open exit, so `aka status` can say the hooks have been
+// failing open on this machine. Nothing here may throw: it runs between `emit`
+// and `process.exit(0)`, and a throw there would skip the exit and reject the
+// entry's top-level await — a non-zero exit, which this host reads as a deny.
+// `recordHookFailOpen` swallows every fs error by contract, but the home
+// directory is resolved before it is called — and `os.homedir()` throws when
+// the platform cannot name one — so the whole body is guarded here as well.
+// Resolved from the layout rather than from a config read, because a settings
+// read is one more thing that could be what threw.
+function countFailOpen(): void {
+  try {
+    recordHookFailOpen(dataDir(), Date.now());
+  } catch {
+    // A fail-open exit that cannot even be located is still a fail-open exit.
+  }
 }
 
 // Base event metadata every Antigravity hook can derive from its stdin payload:

@@ -29,7 +29,11 @@ import type { HostFeatureGap, HostVersionCache } from '@akasecurity/schema';
 import { type ModelFromRecord, modelFromTranscriptTail } from './model-governance.ts';
 
 /**
- * The protections whose hook events postdate some host AKA still runs on.
+ * The protections whose hook events postdate some Claude Code AKA still runs on.
+ *
+ * Unqualified names in this module are Claude Code's; every other harness
+ * spells its own, and Codex's sit at the foot of this file. A guard names one
+ * table or the other, never both, so the two cannot be crossed by accident.
  *
  * A const object rather than a TS `enum`: `scan-worker.ts` is loaded by raw Node
  * under type stripping, where an `enum` emits runtime code instead of erasing.
@@ -299,3 +303,76 @@ export function readHostVersionCache(dataDir: string): HostVersionCache | null {
     return null;
   }
 }
+
+/**
+ * CODEX. The same partition, for a host that reaches every one of these
+ * decisions differently — so none of the reasoning above transfers by default.
+ *
+ * WHAT AN UNRECOGNISED EVENT COSTS HERE. The same silent absence, by a
+ * different mechanism. Codex parses `hooks.json` into a struct whose per-event
+ * fields are named ones (`PreToolUse`, `SessionStart`, …); that struct does not
+ * opt into rejecting unknown fields, while the file wrapper around it does. So
+ * an event name Codex does not recognise is dropped from the parse and the rest
+ * of the file loads — the plugin installs clean and the protection behind that
+ * entry is simply not there. A misspelling at the TOP level of the file is the
+ * loud case instead, and is not what this table guards.
+ *
+ * WHERE A VERSION COMES FROM, AND WHY NOTHING READS ONE YET. Codex puts its
+ * version in exactly one place: the `session_meta` record that opens a rollout
+ * file, as `payload.cli_version`. It is written when the session is CREATED and
+ * is not rewritten when one is resumed — a resumed session appends to the same
+ * file and adds no second `session_meta` — so the version at the head of a
+ * transcript names the host that STARTED that session, which on any resume is
+ * not the host running now. Two consequences for anyone adding a row below:
+ * the tail scanner the Claude Code side uses is the wrong reader twice over
+ * (wrong end of the file, and its byte bound cannot reach line 1 of a long
+ * transcript at all), and an observation is only sound on a session the host
+ * reported as a fresh start — `SessionStart` carries that as `source`, whose
+ * values are `startup`, `resume`, `clear`, `compact` and `fork`. Only the first
+ * of those licenses reading the head record as the running host.
+ */
+export const CODEX_HOST_FEATURE = {} as const;
+
+export type CodexHostFeature = (typeof CODEX_HOST_FEATURE)[keyof typeof CODEX_HOST_FEATURE];
+
+/**
+ * Codex floors — EMPTY, and that is a finding rather than an omission.
+ *
+ * Codex 0.117.0 recognised exactly the five events this plugin registers — its
+ * whole hook-event set was `PreToolUse`, `PostToolUse`, `SessionStart`,
+ * `UserPromptSubmit` and `Stop` — and every event Codex has added since is one
+ * this plugin does not register: the compaction pair, the subagent pair,
+ * `SessionEnd`, `Interrupt` and `PermissionRequest`. So nothing registered here
+ * is missing from any host still in use, and there is nothing to warn about.
+ * The partition guard over this table is what makes that stay true: registering
+ * a newer event fails CI until the version that introduced it is decided here.
+ *
+ * Adding the first row means adding its `CODEX_HOST_FEATURE` member in the same
+ * edit. The annotation below does NOT enforce that while the table is empty:
+ * `CodexHostFeature` is `never`, so `Record<CodexHostFeature, HostFloorRow>`
+ * collapses to `{}` and TypeScript accepts any non-nullish value — a malformed
+ * row typechecks clean. The codex plugin's manifest guard carries the row-shape
+ * case that covers the gap until a member exists.
+ *
+ * Read the `since` off the host's own release history when that day comes, and
+ * write the earliest version that HAS the event, prerelease included. Codex
+ * ships most builds as prereleases, and a release outranks every prerelease of
+ * the same number — so a floor written as `X.Y.0` reports a gap for every
+ * `X.Y.0-alpha.N` user, including the ones whose build already carries the
+ * feature.
+ */
+export const CODEX_HOST_FLOORS: Record<CodexHostFeature, HostFloorRow> = {};
+
+/**
+ * The Codex events old enough that no supported host is missing them.
+ *
+ * The other half of the partition, exactly as on the Claude Code side: an event
+ * in that plugin's `hooks.json` is either named here or carries a floor row.
+ */
+export const CODEX_BASELINE_HOOK_EVENTS: readonly string[] = [
+  'SessionStart',
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PostToolUse',
+  'Stop',
+];

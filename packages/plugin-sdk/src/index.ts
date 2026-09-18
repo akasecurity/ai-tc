@@ -48,9 +48,12 @@ export {
   readHookFailOpens,
   recordHookFailOpen,
 } from './hook-fail-opens.ts';
-export type { HostFeature, HostFloorRow } from './host-floor.ts';
+export type { CodexHostFeature, HostFeature, HostFloorRow } from './host-floor.ts';
 export {
   BASELINE_HOOK_EVENTS,
+  CODEX_BASELINE_HOOK_EVENTS,
+  CODEX_HOST_FEATURE,
+  CODEX_HOST_FLOORS,
   HOST_FEATURE,
   HOST_FLOORS,
   hostCeilingNotice,

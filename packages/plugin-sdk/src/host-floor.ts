@@ -338,14 +338,36 @@ export type CodexHostFeature = (typeof CODEX_HOST_FEATURE)[keyof typeof CODEX_HO
 /**
  * Codex floors — EMPTY, and that is a finding rather than an omission.
  *
- * Codex 0.117.0 recognised exactly the five events this plugin registers — its
- * whole hook-event set was `PreToolUse`, `PostToolUse`, `SessionStart`,
- * `UserPromptSubmit` and `Stop` — and every event Codex has added since is one
- * this plugin does not register: the compaction pair, the subagent pair,
- * `SessionEnd`, `Interrupt` and `PermissionRequest`. So nothing registered here
- * is missing from any host still in use, and there is nothing to warn about.
- * The partition guard over this table is what makes that stay true: registering
- * a newer event fails CI until the version that introduced it is decided here.
+ * The event set GREW, so "0.117.0 knew all five" is not on its own a reason for
+ * an empty table — a host older than that reads a `hooks.json` and silently
+ * drops what it does not know, which is the whole failure this guards. Read
+ * from `HookEventName` in the host's own `protocol.rs` at each tag:
+ *
+ *     0.114.0   SessionStart, Stop
+ *     0.115.0   SessionStart, Stop
+ *     0.116.0   + UserPromptSubmit
+ *     0.117.0   + PreToolUse, PostToolUse      (all five this plugin registers)
+ *     0.122.0   + PermissionRequest
+ *
+ * What makes the table empty is the FEATURE GATE rather than that table. The
+ * `codex_hooks` feature ships `Stage::UnderDevelopment, default_enabled: false`
+ * from 0.117.0 through 0.123.0, and 0.124.0 is the first release carrying
+ * `Stage::Stable, default_enabled: true` (the key is spelled `hooks` now, with
+ * `codex_hooks` kept as a legacy alias). So a host that runs hooks without
+ * anyone opting in by hand is 0.124.0 or newer, and every one of those has all
+ * five — along with the compaction pair, the subagent pair, `SessionEnd`,
+ * `Interrupt` and `PermissionRequest`, none of which this plugin registers.
+ *
+ * One window is genuinely exposed and is named rather than denied: 0.114.0
+ * through 0.116.0 (2026-03-11 to 2026-03-25) predate the features crate
+ * entirely, so hooks there are not gated at all and an incomplete event set is
+ * reachable by default rather than by opt-in. A floor row would describe that
+ * window correctly — and would still warn nobody, because nothing reads a Codex
+ * version yet (see the note above this table on why that read is not sound).
+ * That is the trade this empty table makes, not a claim the window is empty.
+ *
+ * The partition guard over this table is what keeps it honest: registering a
+ * newer event fails CI until the version that introduced it is decided here.
  *
  * Adding the first row means adding its `CODEX_HOST_FEATURE` member in the same
  * edit. The annotation below does NOT enforce that while the table is empty:

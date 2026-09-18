@@ -123,10 +123,16 @@ describe('every registered Codex hook event has a decided host floor', () => {
   });
 
   it('has no floor row, because no registered event needs one', () => {
-    // Deliberately an assertion rather than a silence. Codex 0.117.0 recognised
-    // exactly the five events this plugin registers, and every event added
-    // since is one it does not register, so there is nothing to warn about and
-    // no row to write.
+    // Deliberately an assertion rather than a silence. The reason there is
+    // nothing to warn about is the FEATURE GATE, not the 0.117.0 event set:
+    // Codex's event set grew (0.114.0 carried only SessionStart and Stop, and
+    // the tool-use pair arrived at 0.117.0), but `codex_hooks` shipped
+    // default-off from 0.117.0 through 0.123.0 and went stable and default-on
+    // at 0.124.0 — so any host running hooks without a hand opt-in has all
+    // five. 0.114.0 through 0.116.0 predate the feature gate and are the one
+    // genuinely exposed window; a row would describe it correctly and still
+    // warn nobody, because nothing reads a Codex version yet. See
+    // CODEX_HOST_FLOORS for the tag-by-tag evidence.
     //
     // This case is what makes adding the first row a decision rather than an
     // edit: it fails, and the thing to settle before deleting it is that

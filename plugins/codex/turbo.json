@@ -1,0 +1,14 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "//": "identity-consistency.test.ts asserts this plugin's version against cli/package.json and plugins/claude-code/package.json — the shared version line. Neither file is in this package and neither package is a dependency of it, so the default inputs do not hash them: a CLI-only version bump would leave this task's hash untouched and turbo would replay a cached pass, at exactly the moment the guard exists to fire. Measured, not assumed: `turbo run test --filter=@akasecurity/ai-tc-codex --dry=json` listed neither file, and perturbing either version left the task hash byte-identical until they were named here. That suite parses this file and fails if an input it reads goes missing; this file is inside the package, so editing it re-hashes the task and re-runs that check. Same reasoning as plugins/claude-code/turbo.json.",
+  "extends": ["//"],
+  "tasks": {
+    "test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/cli/package.json",
+        "$TURBO_ROOT$/plugins/claude-code/package.json"
+      ]
+    }
+  }
+}

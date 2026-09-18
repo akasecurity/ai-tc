@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "SessionStart",
+  "timestamp": 1788547858051,
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "transcript_path": "/Users/dev/Library/Application Support/Code/User/workspaceStorage/0123456789abcdef/GitHub.copilot-chat/transcripts/00000000-0000-4000-8000-000000000000.jsonl",
+  "cwd": "/Users/dev/ai-tc",
+  "source": "startup"
+}

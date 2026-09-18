@@ -826,7 +826,24 @@ describe('scanCoverage', () => {
     // reads as an oversight, a zero row reads as a decision.
     const res = await security().scanCoverage('30d');
     const unsupported = res.providers.filter((p) => !p.supported).map((p) => p.provider);
-    expect(unsupported).toEqual(['cursor', 'copilot', 'api']);
+    expect(unsupported).toEqual(['cursor', 'api']);
+  });
+
+  it('pins the copilot row BELOW antigravity: supported at partial (30) coverage', async () => {
+    // The lowest of the terminal-harness rows, and the reason is what the
+    // ADAPTER ships rather than what the host offers. The Copilot CLI's
+    // contract is the richest of the three — prompt capture, an observed input
+    // rewrite and a documented output rewrite — but only the pre-tool-use event
+    // is wired today, so shell command text is scanned and enforced before the
+    // call runs while prompts, tool results and the history backfill are not
+    // covered at all. Pinned strictly under Antigravity's 60 so a later event
+    // landing has to move this number deliberately rather than leaving a row
+    // that overstates what runs.
+    const res = await security().scanCoverage('30d');
+    const copilot = res.providers.find((p) => p.provider === 'copilot');
+    expect(copilot).toEqual({ provider: 'copilot', coverage: 30, supported: true });
+    const antigravity = res.providers.find((p) => p.provider === 'antigravity');
+    expect(copilot?.coverage).toBeLessThan(antigravity?.coverage ?? 0);
   });
 
   it('pins the codex row: supported at partial (80) coverage', async () => {

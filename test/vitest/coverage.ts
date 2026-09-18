@@ -111,7 +111,13 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/local-ops': 65, //                  66.75
   '@akasecurity/audit-gate': 61, //                 62.88
   '@akasecurity/ai-tc-antigravity': 59, //          60.96
-  '@akasecurity/ai-tc-copilot': 99, //              100 (placeholder only — RE-MEASURE when real source lands)
+  // Windows reports LOWEST here and the floor belongs to it: three symlink
+  // cases in store-health.test.ts cannot run unprivileged there, costing 8
+  // covered lines. macOS reads 86.68 (306/353), the Windows executed set 84.41
+  // (298/353) — the latter measured by forcing those three to skip, a method
+  // whose earlier reading matched the real Windows leg's covered-line count
+  // exactly (208/353). Re-measure as the adapter grows — K5.
+  '@akasecurity/ai-tc-copilot': 83, //              84.41 (Windows), 86.68 (macOS)
   '@akasecurity/ai-tc-codex': 58, //                59.78
   '@akasecurity/plugin-browser-extension': 81, //   82.44
   '@akasecurity/cli': 51, //                        52.66

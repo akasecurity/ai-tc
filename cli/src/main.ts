@@ -1,3 +1,5 @@
+import { pathToFileURL } from 'node:url';
+
 import { cliVersion, notifyFromCache, refreshCache } from '@akasecurity/local-ops';
 
 import { commandsHelp } from './command-manifest.ts';
@@ -7,7 +9,7 @@ import { runCompletion } from './commands/completion.ts';
 import { runDashboard, runDashboardServer } from './commands/dashboard.ts';
 import { runDetections } from './commands/detections.ts';
 import { runException } from './commands/exception.ts';
-import { runExtension } from './commands/extension.ts';
+import { hostChildScript, runExtension, runNativeHost } from './commands/extension.ts';
 import { runInit } from './commands/init.ts';
 import { runPlugins } from './commands/plugins.ts';
 import { runPrune } from './commands/prune.ts';
@@ -62,6 +64,10 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   // `aka dashboard` spawns this so a SEA binary can serve the dashboard without
   // exec-ing an external script. Returns the promise so main() awaits the boot.
   '__dashboard-server': (argv) => runDashboardServer(argv),
+  // Hidden: runs the browser extension's native-messaging host in-process (see
+  // extension.ts). The launcher `aka extension install` writes invokes this under
+  // the standalone binary, which has no separate Node runtime to run the host with.
+  '__native-host': () => runNativeHost(),
 };
 
 // Commands that already surface (or manage) update state — the passive post-command
@@ -105,11 +111,19 @@ function homeFromArgv(argv: string[]): string {
   return homeBase(undefined);
 }
 
-// `argv` is the tail after the binary name; `dispatchDeps` exists so the wiring
-// below can be driven in tests without spawning a real child.
+// Where `main` looks for a native-host child script; see `hostChildScript`.
+export interface HostChildDeps {
+  sea?: boolean;
+  root?: string;
+}
+
+// `argv` is the tail after the binary name; `dispatchDeps` and `hostDeps` exist
+// so the wiring below can be driven in tests without spawning a real child or
+// building a real binary.
 export async function main(
   argv: string[] = process.argv.slice(2),
   dispatchDeps: ExternalDispatchDeps = {},
+  hostDeps: HostChildDeps = {},
 ): Promise<void> {
   if (argv[0] === '-v' || argv[0] === '--version' || argv[0] === 'version') {
     process.stdout.write(`${cliVersion() ?? 'unknown'}\n`);
@@ -148,6 +162,11 @@ export async function main(
   }
 
   if (!handler) {
+    const childScript = hostChildScript(command, hostDeps.sea, hostDeps.root);
+    if (childScript !== null) {
+      await import(pathToFileURL(childScript).href);
+      return;
+    }
     process.stderr.write(`aka: unknown command '${command}'\n\n${USAGE}`);
     process.exitCode = 1;
     return;

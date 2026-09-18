@@ -4,12 +4,15 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { dataDir, openLocalDatabase, settingsDir } from '@akasecurity/persistence';
 import type { WebCaptureStatus } from '@akasecurity/schema';
@@ -19,12 +22,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   chromeManifestDir,
+  hostChildScript,
+  launcherCommand,
   launcherPath,
+  NATIVE_HOST_COMMAND,
   resolveExtensionDist,
   resolveHostScript,
   runInstall,
+  runNativeHost,
   runStatus,
 } from '../../src/commands/extension.ts';
+import { launcherScript, parseLauncher } from '../../src/lib/native-host-launcher.ts';
+import { realpathOrNull } from '../../src/lib/stable-path.ts';
 
 describe('chromeManifestDir', () => {
   it('resolves the macOS Chrome NativeMessagingHosts path', () => {
@@ -132,6 +141,8 @@ describe('runInstall / runStatus', () => {
     const out = status();
     expect(out).toContain('installed (out of date)');
     expect(out).toContain('no allowed_origins list');
+    // No `path` either, so Chrome has nothing to start.
+    expect(out).toContain('this manifest names no launcher');
     expect(process.exitCode).toBe(1);
   });
 
@@ -155,8 +166,15 @@ describe('runInstall / runStatus', () => {
   });
 
   it('writes the manifest pointing at an executable launcher (never the bare .js), then status reports it', () => {
+    // A real file: status now checks that what the launcher runs exists, so a
+    // fake path here would read as the broken registration it would be.
+    const hostDir = join(manifestDir, 'install', 'native-host');
+    mkdirSync(hostDir, { recursive: true });
+    const hostScript = join(hostDir, 'host.js');
+    writeFileSync(hostScript, '');
+
     const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
-    runInstall(manifestDir, '/fake/native-host/host.js', '/fake/extension');
+    runInstall(manifestDir, hostScript, '/fake/extension');
 
     const manifestPath = join(manifestDir, 'com.akasecurity.aka.json');
     expect(existsSync(manifestPath)).toBe(true);
@@ -179,12 +197,17 @@ describe('runInstall / runStatus', () => {
     // Chrome executes manifest.path directly, so the launcher must exist, be
     // executable, and exec the Node runtime over the host script — a manifest
     // naming the .js itself would make Chrome's spawn fail silently forever.
+    // Compared by what each path REACHES: the launcher spells both through
+    // whatever link follows upgrades, which is a different string wherever
+    // the runtime came from a package manager.
     expect(existsSync(launcher)).toBe(true);
     const launcherSrc = readFileSync(launcher, 'utf8');
-    expect(launcherSrc).toContain('/fake/native-host/host.js');
+    const runs = parseLauncher(launcherSrc);
+    expect(runs).toHaveLength(2);
+    expect(realpathSync(runs?.[0] ?? '')).toBe(realpathSync(process.execPath));
+    expect(realpathSync(runs?.[1] ?? '')).toBe(realpathSync(hostScript));
     if (process.platform !== 'win32') {
       expect(launcherSrc.startsWith('#!/bin/sh\n')).toBe(true);
-      expect(launcherSrc).toContain(`exec '${process.execPath}'`);
       expect(statSync(launcher).mode & 0o111).not.toBe(0);
     }
 
@@ -223,7 +246,7 @@ describe('runInstall / runStatus', () => {
         writeFileSync(hostScript, '');
 
         vi.spyOn(process.stdout, 'write').mockReturnValue(true);
-        runInstall(manifestDir, hostScript, '/fake/extension', fakeNode);
+        runInstall(manifestDir, hostScript, '/fake/extension', [fakeNode, hostScript]);
 
         const launcher = launcherPath(manifestDir, process.platform);
         const handedToNode = execFileSync('/bin/sh', [launcher], { encoding: 'utf8' });
@@ -234,21 +257,292 @@ describe('runInstall / runStatus', () => {
     },
   );
 
-  it('declines to install when no Node runtime can be resolved for the launcher', () => {
-    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
-    runInstall(manifestDir, '/fake/native-host/host.js', '/fake/extension', null);
-    expect(process.exitCode).toBe(1);
-    expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toContain(
-      'no Node.js runtime found',
-    );
-    expect(existsSync(join(manifestDir, 'com.akasecurity.aka.json'))).toBe(false);
-  });
-
   it('prints instructions to build the extension when its dist could not be resolved', () => {
     const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
     runInstall(manifestDir, '/fake/native-host/host.js', null);
     const written = stdout.mock.calls.map((c) => String(c[0])).join('');
     expect(written).toContain('pnpm --filter @akasecurity/plugin-browser-extension build');
+  });
+});
+
+// A Homebrew prefix built on disk: every version is its own keg under
+// Cellar/aka/<version>/libexec, holding the binary and its native-host sidecar,
+// and opt/aka is the link `brew upgrade` re-points before removing the old keg.
+// Real links, so every assertion reads what realpath reports.
+describe('the native-messaging registration across an upgrade', () => {
+  let root: string;
+  let manifestDir: string;
+
+  beforeEach(() => {
+    // Resolved up front, so the only links under it are the layout's own.
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'aka-brew-prefix-')));
+    manifestDir = join(root, 'NativeMessagingHosts');
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    vi.restoreAllMocks();
+    process.exitCode = 0;
+  });
+
+  const keg = (version: string): string => join(root, 'Cellar', 'aka', version);
+  const optAka = (): string => join(root, 'opt', 'aka');
+
+  function linkDir(target: string, path: string): void {
+    mkdirSync(dirname(path), { recursive: true });
+    symlinkSync(target, path, process.platform === 'win32' ? 'junction' : 'dir');
+  }
+
+  // Returns the keg's binary.
+  function pourKeg(version: string): string {
+    const libexec = join(keg(version), 'libexec');
+    mkdirSync(join(libexec, 'native-host'), { recursive: true });
+    writeFileSync(join(libexec, 'aka'), '');
+    writeFileSync(join(libexec, 'native-host', 'host.js'), '');
+    return join(libexec, 'aka');
+  }
+
+  // What `brew upgrade` does to the tree: pour the new keg, re-point opt at it,
+  // then remove the old keg.
+  function brewUpgrade(from: string, to: string): void {
+    pourKeg(to);
+    rmSync(optAka(), { force: true });
+    linkDir(keg(to), optAka());
+    rmSync(keg(from), { recursive: true, force: true });
+  }
+
+  const standalone = (execPath: string) => ({ sea: true, execPath, realpath: realpathOrNull });
+
+  function status(): string {
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    runStatus(manifestDir);
+    const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+    stdout.mockRestore();
+    return out;
+  }
+
+  function install(command: readonly string[]): void {
+    vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    runInstall(manifestDir, join(root, 'unused-host.js'), '/fake/extension', command);
+    vi.restoreAllMocks();
+  }
+
+  it('has the standalone binary run the host itself, named through opt', () => {
+    const exe = pourKeg('1.0.0');
+    linkDir(keg('1.0.0'), optAka());
+
+    // No host script in the command: the binary finds its own beside it when it
+    // starts, so nothing versioned is written down at all.
+    expect(launcherCommand(join(dirname(exe), 'native-host', 'host.js'), standalone(exe))).toEqual([
+      join(optAka(), 'libexec', 'aka'),
+      NATIVE_HOST_COMMAND,
+    ]);
+  });
+
+  it('names both the Node runtime and the host script through opt under the npm CLI', () => {
+    const node = join(root, 'Cellar', 'node', '24.18.0', 'bin', 'node');
+    mkdirSync(dirname(node), { recursive: true });
+    writeFileSync(node, '');
+    linkDir(join(root, 'Cellar', 'node', '24.18.0'), join(root, 'opt', 'node'));
+    const exe = pourKeg('1.0.0');
+    linkDir(keg('1.0.0'), optAka());
+
+    const hostScript = join(dirname(exe), 'native-host', 'host.js');
+    expect(
+      launcherCommand(hostScript, { sea: false, execPath: node, realpath: realpathOrNull }),
+    ).toEqual([
+      join(root, 'opt', 'node', 'bin', 'node'),
+      join(optAka(), 'libexec', 'native-host', 'host.js'),
+    ]);
+  });
+
+  it('stays installed across `brew upgrade`', () => {
+    const exe = pourKeg('1.0.0');
+    linkDir(keg('1.0.0'), optAka());
+    install(launcherCommand(join(dirname(exe), 'native-host', 'host.js'), standalone(exe)));
+    expect(status()).toContain('native-messaging host: installed\n');
+
+    brewUpgrade('1.0.0', '1.0.1');
+
+    expect(existsSync(keg('1.0.0'))).toBe(false);
+    const out = status();
+    expect(out).toContain('native-messaging host: installed\n');
+    expect(process.exitCode).toBe(0);
+    // And what it names is the NEW keg's binary, not merely something that exists.
+    const runs = parseLauncher(readFileSync(launcherPath(manifestDir, process.platform), 'utf8'));
+    expect(realpathSync(runs?.[0] ?? '')).toBe(join(keg('1.0.1'), 'libexec', 'aka'));
+  });
+
+  it('reports a launcher that names a keg, before and after the upgrade removes it', () => {
+    // The shape a standalone-binary registration used to take: a Node runtime
+    // over the keg's own host script. Working until the upgrade, then gone
+    // with nothing said anywhere.
+    const node = join(root, 'tools', 'node');
+    mkdirSync(dirname(node), { recursive: true });
+    writeFileSync(node, '');
+    const exe = pourKeg('1.0.0');
+    linkDir(keg('1.0.0'), optAka());
+    const kegHost = join(dirname(exe), 'native-host', 'host.js');
+    install([node, kegHost]);
+
+    const before = status();
+    expect(before).toContain('installed (out of date)');
+    expect(before).toContain(
+      `the launcher runs ${kegHost}, a versioned path the next upgrade removes`,
+    );
+    expect(before).toContain('re-run `aka extension install`');
+    // A runtime no layout links to is named as it is, and is not a fault.
+    expect(before).not.toContain(`the launcher runs ${node}`);
+    expect(process.exitCode).toBe(1);
+
+    process.exitCode = 0;
+    brewUpgrade('1.0.0', '1.0.1');
+
+    const after = status();
+    expect(after).toContain('installed (out of date)');
+    expect(after).toContain(`the launcher runs ${kegHost}, which does not exist`);
+    expect(process.exitCode).toBe(1);
+
+    // And the remedy it names works.
+    process.exitCode = 0;
+    const current = join(optAka(), 'libexec', 'aka');
+    install(launcherCommand(join(dirname(current), 'native-host', 'host.js'), standalone(current)));
+    expect(status()).toContain('native-messaging host: installed\n');
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('reports a manifest whose launcher is gone', () => {
+    install([pourKeg('1.0.0'), NATIVE_HOST_COMMAND]);
+    rmSync(launcherPath(manifestDir, process.platform));
+
+    const out = status();
+    expect(out).toContain('installed (out of date)');
+    expect(out).toContain('does not exist or cannot be read');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('reports a launcher that is not in the form install writes', () => {
+    install([pourKeg('1.0.0'), NATIVE_HOST_COMMAND]);
+    writeFileSync(launcherPath(manifestDir, process.platform), 'echo something else\n');
+
+    const out = status();
+    expect(out).toContain('installed (out of date)');
+    expect(out).toContain('is not one `aka extension install` writes');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('checks a launcher of the other platform by its own form', () => {
+    // parseLauncher recognises a launcher by its header, so a cmd launcher is
+    // checked on a POSIX run and the reverse — the missing-target case has to
+    // be reachable on every leg, not only on the one that writes that form.
+    const missing = join(root, 'Cellar', 'aka', '0.9.0', 'libexec', 'aka');
+    install([missing, NATIVE_HOST_COMMAND]);
+    const other = process.platform === 'win32' ? 'darwin' : 'win32';
+    writeFileSync(
+      launcherPath(manifestDir, process.platform),
+      launcherScript([missing, NATIVE_HOST_COMMAND], other),
+    );
+
+    expect(status()).toContain(`the launcher runs ${missing}, which does not exist`);
+    expect(process.exitCode).toBe(1);
+  });
+});
+
+describe('runNativeHost', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aka-native-host-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+    process.exitCode = 0;
+  });
+
+  it('runs the host script in-process, writing nothing to stdout itself', async () => {
+    // Stands in for host.js: ESM that does its work at load, as the real one
+    // starts reading stdin at load.
+    const hostScript = join(dir, 'host.mjs');
+    writeFileSync(
+      hostScript,
+      "import { writeFileSync } from 'node:fs';\n" +
+        "writeFileSync(new URL('./started.txt', import.meta.url), 'ok');\n",
+    );
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+
+    await runNativeHost(hostScript);
+
+    expect(existsSync(join(dir, 'started.txt'))).toBe(true);
+    // Chrome reads this process's stdout as framed messages.
+    expect(stdout).not.toHaveBeenCalled();
+  });
+
+  it('reports a missing host script on stderr, not stdout', async () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+
+    await runNativeHost(null);
+
+    expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toContain(
+      'no native-messaging host script',
+    );
+    expect(stdout).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+  });
+});
+
+describe('hostChildScript', () => {
+  let root: string;
+  let child: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'aka-host-child-'));
+    mkdirSync(join(root, 'native-host'));
+    child = join(root, 'native-host', 'sync.js');
+    writeFileSync(child, '');
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('names a script beside the host under the standalone binary', () => {
+    expect(hostChildScript(child, true, root)).toBe(child);
+  });
+
+  it('names nothing outside the standalone binary, which is a Node runtime already', () => {
+    expect(hostChildScript(child, false, root)).toBeNull();
+  });
+
+  it('names nothing outside this install’s own native-host directory', () => {
+    const elsewhere = join(root, 'elsewhere.js');
+    writeFileSync(elsewhere, '');
+    mkdirSync(join(root, 'native-host-other'));
+    const sibling = join(root, 'native-host-other', 'sync.js');
+    writeFileSync(sibling, '');
+
+    expect(hostChildScript(elsewhere, true, root)).toBeNull();
+    expect(hostChildScript(sibling, true, root)).toBeNull();
+  });
+
+  it('names nothing for a relative path, a non-script, or a script that is not there', () => {
+    const data = join(root, 'native-host', 'host.json');
+    writeFileSync(data, '{}');
+
+    expect(hostChildScript(join('native-host', 'sync.js'), true, root)).toBeNull();
+    expect(hostChildScript(data, true, root)).toBeNull();
+    expect(hostChildScript(join(root, 'native-host', 'gone.js'), true, root)).toBeNull();
+  });
+
+  it('is what a detached child of the in-process host is spawned as', () => {
+    // plugin-runtime spawns `<process.execPath> <script>` with the script
+    // resolved against host.js's own URL — the shape reproduced here, so a
+    // change to how either side spells the path fails on this line.
+    const hostUrl = pathToFileURL(join(root, 'native-host', 'host.js'));
+    const spawned = fileURLToPath(new URL('sync.js', hostUrl));
+    expect(hostChildScript(spawned, true, root)).toBe(child);
   });
 });
 

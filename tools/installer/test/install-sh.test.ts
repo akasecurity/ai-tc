@@ -8,7 +8,15 @@
 //
 // Every case here runs the real script. Nothing below reimplements a step of it.
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readlinkSync,
+  realpathSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -103,6 +111,41 @@ describe.skipIf(process.platform === 'win32' || hostIsUnsupportedByInstallSh())(
       const viaLink = spawnSync(link, ['--version'], { encoding: 'utf8' });
       expect(viaLink.status).toBe(0);
       expect(viaLink.stdout.trim()).toBe(expectedVersionOutput(FIXTURE_VERSION));
+
+      // And through the version-free `current` link, which is what the PATH
+      // link names — install.ps1's junction, on this side.
+      const current = join(installDir, 'current');
+      expect(lstatSync(current).isSymbolicLink()).toBe(true);
+      expect(realpathSync(current)).toBe(
+        realpathSync(join(installDir, FIXTURE_VERSION, `aka-${hostTriple()}`)),
+      );
+      expect(readlinkSync(link)).toBe(join(installDir, 'current', 'aka'));
+    });
+
+    it('re-points current, and the PATH link through it, at the new version on a re-install', async () => {
+      // Everything that recorded where `aka` lives — the PATH link, the browser
+      // extension's native-messaging launcher — names `current/aka`. A
+      // re-install has to move what that reaches, or those keep running the
+      // old version for as long as its directory survives.
+      const next = '0.0.1-fixture';
+      writeRelease(base, { banner: FIXTURE_VERSION });
+      expect((await run()).status).toBe(0);
+      const through = join(installDir, 'current', 'aka');
+      expect(spawnSync(through, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe(
+        expectedVersionOutput(FIXTURE_VERSION),
+      );
+
+      writeRelease(base, { version: next, banner: next });
+      const result = await run(next);
+
+      expect(result.status, describeRun(result)).toBe(0);
+      expect(realpathSync(through)).toBe(
+        realpathSync(join(installDir, next, `aka-${hostTriple()}`, 'aka')),
+      );
+      expect(spawnSync(through, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe(
+        expectedVersionOutput(next),
+      );
+      expect(realpathSync(join(binDir, 'aka'))).toBe(realpathSync(through));
     });
 
     it('refuses a tampered archive, and installs nothing', async () => {

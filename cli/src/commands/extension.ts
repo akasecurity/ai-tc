@@ -377,9 +377,9 @@ function launcherFaults(parsed: unknown): string[] {
       continue;
     }
     const pin = versionPin(arg);
-    if (pin?.reaches === 'this-file') {
+    if (pin?.names === 'this-version') {
       faults.push(`the launcher runs ${arg}, a versioned path the next upgrade removes`);
-    } else if (pin?.reaches === 'another-version') {
+    } else if (pin?.names === 'another-version') {
       faults.push(`the launcher runs ${arg}, but ${pin.link} points at another version`);
     }
   }

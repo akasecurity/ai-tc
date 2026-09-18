@@ -149,6 +149,38 @@ describe('stablePath', () => {
       expect(stablePath(exe)).toBe(exe);
     });
 
+    it("takes no `current` link above the release archive's own top-level directory", () => {
+      // aka-<version>-<triple>, which starts with `aka-` like the binroot does.
+      // Extracted into a shared directory, the link it would take sits beside
+      // that directory's parent.
+      const exe = file(join(root, 'ProgramData', 'aka-0.9.4-win32-x64', 'aka.exe'));
+      linkDir(join(root, 'ProgramData', 'aka-0.9.4-win32-x64'), join(root, 'current'));
+      expect(realpathSync(join(root, 'current', 'aka.exe'))).toBe(exe);
+
+      expect(stablePath(exe)).toBe(exe);
+      expect(versionPin(exe)).toBeNull();
+    });
+
+    it('takes no `current` link above an archive-named directory, even inside a version directory', () => {
+      // The binroot is exactly aka-<platform>-<arch>; a version directory above
+      // it does not make any aka-* directory one.
+      const exe = file(join(root, 'aka', '0.9.4', 'aka-0.9.4-win32-x64', 'aka.exe'));
+      linkDir(join(root, 'aka', '0.9.4', 'aka-0.9.4-win32-x64'), join(root, 'aka', 'current'));
+      expect(realpathSync(join(root, 'aka', 'current', 'aka.exe'))).toBe(exe);
+
+      expect(stablePath(exe)).toBe(exe);
+    });
+
+    it('takes no `current` link above a binroot-named directory with no version above it', () => {
+      // The installers' binroot always sits in a <version> directory.
+      const exe = file(join(root, 'ProgramData', 'aka-win32-x64', 'aka.exe'));
+      linkDir(join(root, 'ProgramData', 'aka-win32-x64'), join(root, 'current'));
+      expect(realpathSync(join(root, 'current', 'aka.exe'))).toBe(exe);
+
+      expect(stablePath(exe)).toBe(exe);
+      expect(versionPin(exe)).toBeNull();
+    });
+
     it('takes no `current` link beside an app directory outside `apps`', () => {
       // Scoop keeps every app under <root>/apps/<app>.
       const exe = file(join(root, 'tools', 'aka', '1.2.3', 'aka.exe'));
@@ -167,11 +199,11 @@ describe('stablePath', () => {
 });
 
 describe('versionPin', () => {
-  it('reports a keg path Homebrew links to as this file', () => {
+  it('reports a keg path Homebrew links to as this version', () => {
     const exe = file(join(root, 'Cellar', 'aka', '1.2.3', 'libexec', 'aka'));
     linkDir(join(root, 'Cellar', 'aka', '1.2.3'), join(root, 'opt', 'aka'));
 
-    expect(versionPin(exe)).toEqual({ link: join(root, 'opt', 'aka'), reaches: 'this-file' });
+    expect(versionPin(exe)).toEqual({ link: join(root, 'opt', 'aka'), names: 'this-version' });
   });
 
   it('reports an older installer version the current link has moved on from', () => {
@@ -183,7 +215,20 @@ describe('versionPin', () => {
 
     expect(versionPin(old)).toEqual({
       link: join(root, 'aka', 'current'),
-      reaches: 'another-version',
+      names: 'another-version',
+    });
+  });
+
+  it('reports another version when the linked version ships no file at this path', () => {
+    // Decided on the link alone: `current` names 0.9.2, and this file is in
+    // 0.9.1, whether or not 0.9.2 has a counterpart for it.
+    const old = file(join(root, 'aka', '0.9.1', 'aka-darwin-arm64', 'native-host', 'host.js'));
+    file(join(root, 'aka', '0.9.2', 'aka-darwin-arm64', 'aka'));
+    linkDir(join(root, 'aka', '0.9.2', 'aka-darwin-arm64'), join(root, 'aka', 'current'));
+
+    expect(versionPin(old)).toEqual({
+      link: join(root, 'aka', 'current'),
+      names: 'another-version',
     });
   });
 
@@ -194,7 +239,7 @@ describe('versionPin', () => {
 
     expect(versionPin(old)).toEqual({
       link: join(root, 'apps', 'aka', 'current'),
-      reaches: 'another-version',
+      names: 'another-version',
     });
   });
 

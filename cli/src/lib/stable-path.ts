@@ -15,9 +15,9 @@ import { basename, dirname, join, relative } from 'node:path';
 // link is re-pointed at its replacement.
 //
 // Each link is looked for only where its own layout puts it, keyed on the
-// directory name that layout carries (`Cellar`, `apps`, `aka-<triple>`), never
-// at an arbitrary ancestor. A `current` link is also looked for no more than
-// CURRENT_LINK_REACH path segments above the file.
+// directory names that layout carries (`Cellar`, `apps`, `<version>/aka-<triple>`),
+// never at an arbitrary ancestor. A `current` link is also looked for no more
+// than CURRENT_LINK_REACH path segments above the file.
 
 // Resolves a path through every link in it, or null when it names nothing.
 export type Realpath = (path: string) => string | null;
@@ -34,6 +34,12 @@ export const realpathOrNull: Realpath = (path) => {
 // in path segments. The installers and Scoop put the binary one segment below
 // it and the native host two.
 export const CURRENT_LINK_REACH = 3;
+
+// The installers' binroot, `aka-<platform>-<arch>`, and the version directory it
+// sits in. The release archive's own top-level directory,
+// `aka-<version>-<platform>-<arch>`, matches neither.
+const INSTALLER_BINROOT = /^aka-(?:darwin|linux|win32)-(?:arm64|x64)$/;
+const INSTALLER_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 interface LayoutLink {
   // The link a layout re-points on upgrade.
@@ -56,7 +62,11 @@ function layoutLinks(realPath: string): LayoutLink[] {
       links.push({ link, path: join(link, rest) });
     };
     if (reach <= CURRENT_LINK_REACH) {
-      if (basename(versionDir).startsWith('aka-') && grandparent !== parent) {
+      if (
+        INSTALLER_BINROOT.test(basename(versionDir)) &&
+        INSTALLER_VERSION.test(basename(parent)) &&
+        grandparent !== parent
+      ) {
         add(join(grandparent, 'current'));
       }
       if (basename(grandparent) === 'apps') add(join(parent, 'current'));
@@ -84,24 +94,31 @@ export function stablePath(path: string, realpath: Realpath = realpathOrNull): s
 export interface VersionPin {
   // The layout's link, e.g. <install-dir>/current.
   link: string;
-  // Whether that link reaches this same file, or another version's.
-  reaches: 'this-file' | 'another-version';
+  // Which version directory that link names: the one this file is in, or
+  // another. `another-version` is decided on the link alone, and says nothing
+  // about whether that version ships a file at this path.
+  names: 'this-version' | 'another-version';
 }
 
 // How `path` stands against its layout's link, when it names a file directly
-// inside a version directory that link belongs to: `this-file` is the spelling
-// the next upgrade removes, `another-version` a version the link has already
-// moved on from. Null for a path reached through a link, a path that names
-// nothing, and a file no layout links to.
+// inside a version directory that link belongs to: `this-version` is the
+// spelling the next upgrade removes, `another-version` a version the link has
+// already moved on from. Null for a path reached through a link, a path that
+// names nothing, and a file no layout links to.
 export function versionPin(path: string, realpath: Realpath = realpathOrNull): VersionPin | null {
   if (realpath(path) !== path) return null;
   const links = layoutLinks(path);
   for (const { link, path: candidate } of links) {
-    if (candidate !== path && realpath(candidate) === path) return { link, reaches: 'this-file' };
+    if (candidate !== path && realpath(candidate) === path) {
+      return { link, names: 'this-version' };
+    }
   }
+  // A link that exists and did not reach this file above names some other
+  // version directory: spelled through it, this file's own path would lead
+  // straight back here.
   for (const { link } of links) {
     const target = realpath(link);
-    if (target !== null && target !== link) return { link, reaches: 'another-version' };
+    if (target !== null && target !== link) return { link, names: 'another-version' };
   }
   return null;
 }

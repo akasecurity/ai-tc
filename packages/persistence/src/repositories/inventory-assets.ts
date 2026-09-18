@@ -108,6 +108,7 @@ const HARNESS_LABELS: Record<HarnessId, string> = {
   [HARNESS.Cursor]: 'Cursor',
   [HARNESS.Codex]: 'Codex',
   [HARNESS.Antigravity]: 'Antigravity',
+  [HARNESS.Copilot]: 'GitHub Copilot',
 };
 
 // A harness (AI tool) is "live" only if its inventory row was seen within this
@@ -167,6 +168,10 @@ const TITLE_NEEDLES: Record<keyof typeof HarnessIdSchema.enum, string> = {
   Cursor: stripSeparators(SOURCE_TOOL.Cursor),
   Codex: stripSeparators(SOURCE_TOOL.Codex),
   Antigravity: stripSeparators(SOURCE_TOOL.Antigravity),
+  // 'githubcopilot', not 'copilot'. The needle is the stripped WIRE id like
+  // every other row, and the wire id carries the vendor: a bare 'copilot'
+  // needle would also match any title that merely contains the word.
+  Copilot: stripSeparators(SOURCE_TOOL.Copilot),
 };
 
 function resolveHarnessId(attrs: HarnessAttrs, row: HarnessRow): HarnessId | null {
@@ -195,6 +200,7 @@ function resolveHarnessId(attrs: HarnessAttrs, row: HarnessRow): HarnessId | nul
   if (t.includes(TITLE_NEEDLES.Cursor)) return HARNESS.Cursor;
   if (t.includes(TITLE_NEEDLES.Codex)) return HARNESS.Codex;
   if (t.includes(TITLE_NEEDLES.Antigravity)) return HARNESS.Antigravity;
+  if (t.includes(TITLE_NEEDLES.Copilot)) return HARNESS.Copilot;
   return null;
 }
 

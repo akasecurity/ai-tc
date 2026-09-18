@@ -168,8 +168,15 @@ export interface VsCodeBlockOutput {
  *
  * NOT the CLI's: `systemMessage` is not among the three output fields that
  * reference documents for `preToolUse`, so the same object there would be a
- * payload the host drops. On the CLI a warn reaches the user through stderr and
+ * payload the host drops. On the CLI a warn is WRITTEN to stderr instead, and
  * stdout stays empty, which is the no-opinion the header describes.
+ *
+ * Whether stderr reaches a human on that host is UNOBSERVED, and this comment
+ * used to claim it did. The reference documents stderr surfacing only for a
+ * FAILING hook ("logged as a hook failure") and says nothing about an exit-0
+ * one, so what is stated here is the channel the notice is written to, never
+ * that anyone reads it. `skills/setup/SKILL.md` carries the same caveat on the
+ * user-facing side, and the two must not drift apart again.
  */
 export interface SystemMessageOutput {
   systemMessage: string;

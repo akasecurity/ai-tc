@@ -65,8 +65,8 @@ what it guarantees is that no path exits non-zero.
 verdict that the tool executes, so printing one per clean call would suppress
 the approval prompts your own Copilot settings would have raised. AKA emits a
 verdict only to deny, rewrites arguments only through `modifiedArgs`, and
-otherwise stays out of the way. A warning it wants to show you goes to stderr,
-because the CLI documents no message field on this event.
+otherwise stays out of the way. A warning it has is written to stderr, because
+the CLI documents no message field on this event.
 
 **A warn may reach only the CLI's log, not your screen.** The hooks reference
 describes stderr surfacing for a FAILING hook ("logged as a hook failure"); what

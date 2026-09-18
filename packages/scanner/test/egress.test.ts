@@ -15,6 +15,7 @@ const {
   scanIsolationDegraded,
   knownContentHashes,
   scanLedger,
+  scanLedgerPaths,
   recordScanned,
   openAtRestKeysForPath,
   resolvedAtRestKeysForPath,
@@ -28,6 +29,7 @@ const {
   scanIsolationDegraded: vi.fn(() => false),
   knownContentHashes: vi.fn(),
   scanLedger: vi.fn(),
+  scanLedgerPaths: vi.fn(),
   recordScanned: vi.fn(),
   openAtRestKeysForPath: vi.fn(),
   resolvedAtRestKeysForPath: vi.fn(),
@@ -41,6 +43,7 @@ vi.mock('@akasecurity/plugin-runtime', () => ({
   resolveDataGateway: vi.fn(() => ({
     knownContentHashes,
     scanLedger,
+    scanLedgerPaths,
     recordScanned,
     openAtRestKeysForPath,
     resolvedAtRestKeysForPath,
@@ -60,8 +63,9 @@ vi.mock('@akasecurity/plugin-sdk', async (importOriginal) => ({
 }));
 
 // Mirrors the real scan_ledger: ONE row per path, whose ruleset hash is
-// overwritten on every write, and reads filtered to one ruleset hash. A
-// multi-version fake would hide exactly the staleness this suite must prove.
+// overwritten on every write, entry reads filtered to one ruleset hash, and a
+// path read that is not. A multi-version fake would hide exactly the staleness
+// this suite must prove.
 interface LedgerRow {
   mtime: string;
   contentHash: string;
@@ -155,6 +159,7 @@ beforeEach(() => {
       ),
     ),
   );
+  scanLedgerPaths.mockImplementation(() => Promise.resolve([...ledgerRows.keys()]));
   recordScanned.mockImplementation((entries: LedgerRow[] & { path: string }[]) => {
     for (const entry of entries) {
       ledgerRows.set(entry.path, {
@@ -386,6 +391,23 @@ describe('scanWorktree — egress-versioned ledger key', () => {
 
     expect(recordProjectEgress).toHaveBeenCalledTimes(2);
     expect(scannedFilesOf(lastEgressInput())).toEqual(['src/pay.ts']);
+  });
+
+  it('sweeps a file deleted just before the version material changes', async () => {
+    write(repo, 'src/pay.ts', STRIPE_CALL);
+    write(repo, 'src/other.ts', STRIPE_CALL);
+    const config = configWith(true);
+
+    await scanWorktree(config, { rootDir: repo, sourceTool: 'claude-code' });
+    unlinkSync(join(repo, 'src', 'pay.ts'));
+
+    // The file's ledger row still carries the old hash when the new one lands.
+    versionMaterial.value = 'extractor-2\n[]';
+    await scanWorktree(config, { rootDir: repo, sourceTool: 'claude-code' });
+
+    const input = lastEgressInput();
+    expect(deletedFilesOf(input)).toEqual(['src/pay.ts']);
+    expect(scannedFilesOf(input)).toEqual(['src/other.ts']);
   });
 });
 

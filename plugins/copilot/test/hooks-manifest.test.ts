@@ -7,8 +7,13 @@
  * None of that is checkable by reading the manifest alone, and all three fail
  * silently in production — a mistyped script path is a hook that never runs, a
  * mistyped token is a hook that returns no opinion, and a timeout under the
- * watchdog is a hook the host kills before it can emit anything. On
- * `preToolUse` the last two are indistinguishable from a deny.
+ * watchdog is a hook the host kills before it can emit anything. All three end
+ * the same way on `preToolUse`: the tool call goes through unscanned, and
+ * nothing anywhere says a scan was skipped.
+ *
+ * The CASING of the keys is checkable here too, and is not cosmetic — the CLI
+ * selects its payload format by it, so this file decides how many times the
+ * hook runs per tool call as well as when.
  */
 import { existsSync, readFileSync } from 'node:fs';
 
@@ -58,6 +63,26 @@ describe('hooks.json', () => {
     expect(ENTRIES.map(({ event }) => event).filter((event) => !known.has(event))).toEqual([]);
   });
 
+  it('registers NO PascalCase event, because the CLI honours both casings', () => {
+    // This file is read by the Copilot CLI, and its hooks reference selects the
+    // payload format by the event name's casing: camelCase gives the CLI's own
+    // envelope, PascalCase gives a VS Code-compatible one. Both are valid keys
+    // HERE, so registering `preToolUse` and `PreToolUse` together does not
+    // serve two hosts — it spawns this script twice per tool call on the one
+    // host that ships, the second time with a payload whose `tool_name` is the
+    // Claude spelling (`Bash`, not `bash`) that `VSCODE_SCANNABLE_FIELDS` has
+    // no row for. A wasted 30s-budget process per call, scanning nothing.
+    //
+    // A VS Code entry belongs in the file VS Code itself reads. Asserted
+    // against the PascalCase vocabulary rather than against a hardcoded
+    // 'PreToolUse', so a second PascalCase event added later is caught too.
+    const pascal = new Set<string>(VSCODE_EVENTS);
+    expect(ENTRIES.map(({ event }) => event).filter((event) => pascal.has(event))).toEqual([]);
+    // …and the camelCase half is really there, or the line above passes on an
+    // empty manifest and says nothing at all.
+    expect(Object.keys(MANIFEST.hooks ?? {})).toEqual(['preToolUse']);
+  });
+
   it('names a script that is a build entry AND was emitted', () => {
     // Both halves, because they fail at different times. A path naming no entry
     // is broken for every install; a path naming an entry the build did not
@@ -103,8 +128,9 @@ describe('hooks.json', () => {
 
   it('registers a timeout the watchdog can beat', () => {
     // A `timeoutSec` at or under the watchdog means the host kills the hook
-    // before it can emit anything — and on `preToolUse` a hook that printed
-    // nothing is, at best, unmeasured and at worst a deny.
+    // before it can emit anything. A killed hook is not the same as a silent
+    // one: the CLI documents a timeout as fail-open, so the call is allowed
+    // through UNSCANNED and any deny the hook had reached is lost.
     for (const { event, entry } of ENTRIES) {
       expect(entry.timeoutSec, event).toBeTypeOf('number');
       expect(Number(entry.timeoutSec) * 1000, event).toBeGreaterThan(WATCHDOG_MS);

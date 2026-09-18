@@ -1,6 +1,6 @@
 {
   "name": "@akasecurity/ai-tc-copilot",
-  "version": "0.9.9",
+  "version": "0.9.13",
   "description": "AI Traffic Control — inspect and govern AI prompts in GitHub Copilot",
   "license": "Apache-2.0",
   "private": true,

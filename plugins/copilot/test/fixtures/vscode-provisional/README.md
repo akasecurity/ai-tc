@@ -78,6 +78,39 @@ is asserted by the adapter beyond "if it is present and a string, scan it".
 
 The failure convention. VS Code fails **open** — exit 2 blocks, and any other
 non-zero exit, invalid JSON or a timeout is a non-blocking warning — while the
-Copilot CLI's `preToolUse` denies on a crash. The adapter prints an explicit
-allow on `preToolUse` in both dialects anyway, which is correct under either
-reading; see `src/hooks/shared.ts`.
+Copilot CLI's `preToolUse` denies on a non-zero exit. Both are satisfied by the
+same rule, which is why no recording is owed for it: the adapter always exits 0,
+and writes a payload only where it reached a verdict. See `src/hooks/shared.ts`.
+
+## Where each tool id came from
+
+The ids in `VSCODE_SCANNABLE_FIELDS` are the part of this directory a wrong
+guess costs the most: an id that does not match what the host sends is not an
+error, it is a **silent unscanned allow** — the hook finds no field table, exits
+early and writes nothing. "Written from the fixtures" does not settle that,
+because the fixtures were written from the same reading. So each id is cited
+individually here, and a recording is what replaces the citation.
+
+| Tool id                  | Fields scanned           | Source                                                                                                            |
+| ------------------------ | ------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `run_in_terminal`        | `command`, `explanation` | VS Code docs, "Copilot Chat tools" / `#runInTerminal`; the input schema published for the built-in terminal tool. |
+| `create_file`            | `content`                | Same tool list, `#createFile`; `filePath` + `content` are its published inputs.                                   |
+| `replace_string_in_file` | `newString`              | Same tool list; the string-replacement editing tool, whose inputs are `filePath`, `oldString`, `newString`.       |
+| `insert_edit_into_file`  | `code`                   | Same tool list; the older insert-edit tool, whose input carries the edit as `code` plus an `explanation`.         |
+| `apply_patch`            | `input`                  | Shared with the Copilot CLI's own `apply_patch`, where the argument name is likewise unverified.                  |
+
+Two caveats that apply to every row and are the reason all of them are
+`verified: false` in `src/capabilities.ts`:
+
+- **The id is the tool-registry name, not necessarily the hook's `tool_name`.**
+  The CLI's own reference notes that its PascalCase payloads report `tool_name`
+  as the **Claude** spelling (`Bash`, not `bash`), which is direct evidence that
+  a host may not put its registry id on the wire. Whether VS Code's agent mode
+  does the same substitution is exactly what a recording would settle.
+- **The key names are the tool's published input schema, not an observed
+  payload.** Whether the hook receives them under those names, and in camelCase,
+  is unverified — see the `tool_input` entry above.
+
+Until a recording lands, a missed id fails **safe for the session and unsafe for
+the finding**: nothing is blocked that should not be, and nothing is scanned
+either.

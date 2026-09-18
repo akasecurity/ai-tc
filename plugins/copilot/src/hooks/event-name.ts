@@ -13,9 +13,14 @@
  * the manifest path the sibling plugins pass there — see
  * `MANIFEST_ARGV_INDEX` in `../build-info.ts`.
  *
- * An absent or unrecognised token answers `undefined`, which the callers read
- * as "no opinion": an explicit allow on `preToolUse` (this host denies on
- * silence) and silence everywhere else.
+ * An absent or unrecognised token answers `undefined`, and that is **not** a
+ * decline. `pre-tool-use.ts` bails only on a token it recognises as some OTHER
+ * event, so a hook started with no token at all goes on to scan and enforce
+ * normally. The token exists to catch a MISWIRED manifest — one that pointed
+ * this script at `sessionEnd` — rather than to gate the ordinary path, and the
+ * distinction matters because those two cases want opposite answers: a hook
+ * wired to the wrong event has nothing to say, while a hook whose token was
+ * simply not passed still has a tool call in front of it.
  */
 
 /**

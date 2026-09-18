@@ -6,17 +6,33 @@
  * stdin:   the host's payload, in either dialect (see ./dialect.ts).
  * stdout (exit 0), CLI:
  *   {"permissionDecision":"deny","permissionDecisionReason":"…"}  → blocked
- *   {"modifiedArgs":{…},"systemMessage":"…"}                      → redacted
- *   {"permissionDecision":"allow"}                                → unchanged
+ *   {"modifiedArgs":{…}}                                          → redacted
+ *   (nothing)                                                     → no opinion
  * stdout (exit 0), VS Code:
  *   {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":…}}
+ *   {"systemMessage":"…"}                                         → warned
+ *   (nothing)                                                     → no opinion
  *
- * THIS HOOK NEVER PRINTS NOTHING. On the Copilot CLI a crashed or non-zero-
- * exiting `preToolUse` hook is read as a DENY, and whether exit 0 with empty
- * stdout allows or denies is unmeasured — so every path through here, including
- * a throw and a watchdog win, leaves an explicit allow on stdout. That is
- * correct under both readings. `runHookFailOpen` is what guarantees it; see
- * ./shared.ts for the limit of that guarantee, which is everything that yields.
+ * THIS HOOK NEVER EXITS NON-ZERO — and that, rather than a payload, is what
+ * keeps it fail-open. On the Copilot CLI `preToolUse` is the one fail-closed
+ * event, and the channel that fails closed is the EXIT CODE: the hooks
+ * reference denies on a non-zero exit other than 2, denies on exit 2, and
+ * documents timeouts as fail-open for every event including this one. Empty
+ * stdout is in none of those lists — that same reference's `preToolUse`
+ * decision table reads "Empty output uses default behavior", which hands the
+ * call to the host's own permission flow. So a path that reaches no verdict
+ * writes nothing and exits 0, which is CLAUDE.md §1's fail-open unchanged.
+ *
+ * An explicit allow is reserved for the one place it is a real answer: VS
+ * Code's rewrite, where the host needs the verdict alongside `updatedInput`.
+ * Printing one per clean call on the CLI would instead PRE-APPROVE every call
+ * AKA found clean, suppressing the prompts the user's own Copilot settings
+ * would have raised — a control plane widening the permissions it was installed
+ * to narrow. `CliPermissionDecisionOutput` carries `'deny'` alone so that is a
+ * compile error rather than a rule someone has to remember.
+ *
+ * `runHookFailOpen` is what guarantees the exit code; see ./shared.ts for the
+ * limit of that guarantee, which is everything that yields.
  */
 import { createPluginRuntime, loadConfig } from '@akasecurity/plugin-sdk';
 import { SOURCE_TOOL } from '@akasecurity/schema';
@@ -31,7 +47,7 @@ import {
   scannableFieldsFor,
 } from './pre-tool-use-decision.ts';
 import type { HookOutput } from './shared.ts';
-import { allowFor, baseMetadata, parseJson, readStdin, runHookFailOpen } from './shared.ts';
+import { baseMetadata, parseJson, readStdin, runHookFailOpen, writeNotice } from './shared.ts';
 import {
   claimStoreUnavailableWarning,
   openGatewayOrNull,
@@ -44,8 +60,8 @@ import {
  *
  * Checked rather than assumed: the hook command carries the token, and a
  * manifest that wired this script to some other event would otherwise have it
- * scanning a payload with no tool call in it and reporting an allow — which is
- * the right answer for the wrong reason, and would hide the misconfiguration.
+ * scanning a payload with no tool call in it and declining — which is the right
+ * answer for the wrong reason, and would hide the misconfiguration.
  */
 const OWN_EVENTS: ReadonlySet<string> = new Set(['preToolUse', 'PreToolUse']);
 
@@ -82,7 +98,7 @@ async function main(): Promise<HookOutput | undefined> {
   // and ignores them, so this process is spawned for every tool call the agent
   // makes — `read_file`, `fetch_webpage`, every `mcp_*`. Returning here exits
   // before `loadConfig` and before the store opens, so an unknown tool costs a
-  // process start and nothing else. `runHookFailOpen` still prints the allow.
+  // process start and nothing else, and writes nothing at all.
   if (!fields) return undefined;
 
   const config = loadConfig();
@@ -92,11 +108,15 @@ async function main(): Promise<HookOutput | undefined> {
   warnIfStoreRedirected(config, sessionId);
   const gateway = openGatewayOrNull(config);
   if (gateway === null) {
-    // The store is gone, so nothing is scanned — but the call still has to be
-    // allowed, and on this host that means saying so. The warning rides the
-    // allow rather than replacing it.
+    // The store is gone, so nothing was scanned and there is no verdict to
+    // reach. Saying so must not become an allow: this is precisely the state in
+    // which AKA knows LEAST about the call, so an explicit allow here would
+    // pre-approve exactly the calls it failed to inspect. The warning goes to
+    // the channel the dialect has for it and stdout keeps its silence.
     if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
-      return allowFor(dialect, storeUnavailableMessage(config.dbPath));
+      const message = storeUnavailableMessage(config.dbPath);
+      if (dialect === 'vscode') return { systemMessage: message };
+      writeNotice(message);
     }
     return undefined;
   }
@@ -138,14 +158,19 @@ async function main(): Promise<HookOutput | undefined> {
     await runtime.close();
   }
 
-  return decidePreToolUse(dialect, call.name, toolInput, scanned) ?? undefined;
+  const decision = decidePreToolUse(dialect, call.name, toolInput, scanned);
+  // `notice` is set only on a dialect whose stdout has no field to carry it, so
+  // this never competes with the payload below for the single JSON object
+  // stdout takes.
+  if (decision.notice !== undefined) writeNotice(decision.notice);
+  return decision.output ?? undefined;
 }
 
-// The fail-open payload's dialect comes from the EVENT TOKEN, not from the
-// payload. It has to: this is the shape written when main() threw, when it
-// declined, and when it outran the watchdog — including on a run where stdin
-// never parsed and there was no payload to sniff. The token is on argv before
-// any of that, and the two vocabularies are disjoint, so it places the shape
-// with no I/O at all. An absent or unknown token falls back to the CLI shape;
-// see `allowFor` for why that direction is the safe one.
-await runHookFailOpen(main, allowFor(readEventName() === 'PreToolUse' ? 'vscode' : 'cli'));
+// No fail-open payload is passed, because there is no payload to write: a body
+// that threw, declined, or outran the watchdog has reached no verdict, and on
+// both hosts saying nothing is how a hook declines. That also removes the one
+// thing the old shape needed the event token for out here — which dialect to
+// spell a fail-open allow in — on a path where stdin may never have parsed.
+// `runHookFailOpen` still guarantees the exit 0 that this host reads as
+// "no deny".
+await runHookFailOpen(main);

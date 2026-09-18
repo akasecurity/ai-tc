@@ -1,21 +1,33 @@
 /**
- * Two hosts, one package, two payload dialects.
+ * One package, two payload dialects — which is NOT the same as two hosts.
  *
- * The Copilot CLI (and the cloud coding agent, which speaks the CLI's protocol)
- * sends a flat **camelCase** envelope — `sessionId`, `timestamp`, `cwd`, plus
- * `toolName`/`toolArgs` on a tool event. VS Code's agent mode sends a flat
- * **snake_case** one — `hook_event_name`, `session_id`, `cwd`, `tool_name`,
- * `tool_input`. Nothing in either payload names the dialect, so it is sniffed,
- * and the sniff is ordered so the one field VS Code sends on every event
- * decides first.
+ * A dialect is a payload FORMAT, and the Copilot CLI can speak both of them.
+ * Its hooks reference says so plainly: "Two payload formats are supported,
+ * selected by the event name used in the hook configuration" — camelCase keys
+ * (`preToolUse`) give the CLI's own flat camelCase envelope, PascalCase keys
+ * (`PreToolUse`) give a VS Code-compatible snake_case one. So `cli` and
+ * `vscode` below name the wire shape a payload arrived in, never the program
+ * that sent it.
  *
- * Everything downstream takes the dialect as a PARAMETER. The two tool
- * vocabularies do not overlap (`bash` against `run_in_terminal`), so their
- * scannable-field tables are never merged: a merged table would let a VS Code
- * tool name resolve against a CLI field list and scan a field that is not there.
+ * The CLI's camelCase envelope is `sessionId`, `timestamp`, `cwd`, plus
+ * `toolName`/`toolArgs` on a tool event. The VS Code-compatible one is
+ * `hook_event_name`, `session_id`, `cwd`, `tool_name`, `tool_input`. Nothing in
+ * either payload names its format, so it is sniffed, and the sniff is ordered
+ * so the one field the snake_case shape sends on every event decides first.
  *
- * `undefined` means the envelope matched neither, which the callers read as
- * "no opinion" — an explicit allow on `preToolUse`, silence elsewhere.
+ * Everything downstream takes the dialect as a PARAMETER, and the two tool
+ * vocabularies are kept in separate tables: a merged one would let a tool name
+ * from either format resolve against the other's field list and scan a field
+ * that is not there. Those vocabularies are genuinely distinct — the same
+ * reference notes that "Payloads for PascalCase `PreToolUse` report `tool_name`
+ * as the Claude tool name (for example, `Bash`, not `bash`)" — but they are not
+ * separated by HOST, which is why `hooks.json` registers the camelCase event
+ * alone. Registering both casings there would spawn this script twice for every
+ * tool call, the second time with a payload whose `Bash` matches no row in the
+ * snake_case table.
+ *
+ * `undefined` means the envelope matched neither format, which the callers read
+ * as "no opinion": nothing on stdout, on every event.
  */
 
 export type Dialect = 'cli' | 'vscode';

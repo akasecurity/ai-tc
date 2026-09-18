@@ -848,23 +848,39 @@ changes. The gaps that exist today:
   `PostToolUse` receives **no tool
   result at all**, so there is no live response scanning and no `tool-response.ts` /
   `scan-response.ts` counterpart in that package.
-- **GitHub Copilot is TWO hosts behind one package, and they disagree about failure.** On
-  the **Copilot CLI** (and the cloud coding agent, which speaks its protocol) a `preToolUse`
-  hook that exits non-zero or crashes is read as a **deny**, a timed-out one allows, and
-  every other event fails open. Whether exit 0 with EMPTY STDOUT allows or denies is
-  **unmeasured** — the probe that would settle it has not run, and
-  `plugins/copilot/test/fixtures/cli/README.md` says so under "Not measured". On **VS Code
-  agent mode** exit 2 blocks and everything else — any other non-zero exit, invalid JSON, a
-  timeout — is a non-blocking warning, so that host fails open; it also **parses matchers and
-  ignores them**, so the hook is spawned for every tool call and the unknown-tool exit is the
-  common path rather than the rare one. The adapter's answer to the disagreement is to print
-  an **explicit allow on every `preToolUse` path** in whichever dialect the event token
-  names, which is correct under both readings of the unmeasured case, and to stay silent on
-  every other event. No path exits non-zero and none exits 2. The VS Code half is built to
-  the published contract and **confirmed against no live install**: its fixtures live in a
-  separate `test/fixtures/vscode-provisional/` directory, every capability it claims is
-  marked unverified, and `plugins/copilot/test/fixture-provenance.test.ts` is what keeps a
-  doc-derived specimen from being filed among the recordings.
+- **GitHub Copilot is TWO hosts behind one package, and what fails closed is the EXIT CODE.**
+  On the **Copilot CLI** (and the cloud coding agent, which speaks its protocol) `preToolUse`
+  is the one fail-closed event, and the hooks reference is specific about the channel: a
+  hook that exits non-zero other than 2 **denies the tool call**, exit 2 denies and merges
+  any stdout JSON into that deny, a timed-out one allows, and every other event fails open.
+  **Empty stdout is in none of those lists.** That same reference's `preToolUse` decision
+  table reads "Empty output uses default behavior", which hands the call to the host's own
+  permission flow — so silence here is §1's fail-open unchanged, and the adapter writes
+  **nothing on every path that reaches no verdict**. It is NOT unmeasured; the earlier
+  reading that it might be is retracted, and `plugins/copilot/test/fixtures/cli/README.md`
+  records under "Settled by the vendor reference" which questions the docs answer and which a
+  recording still owes.
+  **An explicit allow is a verdict, not a way of saying nothing**, so emitting one per clean
+  call would pre-approve exactly the calls the user's own Copilot settings would have
+  prompted about — a control plane widening the permissions it was installed to narrow.
+  `CliPermissionDecisionOutput` therefore carries `'deny'` alone, which makes a CLI allow a
+  **compile error**; VS Code's shape keeps `'allow'` because that host carries `updatedInput`
+  only alongside one. What the adapter guarantees instead is that no path exits non-zero and
+  none exits 2. On **VS Code agent mode** exit 2 blocks and everything else — any other
+  non-zero exit, invalid JSON, a timeout — is a non-blocking warning, so that host fails
+  open; it also **parses matchers and ignores them**, so the hook is spawned for every tool
+  call and the unknown-tool exit is the common path rather than the rare one.
+  **The two dialects are payload FORMATS, not hosts**, and the CLI speaks both: the reference
+  selects the format by the event name's casing, so a manifest registering `preToolUse` and
+  `PreToolUse` together spawns the hook twice per call — the second time with a payload whose
+  `tool_name` is the Claude spelling (`Bash`, not `bash`) that the snake_case table has no row
+  for. `plugins/copilot/hooks.json` therefore registers the camelCase event **alone**, and a
+  VS Code entry belongs in the file that host itself reads.
+  The VS Code half is built to the published contract and **confirmed against no live
+  install**: its fixtures live in a separate `test/fixtures/vscode-provisional/` directory,
+  every capability it claims is marked unverified, and
+  `plugins/copilot/test/fixture-provenance.test.ts` is what keeps a doc-derived specimen from
+  being filed among the recordings.
 - **Antigravity also fails CLOSED**, which inverts this repo's §1 rule at the boundary: a
   hook that exits non-zero, is killed on timeout, or prints nothing is read as a `deny` on
   every tool call. "Fail-open" there therefore means _always printing an explicit_

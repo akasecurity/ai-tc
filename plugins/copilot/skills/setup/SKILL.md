@@ -52,12 +52,29 @@ replaces AKA's.
 
 **Under VS Code, matchers are ignored.** The hook is spawned for every tool call
 the agent makes, including ones AKA has no field table for. Those exit
-immediately with an explicit allow and open no store.
+immediately, write nothing and open no store.
 
-**On the CLI a crashing hook denies the call.** A `preToolUse` hook that exits
-non-zero or crashes is read as a deny; a timed-out one allows. Whether exit 0
-with empty stdout allows or denies has not been measured. AKA prints an
-explicit allow on every `preToolUse` path for that reason — correct either way.
+**On the CLI a crashing hook denies the call.** `preToolUse` is the one
+fail-closed event there: a hook that exits non-zero other than 2 denies the tool
+call, exit 2 denies, and a timed-out one allows. Empty stdout is none of those —
+the hooks reference documents it as "default behavior", meaning the call goes to
+your own permission flow. So AKA writes **nothing** when it has no verdict, and
+what it guarantees is that no path exits non-zero.
+
+**AKA never pre-approves a call on the CLI.** `permissionDecision: "allow"` is a
+verdict that the tool executes, so printing one per clean call would suppress
+the approval prompts your own Copilot settings would have raised. AKA emits a
+verdict only to deny, rewrites arguments only through `modifiedArgs`, and
+otherwise stays out of the way. A warning it wants to show you goes to stderr,
+because the CLI documents no message field on this event.
+
+**A warn may reach only the CLI's log, not your screen.** The hooks reference
+describes stderr surfacing for a FAILING hook ("logged as a hook failure"); what
+a CLI that exits 0 does with a hook's stderr is not documented and was not
+observed here. So under `redactFallback: warn` — the shipped default — the call
+goes through and the notice may end up in the debug log rather than in front of
+you, which makes a warn hard to tell from `monitor` on this host. Set
+`redactFallback` to `block` if a redact on command text has to be visible.
 
 **The cloud coding agent is captured only where the repository asks for it.**
 It reads `.github/hooks/*.json` on the **default branch** and nowhere else, and

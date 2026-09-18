@@ -171,7 +171,7 @@ export function denyOutput(
  */
 export type PreToolUseOutput =
   | ReturnType<typeof denyOutput>
-  | { modifiedArgs: Record<string, unknown>; systemMessage: string }
+  | { modifiedArgs: Record<string, unknown> }
   | {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse';
@@ -181,6 +181,34 @@ export type PreToolUseOutput =
       systemMessage: string;
     }
   | { systemMessage: string };
+
+/**
+ * What one decision puts on each of the hook's two channels.
+ *
+ * TWO channels, because the dialects do not agree that stdout has a message
+ * field. VS Code documents `systemMessage` on `PreToolUse`, so there a notice
+ * rides the payload and `notice` is undefined. The Copilot CLI's hooks
+ * reference documents exactly three `preToolUse` output fields —
+ * `permissionDecision`, `permissionDecisionReason`, `modifiedArgs` — and
+ * `systemMessage` appears nowhere in it, so a message put on stdout there is
+ * dropped by the host and the user is told nothing at all. On that dialect the
+ * text comes back as `notice` and the caller writes it to stderr.
+ *
+ * `output: null` is the no-opinion, and it is a REAL answer rather than a
+ * failure: empty `preToolUse` output is documented as "default behavior", which
+ * hands the call to the host's own permission flow. It is what a clean scan, a
+ * monitor policy and a CLI warn all produce.
+ *
+ * Splitting them here rather than in the hook keeps this module pure — it
+ * returns two strings and does no I/O — while leaving exactly one place that
+ * knows which dialect can carry which.
+ */
+export interface PreToolUseDecision {
+  /** The payload for stdout, or null to write nothing. */
+  output: PreToolUseOutput | null;
+  /** Text for stderr, set only where the dialect's stdout cannot carry it. */
+  notice?: string;
+}
 
 /**
  * The pointer pre-check the hook runs BEFORE the secret scan, and before the
@@ -215,7 +243,7 @@ export function decidePreToolUse(
   toolName: string,
   toolInput: Record<string, unknown>,
   scanned: readonly ScannedField[],
-): PreToolUseOutput | null {
+): PreToolUseDecision {
   const blockedRules = new Set<string>();
   const warnedRules = new Set<string>();
   const redactedRules = new Set<string>();
@@ -266,44 +294,58 @@ export function decidePreToolUse(
   }
 
   if (blockedRules.size > 0) {
-    return denyOutput(
-      dialect,
-      blockMessage({
-        subject: `${toolName} call`,
-        ruleIds: [...blockedRules].join(', '),
-        blockedRef: blockedReferences[0],
-        note: escalatedExecutable
-          ? EXECUTABLE_REDACT_NOTE
-          : escalatedUnredactable
-            ? UNREDACTABLE_NOTE
-            : undefined,
-      }),
-    );
+    return {
+      output: denyOutput(
+        dialect,
+        blockMessage({
+          subject: `${toolName} call`,
+          ruleIds: [...blockedRules].join(', '),
+          blockedRef: blockedReferences[0],
+          note: escalatedExecutable
+            ? EXECUTABLE_REDACT_NOTE
+            : escalatedUnredactable
+              ? UNREDACTABLE_NOTE
+              : undefined,
+        }),
+      ),
+    };
   }
 
   if (redactedRules.size > 0) {
     const rewritten = updatedInput ?? { ...toolInput };
-    const systemMessage = `AKA redacted sensitive content in ${toolName} input — flagged ${[...redactedRules].join(', ')}.${exceptionPointer(redactedReferences)}`;
+    const message = `AKA redacted sensitive content in ${toolName} input — flagged ${[...redactedRules].join(', ')}.${exceptionPointer(redactedReferences)}`;
     // Both dialects carry the WHOLE argument object rather than the changed
     // fields alone. On the CLI `modifiedArgs` replaces the call's arguments; on
     // VS Code `updatedInput` is validated against the tool's own input schema,
     // which a partial object fails.
+    //
+    // The rewrite itself is a documented field on both. Only the EXPLANATION
+    // splits: VS Code carries it on stdout, the CLI has no field for it.
     return dialect === 'cli'
-      ? { modifiedArgs: rewritten, systemMessage }
+      ? { output: { modifiedArgs: rewritten }, notice: message }
       : {
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse',
-            permissionDecision: 'allow',
-            updatedInput: rewritten,
+          output: {
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'allow',
+              updatedInput: rewritten,
+            },
+            systemMessage: message,
           },
-          systemMessage,
         };
   }
 
   if (warnedRules.size > 0) {
-    return {
-      systemMessage: `AKA flagged sensitive content in ${toolName} input (${[...warnedRules].join(', ')}).`,
-    };
+    // The shipped `redactFallback` is `warn`, so this is the common path for a
+    // redact policy on command text — not a corner. On the CLI it is the case
+    // with NO stdout payload at all: there is no verdict to emit (the call is
+    // being let through) and no field to carry the reason, so stdout stays
+    // empty and the reason goes to stderr. The finding is recorded either way;
+    // what varies is only where the user is told.
+    const message = `AKA flagged sensitive content in ${toolName} input (${[...warnedRules].join(', ')}).`;
+    return dialect === 'cli'
+      ? { output: null, notice: message }
+      : { output: { systemMessage: message } };
   }
-  return null;
+  return { output: null };
 }

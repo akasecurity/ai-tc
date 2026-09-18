@@ -2,18 +2,21 @@
 // dialects, and then against a real finding at every enforcement level.
 //
 // The two halves are not optional alternatives. The **fault** rows prove the
-// hook says something when it cannot decide: on the Copilot CLI a crashed or
-// non-zero-exiting `preToolUse` hook is read as a DENY, and whether exit 0 with
-// empty stdout allows or denies is unmeasured, so silence here is at best a
-// coin-flip and at worst a blocked tool call. Every one of those rows is a
-// PRESENCE check, which is the right shape on this event and the wrong one
-// anywhere the absence of output means "no opinion".
+// hook reaches no verdict and says nothing while still exiting 0 — which is
+// what fail-open means here. On the Copilot CLI `preToolUse` is the one
+// fail-closed event, but the channel that fails closed is the EXIT CODE: the
+// hooks reference denies on a non-zero exit other than 2 and on exit 2, and its
+// `preToolUse` decision table reads "Empty output uses default behavior", so
+// empty stdout hands the call to the host's own permission flow. Printing an
+// allow there would instead PRE-APPROVE it.
 //
-// The **enforcement** rows are the positive control the fault rows cannot be
-// without. `expect(stdout).not.toBe('')` says nothing about whether the hook
-// can still decide anything, so a hook wired to print its allow and then return
-// immediately would satisfy every fault row in this file. Only a row driving a
-// real finding through a real policy can see that.
+// So every fault row is an ABSENCE check, and an absence check is worth nothing
+// on its own: `expect(stdout).toBe('')` is satisfied by a hook that crashed
+// before doing anything, by one built from an empty file, and by a broken
+// harness that never spawned. The **enforcement** rows are what make them mean
+// something — they drive a real finding through a real policy and show the same
+// built script DOES write, so silence is a decision rather than a failure.
+// Neither half survives without the other.
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -64,10 +67,10 @@ function runHook(event: string, home: string, input: string | Buffer): HookRun {
 }
 
 /**
- * Assert the three things the host requires, in the order that makes a failure
- * readable: it exited 0, it said something, and what it said is exactly one
- * JSON object. `JSON.parse` over the WHOLE stdout is what forbids a second
- * object — two concatenated objects do not parse.
+ * Assert the three things the host requires of a run that DECIDED, in the order
+ * that makes a failure readable: it exited 0, it said something, and what it
+ * said is exactly one JSON object. `JSON.parse` over the WHOLE stdout is what
+ * forbids a second object — two concatenated objects do not parse.
  *
  * Exit 0 rather than "not 2": a non-zero exit is a deny on the CLI, and under
  * VS Code 2 specifically is the block channel, so either would be an
@@ -79,11 +82,29 @@ function soleObject(run: HookRun): unknown {
   return JSON.parse(run.stdout) as unknown;
 }
 
-/** The two dialects, with the allow each host's schema accepts. */
+/**
+ * Assert a run reached no verdict: exit 0, and NOTHING on stdout.
+ *
+ * Exit 0 is asserted first and carries `stderr` as its message, because that is
+ * the half that would actually deny the tool call — a hook that crashed also
+ * writes no stdout, and without this the two are indistinguishable.
+ */
+function noObject(run: HookRun): void {
+  expect(run.status, run.stderr).toBe(0);
+  expect(run.stdout).toBe('');
+}
+
+/**
+ * The two payload dialects.
+ *
+ * Only `preToolUse` is registered in `hooks.json` — the CLI honours a PascalCase
+ * key too and would spawn this script a second time per tool call — but the
+ * PascalCase entry is still driven here, by argv, because the snake_case code
+ * path is real and is what a VS Code delivery will use.
+ */
 const DIALECTS = [
   {
     event: 'preToolUse',
-    allow: { permissionDecision: 'allow' },
     call: (command: string) => ({
       sessionId: 'c1779e76-9889-419b-ab12-f7bb8a957e15',
       timestamp: 1788547866483,
@@ -94,7 +115,6 @@ const DIALECTS = [
   },
   {
     event: 'PreToolUse',
-    allow: { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } },
     call: (command: string) => ({
       hook_event_name: 'PreToolUse',
       session_id: 'c1779e76-9889-419b-ab12-f7bb8a957e15',
@@ -140,31 +160,32 @@ const FAULTS: { label: string; input: string | Buffer }[] = [
 ];
 
 describe.each(DIALECTS)(
-  'pre-tool-use built hook [$event] — fails open by PRINTING, on every fault',
+  'pre-tool-use built hook [$event] — fails open by EXITING 0 and saying nothing',
   (d) => {
-    it.each(FAULTS)('emits its explicit allow on $label', (fault) => {
+    it.each(FAULTS)('reaches no verdict and writes nothing on $label', (fault) => {
       // Each case gets its own throwaway home so a store one run creates cannot
       // change how the next one behaves.
       const run = withTempHome(
         (home) => runHook(d.event, home, fault.input),
         `aka-copilot-failopen-${d.event}-`,
       );
-      expect(soleObject(run)).toEqual(d.allow);
+      noObject(run);
     });
 
-    it('emits its explicit allow for a tool it has no field table for', () => {
+    it('writes nothing for a tool it has no field table for', () => {
       // The fast path, and under VS Code the COMMON one: matchers are parsed
       // and ignored there, so this hook is spawned for every tool call the
-      // agent makes. It must still print.
+      // agent makes — `read_file`, `fetch_webpage`, every `mcp_*`. An allow per
+      // spawn would pre-approve the agent's entire tool stream.
       const payload = { ...d.call('ls'), toolName: 'read_file', tool_name: 'read_file' };
       const run = withTempHome(
         (home) => runHook(d.event, home, JSON.stringify(payload)),
         `aka-copilot-unknown-tool-${d.event}-`,
       );
-      expect(soleObject(run)).toEqual(d.allow);
+      noObject(run);
     });
 
-    it('emits its explicit allow over a store that cannot be opened', () => {
+    it('warns without a verdict over a store that cannot be opened', () => {
       // The fault that is not about stdin: the hook's own dependency is broken.
       // Not the "SQLite format 3\0" header, so the first PRAGMA fails
       // SQLITE_NOTADB.
@@ -185,12 +206,23 @@ describe.each(DIALECTS)(
         return runHook(d.event, home, JSON.stringify(d.call('echo hello')));
       }, `aka-copilot-corrupt-${d.event}-`);
 
-      // The allow, and the degradation notice riding with it rather than
-      // replacing it: a user whose store is gone is told detection is off, and
-      // the call still goes through.
-      const decided = soleObject(run) as Record<string, unknown>;
-      expect(decided).toMatchObject(d.allow);
-      expect(String(decided.systemMessage)).toContain('could not open its local store');
+      // The user is told detection is off and the call still goes through — but
+      // NOT by pre-approving it. This is the state in which AKA has scanned
+      // nothing, so it is the last place an allow belongs.
+      //
+      // Which channel carries the notice is the dialect's, and the assertion
+      // follows it rather than searching both: VS Code documents
+      // `systemMessage` on stdout, the CLI documents no message field at all
+      // and so gets stderr. Asserting the OTHER channel is empty in each case is
+      // what stops the CLI drifting back to a payload the host discards.
+      if (d.event === 'preToolUse') {
+        noObject(run);
+        expect(run.stderr).toContain('could not open its local store');
+      } else {
+        const decided = soleObject(run) as Record<string, unknown>;
+        expect(String(decided.systemMessage)).toContain('could not open its local store');
+        expect(JSON.stringify(decided)).not.toContain('permissionDecision');
+      }
     });
   },
   60_000,
@@ -198,9 +230,10 @@ describe.each(DIALECTS)(
 
 // ─── Enforcement, as the counterpart to the fault rows above ────────────────
 //
-// Every case above proves the hook says something when it CANNOT decide. These
-// prove what it says when it can. Without them every `stdout !== ''` above is
-// satisfied by a hook that prints its allow and returns.
+// Every case above proves the hook stays silent when it CANNOT decide. These
+// prove it still speaks when it can. Without them every `stdout === ''` above
+// is satisfied by a hook that was never built, never spawned, or crashed on
+// import — the exact failures an absence check cannot tell apart from success.
 
 const RULE_ID = 'secrets/twilio-key';
 function secretFixture(): { namespace: string; packId: string; example: string } {
@@ -233,6 +266,22 @@ describe.each(DIALECTS)('pre-tool-use enforcement [$event]', (d) => {
     }, `aka-copilot-enforce-${policy}-${d.event}-`);
   }
 
+  /**
+   * The message this dialect's user actually sees, read from the channel that
+   * dialect has one on: stdout's `systemMessage` under VS Code, stderr on the
+   * CLI, whose documented `preToolUse` output has no message field.
+   *
+   * Reading the dialect's own channel rather than concatenating both is the
+   * point — a CLI build that went back to putting a `systemMessage` on stdout
+   * would satisfy a both-channels search and fail here, which is the direction
+   * that matters.
+   */
+  function notice(run: HookRun): string {
+    if (d.event === 'preToolUse') return run.stderr;
+    const decided = soleObject(run) as Record<string, unknown>;
+    return String(decided.systemMessage);
+  }
+
   const COMMAND = `deploy ${FIXTURE.example}`;
 
   it('BLOCKS under an explicit block policy, naming the rule', () => {
@@ -248,33 +297,57 @@ describe.each(DIALECTS)('pre-tool-use enforcement [$event]', (d) => {
     expect(String(verdict?.permissionDecisionReason)).toContain(RULE_ID);
   });
 
-  it('LETS THE COMMAND RUN under a redact policy on executable text, saying so', () => {
+  it('LETS THE COMMAND RUN under a redact policy on executable text, with NO verdict', () => {
     // The shipped `redactFallback` is `warn`, and command text cannot be masked
     // in place — rewriting it would change what runs. So a redact policy here
-    // resolves to a warn INSIDE the runtime, the call goes through, and the
-    // only trace is a message. Pinned rather than left implicit, because it is
-    // the surprising half of the fallback.
-    const decided = soleObject(enforce('redact', COMMAND)) as Record<string, unknown>;
-    expect(String(decided.systemMessage)).toContain('AKA flagged sensitive content');
-    expect(JSON.stringify(decided)).not.toContain('modifiedArgs');
-    expect(JSON.stringify(decided)).not.toContain('updatedInput');
+    // resolves to a warn INSIDE the runtime and the call goes through.
+    //
+    // Asserted as the VERDICT rather than as the message text, which is what
+    // this row was missing: "the call goes through" on this host is the ABSENCE
+    // of a decision. An `allow` emitted here would pre-approve a call AKA had
+    // just flagged, suppressing the prompt the user's own Copilot settings
+    // would have raised — strictly worse than not running at all.
+    const run = enforce('redact', COMMAND);
+    // Per dialect, because `not.toContain` against an empty string asserts
+    // NOTHING — the vacuity CLAUDE.md §1 names. On the CLI the claim is that
+    // stdout is exactly empty; only on VS Code, where a payload really is
+    // written, does forbidding the three keys inside it mean anything.
+    if (d.event === 'preToolUse') {
+      noObject(run);
+    } else {
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).not.toBe('');
+      expect(run.stdout).not.toContain('permissionDecision');
+      expect(run.stdout).not.toContain('modifiedArgs');
+      expect(run.stdout).not.toContain('updatedInput');
+    }
+    expect(notice(run)).toContain('AKA flagged sensitive content');
   });
 
-  it('WARNS under a warn policy', () => {
-    const decided = soleObject(enforce('warn', COMMAND)) as Record<string, unknown>;
-    expect(String(decided.systemMessage)).toContain(RULE_ID);
+  it('WARNS under a warn policy, naming the rule, and still with no verdict', () => {
+    const run = enforce('warn', COMMAND);
+    if (d.event === 'preToolUse') {
+      noObject(run);
+    } else {
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).not.toBe('');
+      expect(run.stdout).not.toContain('permissionDecision');
+    }
+    expect(notice(run)).toContain(RULE_ID);
   });
 
-  it('MONITORS silently — the allow, and nothing else', () => {
-    // `monitor` records and says nothing, so what reaches stdout is the
-    // wrapper's own explicit allow. On a host that may read silence as a deny,
-    // "says nothing" still has to be a payload.
-    expect(soleObject(enforce('monitor', COMMAND))).toEqual(d.allow);
+  it('MONITORS silently — nothing on either channel', () => {
+    // `monitor` records and says nothing. Both channels are asserted: a notice
+    // on stderr here would be a warning the operator never configured, and it
+    // would be invisible to a stdout-only check.
+    const run = enforce('monitor', COMMAND);
+    noObject(run);
+    expect(run.stderr).not.toContain('AKA flagged');
   });
 
-  it('allows a clean command under the block policy, so the block row is not vacuous', () => {
+  it('says nothing for a clean command under the block policy, so the block row is not vacuous', () => {
     // The control on the control. Without it, a hook that denied EVERYTHING
     // would satisfy the block case above.
-    expect(soleObject(enforce('block', 'echo hello'))).toEqual(d.allow);
+    noObject(enforce('block', 'echo hello'));
   });
 });

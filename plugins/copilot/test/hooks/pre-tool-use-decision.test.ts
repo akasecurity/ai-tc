@@ -13,7 +13,7 @@ import { POINTER_TOKEN_ANCHORED } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import type { Dialect } from '../../src/hooks/dialect.ts';
-import type { PreToolUseOutput, ScannableField } from '../../src/hooks/pre-tool-use-decision.ts';
+import type { PreToolUseDecision, ScannableField } from '../../src/hooks/pre-tool-use-decision.ts';
 import {
   CLI_SCANNABLE_FIELDS,
   decideInputPointerDeny,
@@ -98,8 +98,19 @@ interface DialectCase {
   writer: string;
   shellCommand: ScannableField;
   writerField: ScannableField;
-  denyReason: (output: PreToolUseOutput | null) => string;
-  rewritten: (output: PreToolUseOutput | null) => Record<string, unknown>;
+  denyReason: (decision: PreToolUseDecision) => string;
+  rewritten: (decision: PreToolUseDecision) => Record<string, unknown>;
+  /**
+   * The human-readable notice, read from the channel THIS dialect carries one
+   * on — stdout's `systemMessage` under VS Code, `notice` (stderr) on the CLI,
+   * whose `preToolUse` output has no message field at all.
+   *
+   * A reader per dialect rather than a lookup across both is the point: a
+   * decision that put its message on the other dialect's channel throws here
+   * instead of being found anyway, which is what stops the CLI drifting back to
+   * emitting a `systemMessage` the host discards.
+   */
+  message: (decision: PreToolUseDecision) => string;
 }
 
 const CLI_CASE: DialectCase = {
@@ -113,17 +124,27 @@ const CLI_CASE: DialectCase = {
   // an allow on this host is the absence of a decision, or a `modifiedArgs`
   // rewrite. So reaching this shape at all is reaching a deny, and a guard
   // against the other value would be unreachable rather than defensive.
-  denyReason: (output) => {
+  denyReason: ({ output }) => {
     if (output === null || !('permissionDecision' in output)) {
       throw new Error('expected a flat CLI permissionDecision');
     }
     return output.permissionDecisionReason;
   },
-  rewritten: (output) => {
+  rewritten: ({ output }) => {
     if (output === null || !('modifiedArgs' in output)) {
       throw new Error('expected a CLI modifiedArgs rewrite');
     }
     return output.modifiedArgs;
+  },
+  message: ({ output, notice }) => {
+    // Both halves asserted, because both are the property: the CLI documents no
+    // message field on `preToolUse`, so the text has to arrive off-stdout AND
+    // stdout must not have grown one.
+    if (output !== null && 'systemMessage' in output) {
+      throw new Error('CLI stdout must not carry a systemMessage');
+    }
+    if (notice === undefined) throw new Error('expected a CLI stderr notice');
+    return notice;
   },
 };
 
@@ -133,7 +154,7 @@ const VSCODE_CASE: DialectCase = {
   writer: 'create_file',
   shellCommand: { field: 'command', executable: true },
   writerField: { field: 'content', executable: false },
-  denyReason: (output) => {
+  denyReason: ({ output }) => {
     if (output === null || !('hookSpecificOutput' in output)) {
       throw new Error('expected a nested VS Code hookSpecificOutput');
     }
@@ -145,7 +166,7 @@ const VSCODE_CASE: DialectCase = {
     }
     return decision.permissionDecisionReason;
   },
-  rewritten: (output) => {
+  rewritten: ({ output }) => {
     if (
       output === null ||
       !('hookSpecificOutput' in output) ||
@@ -154,6 +175,15 @@ const VSCODE_CASE: DialectCase = {
       throw new Error('expected a VS Code allow carrying updatedInput');
     }
     return output.hookSpecificOutput.updatedInput;
+  },
+  message: ({ output, notice }) => {
+    // The mirror image of the CLI reader: this host documents `systemMessage`,
+    // so the text rides stdout and there is nothing for stderr to carry.
+    if (notice !== undefined) throw new Error('VS Code carries its message on stdout');
+    if (output === null || !('systemMessage' in output)) {
+      throw new Error('expected a VS Code systemMessage');
+    }
+    return output.systemMessage;
   },
 };
 
@@ -206,33 +236,62 @@ describe.each(DIALECTS)('decidePreToolUse [$dialect]', (c) => {
 
   it('denies the call under a block fallback, and says masking was not possible', () => {
     const result = degradedRedact('block', COMMAND, 'core-pii/ip-address', IP, '3f2a91');
-    const output = decidePreToolUse(c.dialect, c.shell, { command: COMMAND }, [
+    const decision = decidePreToolUse(c.dialect, c.shell, { command: COMMAND }, [
       { spec: c.shellCommand, result },
     ]);
 
-    const reason = c.denyReason(output);
+    const reason = c.denyReason(decision);
     expect(reason).toContain(`AKA blocked this ${c.shell} call — flagged core-pii/ip-address`);
     expect(reason).toContain(EXECUTABLE_REDACT_NOTE);
     expect(reason).toContain('aka exception approve 3f2a91');
-    const emitted = JSON.stringify(output);
+    // The WHOLE decision, both channels: a rewrite leaked onto the stderr
+    // notice would be just as wrong as one on stdout, and stringifying only the
+    // payload could not see it.
+    const emitted = JSON.stringify(decision);
     expect(emitted).not.toContain('updatedInput');
     expect(emitted).not.toContain('modifiedArgs');
     expect(emitted).not.toContain('[REDACTED');
   });
 
-  it('LETS THE COMMAND RUN under the shipped warn fallback, saying so on screen', () => {
-    // The consequence of the shipped default, pinned rather than left implicit.
-    // The payload carries no rewrite in either dialect, because nothing was
-    // masked — a rewrite here would send the raw command and claim it was
-    // redacted.
+  it('LETS THE COMMAND RUN under the shipped warn fallback, with NO verdict on stdout', () => {
+    // The consequence of the shipped default, pinned rather than left implicit:
+    // `redactFallback` is `warn`, command text cannot be masked in place, so
+    // this is what a redact policy on a command actually does.
+    //
+    // Asserted as a VERDICT rather than as message text. The call is being let
+    // through, and on this host letting through is the ABSENCE of a decision —
+    // an `allow` emitted here would pre-approve a call AKA had just flagged,
+    // suppressing the prompt the user's own settings would have raised. So the
+    // payload must carry no `permissionDecision` on either dialect, and no
+    // rewrite either, because nothing was masked.
     const result = degradedRedact('warn', COMMAND, 'core-pii/ip-address', IP, '3f2a91');
-    const output = decidePreToolUse(c.dialect, c.shell, { command: COMMAND }, [
+    const decision = decidePreToolUse(c.dialect, c.shell, { command: COMMAND }, [
       { spec: c.shellCommand, result },
     ]);
 
-    expect(output).toEqual({
-      systemMessage: `AKA flagged sensitive content in ${c.shell} input (core-pii/ip-address).`,
-    });
+    const emitted = JSON.stringify(decision.output);
+    expect(emitted).not.toContain('permissionDecision');
+    expect(emitted).not.toContain('modifiedArgs');
+    expect(emitted).not.toContain('updatedInput');
+    // …and the user is still told, on whichever channel this dialect has.
+    expect(c.message(decision)).toBe(
+      `AKA flagged sensitive content in ${c.shell} input (core-pii/ip-address).`,
+    );
+  });
+
+  it('puts the warn notice on stdout under VS Code and on stderr on the CLI', () => {
+    // The channel split itself, stated as the exact object rather than through
+    // the readers above — so a dialect that started carrying BOTH (or neither)
+    // fails here even if `message` still found something to return.
+    const result = degradedRedact('warn', COMMAND, 'core-pii/ip-address', IP);
+    const decision = decidePreToolUse(c.dialect, c.shell, { command: COMMAND }, [
+      { spec: c.shellCommand, result },
+    ]);
+    const text = `AKA flagged sensitive content in ${c.shell} input (core-pii/ip-address).`;
+
+    expect(decision).toEqual(
+      c.dialect === 'cli' ? { output: null, notice: text } : { output: { systemMessage: text } },
+    );
   });
 
   it('says NOTHING under the monitor fallback', () => {
@@ -245,7 +304,10 @@ describe.each(DIALECTS)('decidePreToolUse [$dialect]', (c) => {
       decidePreToolUse(c.dialect, c.shell, { command: COMMAND }, [
         { spec: c.shellCommand, result },
       ]),
-    ).toBeNull();
+      // Neither channel: no payload AND no notice. Asserted as the whole object
+      // so a stray `notice` here — a warn nobody asked for, on stderr instead
+      // of stdout — cannot pass as silence.
+    ).toEqual({ output: null });
   });
 
   it('a plain block (no escalation) carries no escalation note', () => {
@@ -266,20 +328,21 @@ describe.each(DIALECTS)('decidePreToolUse [$dialect]', (c) => {
     const content = `*** Update File: notes.md\n+contact ${EMAIL}\n`;
     const args = { [c.writerField.field]: content, path: 'notes.md' };
     const result = redactResult(content, 'core-pii/email', EMAIL, '9c04d7');
-    const output = decidePreToolUse(c.dialect, c.writer, args, [{ spec: c.writerField, result }]);
+    const decision = decidePreToolUse(c.dialect, c.writer, args, [{ spec: c.writerField, result }]);
 
     // The whole object, not the changed field alone: on the CLI `modifiedArgs`
     // REPLACES the call's arguments, and under VS Code `updatedInput` is
     // validated against the tool's own input schema, which a partial object
     // fails. A rewrite that dropped `path` would run against the wrong file on
     // one host and be rejected outright on the other.
-    expect(c.rewritten(output)).toEqual({
+    expect(c.rewritten(decision)).toEqual({
       [c.writerField.field]: content.replace(EMAIL, '[REDACTED:PII]'),
       path: 'notes.md',
     });
-    expect(JSON.stringify(output)).not.toContain(EMAIL);
-    if (output === null || !('systemMessage' in output)) throw new Error('expected a message');
-    expect(output.systemMessage).toBe(
+    expect(JSON.stringify(decision)).not.toContain(EMAIL);
+    // The rewrite is a documented field on BOTH dialects; only the explanation
+    // splits, so it is read through the dialect's own channel.
+    expect(c.message(decision)).toBe(
       `AKA redacted sensitive content in ${c.writer} input — flagged core-pii/email.` +
         ' To allow this exact value intentionally, run: aka exception approve 9c04d7.',
     );
@@ -296,17 +359,17 @@ describe.each(DIALECTS)('decidePreToolUse [$dialect]', (c) => {
       text: null,
       findings: [finding('core-pii/email-address', EMAIL, content)],
     };
-    const output = decidePreToolUse(c.dialect, c.writer, { [c.writerField.field]: content }, [
+    const decision = decidePreToolUse(c.dialect, c.writer, { [c.writerField.field]: content }, [
       { spec: c.writerField, result: unredactable },
     ]);
 
-    const reason = c.denyReason(output);
+    const reason = c.denyReason(decision);
     expect(reason).toContain(UNREDACTABLE_NOTE);
     // The two notes answer different questions and cannot both apply: this one
     // is a runtime failure on a field that CAN be rewritten, the other is a
     // host limitation on one that cannot.
     expect(reason).not.toContain(EXECUTABLE_REDACT_NOTE);
-    const emitted = JSON.stringify(output);
+    const emitted = JSON.stringify(decision);
     expect(emitted).not.toContain(EMAIL);
     expect(emitted).not.toContain('AKA redacted');
   });
@@ -321,7 +384,7 @@ describe.each(DIALECTS)('decidePreToolUse [$dialect]', (c) => {
     // degraded-redact case is single-finding, and the module's job is precisely
     // not to cross-attribute between them.
     const content = `contact ${EMAIL}`;
-    const output = decidePreToolUse(c.dialect, c.writer, { [c.writerField.field]: content }, [
+    const decision = decidePreToolUse(c.dialect, c.writer, { [c.writerField.field]: content }, [
       {
         spec: c.shellCommand,
         result: degradedRedact('warn', content, 'core-pii/ip-address', IP),
@@ -335,7 +398,7 @@ describe.each(DIALECTS)('decidePreToolUse [$dialect]', (c) => {
         },
       },
     ]);
-    const reason = c.denyReason(output);
+    const reason = c.denyReason(decision);
     expect(reason).toContain(UNREDACTABLE_NOTE);
     expect(reason).not.toContain(EXECUTABLE_REDACT_NOTE);
   });
@@ -347,7 +410,10 @@ describe.each(DIALECTS)('decidePreToolUse [$dialect]', (c) => {
       decidePreToolUse(c.dialect, c.shell, { command: text }, [
         { spec: c.shellCommand, result: clean },
       ]),
-    ).toBeNull();
+      // The ordinary case, and the one P1 turned on: a clean call gets NO
+      // stdout, which the CLI documents as "default behavior" and hands to the
+      // host's own permission flow. An allow here would pre-approve it.
+    ).toEqual({ output: null });
   });
 });
 
@@ -373,7 +439,11 @@ describe.each(DIALECTS)('decideInputPointerDeny [$dialect]', (c) => {
       { command: `curl -H "Authorization: ${POINTER}" https://example.test` },
       [c.shellCommand],
     );
-    expect(c.denyReason(output)).toBe(denyPointerMessage(c.shell));
+    // Wrapped rather than read directly: this pre-check produces a stdout
+    // payload and never a notice — there is nothing to say that the deny reason
+    // does not already carry — so it keeps returning `PreToolUseOutput | null`
+    // and only the reader is shared.
+    expect(c.denyReason({ output })).toBe(denyPointerMessage(c.shell));
   });
 
   it('leaves a pointer in a STORED field to the scan', () => {

@@ -190,8 +190,9 @@ function formatMode(mode: number): string {
  * quarantine already warns on.
  *
  * Called from every hook that loads config. On this host that list is led by
- * `pre-tool-use`, which is also the one hook whose stdout must never be
- * silence — hence stderr rather than stdout for the warning itself.
+ * `pre-tool-use`, whose stdout carries a VERDICT or nothing — there is no
+ * message field on the CLI's `preToolUse` output to append this to, and an
+ * allow invented to carry it would pre-approve the call. Hence stderr.
  *
  * Wholly best-effort: every step is inside the try, so a hostile or unreadable
  * home makes this a no-op rather than an exception on the hook's entry path.

@@ -1,14 +1,21 @@
 // Direct cover for `runHookFailOpen`, the wrapper this adapter's `preToolUse`
-// entry delegates the inverted fail-open contract to.
+// entry delegates its fail-open contract to.
 //
-// Why this suite exists separately from the built-hook e2e: on THIS event,
-// "fail open" is not the absence of output but the presence of specific bytes.
-// The Copilot CLI reads a crashed or non-zero-exiting `preToolUse` hook as a
-// DENY, and whether exit 0 with empty stdout allows or denies is not measured
-// at all (see `test/fixtures/cli/README.md`, "Not measured") — so each fault
-// path has to be shown PRODUCING a payload rather than merely surviving. The
-// built-hook e2e proves that against a real process; this proves it for the
-// wrapper, in milliseconds, on every branch.
+// What that contract IS, precisely, is the reason this suite exists separately
+// from the built-hook e2e. On the Copilot CLI `preToolUse` is the one
+// fail-closed event, but what fails closed is the EXIT CODE: the hooks
+// reference denies on a non-zero exit other than 2, denies on exit 2, and
+// documents timeouts as fail-open. Empty stdout is in none of those lists —
+// the `preToolUse` decision table reads "Empty output uses default behavior".
+// So each fault path has to be shown exiting 0 while writing NOTHING, and the
+// thing that would be a defect is a payload appearing where no verdict was
+// reached: on this host `permissionDecision: "allow"` pre-approves a call
+// rather than declining to judge it.
+//
+// An absence assertion is worth nothing without something proving the harness
+// can see a presence, so the `failOpen` seam is driven alongside every silence
+// case: the same wrapper, handed a payload, writes exactly that payload. Delete
+// the emit and the silence cases stay green while those go red.
 //
 // `runHookFailOpen` ends in `process.exit(0)`, so both process-level seams are
 // stubbed: `exit` (which would otherwise kill the vitest worker) and
@@ -27,9 +34,22 @@ import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { HookOutput } from '../../src/hooks/shared.ts';
-import { allowFor, emit, runHookFailOpen, WATCHDOG_MS } from '../../src/hooks/shared.ts';
+import { emit, runHookFailOpen, WATCHDOG_MS, writeNotice } from '../../src/hooks/shared.ts';
 
-const ALLOW = allowFor('cli');
+/**
+ * A payload for the `failOpen` seam.
+ *
+ * Deliberately NOT an allow, and deliberately not built by a helper this
+ * adapter ships: no shipped hook passes a fail-open payload any more, and the
+ * CLI shape can no longer even express an allow. This exists to prove the
+ * wrapper emits what it is given — the positive control the silence cases need
+ * — so any valid `HookOutput` serves, and a deny is the one shape whose
+ * appearance in the wrong place would be unmistakable.
+ */
+const SEAM_PAYLOAD: HookOutput = {
+  permissionDecision: 'deny',
+  permissionDecisionReason: 'seam',
+};
 
 interface WrapperRun {
   /** Every chunk handed to stdout, in order. */
@@ -51,7 +71,7 @@ interface WrapperRun {
  */
 async function driveWrapper(
   main: () => Promise<HookOutput | undefined>,
-  failOpen: HookOutput,
+  failOpen?: HookOutput,
   watchdogMs?: number,
   settle: () => Promise<void> = () => Promise.resolve(),
 ): Promise<WrapperRun> {
@@ -89,13 +109,13 @@ async function driveWrapper(
 }
 
 /**
- * The two things the host requires of every run, asserted together: exactly one
- * JSON object reached stdout, and the process exited 0.
+ * The two things the host requires of a run that DID decide: exactly one JSON
+ * object reached stdout, and the process exited 0.
  *
  * One object rather than "at least one" is the point — two concatenated objects
- * are not valid JSON, so a second write is a deny exactly like silence may be.
- * Exit 0 rather than "not 2" for the same reason: on the CLI a non-zero exit is
- * a deny outright, and under VS Code exit 2 is the block channel.
+ * are not valid JSON, so a second write loses the verdict entirely. Exit 0
+ * rather than "not 2" for the same reason: on the CLI a non-zero exit is a deny
+ * outright, and under VS Code exit 2 is the block channel.
  */
 function soleDecision(run: WrapperRun): unknown {
   expect(run.writes).toHaveLength(1);
@@ -103,49 +123,105 @@ function soleDecision(run: WrapperRun): unknown {
   return JSON.parse(run.writes[0] ?? '') as unknown;
 }
 
+/**
+ * The shape of a run that reached no verdict: nothing on stdout, exit 0.
+ *
+ * `writes` is asserted as the empty ARRAY rather than by length so a failure
+ * prints what was written — the useful half when this goes red, since the whole
+ * question is which payload crept back in.
+ */
+function noDecision(run: WrapperRun): void {
+  expect(run.writes).toEqual([]);
+  expect(run.exits).toEqual([0]);
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('runHookFailOpen — every path produces bytes, because silence may be a deny here', () => {
-  it('emits the fail-open payload when the body throws', async () => {
-    const run = await driveWrapper(() => Promise.reject(new Error('boom')), ALLOW);
-    expect(soleDecision(run)).toEqual(ALLOW);
+describe('runHookFailOpen — a path with no verdict writes nothing and still exits 0', () => {
+  it('writes nothing when the body throws', async () => {
+    noDecision(await driveWrapper(() => Promise.reject(new Error('boom'))));
   });
 
-  it('emits the fail-open payload when the body throws synchronously', async () => {
+  it('writes nothing when the body throws synchronously', async () => {
     // `main()` is called inside the try, so a body that throws before ever
     // returning a promise is caught by the same guard.
-    const run = await driveWrapper(() => {
-      throw new Error('sync boom');
-    }, ALLOW);
-    expect(soleDecision(run)).toEqual(ALLOW);
+    noDecision(
+      await driveWrapper(() => {
+        throw new Error('sync boom');
+      }),
+    );
   });
 
-  it('emits the fail-open payload when the body declines to decide', async () => {
-    const run = await driveWrapper(() => Promise.resolve(undefined), ALLOW);
-    expect(soleDecision(run)).toEqual(ALLOW);
+  it('writes nothing when the body declines to decide', async () => {
+    noDecision(await driveWrapper(() => Promise.resolve(undefined)));
+  });
+
+  it('writes nothing when the body outruns the watchdog', async () => {
+    // The timeout path, which the host itself documents as fail-open — so the
+    // wrapper has nothing to add here beyond not inventing a verdict.
+    const run = await driveWrapper(() => new Promise<undefined>(() => undefined), undefined, 5);
+    noDecision(run);
   });
 
   it('emits the body’s own decision when it returns one', async () => {
-    // The positive control. Without it a wrapper that ignored `main` entirely
-    // and always wrote `failOpen` would satisfy every other case in this file.
+    // The positive control for the whole block. Without it, a wrapper that had
+    // lost its `emit` call entirely would satisfy every silence case above.
     const deny: HookOutput = { permissionDecision: 'deny', permissionDecisionReason: 'pointer' };
-    const run = await driveWrapper(() => Promise.resolve(deny), ALLOW);
+    const run = await driveWrapper(() => Promise.resolve(deny));
     expect(soleDecision(run)).toEqual(deny);
   });
 
-  it('emits the VS Code fail-open shape when that is what it was handed', async () => {
-    // The wrapper is dialect-blind: whichever allow it is given is the one that
-    // reaches the wire. Both are driven so a fail-open hardcoded to the CLI
-    // shape — which VS Code's schema would reject — fails here.
-    const run = await driveWrapper(() => Promise.resolve(undefined), allowFor('vscode'));
-    expect(soleDecision(run)).toEqual({
-      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
-    });
+  it('emits a VS Code payload unchanged, so the wrapper stays dialect-blind', async () => {
+    // The second positive control, and it is not redundant: it is the only
+    // thing here proving a nested payload survives the wrapper as itself. A
+    // version that re-shaped output on its way to `emit` would pass the flat
+    // case above.
+    const allow: HookOutput = {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+        updatedInput: { command: 'echo redacted' },
+      },
+      systemMessage: 'AKA redacted sensitive content',
+    };
+    const run = await driveWrapper(() => Promise.resolve(allow));
+    expect(soleDecision(run)).toEqual(allow);
+  });
+});
+
+describe('runHookFailOpen — the `failOpen` seam, which no shipped hook uses', () => {
+  it('writes the payload it was given when the body throws', async () => {
+    const run = await driveWrapper(() => Promise.reject(new Error('boom')), SEAM_PAYLOAD);
+    expect(soleDecision(run)).toEqual(SEAM_PAYLOAD);
   });
 
-  it('emits the fail-open payload when the body outruns the watchdog', async () => {
+  it('writes the payload it was given when the body declines', async () => {
+    const run = await driveWrapper(() => Promise.resolve(undefined), SEAM_PAYLOAD);
+    expect(soleDecision(run)).toEqual(SEAM_PAYLOAD);
+  });
+
+  it('prefers the body’s decision over the payload it was given', async () => {
+    // Ordering, not just presence: the seam is a FALLBACK, so a wrapper that
+    // wrote it unconditionally would break every real decision.
+    const deny: HookOutput = { permissionDecision: 'deny', permissionDecisionReason: 'real' };
+    const run = await driveWrapper(() => Promise.resolve(deny), SEAM_PAYLOAD);
+    expect(soleDecision(run)).toEqual(deny);
+  });
+
+  it('writes no placeholder object when it is omitted', async () => {
+    // The distinction the guard in `runHookFailOpen` exists for: `{}` is a
+    // payload the host PARSES — the reference merges stdout JSON into the deny
+    // on exit 2 — so an empty object is never equivalent to writing nothing.
+    const run = await driveWrapper(() => Promise.resolve(undefined));
+    expect(run.writes).toEqual([]);
+    expect(run.writes.join('')).not.toContain('{');
+  });
+});
+
+describe('runHookFailOpen — a late body must not append a second write', () => {
+  it('drops a decision that arrives after the watchdog won', async () => {
     let release!: () => void;
     const pending = new Promise<void>((resolve) => {
       release = resolve;
@@ -156,7 +232,7 @@ describe('runHookFailOpen — every path produces bytes, because silence may be 
           permissionDecision: 'deny',
           permissionDecisionReason: 'too late',
         })),
-      ALLOW,
+      SEAM_PAYLOAD,
       5,
       // Let the losing body finish AFTER the wrapper has emitted and "exited",
       // then give its .then() a turn. This is the window in which a second
@@ -167,10 +243,14 @@ describe('runHookFailOpen — every path produces bytes, because silence may be 
         await new Promise((r) => setImmediate(r));
       },
     );
-    // Still one object, and still the permissive one: the late decision is
-    // dropped rather than appended. Two objects on one stdout would be invalid
-    // JSON, which no host reads as an allow.
-    expect(soleDecision(run)).toEqual(ALLOW);
+    // Still exactly one object, and still the one the watchdog chose: the late
+    // decision is dropped rather than appended. Two objects on one stdout are
+    // not valid JSON, so an appended verdict destroys the first one too.
+    //
+    // Driven through the seam rather than through silence on purpose: with no
+    // payload the run writes nothing, and "nothing, then nothing" would hold
+    // whether or not the late write was suppressed.
+    expect(soleDecision(run)).toEqual(SEAM_PAYLOAD);
   });
 
   it('survives a body that REJECTS after losing the race, without a second write', async () => {
@@ -195,7 +275,7 @@ describe('runHookFailOpen — every path produces bytes, because silence may be 
     try {
       const run = await driveWrapper(
         () => pending,
-        ALLOW,
+        SEAM_PAYLOAD,
         5,
         async () => {
           fail(new Error('late boom'));
@@ -206,7 +286,7 @@ describe('runHookFailOpen — every path produces bytes, because silence may be 
           await new Promise((r) => setImmediate(r));
         },
       );
-      expect(soleDecision(run)).toEqual(ALLOW);
+      expect(soleDecision(run)).toEqual(SEAM_PAYLOAD);
       expect(seen).toEqual([]);
     } finally {
       process.off('unhandledRejection', onUnhandled);
@@ -238,7 +318,7 @@ describe('runHookFailOpen — the limit the guarantee does not cover', () => {
         }
         return Promise.resolve(decided);
       },
-      ALLOW,
+      SEAM_PAYLOAD,
       2,
     );
     expect(soleDecision(run)).toEqual(decided);
@@ -269,7 +349,7 @@ describe('emit — resolves on the FLUSH, not on handing bytes to the stream', (
 
     try {
       let settled = false;
-      const pending = emit(ALLOW).then(() => {
+      const pending = emit(SEAM_PAYLOAD).then(() => {
         settled = true;
       });
 
@@ -289,28 +369,73 @@ describe('emit — resolves on the FLUSH, not on handing bytes to the stream', (
   });
 });
 
-describe('allowFor — the payload that must never be silence', () => {
-  it('spells the CLI allow flat and the VS Code allow nested', () => {
-    expect(allowFor('cli')).toEqual({ permissionDecision: 'allow' });
-    expect(allowFor('vscode')).toEqual({
-      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
+describe('writeNotice — the channel a verdict cannot share', () => {
+  it('writes the message with a trailing newline', () => {
+    // The newline is the convention this module chose and the opposite of
+    // `storeRedirectedMessage`'s, which carries its own — so it is asserted
+    // rather than left to the caller to discover.
+    const written: string[] = [];
+    writeNotice('AKA flagged sensitive content', (text) => {
+      written.push(text);
     });
+    expect(written).toEqual(['AKA flagged sensitive content\n']);
   });
 
-  it('falls back to the CLI shape for an unplaced envelope', () => {
-    // An envelope matching neither dialect still gets a payload, because
-    // silence is the one answer that may be read as a deny. The CLI shape is
-    // the fallback because the CLI is the surface whose fail-closed reading is
-    // documented; VS Code fails open, so being wrong in that direction costs a
-    // warning rather than a blocked call.
-    expect(allowFor(undefined)).toEqual({ permissionDecision: 'allow' });
+  it('swallows a writer that throws, because a throw here would DENY', () => {
+    // The branch nothing else reaches, and the reason it exists: this runs
+    // inside `main()`, so an escaping error would reach the wrapper's catch —
+    // or, on the store-unavailable path, leave the hook exiting non-zero, which
+    // on the Copilot CLI is a deny. Losing the notice is the lesser outcome.
+    expect(() => {
+      writeNotice('boom', () => {
+        throw new Error('EPIPE');
+      });
+    }).not.toThrow();
   });
 
-  it('hands out a fresh object each time', () => {
-    // A frozen module constant would be reachable by any caller that received
-    // it; a caller mutating the payload that goes on the wire would change what
-    // every later hook in the process emits.
-    expect(allowFor('cli')).not.toBe(allowFor('cli'));
+  it('really does write through the default path', () => {
+    // The control on both cases above: they inject a writer, so neither can see
+    // that the default is wired to stderr at all. A `writeNotice` whose default
+    // was a no-op would pass them and silently drop every shipped notice.
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      writeNotice('to stderr');
+      expect(spy).toHaveBeenCalledWith('to stderr\n');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe('the CLI verdict type cannot express an allow', () => {
+  it('is a compile error, so the property is held by tsc rather than by a case', () => {
+    // `CliPermissionDecisionOutput.permissionDecision` is `'deny'` alone. The
+    // line below is what a regression looks like, kept as a `@ts-expect-error`
+    // so it is `typecheck` that fails when the union is widened back — a
+    // runtime assertion could not see a type at all.
+    //
+    // `@ts-expect-error` is itself the assertion: it FAILS when the error stops
+    // occurring, so this cannot rot into a comment about a type that now
+    // permits an allow.
+    // @ts-expect-error an allow on the CLI dialect must not typecheck
+    const widened: HookOutput = { permissionDecision: 'allow' };
+    // Referenced so the binding is not merely unused, and asserted so the case
+    // carries a runtime expectation too.
+    expect(widened).toEqual({ permissionDecision: 'allow' });
+  });
+
+  it('still spells the VS Code allow, which that host needs for a rewrite', () => {
+    // The other half, and the reason this is a narrowing rather than a ban:
+    // VS Code carries `updatedInput` only alongside an `allow`, so removing the
+    // verdict there would remove the rewrite channel with it.
+    const allow: HookOutput = {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+        updatedInput: { command: 'echo ok' },
+      },
+    };
+    expect(allow.hookSpecificOutput.permissionDecision).toBe('allow');
   });
 });
 

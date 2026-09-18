@@ -178,7 +178,12 @@ describe(`${SOURCE_FILE}'s emit() shape enumeration`, () => {
     const flat = SENTENCE.body.replace(/\s+/gu, ' ');
     expect(flat).toMatch(/CLI's `permissionDecision`, `modifiedArgs` and `modifiedResult`/u);
     expect(flat).toMatch(/VS Code's `hookSpecificOutput` and `decision`/u);
-    expect(flat).toMatch(/`systemMessage` both dialects share/u);
+    // Was "`systemMessage` both dialects share", and that is now false: the CLI
+    // documents no message field on `preToolUse`, so a bare systemMessage is VS
+    // Code's alone and a CLI notice goes to stderr. Pinned as the narrower
+    // claim, because the wider one is exactly the mistake this case exists to
+    // catch — a reader acting on it would put a message on CLI stdout.
+    expect(flat).toMatch(/bare `systemMessage` that VS Code alone accepts/u);
   });
 });
 
@@ -207,6 +212,24 @@ function copilotBullet(): string {
   return (end === -1 ? rest : rest.slice(0, end)).replace(/\s+/gu, ' ');
 }
 
+/**
+ * The `permissionDecision` line inside `CliPermissionDecisionOutput`, and only
+ * that one.
+ *
+ * Throws rather than returning '' when the interface cannot be found: an
+ * assertion against an empty string would pass every `not.toMatch` and read as
+ * a guard holding while it asserted nothing at all.
+ */
+function cliVerdictField(): string {
+  const at = SOURCE.indexOf('export interface CliPermissionDecisionOutput {');
+  if (at === -1) throw new Error('shared.ts: CliPermissionDecisionOutput was renamed or removed');
+  const body = SOURCE.slice(at, SOURCE.indexOf('}', at));
+  const line = body.split('\n').find((l) => l.includes('permissionDecision'));
+  if (line === undefined)
+    throw new Error('shared.ts: CliPermissionDecisionOutput lost its verdict');
+  return line.trim();
+}
+
 describe("CLAUDE.md's hook-contract bullet for this host", () => {
   const BULLET = copilotBullet();
 
@@ -214,20 +237,54 @@ describe("CLAUDE.md's hook-contract bullet for this host", () => {
     expect(BULLET.length).toBeGreaterThan(0);
   });
 
-  it('states the CLI convention the explicit allow exists for', () => {
+  it('names the exit-code channel as the one that fails closed', () => {
     // Each half is a separate claim a reader acts on, so each is matched
     // separately rather than as one sentence a reflow could break.
-    expect(BULLET).toMatch(/exits non-zero or crashes is read as a \*\*deny\*\*/u);
+    expect(BULLET).toMatch(/exits non-zero other than 2 \*\*denies the tool call\*\*/u);
+    expect(BULLET).toMatch(/exit 2 denies/u);
     expect(BULLET).toMatch(/timed-out one allows/u);
     expect(BULLET).toMatch(/every other event fails open/u);
   });
 
-  it('says the empty-stdout case is UNMEASURED rather than settled', () => {
-    // The load-bearing honesty in the whole bullet. If this ever reads as
-    // settled, the explicit allow stops being a hedge and starts being a claim
-    // — and the fixture README it points at is the only evidence either way.
-    expect(BULLET).toMatch(/unmeasured/iu);
+  it('says EMPTY STDOUT is the documented no-opinion, not an unmeasured case', () => {
+    // The claim the whole design now rests on, and the one that was wrong
+    // before: this bullet used to call the empty-stdout case "unmeasured" and
+    // justify an explicit allow by it. Both halves are pinned — the vendor's
+    // own wording, and the retraction — so a silent revert to the old reading
+    // fails here rather than in review.
+    expect(BULLET).toContain('Empty output uses default behavior');
+    expect(BULLET).toMatch(/NOT unmeasured/u);
     expect(BULLET).toContain('test/fixtures/cli/README.md');
+  });
+
+  it('says why an explicit allow is refused, and that the type enforces it', () => {
+    // Prose and code held together: the bullet claims a compile error, so the
+    // type really has to be the narrow one. A bullet promising a guarantee the
+    // module does not carry is the drift this pair exists to catch.
+    expect(BULLET).toMatch(/pre-approve/u);
+    expect(BULLET).toMatch(/compile error/u);
+    // Sliced to the CLI interface rather than searched across the file: VS
+    // Code's shape legitimately carries `'allow' | 'deny'`, so a whole-file
+    // search for that string would either pass vacuously or forbid the wrong
+    // one.
+    expect(cliVerdictField()).toBe("permissionDecision: 'deny';");
+  });
+
+  it('says the two dialects are payload formats the CLI can both speak', () => {
+    // The premise that was false and is now the reason `hooks.json` registers
+    // one key. Pinned against the manifest itself, not just against the prose.
+    expect(BULLET).toMatch(/payload FORMATS, not hosts/u);
+    expect(BULLET).toMatch(/spawns the hook twice per call/u);
+    // The weaker fact this bullet actually claims, so the exact key SET stays
+    // asserted in one place — `hooks-manifest.test.ts`, whose subject is the
+    // manifest. Duplicating it here would mean a deliberate manifest change
+    // failed twice with the same message.
+    const manifest = JSON.parse(
+      readFileSync(new URL('../hooks.json', import.meta.url), 'utf8'),
+    ) as {
+      hooks: Record<string, unknown>;
+    };
+    expect(Object.keys(manifest.hooks)).not.toContain('PreToolUse');
   });
 
   it('states VS Code’s opposite convention and its ignored matchers', () => {
@@ -236,13 +293,16 @@ describe("CLAUDE.md's hook-contract bullet for this host", () => {
   });
 
   it('describes the answer this package actually implements', () => {
-    // Held to the code rather than to itself: `allowFor` really does spell both
-    // dialects' allow, and the bullet really does claim it prints one on every
-    // path. A bullet promising something the module does not do is the drift.
-    expect(BULLET).toMatch(/explicit allow on every `preToolUse` path/u);
-    expect(BULLET).toMatch(/No path exits non-zero and none exits 2/u);
+    // Held to the code rather than to itself: the bullet claims nothing is
+    // written where no verdict was reached, and claims the exit code is the
+    // guarantee. Both are checkable in `shared.ts`.
+    expect(BULLET).toMatch(/nothing on every path that reaches no verdict/u);
+    expect(BULLET).toMatch(/no path exits non-zero and\s+none exits 2/iu);
     expect(SOURCE).toContain('process.exit(0)');
     expect(SOURCE).not.toMatch(/process\.exit\(\s*[^0)]/u);
+    // The emit is GUARDED rather than unconditional — the difference between
+    // writing nothing and writing `{}`, which the host would parse.
+    expect(SOURCE).toMatch(/if \(output !== undefined\) \{/u);
   });
 
   it('says the VS Code half is confirmed against no live install', () => {

@@ -2,25 +2,38 @@
 // keeps. Detection, policy and persistence live in @akasecurity/plugin-sdk;
 // these just move bytes between the host and the runtime.
 //
-// Three things differ from the Claude Code / Codex siblings, and all three are
+// Four things differ from the Claude Code / Codex siblings, and all four are
 // load-bearing:
 //
-//  1. ONE EVENT FAILS CLOSED AND THE REST FAIL OPEN. On the Copilot CLI a
-//     `preToolUse` hook that exits non-zero or crashes is read as a **deny**
-//     (1.0.62+), while a timeout allows; every other event fails open. Whether
-//     exit 0 with EMPTY STDOUT allows or denies is **not measured** — the one
-//     probe that would settle it did not run (see
-//     `test/fixtures/cli/README.md`, "Not measured"). So `preToolUse` prints an
-//     explicit allow on every path, which is correct under BOTH readings, and
-//     every other event stays silent in the sibling plugins' shape. That turns
-//     the unmeasured probe from a gate into an optimisation.
+//  1. THE EXIT CODE IS WHAT FAILS CLOSED — NOT THE SILENCE. On the Copilot CLI
+//     `preToolUse` is the one fail-closed event, and the hooks reference is
+//     specific about which channel that is: a non-zero exit other than 2
+//     "denies the tool call", exit 2 denies and merges any stdout JSON into the
+//     deny "even if that JSON reports `permissionDecision: \"allow\"`", and
+//     "Timeouts are fail-open for every event, including `preToolUse`". Empty
+//     stdout is in none of those: the same reference's `preToolUse` decision
+//     table says "Empty output uses default behavior", which hands the call to
+//     the host's own permission flow. So silence IS the no-opinion here,
+//     exactly as CLAUDE.md §1 defines fail-open, and what this module has to
+//     guarantee is the EXIT CODE.
 //
-//  2. NO PATH EVER EXITS NON-ZERO, and none exits 2. On the CLI a non-zero exit
-//     from `preToolUse` denies; under VS Code exit 2 is the BLOCK channel. An
+//  2. NO PATH EVER EXITS NON-ZERO, and none exits 2. That is the whole of the
+//     fail-open guarantee on this host. On the CLI a non-zero exit from
+//     `preToolUse` denies; under VS Code exit 2 is the BLOCK channel. An
 //     accidental 2 from an unhandled rejection would block a tool call by a
 //     route nothing in this package ever writes to.
 //
-//  3. TWO DIALECTS SHARE ONE `emit`. The narrowed `HookOutput` union below
+//  3. THIS ADAPTER NEVER EMITS AN ALLOW ON THE CLI. `permissionDecision:
+//     "allow"` is a VERDICT — it decides that the tool executes — so printing
+//     one on every clean call pre-approves the calls the user's own Copilot
+//     settings would have prompted about, which is a control plane widening the
+//     permissions it was installed to narrow. `CliPermissionDecisionOutput`
+//     therefore carries `'deny'` alone, so an allow on that dialect is a
+//     compile error rather than a convention. VS Code's shape keeps `'allow'`
+//     because that host requires the verdict ALONGSIDE `updatedInput` for a
+//     rewrite to be carried at all.
+//
+//  4. TWO DIALECTS SHARE ONE `emit`. The narrowed `HookOutput` union below
 //     spans both; see `./dialect.ts` for how a payload is placed.
 
 import { resolveRepo } from '@akasecurity/plugin-sdk';
@@ -87,30 +100,46 @@ export function getString(record: Record<string, unknown>, key: string): string 
 
 // ─── The wire ────────────────────────────────────────────────────────────────
 
-/** The CLI's `preToolUse` verdict. `ask` is deliberately absent — see below. */
+/**
+ * The CLI's `preToolUse` verdict. Two of the host's three values are
+ * deliberately absent.
+ *
+ * `allow` is absent because emitting one is a DECISION that the tool executes,
+ * not a way of saying nothing: the reference's own `permissionRequest` carve-out
+ * ("a hook `allow` does not pre-approve the request or short-circuit the user
+ * prompt" — stated there as the exception for sandbox escapes) is what says what
+ * an allow does everywhere it is not excepted. A control plane that printed one
+ * per clean call would suppress prompts the user's own settings would have
+ * raised. Saying nothing is how this adapter declines to decide; see the header.
+ *
+ * `ask` is absent because it is not a third OUTCOME here: in non-interactive
+ * mode it was observed resolving to `denied-no-approval-rule-and-could-not-
+ * request-from-user` after a ~25s stall, i.e. a deny that costs most of the hook
+ * budget first. A policy that wants a deny emits one.
+ */
 export interface CliPermissionDecisionOutput {
   // Recorded: a deny returned this way with exit 0 blocked the call.
-  //
-  // `ask` is a third value the host accepts and this union does not carry,
-  // because it is not a third OUTCOME here: in non-interactive mode it was
-  // observed resolving to `denied-no-approval-rule-and-could-not-request-from-
-  // user` after a ~25s stall, i.e. a deny that costs most of the hook budget
-  // first. A policy that wants a deny emits one.
-  permissionDecision: 'allow' | 'deny';
+  permissionDecision: 'deny';
   permissionDecisionReason?: string;
-  systemMessage?: string;
 }
 
-/** The CLI's input rewrite. Observed to replace the executed shell command. */
+/**
+ * The CLI's input rewrite. Observed to replace the executed shell command.
+ *
+ * No `systemMessage`: the reference documents exactly three `preToolUse` output
+ * fields — `permissionDecision`, `permissionDecisionReason` and `modifiedArgs` —
+ * and the string `systemMessage` appears nowhere in it. A message put here would
+ * be dropped by the host, so anything this adapter wants to SAY on the CLI goes
+ * to stderr instead. See `PreToolUseDecision.notice` in
+ * ./pre-tool-use-decision.ts.
+ */
 export interface CliModifiedArgsOutput {
   modifiedArgs: Record<string, unknown>;
-  systemMessage?: string;
 }
 
 /** The CLI's output rewrite, for `postToolUse`. Documented; not observed. */
 export interface CliModifiedResultOutput {
   modifiedResult: Record<string, unknown>;
-  systemMessage?: string;
 }
 
 /** VS Code's `PreToolUse` verdict and its input rewrite, which share a field. */
@@ -133,7 +162,15 @@ export interface VsCodeBlockOutput {
   systemMessage?: string;
 }
 
-/** A message with no verdict attached — the warn channel on both dialects. */
+/**
+ * A message with no verdict attached — VS Code's warn channel, and that host's
+ * only one.
+ *
+ * NOT the CLI's: `systemMessage` is not among the three output fields that
+ * reference documents for `preToolUse`, so the same object there would be a
+ * payload the host drops. On the CLI a warn reaches the user through stderr and
+ * stdout stays empty, which is the no-opinion the header describes.
+ */
 export interface SystemMessageOutput {
   systemMessage: string;
 }
@@ -147,8 +184,8 @@ export interface SystemMessageOutput {
  * than shipping.
  *
  * Its six shapes are the CLI's `permissionDecision`, `modifiedArgs` and
- * `modifiedResult`, VS Code's `hookSpecificOutput` and `decision`, and the
- * `systemMessage` both dialects share. That enumeration is DERIVED in the test
+ * `modifiedResult`, VS Code's `hookSpecificOutput` and `decision`, and the bare
+ * `systemMessage` that VS Code alone accepts. That enumeration is DERIVED in the test
  * rather than remembered here — each variant is named by its one required key,
  * the count word is read out of this sentence, and both are driven against the
  * union in both directions. A seventh variant fails that test until this
@@ -163,25 +200,44 @@ export type HookOutput =
   | SystemMessageOutput;
 
 /**
- * The "carry on unchanged" payload for `preToolUse`, per dialect.
+ * Write a notice on the channel that is not the decision channel.
  *
- * This is the one thing on this host that must never be silence. It is a
- * FUNCTION rather than two frozen constants so a caller cannot hold a reference
- * to the object that goes on the wire and mutate it.
+ * stdout carries at most one JSON object and the host parses it, so a message
+ * cannot simply be appended beside a verdict — and on the Copilot CLI stdout has
+ * no message FIELD for `preToolUse` at all, so a notice there would reach nobody.
+ * stderr has neither constraint, and is already where this package's store
+ * warnings and the SDK's rule-quarantine line go.
  *
- * `systemMessage` rides WITH the allow rather than replacing it. That is not a
- * convenience: a degradation notice returned on its own is a payload carrying
- * no verdict, which on this event is the silence the whole adapter is arranged
- * to avoid. Anything this hook wants to say, it says while allowing.
+ * `message` is passed WITHOUT a trailing newline and this adds one, which is the
+ * opposite convention from `storeRedirectedMessage`'s direct `write(...)` in
+ * ./store-health.ts — that string carries its own. Stated because the two sit in
+ * one package: route a self-terminated message through here and it gains a blank
+ * line.
+ *
+ * NOT awaited, unlike `emit`, and the reason it is safe is a SIZE bound rather
+ * than a flush. `runHookFailOpen` ends in `process.exit(0)`, which does not
+ * drain a pending pipe write, so a queued write is dropped — the same hazard
+ * `warnIfStoreRedirected` records with measurements: on a pipe, 65,000 bytes
+ * returns true and arrives whole, 200,000 returns false and delivers 65,536.
+ * Every notice reaching here is a rule-id list or a store path, hundreds of
+ * bytes, so the queued case is unreachable. A notice that could approach the
+ * ~64KB buffer — a per-finding dump, a file body — needs an awaited write
+ * instead, not a longer message.
+ *
+ * Best-effort by construction: a hook must never fail over a notice. `write` is
+ * a parameter so both branches are drivable without capturing a real fd.
  */
-export function allowFor(dialect: Dialect | undefined, systemMessage?: string): HookOutput {
-  const message = systemMessage === undefined ? {} : { systemMessage };
-  return dialect === 'vscode'
-    ? {
-        hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
-        ...message,
-      }
-    : { permissionDecision: 'allow', ...message };
+export function writeNotice(
+  message: string,
+  write: (text: string) => void = (text) => void process.stderr.write(text),
+): void {
+  try {
+    write(`${message}\n`);
+  } catch {
+    // Advisory by construction — a notice must not cost the caller its exit 0.
+    // A hook that died here would exit non-zero, which on the CLI is a DENY:
+    // the one outcome worse than losing the notice.
+  }
 }
 
 // Hook output protocol: write one JSON object to stdout and exit 0.
@@ -208,14 +264,23 @@ export function emit(output: HookOutput): Promise<void> {
 }
 
 /**
- * Run a hook body so the host is left with a VALID payload rather than silence.
+ * Run a hook body so the host is left with a VALID exit code rather than a
+ * crash.
  *
- * Not necessarily a permissive one: a body that reaches a decision has it
- * forwarded verbatim, which is how `preToolUse` denies. `failOpen` is the
- * event's own "carry on unchanged" payload — `allowFor(dialect)` — and is
- * written on the three paths where no decision was reached: the body throws,
- * the body declines to decide (returns undefined), or the body outruns the
- * watchdog.
+ * A body that reaches a decision has it forwarded verbatim, which is how
+ * `preToolUse` denies. A body that reaches none — it threw, it declined
+ * (returned undefined), or it outran the watchdog — writes **nothing** and
+ * still exits 0. On every host this package speaks to, that is the no-opinion:
+ * the Copilot CLI's reference documents empty `preToolUse` output as "default
+ * behavior", and VS Code treats anything but exit 2 as non-blocking. What must
+ * never happen is a non-zero exit, which on the CLI is a deny — so the
+ * try/catch and the watchdog exist to protect the EXIT CODE, not to manufacture
+ * a payload.
+ *
+ * `failOpen` is therefore optional and every shipped hook omits it. It stays in
+ * the signature because it is the seam the wrapper's own suite drives the
+ * "a payload was written" branch through, and because a future event on a host
+ * that genuinely denies on silence would need one.
  *
  * THE BOUND IS WHAT YIELDS, and it is not a detail — a path it does not cover
  * is a denied tool call. The watchdog is a `setTimeout`, so it fires only when
@@ -248,10 +313,10 @@ export function emit(output: HookOutput): Promise<void> {
  */
 export async function runHookFailOpen(
   main: () => Promise<HookOutput | undefined>,
-  failOpen: HookOutput,
+  failOpen?: HookOutput,
   watchdogMs: number = WATCHDOG_MS,
 ): Promise<never> {
-  let output: HookOutput = failOpen;
+  let output: HookOutput | undefined = failOpen;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   try {
     const decided = await Promise.race([
@@ -270,10 +335,16 @@ export async function runHookFailOpen(
     // open past the emit below on a fast path that never raced it.
     if (watchdog !== undefined) clearTimeout(watchdog);
   }
-  try {
-    await emit(output);
-  } catch {
-    // stdout is gone; exiting 0 is all that is left to try.
+  // Nothing to say is said by writing nothing. Guarding the emit rather than
+  // emitting an empty object matters: `{}` is a payload the host parses, and on
+  // `preToolUse` the reference merges stdout JSON into a deny on exit 2 — so a
+  // placeholder object is never equivalent to silence.
+  if (output !== undefined) {
+    try {
+      await emit(output);
+    } catch {
+      // stdout is gone; exiting 0 is all that is left to try.
+    }
   }
   process.exit(0);
 }

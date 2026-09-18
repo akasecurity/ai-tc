@@ -20,7 +20,7 @@
  * name the resolver probes for, and it has to run.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { declaredEntryKeys } from '../helpers/tsup-entries.ts';
 
 // test/e2e -> plugins/claude-code
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -52,18 +53,19 @@ describe('the built policy-sync child', () => {
     // deleting the entry, renaming it, or pointing it at another outDir would
     // all leave a file-existence assertion green.
     //
-    // The entry KEY is what tsup turns into the emitted filename, so comparing
-    // it against the name the resolver probes for is the check that a rename
-    // actually trips.
-    const config = readFileSync(join(PLUGIN_ROOT, 'tsup.config.ts'), 'utf8');
+    // Read from the EVALUATED config rather than the file's text: a regex over
+    // the source matches a commented-out entry exactly as readily as a real
+    // one, so it cannot tell "removed" from "declared". The entry KEY is what
+    // tsup turns into the emitted filename, so comparing it against the name
+    // the resolver probes for is the check that a rename actually trips.
     const key = SYNC_SCRIPT.replace(/\.js$/, '');
     expect(
-      new RegExp(`(^|\\s)${key}: '`, 'm').test(config),
+      declaredEntryKeys(),
       `tsup declares no \`${key}\` entry, so scripts/${SYNC_SCRIPT} is never emitted and ` +
         'triggerPolicySync resolves a path that does not exist. The spawn then fails with ' +
         'ENOENT on a later tick, spawnDetached swallows it, and attached machines stop ' +
         'pulling policy with nothing recording the gap.',
-    ).toBe(true);
+    ).toContain(key);
 
     // And the build really does produce it, which is what makes the run below
     // meaningful rather than a check of a stale artifact.

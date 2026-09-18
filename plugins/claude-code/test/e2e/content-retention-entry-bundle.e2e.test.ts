@@ -33,7 +33,7 @@
  * rather than the code. Each of the three reads that file itself and skips when
  * it disagrees. CI carries no managed file, so there all three always run.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -48,6 +48,7 @@ import type { TestContext } from 'vitest';
 import { describe, expect, it } from 'vitest';
 
 import { runHook, tempHomeEnv, withTempHome } from '../helpers/run-hook.ts';
+import { declaredEntryKeys } from '../helpers/tsup-entries.ts';
 
 // test/e2e -> plugins/claude-code
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -103,17 +104,20 @@ describe('the built body-expiry child', () => {
   it('is DECLARED under the name the trigger resolves', () => {
     // Asserted against the tsup CONFIG rather than only the emitted file: the
     // build runs before every suite, so an existsSync alone is restored by the
-    // build itself and could not fail for the reason it appears to check. The
-    // entry KEY is what tsup turns into the emitted filename.
-    const config = readFileSync(join(PLUGIN_ROOT, 'tsup.config.ts'), 'utf8');
+    // build itself and could not fail for the reason it appears to check.
+    //
+    // Read from the EVALUATED config rather than the file's text: a regex over
+    // the source matches a commented-out entry exactly as readily as a real
+    // one, so it cannot tell "removed" from "declared". The entry KEY is what
+    // tsup turns into the emitted filename.
     const key = CONTENT_RETENTION_SCRIPT_NAME.replace(/\.js$/, '');
     expect(
-      new RegExp(`(^|\\s)'?${key}'?: '`, 'm').test(config),
+      declaredEntryKeys(),
       `tsup declares no \`${key}\` entry, so scripts/${CONTENT_RETENTION_SCRIPT_NAME} is never ` +
         'emitted and triggerContentRetention resolves a path that does not exist. The spawn ' +
         'then fails with ENOENT on a later tick, spawnDetached swallows it, and every machine ' +
         'with expiry switched on stops expiring with nothing recording the gap.',
-    ).toBe(true);
+    ).toContain(key);
 
     expect(existsSync(built(CONTENT_RETENTION_SCRIPT_NAME))).toBe(true);
   });

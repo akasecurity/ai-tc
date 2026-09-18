@@ -1,7 +1,7 @@
 import { ResolvedEgressHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import type { RawEndpointHit } from '../../src/egress/extract.ts';
+import { extractEgress, type RawEndpointHit } from '../../src/egress/extract.ts';
 import type { ManifestSdkHit } from '../../src/egress/manifests.ts';
 import { type FileEgressHits, resolveEgress } from '../../src/egress/resolve.ts';
 
@@ -191,8 +191,8 @@ describe('resolveEgress — URL/IP hit resolution', () => {
   });
 });
 
-describe('resolveEgress — documentation host exclusion', () => {
-  it('drops a REF hit against a registered provider’s documentation host', () => {
+describe('resolveEgress — documentation hosts', () => {
+  it('records a REF hit against a documentation host like any other host of its provider', () => {
     const hits = resolveEgress([
       fileHits({
         endpoints: [
@@ -204,10 +204,19 @@ describe('resolveEgress — documentation host exclusion', () => {
         ],
       }),
     ]);
-    expect(hits).toEqual([]);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({
+      host: 'docs.github.com',
+      kind: 'provider',
+      name: 'GitHub',
+      providerId: 'github',
+      trust: 'recognized',
+      method: 'REF',
+      dataClass: 'source',
+    });
   });
 
-  it('resolves a POST hit against a documentation host as a real provider destination', () => {
+  it('records a POST hit against a documentation host under its provider', () => {
     const hits = resolveEgress([
       fileHits({
         endpoints: [
@@ -220,25 +229,39 @@ describe('resolveEgress — documentation host exclusion', () => {
       }),
     ]);
     expect(hits).toHaveLength(1);
-    expect(hits[0]?.kind).toBe('provider');
-    expect(hits[0]?.name).toBe('Stripe');
+    expect(hits[0]).toMatchObject({ kind: 'provider', name: 'Stripe', dataClass: 'pii' });
   });
 
-  it('resolves a GET hit against a documentation host as a real provider destination', () => {
-    const hits = resolveEgress([
-      fileHits({
-        endpoints: [
-          endpointHit({
-            url: 'https://docs.github.com/en/rest/search',
-            host: 'docs.github.com',
-            method: 'GET',
-          }),
-        ],
-      }),
-    ]);
+  // The extractor ties a verb to a URL only within one statement, so each of
+  // these real requests extracts as REF. Each must still reach the register.
+  it.each([
+    [
+      'a URL held in a constant',
+      "const DOCS_SEARCH = 'https://docs.github.com/search?q=default';\n" +
+        'export const search = (payload) => axios.post(DOCS_SEARCH, payload);\n',
+    ],
+    [
+      "a client's base URL",
+      "const client = axios.create({ baseURL: 'https://docs.github.com/api/v1' });\n" +
+        "client.post('/search', { q: userQuery });\n",
+    ],
+    [
+      'a new URL() passed to a later fetch',
+      "const u = new URL('https://docs.github.com/search');\n" +
+        "fetch(u, { method: 'POST', body });\n",
+    ],
+  ])('records a documentation-host request made through %s', (_label, source) => {
+    const endpoints = extractEgress(source);
+    expect(endpoints.map((e) => [e.host, e.method])).toEqual([['docs.github.com', 'REF']]);
+
+    const hits = resolveEgress([fileHits({ endpoints })]);
+
     expect(hits).toHaveLength(1);
-    expect(hits[0]?.kind).toBe('provider');
-    expect(hits[0]?.name).toBe('GitHub');
+    expect(hits[0]).toMatchObject({
+      host: 'docs.github.com',
+      providerId: 'github',
+      dataClass: 'source',
+    });
   });
 });
 

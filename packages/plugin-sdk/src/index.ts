@@ -129,7 +129,13 @@ export type {
 } from './provider-codex.ts';
 export { codexProviderFromModelId, resolveCodexProvider } from './provider-codex.ts';
 export type { EgressHit } from './raw-egress.ts';
-export { assertRawFree, maskContextSlice, RawEgressError, safeMaskedMatch } from './raw-egress.ts';
+export {
+  assertRawFree,
+  edgeTruncatedSpans,
+  maskContextSlice,
+  RawEgressError,
+  safeMaskedMatch,
+} from './raw-egress.ts';
 export {
   resolveGitBranch,
   resolveHeadRoot,

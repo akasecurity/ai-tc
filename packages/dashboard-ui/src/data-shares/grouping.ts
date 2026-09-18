@@ -7,7 +7,12 @@
 // kind sharing a `providerId` by coincidence are never folded, even when
 // their names happen to match. This is a presentation fold over the rows a
 // page already holds, with no store-side counterpart.
-import type { DataClass, ShareDestinationSummary, Transport } from '@akasecurity/schema';
+import {
+  type DataClass,
+  distinctDataClasses,
+  type ShareDestinationSummary,
+  type Transport,
+} from '@akasecurity/schema';
 
 import { hasInsecureTransport } from './meta.ts';
 
@@ -29,7 +34,11 @@ export interface ProviderGroup {
   callSiteCount: number;
   /** Union across hosts, first-seen order. */
   transports: Transport[];
-  /** Union across hosts, first-seen order. */
+  /**
+   * Union across hosts, most-sensitive first (`DATA_CLASS_ORDER`), the order
+   * a destination's own `dataClasses` carries — so a view that shows only the
+   * first few still shows the most sensitive.
+   */
   dataClasses: DataClass[];
   /** The latest `lastSeen` across hosts. */
   lastSeen: string;
@@ -46,14 +55,12 @@ function buildProviderGroup(providerId: string, hosts: ShareDestinationSummary[]
   let endpointCount = 0;
   let callSiteCount = 0;
   const transports: Transport[] = [];
-  const dataClasses: DataClass[] = [];
   let insecure = false;
 
   for (const host of hosts) {
     endpointCount += host.endpointCount;
     callSiteCount += host.callSiteCount;
     for (const t of host.transports) if (!transports.includes(t)) transports.push(t);
-    for (const c of host.dataClasses) if (!dataClasses.includes(c)) dataClasses.push(c);
     if (hasInsecureTransport(host.transports)) insecure = true;
   }
 
@@ -71,7 +78,7 @@ function buildProviderGroup(providerId: string, hosts: ShareDestinationSummary[]
     endpointCount,
     callSiteCount,
     transports,
-    dataClasses,
+    dataClasses: distinctDataClasses(hosts.flatMap((host) => host.dataClasses)),
     lastSeen: mostRecent.lastSeen,
     insecure,
   };

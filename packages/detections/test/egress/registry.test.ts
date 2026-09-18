@@ -14,9 +14,7 @@ import { describe, expect, it } from 'vitest';
 import {
   EGRESS_VERSION_MATERIAL,
   EXCLUDED_HOST_SUFFIXES,
-  isNonDataHost,
   matchMostSpecificEntry,
-  NON_DATA_HOST_SUFFIXES,
   PROVIDER_REGISTRY,
   resolveHost,
   resolveSdk,
@@ -160,64 +158,6 @@ describe('PROVIDER_REGISTRY', () => {
   });
 });
 
-describe('NON_DATA_HOST_SUFFIXES', () => {
-  const matches = (host: string, suffix: string) => host === suffix || host.endsWith(`.${suffix}`);
-
-  it('lists only hosts covered by some registry entry’s hostSuffixes', () => {
-    // Otherwise the list could rot: a host removed from every provider's
-    // hostSuffixes would still be named here for no reason, and a host that
-    // was never covered names nothing this resolution step would have caught
-    // anyway.
-    for (const host of NON_DATA_HOST_SUFFIXES) {
-      const covered = PROVIDER_REGISTRY.some((p) => p.hostSuffixes.some((s) => matches(host, s)));
-      expect(covered, `${host} is not covered by any registry entry's hostSuffixes`).toBe(true);
-    }
-  });
-
-  it('lists no host that a registry hostSuffix equals or sits above', () => {
-    // The reverse direction from the case above. A listed host must be
-    // strictly more specific than every registry hostSuffix it falls under
-    // — never equal to one, and never a superdomain a provider's own
-    // hostSuffix sits underneath. Note the argument order: the registry
-    // suffix is the candidate HOST here, and the listed doc host is the
-    // SUFFIX being matched against. Otherwise `isNonDataHost` would exclude
-    // that whole registry suffix — and every subdomain under it — rather
-    // than only the documentation host, e.g. listing 'openai.com' here would
-    // make 'api.openai.com' a non-data host too.
-    for (const host of NON_DATA_HOST_SUFFIXES) {
-      const swallowsARegistrySuffix = PROVIDER_REGISTRY.some((p) =>
-        p.hostSuffixes.some((suffix) => matches(suffix, host)),
-      );
-      expect(
-        swallowsARegistrySuffix,
-        `${host} equals or sits above a registry entry's hostSuffix`,
-      ).toBe(false);
-    }
-  });
-});
-
-describe('isNonDataHost', () => {
-  it('is true for a listed documentation host', () => {
-    expect(isNonDataHost('docs.github.com')).toBe(true);
-  });
-
-  it('is true for a subdomain of a listed documentation host', () => {
-    expect(isNonDataHost('developer.docs.github.com')).toBe(true);
-  });
-
-  it('is false for a provider host that is not on the list', () => {
-    expect(isNonDataHost('api.github.com')).toBe(false);
-  });
-
-  it('is false for a host with no dot boundary against a listed suffix', () => {
-    expect(isNonDataHost('evildocs.github.com')).toBe(false);
-  });
-
-  it('is case-insensitive', () => {
-    expect(isNonDataHost('DOCS.GITHUB.COM')).toBe(true);
-  });
-});
-
 describe('matchMostSpecificEntry', () => {
   function entry(id: string, hostSuffixes: string[]): ProviderRegistryEntry {
     return {
@@ -267,11 +207,11 @@ describe('matchMostSpecificEntry', () => {
 
 describe('EGRESS_VERSION_MATERIAL', () => {
   it(
-    'is EXTRACTOR_VERSION "2" plus the serialized registry and both exclusion lists, ' +
-      'and so changes with any of them',
+    'is EXTRACTOR_VERSION "3" plus the serialized registry and excluded-host list, ' +
+      'and so changes with either of them',
     () => {
       expect(EGRESS_VERSION_MATERIAL).toBe(
-        `2\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify(EXCLUDED_HOST_SUFFIXES)}\n${JSON.stringify(NON_DATA_HOST_SUFFIXES)}`,
+        `3\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify(EXCLUDED_HOST_SUFFIXES)}`,
       );
     },
   );

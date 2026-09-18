@@ -16,19 +16,31 @@
  * The required set is DERIVED from plugin-runtime's exports rather than listed
  * here: each trigger exports the filename it resolves as a `*_SCRIPT_NAME`, so
  * a trigger added to that pass is required here with no edit to this file.
+ *
+ * A clean exit is the ONLY thing the shared run cases below can tell apart from
+ * a no-op that also exits 0 — a bare `process.exit(0);` in place of any of the
+ * three built children passes every one of them. `history-sync.js` has no
+ * offline observable on a machine that has never attached: it reads a
+ * credential that is absent, decides there is nothing to send, and exits —
+ * indistinguishable on disk from doing nothing. `content-retention.js` does
+ * have one, and the cases below pair it with the off-by-default control so
+ * neither reads as a no-op.
  */
+import type { SpawnSyncReturns } from 'node:child_process';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { managedSettingsPaths, readManagedSettings } from '@akasecurity/persistence';
 import * as pluginRuntime from '@akasecurity/plugin-runtime';
 import {
   CONTENT_RETENTION_SCRIPT_NAME,
   HISTORY_SYNC_SCRIPT_NAME,
   SYNC_SCRIPT_NAME,
 } from '@akasecurity/plugin-runtime';
+import type { TestContext } from 'vitest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { removeTrees } from '../../../../test/helpers/remove-tree.ts';
@@ -37,6 +49,12 @@ import tsupConfig from '../../tsup.config.ts';
 // test/native-host -> plugins/browser-extension
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const HOST_DIR = join(PACKAGE_ROOT, 'native-host');
+
+// spawnSync cannot be interrupted, so a hung child blocks the full deadline and
+// vitest then reports a bare per-test timeout — losing the run.error/stderr
+// diagnostics the assertions below exist to surface. Kept well under the
+// package's 20s testTimeout so a real failure stays readable.
+const RUN_TIMEOUT_MS = 10_000;
 
 /** Every filename plugin-runtime exports under a `*_SCRIPT_NAME` name, sorted. */
 const CHILD_SCRIPTS: readonly string[] = Object.entries(pluginRuntime)
@@ -62,6 +80,49 @@ function declaredEntryKeys(): string[] {
     throw new Error('tsup.config.ts no longer declares its entries as a named map');
   }
   return Object.keys(entry);
+}
+
+/**
+ * The `bodyRetention` this machine's administrator pins, if any — which is
+ * what the built child applies inside its own process, whatever settings.json
+ * says.
+ *
+ * Read by EXPLICIT path. The no-managed-settings setup file moves only the
+ * default, so a bare `readManagedSettings()` here would report an unmanaged
+ * machine rather than the one the child actually runs on.
+ */
+const machinePin = readManagedSettings(managedSettingsPaths())?.values.bodyRetention;
+
+/** Skip a case whose written `enabled` this machine's administrator overrides. */
+function skipIfPinnedOtherwise(ctx: TestContext, writtenEnabled: boolean): void {
+  if (machinePin !== undefined && machinePin.enabled !== writtenEnabled) {
+    ctx.skip(
+      `this machine's managed settings pin bodyRetention.enabled=${String(machinePin.enabled)}, ` +
+        'and the built child applies that file in its own process, so it cannot observe what ' +
+        'this case writes',
+    );
+  }
+}
+
+/** Write settings.json directly — the child reads it off disk. */
+function writeBodyRetentionSettings(home: string, bodyRetention: unknown): void {
+  const dir = join(home, '.aka', 'settings');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'settings.json'),
+    JSON.stringify({ specVersion: 8, runMode: 'standalone', bodyRetention }),
+  );
+}
+
+/** Run a built child from the copied bundle against a throwaway home. */
+function runChild(name: string, home: string): SpawnSyncReturns<string> {
+  // A minimal env: the two variables point os.homedir() at the throwaway home
+  // on both platforms, so the run cannot read or write a real ~/.aka.
+  return spawnSync(process.execPath, [join(copiedHostDir, name)], {
+    encoding: 'utf8',
+    env: { HOME: home, USERPROFILE: home },
+    timeout: RUN_TIMEOUT_MS,
+  });
 }
 
 const temps: string[] = [];
@@ -110,13 +171,7 @@ describe('the detached children SessionStart spawns from the native host', () =>
     (name) => {
       const home = mkdtempSync(join(tmpdir(), 'aka-ext-child-home-'));
       temps.push(home);
-      // A minimal env: the two variables point os.homedir() at the throwaway
-      // home on both platforms, so the run cannot read or write a real ~/.aka.
-      const run = spawnSync(process.execPath, [join(copiedHostDir, name)], {
-        encoding: 'utf8',
-        env: { HOME: home, USERPROFILE: home },
-        timeout: 30_000,
-      });
+      const run = runChild(name, home);
 
       expect(run.error).toBeUndefined();
       expect(run.status, `stderr: ${run.stderr}`).toBe(0);
@@ -125,4 +180,38 @@ describe('the detached children SessionStart spawns from the native host', () =>
       expect(run.stderr).toBe('');
     },
   );
+
+  // content-retention.js is the one built child with an offline observable
+  // beyond its exit code: it opens the local store only once expiry is
+  // switched on. Paired so neither case alone reads as a no-op — the off case
+  // above already covers a clean exit; what it does not cover is that a bare
+  // `process.exit(0);` in its place would pass identically.
+  it('content-retention.js opens no store on a machine with expiry off', (ctx) => {
+    // No settings file is written, so the child reads the default: off. A pin
+    // of `enabled: true` makes it open the store, which this case cannot
+    // observe.
+    skipIfPinnedOtherwise(ctx, false);
+    const home = mkdtempSync(join(tmpdir(), 'aka-ext-content-retention-off-'));
+    temps.push(home);
+    const run = runChild(CONTENT_RETENTION_SCRIPT_NAME, home);
+
+    expect(run.error).toBeUndefined();
+    expect(run.status, `stderr: ${run.stderr}`).toBe(0);
+    expect(existsSync(join(home, '.aka', 'data', 'aka.db'))).toBe(false);
+  });
+
+  it('content-retention.js opens the store on a machine with expiry on', (ctx) => {
+    skipIfPinnedOtherwise(ctx, true);
+    const home = mkdtempSync(join(tmpdir(), 'aka-ext-content-retention-on-'));
+    temps.push(home);
+    writeBodyRetentionSettings(home, { enabled: true, retainDays: 30 });
+    const run = runChild(CONTENT_RETENTION_SCRIPT_NAME, home);
+
+    expect(run.error).toBeUndefined();
+    expect(run.status, `stderr: ${run.stderr}`).toBe(0);
+    expect(
+      existsSync(join(home, '.aka', 'data', 'aka.db')),
+      'content-retention.js opened no store, so a no-op in its place would have passed identically',
+    ).toBe(true);
+  });
 });

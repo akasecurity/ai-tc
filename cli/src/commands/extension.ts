@@ -19,7 +19,7 @@ import { isWebChatCaptureConsentValid, webChatCaptureOf } from '@akasecurity/sch
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 import { launcherScript, parseLauncher } from '../lib/native-host-launcher.ts';
 import type { Realpath } from '../lib/stable-path.ts';
-import { isVersionPinned, realpathOrNull, stablePath } from '../lib/stable-path.ts';
+import { realpathOrNull, stablePath, versionPin } from '../lib/stable-path.ts';
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -351,8 +351,10 @@ const ORIGIN_REMEDY = [
 // The same blind spot on the launcher side. An upgrade or uninstall removes
 // the directory an older launcher names, and Chrome's spawn then fails with
 // nothing reported anywhere; a launcher that names a version directory directly
-// works until the next upgrade removes it. Reported rather than repaired, for
-// the reason `originFault` gives.
+// works until the next upgrade removes it; and one naming a version the
+// layout's link has moved on from goes on running that older host for as long
+// as its directory survives. Reported rather than repaired, for the reason
+// `originFault` gives.
 function launcherFaults(parsed: unknown): string[] {
   const launcher = (parsed as { path?: unknown } | null)?.path;
   if (typeof launcher !== 'string' || launcher === '') {
@@ -372,8 +374,13 @@ function launcherFaults(parsed: unknown): string[] {
   for (const arg of argv.filter((value) => isAbsolute(value))) {
     if (realpathOrNull(arg) === null) {
       faults.push(`the launcher runs ${arg}, which does not exist`);
-    } else if (isVersionPinned(arg)) {
+      continue;
+    }
+    const pin = versionPin(arg);
+    if (pin?.reaches === 'this-file') {
       faults.push(`the launcher runs ${arg}, a versioned path the next upgrade removes`);
+    } else if (pin?.reaches === 'another-version') {
+      faults.push(`the launcher runs ${arg}, but ${pin.link} points at another version`);
     }
   }
   return faults;

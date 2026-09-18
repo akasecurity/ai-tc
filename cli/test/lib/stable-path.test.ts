@@ -1,10 +1,10 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { isVersionPinned, stablePath } from '../../src/lib/stable-path.ts';
+import { CURRENT_LINK_REACH, stablePath, versionPin } from '../../src/lib/stable-path.ts';
 
 // Every case builds the layout it names on disk with real directory links, so
 // what is asserted is what realpath reports rather than a model of it. A
@@ -104,40 +104,148 @@ describe('stablePath', () => {
 
     expect(stablePath(missing)).toBe(missing);
   });
+
+  // Whatever stablePath returns is what Chrome runs on every connection, so a
+  // link it accepts decides that for as long as the registration stands. Only
+  // the links the three layouts keep may be taken, and only where they keep them.
+  describe('which links it takes', () => {
+    it('does not take a `current` link at a far ancestor of the install', () => {
+      // The shape of an npm global install on Windows, with a junction planted
+      // at the drive root that reaches the same file today and can be
+      // re-pointed at anything afterwards.
+      const install = ['AppData', 'npm', 'node_modules', '@akasecurity', 'cli', 'native-host'];
+      const host = file(join(root, 'Users', 'victim', ...install, 'host.js'));
+      linkDir(join(root, 'Users'), join(root, 'current'));
+      // The link really does reach the file, so refusing it is a decision, not
+      // a failed lookup.
+      expect(realpathSync(join(root, 'current', 'victim', ...install, 'host.js'))).toBe(host);
+
+      expect(stablePath(host)).toBe(host);
+    });
+
+    it('takes an installer `current` link for the native host beside the binary', () => {
+      const host = file(join(root, 'aka', '1.2.3', 'aka-darwin-arm64', 'native-host', 'host.js'));
+      linkDir(join(root, 'aka', '1.2.3', 'aka-darwin-arm64'), join(root, 'aka', 'current'));
+
+      expect(stablePath(host)).toBe(join(root, 'aka', 'current', 'native-host', 'host.js'));
+    });
+
+    it('takes a `current` link up to CURRENT_LINK_REACH segments above the file, and no further', () => {
+      const binroot = join(root, 'aka', '1.2.3', 'aka-darwin-arm64');
+      linkDir(binroot, join(root, 'aka', 'current'));
+      const within = file(join(binroot, 'a', 'b', 'at-reach'));
+      const beyond = file(join(binroot, 'a', 'b', 'c', 'past-reach'));
+      expect(relative(binroot, within).split(sep)).toHaveLength(CURRENT_LINK_REACH);
+
+      expect(stablePath(within)).toBe(join(root, 'aka', 'current', 'a', 'b', 'at-reach'));
+      expect(stablePath(beyond)).toBe(beyond);
+    });
+
+    it('takes no `current` link beside a version directory that is not an installer binroot', () => {
+      // The installers' version directory is always aka-<triple>.
+      const exe = file(join(root, 'aka', '1.2.3', 'bin', 'aka'));
+      linkDir(join(root, 'aka', '1.2.3', 'bin'), join(root, 'aka', 'current'));
+
+      expect(stablePath(exe)).toBe(exe);
+    });
+
+    it('takes no `current` link beside an app directory outside `apps`', () => {
+      // Scoop keeps every app under <root>/apps/<app>.
+      const exe = file(join(root, 'tools', 'aka', '1.2.3', 'aka.exe'));
+      linkDir(join(root, 'tools', 'aka', '1.2.3'), join(root, 'tools', 'aka', 'current'));
+
+      expect(stablePath(exe)).toBe(exe);
+    });
+
+    it('takes an opt link at any depth below the keg, since Cellar names it', () => {
+      const deep = file(join(root, 'Cellar', 'aka', '1.2.3', 'libexec', 'a', 'b', 'c', 'host.js'));
+      linkDir(join(root, 'Cellar', 'aka', '1.2.3'), join(root, 'opt', 'aka'));
+
+      expect(stablePath(deep)).toBe(join(root, 'opt', 'aka', 'libexec', 'a', 'b', 'c', 'host.js'));
+    });
+  });
 });
 
-describe('isVersionPinned', () => {
-  it('is true for a keg path Homebrew links to', () => {
+describe('versionPin', () => {
+  it('reports a keg path Homebrew links to as this file', () => {
     const exe = file(join(root, 'Cellar', 'aka', '1.2.3', 'libexec', 'aka'));
     linkDir(join(root, 'Cellar', 'aka', '1.2.3'), join(root, 'opt', 'aka'));
 
-    expect(isVersionPinned(exe)).toBe(true);
+    expect(versionPin(exe)).toEqual({ link: join(root, 'opt', 'aka'), reaches: 'this-file' });
   });
 
-  it('is false for the opt spelling of the same file', () => {
+  it('reports an older installer version the current link has moved on from', () => {
+    // The layout install.sh leaves after an upgrade: the old version is still
+    // on disk and still runs, and `current` points at the new one.
+    const old = file(join(root, 'aka', '0.9.1', 'aka-darwin-arm64', 'native-host', 'host.js'));
+    file(join(root, 'aka', '0.9.2', 'aka-darwin-arm64', 'native-host', 'host.js'));
+    linkDir(join(root, 'aka', '0.9.2', 'aka-darwin-arm64'), join(root, 'aka', 'current'));
+
+    expect(versionPin(old)).toEqual({
+      link: join(root, 'aka', 'current'),
+      reaches: 'another-version',
+    });
+  });
+
+  it('reports an older Scoop version the current link has moved on from', () => {
+    const old = file(join(root, 'apps', 'aka', '0.9.1', 'aka.exe'));
+    file(join(root, 'apps', 'aka', '0.9.2', 'aka.exe'));
+    linkDir(join(root, 'apps', 'aka', '0.9.2'), join(root, 'apps', 'aka', 'current'));
+
+    expect(versionPin(old)).toEqual({
+      link: join(root, 'apps', 'aka', 'current'),
+      reaches: 'another-version',
+    });
+  });
+
+  it('reports nothing when `current` is a real directory rather than a link', () => {
+    const exe = file(join(root, 'aka', '1.2.3', 'aka-darwin-arm64', 'aka'));
+    file(join(root, 'aka', 'current', 'aka'));
+
+    expect(versionPin(exe)).toBeNull();
+  });
+
+  it('reports nothing for a `current` link at a far ancestor of the install', () => {
+    const host = file(join(root, 'Users', 'victim', 'npm', 'native-host', 'host.js'));
+    linkDir(join(root, 'Users'), join(root, 'current'));
+
+    expect(versionPin(host)).toBeNull();
+  });
+
+  it("reports nothing for a path spelled through Scoop's own current link", () => {
+    // The spelling stablePath records for a Scoop install. Its unresolved form
+    // sits exactly where the layout's link does, so only the check that a
+    // pinned path is a DIRECT spelling keeps it from reading as superseded.
+    file(join(root, 'apps', 'aka', '1.2.3', 'aka.exe'));
+    linkDir(join(root, 'apps', 'aka', '1.2.3'), join(root, 'apps', 'aka', 'current'));
+
+    expect(versionPin(join(root, 'apps', 'aka', 'current', 'aka.exe'))).toBeNull();
+  });
+
+  it('reports nothing for the opt spelling of the same file', () => {
     file(join(root, 'Cellar', 'aka', '1.2.3', 'libexec', 'aka'));
     linkDir(join(root, 'Cellar', 'aka', '1.2.3'), join(root, 'opt', 'aka'));
 
-    expect(isVersionPinned(join(root, 'opt', 'aka', 'libexec', 'aka'))).toBe(false);
+    expect(versionPin(join(root, 'opt', 'aka', 'libexec', 'aka'))).toBeNull();
   });
 
-  it('is false for a path that reaches the file through some other link', () => {
+  it('reports nothing for a path that reaches the file through some other link', () => {
     // bin/aka follows upgrades too, it is just not the spelling stablePath
     // prefers. Anything reached through a link is not a versioned path.
     file(join(root, 'Cellar', 'aka', '1.2.3', 'libexec', 'aka'));
     linkDir(join(root, 'Cellar', 'aka', '1.2.3'), join(root, 'opt', 'aka'));
     linkDir(join(root, 'Cellar', 'aka', '1.2.3', 'libexec'), join(root, 'binlink'));
 
-    expect(isVersionPinned(join(root, 'binlink', 'aka'))).toBe(false);
+    expect(versionPin(join(root, 'binlink', 'aka'))).toBeNull();
   });
 
-  it('is false for a file no layout links to', () => {
+  it('reports nothing for a file no layout links to', () => {
     // Pinned in the sense of naming a version, but there is nothing better to
     // name, so it is not reported as a registration that needs rewriting.
-    expect(isVersionPinned(file(join(root, 'versions', '1.2.3', 'aka')))).toBe(false);
+    expect(versionPin(file(join(root, 'versions', '1.2.3', 'aka')))).toBeNull();
   });
 
-  it('is false for a path that names nothing', () => {
-    expect(isVersionPinned(join(root, 'Cellar', 'aka', '1.2.3', 'libexec', 'aka'))).toBe(false);
+  it('reports nothing for a path that names nothing', () => {
+    expect(versionPin(join(root, 'Cellar', 'aka', '1.2.3', 'libexec', 'aka'))).toBeNull();
   });
 });

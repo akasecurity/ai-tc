@@ -71,12 +71,14 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
 };
 
 // Commands that already surface (or manage) update state — the passive post-command
-// notice would be redundant or recursive after these.
+// notice would be redundant or recursive after these. `__native-host` because its
+// stdout is Chrome's native-messaging channel.
 const SKIP_NOTICE = new Set([
   'update',
   'check-updates',
   '__update-refresh',
   '__dashboard-server',
+  '__native-host',
   'completion',
 ]);
 

@@ -411,6 +411,35 @@ describe('the native-messaging registration across an upgrade', () => {
     expect(process.exitCode).toBe(0);
   });
 
+  it('reports a launcher still running an older installer version after `current` moves on', () => {
+    // The layout install.sh leaves after an upgrade: it removes only the
+    // version it is installing over, so the old binroot stays on disk and a
+    // launcher naming it keeps working, on the old host, against a store the
+    // new build migrates. `does not exist` never fires for it.
+    const binroot = (version: string): string => join(root, 'aka', version, 'aka-darwin-arm64');
+    for (const version of ['0.9.1', '0.9.2']) {
+      mkdirSync(join(binroot(version), 'native-host'), { recursive: true });
+      writeFileSync(join(binroot(version), 'aka'), '');
+      writeFileSync(join(binroot(version), 'native-host', 'host.js'), '');
+    }
+    const current = join(root, 'aka', 'current');
+    linkDir(binroot('0.9.2'), current);
+    const old = join(binroot('0.9.1'), 'aka');
+    install([old, NATIVE_HOST_COMMAND]);
+
+    const out = status();
+    expect(out).toContain('installed (out of date)');
+    expect(out).toContain(`the launcher runs ${old}, but ${current} points at another version`);
+    expect(out).toContain('re-run `aka extension install`');
+    expect(process.exitCode).toBe(1);
+
+    // And the remedy it names works, from the version `current` now names.
+    process.exitCode = 0;
+    install(launcherCommand('', standalone(join(binroot('0.9.2'), 'aka'))));
+    expect(status()).toContain('native-messaging host: installed\n');
+    expect(process.exitCode).toBe(0);
+  });
+
   it('reports a manifest whose launcher is gone', () => {
     install([pourKeg('1.0.0'), NATIVE_HOST_COMMAND]);
     rmSync(launcherPath(manifestDir, process.platform));

@@ -90,8 +90,8 @@ pointed at the current version (Homebrew's `opt/aka`, the installers' and
 Scoop's `current`), so upgrading keeps it working. A copy of `aka` placed by
 hand is registered where it sits: after moving or replacing it, run
 `aka extension install` again. `aka extension status` reports a registration
-whose launcher names something that is gone, or a versioned path an upgrade
-will remove.
+whose launcher names something that is gone, a versioned path an upgrade will
+remove, or a version other than the one your package manager now points at.
 
 ## Docs
 

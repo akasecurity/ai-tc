@@ -1,7 +1,13 @@
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import {
+  crossPackageSpecifiers,
+  declaredTestInputs,
+  turboRootInput,
+} from '../../../test/helpers/turbo-inputs.ts';
 import { NAME, SETUP_DESCRIPTION, TAGLINE } from '../src/identity.ts';
 
 function read(relative: string): string {
@@ -97,5 +103,48 @@ describe('identity/description consistency guard', () => {
     const plugin = readManifest('../.claude-plugin/plugin.json');
     const pkg = readManifest('../package.json');
     expect(plugin.version).toBe(pkg.version);
+  });
+});
+
+describe('turbo hashes every cross-package file this suite reads', () => {
+  // Most of what this suite asserts is about files in other packages or in
+  // none: the READMEs, the marketplace manifest, the CLI's init command, the
+  // shared triage rubric. Unnamed, an edit to one leaves this task's hash
+  // untouched and turbo replays a cached pass at the one moment the case
+  // reading it exists to fail.
+  //
+  // The files are derived from this file's own relative literals rather than
+  // listed, so a read added above is demanded here without anyone remembering.
+  const packageDir = fileURLToPath(new URL('..', import.meta.url));
+  const reads = crossPackageSpecifiers({
+    testFile: fileURLToPath(import.meta.url),
+    packageDir,
+    repoRoot: fileURLToPath(new URL('../../..', import.meta.url)),
+  });
+
+  it('finds the reads it is meant to cover', () => {
+    // Without this a scan that matched nothing would demand nothing, and the
+    // membership check below would pass over an empty list.
+    expect(reads).toEqual([
+      '.claude-plugin/marketplace.json',
+      'README.md',
+      'cli/README.md',
+      'cli/src/commands/init.ts',
+      'packages/setup-wizard/assets/triage-rubric.md',
+    ]);
+  });
+
+  it('names each of them in plugins/claude-code/turbo.json', () => {
+    const inputs = declaredTestInputs(packageDir);
+    expect(
+      reads.filter((file) => !inputs.includes(turboRootInput(file))),
+      'read by this suite and not hashed by its test task, so an edit there replays a cached pass',
+    ).toEqual([]);
+  });
+
+  it("keeps the package's own files in the hash", () => {
+    // Naming inputs REPLACES the default set, so dropping this entry would leave
+    // the task hashing the cross-package files and nothing of this package.
+    expect(declaredTestInputs(packageDir)).toContain('$TURBO_DEFAULT$');
   });
 });

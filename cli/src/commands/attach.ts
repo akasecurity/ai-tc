@@ -3,14 +3,14 @@ import {
   applyOnboarding,
   clearAttachmentDerivedState,
   dataDir as dataDirOf,
-  isSafeEndpoint,
+  managedAttachRefusal,
+  managedDetachRefusal,
   ManagedFieldError,
   openLocalDatabase,
   readControlPlaneCredentialFile,
   readControlPlaneCredentialState,
   readEffectiveSettings,
   readLocalHistoryPreview,
-  readWorkspaceSettings,
   removeControlPlaneCredential,
   seedCaptureBacklogOwed,
   settingsDir as settingsDirOf,
@@ -23,8 +23,17 @@ import {
 } from '@akasecurity/plugin-runtime';
 import { hostCompatibilityLines, readHostVersionCache } from '@akasecurity/plugin-sdk';
 import { createAttachClient, createRemoteClient } from '@akasecurity/remote';
-import type { HistorySyncConsent, ManagedSettings } from '@akasecurity/schema';
-import { HISTORY_SYNC_PAYLOAD_VERSION } from '@akasecurity/schema';
+import type {
+  HistorySyncConsent,
+  ManagedSettings,
+  UnsafeEndpointReason,
+} from '@akasecurity/schema';
+import {
+  connectionRefusalMessage,
+  HISTORY_SYNC_PAYLOAD_VERSION,
+  originOnly,
+  unsafeEndpointReason,
+} from '@akasecurity/schema';
 
 import { homeBase } from '../lib/args.ts';
 import { openUrl } from '../lib/open-url.ts';
@@ -169,6 +178,36 @@ const MUTUALLY_EXCLUSIVE = '--sync-history and --no-sync-history are mutually ex
 const isError = (v: ParsedArgs | { error: string }): v is { error: string } => 'error' in v;
 
 /**
+ * The plain-language reason `--url` was refused, rendered beneath
+ * `refusing to attach to <origin>:` — never the raw endpoint, since the
+ * `userinfo` case exists to keep a copy-pasted password out of this message.
+ */
+function unsafeEndpointMessage(reason: UnsafeEndpointReason): string {
+  switch (reason) {
+    case 'unparseable':
+      return (
+        'that does not look like a web address; include the scheme, as in ' +
+        'https://aka.example.com.'
+      );
+    case 'userinfo':
+      return (
+        'the address carries a username or password; remove them, the access key ' +
+        'is sent separately.'
+      );
+    case 'query-or-fragment':
+      return (
+        'the address must be an origin, optionally with a path; drop the query ' +
+        'string or fragment.'
+      );
+    case 'insecure':
+      return (
+        'an access key must not travel in the clear. Use an https URL (http is ' +
+        'accepted only for a loopback deployment).'
+      );
+  }
+}
+
+/**
  * Attach: verify the credential, then write both halves.
  *
  * VERIFIED BEFORE ANYTHING IS WRITTEN, and the URL is checked before the
@@ -199,11 +238,9 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
     exit(2);
     return;
   }
-  if (!isSafeEndpoint(endpoint)) {
-    io.err(
-      `refusing to attach to ${endpoint}: an access key must not travel in the clear. ` +
-        'Use an https URL (http is accepted only for a loopback deployment).',
-    );
+  const unsafeReason = unsafeEndpointReason(endpoint);
+  if (unsafeReason !== null) {
+    io.err(`refusing to attach to ${originOnly(endpoint)}: ${unsafeEndpointMessage(unsafeReason)}`);
     exit(2);
     return;
   }
@@ -223,14 +260,27 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
   let confirmed: { apiKey: string; identity: { tenantName: string; userEmail: string } } | null =
     null;
 
-  if (!args.keyStdin) {
-    const refusal = managedRefusal(base, endpoint, args.label, deps.managedSettings);
-    if (refusal !== null) {
-      io.err(refusal);
-      exit(2);
-      return;
-    }
+  // AHEAD OF BOTH PATHS, not only the interactive one. The key path used to
+  // skip this and let the writer decide, which under a pinned-but-unlocked
+  // overlay is no decision at all: the write lands, and the next read overlays
+  // the pin back over it. Both paths also reach a network before the write —
+  // a grant on one, `whoami` on the other — and neither should be asked about
+  // a deployment this machine was never going to keep. The decision is shared
+  // with the dashboard's attach action, so the two surfaces cannot disagree.
+  const refusal = managedAttachRefusal({ endpoint, label: args.label }, base, deps.managedSettings);
+  if (refusal !== null) {
+    // Leaving --label off is refused as the rename it amounts to, and the flag
+    // that keeps the name is this surface's to name.
+    io.err(
+      refusal.reason === 'label-required'
+        ? `${connectionRefusalMessage(refusal)} Attach with the --label it already has, as \`aka status\` shows it.`
+        : connectionRefusalMessage(refusal),
+    );
+    exit(2);
+    return;
+  }
 
+  if (!args.keyStdin) {
     const outcome = await (deps.deviceAttach ?? runDeviceAttach)({
       io,
       endpoint,
@@ -356,6 +406,9 @@ export async function runAttach(argv: string[], deps: AttachDeps = {}): Promise<
         historySyncConsent: historyConsent,
       },
       base,
+      // The same overlay the pre-flight read — injected or real — so the writer
+      // and the pre-flight cannot disagree about who manages this machine.
+      deps.managedSettings,
     );
   } catch (err) {
     // Put back exactly what was there, rather than removing unconditionally.
@@ -570,9 +623,10 @@ async function verifyWithControlPlane(
  * bundle merges over the local one RAISE-ONLY, so one left behind keeps
  * escalating enforcement on a machine nothing manages any more — and nothing
  * would ever refresh or clear it, because the sync that wrote it runs only
- * while attached. The recorded sync outcome goes for the same reason: it
- * describes a deployment this machine is no longer talking to, and leaving it
- * would have status report a stale refusal after a later re-attach.
+ * while attached. The recorded sync and posture outcomes go for the same
+ * reason: each describes a deployment this machine is no longer talking to,
+ * and leaving either would have status report a stale refusal after a later
+ * re-attach.
  */
 export function runDetach(argv: string[], deps: AttachDeps = {}): void {
   const io = deps.prompter ?? terminalPrompter();
@@ -586,13 +640,28 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
   }
   const base = deps.base ?? homeBase(args.home);
 
+  // AHEAD OF EVERYTHING THIS COMMAND TOUCHES, the history window included. The
+  // lock's refusal used to arrive from the writer, by which point the attached
+  // period had been handed to the live path and the drain's boundary released
+  // — for a detach that then did not happen. And under a pin with no lock the
+  // writer refuses nothing at all: see managedDetachRefusal, which the
+  // dashboard's detach action decides through as well.
+  const refusal = managedDetachRefusal(base, deps.managedSettings);
+  if (refusal !== null) {
+    io.err(connectionRefusalMessage(refusal));
+    exit(1);
+    return;
+  }
+
   // THE DESCRIPTOR FIRST, and the credential only once it has actually gone.
   // The other order lets a refused detach still take effect in the way that
   // matters: an administrator can freeze `runMode`, so `applyOnboarding` throws
-  // — but the credential is already deleted, settings still say `attached`, and
-  // the machine silently stops forwarding while being told nothing happened.
-  // That would let any user end reporting on a machine their organization
-  // manages, by running a command that claims it did nothing.
+  // (the pre-flight above answers that first; the writer's own refusal is the
+  // last word only if the overlay appeared between the two reads) — but the
+  // credential is already deleted, settings still say `attached`, and the
+  // machine silently stops forwarding while being told nothing happened. That
+  // would let any user end reporting on a machine their organization manages,
+  // by running a command that claims it did nothing.
   const had = readControlPlaneCredentialState(settingsDirOf(base)).usable;
   // BEFORE the descriptor is cleared, because it is what says when this
   // attachment began. The period since then belonged to the live forward path;
@@ -600,7 +669,13 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
   // later re-attach to the same deployment freezes a new one and picks up the
   // window in which nothing was forwarding. Without it that window is delivered
   // by neither path and reported as outstanding by neither.
-  closeHistoryWindow(base, readWorkspaceSettings(base).controlPlane?.attachedAt);
+  //
+  // Through the same overlay the pre-flight read — injected or real — so this
+  // reads what the machine reads, and a suite reads what it injected.
+  closeHistoryWindow(
+    base,
+    readEffectiveSettings(base, deps.managedSettings).settings.controlPlane?.attachedAt,
+  );
   try {
     // The history grant goes with the attachment it named. `undefined` on an
     // optional key is how this writer records a REVOCATION, so the key leaves
@@ -609,6 +684,7 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
     applyOnboarding(
       { runMode: 'standalone', controlPlane: undefined, historySyncConsent: undefined },
       base,
+      deps.managedSettings,
     );
   } catch (err) {
     io.err(
@@ -636,10 +712,10 @@ export function runDetach(argv: string[], deps: AttachDeps = {}): void {
 /**
  * Everything derived from an attachment: the cached bundle, the recorded sync
  * outcome, the forward breaker's state, the count of events the batch budget
- * discarded, and how far the history drain had got. All five are meaningless
- * without one, and all five MISLEAD if they survive it — the drop tally most legibly, since a freshly attached machine
- * would otherwise open by reporting events it lost to a deployment it no longer
- * talks to.
+ * discarded, the last posture send's outcome, and how far the history drain had
+ * got. All six are meaningless without one, and all six MISLEAD if they survive
+ * it — the drop tally most legibly, since a freshly attached machine would
+ * otherwise open by reporting events it lost to a deployment it no longer talks to.
  *
  * The breaker file is the one whose survival is more than cosmetic. Left
  * behind, a re-attach against a healthy plane opens with a stale `openedAtMs`,
@@ -723,69 +799,6 @@ export async function runStatus(argv: string[], deps: AttachDeps = {}): Promise<
   // Code install before its first completed turn all have no cache to read.
   const hostLines = hostCompatibilityLines(readHostVersionCache(dataDir));
   if (hostLines.length > 0) io.out(`${hostLines.join('\n')}\n`);
-}
-
-/**
- * Why this machine may not be attached here, or null when it may.
- *
- * RUN BEFORE ANY NETWORK CALL, which is the whole point of it being separate
- * from the write-time `ManagedFieldError` further down. An administrator who
- * froze `runMode`, or pinned a different endpoint, has already decided; asking
- * a deployment for a grant and walking someone through a browser approval
- * before telling them so wastes their time and leaves a decided grant behind on
- * a deployment they were never going to join.
- *
- * Attaching to the endpoint an administrator PINNED is the supported path and
- * is not refused here — that is the managed-enrolment case, not a conflict.
- */
-export function managedRefusal(
-  base: string,
-  endpoint: string,
-  label: string | undefined,
-  // The overlay, injectable. It lives at ABSOLUTE SYSTEM paths on purpose — a
-  // lock inside `~` is removable by the party being locked — so a temp home
-  // cannot make a machine look managed, and cannot make a managed one look
-  // clean either. Without this seam a suite reads whatever the DEVELOPER'S
-  // machine is enrolled in, and a test asserting "not refused" passes or fails
-  // on who ran it.
-  managedOverride?: ManagedSettings | null,
-): string | null {
-  let effective: ReturnType<typeof readEffectiveSettings>;
-  try {
-    effective = readEffectiveSettings(base, managedOverride);
-  } catch {
-    // An unreadable managed overlay leaves the machine UNMANAGED rather than
-    // unusable — the same direction managed-settings.ts fails in, and for the
-    // same reason: a typo in an MDM payload must not stop every machine
-    // attaching at once.
-    return null;
-  }
-  const locked = new Set(effective.managed.lockedFields);
-  const org = effective.managed.organization;
-  const who = org ?? 'your organization';
-
-  if (locked.has('runMode') && effective.settings.runMode !== 'attached') {
-    return `${who} manages this machine and has set it to standalone, so it cannot be attached here.`;
-  }
-  const pinned = effective.settings.controlPlane;
-  if (locked.has('runMode') && pinned !== undefined && pinned.endpoint !== endpoint) {
-    return (
-      `${who} manages this machine and has pinned it to ${pinned.endpoint}. ` +
-      `Attach to that endpoint, or ask them to change it.`
-    );
-  }
-  // A label-only difference is still a change to a descriptor the administrator
-  // owns, and the writer would refuse it after the browser approval rather than
-  // before — so it is refused here, where nobody has been sent anywhere yet.
-  if (
-    locked.has('runMode') &&
-    pinned?.label !== undefined &&
-    label !== undefined &&
-    pinned.label !== label
-  ) {
-    return `${who} manages this machine name, so it cannot be renamed here.`;
-  }
-  return null;
 }
 
 /**

@@ -188,6 +188,7 @@ function toIngestHit(hit: ResolvedEgressHit): EgressIngestHit {
     kind: hit.kind,
     name: hit.name,
     category: hit.category,
+    providerId: hit.providerId,
     trust: hit.trust,
     network: hit.network,
     method: hit.method,

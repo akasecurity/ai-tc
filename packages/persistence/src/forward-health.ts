@@ -1,38 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { ControlPlaneFailure } from '@akasecurity/schema';
+
 import { ATTACHED_FORWARD_STATE_FILENAME } from './attached-derived.ts';
 
-/**
- * How a control-plane call failed, as coarsely as anything is willing to say.
- *
- * ONE SOURCE, for the reason `sync-failure.ts` gives about its own list: the
- * writer and the readers must agree, and they live on opposite sides of this
- * package. The forward path classifies a failure and writes this value; the
- * status command and the dashboard render it; and a second spelling would be a
- * value that silently reads as "no cause recorded" rather than a type error.
- *
- *   `unauthorized` — the deployment knows this machine and refuses its key.
- *   `forbidden`    — the key is accepted and the call is not permitted.
- *   `unreachable`  — no verdict was obtained at all. The DEFAULT, and the
- *                    bucket for "no verdict we are willing to name", which is
- *                    why the surfaces that render it say what they observed
- *                    rather than guessing at a cause.
- */
-export type ControlPlaneFailure = 'unauthorized' | 'forbidden' | 'unreachable';
-
-/**
- * Validated on the way in, exactly as the sync outcome is: `lastFailure` is
- * RENDERED, so an arbitrary string from a hand-edited file must never reach the
- * output. An unrecognised value reads as null — no cause named — rather than as
- * a failure to parse the whole file, because the failure COUNT next to it is
- * still evidence and losing it would cost more than the cause.
- */
-const FAILURES: ReadonlySet<string> = new Set<ControlPlaneFailure>([
-  'unauthorized',
-  'forbidden',
-  'unreachable',
-]);
+export { ControlPlaneFailure };
 
 /**
  * How long the breaker stays open before a single probe is allowed through.
@@ -124,14 +97,15 @@ export function parseForwardHealth(raw: string, nowMs: number): ForwardHealth | 
       record.openedAtMs <= nowMs
         ? record.openedAtMs
         : null;
-    // Absent for every file written before this field existed, which is the
-    // common case on an already-deployed device: it reads as "no cause
-    // recorded", the same as an unrecognised one, and the count and stamp
-    // beside it stay usable.
-    const lastFailure =
-      typeof record.lastFailure === 'string' && FAILURES.has(record.lastFailure)
-        ? (record.lastFailure as ControlPlaneFailure)
-        : null;
+    // `lastFailure` is RENDERED, so an arbitrary string from a hand-edited
+    // file must never reach the output — validated with the same schema a
+    // fourth member would have to be added to, rather than a hand-spelled
+    // set that could silently drift from it. Absent for every file written
+    // before this field existed, which is the common case on an
+    // already-deployed device: it reads as "no cause recorded", the same as
+    // an unrecognised one, and the count and stamp beside it stay usable.
+    const parsedFailure = ControlPlaneFailure.safeParse(record.lastFailure);
+    const lastFailure = parsedFailure.success ? parsedFailure.data : null;
     return { consecutiveFailures: failures, openedAtMs, lastFailure };
   } catch {
     // TORN READ. A half-written or garbage file must never resolve to "open":

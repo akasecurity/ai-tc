@@ -177,6 +177,7 @@ function gatewayOver(db: LocalDatabase, dir: string): DataGateway {
     tokenReports: () => Promise.resolve([]),
     knownContentHashes: () => Promise.resolve(new Set<string>()),
     scanLedger: () => Promise.resolve(new Map()),
+    scanLedgerPaths: () => Promise.resolve([]),
     recordScanned: () => Promise.resolve(),
     openAtRestKeysForPath: (path) => Promise.resolve(db.resolutions.openAtRestKeysForPath(path)),
     resolvedAtRestKeysForPath: (path) =>

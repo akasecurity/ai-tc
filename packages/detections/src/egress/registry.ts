@@ -11,14 +11,20 @@ import type {
   ShareTrustLevel,
 } from '@akasecurity/schema';
 
-// Bumped whenever the resolution/matching rules below change (not the registry
-// data itself — that's covered by PROVIDER_REGISTRY being embedded verbatim).
-const EXTRACTOR_VERSION = '1';
+// Covers every resolution/matching rule below and every field a resolution
+// derives from them (kind, trust, name, category, providerId). The registry
+// data and the excluded-host list are covered separately, by
+// EGRESS_VERSION_MATERIAL embedding PROVIDER_REGISTRY and EXCLUDED_HOST_SUFFIXES
+// verbatim.
+const EXTRACTOR_VERSION = '3';
 
 // One row per known provider. `hostSuffixes` are suffix-matched (see
 // hostMatchesSuffix): 'stripe.com' matches 'api.stripe.com' but never
-// 'evilstripe.com'. `sdks` lists only ecosystems the provider ships a real SDK
-// for.
+// 'evilstripe.com'. When two entries both suffix-match a host, the entry
+// whose matching suffix is longest wins regardless of declaration order (see
+// matchMostSpecificEntry) — so a specific entry like 'google-fonts' below can
+// sit anywhere relative to the 'gcp' entry it overlaps with. `sdks` lists only
+// ecosystems the provider ships a real SDK for.
 export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   {
     id: 'stripe',
@@ -151,6 +157,15 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       rubygems: ['google-cloud-storage'],
       nuget: ['Google.Cloud.Storage.V1'],
     },
+  },
+  {
+    id: 'google-fonts',
+    name: 'Google Fonts',
+    category: 'CDN / edge',
+    hostSuffixes: ['fonts.googleapis.com', 'fonts.gstatic.com'],
+    apiBase: 'https://fonts.googleapis.com',
+    defaultDataClasses: ['none'],
+    sdks: {},
   },
   {
     id: 'azure',
@@ -552,15 +567,13 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   },
 ];
 
-// The scanner's ledger key material: this changes whenever the registry data
-// or the resolution rules change, forcing a one-time re-extraction.
-export const EGRESS_VERSION_MATERIAL = `${EXTRACTOR_VERSION}\n${JSON.stringify(PROVIDER_REGISTRY)}`;
-
 export interface HostResolution {
   kind: DestinationKind;
   trust: ShareTrustLevel;
   name: string;
   category: string;
+  /** The matched provider catalog entry's id; null for every non-provider kind. */
+  providerId: string | null;
   entry: ProviderRegistryEntry | null;
 }
 
@@ -571,7 +584,7 @@ const INTERNAL_TLDS = ['internal', 'local', 'corp', 'lan', 'intranet', 'home.arp
 // Non-provider hosts excluded from resolution entirely: loopback/reserved
 // name suffixes (RFC 2606/6761-style) and the schema/XML-namespace hosts that
 // show up as URL-shaped literals in source but name no real destination.
-const EXCLUDED_HOST_SUFFIXES = [
+export const EXCLUDED_HOST_SUFFIXES = [
   'localhost',
   'test',
   'example',
@@ -590,6 +603,38 @@ const EXCLUDED_HOST_SUFFIXES = [
 // but never 'evilstripe.com' (no dot boundary).
 function hostMatchesSuffix(host: string, suffix: string): boolean {
   return host === suffix || host.endsWith(`.${suffix}`);
+}
+
+// The scanner's ledger key material: this changes whenever the registry
+// data, the excluded-host list, or the resolution rules change, forcing a
+// one-time re-extraction.
+export const EGRESS_VERSION_MATERIAL = `${EXTRACTOR_VERSION}\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify(EXCLUDED_HOST_SUFFIXES)}`;
+
+/**
+ * The registry entry whose hostSuffixes best matches `host`, among the given
+ * `entries`. When more than one entry matches — an apex entry and a more
+ * specific subdomain entry both suffix-match, e.g. 'googleapis.com' (Google
+ * Cloud) and 'fonts.googleapis.com' (Google Fonts) — the entry whose matching
+ * suffix is LONGEST wins, so the more specific host takes precedence over its
+ * apex regardless of where each entry sits in `entries`. Equal-length matches
+ * fall back to declaration order: the first entry reaching that length keeps
+ * it, since only a strictly longer suffix replaces the running best.
+ */
+export function matchMostSpecificEntry(
+  host: string,
+  entries: readonly ProviderRegistryEntry[],
+): ProviderRegistryEntry | null {
+  let best: ProviderRegistryEntry | null = null;
+  let bestSuffixLength = -1;
+  for (const entry of entries) {
+    for (const suffix of entry.hostSuffixes) {
+      if (hostMatchesSuffix(host, suffix) && suffix.length > bestSuffixLength) {
+        best = entry;
+        bestSuffixLength = suffix.length;
+      }
+    }
+  }
+  return best;
 }
 
 /** True when `host` is a syntactically valid dotted-quad IPv4 literal. */
@@ -701,31 +746,51 @@ export function resolveHost(
 
   if (isValidIPv4(h)) {
     if (isPrivateOrReservedIPv4(h)) return null;
-    return { kind: 'ip', trust: 'ip', name: h, category: 'Unresolved host', entry: null };
+    return {
+      kind: 'ip',
+      trust: 'ip',
+      name: h,
+      category: 'Unresolved host',
+      providerId: null,
+      entry: null,
+    };
   }
 
   if (isValidIPv6(h)) {
     if (isPrivateOrReservedIPv6(h)) return null;
-    return { kind: 'ip', trust: 'ip', name: h, category: 'Unresolved host', entry: null };
+    return {
+      kind: 'ip',
+      trust: 'ip',
+      name: h,
+      category: 'Unresolved host',
+      providerId: null,
+      entry: null,
+    };
   }
 
   const mappedIPv4 = ipv4MappedAddress(h);
   if (mappedIPv4 !== null && isValidIPv4(mappedIPv4)) {
     if (isPrivateOrReservedIPv4(mappedIPv4)) return null;
-    return { kind: 'ip', trust: 'ip', name: h, category: 'Unresolved host', entry: null };
+    return {
+      kind: 'ip',
+      trust: 'ip',
+      name: h,
+      category: 'Unresolved host',
+      providerId: null,
+      entry: null,
+    };
   }
 
   if (EXCLUDED_HOST_SUFFIXES.some((suffix) => hostMatchesSuffix(h, suffix))) return null;
 
-  const entry = PROVIDER_REGISTRY.find((p) =>
-    p.hostSuffixes.some((suffix) => hostMatchesSuffix(h, suffix)),
-  );
+  const entry = matchMostSpecificEntry(h, PROVIDER_REGISTRY);
   if (entry) {
     return {
       kind: 'provider',
       trust: 'recognized',
       name: entry.name,
       category: entry.category,
+      providerId: entry.id,
       entry,
     };
   }
@@ -741,6 +806,7 @@ export function resolveHost(
       trust: 'internal',
       name: h,
       category: 'Internal services',
+      providerId: null,
       entry: null,
     };
   }
@@ -750,6 +816,7 @@ export function resolveHost(
     trust: 'unverified',
     name: h,
     category: 'External domain',
+    providerId: null,
     entry: null,
   };
 }

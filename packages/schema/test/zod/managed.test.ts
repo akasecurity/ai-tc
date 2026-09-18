@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ManagedContext } from '../../src/zod/managed.ts';
+import type { ConnectionRefusal, ManagedContext } from '../../src/zod/managed.ts';
 import {
+  connectionRefusalMessage,
   isFieldManaged,
   managedByLabel,
   ManagedSettings,
@@ -45,6 +46,49 @@ describe('managedByLabel', () => {
     const label = managedByLabel(NO_MANAGED_CONTEXT);
     expect(label).toMatch(/your organization/i);
     expect(label).not.toContain('undefined');
+  });
+});
+
+// The sentence both connection surfaces refuse with — `aka attach` / `aka detach`
+// and the dashboard's Settings actions. Exact strings rather than fragments: the
+// point of one formatter is that the terminal and the page cannot word one
+// decision two ways, so a change here is a change to both and should read as one.
+describe('connectionRefusalMessage', () => {
+  const PINNED = 'https://pinned.example-org.internal';
+
+  it.each<[ConnectionRefusal, string]>([
+    [
+      { reason: 'held-standalone', organization: 'Example Org' },
+      'Example Org manages this machine and has set it to standalone, so it cannot be attached here.',
+    ],
+    [
+      { reason: 'pinned-endpoint', organization: 'Example Org', endpoint: PINNED },
+      `Example Org manages this machine and has pinned it to ${PINNED}. Attach to that endpoint, or ask them to change it.`,
+    ],
+    [
+      { reason: 'pinned-label', organization: 'Example Org' },
+      'Example Org manages this machine name, so it cannot be renamed here.',
+    ],
+    // The same decision as a rename: leaving the name off drops it. How to keep
+    // it is a flag in a terminal and a field on the page, so each surface adds
+    // that itself.
+    [
+      { reason: 'label-required', organization: 'Example Org' },
+      'Example Org manages this machine name, so it cannot be renamed here.',
+    ],
+    [
+      { reason: 'held-attached', organization: 'Example Org', endpoint: PINNED },
+      `Example Org manages this machine's attachment to ${PINNED}, so it cannot be detached here. Ask them to change it.`,
+    ],
+  ])('words %o', (refusal, sentence) => {
+    expect(connectionRefusalMessage(refusal)).toBe(sentence);
+  });
+
+  it('still names an administrator, at the start of the sentence, when the file names none', () => {
+    const message = connectionRefusalMessage({ reason: 'held-attached', endpoint: PINNED });
+    expect(message.startsWith('Your organization manages')).toBe(true);
+    expect(message).toContain(PINNED);
+    expect(message).not.toContain('undefined');
   });
 });
 

@@ -73,7 +73,10 @@ export type FindingAction = z.infer<typeof FindingAction>;
 // 'claudecode'. A subset of the canonical `Harness` vocabulary (harness-map.ts)
 // named by MEMBER, so it can carry no id that file does not define. Omits
 // 'Windsurf' on purpose: see the `Harness & FindingProvider` intersection on
-// TOOL_TO_HARNESS.
+// TOOL_TO_HARNESS. Carries 'AiTcSdk' for the same reason it must NOT omit any
+// other member TOOL_TO_HARNESS maps onto: that table's value type is
+// `Harness & FindingProvider`, so a mapped target absent here is a compile
+// error there, not a silent gap.
 export const FindingProvider = Harness.extract([
   'ClaudeCode',
   'ClaudeDesktop',
@@ -84,6 +87,7 @@ export const FindingProvider = Harness.extract([
   'Codex',
   'Antigravity',
   'Api',
+  'AiTcSdk',
 ]).meta({ id: 'FindingProvider' });
 export type FindingProvider = z.infer<typeof FindingProvider>;
 

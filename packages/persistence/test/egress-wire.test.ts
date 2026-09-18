@@ -303,6 +303,7 @@ describe('toEgressIngestRequest', () => {
         'method',
         'name',
         'network',
+        'providerId',
         'site',
         'template',
         'transport',
@@ -310,6 +311,27 @@ describe('toEgressIngestRequest', () => {
         'url',
       ].sort(),
     );
+  });
+
+  it('carries a provider hit providerId through to the payload', () => {
+    const payload = toEgressIngestRequest(input({ hits: [hit({ providerId: 'stripe' })] }));
+    expect(payload.hits[0]?.providerId).toBe('stripe');
+  });
+
+  it('carries a non-provider hit null providerId through to the payload', () => {
+    const payload = toEgressIngestRequest(
+      input({
+        hits: [
+          hit({
+            kind: 'external',
+            providerId: null,
+            trust: 'unverified',
+            host: 'api.acme-partner.com',
+          }),
+        ],
+      }),
+    );
+    expect(payload.hits[0]?.providerId).toBeNull();
   });
 
   it('carries only the confirmed site-level fields', () => {

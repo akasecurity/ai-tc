@@ -39,7 +39,7 @@ import { VaultConsent, VaultInlineReveal, VaultKeyCustody } from './vault.ts';
 // v2 added historicalAccess; v3 added dataSharesInPlace; v4 added
 // modelJudgeConsent; v5 added the secret-vault fields (vaultConsent,
 // vaultKeyCustody, vaultInlineReveal); v6 added historySyncConsent; v7 added
-// redactFallback; v8 added bodyRetention. Nothing
+// redactFallback; v8 added bodyRetention and webChatCapture. Nothing
 // reads it, and nothing re-stamps it — the `.default()` below only fills when
 // the key is absent, and applyOnboarding's merge preserves whatever an existing
 // settings.json already carries. So an already-onboarded machine keeps the
@@ -231,6 +231,66 @@ export function isHistorySyncConsentStale(
   return consent.endpoint === endpoint && consent.payloadVersion !== HISTORY_SYNC_PAYLOAD_VERSION;
 }
 
+// The behavior the user consented to when they allowed the browser extension to
+// write down what it observes on a web chat. A grant recorded against an older
+// version stops counting, so widening what is recorded re-asks rather than
+// riding a narrower grant — the same rule VAULT_CONSENT_VERSION carries.
+//
+// v1 covers, per assistant turn: the model, the token counts the site reported,
+// the names of the tool calls the reply made with their salient argument masked,
+// and the reply's own text under the stored `responses` mode — in which a
+// detected value is masked only where the detection that flagged it resolves to
+// redact or stronger, exactly as on every other capture path. Account and quota
+// snapshots are NOT in it.
+export const WEB_CHAT_CAPTURE_CONSENT_VERSION = 1;
+
+// A recorded consent to that, carrying the version it was given against. Same
+// two fields as VaultConsent, and separate from it because the two authorize
+// unrelated things: one is a custody change on what is redacted, this one is a
+// new class of row being written at all.
+export const WebChatCaptureConsent = z.object({
+  acknowledgedAt: z.iso.datetime(),
+  version: z.number().int().positive(),
+});
+export type WebChatCaptureConsent = z.infer<typeof WebChatCaptureConsent>;
+
+// Which assistant replies are kept as `response` captures.
+//
+//   with-findings  only a reply a scan found something in (the default)
+//   always         every reply, which is a full conversation corpus at rest
+//   never          no reply text at all — the per-turn metadata still lands
+//
+// A vocabulary rather than a boolean because 'never' and an absent grant are
+// different answers: 'never' keeps the model, token and tool metadata and drops
+// the text, while no grant writes nothing new at all.
+export const WebChatResponseCapture = z.enum(['with-findings', 'always', 'never']);
+export type WebChatResponseCapture = z.infer<typeof WebChatResponseCapture>;
+
+// What the browser extension may record from a web chat, and the grant that
+// authorizes it.
+//
+// `account` covers account, plan and quota snapshots. It defaults to false
+// because nothing collects them yet; it is stored here so the answer has one
+// home rather than arriving as a second block later.
+export const WebChatCapture = z.object({
+  responses: WebChatResponseCapture.default('with-findings'),
+  account: z.boolean().default(false),
+  // Absent until granted. Presence alone does not authorize anything — see
+  // isWebChatCaptureConsentValid.
+  consent: WebChatCaptureConsent.optional(),
+});
+export type WebChatCapture = z.infer<typeof WebChatCapture>;
+
+// The single definition of "the user has consented to what is recorded TODAY" —
+// shared by the recording gate, the settings writer and the dashboard form so
+// they cannot disagree about what counts as granted. Presence is not enough: a
+// grant recorded against an older version is stale, and stale reads as revoked.
+// Pure logic over the schema — no I/O — so every surface, including the
+// bundler-agnostic dashboard views, can import it.
+export function isWebChatCaptureConsentValid(consent: WebChatCaptureConsent | undefined): boolean {
+  return consent?.version === WEB_CHAT_CAPTURE_CONSENT_VERSION;
+}
+
 // Onboarding answers + global prefs, persisted to ~/.aka/settings/settings.json.
 // Versioned and default-filled so future config steps are additive: a
 // settings.json written by an older plugin still parses, with any missing key
@@ -327,6 +387,16 @@ export const WorkspaceSettings = z.object({
   // both widenings. Absent until granted, and a grant for a different endpoint
   // or an older payload no longer counts.
   historySyncConsent: HistorySyncConsent.optional(),
+  // What the browser extension may record from a web chat, and the grant that
+  // authorizes it. Absent until the user answers: recording something that was
+  // never recorded before is never an assumed grant on upgrade, so the whole
+  // block is optional rather than defaulted in. What an absent block means is
+  // webChatCaptureOf's answer, in one place.
+  //
+  // Enforcement is NOT gated on this. A machine that has never answered still
+  // blocks, redacts and warns on what a user sends; the grant covers what is
+  // written down.
+  webChatCapture: WebChatCapture.optional(),
   // Local body expiry (see BodyRetention). Off until switched on; expiring a
   // body never removes the row or its findings.
   bodyRetention: BodyRetention.default({
@@ -339,6 +409,18 @@ export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
 // The default (unonboarded) settings the SDK falls back to when no file exists.
 export function defaultWorkspaceSettings(): WorkspaceSettings {
   return WorkspaceSettings.parse({});
+}
+
+/**
+ * The web-chat capture block in force, whether or not the file carries one.
+ *
+ * One definition of what an unanswered machine does, so the settings writer, the
+ * dashboard form and the recording gate cannot each invent their own. An absent
+ * block resolves to the schema's own defaults — reply text only where a scan
+ * found something, no account data — and to NO grant, so it authorizes nothing.
+ */
+export function webChatCaptureOf(settings: WorkspaceSettings): WebChatCapture {
+  return settings.webChatCapture ?? WebChatCapture.parse({});
 }
 
 /**
@@ -579,7 +661,12 @@ export function toCaptureAttributes(event: IngestEvent): CaptureAttributes {
     // `.catchall(z.unknown())` carries the long tail.
     ...(metadata?.model !== undefined ? { model: metadata.model } : {}),
     ...(metadata?.turnIndex !== undefined ? { turn_index: metadata.turnIndex } : {}),
-    ...(metadata?.messageId !== undefined ? { message_id: metadata.messageId } : {}),
+    // A blank id is omitted rather than stored: it is a join key and `''` joins
+    // nothing. This runs on the local write path, which types the event but
+    // never parses it, so EventMetadata's own `.min(1)` does not reach here.
+    ...(metadata?.messageId !== undefined && metadata.messageId !== ''
+      ? { message_id: metadata.messageId }
+      : {}),
     ...(metadata?.conversationId !== undefined ? { conversation_id: metadata.conversationId } : {}),
   };
 }

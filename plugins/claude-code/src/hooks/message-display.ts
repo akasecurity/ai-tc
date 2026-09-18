@@ -31,7 +31,7 @@ import {
   saveCarry,
   transformDelta,
 } from './message-display-transform.ts';
-import { emit, getString, parseJson, readStdin } from './shared.ts';
+import { countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
 
 async function main(): Promise<void> {
   const input = parseJson(await readStdin());
@@ -112,6 +112,8 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch {
-  // Fail-open: never break the user's session
+  // Fail-open: never break the user's session — but count the exit, so
+  // `aka status` can say the hooks have been failing open on this machine.
+  countFailOpen();
 }
 process.exit(0);

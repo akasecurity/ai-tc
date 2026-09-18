@@ -761,15 +761,24 @@ importers:
       '@akasecurity/eslint-config':
         specifier: workspace:*
         version: link:../../packages/eslint-config
+      '@akasecurity/persistence':
+        specifier: workspace:*
+        version: link:../../packages/persistence
       '@akasecurity/plugin-runtime':
         specifier: workspace:*
         version: link:../../packages/plugin-runtime
       '@akasecurity/plugin-sdk':
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
+      '@akasecurity/scanner':
+        specifier: workspace:*
+        version: link:../../packages/scanner
       '@akasecurity/schema':
         specifier: workspace:*
         version: link:../../packages/schema
+      '@akasecurity/setup-wizard':
+        specifier: workspace:*
+        version: link:../../packages/setup-wizard
       '@types/node':
         specifier: ^24.13.3
         version: 24.13.3
@@ -779,6 +788,9 @@ importers:
       eslint:
         specifier: ^9.39.5
         version: 9.39.5(jiti@2.7.0)
+      tsup:
+        specifier: ^8.0.0
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.26)(tsx@4.23.12)(typescript@5.9.3)(yaml@2.9.0)
       typescript:
         specifier: ^5.8.0
         version: 5.9.3

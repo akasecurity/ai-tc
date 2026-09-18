@@ -405,13 +405,15 @@ const SESSION_ROOT = `event_type = 'session'`;
 
 // A session root "has activity" when any child event is more than bookkeeping —
 // hooks and config scans are recorded for every launch (including background
-// `claude` invocations that never see a prompt), so they alone don't make a
-// session worth listing. Correlates on the outer `audit_events` row; served by
-// idx_audit_session (root_session_id, started_at).
+// `claude` invocations that never see a prompt), and a browser tab reports its
+// own capture status on every load whether or not the user ever typed anything
+// — so none of the three alone makes a session worth listing. Correlates on
+// the outer `audit_events` row; served by idx_audit_session (root_session_id,
+// started_at).
 const HAS_ACTIVITY = `EXISTS (
   SELECT 1 FROM audit_events c
   WHERE c.root_session_id = audit_events.id
-    AND c.event_type NOT IN ('hook', 'config_scan'))`;
+    AND c.event_type NOT IN ('hook', 'config_scan', 'capture_status'))`;
 
 /**
  * Activity read views over the local `audit_events` store. Runs the
@@ -475,6 +477,17 @@ export class SqliteActivityRepository implements ActivityReadPort {
     // same name. The indexes named are ones every open store carries, since
     // opening runs the migrations, so the hard requirement `INDEXED BY`
     // introduces is already met; activity-probe-plans.test.ts pins the plan.
+    // The two descendant branches below exclude `capture_status` for the same
+    // reason HAS_ACTIVITY does, and the exclusion has to be made in both or
+    // they disagree about one session: a browser tab relays a status on every
+    // load and again on unload whether or not anyone typed, so the unload
+    // report alone re-armed a thirty-minute "live" window for a session
+    // `listSessions({ excludeEmpty: true })` and `sessionsToday` both leave
+    // out — the Activity page then read "Live now: 1" with no matching row in
+    // the list beneath it. Only this kind, not all three HAS_ACTIVITY names:
+    // `hook` and `config_scan` carry the same asymmetry on `main` and are a
+    // separate question, while capture status is the first of the three that
+    // fires with no user activity at all.
     const liveThreshold = this.now() - LIVE_ACTIVITY_WINDOW_MS;
     const liveNow = countScalar(
       this.db,
@@ -484,10 +497,10 @@ export class SqliteActivityRepository implements ActivityReadPort {
                SELECT id FROM audit_events WHERE event_type = 'session' AND started_at >= ?
                UNION
                SELECT root_session_id FROM audit_events INDEXED BY idx_audit_started_at
-                WHERE started_at >= ?
+                WHERE started_at >= ? AND event_type <> 'capture_status'
                UNION
                SELECT root_session_id FROM audit_events INDEXED BY idx_audit_ended_at
-                WHERE ended_at >= ?)`,
+                WHERE ended_at >= ? AND event_type <> 'capture_status')`,
       [liveThreshold, liveThreshold, liveThreshold],
     );
 

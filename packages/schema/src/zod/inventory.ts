@@ -40,7 +40,13 @@ export type HarnessEventKind = z.infer<typeof HarnessEventKind>;
 
 // A subset of the canonical `Harness` vocabulary (harness-map.ts), named by
 // MEMBER so it can carry no id that file does not define.
-export const HarnessId = Harness.extract(['ClaudeCode', 'Cursor', 'Codex', 'Antigravity']).meta({
+export const HarnessId = Harness.extract([
+  'ClaudeCode',
+  'Cursor',
+  'Codex',
+  'Antigravity',
+  'Copilot',
+]).meta({
   id: 'HarnessId',
 });
 export type HarnessId = z.infer<typeof HarnessId>;

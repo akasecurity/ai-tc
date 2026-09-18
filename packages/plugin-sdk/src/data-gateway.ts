@@ -15,6 +15,7 @@ import type {
   PolicyBundle,
   ProjectFilesScan,
   RecordProjectEgressInput,
+  ReportedCaptureDocument,
   ResolvedInventory,
   RuleProbeVerdict,
   SessionTokenReport,
@@ -159,6 +160,10 @@ export interface DataGateway {
   // re-reading them. Entries recorded under a different rulesetHash are omitted —
   // a new detection rule invalidates every skip.
   scanLedger(rulesetHash: string): Promise<Map<string, ScanLedgerState>>;
+  // Every ledgered path regardless of rulesetHash: the deletion sweep's
+  // universe. Skips are keyed to the ruleset; a deletion is not, so a file
+  // removed before a ruleset change must still be found gone after it.
+  scanLedgerPaths(): Promise<string[]>;
   recordScanned(entries: ScanLedgerEntry[]): Promise<void>;
   // The one-time ReDoS timing verdict for a regex rule (keyed by a content
   // hash of its pattern+flags), so a rule already measured safe — or
@@ -330,4 +335,21 @@ export function hasLocalStoreMaintenance(
   return Object.keys(LOCAL_STORE_MAINTENANCE_MEMBERS).every((member) =>
     offersMaintenance(gateway, member as keyof LocalStoreMaintenance),
   );
+}
+
+/**
+ * Reading back what a browser tab reported about its own network capture.
+ *
+ * Its own capability rather than a `DataGateway` member: only an implementation
+ * with a local store can answer, and a gateway that cannot simply does not
+ * offer it — the caller then falls back to whatever it holds in memory.
+ */
+export interface CaptureStatusReader {
+  readCaptureStatuses(): Promise<ReportedCaptureDocument[]>;
+}
+
+export function offersCaptureStatusReader(
+  gateway: DataGateway,
+): gateway is DataGateway & CaptureStatusReader {
+  return typeof (gateway as Partial<CaptureStatusReader>).readCaptureStatuses === 'function';
 }

@@ -11,6 +11,7 @@ import { createForwardPolicy } from './forward-policy.ts';
 import { AttachedDataGateway } from './gateway.ts';
 import { createPluginBlock, type PluginBuildInfo } from './plugin-block.ts';
 import { createPolicyStore } from './policy-store.ts';
+import { writePostureReportState } from './posture-report-state.ts';
 import { createPostureReporter } from './posture-reporter.ts';
 import { readStorePosture } from './posture-snapshot.ts';
 import { createPostureStore } from './posture-store.ts';
@@ -104,8 +105,16 @@ export function resolveGatewayForConfig(config: PluginConfig, meta?: GatewayMeta
         // What it buys: once the breaker is open — the plane already confirmed
         // down by the gateway's own writes — this stops paying a request
         // timeout per throttle interval to re-learn it.
-        report: (snapshot) =>
-          forward.run(() => client.reportStorePosture(snapshot)).then(() => undefined),
+        //
+        // And what `run` resolves with is handed back whole: the breaker has
+        // classified the failure once, and the posture line in `aka status`
+        // names the same cause the forward line does, from the same enum.
+        report: (snapshot) => forward.run(() => client.reportStorePosture(snapshot)),
+        // Beside the breaker's own file in dataDir, and cleared with it on
+        // detach — an outcome describes a deployment, not the machine.
+        recordOutcome: (outcome, atMs) => {
+          writePostureReportState(config.dataDir, { outcome, atMs });
+        },
         store: postureStore,
         readStore: () => readStorePosture(config.dbPath),
         hostname: () => hostname(),

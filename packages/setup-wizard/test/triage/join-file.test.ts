@@ -1,3 +1,4 @@
+import { safeMaskedMatch } from '@akasecurity/plugin-sdk';
 import type { TriageHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
@@ -18,6 +19,58 @@ const hit = (over: Partial<TriageHit>): TriageHit => ({
 });
 
 describe('buildJoinEntries', () => {
+  // A context window is a fixed radius around ITS OWN match, so a second finding
+  // close enough to appear in it is routinely cut in half by the edge. The span
+  // pass above searches with `indexOf`, which needs a whole value, so the clipped
+  // half is the one occurrence it can never span — while the egress gate reads
+  // the result run by run and refuses exactly that. Nothing here catches the
+  // refusal, so one ordinary transcript (two secrets within a window of each
+  // other, a .env paste being the obvious one) aborted the whole triage.
+  it('masks a neighbour the context window cut, instead of throwing', () => {
+    const other = 'Wk4Pq8Zn2Vb6Hm3Xr9Ts5Ld7Gc1Fj0A';
+    const cut = other.slice(0, 14); // what survives this window's right edge
+    const entries = buildJoinEntries([
+      hit({ id: '0', context: `export KEY=AKIAIOSFODNN7EXAMPLE then ${cut}` }),
+      hit({ id: '1', ruleId: 'pulled/other', rawMatch: other, context: `${other} x` }),
+    ]);
+    const e = entries[0];
+    if (!e) throw new Error('expected an entry');
+    expect(e.maskedContext).not.toContain(cut);
+    expect(JSON.stringify(e)).not.toContain(cut);
+  });
+
+  it('masks a neighbour the LEFT edge cut', () => {
+    const other = 'Wk4Pq8Zn2Vb6Hm3Xr9Ts5Ld7Gc1Fj0A';
+    const cut = other.slice(18); // the window opens mid-value
+    const entries = buildJoinEntries([
+      hit({ id: '0', context: `${cut} then export KEY=AKIAIOSFODNN7EXAMPLE` }),
+      hit({ id: '1', ruleId: 'pulled/other', rawMatch: other, context: `${other} x` }),
+    ]);
+    const e = entries[0];
+    if (!e) throw new Error('expected an entry');
+    expect(e.maskedContext).not.toContain(cut);
+  });
+
+  // An @-bearing raw, which nothing here drove before. `maskMatch`'s email branch
+  // reveals the whole host, so this entry's `maskedMatch` carries a run of its
+  // own raw — the shape that reaches `writePlanFile`'s whole-document backstop.
+  // This call site asserts only `maskedContext`, so it does not throw either way;
+  // what it pins is that the context is masked and the password reaches no field.
+  it('masks a user:pass@host secret and keeps its password out of every field', () => {
+    const conn = ['smtp://alice', 'hunter2pass@mail.example.com'].join(':');
+    const e = buildJoinEntries([
+      hit({ ruleId: 'secrets/conn-string', rawMatch: conn, context: `export URL=${conn} # prod` }),
+    ])[0];
+    if (!e) throw new Error('expected an entry');
+
+    expect(e.maskedContext).toBe('export URL=[REDACTED:SECRET] # prod');
+    expect(e.maskedMatch).toBe(safeMaskedMatch(conn));
+
+    const blob = JSON.stringify(e);
+    expect(blob).not.toContain(conn);
+    expect(blob).not.toContain('hunter2pass'); // the credential, in no field
+  });
+
   it('drops raw and masks context (no raw substring in any field)', () => {
     const e = buildJoinEntries([hit({})])[0];
     if (!e) throw new Error('expected an entry');

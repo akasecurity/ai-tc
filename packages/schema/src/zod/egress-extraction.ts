@@ -60,6 +60,8 @@ export const ResolvedEgressHit = z
     kind: DestinationKind,
     name: z.string(),
     category: z.string(),
+    /** The id of the matched provider catalog entry; null for internal/external/ip destinations. */
+    providerId: z.string().nullable(),
     trust: ShareTrustLevel,
     network: DestinationNetwork.nullable(),
     method: HttpMethod,

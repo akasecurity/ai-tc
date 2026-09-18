@@ -3,6 +3,7 @@ export {
   ATTACHED_FORWARD_DROPS_FILENAME,
   ATTACHED_FORWARD_STATE_FILENAME,
   ATTACHED_HISTORY_SYNC_STATE_FILENAME,
+  ATTACHED_POSTURE_REPORT_FILENAME,
   ATTACHED_SYNC_STATE_FILENAME,
   clearAttachmentDerivedState,
   POLICY_CACHE_FILENAME,
@@ -86,6 +87,11 @@ export {
   settingsDir,
 } from './local-layout.ts';
 export {
+  managedAttachRefusal,
+  managedConnectionHold,
+  managedDetachRefusal,
+} from './managed-connection.ts';
+export {
   lockedAmong,
   managedContextOf,
   managedSettingsPaths,
@@ -130,6 +136,7 @@ export { SqliteActivityRepository } from './repositories/activity.ts';
 export { SqliteAuditEventsRepository } from './repositories/audit-events.ts';
 export type { BodyExpiryOptions, BodyExpiryOutcome } from './repositories/body-retention.ts';
 export { SqliteBodyRetentionRepository } from './repositories/body-retention.ts';
+export { SqliteCaptureStatusRepository } from './repositories/capture-status.ts';
 export { SqliteClassifiedDataRepository } from './repositories/classified-data.ts';
 export { SqliteConfigInventoryRepository } from './repositories/config-inventory.ts';
 export { SqliteDetectionsRepository } from './repositories/detections.ts';

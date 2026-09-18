@@ -68,7 +68,12 @@ export const EventMetadata = z
     // in — set by the browser extension's network capture so a stored `response`
     // row can be joined to the `llm_call` leaf describing the same turn. Absent
     // on every other capture path, which has no such id.
-    messageId: z.string().optional(),
+    //
+    // Non-empty for the reason WebExchange.messageId is: it is the join key, and
+    // a blank one matches no `llm_call` leaf. That refusal reaches only the
+    // places an event is PARSED; the local write path types the event and parses
+    // nothing, which is why `toCaptureAttributes` omits a blank one separately.
+    messageId: z.string().min(1).optional(),
     conversationId: z.string().optional(),
     // How long THIS capture's inspection blocked its caller, in whole
     // milliseconds — the plugin's own added latency, NOT the LLM call it sat in

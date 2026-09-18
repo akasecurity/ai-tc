@@ -839,3 +839,13 @@ pointer inside a Bash command is denied rather than executed or substituted.
 If the user asks about recovering a redacted value, point them at the vault
 surfaces that do exist on this machine (`aka vault show`, the dashboard's
 Vault page) rather than implying this plugin can reveal anything.
+
+That said, the model itself is not left to guess what a pointer IS. When
+`vaultConsent` is valid — granted through this same `settings.json`, by any
+plugin on the machine — SessionStart injects the same standing protocol brief
+Claude Code's does: what `[[aka:<category>:...]]` means, to use it verbatim,
+never to fabricate or alter one, and where the human can resolve it
+(`aka vault show`, the dashboard). That closes the actual failure mode this
+gap used to cause — a Codex session encountering a pointer with no idea what
+it was looking at — without claiming this plugin can mint or resolve one
+itself; it still cannot.

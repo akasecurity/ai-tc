@@ -1,7 +1,7 @@
 import { ResolvedEgressHit } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import type { RawEndpointHit } from '../../src/egress/extract.ts';
+import { extractEgress, type RawEndpointHit } from '../../src/egress/extract.ts';
 import type { ManifestSdkHit } from '../../src/egress/manifests.ts';
 import { type FileEgressHits, resolveEgress } from '../../src/egress/resolve.ts';
 
@@ -48,6 +48,41 @@ describe('resolveEgress — URL/IP hit resolution', () => {
     expect(hits[0]?.trust).toBe('recognized');
     expect(hits[0]?.dataClass).toBe('pii');
     expect(hits[0]?.network).toBeNull();
+    expect(hits[0]?.providerId).toBe('stripe');
+  });
+
+  it('resolves a github.com URL hit with providerId "github"', () => {
+    const hits = resolveEgress([
+      fileHits({
+        endpoints: [
+          endpointHit({
+            url: 'https://github.com/octocat/hello-world',
+            host: 'github.com',
+            method: 'GET',
+          }),
+        ],
+      }),
+    ]);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.kind).toBe('provider');
+    expect(hits[0]?.providerId).toBe('github');
+  });
+
+  it('resolves a raw.githubusercontent.com URL hit with providerId "github"', () => {
+    const hits = resolveEgress([
+      fileHits({
+        endpoints: [
+          endpointHit({
+            url: 'https://raw.githubusercontent.com/octocat/hello-world/main/README.md',
+            host: 'raw.githubusercontent.com',
+            method: 'GET',
+          }),
+        ],
+      }),
+    ]);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.kind).toBe('provider');
+    expect(hits[0]?.providerId).toBe('github');
   });
 
   it('resolves an unrecognized public-domain hit as external/unverified with populated network', () => {
@@ -67,6 +102,7 @@ describe('resolveEgress — URL/IP hit resolution', () => {
     expect(hits[0]?.trust).toBe('unverified');
     expect(hits[0]?.dataClass).toBe('none');
     expect(hits[0]?.network).toEqual({ port: 8443, geo: null, ptr: null });
+    expect(hits[0]?.providerId).toBeNull();
   });
 
   it('resolves a bare public IP reference as ip/ip with populated network', () => {
@@ -88,6 +124,7 @@ describe('resolveEgress — URL/IP hit resolution', () => {
     expect(hits[0]?.trust).toBe('ip');
     expect(hits[0]?.dataClass).toBe('none');
     expect(hits[0]?.network).toEqual({ port: 8080, geo: null, ptr: null });
+    expect(hits[0]?.providerId).toBeNull();
   });
 
   it('drops a hit whose host resolveHost excludes', () => {
@@ -124,6 +161,7 @@ describe('resolveEgress — URL/IP hit resolution', () => {
     expect(hits).toHaveLength(1);
     expect(hits[0]?.kind).toBe('internal');
     expect(hits[0]?.trust).toBe('internal');
+    expect(hits[0]?.providerId).toBeNull();
   });
 
   it('carries the call site through from the file and hit: file, line, snippet, dynamic, vendored', () => {
@@ -153,6 +191,80 @@ describe('resolveEgress — URL/IP hit resolution', () => {
   });
 });
 
+describe('resolveEgress — documentation hosts', () => {
+  it('records a REF hit against a documentation host like any other host of its provider', () => {
+    const hits = resolveEgress([
+      fileHits({
+        endpoints: [
+          endpointHit({
+            url: 'https://docs.github.com/en/rest',
+            host: 'docs.github.com',
+            method: 'REF',
+          }),
+        ],
+      }),
+    ]);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({
+      host: 'docs.github.com',
+      kind: 'provider',
+      name: 'GitHub',
+      providerId: 'github',
+      trust: 'recognized',
+      method: 'REF',
+      dataClass: 'source',
+    });
+  });
+
+  it('records a POST hit against a documentation host under its provider', () => {
+    const hits = resolveEgress([
+      fileHits({
+        endpoints: [
+          endpointHit({
+            url: 'https://docs.stripe.com/api/charges',
+            host: 'docs.stripe.com',
+            method: 'POST',
+          }),
+        ],
+      }),
+    ]);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({ kind: 'provider', name: 'Stripe', dataClass: 'pii' });
+  });
+
+  // The extractor ties a verb to a URL only within one statement, so each of
+  // these real requests extracts as REF. Each must still reach the register.
+  it.each([
+    [
+      'a URL held in a constant',
+      "const DOCS_SEARCH = 'https://docs.github.com/search?q=default';\n" +
+        'export const search = (payload) => axios.post(DOCS_SEARCH, payload);\n',
+    ],
+    [
+      "a client's base URL",
+      "const client = axios.create({ baseURL: 'https://docs.github.com/api/v1' });\n" +
+        "client.post('/search', { q: userQuery });\n",
+    ],
+    [
+      'a new URL() passed to a later fetch',
+      "const u = new URL('https://docs.github.com/search');\n" +
+        "fetch(u, { method: 'POST', body });\n",
+    ],
+  ])('records a documentation-host request made through %s', (_label, source) => {
+    const endpoints = extractEgress(source);
+    expect(endpoints.map((e) => [e.host, e.method])).toEqual([['docs.github.com', 'REF']]);
+
+    const hits = resolveEgress([fileHits({ endpoints })]);
+
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({
+      host: 'docs.github.com',
+      providerId: 'github',
+      dataClass: 'source',
+    });
+  });
+});
+
 describe('resolveEgress — SDK hit resolution', () => {
   it('resolves a recognized SDK dependency into a synthetic endpoint at the provider apiBase', () => {
     const hits = resolveEgress([fileHits({ file: 'package.json', sdkHits: [sdkHit()] })]);
@@ -167,6 +279,17 @@ describe('resolveEgress — SDK hit resolution', () => {
     expect(hits[0]?.dataClass).toBe('pii');
     expect(hits[0]?.site.file).toBe('package.json');
     expect(hits[0]?.site.line).toBe(12);
+    expect(hits[0]?.providerId).toBe('stripe');
+  });
+
+  it('resolves an @octokit/rest npm SDK dependency with providerId "github"', () => {
+    const hits = resolveEgress([
+      fileHits({ file: 'package.json', sdkHits: [sdkHit({ pkg: '@octokit/rest' })] }),
+    ]);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.kind).toBe('provider');
+    expect(hits[0]?.host).toBe('api.github.com');
+    expect(hits[0]?.providerId).toBe('github');
   });
 
   it('drops an SDK hit for a package the registry does not recognize', () => {

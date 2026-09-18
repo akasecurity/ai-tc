@@ -30,6 +30,34 @@ describe('NeedsReviewListView', () => {
     expect(html).toContain('1 call<');
   });
 
+  it('shows the host under a provider name, and not a second time where the name is the host', () => {
+    const named = renderToStaticMarkup(
+      <NeedsReviewListView
+        items={[
+          reviewDestination({
+            id: 'a',
+            name: 'Okta',
+            host: 'okta.com',
+            kind: 'provider',
+            trust: 'recognized',
+            providerId: 'okta',
+          }),
+        ]}
+        onReview={vi.fn()}
+      />,
+    );
+    expect(named).toContain('Okta');
+    expect(named).toContain('okta.com');
+
+    const ip = renderToStaticMarkup(
+      <NeedsReviewListView
+        items={[reviewDestination({ id: 'b', name: '203.0.113.0', host: '203.0.113.0' })]}
+        onReview={vi.fn()}
+      />,
+    );
+    expect(ip.split('203.0.113.0')).toHaveLength(2);
+  });
+
   it('says the queue is clear for an empty list, rather than rendering a blank body', () => {
     // The sheet outlives its own list — the last flagged destination can clear
     // while it is still open — so an empty list has to say something.

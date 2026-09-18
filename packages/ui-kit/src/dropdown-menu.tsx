@@ -1,4 +1,5 @@
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
+import { cva, type VariantProps } from 'class-variance-authority';
 import { type ComponentPropsWithRef } from 'react';
 
 import { cn } from './lib/cn.ts';
@@ -36,8 +37,25 @@ export const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
 export const DropdownMenuGroup = DropdownMenuPrimitive.Group;
 export const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup;
 
-const itemClass =
-  'flex cursor-pointer select-none items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-text-2 outline-none focus:bg-surface-2 focus:text-text data-[disabled]:pointer-events-none data-[disabled]:opacity-50';
+// Same axis as button.tsx's `tone`: `default` is this menu's ordinary item
+// color, `danger` is the one override a destructive item (e.g. "Delete")
+// needs, instead of ad hoc classes at the call site.
+const dropdownMenuItemVariants = cva(
+  'flex cursor-pointer select-none items-center gap-2 rounded-md px-2.5 py-1.5 text-sm outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+  {
+    variants: {
+      tone: {
+        default: 'text-text-2 focus:bg-surface-2 focus:text-text',
+        danger: 'text-sev-critical-ink focus:bg-sev-critical-fill focus:text-sev-critical-ink',
+      },
+    },
+    defaultVariants: { tone: 'default' },
+  },
+);
+
+// RadioItem and CheckboxItem below have no `tone` of their own — they share
+// this variant's `default` tone rather than duplicating its class list.
+const itemClass = dropdownMenuItemVariants();
 
 export function DropdownMenuContent({
   className,
@@ -58,11 +76,18 @@ export function DropdownMenuContent({
   );
 }
 
-export function DropdownMenuItem({
-  className,
-  ...props
-}: ComponentPropsWithRef<typeof DropdownMenuPrimitive.Item>) {
-  return <DropdownMenuPrimitive.Item className={cn(itemClass, className)} {...props} />;
+export interface DropdownMenuItemProps
+  extends
+    ComponentPropsWithRef<typeof DropdownMenuPrimitive.Item>,
+    VariantProps<typeof dropdownMenuItemVariants> {}
+
+export function DropdownMenuItem({ className, tone, ...props }: DropdownMenuItemProps) {
+  return (
+    <DropdownMenuPrimitive.Item
+      className={cn(dropdownMenuItemVariants({ tone }), className)}
+      {...props}
+    />
+  );
 }
 
 export function DropdownMenuRadioItem({

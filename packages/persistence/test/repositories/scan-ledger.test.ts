@@ -38,6 +38,18 @@ describe('SqliteScanLedgerRepository (via LocalDatabase.scanLedger)', () => {
     db.close();
   });
 
+  it('lists every ledgered path whatever ruleset it was scanned under', () => {
+    const db = store.open();
+    db.scanLedger.upsertEntries([
+      entry('/repo/a.ts', { rulesetHash: 'ruleset-v1' }),
+      entry('/repo/b.ts', { rulesetHash: 'ruleset-v2' }),
+    ]);
+
+    expect(db.scanLedger.allPaths().sort()).toEqual(['/repo/a.ts', '/repo/b.ts']);
+    expect([...db.scanLedger.entriesForRuleset('ruleset-v2').keys()]).toEqual(['/repo/b.ts']);
+    db.close();
+  });
+
   it('upserts on path: a re-scan overwrites mtime, hash, and ruleset', () => {
     const db = store.open();
     db.scanLedger.upsertEntries([entry('/repo/a.ts')]);

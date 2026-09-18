@@ -350,7 +350,9 @@ export const auditEvents = sqliteTable(
         'code_change',
         'tool_use',
         'model_refusal',
+        'request_decision',
         'config_scan',
+        'capture_status',
       ],
     }).notNull(),
     hostId: text(COL.hostId).references(() => inventory.id),
@@ -710,6 +712,12 @@ export const inspectionFindings = sqliteTable(
 // base facts live here. Seeded sample rows carry provenance='sample'.
 
 // DESTINATION — one host we send data to.
+//
+// `host` is the row identity — the unique index below, and the ON CONFLICT
+// target every writer upserts against. `provider_id` is a secondary grouping
+// key: several hosts of one provider (api.github.com, raw.githubusercontent.com)
+// each keep their own row, and provider_id folds them together for read-side
+// rollups. It is never part of a conflict target.
 export const shareDestination = sqliteTable(
   'share_destination',
   {
@@ -717,6 +725,7 @@ export const shareDestination = sqliteTable(
     kind: text(COL.kind, { enum: ['provider', 'internal', 'external', 'ip'] }).notNull(),
     name: text(COL.name).notNull(),
     host: text(COL.host).notNull(),
+    providerId: text(COL.providerId),
     category: text(COL.category).notNull(),
     trust: text(COL.trust).notNull(),
     note: text(COL.note),

@@ -137,14 +137,17 @@ describe('HarnessEventKind enum', () => {
 });
 
 describe('HarnessId enum', () => {
-  it('accepts claudecode, cursor, codex, antigravity', () => {
-    for (const v of ['claudecode', 'cursor', 'codex', 'antigravity']) {
+  it('accepts claudecode, cursor, codex, antigravity, copilot', () => {
+    for (const v of ['claudecode', 'cursor', 'codex', 'antigravity', 'copilot']) {
       expect(HarnessId.safeParse(v).success).toBe(true);
     }
   });
 
   it('rejects invalid values', () => {
-    expect(HarnessId.safeParse('copilot').success).toBe(false);
+    // Both are near-misses on a member rather than arbitrary strings: 'copilot'
+    // IS the display id and is accepted, so the rejected spelling here is the
+    // WIRE id, which this vocabulary never carries.
+    expect(HarnessId.safeParse('github-copilot').success).toBe(false);
     expect(HarnessId.safeParse('claude-code').success).toBe(false);
   });
 });

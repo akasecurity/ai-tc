@@ -15,27 +15,119 @@
  * MutationObserver keeps re-resolving both rather than caching stale nodes.
  * The decision loop itself lives in interceptor.ts (unit-tested there).
  */
+import type { BannerRequest } from './interceptor.ts';
 import { createSubmitInterceptor } from './interceptor.ts';
 import type { BackgroundRequest, BackgroundResponse } from './messaging.ts';
 import { resolveAdapter } from './providers/registry.ts';
 import type { ProviderAdapter } from './providers/types.ts';
+import type { SharedScope } from './tab-session.ts';
+import type { EnforcementState } from './tab-session.ts';
+import { notifyDomSend, publishEnforcementState, resolveSessionId } from './tab-session.ts';
 
 const adapter = resolveAdapter(location.hostname);
 if (adapter) {
   bootstrap(adapter);
 }
 
+// What the two halves of the gate below add up to. Both misses are named
+// separately because each points at a different selector list, and one site has
+// shown both: its signed-in build resolves a composer and no send button, its
+// anonymous build a send button and no composer.
+function enforcementState(
+  composerEl: HTMLElement | null,
+  buttonEl: HTMLElement | null,
+): EnforcementState {
+  if (composerEl && buttonEl) return 'watching';
+  if (composerEl) return 'composer-only';
+  if (buttonEl) return 'button-only';
+  return 'unattached';
+}
+
+// How long a DEGRADED enforcement state must persist before it is believed.
+//
+// reattach runs on every DOM mutation, and a page load legitimately passes
+// through a half-resolved state on its way to a bound one — measured live as
+// unknown -> button-only -> watching within a few frames. Publishing each step
+// puts a "not enforcing" row in the store and a warning in the popup for a tab
+// that is perfectly healthy, on every load. Only a state that OUTLASTS the
+// mount is a fault worth reporting.
+const ENFORCEMENT_SETTLE_MS = 2000;
+
 // Synchronous: the watcher must be attached before anything can be sent, so
 // nothing here is allowed to await. session_start is fired and left to settle
 // on its own (see below).
-function bootstrap(activeAdapter: ProviderAdapter): void {
-  const sessionId = crypto.randomUUID();
+//
+// Exported so it can be driven with a stand-in adapter. The call below runs it
+// for real only when `location.hostname` resolves to an adapter, so importing
+// this module anywhere else does nothing.
+export function bootstrap(activeAdapter: ProviderAdapter): void {
+  // Shared with the network path rather than minted here: the two run as
+  // separate content scripts in one isolated world, and a second id would put
+  // this tab's prompts under a different session root than the exchanges that
+  // answered them.
+  const scope = window as unknown as SharedScope;
+  const sessionId = resolveSessionId(scope);
   const interceptor = createSubmitInterceptor({
     adapter: activeAdapter,
     sessionId,
     relay,
     showBanner,
+    // A send that actually left the composer is this tab's one observation
+    // that the user asked for a turn. The network path counts it as a turn it
+    // must see an exchange for, so a run of sends with no exchange behind them
+    // is how a tap that installed and sees nothing becomes visible.
+    noteSend: () => {
+      notifyDomSend(scope);
+    },
   });
+
+  // Asymmetric on purpose: `watching` is published at once, because a bound
+  // watcher is never provisional — it either bound or it did not. Everything
+  // else waits out ENFORCEMENT_SETTLE_MS, and is cancelled if the page reaches
+  // `watching` first. An identical repeat does NOT restart the wait, or the
+  // churn of a busy SPA would defer a genuinely broken page for ever.
+  let publishedEnforcement: EnforcementState = 'unknown';
+  let pendingEnforcement: EnforcementState | null = null;
+  let enforcementTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function reportEnforcement(state: EnforcementState): void {
+    if (state === 'watching') {
+      if (enforcementTimer) clearTimeout(enforcementTimer);
+      enforcementTimer = null;
+      pendingEnforcement = null;
+      if (publishedEnforcement !== 'watching') {
+        publishedEnforcement = 'watching';
+        publishEnforcementState(scope, 'watching');
+      }
+      return;
+    }
+    if (state === publishedEnforcement) {
+      // Back where it settled, so whatever was pending is no longer true. The
+      // combined early return this replaced left the timer running: settled at
+      // `button-only`, one re-render reading `unattached` starts the wait, the
+      // next pass reads `button-only` again and returns here — and
+      // ENFORCEMENT_SETTLE_MS later the timer publishes `unattached` for a tab
+      // that was back to `button-only` for the whole window. Nothing
+      // re-reports until the DOM mutates again, so the popup can show that
+      // reason indefinitely. It also let two alternating degraded states keep
+      // restarting each other's timer.
+      if (enforcementTimer) clearTimeout(enforcementTimer);
+      enforcementTimer = null;
+      pendingEnforcement = null;
+      return;
+    }
+    // An identical repeat still does not restart the wait, which is what stops
+    // a busy SPA deferring a genuinely broken page for ever.
+    if (state === pendingEnforcement) return;
+    if (enforcementTimer) clearTimeout(enforcementTimer);
+    pendingEnforcement = state;
+    enforcementTimer = setTimeout(() => {
+      enforcementTimer = null;
+      pendingEnforcement = null;
+      publishedEnforcement = state;
+      publishEnforcementState(scope, state);
+    }, ENFORCEMENT_SETTLE_MS);
+  }
 
   let composer: HTMLElement | null = null;
   let sendButton: HTMLElement | null = null;
@@ -50,6 +142,12 @@ function bootstrap(activeAdapter: ProviderAdapter): void {
     // remounted button would otherwise send unwatched (watchSubmit binds its
     // click listener to the node it saw at attach time).
     const nextButton = activeAdapter.findSendButton();
+    // Reported on every pass, and BEFORE the identity check below. On a page
+    // where neither half resolves, that check compares null against null on the
+    // very first pass and returns — so a tab that never attached would
+    // otherwise report nothing at all, for its whole life, which is
+    // indistinguishable from a tab nobody typed in.
+    reportEnforcement(enforcementState(nextComposer, nextButton));
     if (nextComposer === composer && nextButton === sendButton) return;
     unwatch?.();
     composer = nextComposer;
@@ -106,14 +204,138 @@ function relay(request: BackgroundRequest): Promise<BackgroundResponse> {
 }
 
 let bannerHost: HTMLElement | null = null;
+let bannerShadow: ShadowRoot | null = null;
 let bannerHideTimer: ReturnType<typeof setTimeout> | null = null;
+let bannerKeeper: MutationObserver | null = null;
+// How many times one approve banner is put back within a single burst — the
+// re-attachments made before a zero-delay timer set on the first of them gets
+// to run — before it is let go. It bounds one uninterrupted exchange rather
+// than the banner's lifetime.
+const BANNER_REATTACH_LIMIT = 20;
 
-// A fixed, viewport-anchored toast rather than one positioned relative to the
-// composer: every provider's layout differs enough (sidebar widths, mobile
-// breakpoints, …) that a fixed bottom-center placement stays visible and
-// unclipped everywhere. Rendered in a shadow root so the host page's CSS
-// can neither hide it nor be affected by it.
-function showBanner(message: string, tone: 'block' | 'warn' | 'redact'): void {
+// The DOM types declare both always present, but a page can take either out of
+// the document, and the hold has to wait on that rather than throw.
+function hostAncestors(): { root: Element | null; body: HTMLElement | null } {
+  return { root: document.documentElement, body: document.body };
+}
+
+// Stops putting a removed banner back. Called whenever the banner on screen
+// stops being one that carries an approve command: it was dismissed, or a
+// banner that auto-hides replaced it.
+function releaseBanner(): void {
+  bannerKeeper?.disconnect();
+  bannerKeeper = null;
+}
+
+/**
+ * Puts the host back when the page takes it out while an approve banner is up.
+ * That banner stays until dismissed because the command on it is the only
+ * on-screen route to the exception, and showBanner only re-creates a detached
+ * host on its NEXT call — so without this a re-render that drops the host
+ * mid-display takes the route with it, and nothing brings it back.
+ *
+ * `childList` only, on the document, the root element and `document.body` (the
+ * host's parent), never a subtree observer: these pages re-render constantly,
+ * and a subtree observer would run on every one of those mutations for as
+ * long as the banner is up. The host is in the document only while each of
+ * those three links holds, and taking a node out of its parent is a `childList`
+ * record on that parent — so the three observations see the host taken out of
+ * body, body taken out of the root element, and the root element taken out of
+ * the document, however the page does it. They move to a replacement root
+ * element or body on the first delivery after it arrives. While the document
+ * has no body the host waits, uncounted: whatever brings a body back is
+ * inserted into a node already observed, and that delivery puts the host in.
+ *
+ * Bounded by BANNER_REATTACH_LIMIT per burst. A page whose own observer takes
+ * the host out whenever it returns would otherwise trade mutations with this
+ * one on the microtask queue for good, and the tab would never get its event
+ * loop back. That exchange never yields to a task, so the zero-delay timer
+ * that resets the count, started on a burst's first re-attachment, cannot run
+ * inside it; past the limit the banner is let go for good.
+ *
+ * What it does not cover: a page that removes the host more often than the
+ * limit within one burst, and a page that leaves the host in place but hides
+ * it or draws over it.
+ */
+function holdBanner(host: HTMLElement): void {
+  releaseBanner();
+  let burst = 0;
+  let watchedRoot: Element | null = null;
+  let watchedBody: HTMLElement | null = null;
+  const keeper = new MutationObserver(() => {
+    const parent = watchHostAncestors();
+    if (parent === null || host.parentNode === parent) return;
+    if (burst >= BANNER_REATTACH_LIMIT) {
+      keeper.disconnect();
+      if (bannerKeeper === keeper) bannerKeeper = null;
+      return;
+    }
+    if (burst === 0) {
+      setTimeout(() => {
+        burst = 0;
+      }, 0);
+    }
+    burst += 1;
+    parent.append(host);
+  });
+  // Re-registered only when the root element or body is a different node from
+  // the last delivery, so the observer never keeps a replaced one registered.
+  // Disconnecting inside the callback loses nothing: the queue was emptied
+  // when the callback was handed its records, and every decision above is
+  // read from the document rather than from those records.
+  function watchHostAncestors(): HTMLElement | null {
+    const { root, body } = hostAncestors();
+    if (root !== watchedRoot || body !== watchedBody) {
+      keeper.disconnect();
+      keeper.observe(document, { childList: true });
+      if (root) keeper.observe(root, { childList: true });
+      if (body) keeper.observe(body, { childList: true });
+      watchedRoot = root;
+      watchedBody = body;
+    }
+    return body;
+  }
+  watchHostAncestors();
+  bannerKeeper = keeper;
+}
+
+/**
+ * A fixed, viewport-anchored toast rather than one positioned relative to the
+ * composer: every provider's layout differs enough (sidebar widths, mobile
+ * breakpoints, …) that a fixed bottom-center placement stays visible and
+ * unclipped everywhere. Rendered in a shadow root so the host page's selectors
+ * cannot reach inside it and its own styles stay out of the page. Properties
+ * the host inherits still flow in, as they do across any shadow boundary.
+ *
+ * The root is CLOSED, and that is a security property rather than tidiness.
+ * The host sits under `document.body`, so an open root let page script reach
+ * `host.shadowRoot` — via a MutationObserver watching for the host to arrive —
+ * and rewrite the approve command the user is being told to paste into a
+ * terminal. An official-looking security banner asking for a terminal paste is
+ * the most useful pretext a compromised page script could be handed, and this
+ * whole subsystem is built on the assumption that the page is hostile. A
+ * closed root is not reachable from the page in any world.
+ *
+ * What it does NOT stop, and what only moving the banner out of the page
+ * document would: page script can still take the host out of the document, a
+ * page stylesheet can still hide the host element itself, and the page can
+ * still draw a lookalike banner of its own. A banner carrying an
+ * approve command is put back once the removal is delivered, until it is
+ * dismissed (see `holdBanner`, which also says what that does not cover) — but
+ * a page that removes it more often than that function's limit allows within
+ * one burst can keep it off screen, and any other banner stays gone until the
+ * next one is shown.
+ */
+export function showBanner(banner: BannerRequest): ShadowRoot {
+  // Re-created when the cached host is no longer in the document. These sites
+  // re-render heavily, and a host that has been detached renders every later
+  // banner into a node nobody can see — including a BLOCK banner, which would
+  // leave the user with a message that silently never sent and no explanation
+  // on screen.
+  if (bannerHost && !bannerHost.isConnected) {
+    bannerHost = null;
+    bannerShadow = null;
+  }
   if (!bannerHost) {
     bannerHost = document.createElement('div');
     bannerHost.style.all = 'initial';
@@ -124,8 +346,14 @@ function showBanner(message: string, tone: 'block' | 'warn' | 'redact'): void {
     bannerHost.style.transform = 'translateX(-50%)';
     document.body.append(bannerHost);
   }
-  const shadow = bannerHost.shadowRoot ?? bannerHost.attachShadow({ mode: 'open' });
-  const color = tone === 'block' ? '#dc2626' : tone === 'redact' ? '#d97706' : '#2563eb';
+  // Kept on the module rather than read back from `bannerHost.shadowRoot`,
+  // which a closed root leaves null for every caller including this one.
+  if (bannerShadow?.host !== bannerHost) {
+    bannerShadow = bannerHost.attachShadow({ mode: 'closed' });
+  }
+  const shadow = bannerShadow;
+  const color =
+    banner.tone === 'block' ? '#dc2626' : banner.tone === 'redact' ? '#d97706' : '#2563eb';
   const box = document.createElement('div');
   box.style.font = '13px/1.4 system-ui, sans-serif';
   box.style.background = color;
@@ -134,12 +362,110 @@ function showBanner(message: string, tone: 'block' | 'warn' | 'redact'): void {
   box.style.borderRadius = '8px';
   box.style.boxShadow = '0 4px 12px rgba(0,0,0,0.25)';
   box.style.maxWidth = '480px';
-  box.textContent = message;
+
+  const text = document.createElement('div');
+  text.textContent = banner.message;
+  box.append(text);
+
+  if (banner.exception) {
+    const intro = document.createElement('div');
+    intro.style.marginTop = '6px';
+    intro.textContent = banner.exception.intro;
+    // Its OWN element, monospaced — but a LABEL rather than the thing that
+    // gets copied. A `copy` event is composed, so it reaches the page's own
+    // document listener, where `clipboardData.setData` can replace a selection
+    // the user made here with anything at all: the text on screen would stay
+    // AKA's while the clipboard carried the page's. So selection is off and
+    // the button below is the copy path; it writes through the Clipboard API,
+    // which dispatches no `copy` event for the page to intercept.
+    const command = document.createElement('code');
+    command.style.display = 'block';
+    command.style.marginTop = '4px';
+    command.style.padding = '4px 6px';
+    command.style.background = 'rgba(0,0,0,0.25)';
+    command.style.borderRadius = '4px';
+    command.style.font = '12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace';
+    command.style.userSelect = 'none';
+    command.textContent = banner.exception.command;
+    const copy = document.createElement('button');
+    copy.style.all = 'unset';
+    copy.style.cursor = 'pointer';
+    copy.style.marginTop = '6px';
+    copy.style.marginRight = '12px';
+    copy.style.textDecoration = 'underline';
+    copy.textContent = 'Copy command';
+    // Written from the ledger value this banner was handed, never read back
+    // out of the element above — which is the point of the whole change: what
+    // reaches the clipboard cannot be something the page substituted.
+    const toCopy = banner.exception.command;
+    copy.addEventListener('click', () => {
+      void navigator.clipboard.writeText(toCopy).then(
+        () => {
+          copy.textContent = 'Copied';
+        },
+        () => {
+          // The API needs a secure context and can be refused outright —
+          // including by a Permissions-Policy the page itself sends, so a
+          // refusal is something the page can arrange. Selection therefore
+          // stays OFF: handing it back here would turn every refusal into the
+          // selectable state a page `copy` listener can rewrite. Say so rather
+          // than leaving a label that claims a copy nobody made, and point at
+          // the route that involves no clipboard at all. It names the approve
+          // command because the line directly above this button is the help
+          // command.
+          copy.textContent = 'Copy failed — type the approve command into a terminal';
+        },
+      );
+    });
+    const help = document.createElement('div');
+    help.style.marginTop = '6px';
+    help.style.opacity = '0.85';
+    // Unselectable for the same reason as the command: it is a second terminal
+    // command, and a selection of it reaches the page's `copy` listener just
+    // the same. It has no copy button because it is short enough to type.
+    help.style.userSelect = 'none';
+    help.textContent = banner.exception.help;
+    const dismiss = document.createElement('button');
+    dismiss.style.all = 'unset';
+    dismiss.style.cursor = 'pointer';
+    dismiss.style.marginTop = '8px';
+    dismiss.style.textDecoration = 'underline';
+    dismiss.textContent = 'Dismiss';
+    // Closes the host this banner was rendered into, not whichever host is
+    // current. The two differ once the page puts back a host it removed after
+    // a later banner created a new one; this button then removes its own host
+    // and leaves the current banner, and its hold, alone.
+    const owner = bannerHost;
+    dismiss.addEventListener('click', () => {
+      owner.remove();
+      if (bannerHost !== owner) return;
+      releaseBanner();
+      bannerHost = null;
+      bannerShadow = null;
+    });
+    box.append(intro, command, help, copy, dismiss);
+  }
   shadow.replaceChildren(box);
 
   if (bannerHideTimer) clearTimeout(bannerHideTimer);
-  bannerHideTimer = setTimeout(() => {
-    bannerHost?.remove();
-    bannerHost = null;
-  }, 6000);
+  bannerHideTimer = null;
+  // A banner carrying an approve command does NOT auto-hide: the command is
+  // the whole reason it exists, and six seconds is not long enough to read a
+  // reference, switch to a terminal and type it. It is dismissed instead, and
+  // until then `holdBanner` puts it back when the page takes it out, within
+  // the limit that function describes.
+  if (banner.exception) {
+    holdBanner(bannerHost);
+  } else {
+    releaseBanner();
+    bannerHideTimer = setTimeout(() => {
+      bannerHost?.remove();
+      bannerHost = null;
+      bannerShadow = null;
+    }, 6000);
+  }
+  // Returned because a closed root is reachable from nowhere else — not from
+  // page script, which is the point, and not from this module's own caller
+  // through `host.shadowRoot`, which a closed root leaves null.
+  return shadow;
 }

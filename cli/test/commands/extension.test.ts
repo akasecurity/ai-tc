@@ -11,8 +11,12 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { dataDir, openLocalDatabase, settingsDir } from '@akasecurity/persistence';
+import type { WebCaptureStatus } from '@akasecurity/schema';
+import { toCaptureStatusAttributes, WEB_CHAT_CAPTURE_CONSENT_VERSION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import {
   chromeManifestDir,
   launcherPath,
@@ -245,5 +249,284 @@ describe('runInstall / runStatus', () => {
     runInstall(manifestDir, '/fake/native-host/host.js', null);
     const written = stdout.mock.calls.map((c) => String(c[0])).join('');
     expect(written).toContain('pnpm --filter @akasecurity/plugin-browser-extension build');
+  });
+});
+
+describe('runStatus — the network-capture block', () => {
+  let home: string;
+  let manifestDir: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'aka-extension-status-home-'));
+    manifestDir = mkdtempSync(join(tmpdir(), 'aka-extension-status-manifest-'));
+  });
+
+  afterEach(() => {
+    // `home` is opened with openLocalDatabase (via seedStatus/runStatus), so a
+    // bare rmSync can meet a WAL/SHM sidecar that outlives close() by a
+    // moment on Windows — removeTree tolerates that the way every other
+    // store-touched teardown in this repo does.
+    removeTree(home);
+    rmSync(manifestDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+    process.exitCode = 0;
+  });
+
+  function writeSettings(webChatCapture?: unknown): void {
+    const dir = settingsDir(home);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'settings.json'),
+      JSON.stringify({
+        specVersion: 3,
+        runMode: 'standalone',
+        policy: 'redact',
+        historicalAccess: 'session-only',
+        dataSharesInPlace: true,
+        vaultKeyCustody: 'file',
+        vaultInlineReveal: 'masked',
+        redactFallback: 'warn',
+        bodyRetention: { enabled: false, retainDays: 30 },
+        ...(webChatCapture !== undefined ? { webChatCapture } : {}),
+      }),
+    );
+  }
+
+  function consentedSettings(): unknown {
+    return {
+      responses: 'with-findings',
+      account: false,
+      consent: {
+        acknowledgedAt: '2026-01-01T00:00:00.000Z',
+        version: WEB_CHAT_CAPTURE_CONSENT_VERSION,
+      },
+    };
+  }
+
+  function seedStatus(
+    tool: 'chatgpt' | 'claude-ai',
+    status: WebCaptureStatus,
+    agoMs = 0,
+    rootSessionId?: string,
+  ): void {
+    const db = openLocalDatabase(dataDir(home));
+    // Stamped NOW rather than at a fixed date: `captureStatus.latest` bounds
+    // its read to the last CAPTURE_STATUS_RECENCY_MS, so a literal calendar
+    // date ages out of the window once the wall clock passes it and every
+    // case below would then assert against an empty read.
+    const startedAt = new Date(Date.now() - agoMs).toISOString();
+    try {
+      // `root_session_id` groups a site's rows into documents, so a case about
+      // two tabs names it and every other case leaves it unset — which reads
+      // as the one document those cases mean. It is a self-FK, so the root row
+      // has to exist first; its `session` row carries no attributes and so no
+      // `source_tool`, which keeps it out of this read.
+      if (rootSessionId !== undefined) db.auditEvents.ensureSessionRoot(rootSessionId, startedAt);
+      db.auditEvents.insertAuditEvent({
+        id: `${tool}-status-${String(Math.random())}`,
+        eventType: 'capture_status',
+        startedAt,
+        ...(rootSessionId === undefined ? {} : { rootSessionId }),
+        attributes: toCaptureStatusAttributes(status, tool),
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  const BASE_STATUS: WebCaptureStatus = {
+    patched: true,
+    live: false,
+    blind: false,
+    sendsSeenDom: 0,
+    exchangesSeenNet: 0,
+    parseFailures: 0,
+    unparsedBodies: 0,
+    shapeMisses: [],
+    conversationEndpoints: 0,
+    closed: false,
+    enforcement: 'watching',
+  };
+
+  function run(): string {
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    runStatus(manifestDir, home);
+    return stdout.mock.calls.map((c) => String(c[0])).join('');
+  }
+
+  it('prints standby for a site whose build declares no endpoints', () => {
+    writeSettings(consentedSettings());
+    // The shape every machine reports today: the extension DID report, and it
+    // declared zero conversation endpoints (the traffic survey has not run).
+    seedStatus('chatgpt', BASE_STATUS);
+    const out = run();
+    expect(out).toContain('standby');
+    expect(out).toContain('declares no endpoints');
+    expect(out).not.toContain('web-capture-drift');
+  });
+
+  it('prints the drift rule and its remediation for a degraded site', () => {
+    writeSettings(consentedSettings());
+    seedStatus('claude-ai', {
+      ...BASE_STATUS,
+      conversationEndpoints: 1,
+      closed: false,
+      live: true,
+      shapeMisses: ['message.id'],
+    });
+    const out = run();
+    expect(out).toContain('degraded');
+    expect(out).toContain('web-capture-drift (medium)');
+    expect(out).toContain('chrome://extensions');
+  });
+
+  it('prints the working state for a site whose capture is working', () => {
+    // `active` used to be the one state whose headline was built rather than
+    // looked up, because it quoted the turn count. It no longer does: the
+    // stored count is only as current as the report that carried it, and the
+    // bridge relays on a transition rather than per turn, so the number went
+    // stale the moment a tab settled.
+    writeSettings(consentedSettings());
+    seedStatus('chatgpt', {
+      ...BASE_STATUS,
+      conversationEndpoints: 1,
+      closed: false,
+      live: true,
+      exchangesSeenNet: 1,
+      sendsSeenDom: 1,
+    });
+    const out = run();
+    expect(out).toContain('active');
+    expect(out).toContain('observed');
+    // No count: it would be the count as of the last report, not the session's.
+    expect(out).not.toContain('1 turn observed');
+    expect(out).not.toContain('web-capture-drift');
+  });
+
+  it('prints one tab-s drift while another tab is capturing fine', () => {
+    // Two documents on one site, which is an ordinary browser. The newest of
+    // them reporting healthy used to be the whole answer, so this surface said
+    // `active` while a tab was swallowing the user's messages.
+    writeSettings(consentedSettings());
+    seedStatus(
+      'claude-ai',
+      { ...BASE_STATUS, conversationEndpoints: 1, blind: true, sendsSeenDom: 3 },
+      60_000,
+      'doc-blind',
+    );
+    seedStatus(
+      'claude-ai',
+      { ...BASE_STATUS, conversationEndpoints: 1, live: true, exchangesSeenNet: 4 },
+      0,
+      'doc-healthy',
+    );
+    const out = run();
+    expect(out).toContain('blind');
+    expect(out).toContain('the network capture never saw');
+  });
+
+  it('prints the blind headline and its own remediation, not the degraded one', () => {
+    // The two drift states share a rule id and a severity, so the headline and
+    // the remediation are all that separate them on this surface.
+    writeSettings(consentedSettings());
+    seedStatus('claude-ai', {
+      ...BASE_STATUS,
+      conversationEndpoints: 1,
+      closed: false,
+      blind: true,
+      sendsSeenDom: 3,
+    });
+    const out = run();
+    expect(out).toContain('blind');
+    expect(out).toContain('the network capture never saw');
+    expect(out).toContain('reload the tab');
+    expect(out).not.toContain('no longer carry the fields');
+  });
+
+  it('a drifting site does not change the exit code', () => {
+    writeSettings(consentedSettings());
+    seedStatus('claude-ai', {
+      ...BASE_STATUS,
+      conversationEndpoints: 1,
+      closed: false,
+      live: true,
+      shapeMisses: ['message.id'],
+    });
+    run();
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('a manifest fault still sets the exit code, with the capture block present', () => {
+    // The positive control for the case above: an UNRELATED fault (the
+    // manifest, not the capture block) must still be reported.
+    writeFileSync(join(manifestDir, 'com.akasecurity.aka.json'), JSON.stringify({ type: 'stdio' }));
+    writeSettings(consentedSettings());
+    const out = run();
+    expect(out).toContain('installed (out of date)');
+    expect(out).toContain('network capture');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('prints the not-enabled block and no site lines without consent', () => {
+    writeSettings();
+    const out = run();
+    expect(out).toContain('network capture: not enabled');
+    expect(out).not.toContain('chatgpt');
+    expect(out).not.toContain('claude-ai');
+  });
+
+  it('gives every known site a line even with an empty store', () => {
+    writeSettings(consentedSettings());
+    const out = run();
+    expect(out).toContain('chatgpt');
+    expect(out).toContain('claude-ai');
+    expect((out.match(/unreported/g) ?? []).length).toBe(2);
+  });
+
+  it('prints unavailable for an unreadable store and leaves the exit code alone', () => {
+    // A --home with valid, CONSENTED settings (so the fault below is reached
+    // rather than short-circuited by the consent check) whose data directory
+    // cannot be created: a regular FILE sits where the store's parent
+    // directory needs to go.
+    const blockedHome = mkdtempSync(join(tmpdir(), 'aka-extension-status-blocked-'));
+    mkdirSync(settingsDir(blockedHome), { recursive: true });
+    writeFileSync(
+      join(settingsDir(blockedHome), 'settings.json'),
+      JSON.stringify({
+        specVersion: 3,
+        runMode: 'standalone',
+        policy: 'redact',
+        historicalAccess: 'session-only',
+        dataSharesInPlace: true,
+        vaultKeyCustody: 'file',
+        vaultInlineReveal: 'masked',
+        redactFallback: 'warn',
+        bodyRetention: { enabled: false, retainDays: 30 },
+        webChatCapture: consentedSettings(),
+      }),
+    );
+    writeFileSync(join(blockedHome, 'data'), 'not a directory');
+    try {
+      const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+      runStatus(manifestDir, blockedHome);
+      const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+      expect(out).toContain('network capture: unavailable');
+      expect(out).toContain('could not be read');
+      expect(process.exitCode).toBe(0);
+    } finally {
+      rmSync(blockedHome, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves the existing host-manifest output unchanged when home is omitted', () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    runStatus(manifestDir);
+    const out = stdout.mock.calls.map((c) => String(c[0])).join('');
+    expect(out).toBe(
+      'native-messaging host: not installed\n' +
+        `  manifest: ${join(manifestDir, 'com.akasecurity.aka.json')}\n` +
+        '  run `aka extension install` to set it up\n',
+    );
+    expect(out).not.toContain('network capture');
   });
 });

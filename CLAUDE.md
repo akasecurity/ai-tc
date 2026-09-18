@@ -326,12 +326,12 @@ Sigstore.
 **Four gates enforce this, and they cover different things.** Losing track of which is
 which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
 
-| Gate                                          | Catches                                                                                                                                                    | Cannot see                                                                                                                                                                                                                                                                                                         |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source                                                                                                                | A transitive dependency, a non-literal `import()`; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above)                                                                                        |
-| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time, on this thread and in any **worker** spawned from it                                                       | A child process — it has its own copy of `node:net` — and therefore any worker that child starts                                                                                                                                                                                                                   |
-| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included                                                                                                        | A path the suite never executes; it is Linux-only                                                                                                                                                                                                                                                                  |
-| The `Packaged artifact` CI job (`ci.yml`)     | A PUBLISHED-tarball path that DEPENDS on reaching the network — while `npm ci` installs it, and while `aka init`, `aka scan` and the bundled dashboard run | A call the artifact makes and SWALLOWS: a namespace makes the connect fail, and this product fails open by design, so only a path that needs the answer reports here. Also a packaged path those commands never reach; the three PLUGIN tarballs and the extension, which nothing packs here; and it is Linux-only |
+| Gate                                          | Catches                                                                                                                                                    | Cannot see                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The ESLint ban (`@akasecurity/eslint-config`) | A network primitive **written** into source                                                                                                                | A transitive dependency, a non-literal `import()`; a network global reached through a parameter, an alias or a structural type — the ban matches one only bare or hung off `globalThis`/`window`/`self`/`global`, so `win.fetch` on a `Window` parameter passes with no opt-out; a file no lint pass targets; **itself** — an inline `eslint-disable` takes the ban off the line below it, which is why the directives are inventoried separately (above) |
+| `test/setup/no-network.ts` (every vitest run) | A non-loopback connect **called** at test time, on this thread and in any **worker** spawned from it                                                       | A child process — it has its own copy of `node:net` — and therefore any worker that child starts                                                                                                                                                                                                                                                                                                                                                          |
+| The `No-network` CI job (`ci.yml`)            | Anything in the process tree, subprocesses included                                                                                                        | A path the suite never executes; it is Linux-only                                                                                                                                                                                                                                                                                                                                                                                                         |
+| The `Packaged artifact` CI job (`ci.yml`)     | A PUBLISHED-tarball path that DEPENDS on reaching the network — while `npm ci` installs it, and while `aka init`, `aka scan` and the bundled dashboard run | A call the artifact makes and SWALLOWS: a namespace makes the connect fail, and this product fails open by design, so only a path that needs the answer reports here. Also a packaged path those commands never reach; the three PLUGIN tarballs and the extension, which nothing packs here; and it is Linux-only                                                                                                                                        |
 
 The first one is only as wide as the files something points ESLint at, which is why
 coverage is derived and guarded rather than remembered — every package's source dirs and
@@ -493,8 +493,12 @@ properties are load-bearing:
   exemption is the BLAST RADIUS rather than the duration — nothing on the hook path
   reads that file, so a stale value costs a wrong line on `aka status` and
   /aka:health, pull surfaces somebody is reading because they are already debugging.
-  A fourth writer does not inherit that by being on this list, and a file any
-  enforcement path READS would not qualify for it at all. The first MINT
+  `plugin-sdk`'s `hook-fail-opens.ts` (`data/hook-fail-opens.json`) is a fourth, and it
+  holds the same exemption on its own account rather than by being listed here: it is
+  written only after a hook has already failed open, and nothing but `aka status` renders
+  it, as a count that already says "at least". A fifth writer does not inherit that by
+  being on this list, and a file any enforcement path READS would not qualify for it at
+  all. The first MINT
   is no longer one of them, and it was not fixed with a lock: `createKeyFile` publishes through
   `createOwnerOnlyFileSync`, which links an already-complete tmp into place, so exactly one
   caller wins and every loser reads the file back and ADOPTS the winner's key. That works only
@@ -510,7 +514,20 @@ properties are load-bearing:
   plus the locked set — and writes it never. Making AKA a writer of it would be the third
   `settings.json`-class writer this section exists to prevent, on a file the lock does not cover.
   Three consequences. A pinned VALUE and a LOCK are separable: a value with no lock is a default
-  the user may still change, a lock with no value freezes whatever they last chose. A locked field
+  the user may still change, a lock with no value freezes whatever they last chose — with one
+  exception the writer cannot see: a pinned CONNECTION (`runMode` / `controlPlane`) is written
+  through and then overlaid straight back on the next read, so both surfaces that change it —
+  `aka attach` / `aka detach` and the dashboard's attach and detach Settings actions — refuse to
+  move away from it ahead of every side effect, deciding against the effective settings rather
+  than the lock list. That decision is ONE copy, `packages/persistence/src/managed-connection.ts`,
+  worded by `connectionRefusalMessage` in `@akasecurity/schema`, and the Settings page withholds
+  the controls it would refuse from the same call. What an attach under such a pin leaves in the
+  user's file is judged one half at a time: an echo of the pinned mode is stripped like any other
+  echo, but the descriptor the attach writes is kept even where it matches the pin, because it
+  records what the pin cannot — when this machine enrolled, and what the user called the
+  deployment. A descriptor without the mode is not an attachment, so once the pin is gone the
+  machine is in the mode the user last chose, holding that record — never attached on the
+  strength of an echo. A locked field
   is refused inside the lock (`ManagedFieldError`), by THROWING rather than dropping the key and
   writing the rest — a half-applied save reports success while losing the answer the user cared
   about, which is this section's whole failure mode. And a damaged managed file leaves the machine
@@ -690,7 +707,13 @@ The store-reading packages read the local SQLite store directly through
 Keep these package boundaries intact — a forbidden import across a package wall is a defect.
 
 ```
-@akasecurity/schema        → zod (core Zod contracts + the SQLite local-store & rule-registry schemas, defined with Drizzle)
+@akasecurity/schema        → zod (core Zod contracts + the SQLite local-store & rule-registry schemas,
+                     defined with Drizzle; also the endpoint safety rule every
+                     forwarder and client shares — isSafeEndpoint /
+                     unsafeEndpointReason / originOnly / LOOPBACK_HOSTS — the
+                     ControlPlaneFailure type, and the raise-only enforcement
+                     clamp and its category anchor — mergeRaiseOnly +
+                     ruleCategoryMap)
 @akasecurity/persistence   → node:sqlite, @akasecurity/schema
                      (SQLite adapter + read/view ports, plus the shared ~/.aka
                      layout/settings/fingerprint file I/O, plus the egress wire
@@ -737,10 +760,24 @@ cli               → @akasecurity/schema, persistence, local-ops, detections,
 plugins/claude-code → @akasecurity/plugin-runtime, plugin-sdk
 plugins/codex        → @akasecurity/plugin-runtime, plugin-sdk
 plugins/antigravity  → @akasecurity/plugin-runtime, plugin-sdk
+plugins/copilot      → @akasecurity/plugin-runtime, plugin-sdk (GitHub Copilot: the
+                     Copilot CLI and VS Code agent mode, and the cloud coding
+                     agent, which speaks the CLI's protocol. ONE package, TWO
+                     payload dialects — the CLI's flat camelCase envelope and VS
+                     Code's flat snake_case one — sniffed per payload in
+                     src/hooks/dialect.ts and carried as a parameter from there
+                     down, so the two scannable-field tables are never merged)
 plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the native-messaging
                      host only — Node side); the browser-side content script bundles just
                      `@akasecurity/plugin-sdk/browser` (mask.ts's Node-API-free slice) and
-                     must never import anything Node-only
+                     must never import anything Node-only. The MAIN-world tap
+                     (`src/tap.ts`) runs with the page's own authority and REASSIGNS the
+                     page's `fetch` and `XMLHttpRequest.prototype.open`/`send` to observe
+                     chat traffic. It originates no network request and imports nothing,
+                     and it passes §4's network ban with no opt-out because it reaches
+                     those globals through its `win` parameter and a structural type — so
+                     an audit of what touches `fetch` has to include it by name.
+                     `test/tap-bundle.test.ts` holds the built bundle to that shape.
 @akasecurity/plugin-runtime → @akasecurity/plugin-sdk, persistence, schema, remote
                      (the attached-mode gateway under src/attached/ — inert on a
                      machine that has not attached, which is why `remote` is a
@@ -799,7 +836,7 @@ plugins/browser-extension → @akasecurity/plugin-runtime, plugin-sdk (the nativ
                      harness plugins share this without forking it.)
 ```
 
-All three CLI plugin packages bundle the SAME `plugin-runtime`/`plugin-sdk` core and differ
+All four CLI plugin packages bundle the SAME `plugin-runtime`/`plugin-sdk` core and differ
 only in their own thin hook-entrypoint layer (stdin/stdout glue matched to each host's hook
 contract) plus the harness-specific bits `plugin-sdk` deliberately keeps file-scoped (provider
 resolution, tool-name → scannable-field tables).
@@ -825,6 +862,39 @@ changes. The gaps that exist today:
   `PostToolUse` receives **no tool
   result at all**, so there is no live response scanning and no `tool-response.ts` /
   `scan-response.ts` counterpart in that package.
+- **GitHub Copilot is TWO hosts behind one package, and what fails closed is the EXIT CODE.**
+  On the **Copilot CLI** (and the cloud coding agent, which speaks its protocol) `preToolUse`
+  is the one fail-closed event, and the hooks reference is specific about the channel: a
+  hook that exits non-zero other than 2 **denies the tool call**, exit 2 denies and merges
+  any stdout JSON into that deny, a timed-out one allows, and every other event fails open.
+  **Empty stdout is in none of those lists.** That same reference's `preToolUse` decision
+  table reads "Empty output uses default behavior", which hands the call to the host's own
+  permission flow — so silence here is §1's fail-open unchanged, and the adapter writes
+  **nothing on every path that reaches no verdict**. It is NOT unmeasured; the earlier
+  reading that it might be is retracted, and `plugins/copilot/test/fixtures/cli/README.md`
+  records under "Settled by the vendor reference" which questions the docs answer and which a
+  recording still owes.
+  **An explicit allow is a verdict, not a way of saying nothing**, so emitting one per clean
+  call would pre-approve exactly the calls the user's own Copilot settings would have
+  prompted about — a control plane widening the permissions it was installed to narrow.
+  `CliPermissionDecisionOutput` therefore carries `'deny'` alone, which makes a CLI allow a
+  **compile error**; VS Code's shape keeps `'allow'` because that host carries `updatedInput`
+  only alongside one. What the adapter guarantees instead is that no path exits non-zero and
+  none exits 2. On **VS Code agent mode** exit 2 blocks and everything else — any other
+  non-zero exit, invalid JSON, a timeout — is a non-blocking warning, so that host fails
+  open; it also **parses matchers and ignores them**, so the hook is spawned for every tool
+  call and the unknown-tool exit is the common path rather than the rare one.
+  **The two dialects are payload FORMATS, not hosts**, and the CLI speaks both: the reference
+  selects the format by the event name's casing, so a manifest registering `preToolUse` and
+  `PreToolUse` together spawns the hook twice per call — the second time with a payload whose
+  `tool_name` is the Claude spelling (`Bash`, not `bash`) that the snake_case table has no row
+  for. `plugins/copilot/hooks.json` therefore registers the camelCase event **alone**, and a
+  VS Code entry belongs in the file that host itself reads.
+  The VS Code half is built to the published contract and **confirmed against no live
+  install**: its fixtures live in a separate `test/fixtures/vscode-provisional/` directory,
+  every capability it claims is marked unverified, and
+  `plugins/copilot/test/fixture-provenance.test.ts` is what keeps a doc-derived specimen from
+  being filed among the recordings.
 - **Antigravity also fails CLOSED**, which inverts this repo's §1 rule at the boundary: a
   hook that exits non-zero, is killed on timeout, or prints nothing is read as a `deny` on
   every tool call. "Fail-open" there therefore means _always printing an explicit_
@@ -991,10 +1061,11 @@ anything, so it is never a substitute for passing an instant.
 
 See `skills/write-detection-rule/SKILL.md`. A rule PR carrying fewer than 2 positive or
 2 negative fixtures is rejected by CI — `packages/detections/test/engine.test.ts` asserts
-the bar per rule, and `packages/detections/test/posture/config-posture.test.ts` asserts it
-for posture rules. Both read it from `packages/detections/test/helpers/fixture-bar.ts`, so
-the number and its message live in one place; the count is of DISTINCT cases, because a
-repeated fixture exercises nothing the first one did not.
+the bar per rule, and each posture suite under `packages/detections/test/posture/` asserts
+it for its own rules. Every one of them reads it from
+`packages/detections/test/helpers/fixture-bar.ts`, so the number and its message live in
+one place; the count is of DISTINCT cases, because a repeated fixture exercises nothing the
+first one did not.
 
 Any change to the `installed_packs` / `available_packs` **write semantics** must extend the
 legacy-writers suite (`packages/persistence/test/repositories/legacy-writers.test.ts`) — it
@@ -1008,6 +1079,8 @@ web-ui/               the OSS Next.js dashboard (Server Components read ~/.aka; 
 plugins/claude-code/  the Claude Code plugin (hooks + commands; self-contained npm bundle)
 plugins/codex/        the Codex CLI plugin (hooks + skills; self-contained npm bundle)
 plugins/antigravity/  the Antigravity plugin (hooks + skills; self-contained npm bundle)
+plugins/copilot/      the GitHub Copilot plugin — the Copilot CLI, VS Code agent mode and
+                      the cloud coding agent, one package over two payload dialects
 plugins/browser-extension/  the Chrome extension for ChatGPT + Claude.ai web chat (MV3
                       content scripts + a native-messaging host; private — bundled into
                       the CLI by `bundle:extension`, installed via `aka extension install`)
@@ -1266,6 +1339,13 @@ changes the shipped artifact **even when the app's own `src/` is untouched**:
 - **`cli`** bundles the same `@akasecurity/*` packages **and** ships the OSS web-ui
   (`web-ui` is `external` to the CLI JS but copied in by `prepack`'s `bundle:web-ui` and
   spawned as a separate Next server). So a web-ui change — or any bundled-package change — changes the CLI.
+- **`plugins/copilot` bundles the same core and is NOT one of the four.** It builds
+  `scripts/*.js` through the same `tsup` config and inlines the same `@akasecurity/*`
+  packages, but it is still `"private": true` and publishes nowhere, so it moves on no
+  version line and belongs in no bump above. That sentence stops being true the moment
+  `private` is unset — which is also what moves `required-checks.test.js`'s temporary
+  Windows pin and the `ci.yml` prose that justifies it, so all three change together or
+  `main` reds on a diff that looks innocent.
 
 When a change touches the web-ui or any bundled package and the user wants to publish:
 
@@ -1722,19 +1802,21 @@ magnitude clear of the measurement: a ratio is blind to a constant-factor regres
 scaling one. They catch different defects; neither substitutes for the other.
 
 The numbers, measured on arm64 macOS / Node 24 against corpora from
-`src/test-fixtures/generate.ts`:
+`src/test-fixtures/generate.ts`. The two ratio rows are ranges over six interleaved runs of
+the suite itself (below), three on a machine carrying a video call and an antivirus scan and
+three with 24 CPU burners added on its 8 cores:
 
-| Property                                    | Measured                           | Gate                   |
-| ------------------------------------------- | ---------------------------------- | ---------------------- |
-| Store growth, 5k → 10k                      | **1,048.6 B/event** marginal       | ±15% band ✅           |
-| `recordCapture` 2k → 20k                    | ratio **1.02** (fastest of 200)    | ratio < 3 ✅           |
-| `openLocalDatabase` 2k → 20k                | ratio **0.99** (fastest of 20)     | ratio < 3 ✅           |
-| `recordCapture` at 1M rows                  | 0.076 ms median, 0.116 p95 (n=200) | backstop ≤ 1,000 ms ✅ |
-| `openLocalDatabase` at 1M rows              | 0.55 ms median, 0.72 p95 (n=20)    | backstop ≤ 1,000 ms ✅ |
-| `/security` (8 aggregations) at 50k events  | **159 ms** (was 11,197)            | 3 flatness ratios ✅   |
-| `/security` (8 aggregations) at 150k events | **350 ms** (was 125,987)           | 3 flatness ratios ✅   |
-| `/security` (8 aggregations) at 300k events | **729 ms**                         | 3 flatness ratios ✅   |
-| `/security` at 1M events                    | **~2.5–3 s** extrapolated          | ungated, unmeasured ❌ |
+| Property                                    | Measured                             | Gate                   |
+| ------------------------------------------- | ------------------------------------ | ---------------------- |
+| Store growth, 5k → 10k                      | **1,048.6 B/event** marginal         | ±15% band ✅           |
+| `recordCapture` 2k → 20k                    | ratio **1.02–1.08** (fastest of 200) | ratio < 3 ✅           |
+| `openLocalDatabase` 2k → 20k                | ratio **0.72–1.03** (fastest of 20)  | ratio < 3 ✅           |
+| `recordCapture` at 1M rows                  | 0.076 ms median, 0.116 p95 (n=200)   | backstop ≤ 1,000 ms ✅ |
+| `openLocalDatabase` at 1M rows              | 0.55 ms median, 0.72 p95 (n=20)      | backstop ≤ 1,000 ms ✅ |
+| `/security` (8 aggregations) at 50k events  | **159 ms** (was 11,197)              | 3 flatness ratios ✅   |
+| `/security` (8 aggregations) at 150k events | **350 ms** (was 125,987)             | 3 flatness ratios ✅   |
+| `/security` (8 aggregations) at 300k events | **729 ms**                           | 3 flatness ratios ✅   |
+| `/security` at 1M events                    | **~2.5–3 s** extrapolated            | ungated, unmeasured ❌ |
 
 **Both pairs came down from a decade higher, and the reason is worth carrying.** They
 were 5k → 50k and 10k → 20k, and at those sizes the two files were the largest single
@@ -1768,8 +1850,8 @@ size-dependent term to reach 2/7 of the baseline — ~15 us against `recordCaptu
 (measured 53.4 us at 2k and 53.0 us at 5k, i.e. flat in the corpus size),
 i.e. a per-row slope of ~7.6 ns. Adding a `SELECT COUNT(*)` to that path is genuinely
 linear and does **not** redden it: SQLite answers the count from a covering index. The
-same scan with the index defeated (`WHERE LENGTH(id) = 999`, ~40 ns/row) reads 4.739 and
-fails. So a ratio gate catches a linear cost that changes what the operation costs, not
+same scan with the index defeated (`WHERE LENGTH(id) = 999`, ~40 ns/row) reads 4.06–4.18
+and fails. So a ratio gate catches a linear cost that changes what the operation costs, not
 one inside its noise floor — and the floor is proportional to the SMALL size, so cutting
 the pair by 2.5x raised it by 2.5x.
 
@@ -1789,8 +1871,9 @@ the mechanism and `security-page-scale.test.ts` pins the consequence, as a ratio
 10x store step with `severitySummary` as the growth control. Neither implies the other.
 
 `recentFindings`, `recentlyResolved` and `mttrTrend` are the three now flat in store size —
-ratios **1.10**, **1.26** and **1.32** over 2k → 20k, against a ceiling of 3 and a control
-reading 18.30. What each needed differs, and none of it was tuning:
+ratios **1.05–1.18**, **1.22–1.29** and **1.26–1.32** over 2k → 20k across the same six
+interleaved runs as the table above, against a ceiling of 3 and a control reading
+11.87–12.86. What each needed differs, and none of it was tuning:
 
 - **`recentlyResolved` was QUADRATIC**, O(code_change events x resolved keys), because the
   join key was unreachable: `f` was reached FROM `latest`, so `latest` got probed on
@@ -1971,10 +2054,11 @@ emptied field without substituting a horizon nobody chose.
 
 **`wal_autocheckpoint` is not set, and that does NOT mean the WAL is unbounded.**
 `openWithPragmas` leaves it alone, so SQLite's own default of 1000 pages applies: at the
-store's 4 KiB page size the log settles at about 4.2 MB and stays there — peak 4,198,312 B
-measured over 20,000 committed captures. The unbounded case is a long TRANSACTION — a
-checkpoint cannot run inside one — where the same 20,000 writes peak at 12,219,952 B, and
-the fixture generator's 1M-event transaction grows the log by its whole page footprint,
+store's 4 KiB page size the log settles at about 4.2 MB and stays there over 20,000
+committed captures. The unbounded case is a long TRANSACTION — a checkpoint cannot run
+inside one — where the same writes grow the log nearly four times as far (both figures sit
+beside `MEASURED_SETTLED_WAL_BYTES` in `store-growth.test.ts`, and are not restated here),
+and the fixture generator's 1M-event transaction grows the log by its whole page footprint,
 which is hundreds of megabytes. Nothing on the capture path does that (every
 `recordCapture` commits, and every hook is its own process), but a batch importer would.
 Do not "fix" the pragma without re-reading `store-growth.test.ts`.
@@ -1995,8 +2079,9 @@ product code in it at all.
 So a file that seeds two sizes and divides one measurement by the other **checkpoints after
 seeding** (`PRAGMA wal_checkpoint(TRUNCATE)` through `corpusConnection`), which leaves both
 stores at the steady state — measured 4,148,872 and 4,144,752 B, i.e. equal — so the cost
-cancels in the ratio the way every other shared cost does. `scale-budgets.test.ts` and
-`security-page-scale.test.ts` both do this. It equalizes the LOG and not the DATABASE (2.2
+cancels in the ratio the way every other shared cost does. All four two-size suites here —
+`scale-budgets`, `security-page-scale`, `findings-page-scale` and `activity-page-scale` —
+do this. It equalizes the LOG and not the DATABASE (2.2
 MB against 17.0 MB, still 7.7x apart), so a size-dependent cost in the thing under test
 survives it: verified by mutation, an index-defeated per-open scan fails at 4.14 with the
 checkpoint and 4.08 without. `store-growth.test.ts` is the deliberate exception — the
@@ -2006,13 +2091,46 @@ The failure this guards is quiet in the wrong direction: it reddens a tree whose
 cannot explain it, and the obvious-looking fix is to widen `FLATNESS_CEILING`. Widening it
 answers a state mismatch by weakening the one number that separates flat from linear.
 
-That WAL case is **skipped on Windows, on cost rather than on behaviour.** Demonstrating
-the bound needs 20,000 SEPARATE commits — a checkpoint cannot run inside a transaction, so
-batching them removes the property under test — and each one is an fsync on the platform
-that charges most for it; it overran its own 180 s setup ceiling there and starved
-neighbouring suites on the shared leg while doing it. What it asserts is SQLite's page
-arithmetic, which does not vary by filesystem, so the other two legs cover it. Lowering
-the event count instead is the worse trade: the count is what puts a log that never
+**The same file also samples the two sizes INTERLEAVED, and that is the other half of the
+same contract.** A checkpoint puts both stores in one STATE; it says nothing about WHEN
+each is timed. The four suites used to time each store straight after seeding it, which
+put the large store's samples several seconds of CI seeding after the small store's — and
+a fastest-of-n survives a slowdown that reaches SOME of a side's samples, never one that
+lasts through all of them on one side only. That is how `activity-page-scale.test.ts`
+reddened a Linux CI leg at a ratio of **3.035** (1.974 ms against 5.989 ms) on a change
+whose diff could not reach this package, while the same run's two other full-suite legs
+passed it. So both stores are seeded first, and every probe is then timed against the two
+in alternation through `test/helpers/interleaved-samples.ts`: one probe per block, the
+leading store alternating per iteration and per block, and the microtask queue drained
+between blocks. Its own suite pins each of those without a clock. **Do not hand-roll the
+loop in a new two-size suite** — the four copies it replaced had each got block entry
+wrong in the same way, and a copy's defects are visible to no assertion but its own.
+
+**That WAL case runs its fixture connection at `synchronous = OFF`, which is NOT the
+product's configuration — and the quantity it asserts does not depend on the difference.**
+Demonstrating the bound needs 20,000 SEPARATE commits — a checkpoint cannot run inside a
+transaction, so batching them removes the property under test — and `openWithPragmas`
+leaves `synchronous` at node:sqlite's compiled `SQLITE_DEFAULT_WAL_SYNCHRONOUS=2`, where
+every one of those commits fsyncs the log. That made the setup cost the runner's fsync
+latency times twenty thousand, and it overran its 180 s hook ceiling on a commit whose diff
+could not reach it. At `OFF` the loop makes no fsync at all; `NORMAL` is not enough, because
+it still syncs at every checkpoint. Durability moves the cost and not the log — the
+autocheckpoint counts frames, and a frame is the same bytes synced or not — so both
+measurements the ceiling sits between read identically under `FULL` and `OFF`. Those
+measurements live beside `MEASURED_SETTLED_WAL_BYTES`, and the fsync counts and the
+injected-latency reproduction in the fixture's own comment, and are deliberately not
+restated here. The case reads back every pragma the result depends on — `synchronous`,
+which SQLite silently resolves to `NORMAL` when handed a value it does not recognise, and
+the `wal_autocheckpoint` and `page_size` the peak is a product of — so each is held by
+assertion rather than by comment. A slow setup there is never answered by lowering the
+autocheckpoint, cutting the event count or raising the ceiling.
+
+It is still **skipped on Windows, on cost rather than on behaviour.** It overran its own
+180 s setup ceiling on that leg while every commit was an fsync, and starved neighbouring
+suites on the shared leg while doing it; what the loop costs there without those fsyncs has
+not been measured, so the skip stands until it is. What it asserts is SQLite's page
+arithmetic, which does not vary by filesystem, so the other two legs cover it. Lowering the
+event count instead is the worse trade: the count is what puts a log that never
 checkpointed several times over the ceiling, so cutting it weakens the assertion on every
 platform to buy coverage on one.
 
@@ -2663,11 +2781,33 @@ prefix. `expectNoEchoOf` is the **required form for every raw-value absence asse
 newly written or newly touched** in a package carrying the helper — `cli/test/helpers/no-echo.ts`,
 `plugins/claude-code/test/helpers/no-echo.ts`, `plugins/codex/test/helpers/no-echo.ts`,
 `plugins/antigravity/test/helpers/no-echo.ts`, `web-ui/test/helpers/no-echo.ts`,
-`packages/setup-wizard/test/helpers/no-echo.ts` and
-`packages/persistence/test/helpers/no-echo.ts`. A plain
+`packages/setup-wizard/test/helpers/no-echo.ts`,
+`packages/persistence/test/helpers/no-echo.ts` and
+`packages/remote/test/helpers/no-echo.ts`. A plain
 `not.toContain(rawValue)` in a new or edited assertion is a defect, not a style choice, and
 editing a file means its in-class assertions come along rather than being left beside converted
 ones.
+
+**The same rule holds in PRODUCT code, and one module is where it is enforced.**
+`packages/plugin-sdk/src/raw-egress.ts` is the boundary every raw value crosses on its way out
+of the triage path — its callers route a model's `reasoning` and `notes`, a downstream error
+message bound for the parent command's stderr, the serialized plan document, a masked context
+window and a file path through it. `assertRawFree` and `maskContextSlice` reject **run by run**
+against `RAW_RUN_LEN`, for the reason the paragraph above gives: `text.includes(raw)` matches
+only if the ENTIRE value survives, so a truncated echo passes it, and truncating is exactly what
+a model does to a long token it quotes back. A partial echo there does not merely print —
+`planTriageWriteback` writes `reasoning` into a suppression grant's `justification`, so it lands
+at rest. `RAW_RUN_LEN` is the same number the `no-echo` helpers use, but they sit across a
+package wall and are INDEPENDENT copies: neither pins the other, and each is held by its own
+suite. The product side's pin is DERIVED (it measures the shortest run the boundary really
+refuses, and carries a calibration case so a constant cannot stand in for a measurement), so it
+goes red on the first character of drift in either direction.
+
+`safeMaskedMatch` is the deliberate exception and must stay whole-value. It verifies a preview
+built to REVEAL a fragment on purpose, so a surviving run is the feature rather than the leak:
+`maskMatch`'s email branch discloses the whole domain, which is a run far past the window, and
+tightening it in step with its two siblings would collapse every email preview to `'***'`. The
+reason is stated at the function and pinned by a case that fails if somebody tightens it.
 
 **Older assertions are a backlog, not a clean tree.** `plugins/claude-code` still carries around
 twenty whole-value raw-value assertions in files this convention has not reached —
@@ -2683,7 +2823,7 @@ purpose; and the deliberate **control** assertions inside each `no-echo.test.ts`
 to show the whole-value form would have passed.
 
 **Share it inside a package, copy it across a wall — and a copy takes the suite with it.**
-All seven packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
+All eight packages import a `test/helpers/no-echo.ts` with its own tests in `no-echo.test.ts`:
 each case drives the helper with an output that leaks a run, and asserts both that the helper
 refuses it **and** that the whole-value form it replaced would have passed. That second half is
 what shows the assertion is _stronger_ rather than merely also-red, and it is why raising the
@@ -2701,11 +2841,13 @@ constructed — true by construction, and it stays true however `maskMatch` chan
 (`@akasecurity/plugin-sdk` re-exports it, so the plugin crosses no package wall), which is what
 makes widening its generic branch go red where the reason is written down.
 
-`packages/persistence` is the one copy with **no** masked-preview case, and it is not an
-omission to fix: that package has no masking surface, and `@akasecurity/detections` — which owns
-`maskMatch` — depends ON it, so importing it even as a dev dependency would make a cycle out of
-a test fixture. Its fixture is a generated base64 vault key instead, which is what that package
-actually has to keep out of an error.
+`packages/persistence` and `packages/remote` are the two copies with **no** masked-preview
+case, and neither is an omission to fix: neither package has a masking surface. For
+`persistence` there is a second reason — `@akasecurity/detections`, which owns `maskMatch`,
+depends ON it, so importing it even as a dev dependency would make a cycle out of a test
+fixture. Its fixture is a generated base64 vault key instead, which is what that package
+actually has to keep out of an error; `remote`'s is the userinfo of a refused endpoint, which
+is what that package has to keep out of a `RemoteEndpointRefused` message.
 
 **Capture the error outside the `catch`.** This shape passes while the function under test
 stops throwing entirely:

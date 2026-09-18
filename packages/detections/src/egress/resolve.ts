@@ -53,7 +53,11 @@ export function resolveEgress(
 // A URL/IP hit's host decides kind/trust/name/category via the registry.
 // Provider hits take the registry's most-sensitive default data class and
 // carry no network shape; every other kind carries the observed port with no
-// geo/PTR enrichment (this pass performs no DNS or geo lookup).
+// geo/PTR enrichment (this pass performs no DNS or geo lookup). A `REF` hit —
+// no method evidence of its own — resolves like any other, documentation
+// hosts included: the extractor also reports `REF` for a real request whose
+// URL is held in a variable, a `new URL()` or a client's base URL, where the
+// verb sits in another statement.
 function resolveEndpointHit(
   file: FileEgressHits,
   endpoint: RawEndpointHit,
@@ -68,6 +72,7 @@ function resolveEndpointHit(
     kind: resolution.kind,
     name: resolution.name,
     category: resolution.category,
+    providerId: resolution.providerId,
     trust: resolution.trust,
     network: isProvider ? null : { port: endpoint.port, geo: null, ptr: null },
     method: endpoint.method,
@@ -97,6 +102,7 @@ function resolveSdkHit(file: FileEgressHits, sdkHit: ManifestSdkHit): ResolvedEg
     kind: 'provider',
     name: entry.name,
     category: entry.category,
+    providerId: entry.id,
     trust: 'recognized',
     network: null,
     method: 'SDK',

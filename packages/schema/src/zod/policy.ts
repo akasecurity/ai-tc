@@ -573,6 +573,269 @@ export const DEFAULT_ACTIONS: Record<DetectionCategory, ActionTaken> = Object.fr
   DetectionCategorySchema.options.map((c) => [c, builtinPolicyToAction(severityFloorPolicy(c))]),
 ) as Record<DetectionCategory, ActionTaken>;
 
+// ─── Merging a cached tenant bundle over the local one, raise-only ───────────
+
+// ruleId -> category for every rule the caller can resolve. A policy whose
+// category can't be resolved this way is left unclamped rather than guessed
+// at, so every source that can name a rule id has to be represented here — a
+// rule missing from this map has NO floor at all.
+//
+// THREE TIERS, WEAKEST TRUST FIRST, because later writes win an id collision:
+//
+//   1. `wireRules` — the untrusted organization bundle. Seeded first so it
+//      still supplies a floor for marketplace rule ids nothing else has heard
+//      of, while never overriding a tier below it.
+//   2. `localRules` — the device's own installed packs. More trustworthy than
+//      the wire (nothing remote wrote them) and less than compiled-in. Without
+//      them a locally installed marketplace rule resolves to no category, so a
+//      remote `{ ruleId, action: 'allow' }` targeting it passes UNCLAMPED.
+//   3. `compiledRules` — compiled into the caller's own build, so it anchors
+//      the clamp whatever anyone else claims. Taken as a plain array rather
+//      than read from a registry here, because this package must not depend on
+//      whatever holds the compiled-in packs; the caller (e.g. `bundledDetections()`
+//      in @akasecurity/plugin-sdk, flattened to its rules) supplies them.
+//      REQUIRED, unlike the two tiers above it: schema cannot reach the
+//      compiled-in inventory itself, so the caller owns this anchor, and a
+//      caller that forgot it is a caller with no floor at all rather than one
+//      merely missing the marketplace rules the wire and local tiers cover —
+//      `undefined` stops compiling instead of silently degrading to `[]`. The
+//      one production caller is `@akasecurity/plugin-runtime`'s attached
+//      gateway, which passes every bundled rule flattened.
+//
+// Tier 1 losing to tiers 2 and 3 is the load-bearing part: the wire rules come
+// from the SAME unsigned bundle this clamp exists to defend against, so a
+// tampered bundle must not be able to redeclare a known rule's category to pick
+// its own floor — e.g. moving `secrets/aws-access-key` from `secret` to
+// `code_context` (floor warn -> log) and pairing that with a ruleId-targeted
+// `allow` policy to slip a real secret past at only 'log'.
+//
+// The three arrays are separate PARAMETERS rather than one pre-concatenated
+// list on purpose: the order is a security property, and a single argument
+// would let a call site pass `[...local, ...wire, ...compiled]` — which reads
+// just as naturally and silently inverts the trust order above.
+export function ruleCategoryMap(
+  wireRules: PolicyBundle['rules'],
+  localRules: PolicyBundle['rules'],
+  compiledRules: readonly Rule[],
+): Map<string, DetectionCategory> {
+  const map = new Map<string, DetectionCategory>();
+  for (const rule of wireRules ?? []) map.set(rule.id, rule.category);
+  for (const rule of localRules ?? []) map.set(rule.id, rule.category);
+  for (const rule of compiledRules) map.set(rule.id, rule.category);
+  return map;
+}
+
+/**
+ * The key a policy resolves under, matching how the runtime indexes them.
+ *
+ * The runtime keeps ruleId-targeted and category-targeted policies in two
+ * SEPARATE indexes and consults the rule one first, so the two namespaces must
+ * stay distinct here too — collapsing them would let a category policy and a
+ * ruleId policy contend for one slot and silently drop one.
+ */
+function policyKey(policy: Policy): string {
+  return 'ruleId' in policy.target
+    ? `rule:${policy.target.ruleId}`
+    : `category:${policy.target.category}`;
+}
+
+/** The compiled-in floor for a policy's resolved category, or null if unknown. */
+function floorFor(
+  policy: Policy,
+  categoryByRuleId: Map<string, DetectionCategory>,
+): ActionTaken | null {
+  const category =
+    'category' in policy.target
+      ? policy.target.category
+      : categoryByRuleId.get(policy.target.ruleId);
+  return category === undefined ? null : DEFAULT_ACTIONS[category];
+}
+
+/**
+ * The stronger of two actions; either may be absent.
+ *
+ * A thin null-tolerant wrapper over `strongerAction`, and the absence is the
+ * whole reason it exists: "no floor at all" and "the weakest floor" are
+ * different answers here — an unresolvable rule id gets the first — and
+ * spelling the first as `'allow'` would clamp against a floor nobody set.
+ */
+function strongerOf(a: ActionTaken | null, b: ActionTaken | null): ActionTaken | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return strongerAction(a, b);
+}
+
+/**
+ * Merge the cached TENANT bundle's policies over the LOCAL bundle's, raise-only.
+ *
+ * The cached bundle is read from disk with no signature or provenance check,
+ * so `remotePolicies` is HOSTILE input: a compromised control plane or a
+ * tampered cache file must not be able to use a policy to REDUCE enforcement,
+ * either below the compiled-in default for its category or below what the
+ * user's own local bundle already enforces. Raising is unaffected.
+ *
+ * ⚠ This is the one place a correct-looking merge silently produces WEAKER
+ * enforcement, because of how a resolver consumes the result. It indexes
+ * policies FIRST-WRITE-WINS (plugin-sdk's `policy-resolver.ts`,
+ * `createPolicyResolver`: it walks `bundle.policies` in order and only `set`s
+ * a key — its `byRule` or `byCategory` map — it does not already have; the
+ * runtime's `ensureInitialized` rebuilds this resolver on every bundle
+ * change). So a naive `[...remote, ...local]` concatenation hands the remote
+ * side precedence for every contended target — and a remote policy that is
+ * weaker than the user's LOCAL policy but still at or above the compiled-in
+ * DEFAULT_ACTIONS floor passes a clamp written against that floor while
+ * quietly downgrading real enforcement. Concretely: local says `block` for
+ * `secret`, the default floor is `warn`, the remote side says `warn` —
+ * floor-clamping alone sees nothing wrong, and the device stops blocking
+ * secrets.
+ *
+ * So the merge does not rely on order at all. It resolves each contended target
+ * to the STRONGER of the two sides and emits exactly ONE policy per key, which
+ * makes the result correct under first-write-wins whatever order it is read in.
+ * The floor clamp is still applied on top, for targets only the remote side declares.
+ *
+ * ⚠ AND THE SAME BUG REACHES ACROSS THE TWO NAMESPACES, where "contended
+ * target" does not model it. `policyKey` keeps `rule:` and `category:`
+ * distinct because the resolver keeps two maps — but it does not treat them
+ * as independent: `actionFor` consults `byRule` FIRST and returns
+ * unconditionally when it has an entry, so a ruleId policy outranks the
+ * category policy that would otherwise cover that rule. Two policies on
+ * different keys therefore never meet in the comparison below while one still
+ * overrides the other in practice: local `{ category: 'secret', action:
+ * 'block' }` + remote `{ ruleId: 'aka.secret.aws-access-key', action: 'allow'
+ * }` both survive, and the device stops blocking AWS keys.
+ *
+ * The compiled-in floor cannot catch that on its own, and not by accident:
+ * DEFAULT_ACTIONS is derived from `severityFloorPolicy`, which only ever returns
+ * 'warn' or 'monitor'. The floor is NEVER 'redact' or 'block', so every local
+ * block/redact policy sits strictly above it and a floor-only clamp is blind to
+ * exactly the strongest enforcement the user has. So a remote ruleId policy is
+ * clamped to the stronger of the compiled-in floor and whatever the LOCAL
+ * bundle's category policy enforces for that rule's category — the raise-only
+ * rule stated against what the device EFFECTIVELY enforces, not against the one
+ * key that happens to match.
+ *
+ * Disabled policies are carried through untouched, after the merged set: the
+ * resolver skips them when indexing, so they cannot affect resolution, and
+ * dropping them would silently discard state the user can re-enable.
+ */
+export function mergeRaiseOnly(
+  localPolicies: Policy[],
+  remotePolicies: Policy[],
+  categoryByRuleId: Map<string, DetectionCategory>,
+): Policy[] {
+  const merged = new Map<string, Policy>();
+  const disabled: Policy[] = [];
+
+  // What the TENANT enforces per CATEGORY, already clamped to the compiled-in
+  // floor. Computed before either loop so no ordering within either side can
+  // change it, and the exact mirror of `localCategoryAction` below: each side's
+  // category policies floor the OTHER side's ruleId policies, because a ruleId
+  // policy is the one that wins at resolution time and so is the one able to
+  // undercut a category policy sitting on a different key.
+  const remoteCategoryAction = new Map<DetectionCategory, ActionTaken>();
+  for (const policy of remotePolicies) {
+    if (!policy.enabled) continue;
+    if (!('category' in policy.target)) continue;
+    // First-write-wins, matching how the runtime would index these.
+    if (remoteCategoryAction.has(policy.target.category)) continue;
+    const floor = floorFor(policy, categoryByRuleId);
+    remoteCategoryAction.set(
+      policy.target.category,
+      floor !== null && !isActionAtLeast(policy.action, floor) ? floor : policy.action,
+    );
+  }
+
+  // Local first: it is the trusted side, and first-write-wins within one side
+  // reproduces the runtime's own precedence for duplicate targets.
+  for (const policy of localPolicies) {
+    if (!policy.enabled) {
+      disabled.push(policy);
+      continue;
+    }
+    const key = policyKey(policy);
+    if (merged.has(key)) continue;
+    // Raise a local ruleId policy to whatever the control plane enforces for that
+    // rule's category. Without this, every enabled installed pack the user
+    // never assigned a policy to — `installed_packs.policy_id` NULL, which
+    // `policyIdToAction` coalesces to Monitor, i.e. 'log' — emits a ruleId
+    // policy on a key the remote category policy never contends for, and
+    // wins at resolution. The device's own untouched packs would silently
+    // reduce the remote `secret -> block` to log-only.
+    //
+    // A local policy already STRONGER than the remote one is left exactly as it
+    // is: raising is always allowed, and clamping it down to the remote one's
+    // action would be this same bug reversed. Category-targeted local policies
+    // need nothing here — they share a key with the remote one and are settled by
+    // the stronger-wins comparison below.
+    let remoteFloor: ActionTaken | null = null;
+    if ('ruleId' in policy.target) {
+      const category = categoryByRuleId.get(policy.target.ruleId);
+      // An unresolvable ruleId gets no floor rather than a guessed one — same
+      // rule as `floorFor`.
+      if (category !== undefined) remoteFloor = remoteCategoryAction.get(category) ?? null;
+    }
+    merged.set(
+      key,
+      remoteFloor !== null && !isActionAtLeast(policy.action, remoteFloor)
+        ? { ...policy, action: remoteFloor }
+        : policy,
+    );
+  }
+
+  // What the LOCAL bundle enforces per category, snapshotted while `merged`
+  // still holds local policies ONLY. Raise-only is defined against the local
+  // bundle, so a remote policy folded in below must never become another
+  // policy's floor — and reading this out of `merged` inside the loop would let
+  // exactly that happen, depending on array order.
+  const localCategoryAction = new Map<DetectionCategory, ActionTaken>();
+  for (const policy of merged.values()) {
+    if ('category' in policy.target) localCategoryAction.set(policy.target.category, policy.action);
+  }
+
+  for (const policy of remotePolicies) {
+    if (!policy.enabled) {
+      disabled.push(policy);
+      continue;
+    }
+    const key = policyKey(policy);
+    // Clamp the remote policy to the compiled-in floor first — this is what
+    // covers a target the local bundle never declared.
+    const floor = floorFor(policy, categoryByRuleId);
+    // …then raise that floor to whatever the local bundle enforces for the
+    // rule's CATEGORY. Only ruleId policies need this: they are the side that
+    // wins at resolution time, so they are the side that can override a
+    // category policy sitting on a different key. A category policy is already
+    // covered by the contended-key comparison below, and a ruleId whose
+    // category cannot be resolved gets no local floor rather than a guessed one
+    // — same rule as `floorFor`.
+    let localFloor: ActionTaken | null = null;
+    if ('ruleId' in policy.target) {
+      const category = categoryByRuleId.get(policy.target.ruleId);
+      if (category !== undefined) localFloor = localCategoryAction.get(category) ?? null;
+    }
+    const effectiveFloor = strongerOf(floor, localFloor);
+    const clamped =
+      effectiveFloor !== null && !isActionAtLeast(policy.action, effectiveFloor)
+        ? { ...policy, action: effectiveFloor }
+        : policy;
+
+    const existing = merged.get(key);
+    if (existing === undefined) {
+      merged.set(key, clamped);
+      continue;
+    }
+    // Contended target: the STRONGER side wins. This is the raise-only rule
+    // stated against the local policy rather than against the default floor,
+    // which is the half a floor-only clamp misses.
+    if (actionRank(clamped.action) > actionRank(existing.action)) {
+      merged.set(key, clamped);
+    }
+  }
+
+  return [...merged.values(), ...disabled];
+}
+
 // Locked catalog of the 4 built-in policy archetypes — the single source of truth
 // for the local policy-catalog read port. Each entry's `id` is derived from
 // its record key, never re-declared.

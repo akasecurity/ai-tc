@@ -10,10 +10,38 @@
 // loop never ends. `bypassNextSubmit` is armed immediately before each
 // programmatic submit and consumed by the very next handleSubmit invocation,
 // which returns BEFORE preventDefault so the site's own handler finally runs.
+import type { BlockedDetectionRef } from '@akasecurity/plugin-sdk';
+
+import type { ExceptionRoute } from './exception-guidance.ts';
+import { blockGuidance, redactExceptionRoute } from './exception-guidance.ts';
 import type { BackgroundRequest, BackgroundResponse } from './messaging.ts';
 import type { ProviderAdapter } from './providers/types.ts';
 
 export type BannerTone = 'block' | 'warn' | 'redact';
+
+// What one banner renders. `exception` rides as its own field rather than
+// inside `message` for two reasons: the command has to be its own element with
+// a copy path that never reads the page (a `message` is plain selectable text,
+// which a page `copy` listener can swap on its way to the clipboard), and its
+// presence is what tells the banner to stay on screen — a banner whose approve
+// command scrolls away after six seconds offers a route the user cannot take.
+// So every banner naming a ledger reference carries it here, and no `message`
+// carries the command.
+export interface BannerRequest {
+  tone: BannerTone;
+  message: string;
+  exception?: ExceptionRoute;
+}
+
+// A banner with the redact approve route attached when the host ledgered one,
+// and without the field at all when it did not — so that banner auto-hides.
+function withRedactRoute(
+  banner: Omit<BannerRequest, 'exception'>,
+  references: readonly BlockedDetectionRef[] | undefined,
+): BannerRequest {
+  const route = redactExceptionRoute(references?.[0]);
+  return route ? { ...banner, exception: route } : banner;
+}
 
 export interface SubmitInterceptor {
   // Wired as the adapter's watchSubmit callback. Synchronous on the event
@@ -26,9 +54,15 @@ export function createSubmitInterceptor(opts: {
   adapter: ProviderAdapter;
   sessionId: string;
   relay: (request: BackgroundRequest) => Promise<BackgroundResponse>;
-  showBanner: (message: string, tone: BannerTone) => void;
+  showBanner: (banner: BannerRequest) => void;
+  // Called once per message that actually left the composer, and never for one
+  // this interceptor stopped. The network path counts each of these as a turn
+  // it must see an exchange for, so a decision that blocks — or a redact it
+  // could not carry out, or a send button that went missing — must not be
+  // charged to it: nothing was sent, so nothing on the network can answer.
+  noteSend: () => void;
 }): SubmitInterceptor {
-  const { adapter, sessionId, relay, showBanner } = opts;
+  const { adapter, sessionId, relay, showBanner, noteSend } = opts;
   let bypassNextSubmit = false;
   // One decision at a time per composer. Without it, Enter pressed twice while
   // a slow host is still deciding relays the same text twice — two rows in the
@@ -46,7 +80,18 @@ export function createSubmitInterceptor(opts: {
     setTimeout(() => {
       bypassNextSubmit = false;
     }, 0);
-    if (adapter.submit(composer)) return true;
+    if (adapter.submit(composer)) {
+      // After the send, not before: submit() clicks the site's own button, so
+      // the request it starts is already on its way when this runs and the
+      // network path can pair the two. Wrapped because health reporting may
+      // never break the send it is reporting on.
+      try {
+        noteSend();
+      } catch {
+        // A reporting fault costs the count, never the message.
+      }
+      return true;
+    }
     // Selector drift: there was no send button to click. handleSubmit has
     // already preventDefault()ed the user's own send, so nothing sent this
     // message and nothing else is going to. Staying silent here is the worst
@@ -54,10 +99,11 @@ export function createSubmitInterceptor(opts: {
     // vanish and reads it as sent. Clear the bypass immediately (nothing
     // consumed it) rather than leaving it armed until the timer.
     bypassNextSubmit = false;
-    showBanner(
-      'AKA could not send this message — the send button was not found, so the site may have changed. Your text is still in the composer and was NOT sent.',
-      'block',
-    );
+    showBanner({
+      tone: 'block',
+      message:
+        'AKA could not send this message — the send button was not found, so the site may have changed. Your text is still in the composer and was NOT sent.',
+    });
     return false;
   }
 
@@ -82,10 +128,19 @@ export function createSubmitInterceptor(opts: {
     }
 
     if (response.action === 'block') {
-      showBanner(
-        `AKA blocked this message — flagged ${response.ruleIds.join(', ')}. Remove it and resend.`,
-        'block',
-      );
+      const guidance = blockGuidance({
+        ruleIds: response.ruleIds.join(', '),
+        blockedRef: response.blockedReferences?.[0],
+      });
+      showBanner({
+        tone: 'block',
+        message: `${guidance.headline} ${guidance.advice}`,
+        exception: {
+          intro: guidance.approveIntro,
+          command: guidance.command,
+          help: guidance.help,
+        },
+      });
       return;
     }
     if (response.action === 'redact') {
@@ -96,8 +151,13 @@ export function createSubmitInterceptor(opts: {
       // "nothing was flagged". A redact the client cannot carry out blocks.
       if (typeof response.text !== 'string') {
         showBanner(
-          `AKA could not redact this message (${response.ruleIds.join(', ')}) — remove the flagged content and resend.`,
-          'block',
+          withRedactRoute(
+            {
+              tone: 'block',
+              message: `AKA could not redact this message (${response.ruleIds.join(', ')}) — remove the flagged content and resend.`,
+            },
+            response.blockedReferences,
+          ),
         );
         return;
       }
@@ -109,8 +169,13 @@ export function createSubmitInterceptor(opts: {
       // false assurance about the one action the product exists to perform.
       if (adapter.extractText(composer).trim() !== response.text.trim()) {
         showBanner(
-          'AKA could not redact this message — remove the flagged content and resend.',
-          'block',
+          withRedactRoute(
+            {
+              tone: 'block',
+              message: 'AKA could not redact this message — remove the flagged content and resend.',
+            },
+            response.blockedReferences,
+          ),
         );
         return;
       }
@@ -120,17 +185,31 @@ export function createSubmitInterceptor(opts: {
       // produce — the same false assurance the read-back above guards against.
       if (!passThrough(composer)) return;
       showBanner(
-        `AKA redacted sensitive content (${response.ruleIds.join(', ')}) before sending.`,
-        'redact',
+        withRedactRoute(
+          {
+            tone: 'redact',
+            message: `AKA redacted sensitive content (${response.ruleIds.join(', ')}) before sending.`,
+          },
+          response.blockedReferences,
+        ),
       );
       return;
     }
     if (response.action === 'warn') {
       if (!passThrough(composer)) return;
-      showBanner(
-        `AKA flagged sensitive content (${response.ruleIds.join(', ')}) — sent unchanged.`,
-        'warn',
-      );
+      // No approve route here, unlike the block and redact banners. A warn
+      // decision LEDGERS nothing: `recordBlockedDetections` in
+      // @akasecurity/plugin-sdk returns before writing unless the decision's
+      // action is block or redact, and it is that result `evaluate` sets
+      // `blockedReferences` from — so every warn the native host can actually
+      // produce arrives with no reference, and a route offered here would name
+      // one `aka exception approve` cannot find.
+      // Ledgering warn decisions would change the exception flow for every
+      // plugin, so it belongs in its own change rather than in this banner.
+      showBanner({
+        tone: 'warn',
+        message: `AKA flagged sensitive content (${response.ruleIds.join(', ')}) — sent unchanged.`,
+      });
       return;
     }
     passThrough(composer);

@@ -28,6 +28,11 @@ function hit(o: Partial<ResolvedEgressHit> = {}): ResolvedEgressHit {
     kind: o.kind ?? 'provider',
     name: o.name ?? host,
     category: o.category ?? 'Payments',
+    // `o.providerId ?? 'stripe'` would silently turn an explicit
+    // `providerId: null` (a non-provider hit) into 'stripe' — check for
+    // `undefined` specifically, so a caller can genuinely construct a
+    // null-providerId hit.
+    providerId: o.providerId === undefined ? 'stripe' : o.providerId,
     trust: o.trust ?? 'recognized',
     network: o.network ?? null,
     method: o.method ?? 'POST',
@@ -84,5 +89,34 @@ describe('StandaloneDataGateway.recordProjectEgress', () => {
     await gw.close();
 
     await expect(async () => gw.recordProjectEgress(input([hit()]))).rejects.toThrow();
+  });
+
+  // Regression: the `hit()` builder used to default a null providerId to
+  // 'stripe' via `??`, so a non-provider hit could never actually reach this
+  // path with providerId: null — this is what proves it now does.
+  it('writes a null provider_id through for a non-provider hit', async () => {
+    const gw = new StandaloneDataGateway(dir);
+    await gw.recordProjectEgress(
+      input([
+        hit({
+          host: 'api.acme-partner.com',
+          kind: 'external',
+          name: 'api.acme-partner.com',
+          category: 'External domain',
+          providerId: null,
+          trust: 'unverified',
+          url: 'https://api.acme-partner.com/v1/orders',
+        }),
+      ]),
+    );
+    await gw.close();
+
+    const raw = new DatabaseSync(join(dir, DB_FILENAME));
+    const row = raw
+      .prepare('SELECT host, provider_id AS providerId FROM share_destination')
+      .get() as { host: string; providerId: string | null } | undefined;
+    raw.close();
+
+    expect(row).toEqual({ host: 'api.acme-partner.com', providerId: null });
   });
 });

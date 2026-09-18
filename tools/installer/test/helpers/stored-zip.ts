@@ -2,23 +2,39 @@
  * A minimal STORED (uncompressed) zip writer, so building a win32 fixture
  * archive off Windows needs no PowerShell.
  *
- * WHY THIS EXISTS AT ALL, given `Compress-Archive` already did it. On GitHub's
- * `ubuntu-24.04-arm` runners `pwsh` intermittently aborts (SIGABRT) partway
- * into that cmdlet with a `FileLoadException` naming an assembly whose name has
- * been read truncated — see the note on `compressArchive`, which retries it.
- * That retry is losing: three separate jobs in one day burned all three attempts
- * on a command that is correct, one of them over six seconds, WHILE another
- * `Compress-Archive` in the same job completed. So it is not a window to wait
- * out, and a bigger retry budget is a guess rather than a fix.
+ * WHY THIS EXISTS AT ALL, given `Compress-Archive` already did it. On Linux CI
+ * runners `pwsh` intermittently dies before its command runs, with
+ * `Unhandled exception.`, a `System.IO.FileLoadException` "The given assembly
+ * name was invalid", and SIGABRT. It does not depend on the command: the
+ * `Compress-Archive` child and `install.ps1` children alike have died with
+ * that trace.
  *
- * What the evidence does support is narrower and is what this acts on: every
- * observed abort is in the `Compress-Archive` child, and NONE is in the
- * `install.ps1` children the same suite spawns from the same helper with the
- * same environment — those keep passing in the very runs where the fixture
- * build dies. Resolving an unknown command name is what sends PowerShell
- * through module auto-discovery, and that is the work the refusal path never
- * does. Off Windows this file removes that call, so whichever assembly load is
- * dying is no longer on the path at all.
+ * What carries it is the .NET multicore-JIT startup profile pwsh keeps at
+ * `$XDG_CACHE_HOME/powershell/StartupProfileData-NonInteractive` — under
+ * `~/.cache` when the variable is unset — which every start reads and rewrites
+ * on exit. Measured against pwsh 7.6.5 on Linux: a profile with one assembly
+ * name damaged inside records that still parse reproduces the crash frame for
+ * frame, while a truncated or spliced profile does not crash at all, because
+ * .NET rejects a structurally broken file. The start that crashed leaves the
+ * file byte-identical, so a retry reads the same damage — which is why
+ * `compressArchive`'s retry burned all three attempts on a correct command, and
+ * why neither a bigger budget nor a pause would help. A private
+ * `XDG_CACHE_HOME` takes the file off the path.
+ *
+ * How a profile comes to be damaged is NOT measured. Concurrent starts sharing
+ * the file are the origin reported upstream (PowerShell/PowerShell#26528), and
+ * this suite does start pwsh concurrently, but that race has not been
+ * reproduced.
+ *
+ * Off Windows this file builds the zip in Node, so a fixture build starts no
+ * pwsh: nothing there reads a profile or adds a start to the ones sharing it.
+ * The PowerShell children that remain off Windows — the probe and each
+ * `install.ps1` attempt — run under `privateCacheHome` in run-installer.ts. The
+ * `Compress-Archive` child does not. Off Windows it is reached only when a
+ * caller passes one of `writeArchive`'s seams, and passing `exe` without `run`
+ * would start a real pwsh reading the shared profile. Every caller passing a
+ * seam today also passes `run`, so none does — a convention the signature does
+ * not enforce.
  *
  * IT IS DELIBERATELY NOT USED ON WINDOWS. There the cmdlet is what
  * `archive-sea.mjs` runs to build a real release, the fixture mirrors it on

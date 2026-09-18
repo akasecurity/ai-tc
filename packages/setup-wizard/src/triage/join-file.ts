@@ -1,4 +1,9 @@
-import { assertRawFree, maskContextSlice, safeMaskedMatch } from '@akasecurity/plugin-sdk';
+import {
+  assertRawFree,
+  edgeTruncatedSpans,
+  maskContextSlice,
+  safeMaskedMatch,
+} from '@akasecurity/plugin-sdk';
 import type { DetectionCategory, TriageHit } from '@akasecurity/schema';
 
 export interface JoinEntry {
@@ -33,6 +38,13 @@ export function buildJoinEntries(hits: readonly TriageHit[]): JoinEntry[] {
         at = h.context.indexOf(o.rawMatch, at + o.rawMatch.length);
       }
     }
+    // `indexOf` above finds WHOLE occurrences only, and this window is a fixed
+    // radius around the match — so a neighbouring value straddling either edge
+    // is present as a bare prefix or suffix that no span above can cover. The
+    // egress gate rejects run by run, so leaving one unspanned throws out of
+    // this function, which nothing here catches: one transcript with two secrets
+    // within a window of each other would abort the whole triage.
+    egressHits.push(...edgeTruncatedSpans(h.context, rawValues));
     const maskedContext = maskContextSlice(h.context, 0, egressHits);
     const entry: JoinEntry = {
       id: h.id ?? '',

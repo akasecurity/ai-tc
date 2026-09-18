@@ -333,6 +333,7 @@ describe('detachFromControlPlane', () => {
       historySyncConsent: 'granted',
       vaultConsent: 'off',
       vaultInlineReveal: 'masked',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -457,6 +458,7 @@ describe('detachFromControlPlane', () => {
       historySyncConsent: 'revoked',
       vaultConsent: 'off',
       vaultInlineReveal: 'off',
+      webChatCaptureConsent: 'unchanged',
       redactFallback: 'warn',
       bodyRetention: { enabled: false, retainDays: 30 },
     });
@@ -503,6 +505,7 @@ describe('write failures are reported, never thrown', () => {
         historySyncConsent: 'revoked',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
+        webChatCaptureConsent: 'unchanged',
         redactFallback: 'warn',
         bodyRetention: { enabled: false, retainDays: 30 },
       });
@@ -612,6 +615,7 @@ describe('untyped wire input', () => {
         historySyncConsent: 'revoked',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
+        webChatCaptureConsent: 'unchanged',
         redactFallback: 'warn',
         bodyRetention: { enabled: false, retainDays: 30 },
       });
@@ -627,6 +631,7 @@ describe('untyped wire input', () => {
         historicalAccess: 'session-only',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
+        webChatCaptureConsent: 'unchanged',
         redactFallback: 'warn',
         bodyRetention: { enabled: false, retainDays: 30 },
       });
@@ -643,6 +648,7 @@ describe('untyped wire input', () => {
         historySyncConsent: 'revoked',
         vaultConsent: 'off',
         vaultInlineReveal: 'masked',
+        webChatCaptureConsent: 'unchanged',
         redactFallback: 'warn',
         bodyRetention: { enabled: false, retainDays: 30 },
       });

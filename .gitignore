@@ -46,3 +46,26 @@ docs/
 .claude/settings.json
 .claude/rules/
 .worktrees/
+
+# Raw web-chat captures and the sanitiser's survey output. A capture is a real
+# conversation — somebody's messages, their account identifiers, their auth
+# headers — and a survey file is unpruned strings lifted verbatim out of one.
+# Only the sanitised fixture scripts/sanitize-capture.mjs produces is ever
+# committed.
+#
+# Ignored by LOCATION rather than by a name convention nobody is told about:
+# everything under the fixtures tree is ignored, and the artifacts the fixture
+# bar reads are re-included by name. Anything else landing there — a capture
+# saved as capture.json, a survey, a scratch copy — is ignored by default.
+*.har
+*.raw.json
+*.keys.txt
+*.values.txt
+*.survey.txt
+plugins/browser-extension/test/fixtures/**
+!plugins/browser-extension/test/fixtures/*/
+!plugins/browser-extension/test/fixtures/*/request.json
+!plugins/browser-extension/test/fixtures/*/stream.json
+!plugins/browser-extension/test/fixtures/*/account.json
+!plugins/browser-extension/test/fixtures/*/approved-keys.txt
+!plugins/browser-extension/test/fixtures/*/approved-values.txt

@@ -1,0 +1,12 @@
+# Values preserved verbatim in the claude.ai fixtures: NONE.
+#
+# Deliberately empty. Everything the parsers switch on is declared in
+# claudeAdapter.protocolTokens instead, which the sanitiser gates on an
+# EXACT match and the detector still screens — a narrower seam than an
+# operator approval, and the right one for a value the code depends on.
+#
+# The survey offered 61 request and 23 response candidates. Two of them,
+# 'ban' and 'ana', were fragments the tokeniser split out of the
+# assistant's own six-character reply. Approving a value here preserves
+# real content verbatim in a public fixture, so the list stays empty and
+# fidelity is bought through the declaration seam instead.

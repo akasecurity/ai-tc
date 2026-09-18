@@ -4,9 +4,19 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 
+import { WEB_CAPTURE_DRIFT_RULE, webCaptureReport } from '@akasecurity/detections';
 import { isSea } from '@akasecurity/local-ops';
-import { DATA_FILE_MODE } from '@akasecurity/persistence';
+import {
+  DATA_FILE_MODE,
+  dataDir,
+  openLocalDatabase,
+  readEffectiveSettings,
+} from '@akasecurity/persistence';
+import { isWebChatCaptureConsentValid, webChatCaptureOf } from '@akasecurity/schema';
+
+import { HOME_OPTION, homeBase } from '../lib/args.ts';
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -206,13 +216,21 @@ function registerWindowsHost(manifestPath: string): void {
 }
 
 export function runExtension(argv: string[]): void {
-  const sub = argv[0];
+  // Parsed first, THEN read the subcommand from the positionals — the same
+  // rule `aka detections` follows, so a flag-first invocation (`--home <dir>
+  // status`) still resolves the subcommand.
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: HOME_OPTION,
+    allowPositionals: true,
+  });
+  const sub = positionals[0];
   if (sub === 'install') {
     runInstall(chromeManifestDir());
     return;
   }
   if (sub === 'status') {
-    runStatus(chromeManifestDir());
+    runStatus(chromeManifestDir(), homeBase(values.home));
     return;
   }
   process.stderr.write(
@@ -313,7 +331,52 @@ function manifestFault(manifestPath: string): string | null {
   return `does not grant ${missing.length === 1 ? 'the extension id' : 'the extension ids'} ${missing.join(', ')}`;
 }
 
-export function runStatus(manifestDir: string): void {
+// The network-capture block `runStatus` appends when `home` is given. Reads
+// the reported `capture_status` rows through the same store the extension's
+// native host writes into (SqliteCaptureStatusRepository), and derives each
+// site's word with the SAME deriver the drift rule fires on, so the CLI can
+// never print a state the rule disagrees with.
+//
+// Never touches process.exitCode: a drifting site is a real fault but not a
+// CLI misconfiguration, and `aka extension status` runs in scripts that must
+// not start failing on a state the user cannot fix from the CLI.
+function captureBlock(home: string): string {
+  try {
+    const effective = readEffectiveSettings(home);
+    const webChat = webChatCaptureOf(effective.settings);
+    if (!isWebChatCaptureConsentValid(webChat.consent)) {
+      return (
+        '\nnetwork capture: not enabled\n' +
+        '  no web-chat capture consent is recorded, so nothing is observed or stored\n' +
+        '  enable it under Settings in `aka dashboard`\n'
+      );
+    }
+
+    const db = openLocalDatabase(dataDir(home));
+    let records;
+    try {
+      records = db.captureStatus.latest(Date.now());
+    } finally {
+      db.close();
+    }
+
+    const lines = webCaptureReport(records).map((site) => {
+      let line = `  ${site.tool.padEnd(10)} ${site.state.padEnd(10)} ${site.headline}\n`;
+      if (site.drift && site.remediation !== undefined) {
+        line += `    ${WEB_CAPTURE_DRIFT_RULE.ruleId} (${WEB_CAPTURE_DRIFT_RULE.severity}) — ${site.remediation}\n`;
+      }
+      return line;
+    });
+    return `\nnetwork capture\n${lines.join('')}`;
+  } catch (err) {
+    return (
+      '\nnetwork capture: unavailable\n' +
+      `  the local store could not be read (${err instanceof Error ? err.message : String(err)})\n`
+    );
+  }
+}
+
+export function runStatus(manifestDir: string, home?: string): void {
   const manifestPath = join(manifestDir, `${NATIVE_HOST_NAME}.json`);
   if (!existsSync(manifestPath)) {
     process.stdout.write(
@@ -321,18 +384,23 @@ export function runStatus(manifestDir: string): void {
         `  manifest: ${manifestPath}\n` +
         '  run `aka extension install` to set it up\n',
     );
-    return;
+  } else {
+    const fault = manifestFault(manifestPath);
+    process.stdout.write(
+      `native-messaging host: ${fault ? 'installed (out of date)' : 'installed'}\n` +
+        `  manifest: ${manifestPath}\n` +
+        (fault
+          ? `  this manifest ${fault}\n` +
+            '  Chrome refuses a connection from any origin the manifest omits —\n' +
+            '  re-run `aka extension install` to rewrite it\n'
+          : ''),
+    );
+    if (fault) process.exitCode = 1;
   }
 
-  const fault = manifestFault(manifestPath);
-  process.stdout.write(
-    `native-messaging host: ${fault ? 'installed (out of date)' : 'installed'}\n` +
-      `  manifest: ${manifestPath}\n` +
-      (fault
-        ? `  this manifest ${fault}\n` +
-          '  Chrome refuses a connection from any origin the manifest omits —\n' +
-          '  re-run `aka extension install` to rewrite it\n'
-        : ''),
-  );
-  if (fault) process.exitCode = 1;
+  // Omitted entirely when no home was resolved (the unit-test call shape) —
+  // the capture block must never depend on the developer's real ~/.aka.
+  if (home !== undefined) {
+    process.stdout.write(captureBlock(home));
+  }
 }

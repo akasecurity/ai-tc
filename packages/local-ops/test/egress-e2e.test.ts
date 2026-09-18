@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { removeTree, removeTrees } from '../../../test/helpers/remove-tree.ts';
 import { recordProjectEgress } from '../src/egress-record.ts';
 import { scanPathIntoStore } from '../src/fs-scan.ts';
+import { migratedStore } from './helpers/store-templates.ts';
 
 // End-to-end acceptance for the CLI/web egress pipeline: walk a planted corpus
 // with `scanPathIntoStore`, record it with `recordProjectEgress`, then read the
@@ -253,6 +254,10 @@ let root: string;
 let store: string;
 let base: string;
 let db: LocalDatabase;
+// The handle THIS test's setup opened, or undefined when the setup threw first.
+// `db` still names the previous test's handle in that case, already closed, and
+// closing it again would throw before the trees were removed.
+let opened: LocalDatabase | undefined;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'aka-corpus-'));
@@ -260,12 +265,20 @@ beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), 'aka-corpus-home-'));
   cpSync(CORPUS, root, { recursive: true });
   initRepo(root);
+  // What is under test is the egress ledger, not the store's creation, so the
+  // store is copied from the migrated template rather than migrated per test.
+  migratedStore.seed(store);
   db = openLocalDatabase(store);
+  opened = db;
 });
 
 afterEach(() => {
-  db.close();
-  removeTrees([root, store, base]);
+  try {
+    opened?.close();
+  } finally {
+    opened = undefined;
+    removeTrees([root, store, base]);
+  }
 });
 
 describe('egress acceptance corpus — destination ledger', () => {
@@ -399,6 +412,50 @@ describe('egress acceptance corpus — reconciliation', () => {
     // The partner host was the only plaintext one, and the only source of two
     // of the three review reasons it carried.
     expect(stats.insecure).toBe(0);
+  });
+});
+
+describe('egress acceptance corpus — documentation-host requests', () => {
+  // The URL sits in a constant and the verb in another statement, so the
+  // extractor reports REF. The destination must be recorded, and must still
+  // be there, decision and all, when the unchanged source is scanned again.
+  it('keeps a documentation-host destination and its decision across a rescan', async () => {
+    const project = mkdtempSync(join(tmpdir(), 'aka-docs-host-'));
+    try {
+      mkdirSync(join(project, 'src'));
+      writeFileSync(
+        join(project, 'src', 'search.ts'),
+        "const DOCS_SEARCH = 'https://docs.github.com/search?q=default';\n" +
+          'export const search = (payload: unknown) => axios.post(DOCS_SEARCH, payload);\n',
+      );
+
+      await scanAndRecord(db, project, base);
+      expect(await readLedger(db)).toEqual([
+        {
+          host: 'docs.github.com',
+          kind: 'provider',
+          trust: 'recognized',
+          name: 'GitHub',
+          category: 'Developer platform',
+          transports: ['https'],
+          dataClasses: ['source'],
+          endpoints: ['REF https https://docs.github.com/search x1'],
+        },
+      ]);
+
+      const { groups } = await db.shares.listDestinations({
+        groupBy: 'destination',
+        review: false,
+      });
+      const id = groups.flatMap((g) => g.items)[0]?.id ?? '';
+      expect(db.shares.setEgressDecision(id, 'block')).toBe(true);
+
+      await scanAndRecord(db, project, base);
+
+      expect((await db.shares.getDestination(id))?.status).toBe('blocked');
+    } finally {
+      removeTree(project);
+    }
   });
 });
 

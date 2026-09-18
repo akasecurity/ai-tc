@@ -2,12 +2,19 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { DestinationKind, EgressEcosystem, ShareTrustLevel } from '@akasecurity/schema';
+import type {
+  DestinationKind,
+  EgressEcosystem,
+  ProviderRegistryEntry,
+  ShareTrustLevel,
+} from '@akasecurity/schema';
 import { DATA_CLASS_ORDER } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
   EGRESS_VERSION_MATERIAL,
+  EXCLUDED_HOST_SUFFIXES,
+  matchMostSpecificEntry,
   PROVIDER_REGISTRY,
   resolveHost,
   resolveSdk,
@@ -20,6 +27,8 @@ interface HostCase {
   host: string;
   opts?: { internalDomains?: string[] };
   expect: { kind: DestinationKind; trust: ShareTrustLevel; name: string; category: string } | null;
+  /** Checked only when present, against `resolveHost(...)?.providerId`. */
+  expectProviderId?: string | null;
 }
 
 interface SdkCase {
@@ -58,7 +67,18 @@ describe('resolveHost — fixture corpus', () => {
       expect(result?.trust).toBe(c.expect.trust);
       expect(result?.name).toBe(c.expect.name);
       expect(result?.category).toBe(c.expect.category);
+      if (c.expectProviderId !== undefined) {
+        expect(result?.providerId).toBe(c.expectProviderId);
+      }
     }
+  });
+
+  it('has at least one host case pinning a populated providerId and one pinning null', () => {
+    const withProviderId = fixture.hosts.filter(
+      (c) => c.expect !== null && c.expectProviderId !== undefined,
+    );
+    expect(withProviderId.some((c) => c.expectProviderId !== null)).toBe(true);
+    expect(withProviderId.some((c) => c.expectProviderId === null)).toBe(true);
   });
 
   it('providers carry the matched registry entry; non-providers carry null', () => {
@@ -91,8 +111,8 @@ describe('PROVIDER_REGISTRY', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it('has 35 seeded providers, each with at least one hostSuffix and one dataClass', () => {
-    expect(PROVIDER_REGISTRY.length).toBe(35);
+  it('has 36 seeded providers, each with at least one hostSuffix and one dataClass', () => {
+    expect(PROVIDER_REGISTRY.length).toBe(36);
     for (const p of PROVIDER_REGISTRY) {
       expect(p.hostSuffixes.length).toBeGreaterThanOrEqual(1);
       expect(p.defaultDataClasses.length).toBeGreaterThanOrEqual(1);
@@ -120,10 +140,79 @@ describe('PROVIDER_REGISTRY', () => {
       }
     }
   });
+
+  it('carries no hostSuffix shared identically by two different entries', () => {
+    // An identical suffix on two entries would make resolution depend on
+    // declaration order (matchMostSpecificEntry's tie-break) rather than on
+    // which entry actually owns the host — a silent ambiguity a more specific
+    // suffix on one side is meant to resolve instead.
+    const bySuffix = new Map<string, string[]>();
+    for (const p of PROVIDER_REGISTRY) {
+      for (const suffix of p.hostSuffixes) {
+        bySuffix.set(suffix, [...(bySuffix.get(suffix) ?? []), p.id]);
+      }
+    }
+    for (const [suffix, ids] of bySuffix) {
+      expect(ids, `${suffix} is listed by more than one entry: ${ids.join(', ')}`).toHaveLength(1);
+    }
+  });
+});
+
+describe('matchMostSpecificEntry', () => {
+  function entry(id: string, hostSuffixes: string[]): ProviderRegistryEntry {
+    return {
+      id,
+      name: id,
+      category: 'Test',
+      hostSuffixes,
+      apiBase: `https://${id}.example`,
+      defaultDataClasses: ['none'],
+      sdks: {},
+    };
+  }
+
+  it('picks the entry with the longest matching suffix, regardless of declaration order', () => {
+    const apexFirst = [
+      entry('apex', ['googleapis.com']),
+      entry('specific', ['fonts.googleapis.com']),
+    ];
+    const specificFirst = [
+      entry('specific', ['fonts.googleapis.com']),
+      entry('apex', ['googleapis.com']),
+    ];
+
+    expect(matchMostSpecificEntry('fonts.googleapis.com', apexFirst)?.id).toBe('specific');
+    expect(matchMostSpecificEntry('fonts.googleapis.com', specificFirst)?.id).toBe('specific');
+
+    // The apex still resolves to the apex entry when the specific suffix
+    // doesn't match at all.
+    expect(matchMostSpecificEntry('storage.googleapis.com', apexFirst)?.id).toBe('apex');
+    expect(matchMostSpecificEntry('storage.googleapis.com', specificFirst)?.id).toBe('apex');
+  });
+
+  it('falls back to declaration order when two matching suffixes tie in length', () => {
+    const firstDeclared = [entry('first', ['tied.example']), entry('second', ['tied.example'])];
+    expect(matchMostSpecificEntry('tied.example', firstDeclared)?.id).toBe('first');
+
+    const reversed = [entry('second', ['tied.example']), entry('first', ['tied.example'])];
+    expect(matchMostSpecificEntry('tied.example', reversed)?.id).toBe('second');
+  });
+
+  it('returns null when nothing matches', () => {
+    expect(
+      matchMostSpecificEntry('unrelated.example', [entry('apex', ['googleapis.com'])]),
+    ).toBeNull();
+  });
 });
 
 describe('EGRESS_VERSION_MATERIAL', () => {
-  it('is EXTRACTOR_VERSION "1" plus the serialized registry, and so changes with the registry', () => {
-    expect(EGRESS_VERSION_MATERIAL).toBe(`1\n${JSON.stringify(PROVIDER_REGISTRY)}`);
-  });
+  it(
+    'is EXTRACTOR_VERSION "3" plus the serialized registry and excluded-host list, ' +
+      'and so changes with either of them',
+    () => {
+      expect(EGRESS_VERSION_MATERIAL).toBe(
+        `3\n${JSON.stringify(PROVIDER_REGISTRY)}\n${JSON.stringify(EXCLUDED_HOST_SUFFIXES)}`,
+      );
+    },
+  );
 });

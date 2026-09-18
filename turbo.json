@@ -77,11 +77,18 @@
     // describes the RUNNER, so hashing one would fork the cache per machine
     // while answering no question about the inputs.
     //
-    // turbo's env mode is `strict`. Its default passthrough already carries
-    // PATH, HOME, TEMP, TMP and PATHEXT — so those need no entry here, and
-    // adding one would only read as though it bought something. None of the
-    // names below are in it, and each is one a Windows child genuinely needs:
+    // turbo's env mode is `strict`. Its built-in passthrough carries PATH, HOME,
+    // TEMP, TMP and PATHEXT, but that list lives inside the turbo binary, where a
+    // version bump can change it with nothing here noticing. PATH, HOME and
+    // PATHEXT are left to it. Every name below is declared, and each is one a
+    // Windows child genuinely needs:
     //
+    //   TEMP, TMP               where `os.tmpdir()` points, TEMP first on
+    //                           Windows. The Windows leg moves both onto the
+    //                           runner's second disk and every temp store in
+    //                           the suites follows them, so a turbo that stopped
+    //                           forwarding them would put those stores back on
+    //                           the OS disk with nothing going red.
     //   PROCESSOR_ARCHITECTURE  install.ps1 reads it at step 1 to pick its
     //                           target triple. Filtered, the child sees an
     //                           empty string and the script correctly refuses
@@ -99,6 +106,8 @@
       "dependsOn": ["build", "^build", "^typecheck"],
       "env": ["AKA_INSTALLER_ALLOW_USER_PATH"],
       "passThroughEnv": [
+        "TEMP",
+        "TMP",
         "PROCESSOR_ARCHITECTURE",
         "SystemRoot",
         "windir",

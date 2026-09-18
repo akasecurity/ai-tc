@@ -8,7 +8,30 @@
         "trust": "recognized",
         "name": "Stripe",
         "category": "Payments"
-      }
+      },
+      "expectProviderId": "stripe"
+    },
+    {
+      "label": "github.com resolves to GitHub (exact hostSuffix)",
+      "host": "github.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitHub",
+        "category": "Developer platform"
+      },
+      "expectProviderId": "github"
+    },
+    {
+      "label": "raw.githubusercontent.com resolves to GitHub (second hostSuffix entry)",
+      "host": "raw.githubusercontent.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitHub",
+        "category": "Developer platform"
+      },
+      "expectProviderId": "github"
     },
     {
       "label": "stripe.com resolves to Stripe (exact hostSuffix)",
@@ -68,7 +91,8 @@
         "trust": "internal",
         "name": "db.internal",
         "category": "Internal services"
-      }
+      },
+      "expectProviderId": null
     },
     {
       "label": "intranet (single-label host) resolves internal",
@@ -131,7 +155,8 @@
         "trust": "unverified",
         "name": "acme-partner.com",
         "category": "External domain"
-      }
+      },
+      "expectProviderId": null
     },
     {
       "label": "an unrecognized public domain with a malformed-IP-looking label still resolves external",
@@ -151,7 +176,8 @@
         "trust": "ip",
         "name": "198.51.100.23",
         "category": "Unresolved host"
-      }
+      },
+      "expectProviderId": null
     },
     {
       "label": "172.32.0.1 is just outside the private 172.16-31 range \u2014 kind ip, not excluded",
@@ -427,6 +453,296 @@
         "name": "Amazon Web Services",
         "category": "Cloud platform"
       }
+    },
+    {
+      "label": "fonts.googleapis.com resolves to Google Fonts, not the coarser Google Cloud apex",
+      "host": "fonts.googleapis.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Google Fonts",
+        "category": "CDN / edge"
+      }
+    },
+    {
+      "label": "fonts.gstatic.com resolves to Google Fonts (its second hostSuffix)",
+      "host": "fonts.gstatic.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Google Fonts",
+        "category": "CDN / edge"
+      }
+    },
+    {
+      "label": "storage.googleapis.com still resolves to Google Cloud — the apex entry is unaffected by the more specific fonts entry",
+      "host": "storage.googleapis.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Google Cloud",
+        "category": "Cloud platform"
+      }
+    },
+    {
+      "label": "www.googleapis.com still resolves to Google Cloud",
+      "host": "www.googleapis.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Google Cloud",
+        "category": "Cloud platform"
+      }
+    },
+    {
+      "label": "docs.github.com resolves to GitHub (a documentation host, recorded like any other host of its provider)",
+      "host": "docs.github.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitHub",
+        "category": "Developer platform"
+      }
+    },
+    {
+      "label": "help.github.com resolves to GitHub (a documentation host, recorded like any other host of its provider)",
+      "host": "help.github.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitHub",
+        "category": "Developer platform"
+      }
+    },
+    {
+      "label": "api.github.com resolves to GitHub beside its documentation hosts",
+      "host": "api.github.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitHub",
+        "category": "Developer platform"
+      }
+    },
+    {
+      "label": "raw.githubusercontent.com still resolves to GitHub (its second hostSuffix)",
+      "host": "raw.githubusercontent.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitHub",
+        "category": "Developer platform"
+      }
+    },
+    {
+      "label": "gist.github.com still resolves to GitHub",
+      "host": "gist.github.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitHub",
+        "category": "Developer platform"
+      }
+    },
+    {
+      "label": "codeload.github.com still resolves to GitHub",
+      "host": "codeload.github.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitHub",
+        "category": "Developer platform"
+      }
+    },
+    {
+      "label": "docs.stripe.com resolves to Stripe (a documentation host, recorded like any other host of its provider)",
+      "host": "docs.stripe.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Stripe",
+        "category": "Payments"
+      }
+    },
+    {
+      "label": "docs.anthropic.com resolves to Anthropic (a documentation host, recorded like any other host of its provider)",
+      "host": "docs.anthropic.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Anthropic",
+        "category": "LLM provider"
+      }
+    },
+    {
+      "label": "api.anthropic.com still resolves to Anthropic",
+      "host": "api.anthropic.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Anthropic",
+        "category": "LLM provider"
+      }
+    },
+    {
+      "label": "docs.datadoghq.com resolves to Datadog (a documentation host, recorded like any other host of its provider)",
+      "host": "docs.datadoghq.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Datadog",
+        "category": "Observability"
+      }
+    },
+    {
+      "label": "docs.sentry.io resolves to Sentry (a documentation host, recorded like any other host of its provider)",
+      "host": "docs.sentry.io",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Sentry",
+        "category": "Error tracking"
+      }
+    },
+    {
+      "label": "sentry.io (bare apex) still resolves to Sentry",
+      "host": "sentry.io",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Sentry",
+        "category": "Error tracking"
+      }
+    },
+    {
+      "label": "docs.gitlab.com resolves to GitLab (a documentation host, recorded like any other host of its provider)",
+      "host": "docs.gitlab.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitLab",
+        "category": "Developer platform"
+      }
+    },
+    {
+      "label": "gitlab.com (bare apex) still resolves to GitLab",
+      "host": "gitlab.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "GitLab",
+        "category": "Developer platform"
+      }
+    },
+    {
+      "label": "docs.newrelic.com resolves to New Relic (a documentation host, recorded like any other host of its provider)",
+      "host": "docs.newrelic.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "New Relic",
+        "category": "Observability"
+      }
+    },
+    {
+      "label": "api.newrelic.com still resolves to New Relic",
+      "host": "api.newrelic.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "New Relic",
+        "category": "Observability"
+      }
+    },
+    {
+      "label": "docs.honeycomb.io resolves to Honeycomb (a documentation host, recorded like any other host of its provider)",
+      "host": "docs.honeycomb.io",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Honeycomb",
+        "category": "Observability"
+      }
+    },
+    {
+      "label": "api.honeycomb.io still resolves to Honeycomb",
+      "host": "api.honeycomb.io",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Honeycomb",
+        "category": "Observability"
+      }
+    },
+    {
+      "label": "docs.splunk.com resolves to Splunk (a documentation host, recorded like any other host of its provider)",
+      "host": "docs.splunk.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Splunk",
+        "category": "Observability"
+      }
+    },
+    {
+      "label": "help.splunk.com resolves to Splunk (a documentation host, recorded like any other host of its provider)",
+      "host": "help.splunk.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Splunk",
+        "category": "Observability"
+      }
+    },
+    {
+      "label": "splunk.com (bare apex) still resolves to Splunk",
+      "host": "splunk.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Splunk",
+        "category": "Observability"
+      }
+    },
+    {
+      "label": "docs.cohere.com resolves to Cohere (a documentation host, recorded like any other host of its provider)",
+      "host": "docs.cohere.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Cohere",
+        "category": "LLM provider"
+      }
+    },
+    {
+      "label": "docs.mistral.ai resolves to Mistral AI (a documentation host, recorded like any other host of its provider)",
+      "host": "docs.mistral.ai",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Mistral AI",
+        "category": "LLM provider"
+      }
+    },
+    {
+      "label": "docs.mixpanel.com resolves to Mixpanel (a documentation host, recorded like any other host of its provider)",
+      "host": "docs.mixpanel.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "Mixpanel",
+        "category": "Analytics"
+      }
+    },
+    {
+      "label": "docs.mongodb.com resolves to MongoDB Atlas (a documentation host, recorded like any other host of its provider)",
+      "host": "docs.mongodb.com",
+      "expect": {
+        "kind": "provider",
+        "trust": "recognized",
+        "name": "MongoDB Atlas",
+        "category": "Database SaaS"
+      }
     }
   ],
   "sdks": [
@@ -435,6 +751,12 @@
       "ecosystem": "npm",
       "pkg": "stripe",
       "expectId": "stripe"
+    },
+    {
+      "label": "npm:@octokit/rest resolves to github",
+      "ecosystem": "npm",
+      "pkg": "@octokit/rest",
+      "expectId": "github"
     },
     {
       "label": "pypi:SENTRY_SDK resolves to sentry (PEP-503: case AND separator normalization)",

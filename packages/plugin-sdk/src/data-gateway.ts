@@ -160,6 +160,10 @@ export interface DataGateway {
   // re-reading them. Entries recorded under a different rulesetHash are omitted —
   // a new detection rule invalidates every skip.
   scanLedger(rulesetHash: string): Promise<Map<string, ScanLedgerState>>;
+  // Every ledgered path regardless of rulesetHash: the deletion sweep's
+  // universe. Skips are keyed to the ruleset; a deletion is not, so a file
+  // removed before a ruleset change must still be found gone after it.
+  scanLedgerPaths(): Promise<string[]>;
   recordScanned(entries: ScanLedgerEntry[]): Promise<void>;
   // The one-time ReDoS timing verdict for a regex rule (keyed by a content
   // hash of its pattern+flags), so a rule already measured safe — or

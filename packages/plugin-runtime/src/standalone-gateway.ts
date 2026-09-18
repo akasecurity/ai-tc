@@ -538,6 +538,10 @@ export class StandaloneDataGateway
     return Promise.resolve(this.db.scanLedger.entriesForRuleset(rulesetHash));
   }
 
+  scanLedgerPaths(): Promise<string[]> {
+    return Promise.resolve(this.db.scanLedger.allPaths());
+  }
+
   recordScanned(entries: ScanLedgerEntry[]): Promise<void> {
     this.db.scanLedger.upsertEntries(entries);
     return Promise.resolve();

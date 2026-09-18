@@ -773,6 +773,10 @@ export class AttachedDataGateway implements DataGateway, LocalStoreMaintenance {
     return this.deps.local.scanLedger(rulesetHash);
   }
 
+  async scanLedgerPaths(): Promise<string[]> {
+    return this.deps.local.scanLedgerPaths();
+  }
+
   async recordScanned(entries: ScanLedgerEntry[]): Promise<void> {
     return this.deps.local.recordScanned(entries);
   }

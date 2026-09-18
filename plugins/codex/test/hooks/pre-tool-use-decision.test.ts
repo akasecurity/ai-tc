@@ -357,6 +357,7 @@ function fakeGateway(b: PolicyBundle): DataGateway {
     tokenReports: () => Promise.resolve([]),
     knownContentHashes: () => Promise.resolve(new Set<string>()),
     scanLedger: () => Promise.resolve(new Map()),
+    scanLedgerPaths: () => Promise.resolve([]),
     recordScanned: () => Promise.resolve(),
     openAtRestKeysForPath: () => Promise.resolve([]),
     resolvedAtRestKeysForPath: () => Promise.resolve([]),

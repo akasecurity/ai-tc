@@ -1,4 +1,5 @@
 import type { ComponentStatus, UpdateReport } from '@akasecurity/schema';
+import { RELEASE_CHANNEL } from '@akasecurity/schema';
 
 /**
  * The lines explaining a `latest` that came from a marketplace pin.
@@ -35,6 +36,18 @@ function statusLabel(s: ComponentStatus): string {
   return s.updateAvailable ? 'update available' : 'up to date';
 }
 
+/**
+ * The channel to SHOW for a row, empty when there is nothing worth showing.
+ *
+ * Stable and absent read alike, and both render as nothing: a column repeating
+ * `stable` on every row of every default machine is noise that pushes the
+ * status off the width of a terminal, while a row on another channel is the one
+ * case where the version alone does not explain what the machine is following.
+ */
+function channelCell(s: ComponentStatus): string {
+  return s.channel === undefined || s.channel === RELEASE_CHANNEL.Stable ? '' : s.channel;
+}
+
 // Render the installed-vs-latest table plus any not-yet-installed plugins as a
 // single block of text. Shared by `aka check-updates` and the preamble of `aka
 // update` so both read identically.
@@ -43,20 +56,27 @@ export function renderReport(report: UpdateReport): string {
     name: s.name,
     installed: s.installed ?? '—',
     latest: s.latest ?? 'unknown',
+    channel: channelCell(s),
     status: statusLabel(s),
   }));
 
   const nameW = Math.max(9, ...rows.map((r) => r.name.length));
   const instW = Math.max(9, ...rows.map((r) => r.installed.length));
   const latW = Math.max(6, ...rows.map((r) => r.latest.length));
+  // The column appears only when some row has something to put in it, so the
+  // header of a default report is byte-identical to what it has always been.
+  const chanW = rows.some((r) => r.channel !== '')
+    ? Math.max(7, ...rows.map((r) => r.channel.length))
+    : 0;
+  const chanCol = (value: string): string => (chanW === 0 ? '' : `${value.padEnd(chanW)}  `);
 
   const lines: string[] = [];
   lines.push(
-    `  ${'Component'.padEnd(nameW)}  ${'Installed'.padEnd(instW)}  ${'Latest'.padEnd(latW)}  Status`,
+    `  ${'Component'.padEnd(nameW)}  ${'Installed'.padEnd(instW)}  ${'Latest'.padEnd(latW)}  ${chanCol('Channel')}Status`,
   );
   for (const r of rows) {
     lines.push(
-      `  ${r.name.padEnd(nameW)}  ${r.installed.padEnd(instW)}  ${r.latest.padEnd(latW)}  ${r.status}`,
+      `  ${r.name.padEnd(nameW)}  ${r.installed.padEnd(instW)}  ${r.latest.padEnd(latW)}  ${chanCol(r.channel)}${r.status}`,
     );
   }
 

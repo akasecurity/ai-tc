@@ -254,7 +254,7 @@ const MESSAGE_TAIL = [
   'and unix/named-pipe sockets are allowed; everything else is refused here.',
   '',
   'Reach the outside world only through a seam a test can inject — see',
-  "local-ops' ReportDeps.viewVersion and judge.ts's spawnClaude — never from a",
+  "local-ops' ReportDeps.viewDistTags and judge.ts's spawnClaude — never from a",
   'test itself.',
 ].join('\n');
 

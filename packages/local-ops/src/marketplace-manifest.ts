@@ -3,6 +3,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import type { AgentPlugin } from './registry.ts';
+// `semver.ts` imports nothing from this module, so reaching for it here keeps
+// the LEAF property the header below protects.
+import { isSemver } from './semver.ts';
 
 // What the HOST will actually install, read from the marketplace manifest it
 // resolved — as distinct from what npm has published.
@@ -96,5 +99,15 @@ export function marketplacePinnedVersion(
   );
   if (entry === undefined || !isRecord(entry.source)) return null;
   const version = entry.source.version;
-  return typeof version === 'string' && version !== '' ? version : null;
+  // An EXACT version only. A `version` field may also carry a RANGE (`^2.0.0`)
+  // or a dist-tag, and neither is something this report can compare:
+  // compareSemver returns 0 for anything it cannot parse, so a range was
+  // reported as `Latest: ^0.11.0-beta.0` with `updateAvailable` false for ever
+  // — a row that can never move and never says why.
+  //
+  // Refusing falls the caller back to the npm answer for the channel this
+  // machine follows, which is the version the host will really resolve such a
+  // pin to. So the refusal is what makes a non-exact pin usable rather than
+  // freezing the row.
+  return typeof version === 'string' && isSemver(version) ? version : null;
 }

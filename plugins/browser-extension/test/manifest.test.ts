@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { NATIVE_HOST_NAME } from '../src/constants.ts';
+import { isLegalChromeVersion, manifestVersionFields } from '../src/packaging/store-zip.ts';
 import { ADAPTER_HOSTNAMES, resolveAdapter } from '../src/providers/registry.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -16,10 +17,20 @@ const REPO_ROOT = join(HERE, '..', '..', '..');
 
 interface ExtensionManifest {
   key: string;
+  version: string;
   content_scripts: { matches: string[] }[];
   host_permissions?: string[];
   permissions: string[];
 }
+
+/** Any of the three files below this suite reads a version out of. */
+interface Versioned {
+  version: string;
+  version_name?: string;
+}
+
+const readVersioned = (...segments: string[]): Versioned =>
+  JSON.parse(readFileSync(join(...segments), 'utf8')) as Versioned;
 
 const manifest = JSON.parse(
   readFileSync(join(PACKAGE_ROOT, 'manifest.json'), 'utf8'),
@@ -65,6 +76,43 @@ describe('manifest.json stays in sync with the provider registry', () => {
 
   it('requests exactly the nativeMessaging permission', () => {
     expect(manifest.permissions).toEqual(['nativeMessaging']);
+  });
+});
+
+describe('the extension version has ONE source of truth', () => {
+  // package.json is it. src/native-host/host.ts stamps that field into
+  // meta.pluginBuild on every session, scripts/build.mjs stamps it into
+  // dist/manifest.json, and cli/scripts/bundle-extension.mjs refuses to bundle a
+  // built manifest whose version is not the CLI's — so the three numbers a user
+  // can see (chrome://extensions, the recorded build, the CLI they installed it
+  // from) are one number or the pack step fails.
+  const self = readVersioned(PACKAGE_ROOT, 'package.json');
+
+  it('the committed manifest carries a version Chrome rejects', () => {
+    // All-zero is documented as invalid, so an UNSTAMPED tree cannot be loaded
+    // unpacked or uploaded — which is what makes a missing stamping step
+    // detectable rather than shipping whatever placeholder was committed.
+    expect(isLegalChromeVersion(manifest.version)).toBe(false);
+  });
+
+  it('the built manifest carries the package version, and Chrome accepts it', () => {
+    // globalSetup has run `pnpm build`, so dist/ is present and current. Both
+    // fields are read, because a pre-release package version is split across
+    // them: `version` holds the numeric core and `version_name` the whole string.
+    const built = readVersioned(PACKAGE_ROOT, 'dist', 'manifest.json');
+    const expected = manifestVersionFields(self.version);
+    expect(built.version).toBe(expected.version);
+    expect(built.version_name).toBe(expected.version_name);
+    expect(built.version_name ?? built.version).toBe(self.version);
+    expect(isLegalChromeVersion(built.version)).toBe(true);
+  });
+
+  it('the package sits on the CLI shared version line', () => {
+    // The pack-time refusal in cli/scripts/bundle-extension.mjs runs on every
+    // PR (ci.yml's packaged-artifact job packs the CLI, which runs its prepack),
+    // so a drift here reddens the whole tree rather than one release run. This
+    // says so where the number is, instead of in a pack log.
+    expect(self.version).toBe(readVersioned(REPO_ROOT, 'cli', 'package.json').version);
   });
 });
 
@@ -345,12 +393,34 @@ describe('turbo hashes the CLI source these guards read', () => {
   // ci.yml restores .turbo/cache with restore-keys that fall back across
   // commits, so the stale hit is reachable in CI and not just locally.
   //
-  // Read as text with a scoped regex rather than parsed: turbo.json is JSONC and
+  // Located with a scoped regex rather than JSON.parse: turbo.json is JSONC and
   // carries comments throughout, which is how the rest of this repo reads it.
   const TURBO_JSON = readFileSync(join(REPO_ROOT, 'turbo.json'), 'utf8');
   const task = /"@akasecurity\/plugin-browser-extension#test"\s*:\s*\{([\s\S]*?)\n {4}\}/.exec(
     TURBO_JSON,
   );
+
+  /**
+   * The elements of the task's `inputs` array, with `//` lines dropped first.
+   *
+   * The array rather than the task body as text, because a substring match over
+   * the body is satisfied by two things turbo hashes nothing for: a
+   * commented-out entry, and a longer path that merely CONTAINS the one named —
+   * `$TURBO_ROOT$/cli/package.json.disabled` reads as covered and hashes no file
+   * that exists. Both were observed passing a text match.
+   */
+  function declaredInputs(body: string): string[] {
+    const array = /"inputs"\s*:\s*\[([\s\S]*?)\]/.exec(body.replace(/^[ \t]*\/\/.*$/gm, ''));
+    const list = array?.[1];
+    if (list === undefined) return [];
+    const out: string[] = [];
+    for (const [, value] of list.matchAll(/"([^"]*)"/g)) {
+      if (value !== undefined) out.push(value);
+    }
+    return out;
+  }
+
+  const inputs = declaredInputs(task?.[1] ?? '');
 
   it('declares a task entry for this package', () => {
     expect(
@@ -360,17 +430,36 @@ describe('turbo hashes the CLI source these guards read', () => {
     ).not.toBeNull();
   });
 
+  it('declares a non-empty inputs array', () => {
+    // Asserted on its own so a moved or reshaped `inputs` reports THAT, rather
+    // than arriving at the three membership checks below as an empty list and
+    // reading as three missing files.
+    expect(inputs.length).toBeGreaterThan(0);
+    // $TURBO_DEFAULT$ keeps the package's own files in the hash: naming inputs
+    // REPLACES the default set, so dropping it would leave the task hashing the
+    // three cross-package files and nothing of this package at all.
+    expect(inputs).toContain('$TURBO_DEFAULT$');
+  });
+
   it('names the CLI source in its inputs', () => {
     expect(
-      task?.[1],
+      inputs,
       'the task must hash cli/src/commands/extension.ts, or a CLI-only change replays a cached pass',
     ).toContain('$TURBO_ROOT$/cli/src/commands/extension.ts');
+  });
+
+  it('names the CLI manifest in its inputs', () => {
+    expect(
+      inputs,
+      'the task must hash cli/package.json, or a CLI-only version bump replays a cached pass ' +
+        'at exactly the moment the shared-version-line guard exists to fire',
+    ).toContain('$TURBO_ROOT$/cli/package.json');
   });
 
   it('names turbo.json in its inputs, so removing them re-runs this suite', () => {
     // Self-coverage: without this, deleting the input above is invisible here
     // for the same reason the CLI source was — the config that silences the
     // guard is not itself hashed by it.
-    expect(task?.[1]).toContain('$TURBO_ROOT$/turbo.json');
+    expect(inputs).toContain('$TURBO_ROOT$/turbo.json');
   });
 });

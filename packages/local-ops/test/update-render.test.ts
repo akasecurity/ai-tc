@@ -81,3 +81,53 @@ describe('renderReport — the marketplace-pin note', () => {
     ).not.toContain('Pinned by a marketplace');
   });
 });
+
+/**
+ * The release channel a row's versions were resolved against.
+ *
+ * Shown only when it is not stable. A column repeating `stable` on every row of
+ * every default machine is noise that pushes the status off the width of a
+ * terminal, while a row on another channel is the one case where the version
+ * alone does not say what the machine is following.
+ */
+describe('renderReport — the channel column', () => {
+  const headerOf = (out: string): string => out.split('\n')[0] ?? '';
+
+  it('carries no channel column on a default report', () => {
+    // Both readings of "default": a producer that predates channels and sets
+    // nothing, and one that resolved stable and said so.
+    for (const row of [report(), report({ channel: 'stable' })]) {
+      const out = renderReport(row);
+      expect(headerOf(out)).not.toContain('Channel');
+      expect(out).not.toContain('stable');
+      // The positive control: an empty render satisfies both absences above.
+      expect(out).toContain('Claude Code plugin');
+      expect(out).toContain('up to date');
+    }
+  });
+
+  it('names the channel of a row that is not on stable', () => {
+    const out = renderReport(report({ channel: 'beta', installed: '0.11.0-beta.2' }));
+
+    expect(headerOf(out)).toContain('Channel');
+    expect(out).toContain('beta');
+    // The column is a column, not a note appended somewhere: the row carrying
+    // the version has to be the row carrying the channel.
+    const row = out.split('\n').find((line) => line.includes('0.11.0-beta.2'));
+    expect(row).toBeDefined();
+    expect(row).toContain('beta');
+  });
+
+  it('keeps the status readable beside it', () => {
+    // The failure a hand-built column produces: the status ends up inside the
+    // channel cell, or the cell swallows the padding and the two run together.
+    const out = renderReport(
+      report({ channel: 'nightly', updateAvailable: true, latest: '0.9.13' }),
+    );
+    const row = out.split('\n').find((line) => line.includes('0.9.13'));
+    expect(row).toBeDefined();
+    expect(row).toContain('nightly');
+    expect(row).toContain('update available');
+    expect(row).toMatch(/nightly\s+update available/);
+  });
+});

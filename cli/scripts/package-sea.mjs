@@ -15,6 +15,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -159,11 +160,15 @@ execFileSync(process.execPath, ['--experimental-sea-config', join(cliDir, 'sea-c
   stdio: 'inherit',
 });
 
-// 3. Copy the running node binary and strip its signature (macOS) before injecting.
+// 3. Copy the running node binary and strip its signature (macOS, Windows) before
+// injecting. Node's single-executable-application docs give this order on both
+// platforms — take the signature off, then inject — because the injection invalidates
+// whatever was there.
 const nodeBin = realpathSync(process.execPath);
 copyFileSync(nodeBin, exePath);
 chmodSync(exePath, 0o755);
 if (isMac) execFileSync('codesign', ['--remove-signature', exePath], { stdio: 'inherit' });
+if (isWin) stripWindowsSignature(exePath);
 
 // 4. Inject the blob. The SEA fuse sentinel changed between Node releases, so read it
 // from the target binary rather than hard-coding it.
@@ -187,6 +192,89 @@ if (!/^\d+\.\d+\.\d+/.test(version)) {
   throw new Error(`packaged binary --version returned "${version}"`);
 }
 process.stdout.write(`packaged: ${exePath} (verified v${version})\n`);
+
+// Descending SDK version order: numeric per dot-separated segment, so 10.0.26100.0
+// sorts above 10.0.9999.0 rather than below it the way a string compare would.
+function bySdkVersionDesc(a, b) {
+  const left = a.split('.').map(Number);
+  const right = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    const delta = (right[i] ?? 0) - (left[i] ?? 0);
+    if (delta !== 0) return delta;
+  }
+  return 0;
+}
+
+// The newest x64 signtool.exe an installed Windows SDK provides, or undefined.
+//
+// Enumerated to an ABSOLUTE path, never spawned by bare name. Windows searches the
+// working directory ahead of PATH, so a bare `signtool.exe` runs a file sitting in
+// whatever repository the build was started from; and libuv's own search tries only
+// `.com` and `.exe`, so a bare name needs a shell, which re-parses the argv. An
+// absolute path avoids both.
+//
+// Newer SDKs nest tools under bin/<version>/<arch>/; older ones put them straight
+// under bin/<arch>/, which is the fallback.
+//
+// The roots are declared inside the function on purpose: `stripWindowsSignature` is
+// called from step 3, above every `const` down here, so a module-scope binding would
+// be in its temporal dead zone on the one platform that calls it.
+function findSigntool() {
+  const binDirs = [
+    'C:\\Program Files (x86)\\Windows Kits\\10\\bin',
+    'C:\\Program Files\\Windows Kits\\10\\bin',
+  ];
+  for (const binDir of binDirs) {
+    if (!existsSync(binDir)) continue;
+    const versions = readdirSync(binDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && /^\d+(\.\d+)*$/.test(entry.name))
+      .map((entry) => entry.name)
+      .sort(bySdkVersionDesc);
+    for (const version of [...versions, '']) {
+      const candidate = join(binDir, version, 'x64', 'signtool.exe');
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
+// Take Node's own Authenticode signature off the copied node.exe. The injection
+// below invalidates it, so shipping it leaves every Windows binary carrying a
+// signature that fails verification — which reads as tampering rather than as the
+// unsigned binary this channel actually ships.
+//
+// Best effort, and deliberately so: signtool comes with the Windows SDK, which a
+// machine building this need not have, and a stale signature is a smaller problem
+// than a release that cannot be cut. Exactly one line reports which of the four
+// outcomes happened, because a silent no-op and a silent success read alike in a
+// build log.
+//
+// The LOOKUP is inside the try as well as the spawn. Enumerating the SDK's
+// version directories reads the filesystem, so it can fail on its own — EACCES or
+// EPERM on a locked-down machine, or ENOENT when a directory goes between the
+// existsSync and the readdirSync — and a lookup that threw past this function
+// would end the packaging run, which is the opposite of best effort. `signtool`
+// stays undefined until the lookup returns, so the catch can tell a failed lookup
+// from a failed strip and name the right one.
+function stripWindowsSignature(target) {
+  let signtool;
+  try {
+    signtool = findSigntool();
+    if (signtool === undefined) {
+      process.stdout.write('windows signature: not stripped — no SDK signtool.exe found\n');
+      return;
+    }
+    execFileSync(signtool, ['remove', '/s', target], { stdio: 'ignore' });
+    process.stdout.write(`windows signature: stripped by ${signtool}\n`);
+  } catch (err) {
+    const code = err?.status ?? err?.code ?? 'unknown';
+    if (signtool === undefined) {
+      process.stdout.write(`windows signature: not stripped — SDK lookup failed with ${code}\n`);
+      return;
+    }
+    process.stdout.write(`windows signature: strip failed — ${signtool} exited ${code}\n`);
+  }
+}
 
 // Read the "NODE_SEA_FUSE_<hex>" sentinel embedded in a node binary.
 function extractFuse(nodeBinPath) {

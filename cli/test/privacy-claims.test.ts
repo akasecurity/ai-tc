@@ -28,17 +28,22 @@ import { GLOBAL_FLAGS } from '../src/command-manifest.ts';
  * Every npm package the passive update check looks up, taken from the real
  * report builder rather than named here.
  *
- * `gatherReport` asks `viewVersion` once for the CLI and once per marketplace
+ * `gatherReport` asks `viewDistTags` once for the CLI and once per marketplace
  * agent that has both a ref and an npm package, so recording that seam is what
  * the registry actually sees. Derived because the footnote said "this package",
  * singular, while three lookups crossed — and a hand-written list here would
  * have been just as wrong, just as invisibly. `installed` is deliberately EMPTY:
  * the plugin lookups run whether or not the plugin is installed, which is the
  * reason the copy may not say the registry learns what you have.
+ *
+ * A push-list rather than a Set, which is what makes a SECOND lookup per
+ * package redden the count assertion below instead of passing: the seam asks
+ * for a whole dist-tag map precisely so one request per package answers every
+ * channel, and reading a channel tag and `latest` separately would double it.
  */
 const LOOKED_UP_PACKAGES: string[] = [];
 gatherReport({
-  viewVersion: (pkg: string) => {
+  viewDistTags: (pkg: string) => {
     LOOKED_UP_PACKAGES.push(pkg);
     return null;
   },

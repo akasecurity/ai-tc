@@ -119,7 +119,14 @@ deliberately outside it and are not violations — `AGENT_PLUGINS[].id` in
 `packages/local-ops/src/registry.ts` (the ref `aka plugins install` takes, which
 carries its own `sourceTool` field alongside) and the browser extension's
 content-script provider ids, which name a web app rather than a capture and whose
-files import nothing from schema on purpose.
+files import nothing from schema on purpose. That is a statement about how an
+`AGENT_PLUGINS` id is SPELLED, and only that: the entries' install coordinates ARE
+gated, by `packages/eslint-config/test/release-identity.test.js` — `pluginName`,
+`marketplace` and `cliBin` are all present or all absent, `installHint` is present
+exactly when they are absent (Antigravity's permanent state: that host has no
+marketplace and installs from a local directory), every `npmPackage` names a tracked
+non-private workspace package, and an entry whose marketplace is this repository
+agrees with `.claude-plugin/marketplace.json`.
 `src/zod/harness-map.ts` holds both spellings as named-member const objects —
 `SOURCE_TOOL` (the wire id a plugin stamps on a capture, `'claude-code'`) and `HARNESS` (the
 display id the dashboard renders, `'claudecode'`). Four rules keep them from re-multiplying,
@@ -306,8 +313,15 @@ temp dir, sending that (public-package) graph the same way. The binary channel's
 is the second such path: `cli/scripts/package-sea.mjs` shells out to `npm install` to place
 the Next standalone server's runtime dependencies (`next`, `react`, `react-dom` and their
 transitive graph) inside the archive, so `release-binaries.yml` and `build-binaries.yml`
-both reach the registry — and `pnpm package:sea` does not run offline. Both are repository
-tooling, not product paths; nothing a user installs performs either.
+both reach the registry — and `pnpm package:sea` does not run offline. A third path reaches
+somewhere other than the registry: on a `bin-v*` tag push, `release-binaries.yml`'s attestation
+step exchanges the runner's OIDC token for a short-lived signing certificate from Sigstore
+(Fulcio), logs the signed provenance to its transparency log (Rekor), and uploads it to GitHub's
+attestations API. A fourth is the pair of publish jobs behind it, which write the rendered
+Homebrew formula and Scoop manifest into `akasecurity/homebrew-tap` and `akasecurity/scoop-bucket`
+through GitHub's contents API with a per-repository token. All four are repository tooling, not
+product paths; nothing a user installs performs any of them, and the installers never contact
+Sigstore.
 
 **Four gates enforce this, and they cover different things.** Losing track of which is
 which is how "enforced by ESLint and CI" becomes a claim nobody has checked:
@@ -1005,8 +1019,11 @@ skills/               agent skills (e.g. write-detection-rule)
 tools/                repo tooling, never shipped: the installer one-liners and
                       the installer workspace package whose suite drives them end
                       to end, plus audit-gate (CI dependency-audit),
-                      portability-gate (cross-platform test rules) and
-                      coverage-gate (per-PR diff coverage)
+                      portability-gate (cross-platform test rules),
+                      coverage-gate (per-PR diff coverage), and
+                      package-manifests (renders the Homebrew formula, Scoop
+                      manifest and VERSION file a binary release publishes,
+                      from that release's own SHA256SUMS)
 ```
 
 ## Adding a new workspace package
@@ -1156,7 +1173,9 @@ tools/                repo tooling, never shipped: the installer one-liners and
    forces a human to notice the new package — what actually stops it shipping
    unguarded are the assertions next to it (a missing config, a config that never
    extends the shared one, a `lint` script that misses a directory or a root file, a
-   root file the linter cannot parse).
+   root file the linter cannot parse). A package under `tools/` also takes a
+   `WALL_EXEMPT_PACKAGES` entry in `package-walls.test.js`, and moves the lint-script
+   count `required-checks.test.js` pins.
 
 7. If it has a `test` script, run those tests through **vitest** and wire the
    no-network guard into its `vitest.config.ts`, then add its name to
@@ -1259,6 +1278,21 @@ When a change touches the web-ui or any bundled package and the user wants to pu
    - `setup-wizard` change → `plugins/claude-code`, `plugins/codex` **and**
      `plugins/antigravity` (all three bundle it; the CLI does not).
    - The CLI and all three plugins normally move together on one shared version line.
+   - **Any `cli` bump → `plugins/browser-extension` too, to the SAME version.** The extension
+     ships inside the CLI tarball, its `package.json` is the one place its version lives
+     (`scripts/build.mjs` stamps it into `dist/manifest.json`, and the native host records it as
+     `meta.pluginBuild` on every session), and `cli/scripts/bundle-extension.mjs` REFUSES to
+     bundle a built manifest whose version is not the CLI's. That script runs from the CLI's
+     `prepack`, which `ci.yml`'s `packaged-artifact` job runs — so a CLI-only bump reddens
+     every pull request, not one release run. The committed `manifest.json` carries `0.0.0`,
+     which Chrome rejects, so an artifact nobody stamped is detectable rather than shippable.
+     A STORE archive (`package:zip`) is built from a bare version only, and only from a `dist/`
+     that agrees with `package.json` on both halves (`storeArchiveRefusal`): every pre-release of
+     one core collapses onto the same Chrome `version` and the same archive name, so at most one
+     could ever be uploaded, and a stale `dist/` would otherwise ship under the old number.
+     Chrome's `version` takes one to four integers and **no suffix**, so a pre-release package
+     version is built as its numeric core in `version` plus the whole string in `version_name`
+     (`builtManifest` in `src/packaging/store-zip.ts`); the pack-time check reads both halves.
 2. Keep `plugins/claude-code/.claude-plugin/plugin.json` in sync with
    `plugins/claude-code/package.json`, `plugins/codex/.codex-plugin/plugin.json` in sync
    with `plugins/codex/package.json`, and `plugins/antigravity/plugin.json` (Antigravity reads
@@ -1274,9 +1308,116 @@ summary or PR description. The steps above are what a **release** does: which ar
 derivable from the bundling rules, and how far they move is settled at release time by whoever
 cuts it.
 
-Versions are bumped by hand in a `chore(release):` commit (no changesets). Every release is a
-bare `X.Y.Z` on the one shared version line — never a pre-release suffix. The CLI and both
-plugins currently share the `0.9.x` line.
+Versions are bumped by hand in a `chore(release):` commit (no changesets). A stable release is
+a bare `X.Y.Z` on the one shared version line; a pre-release carries a suffix and is routed by
+it (below). The CLI and all three plugins currently share the `0.9.x` line.
+
+### Release channels — the suffix decides the dist-tag
+
+Every npm publish step in `release-cli.yml` and the three `release-plugin-*.yml` routes on the
+version it is publishing, with one shell `case`: a `-beta.*` version goes to the `beta` dist-tag,
+`-nightly.*` to `nightly`, any other suffixed version to `rc`, and a bare `X.Y.Z` to `latest`.
+**On npm, only a bare version moves `latest`** — and only a bare `cli-v*` tag moves the
+`cli-latest` alias — so a published pre-release stays reachable by its dist-tag and reaches no
+machine that did not ask for it. The binary channel gives the same guarantee by a DIFFERENT
+mechanism, and the difference is load-bearing: see "Binary (SEA) channel" below. There is no separate
+tag prefix for a pre-release: `cli-v0.10.0-beta.1` rides the existing prefix, which is what keeps
+each workflow's tag-to-manifest equality check in force. `notify-marketplace.yml` dispatches a
+suffixed version like any other and leaves declining it to the importer that owns the pin, which
+accepts only an exact `x.y.z` — that rule lives on that side, in one place.
+
+`packages/eslint-config/test/release-channels.test.js` holds that by EXECUTING each publish
+step's extracted `case` block under bash against sample versions, rather than by reading the
+arms — arm ORDER is the defect that matters (`*-*` ahead of `*-beta.*` sends every beta to `rc`),
+and only running it shows that. It reaches the workflows through one shared reader,
+`test/helpers/release-workflows.js`, which `release-identity.test.js` uses too: two readers of
+one shell string are free to disagree about what a workflow publishes.
+
+**A pre-release moves the whole shared line.** `release-identity.test.js` puts the four
+published artifacts on one version and each plugin's identity suite pins it to the CLI's; the
+extension is private, so it is outside that audit's set and is pinned to `cli/package.json` by
+its own `test/manifest.test.ts`. So `0.10.0-beta.1` is a `chore(release):` commit
+moving all four published manifests, the three host manifests and the extension together. Cut
+that commit on a release branch: on `main` it would sit in front of the next stable cut until the
+matching stable shipped.
+
+**A machine's channel is DERIVED, never stored.** `channelOfVersion` (`@akasecurity/local-ops`,
+`src/release-channel.ts` — pure, no I/O) reads it off the first pre-release identifier of the
+version a component is RUNNING, per component, every time the update report is built. There is
+no settings field, and adding one would be wrong rather than merely bigger: a stored channel can
+disagree with the bytes on disk, and it would be a third `settings.json`-class writer (§6). The
+update surfaces ask `npm view <pkg> dist-tags --json` and offer the newer of the channel's own tag
+and `latest` — that max is the whole graduation mechanism, since `beta` goes on pointing at
+`0.10.0-beta.3` after `0.10.0` ships. A stable machine reads `latest` and nothing else.
+
+**What is offered is what is installed.** The install spec is `<package>@<the resolved VERSION>`,
+never `@<dist-tag>`, on all three paths — `aka update`, `aka update --channel`, and the
+dashboard's apply — because all three build it through one function (`cliInstallSpec` in
+`install-channel.ts`). Installing the tag instead is what made a graduated beta machine re-install
+its own pre-release and be offered the same update for ever. That version is REGISTRY-SUPPLIED
+text headed for argv, so it crosses `isExactSemver` first — not `isSemver`, which trims, so
+`' 1.0.0 '` and `'1.0.0\n'` pass it. Anything the strict check refuses is treated as unresolved,
+and only then does the spec fall back to the dist-tag from the closed `DIST_TAG` table. Where the
+offered version came from is a typed answer (`RELEASE_TAG_SOURCE`: channel, graduated,
+unpublished, unknown) rather than something folded into `latest`.
+
+The vocabulary is two const-object registries joined by member name (§2's rule, for the same
+reason): `RELEASE_CHANNEL` is what a user types (`stable`), `DIST_TAG` — annotated
+`Record<ReleaseChannel, string>` — is what the registry serves (`latest`). Collapsing them makes
+the documented `--channel stable` unparseable. The switchable set is derived from `DIST_TAG`'s
+keys, never re-listed.
+
+`aka update --channel <stable|beta|nightly>` switches the **CLI only**, including with the `all`
+target: a plugin's channel is its host's marketplace registration, which this process cannot
+change, so the flag is refused outright for a plugin target. The token is parsed against the
+closed union BEFORE any spawn, because the Windows shell path concatenates argv unescaped (§7).
+An explicitly requested channel that serves NO tag is refused before the report is rendered,
+before any confirmation and before any spawn — rendering first would print the stable version
+beside the requested channel's name, which is the sentence a user acts on. The derived path
+keeps its fallback to `latest`, which is intended: a beta machine whose tag has been retired is
+still offered the stable. The binary and Homebrew installs cannot express a channel and say so.
+A standalone binary's plan names WHO manages it: `SEA_OWNER` (Homebrew / Scoop / Standalone,
+`install-channel.ts`) is derived from the running executable's real path — a brew-prefix-anchored
+`Cellar/aka/` keg is Homebrew (`brew upgrade aka`); an `apps/aka/<version or current>/` run is
+Scoop (`scoop update aka`) only when a sibling `shims` directory exists at that root, because
+`install.ps1 --dir <…>\apps\aka` lays down a byte-identical path on a machine with no Scoop;
+anything else is Standalone (re-run the installer one-liner), and only Standalone carries an
+`installRoot`. The advice table is annotated `Record<SeaOwner, …>` and `describeSea` has no
+default, so a fourth owner fails to compile at both. The npm-under-brew case (`kind: 'homebrew'`,
+an npm global inside brew's `node` keg) still prints `brew upgrade aka`, which now names the
+tap's formula: it fails on a machine that has not tapped it, and on one carrying both it upgrades
+the standalone copy rather than this npm one. Changing that advice is deferred on purpose —
+`brew install akasecurity/tap/aka` collides at link with the npm `aka` already in that prefix.
+`aka update` only moves forward: switching to a channel whose newest release is behind the
+running copy installs nothing and says so. A marketplace `version`
+pin is honoured only when it is an EXACT semver — a range used to be returned verbatim, which
+froze `updateAvailable` at false for ever.
+
+What is NOT built: nothing publishes a `nightly`, and no beta marketplace entry exists. A Claude
+Code marketplace entry pins an exact version or a range, never a dist-tag, while a Codex entry
+may name a dist-tag; and Claude Code installs from a different marketplace REPOSITORY
+(`akasecurity/marketplace`, as `ai-tc@akasecurity`) than Codex (this one, as `aka-codex@ai-tc`),
+so the two entries live in different manifests. A beta door for plugin users is therefore a
+per-host decision, and it has not been made. `rc` is a dist-tag the workflows publish and NOT a
+channel: `--channel rc` is refused and a machine running an `rc` build reads as stable, so an
+`rc` is installed by exact version or `@rc`.
+
+### Release branches
+
+`ci.yml` triggers for `main` AND every `release/**` branch on both `push` and `pull_request`, so
+a pull request based on a release branch runs the same jobs and reports the same check NAMES as
+one based on `main`. There is deliberately **no lighter gate** for a promotion: the jobs have no
+`needs:` edges and run in parallel, so dropping legs saves no wall clock; and "this code already
+passed on `main`" is true of each commit but not of the merged tree, which no run has seen.
+
+Two things are outside the tree and stay human steps. Branch protection for release branches is
+a repository setting — until it names the same required checks, a release-base pull request
+REPORTS them and can still be merged red. A classic protection pattern uses the same `fnmatch`
+rules as a workflow filter — `*` stops at a `/` — so `release/*` covers `release/stable` and not
+`release/0.9/stable`; the protection-side spelling that matches what `ci.yml`'s `release/**`
+matches is `release/**/*`. A branch named bare `release` matches neither list and gets no CI at
+all, so release branches are named `release/<something>`. On the push side, the dependency audit,
+CodeQL and the internal-path guard still run post-merge for `main` only.
 
 ### Binary (SEA) channel — `bin-v*`
 
@@ -1284,18 +1425,114 @@ The `aka` CLI also ships as a self-contained **Standalone Executable Application
 binary that embeds the Node runtime, so end users need neither Node nor npm. This is a **separate
 release channel** from the `cli-v*` npm publish:
 
+- **Bare versions only — there is no pre-release lane.** A pushed tag that is not exactly
+  `bin-v<X.Y.Z>` is REFUSED by a first `verify-tag` job the build fan-out `needs:`, so it costs
+  one runner rather than four and reaches neither the Release nor the `bin-latest` move (which is
+  additionally wrapped in a bare-version `case`). That refusal is the ONLY thing standing between
+  a pre-release binary and every default install: both installers take the NEWEST `bin-v*`
+  release and deliberately ignore GitHub's prerelease flag, and they are themselves fetched from
+  `bin-latest`. A real lane would need an opt-in channel selector in both installers, a default
+  ref narrowed to bare tags, and a second tag to serve the installers from — none of which
+  exists. The guard EXECUTES the refusal block under bash, and separately pins that the block is
+  reached at all: falsifying the step's own `if:`, `continue-on-error` on the job, and a
+  job-level `if: always()` on the fan-out each left every executing case green.
 - **Trigger:** push a tag `bin-v<version>`. It must equal `cli/package.json`'s version —
   `release-binaries.yml` gates on it and fails the release on a mismatch. `workflow_dispatch` runs a
   build-only dry run (no Release).
 - **Build:** `release-binaries.yml` builds the SEA on native runners per platform (no cross-compile)
   — `darwin-arm64`, `linux-x64`, `linux-arm64`, `win32-x64` — via `build:sea` → `bundle:web-ui` →
   `package:sea` → `archive:sea`.
-- **Assets:** `aka-<version>-<triple>.tar.gz` (`.zip` on Windows) plus an aggregated `SHA256SUMS`.
-  The `tools/installer/` one-liners verify the download against it, fail-closed.
+- **Assets:** `aka-<version>-<triple>.tar.gz` (`.zip` on Windows) plus an aggregated `SHA256SUMS`,
+  and three files the release job RENDERS from that sums file with
+  `tools/package-manifests/src/render-manifests.ts` (run under Node 24 type stripping, no pnpm
+  install — the release job sets up Node 24 for it): `aka.rb` (the Homebrew formula), `aka.json`
+  (the Scoop manifest) and `VERSION`. Both release steps set `fail_on_unmatched_files: true`, so
+  a missing asset fails the run instead of publishing a partial release. The
+  renderer takes `--version`, `--repo` (required, no default — a fork's dispatch run must not
+  render `akasecurity` URLs), `--sums` and `--out`, renders everything in memory and writes
+  nothing on any refusal. The formula and manifest point at the IMMUTABLE versioned asset URLs,
+  never at `bin-latest`. The `tools/installer/` one-liners verify the download against
+  `SHA256SUMS`, fail-closed.
 - **`bin-latest`:** on success the workflow force-moves `bin-latest` to the release commit; the
   installer one-liners (`install.sh`/`install.ps1`) are fetched from `bin-latest`, not `main`.
+  It then updates a ROLLING GitHub Release on that tag (`Publish the rolling bin-latest release`,
+  gated on a push AND on the staging step having seen a bare `bin-vX.Y.Z`, so a dispatch dry run
+  cannot touch it) carrying VERSION-LESS alias copies of the four archives
+  (`aka-darwin-arm64.tar.gz`, `aka-linux-x64.tar.gz`, `aka-linux-arm64.tar.gz`,
+  `aka-win32-x64.zip`), a `SHA256SUMS` naming those aliases, and the three rendered files. That
+  is what makes `https://github.com/akasecurity/ai-tc/releases/download/bin-latest/<alias>` a
+  stable one-click URL: GitHub's own `/releases/latest` is unusable here — every release is
+  flagged pre-release, and six tag prefixes share one Releases list, so its election could land
+  on a plugin release. The aliases are staged in `dist-latest/`, never in `dist/`, because the
+  versioned release's `dist/aka-*` globs would otherwise sweep them in under names it never
+  promised. The rolling release stays `prerelease: true` and `make_latest: false`.
+- **`bin-latest` only moves FORWARD.** The workflow's concurrency group is per tag, so nothing
+  else orders two releases: a re-run of an older tag's failed release, or two tags pushed out of
+  order, would otherwise move it back. `Decide whether bin-latest moves forward` reads the
+  version the tag names on origin and lets through only one at least as new — the SAME version
+  included, because re-running is how a half-finished rolling upload is repaired — and the move
+  pushes `--force-with-lease` against the value it read, so a release of another version that
+  moved the tag in between fails the push instead of being overwritten. A read that fails for
+  any reason but "no such tag" refuses rather than moving blind. There is no fixed concurrency
+  group: GitHub cancels a pending run when a newer one joins, which drops a whole release, and
+  the `queue: max` key that avoids that is rejected by the actionlint version CI pins. What the
+  lease does not cover is two releases whose rolling UPLOADS overlap after both moved the tag in
+  turn; the tag cannot go backward, the assets can end up mixed, and re-running the newer
+  release's job makes them whole. A failure after the tag moved is named in the log by
+  `Explain a bin-latest left half-published`.
+- **Package managers.** Two jobs after `release`, `publish-homebrew-tap` and
+  `publish-scoop-bucket`, push the rendered `Formula/aka.rb` to `akasecurity/homebrew-tap` and
+  `bucket/aka.json` to `akasecurity/scoop-bucket` through the contents API, with a fine-grained
+  PAT per repository (`HOMEBREW_TAP_TOKEN`, `SCOOP_BUCKET_TOKEN`). Its value is read exactly once,
+  onto `GH_TOKEN` in the push step's `env:`; the job's gates read a boolean
+  (`${{ secrets.X != '' }}`) instead, because a job-level mapping of the value puts it in every
+  step's environment, the third-party artifact download included. Both targets are HARDCODED
+  rather than repository variables, so the READMEs can be held to the same spelling. Each job
+  holds `contents: read` here and no write scope. On the canonical repository an empty secret
+  FAILS the job with an `::error::` naming it — the Release and the `bin-latest` move have already
+  happened, so the red run is the signal to add the secret and re-run, which a content compare
+  makes a no-op. A fork skips. Each push only moves forward as well: the version already there is
+  read off its versioned download URL, which both formats carry, and a file serving a newer one is
+  left in place — so re-running an older release, or this job alone, cannot downgrade the tap or
+  the bucket. The formula
+  installs the whole archive directory into `libexec` and symlinks `bin/aka` (Node resolves
+  `process.execPath` through the symlink, which is how `boot.cjs` still finds its sidecars);
+  `brew install ./aka.rb` from the attached copy is refused by current Homebrew, so the attached
+  `aka.rb` is an audit copy and the tap is the only Homebrew door. `scoop install <url>` of the
+  attached `aka.json` IS an install path. There is no darwin-x64 build, so the formula refuses
+  Intel macOS (`depends_on arch: :arm64`).
 - `cli-v*` (npm) and `bin-v*` (binary) are **independent** — a binary release needs no npm publish
   and vice versa, though they normally share one version line.
+- **Signing state, stated exactly.** The macOS binary is AD-HOC signed (`codesign --sign -`), which
+  is mandatory rather than decorative: injecting the blob invalidates Node's own signature, and an
+  unsigned arm64 Mach-O is killed at exec. It is NOT Developer ID signed and NOT notarized. The
+  Windows binary carries no VALID signature. `package-sea.mjs` strips `node.exe`'s own
+  Authenticode signature before the inject, but best-effort: it ships unsigned when the strip
+  lands, and carrying `node.exe`'s now-invalid signature — which Windows reports as tampered
+  rather than as unsigned — on any of the three other outcomes the step reports: no SDK
+  `signtool` found, the SDK lookup failing, or the strip itself failing. None of them fails the
+  build, and the build log says which.
+  The order is load-bearing on both platforms (remove signature → inject → sign on
+  macOS; remove → inject on Windows) and is pinned over a COMMENT-STRIPPED read of the script,
+  since commenting a call out kept a plain text match green.
+- **Provenance.** Every asset the two releases publish — each archive, `SHA256SUMS`, the three
+  rendered files, and the rolling release's alias set — carries a build-provenance attestation,
+  made in the `release` job by `actions/attest` pinned to a commit SHA and gated on `push`, so
+  the `workflow_dispatch` dry run attests nothing. The alias ARCHIVES are byte-identical renames,
+  and `gh attestation verify` identifies an artifact by its digest, so they verify against the
+  same attestation under their new names; the alias `SHA256SUMS` is new bytes and is attested in
+  its own right. Only that job holds `id-token: write` and `attestations: write`; the build
+  fan-out and the two publish jobs hold neither, and the workflow's top-level block grants no
+  write scope for any of them to inherit.
+  `packages/eslint-config/test/release-binaries-integrity.test.js` holds all of that, slicing the
+  attest STEP rather than the job (the release-creation steps name the same globs, so a job-wide
+  match is inert) and requiring the attest subjects to EQUAL the union of every softprops step's
+  `files:` in both directions — which is why the aliases must be staged before the attest step
+  and why a rolling asset can never ship unattested. **The installers do not verify the attestation and never require `gh`** — they
+  verify the checksum and stop. That checksum arrives from the same release as the archive, so it
+  catches a corrupt download and not a replaced release; `gh attestation verify <asset> -R
+<owner>/<repo>` is the manual check that does. `install.sh`/`install.ps1` themselves come from
+  the movable `bin-latest` tag and are covered by neither.
 
 ## Running locally
 
@@ -1881,7 +2118,7 @@ The only opt-out is **`takeBlockedAttempts()`**, and there is no env escape hatc
 config flag. Draining is how a test consumes a refusal it provoked on purpose, so it
 is also the way to hide one — the seam is deliberate, narrow, and visible in review.
 A test that needs the outside world needs an injectable seam instead — `local-ops`'
-`ReportDeps.viewVersion` and `judge.ts`'s `spawnClaude` are the two worked examples,
+`ReportDeps.viewDistTags` and `judge.ts`'s `spawnClaude` are the two worked examples,
 and neither `vi.mock`s `execFileSync`: they take the boundary as a parameter, so the
 network call site is never reached rather than being intercepted.
 

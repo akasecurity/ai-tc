@@ -2,14 +2,17 @@ import { readFileSync } from 'node:fs';
 import { sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { CliUpdateTarget, ReleaseChannel } from '@akasecurity/schema';
+import { DIST_TAG, RELEASE_CHANNEL } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import type { ChannelProbe, InstallChannel } from './install-channel.ts';
+import type { ChannelProbe, InstallChannel, SeaOwner } from './install-channel.ts';
 import {
   classifyInstall,
   describeChannel,
   detectInstallChannel,
   planCliUpdate,
+  SEA_OWNER,
 } from './install-channel.ts';
 import { CLI_PACKAGE } from './updates.ts';
 
@@ -18,6 +21,18 @@ import { CLI_PACKAGE } from './updates.ts';
 // there — the layouts they describe are what npm/pnpm/bun really lay down.
 function p(posix: string): string {
   return posix.split('/').join(sep);
+}
+
+// Every owner in the vocabulary, read off the registry rather than retyped, so
+// a case that must hold for all of them grows a row when a member is added
+// instead of going on covering the old set under a name that reads complete.
+const SEA_OWNERS: SeaOwner[] = Object.values(SEA_OWNER);
+
+// A label for a case driven over several channels. The kind alone stops
+// separating them once three rows share `sea`, and a failure that cannot say
+// which owner produced it is a failure someone has to re-derive by hand.
+function channelLabel(channel: InstallChannel): string {
+  return channel.kind === 'sea' ? `sea/${channel.managedBy}` : channel.kind;
 }
 
 interface ProbeOptions {
@@ -197,9 +212,9 @@ describe('classifyInstall', () => {
   it('does not read a directory merely NAMED Cellar as a Homebrew tree', () => {
     // `Cellar` is an ordinary word, and this was the one rule here matching a
     // bare segment anywhere in the path rather than a layout. A user with a
-    // directory of that name was told to run `brew upgrade aka` — a formula
-    // that does not exist — instead of being pointed at the manager that
-    // really owns the install.
+    // directory of that name was told to run `brew upgrade aka` — which
+    // upgrades a keg that does not hold their install — instead of being
+    // pointed at the manager that really owns it.
     const channel = classifyInstall(
       globalProbe('/Users/x/Cellar/tools/lib/node_modules/@akasecurity/cli'),
     );
@@ -216,13 +231,21 @@ describe('classifyInstall', () => {
     expect(channel).toStrictEqual<InstallChannel>({
       kind: 'sea',
       execPath: p('/Users/x/.local/share/aka/0.9.3/aka-darwin-arm64/aka'),
+      managedBy: SEA_OWNER.Standalone,
       installRoot: p('/Users/x/.local/share/aka'),
     });
   });
 
   it('still reports sea for a hand-placed binary, with no install root', () => {
     const channel = classifyInstall(probe({ sea: true, execPath: '/usr/local/bin/aka' }));
-    expect(channel).toMatchObject({ kind: 'sea', installRoot: null });
+    // `managedBy` is asserted here and not only on the case above: an owner rule
+    // that answered unconditionally would set `installRoot` to null on this
+    // path anyway, so the two keys it used to name were both unmoved by it.
+    expect(channel).toMatchObject({
+      kind: 'sea',
+      managedBy: SEA_OWNER.Standalone,
+      installRoot: null,
+    });
   });
 
   it('a SEA never falls through to a package-manager plan', () => {
@@ -233,6 +256,231 @@ describe('classifyInstall', () => {
     );
     expect(plan.command).toBeNull();
     expect(plan.display).not.toContain('npm');
+  });
+
+  // The binary ships through three routes and the bytes are the same on all of
+  // them, so nothing in the file itself says who replaces it. Location is the
+  // only evidence, and getting it wrong is not a vague answer: it names a
+  // command that either cannot run or unpacks a second copy beside the one a
+  // package manager owns.
+  describe('who owns the standalone binary', () => {
+    // Every prefix brew installs under, so the anchor is exercised as the set it
+    // is rather than through whichever one the developer happens to have.
+    const BREW_PREFIXES = [
+      '/opt/homebrew',
+      '/usr/local',
+      '/home/linuxbrew/.linuxbrew',
+      '/home/u/.linuxbrew',
+    ];
+
+    // The formula unpacks the archive into `libexec` and symlinks the launcher,
+    // so the binary keeps its sidecars and the path ends in the same
+    // `aka-<triple>/aka` shape the standalone installer produces.
+    function brewExec(prefix: string): string {
+      return `${prefix}/Cellar/aka/0.9.13/libexec/aka-darwin-arm64/aka`;
+    }
+
+    it('names Homebrew for a binary inside an aka keg, under every brew prefix', () => {
+      for (const prefix of BREW_PREFIXES) {
+        const channel = classifyInstall(probe({ sea: true, execPath: brewExec(prefix) }));
+        expect(channel, prefix).toMatchObject({
+          kind: 'sea',
+          managedBy: SEA_OWNER.Homebrew,
+        });
+        expect(planCliUpdate(channel, 'darwin').display, prefix).toBe('brew upgrade aka');
+      }
+    });
+
+    it('leaves a binary in someone ELSE\u2019s keg to the installer', () => {
+      // A keg is only evidence when it is the `aka` keg. Anything else is a tree
+      // brew owns for another formula, and a binary sitting inside one got there
+      // some other way — `brew upgrade aka` would name a keg that is not it.
+      // Two of the kegs carry `aka` inside their own name, so a prefix, suffix
+      // or substring match on the keg is refused as well as a match on any keg.
+      for (const keg of ['node', 'akamai', 'kaka']) {
+        const channel = classifyInstall(
+          probe({ sea: true, execPath: `/opt/homebrew/Cellar/${keg}/24.4.0/libexec/aka` }),
+        );
+        expect(channel, keg).toMatchObject({ kind: 'sea', managedBy: SEA_OWNER.Standalone });
+        expect(planCliUpdate(channel, 'darwin').display, keg).toContain('install.sh');
+      }
+    });
+
+    // The three places a Scoop install can be read from. `current` leads because
+    // it is the normal route: the shim a user's PATH resolves targets that
+    // junction, so it is what a shim-started process reports.
+    const SCOOP_TAILS = ['current/aka.exe', '0.9.13/aka.exe', '0.9.13/aka-win32-x64/aka.exe'];
+    const SCOOP_ROOT = 'C:/Users/u/scoop';
+    // A drive-letter root opens with no separator, so on its own it never
+    // exercises the leading separator the shims path is rebuilt with. The rooted
+    // form does, on both hosts.
+    const SCOOP_ROOTS = [SCOOP_ROOT, '/Users/u/scoop'];
+
+    it('names Scoop for an apps/aka layout with a shims sibling', () => {
+      for (const root of SCOOP_ROOTS) {
+        for (const tail of SCOOP_TAILS) {
+          const channel = classifyInstall(
+            probe({
+              sea: true,
+              execPath: `${root}/apps/aka/${tail}`,
+              dirs: [`${root}/shims`],
+            }),
+          );
+          const label = `${root} ${tail}`;
+          expect(channel, label).toMatchObject({ kind: 'sea', managedBy: SEA_OWNER.Scoop });
+          expect(planCliUpdate(channel, 'win32').display, label).toBe('scoop update aka');
+        }
+      }
+    });
+
+    it('leaves the same layout to the installer when no shims sibling is there', () => {
+      // `install.ps1 --dir <…>\apps\aka` produces a byte-identical path on a
+      // machine that has no Scoop at all, so the run alone cannot decide this.
+      // Sending that user to `scoop update aka` names a command they cannot run.
+      for (const root of SCOOP_ROOTS) {
+        for (const tail of SCOOP_TAILS) {
+          const channel = classifyInstall(
+            probe({ sea: true, execPath: `${root}/apps/aka/${tail}` }),
+          );
+          const label = `${root} ${tail}`;
+          expect(channel, label).toMatchObject({ kind: 'sea', managedBy: SEA_OWNER.Standalone });
+          expect(planCliUpdate(channel, 'win32').display, label).toContain('install.ps1');
+        }
+      }
+    });
+
+    it('needs a version or `current` directory between apps/aka and the executable', () => {
+      // Scoop always interposes one, so an executable sitting directly in
+      // `apps/aka` is not a layout it produces, shims sibling or not.
+      const channel = classifyInstall(
+        probe({
+          sea: true,
+          execPath: `${SCOOP_ROOT}/apps/aka/aka.exe`,
+          dirs: [`${SCOOP_ROOT}/shims`],
+        }),
+      );
+      expect(channel).toMatchObject({ kind: 'sea', managedBy: SEA_OWNER.Standalone });
+    });
+
+    it('reads no Scoop root off a path that carries no apps/aka run at all', () => {
+      // With the run absent there is no root to look for `shims` under. A
+      // `shims` directory beside the executable itself is ordinary, and must
+      // not be mistaken for the one a Scoop root carries.
+      const channel = classifyInstall(
+        probe({ sea: true, execPath: '/Users/x/tools/aka', dirs: ['/Users/x/tools/shims'] }),
+      );
+      expect(channel).toMatchObject({ kind: 'sea', managedBy: SEA_OWNER.Standalone });
+    });
+
+    it('does not read a directory merely NAMED scoop as a Scoop app', () => {
+      // The sibling of the Cellar case above: the shims directory is checked
+      // against the root the `apps`/`aka` run names, so a shims directory
+      // somewhere else is not evidence on its own.
+      const channel = classifyInstall(
+        probe({
+          sea: true,
+          execPath: `${SCOOP_ROOT}/0.9.13/aka-win32-x64/aka.exe`,
+          dirs: [`${SCOOP_ROOT}/shims`],
+        }),
+      );
+      expect(channel).toMatchObject({ kind: 'sea', managedBy: SEA_OWNER.Standalone });
+    });
+
+    it('reports no installer root for a binary a package manager owns', () => {
+      // `installRoot` is the standalone installer's own root and means nothing
+      // for the other two. Both of these end in `aka-<triple>/<exe>`, which is
+      // exactly the shape the installer rule matches — so without the owner gate
+      // each would report a root that no installer laid down, and print it.
+      const brew = classifyInstall(probe({ sea: true, execPath: brewExec('/opt/homebrew') }));
+      expect(brew).toMatchObject({ managedBy: SEA_OWNER.Homebrew, installRoot: null });
+
+      const scoop = classifyInstall(
+        probe({
+          sea: true,
+          execPath: `${SCOOP_ROOT}/apps/aka/0.9.13/aka-win32-x64/aka.exe`,
+          dirs: [`${SCOOP_ROOT}/shims`],
+        }),
+      );
+      expect(scoop).toMatchObject({ managedBy: SEA_OWNER.Scoop, installRoot: null });
+
+      // The control, without which both assertions above hold whether or not the
+      // gate is there: the SAME trailing shape, owned by nobody, does resolve a
+      // root — so `null` is the gate's doing rather than the rule declining.
+      const standalone = classifyInstall(
+        probe({ sea: true, execPath: '/Users/x/.local/share/aka/0.9.13/aka-win32-x64/aka.exe' }),
+      );
+      expect(standalone).toMatchObject({
+        managedBy: SEA_OWNER.Standalone,
+        installRoot: p('/Users/x/.local/share/aka'),
+      });
+    });
+
+    it('names the owner in the line that precedes the update command', () => {
+      // `describeChannel` is the preamble the update command is printed under,
+      // so an owner it does not distinguish reads as the installer's binary
+      // above a `brew upgrade` the user never asked about.
+      const brew = classifyInstall(probe({ sea: true, execPath: brewExec('/opt/homebrew') }));
+      expect(describeChannel(brew)).toContain('Homebrew');
+
+      const scoop = classifyInstall(
+        probe({
+          sea: true,
+          execPath: `${SCOOP_ROOT}/apps/aka/current/aka.exe`,
+          dirs: [`${SCOOP_ROOT}/shims`],
+        }),
+      );
+      expect(describeChannel(scoop)).toContain('Scoop');
+
+      const standalone = classifyInstall(
+        probe({ sea: true, execPath: '/Users/x/.local/share/aka/0.9.3/aka-darwin-arm64/aka' }),
+      );
+      expect(describeChannel(standalone)).not.toContain('Homebrew');
+      expect(describeChannel(standalone)).not.toContain('Scoop');
+
+      // The installer root is reported AFTER the executable. Searched for in the
+      // whole line it is satisfied by the executable path alone, which begins
+      // with that very root — so only the remainder is evidence the root is shown.
+      const standaloneExec = p('/Users/x/.local/share/aka/0.9.3/aka-darwin-arm64/aka');
+      const standaloneLine = describeChannel(standalone);
+      const execAt = standaloneLine.indexOf(standaloneExec);
+      expect(execAt).toBeGreaterThanOrEqual(0);
+      expect(standaloneLine.slice(execAt + standaloneExec.length)).toContain(
+        p('/Users/x/.local/share/aka'),
+      );
+
+      // Three owners, three distinct lines: a switch arm that fell through to a
+      // neighbour would leave two of them equal.
+      const lines = [describeChannel(brew), describeChannel(scoop), describeChannel(standalone)];
+      expect(new Set(lines).size).toBe(SEA_OWNERS.length);
+    });
+
+    it('enumerates the registry it drives every owner-wide case from', () => {
+      // Each case below derives its rows from `SEA_OWNERS`, so an empty registry
+      // would leave all of them looping over nothing and reporting green. The
+      // count is asserted here, once, rather than re-derived at each of them.
+      expect(SEA_OWNERS.length).toBeGreaterThan(1);
+      expect(new Set(SEA_OWNERS).size).toBe(SEA_OWNERS.length);
+      expect(SEA_OWNERS).toContain(SEA_OWNER.Homebrew);
+      expect(SEA_OWNERS).toContain(SEA_OWNER.Scoop);
+      expect(SEA_OWNERS).toContain(SEA_OWNER.Standalone);
+    });
+
+    it('gives each owner its own update command, and never a package spec', () => {
+      const displays = SEA_OWNERS.map(
+        (managedBy) =>
+          planCliUpdate(
+            { kind: 'sea', execPath: '/usr/local/bin/aka', managedBy, installRoot: null },
+            'win32',
+          ).display,
+      );
+      expect(displays.length).toBe(SEA_OWNERS.length);
+      expect(new Set(displays).size).toBe(SEA_OWNERS.length);
+      for (const display of displays) {
+        // None of the three has an npm package behind it, so none of them may
+        // ever print one — that is the defect the whole `sea` kind exists for.
+        expect(display).not.toContain(CLI_PACKAGE);
+      }
+    });
   });
 
   it('recognises a source checkout rather than proposing an install', () => {
@@ -496,18 +744,335 @@ describe('planCliUpdate', () => {
 
   it('every non-runnable plan says why and what to run instead', () => {
     const channels: InstallChannel[] = [
-      { kind: 'sea', execPath: '/usr/local/bin/aka', installRoot: null },
+      ...SEA_OWNERS.map((managedBy): InstallChannel => ({
+        kind: 'sea',
+        execPath: '/usr/local/bin/aka',
+        managedBy,
+        installRoot: null,
+      })),
       { kind: 'homebrew', packageDir: '/opt/homebrew/x' },
       { kind: 'dev', packageDir: '/src/cli' },
       { kind: 'project', packageDir: '/p/node_modules/x', projectRoot: '/p', manager: 'pnpm' },
       { kind: 'unknown', detail: 'nowhere' },
     ];
+    expect(channels.length).toBeGreaterThan(SEA_OWNERS.length);
     for (const channel of channels) {
+      const label = channelLabel(channel);
       const plan = planCliUpdate(channel);
-      expect(plan.command, channel.kind).toBeNull();
-      expect(plan.reason, channel.kind).toBeTruthy();
-      expect(plan.display.length, channel.kind).toBeGreaterThan(0);
-      expect(describeChannel(channel).length, channel.kind).toBeGreaterThan(0);
+      expect(plan.command, label).toBeNull();
+      expect(plan.reason, label).toBeTruthy();
+      expect(plan.display.length, label).toBeGreaterThan(0);
+      expect(describeChannel(channel).length, label).toBeGreaterThan(0);
+    }
+  });
+});
+
+/**
+ * A target carrying a channel and NO resolved version — the offline row, and
+ * what every plan built before a report has answered installs.
+ *
+ * `version: null` is spelled at each of these call sites rather than defaulted,
+ * because that is the whole shape of the field: an omitted version is the defect
+ * the pairing exists to prevent, so declining has to read as a decision.
+ */
+function onChannel(channel: ReleaseChannel): CliUpdateTarget {
+  return { channel, version: null };
+}
+
+/**
+ * The release channel a plan installs from, with no version resolved.
+ *
+ * The spec's tag then comes from the DIST_TAG table and from nowhere else: the
+ * token a user types (`stable`) is not the tag the registry serves (`latest`),
+ * so a spec built from the typed token asks npm for a tag nothing publishes and
+ * the update fails with the registry's own 404.
+ */
+describe('planCliUpdate — the release channel', () => {
+  const globalChannel = classifyInstall(globalProbe('/opt/node/lib/node_modules/@akasecurity/cli'));
+
+  it('defaults to the stable tag, byte-identical to what shipped', () => {
+    // The control for every case below: the default must not move, because the
+    // line every existing install prints is this one.
+    expect(planCliUpdate(globalChannel, 'linux').command?.args).toContain(`${CLI_PACKAGE}@latest`);
+    expect(planCliUpdate(globalChannel, 'linux')).toStrictEqual(
+      planCliUpdate(globalChannel, 'linux', onChannel(RELEASE_CHANNEL.Stable)),
+    );
+  });
+
+  it('asks for the tag the requested channel maps to, not the channel token', () => {
+    const beta = planCliUpdate(globalChannel, 'linux', onChannel(RELEASE_CHANNEL.Beta));
+    expect(beta.command?.args).toContain(`${CLI_PACKAGE}@beta`);
+    expect(beta.display).toContain(`${CLI_PACKAGE}@beta`);
+
+    const stable = planCliUpdate(globalChannel, 'linux', onChannel(RELEASE_CHANNEL.Stable));
+    expect(stable.command?.args).toContain(`${CLI_PACKAGE}@latest`);
+    // The spec never carries the typed token. Give `Stable` the value `latest`
+    // and this is what still holds while `--channel stable` stops parsing, so
+    // it is asserted as an absence rather than left to the positive above.
+    expect(stable.command?.args).not.toContain(`${CLI_PACKAGE}@stable`);
+    expect(stable.display).not.toContain('@stable');
+  });
+
+  it('carries the tag into the advisory lines a user would paste', () => {
+    // These print a command instead of running one, so a tag left off here is a
+    // line that silently installs the wrong channel.
+    const project = planCliUpdate(
+      { kind: 'project', packageDir: '/p/node_modules/x', projectRoot: '/p', manager: 'pnpm' },
+      'linux',
+      onChannel(RELEASE_CHANNEL.Beta),
+    );
+    expect(project.command).toBeNull();
+    expect(project.display).toContain(`${CLI_PACKAGE}@beta`);
+
+    const unknown = planCliUpdate(
+      { kind: 'unknown', detail: 'nowhere' },
+      'linux',
+      onChannel(RELEASE_CHANNEL.Beta),
+    );
+    expect(unknown.command).toBeNull();
+    expect(unknown.display).toContain(`${CLI_PACKAGE}@beta`);
+  });
+
+  it('says so on the two install kinds that cannot express a channel', () => {
+    // The binary embeds its own runtime and Homebrew owns its tree — neither
+    // has an npm spec to put a tag on. Printing the stable advice with no note
+    // would answer a request to switch channels by quietly doing something else.
+    const channels: InstallChannel[] = [
+      ...SEA_OWNERS.map((managedBy): InstallChannel => ({
+        kind: 'sea',
+        execPath: '/usr/local/bin/aka',
+        managedBy,
+        installRoot: null,
+      })),
+      { kind: 'homebrew', packageDir: '/opt/homebrew/x' },
+    ];
+    // Every owner of the binary carries the note, not just the one the installer
+    // owns: brew and scoop cannot follow a channel either, and an owner added
+    // with the note left off would answer a switch request with a bare upgrade.
+    expect(channels.length).toBe(SEA_OWNERS.length + 1);
+    for (const channel of channels) {
+      const label = channelLabel(channel);
+      const asked = planCliUpdate(channel, 'linux', onChannel(RELEASE_CHANNEL.Beta));
+      expect(asked.command, label).toBeNull();
+      expect(asked.reason, label).toContain(RELEASE_CHANNEL.Beta);
+
+      // And says nothing extra when nothing was asked for: the note is about
+      // the request, so a default plan's reason is what it always was.
+      const unasked = planCliUpdate(channel, 'linux');
+      expect(unasked.reason, label).not.toContain(RELEASE_CHANNEL.Beta);
+      expect(String(asked.reason).startsWith(String(unasked.reason)), label).toBe(true);
+      expect(String(asked.reason).length, label).toBeGreaterThan(String(unasked.reason).length);
+    }
+  });
+
+  it('quotes a root with a space whatever channel was asked for', () => {
+    // The quoting is by exception and independent of the channel; a tag
+    // appended into the joined display line must not disturb it.
+    const win = planCliUpdate(
+      {
+        kind: 'global',
+        manager: 'npm',
+        root: String.raw`C:\Program Files\nodejs`,
+        packageDir: String.raw`C:\Program Files\nodejs\node_modules\@akasecurity\cli`,
+      },
+      'win32',
+      onChannel(RELEASE_CHANNEL.Beta),
+    );
+    expect(win.display).toContain(String.raw`"C:\Program Files\nodejs"`);
+    expect(win.display).toContain(`${CLI_PACKAGE}@beta`);
+    expect(win.command?.args).toContain(String.raw`C:\Program Files\nodejs`);
+  });
+});
+
+/**
+ * The spec a plan installs, once a report has RESOLVED a version.
+ *
+ * The property is that one value drives the row a surface shows and the spec it
+ * runs. A dist-tag spec cannot carry it: `beta` goes on serving 0.11.0-beta.3
+ * after 0.11.0 ships, so a machine offered the stable re-installed the
+ * prerelease, printed success, and was offered the same update on every run
+ * afterwards.
+ */
+describe('planCliUpdate — the version the spec names', () => {
+  const globalChannel = classifyInstall(globalProbe('/opt/node/lib/node_modules/@akasecurity/cli'));
+
+  /** The last argv element of a runnable plan, which is the npm spec. */
+  function specOf(target: CliUpdateTarget): string {
+    const plan = planCliUpdate(globalChannel, 'linux', target);
+    expect(plan.command, JSON.stringify(target)).not.toBeNull();
+    const args = plan.command?.args ?? [];
+    expect(args.length, JSON.stringify(target)).toBeGreaterThan(0);
+    return String(args[args.length - 1]);
+  }
+
+  it('installs the resolved version rather than the channel’s tag', () => {
+    // The graduation row. `beta` still points at the prerelease, so a tag spec
+    // re-installs it while the report offers the release.
+    expect(specOf({ channel: RELEASE_CHANNEL.Beta, version: '0.11.0' })).toBe(
+      `${CLI_PACKAGE}@0.11.0`,
+    );
+    // Asserted as an absence too: the tag spec is the string this replaced, and
+    // it is what a plan reverted to the old build would produce.
+    expect(specOf({ channel: RELEASE_CHANNEL.Beta, version: '0.11.0' })).not.toBe(
+      `${CLI_PACKAGE}@${DIST_TAG[RELEASE_CHANNEL.Beta]}`,
+    );
+  });
+
+  it('names the resolved version on every channel, including stable', () => {
+    for (const channel of Object.values(RELEASE_CHANNEL)) {
+      expect(specOf({ channel, version: '0.12.3' }), channel).toBe(`${CLI_PACKAGE}@0.12.3`);
+    }
+  });
+
+  it('keeps a prerelease version verbatim', () => {
+    // A beta moving to a newer beta: the identifier must survive into the spec,
+    // since `0.11.0-beta.4` and `0.11.0` are different releases.
+    expect(specOf({ channel: RELEASE_CHANNEL.Beta, version: '0.11.0-beta.4' })).toBe(
+      `${CLI_PACKAGE}@0.11.0-beta.4`,
+    );
+    expect(
+      specOf({
+        channel: RELEASE_CHANNEL.Nightly,
+        version: '0.9.13-nightly.20260918.gabc1234',
+      }),
+    ).toBe(`${CLI_PACKAGE}@0.9.13-nightly.20260918.gabc1234`);
+  });
+
+  it('falls back to the channel’s tag when no version was resolved', () => {
+    // The offline row, and the only case a dist-tag spec is still right: the
+    // registry answered nothing, so there is no version to name.
+    for (const channel of Object.values(RELEASE_CHANNEL)) {
+      expect(specOf({ channel, version: null }), channel).toBe(
+        `${CLI_PACKAGE}@${DIST_TAG[channel]}`,
+      );
+    }
+  });
+
+  it('carries the resolved version into the advisory lines a user would paste', () => {
+    // These print a command instead of running one, so a version left off here
+    // is a line that installs something other than what was offered.
+    const project = planCliUpdate(
+      { kind: 'project', packageDir: '/p/node_modules/x', projectRoot: '/p', manager: 'pnpm' },
+      'linux',
+      { channel: RELEASE_CHANNEL.Beta, version: '0.11.0' },
+    );
+    expect(project.command).toBeNull();
+    expect(project.display).toContain(`${CLI_PACKAGE}@0.11.0`);
+    expect(project.display).not.toContain(`${CLI_PACKAGE}@beta`);
+
+    const unknown = planCliUpdate({ kind: 'unknown', detail: 'nowhere' }, 'linux', {
+      channel: RELEASE_CHANNEL.Beta,
+      version: '0.11.0',
+    });
+    expect(unknown.command).toBeNull();
+    expect(unknown.display).toContain(`${CLI_PACKAGE}@0.11.0`);
+  });
+
+  it('still names the channel in the note, which is about the request', () => {
+    // The two kinds with no npm spec at all. A resolved version does not give
+    // them one, so the note has to go on naming the line that was asked for.
+    const channels: InstallChannel[] = [
+      ...SEA_OWNERS.map((managedBy): InstallChannel => ({
+        kind: 'sea',
+        execPath: '/usr/local/bin/aka',
+        managedBy,
+        installRoot: null,
+      })),
+      { kind: 'homebrew', packageDir: '/opt/homebrew/x' },
+    ];
+    expect(channels.length).toBe(SEA_OWNERS.length + 1);
+    for (const channel of channels) {
+      const label = channelLabel(channel);
+      const plan = planCliUpdate(channel, 'linux', {
+        channel: RELEASE_CHANNEL.Beta,
+        version: '0.11.0',
+      });
+      expect(plan.command, label).toBeNull();
+      expect(plan.reason, label).toContain(RELEASE_CHANNEL.Beta);
+    }
+  });
+});
+
+/**
+ * A resolved version is REGISTRY-SUPPLIED TEXT on its way to a child process's
+ * argv, and `exec.ts` hands that argv to cmd.exe on Windows, where Node
+ * concatenates it without escaping. So the spawn seam is the assertion: a
+ * version this grammar does not accept exactly must reach it never, and the
+ * plan falls back to the closed dist-tag table instead.
+ */
+describe('planCliUpdate — what a hostile registry answer cannot reach', () => {
+  const globalChannel = classifyInstall(globalProbe('/opt/node/lib/node_modules/@akasecurity/cli'));
+
+  // Each is a token a shell would act on, or one npm would read as a flag, in a
+  // position where a version is expected.
+  //
+  // The whitespace rows come in all three placements — leading, trailing and
+  // both — because the check is an equality against the trimmed string and a
+  // one-sided trim reads as a fix while leaving the other side open. With only
+  // the two-sided and trailing forms here, `version === version.trimEnd()`
+  // refuses every row and this whole describe stays green.
+  const hostile = [
+    '0.11.0; rm -rf /',
+    '0.11.0 && curl http://example.test/x',
+    '0.11.0 | tee /tmp/aka-pwn',
+    '0.11.0`whoami`',
+    '0.11.0$(whoami)',
+    '0.11.0 --prefix=/tmp',
+    '0.11.0\nlatest',
+    '0.11.0%PATH%',
+    ' 0.11.0 ',
+    '0.11.0\t',
+    ' 0.11.0',
+    '\t0.11.0',
+    '\n0.11.0',
+    '-0.11.0',
+    '--prefix=/tmp',
+    '0.11.0"quoted"',
+    "0.11.0'quoted'",
+    '0.11.0&0.11.1',
+    '0.11.0\r',
+    '',
+    'latest',
+    '__proto__',
+  ];
+
+  it.each(hostile)('treats %j as unresolved and spawns the tag instead', (version) => {
+    const plan = planCliUpdate(globalChannel, 'linux', {
+      channel: RELEASE_CHANNEL.Beta,
+      version,
+    });
+
+    // The positive control: this channel DOES have a runnable plan, so an
+    // absence assertion below cannot pass on an empty argv.
+    expect(plan.command).not.toBeNull();
+    const args = plan.command?.args ?? [];
+    expect(args.length).toBeGreaterThan(0);
+
+    // The spec is the tag, built from this repo's own text.
+    expect(args[args.length - 1]).toBe(`${CLI_PACKAGE}@${DIST_TAG[RELEASE_CHANNEL.Beta]}`);
+    // And no argv element, nor the line printed beside it, carries the value.
+    for (const arg of args) {
+      expect(arg, arg).not.toContain(version === '' ? ' never' : version);
+    }
+    expect(plan.display).not.toContain(version === '' ? ' never' : version);
+  });
+
+  it('accepts the forms a registry really serves, so the refusal is not total', () => {
+    // The non-vacuity control for the rows above: switch the check to `false`
+    // and every one of them still passes while this goes red.
+    for (const version of [
+      '0.11.0',
+      '1.0.0',
+      '0.11.0-beta.4',
+      '0.9.13-nightly.20260918.gabc1234',
+    ]) {
+      const plan = planCliUpdate(globalChannel, 'linux', {
+        channel: RELEASE_CHANNEL.Beta,
+        version,
+      });
+      const args = plan.command?.args ?? [];
+      expect(args.length, version).toBeGreaterThan(0);
+      expect(args[args.length - 1], version).toBe(`${CLI_PACKAGE}@${version}`);
     }
   });
 });

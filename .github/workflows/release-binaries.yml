@@ -15,7 +15,10 @@ on:
   workflow_dispatch:
 
 # Least privilege: the build fan-out only reads the repo and uploads artifacts, so the
-# default token is read-only. Only the release job below is granted contents: write.
+# default token is read-only. Only the release job below is granted contents: write,
+# plus the id-token: write and attestations: write its provenance step needs. The
+# fan-out must not gain either: neither runs on pull_request, but a write scope granted
+# to a matrix job is granted to four runners that only build.
 permissions:
   contents: read
 
@@ -39,8 +42,46 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The binary channel has no pre-release lane, so a pre-release tag is refused
+  # rather than built. Both install one-liners resolve their default ref by taking
+  # the newest `bin-v*` release and neither reads GitHub's pre-release flag, and
+  # both are themselves fetched from `bin-latest` — so a suffixed tag would hand
+  # the pre-release binary AND the pre-release installer to every default install.
+  # Refusing here is the only thing that keeps that from happening: a pre-release
+  # lane would have to start with an opt-in channel selector in both installers
+  # and a default ref narrowed to bare tags, and neither exists.
+  #
+  # First and alone, with no checkout and nothing to write: the build fan-out
+  # `needs:` this, so a refused tag costs one runner rather than four.
+  verify-tag:
+    name: Verify the tag names a stable release
+    runs-on: ubuntu-24.04
+    steps:
+      # The tag arrives through GITHUB_REF_NAME in the environment. A `${{ }}`
+      # expression would be pasted into the script before the shell reads it,
+      # making the tag name part of the program rather than its input.
+      - name: Refuse a tag that is not a bare version
+        if: github.event_name == 'push'
+        run: |
+          version="${GITHUB_REF_NAME#bin-v}"
+          case "$version" in
+            # Anything but digits and dots: a pre-release identifier, a build
+            # suffix, or a word such as `latest`.
+            *[!0-9.]*) bare=no ;;
+            # More or fewer than three components, or an empty one.
+            *.*.*.* | *..* | .* | *.) bare=no ;;
+            *.*.*) bare=yes ;;
+            *) bare=no ;;
+          esac
+          if [ "$bare" != yes ]; then
+            echo "::error::Refusing ${GITHUB_REF_NAME} — the binary channel publishes bare bin-vX.Y.Z tags only. Both install one-liners take the newest bin-v* release and read no pre-release flag, so a suffixed tag becomes the default install for everyone."
+            exit 1
+          fi
+          echo "${GITHUB_REF_NAME} is a bare version"
+
   build:
     name: ${{ matrix.target }}
+    needs: verify-tag
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -92,6 +133,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write # create the GitHub Release
+      id-token: write # mint the OIDC token Sigstore signs the attestation with
+      attestations: write # persist the attestation against this repository
     steps:
       - uses: actions/checkout@v7
 
@@ -107,6 +150,13 @@ jobs:
             exit 1
           fi
 
+      # The manifest renderer runs under Node's type stripping with no install of
+      # its own, so the runtime it is handed is pinned here rather than left to
+      # whatever the image ships. No `cache:` input: this job installs nothing.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -119,6 +169,146 @@ jobs:
           rm -f aka-*.sha256
           cat SHA256SUMS
 
+      # The Homebrew formula and the Scoop manifest, rendered from the checksums
+      # the step above just wrote. The version comes from cli/package.json: on a
+      # push the check at the top of this job has already proved the tag equals
+      # it, and reading it here lets the workflow_dispatch dry run render too.
+      #
+      # The renderer takes the repository from the environment rather than from a
+      # `${{ }}` expression, which would be pasted into the script before the
+      # shell reads it.
+      - name: Render the package-manager manifests
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./cli/package.json').version")
+          node tools/package-manifests/src/render-manifests.ts \
+            --version "$version" \
+            --repo "$GITHUB_REPOSITORY" \
+            --sums dist/SHA256SUMS \
+            --out dist
+          cat dist/aka.rb dist/aka.json dist/VERSION
+
+      # `bin-latest` carries VERSION-LESS copies of the same archives, so a
+      # download link on a documentation page is a fixed URL. The names are
+      # stripped rather than re-derived, the checksum file is rewritten from the
+      # one the archives were hashed into, and `sha256sum -c` proves each copy
+      # landed — a short copy fails here rather than on a user's machine.
+      - name: Stage the rolling bin-latest assets
+        id: rolling
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./cli/package.json').version")
+          mkdir -p dist-latest
+
+          staged=0
+          for src in dist/aka-"$version"-*.tar.gz dist/aka-"$version"-*.zip; do
+            [ -e "$src" ] || continue
+            base=$(basename "$src")
+            suffix=${base#"aka-$version-"}
+            cp "$src" "dist-latest/aka-$suffix"
+            staged=$((staged + 1))
+          done
+          if [ "$staged" -ne 4 ]; then
+            echo "::error::staged $staged alias archives, expected 4 — the rolling bin-latest release would be incomplete"
+            exit 1
+          fi
+
+          : > dist-latest/SHA256SUMS
+          while read -r sum name || [ -n "$sum" ]; do
+            suffix=${name#"aka-$version-"}
+            printf '%s  %s\n' "$sum" "aka-$suffix" >> dist-latest/SHA256SUMS
+          done < dist/SHA256SUMS
+          named=$(wc -l < dist-latest/SHA256SUMS)
+          if [ "$named" -ne 4 ]; then
+            echo "::error::the alias checksum file names $named archives, expected 4"
+            exit 1
+          fi
+          ( cd dist-latest && sha256sum -c SHA256SUMS )
+
+          cp dist/aka.rb dist/aka.json dist/VERSION dist-latest/
+
+          {
+            printf 'aka %s — the same bytes as the bin-v%s release, under names that do not change.\n\n' "$version" "$version"
+            for asset in aka-darwin-arm64.tar.gz aka-linux-x64.tar.gz aka-linux-arm64.tar.gz aka-win32-x64.zip SHA256SUMS aka.rb aka.json VERSION; do
+              printf -- '- https://github.com/%s/releases/download/bin-latest/%s\n' "$GITHUB_REPOSITORY" "$asset"
+            done
+            printf '\nVerify a download against SHA256SUMS on this release, and its provenance with %s.\n' "\`gh attestation verify <file> -R ${GITHUB_REPOSITORY}\`"
+          } > dist-latest/RELEASE_NOTES.md
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          # The rolling release hangs off `bin-latest`, so it is published for
+          # exactly the tags that move it. The inner arms are the ones the
+          # refusal job uses; the outer one is what routes a BRANCH name — which
+          # is what GITHUB_REF_NAME holds on the workflow_dispatch dry run — away
+          # from the download surface a documentation page points at.
+          publish=no
+          case "$GITHUB_REF_NAME" in
+            bin-v*)
+              case "${GITHUB_REF_NAME#bin-v}" in
+                # Anything but digits and dots: a pre-release identifier, a build
+                # suffix, or a word such as `latest`.
+                *[!0-9.]*) publish=no ;;
+                # More or fewer than three components, or an empty one.
+                *.*.*.* | *..* | .* | *.) publish=no ;;
+                *.*.*) publish=yes ;;
+                *) publish=no ;;
+              esac
+              ;;
+          esac
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "rolling publish: $publish"
+
+      # Build-provenance attestation over the bytes this release publishes. The
+      # action mints an OIDC token, Sigstore issues a short-lived certificate
+      # against it, and the signed SLSA provenance is uploaded to this
+      # repository's attestations API. A consumer checks one with
+      # `gh attestation verify <asset> -R akasecurity/ai-tc`; the installers do
+      # not, and require no `gh` (see tools/installer/README.md).
+      #
+      # It attests exactly what the two Release steps below publish — the
+      # versioned archives and their SHA256SUMS, the rendered formula and
+      # manifest, and the rolling `bin-latest` copies — so every archive AND
+      # every checksum file the installers verify against is covered. The alias
+      # copies are named one by one rather than globbed: a glob shared with the
+      # versioned set would make the two lists agree while covering half of it.
+      # Running BEFORE either Release means a failure here publishes nothing
+      # rather than leaving unattested assets behind.
+      #
+      # `actions/attest` rather than `actions/attest-build-provenance`, whose
+      # README documents itself as a wrapper and points new workflows here. With
+      # no sbom or predicate input it runs in provenance mode, which is the
+      # default. Its usage example lists a third permission,
+      # `artifact-metadata: write`; that covers the artifact STORAGE RECORD,
+      # which the same README gates behind `push-to-registry: true` and a
+      # fully-qualified image name, so a release-archive subject never reaches it
+      # and the scope is deliberately not granted.
+      #
+      # Gated on `push`, so the workflow_dispatch dry run — which cuts no
+      # Release — signs nothing and needs no OIDC identity.
+      - name: Attest build provenance
+        if: github.event_name == 'push'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/aka-*.tar.gz
+            dist/aka-*.zip
+            dist/SHA256SUMS
+            dist/aka.rb
+            dist/aka.json
+            dist/VERSION
+            dist-latest/aka-darwin-arm64.tar.gz
+            dist-latest/aka-linux-x64.tar.gz
+            dist-latest/aka-linux-arm64.tar.gz
+            dist-latest/aka-win32-x64.zip
+            dist-latest/SHA256SUMS
+            dist-latest/aka.rb
+            dist-latest/aka.json
+            dist-latest/VERSION
+
+      # `fail_on_unmatched_files` makes a missing archive end the run rather than
+      # publish a partial release, which is a change to the path every binary
+      # release has taken so far.
       - name: Create GitHub Release
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
@@ -127,13 +317,329 @@ jobs:
             dist/aka-*.tar.gz
             dist/aka-*.zip
             dist/SHA256SUMS
+            dist/aka.rb
+            dist/aka.json
+            dist/VERSION
+          fail_on_unmatched_files: true
           generate_release_notes: true
           prerelease: ${{ startsWith(github.ref_name, 'bin-v0.') }}
 
-      # The install one-liners fetch install.sh/install.ps1 from the `bin-latest` tag,
-      # so a successful release moves it to this commit (mirrors cli-latest).
-      - name: Point bin-latest at this release
+      # `bin-latest` serves both install one-liners and every one-click link, so
+      # it only ever moves FORWARD. The concurrency group above is per tag, so
+      # nothing else orders two releases: a re-run of an older tag's failed
+      # release, or two tags pushed out of order, would otherwise move it back.
+      # The SAME version is let through, because re-running this job is how a
+      # rolling upload that failed partway is repaired. The value origin holds
+      # for the tag is kept as the lease the move below pushes against.
+      - name: Decide whether bin-latest moves forward
+        id: advance
         if: github.event_name == 'push'
         run: |
-          git tag -f bin-latest
-          git push -f origin bin-latest
+          set -euo pipefail
+          version=$(node -p "require('./cli/package.json').version")
+
+          # --exit-code answers 2 for "no such ref"; anything else non-zero is a
+          # fault, and a fault read as "not there yet" would move the tag blind.
+          status=0
+          line=$(git ls-remote --exit-code --tags origin refs/tags/bin-latest) || status=$?
+          case "$status" in
+            0)
+              lease=$(printf '%s\n' "$line" | cut -f1)
+              git fetch --no-tags --depth=1 origin refs/tags/bin-latest
+              current=$(git show FETCH_HEAD:cli/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
+              ;;
+            2)
+              lease=''
+              current=''
+              ;;
+            *)
+              echo "::error::could not read bin-latest from origin (git ls-remote exited $status) — it is not moved without knowing what it names"
+              exit 1
+              ;;
+          esac
+
+          move=yes
+          if [ -n "$current" ]; then
+            case "$current" in
+              *[!0-9.]* | *.*.*.* | *..* | .* | *.) bare=no ;;
+              *.*.*) bare=yes ;;
+              *) bare=no ;;
+            esac
+            if [ "$bare" != yes ]; then
+              echo "::error::bin-latest names ${current}, which is not a bare X.Y.Z — there is no order to move it forward in"
+              exit 1
+            fi
+            newest=$(printf '%s\n%s\n' "$current" "$version" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+            if [ "$newest" != "$version" ]; then
+              move=no
+              echo "::notice::bin-latest serves ${current}, which is newer than ${version} — it stays where it is"
+            fi
+          fi
+          echo "move=$move" >> "$GITHUB_OUTPUT"
+          echo "lease=$lease" >> "$GITHUB_OUTPUT"
+          echo "bin-latest: ${current:-none} -> ${version}: move=$move"
+
+      # The install one-liners fetch install.sh/install.ps1 from the `bin-latest` tag,
+      # so a successful release moves it to this commit (mirrors cli-latest).
+      #
+      # Gated on a bare version with the same `case` release-cli.yml uses for
+      # cli-latest, which is defence in depth behind verify-tag rather than the
+      # same check twice: dropping either one alone still leaves `bin-latest` — the
+      # tag the installers bootstrap themselves from — on the last stable release.
+      #
+      # The push is a compare-and-swap against the value the step above read, so
+      # a release of another version that moved the tag in between makes this
+      # push fail rather than overwrite it.
+      - name: Point bin-latest at this release
+        id: move
+        if: github.event_name == 'push' && steps.advance.outputs.move == 'yes'
+        env:
+          LEASE: ${{ steps.advance.outputs.lease }}
+        run: |
+          case "${GITHUB_REF_NAME#bin-v}" in
+            *-*) echo "Pre-release — bin-latest stays on the last stable release" ;;
+            *)
+              git tag -f bin-latest
+              git push --force-with-lease="refs/tags/bin-latest:${LEASE}" origin refs/tags/bin-latest
+              ;;
+          esac
+
+      # A rolling release on the tag the installers already bootstrap from, so a
+      # download link is a constant. It is published AFTER the tag move: the tag
+      # has carried no release until now, and one cut ahead of the move would
+      # name the previous commit. `target_commitish` is deliberately absent — the
+      # REST releases API ignores it when the tag already exists.
+      #
+      # BOTH halves of the gate are load-bearing. `prerelease` keeps this out of
+      # the repository's latest-release election, which six tag prefixes share
+      # here, and `make_latest: false` says the same thing a second way; the
+      # event check is what keeps the workflow_dispatch dry run — whose build is
+      # attested by nothing — off the surface a documentation page links to.
+      - name: Publish the rolling bin-latest release
+        if: github.event_name == 'push' && steps.rolling.outputs.publish == 'yes' && steps.advance.outputs.move == 'yes'
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: bin-latest
+          name: aka ${{ steps.rolling.outputs.version }} — latest binaries
+          body_path: dist-latest/RELEASE_NOTES.md
+          files: |
+            dist-latest/aka-darwin-arm64.tar.gz
+            dist-latest/aka-linux-x64.tar.gz
+            dist-latest/aka-linux-arm64.tar.gz
+            dist-latest/aka-win32-x64.zip
+            dist-latest/SHA256SUMS
+            dist-latest/aka.rb
+            dist-latest/aka.json
+            dist-latest/VERSION
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          prerelease: true
+          make_latest: false
+
+      # The tag moves first and its assets are uploaded one file at a time after,
+      # so a failure from here on leaves `bin-latest` naming this release while
+      # the files behind it are a mix of this release and the last one — a
+      # download there then fails its checksum. Re-running the job repairs it:
+      # the decision step lets the same version through and every asset is
+      # overwritten.
+      - name: Explain a bin-latest left half-published
+        if: failure() && steps.move.outcome == 'success'
+        run: |
+          echo "::error::bin-latest now names ${GITHUB_REF_NAME}, but its rolling release did not finish uploading — the files under releases/download/bin-latest/ may disagree with each other until this job is re-run. Re-run it: the same version is let through and every asset is overwritten."
+
+      # The two publish jobs below cannot render for themselves: the renderer
+      # reads the aggregated SHA256SUMS, which exists on this runner only.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-manifests
+          path: |
+            dist/aka.rb
+            dist/aka.json
+            dist/VERSION
+          if-no-files-found: error
+
+  # Writes the rendered formula into the Homebrew tap with a token scoped to
+  # that repository alone. No write scope here: a token able to write THIS
+  # repository would be a second, broader credential on the same runner for no
+  # reason, and nothing is checked out, so no repository token is persisted
+  # either.
+  #
+  # The target is a literal rather than a repository variable: both READMEs name
+  # this tap, and a reader cannot observe a variable.
+  publish-homebrew-tap:
+    name: Publish the Homebrew formula
+    needs: release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    # Secrets are unreadable from an `if:`, so the job carries whether the token
+    # is set — a boolean, never the value. A job-level mapping of the token
+    # itself would put it in the environment of every step, the artifact
+    # download included; this way it reaches one process, as GH_TOKEN in the
+    # step that calls the API.
+    env:
+      HOMEBREW_TAP_TOKEN_SET: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: package-manifests
+          path: manifests
+
+      # On the canonical repository a missing token is a configuration fault:
+      # the binaries are released and immutable, the tap still serves the
+      # previous formula, and a silent skip means nobody learns until someone
+      # notices `brew install` is stale.
+      - name: Fail if the Homebrew tap token is not configured
+        if: github.repository == 'akasecurity/ai-tc' && env.HOMEBREW_TAP_TOKEN_SET != 'true'
+        env:
+          TARGET_REPO: akasecurity/homebrew-tap
+          TARGET_PATH: Formula/aka.rb
+        run: |
+          echo "::error::the binaries were released but the HOMEBREW_TAP_TOKEN secret is not configured — ${TARGET_REPO} still serves the previous ${TARGET_PATH}. Restore the secret, then re-run this job."
+          exit 1
+
+      - name: Report an unconfigured Homebrew tap
+        if: github.repository != 'akasecurity/ai-tc' && env.HOMEBREW_TAP_TOKEN_SET != 'true'
+        run: |
+          echo '::notice::no HOMEBREW_TAP_TOKEN secret on this repository — no formula published'
+
+      - name: Push Formula/aka.rb to the tap
+        if: env.HOMEBREW_TAP_TOKEN_SET == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TARGET_REPO: akasecurity/homebrew-tap
+          TARGET_PATH: Formula/aka.rb
+          SOURCE_FILE: manifests/aka.rb
+        run: |
+          set -euo pipefail
+          version=$(cat manifests/VERSION)
+          content=$(base64 < "$SOURCE_FILE" | tr -d '\n')
+          body="${RUNNER_TEMP}/tap-current.json"
+          err="${RUNNER_TEMP}/tap-current.err"
+
+          # A 404 is the create case, which the contents API takes with no `sha`.
+          # Anything else is a fault and must not be read as "not there yet":
+          # that would write the file back with no parent blob and drop whatever
+          # the read could not see.
+          if gh api "repos/${TARGET_REPO}/contents/${TARGET_PATH}" > "$body" 2> "$err"; then
+            sha=$(jq -r '.sha' < "$body")
+            existing=$(jq -r '.content' < "$body" | tr -d '\n')
+          elif grep -q '(HTTP 404)' "$err"; then
+            sha=''
+            existing=''
+          else
+            echo "::error::could not read ${TARGET_PATH} from ${TARGET_REPO} — the formula was not updated"
+            cat "$err"
+            exit 1
+          fi
+
+          # The file only ever moves forward: a re-run of an older release, or
+          # two releases finishing out of order, leaves a newer one in place. Its
+          # version is read off the versioned download URL both formats carry.
+          if [ -n "$existing" ]; then
+            published=$(printf '%s' "$existing" | base64 -d | grep -oE 'releases/download/bin-v[0-9]+[.][0-9]+[.][0-9]+/' | head -n 1 | sed -e 's|^releases/download/bin-v||' -e 's|/$||' || true)
+            if [ -n "$published" ]; then
+              newest=$(printf '%s\n%s\n' "$published" "$version" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+              if [ "$newest" != "$version" ]; then
+                echo "${TARGET_REPO}:${TARGET_PATH} already serves aka ${published}, which is newer than ${version} — leaving it"
+                exit 0
+              fi
+            fi
+          fi
+
+          # Re-running this job after a transient failure must not add a commit
+          # that changes nothing.
+          if [ "$existing" = "$content" ]; then
+            echo "${TARGET_REPO}:${TARGET_PATH} already serves aka ${version} — nothing to commit"
+            exit 0
+          fi
+
+          args=(--method PUT "repos/${TARGET_REPO}/contents/${TARGET_PATH}" --silent
+            -f "message=aka ${version}" -f "content=${content}")
+          if [ -n "$sha" ]; then
+            args+=(-f "sha=${sha}")
+          fi
+          gh api "${args[@]}"
+          echo "${TARGET_REPO}:${TARGET_PATH} now serves aka ${version}"
+
+  # The same shape against the Scoop bucket. Every step name differs from its
+  # Homebrew counterpart, so a guard can read one job without matching the other.
+  publish-scoop-bucket:
+    name: Publish the Scoop manifest
+    needs: release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      SCOOP_BUCKET_TOKEN_SET: ${{ secrets.SCOOP_BUCKET_TOKEN != '' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: package-manifests
+          path: manifests
+
+      - name: Fail if the Scoop bucket token is not configured
+        if: github.repository == 'akasecurity/ai-tc' && env.SCOOP_BUCKET_TOKEN_SET != 'true'
+        env:
+          TARGET_REPO: akasecurity/scoop-bucket
+          TARGET_PATH: bucket/aka.json
+        run: |
+          echo "::error::the binaries were released but the SCOOP_BUCKET_TOKEN secret is not configured — ${TARGET_REPO} still serves the previous ${TARGET_PATH}. Restore the secret, then re-run this job."
+          exit 1
+
+      - name: Report an unconfigured Scoop bucket
+        if: github.repository != 'akasecurity/ai-tc' && env.SCOOP_BUCKET_TOKEN_SET != 'true'
+        run: |
+          echo '::notice::no SCOOP_BUCKET_TOKEN secret on this repository — no manifest published'
+
+      - name: Push bucket/aka.json to the bucket
+        if: env.SCOOP_BUCKET_TOKEN_SET == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          TARGET_REPO: akasecurity/scoop-bucket
+          TARGET_PATH: bucket/aka.json
+          SOURCE_FILE: manifests/aka.json
+        run: |
+          set -euo pipefail
+          version=$(cat manifests/VERSION)
+          content=$(base64 < "$SOURCE_FILE" | tr -d '\n')
+          body="${RUNNER_TEMP}/bucket-current.json"
+          err="${RUNNER_TEMP}/bucket-current.err"
+
+          if gh api "repos/${TARGET_REPO}/contents/${TARGET_PATH}" > "$body" 2> "$err"; then
+            sha=$(jq -r '.sha' < "$body")
+            existing=$(jq -r '.content' < "$body" | tr -d '\n')
+          elif grep -q '(HTTP 404)' "$err"; then
+            sha=''
+            existing=''
+          else
+            echo "::error::could not read ${TARGET_PATH} from ${TARGET_REPO} — the manifest was not updated"
+            cat "$err"
+            exit 1
+          fi
+
+          if [ -n "$existing" ]; then
+            published=$(printf '%s' "$existing" | base64 -d | grep -oE 'releases/download/bin-v[0-9]+[.][0-9]+[.][0-9]+/' | head -n 1 | sed -e 's|^releases/download/bin-v||' -e 's|/$||' || true)
+            if [ -n "$published" ]; then
+              newest=$(printf '%s\n%s\n' "$published" "$version" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+              if [ "$newest" != "$version" ]; then
+                echo "${TARGET_REPO}:${TARGET_PATH} already serves aka ${published}, which is newer than ${version} — leaving it"
+                exit 0
+              fi
+            fi
+          fi
+
+          if [ "$existing" = "$content" ]; then
+            echo "${TARGET_REPO}:${TARGET_PATH} already serves aka ${version} — nothing to commit"
+            exit 0
+          fi
+
+          args=(--method PUT "repos/${TARGET_REPO}/contents/${TARGET_PATH}" --silent
+            -f "message=aka ${version}" -f "content=${content}")
+          if [ -n "$sha" ]; then
+            args+=(-f "sha=${sha}")
+          fi
+          gh api "${args[@]}"
+          echo "${TARGET_REPO}:${TARGET_PATH} now serves aka ${version}"

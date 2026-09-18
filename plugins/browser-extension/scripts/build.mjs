@@ -6,11 +6,13 @@
 // host, tsup — see ../tsup.config.ts for why it needs its own tool, not
 // esbuild: the node:sqlite specifier fix and Node platform target).
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import * as esbuild from 'esbuild';
+
+import { builtManifest } from '../src/packaging/store-zip.ts';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const watch = process.argv.includes('--watch');
@@ -62,7 +64,17 @@ function buildNativeHost() {
 
 function copyStaticAssets() {
   mkdirSync(join(root, 'dist'), { recursive: true });
-  cpSync(join(root, 'manifest.json'), join(root, 'dist', 'manifest.json'));
+  // dist/manifest.json carries package.json's version. The source manifest
+  // carries an all-zero one, which Chrome rejects — so a build output that
+  // never reached this line cannot be loaded unpacked or uploaded to the store.
+  // A pre-release package version is split across `version` and `version_name`,
+  // since Chrome's `version` takes no suffix.
+  const { version } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  const source = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+  writeFileSync(
+    join(root, 'dist', 'manifest.json'),
+    JSON.stringify(builtManifest(source, version), null, 2) + '\n',
+  );
   if (existsSync(join(root, 'icons'))) {
     cpSync(join(root, 'icons'), join(root, 'dist', 'icons'), { recursive: true });
   }

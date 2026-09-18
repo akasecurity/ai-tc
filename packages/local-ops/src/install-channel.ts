@@ -1,8 +1,12 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 
+import type { CliUpdateTarget, ReleaseChannel } from '@akasecurity/schema';
+import { DIST_TAG, RELEASE_CHANNEL } from '@akasecurity/schema';
+
 import { quoteForDisplay } from './exec.ts';
 import { isSea } from './self-exec.ts';
+import { isExactSemver } from './semver.ts';
 import { CLI_PACKAGE, isRecord } from './updates.ts';
 
 // How THIS `aka` got onto the machine, and therefore how it must be updated.
@@ -31,9 +35,27 @@ import { CLI_PACKAGE, isRecord } from './updates.ts';
 
 export type InstallManager = 'npm' | 'pnpm' | 'yarn' | 'bun';
 
+/**
+ * What replaces the standalone binary. The same bytes ship through three
+ * routes, and each is updated by a different command: a package manager that
+ * owns the files it laid down, or the standalone installer, which owns nothing
+ * and simply unpacks over its own root.
+ */
+export const SEA_OWNER = {
+  Homebrew: 'homebrew',
+  Scoop: 'scoop',
+  Standalone: 'standalone',
+} as const;
+
+export type SeaOwner = (typeof SEA_OWNER)[keyof typeof SEA_OWNER];
+
 export type InstallChannel =
-  /** The self-contained binary from tools/installer (or a hand-placed copy). */
-  | { kind: 'sea'; execPath: string; installRoot: string | null }
+  /**
+   * The self-contained binary. `managedBy` names what replaces it; `installRoot`
+   * is the standalone installer's own root, and is null for every other owner —
+   * whose layout the installer rule would otherwise match and misreport.
+   */
+  | { kind: 'sea'; execPath: string; managedBy: SeaOwner; installRoot: string | null }
   /** A global install owned by a JS package manager, pinned to `root`. */
   | { kind: 'global'; manager: InstallManager; root: string; packageDir: string }
   /** A Homebrew-managed tree — brew owns the files, so brew must do the upgrade. */
@@ -157,14 +179,39 @@ function collapseVirtualStore(parts: string[]): string[] {
 // and Linuxbrew's /home/linuxbrew/.linuxbrew or a per-user .linuxbrew. The
 // anchor matters because `Cellar` is an ordinary word — matching the segment
 // wherever it appears sends anyone with a directory of that name to
-// `brew upgrade aka`, a formula that does not exist, instead of to the
-// package manager that really owns their install.
+// `brew upgrade aka`, which upgrades a keg that does not hold their install,
+// instead of to the package manager that really owns it.
 const BREW_PREFIX_SEGMENTS = new Set(['homebrew', 'local', 'linuxbrew', '.linuxbrew']);
 
-function isHomebrewCellar(parts: string[]): boolean {
-  return parts.some(
-    (segment, i) => segment === 'Cellar' && i >= 1 && BREW_PREFIX_SEGMENTS.has(parts[i - 1] ?? ''),
-  );
+// The keg a path sits in — the segment directly below an anchored `Cellar` — or
+// null when no anchored Cellar is above it. The keg NAME is what separates a
+// binary brew laid down from one that merely lives inside some other keg's
+// tree, so the answer is the name rather than a boolean.
+function brewKeg(parts: string[]): string | null {
+  for (let i = parts.length - 2; i >= 1; i--) {
+    if (parts[i] === 'Cellar' && BREW_PREFIX_SEGMENTS.has(parts[i - 1] ?? '')) {
+      return parts[i + 1] ?? null;
+    }
+  }
+  return null;
+}
+
+// Scoop lays an app down at `<root>/apps/<app>/<version>/`, points a `current`
+// junction at the version in use, and writes the launcher a user runs into
+// `<root>/shims`. That launcher targets the junction, so `current` is the
+// location a shim-started process reports — the primary shape here, not a
+// fallback.
+//
+// The `apps`/`aka` run on its own is not evidence of Scoop: the standalone
+// installer produces a byte-identical layout when pointed at that directory,
+// and telling that user to run a package manager they do not have names a
+// command that cannot run. The sibling `shims` directory is what separates the
+// two — every Scoop root carries one, and an installer root has no reason to.
+function isScoopApp(probe: ChannelProbe, parts: string[], leading: string): boolean {
+  const at = lastRunIndex(parts, ['apps', 'aka']);
+  // `apps`, `aka`, a version or `current`, then at least the executable.
+  if (at < 1 || parts.length < at + 4) return false;
+  return probe.exists(join(toPath(parts.slice(0, at), leading), 'shims'));
 }
 
 // Which manager owns a project's node_modules, read off the lockfile it
@@ -191,9 +238,12 @@ function isYarnSegment(segment: string): boolean {
   return segment.toLowerCase().replace(/^\./, '') === 'yarn';
 }
 
-// The installer lays a binary down at
+// The standalone installer lays a binary down at
 // `<installRoot>/<version>/aka-<triple>/aka`; anything else is a copy someone
 // placed by hand, which we can describe but not locate an install root for.
+// Only asked of a binary no package manager owns: a brew keg and a Scoop app
+// both end in that same `aka-<triple>/aka` shape, so asking this of one of them
+// yields a root the installer does not own — and then prints it.
 function seaInstallRoot(execPath: string): string | null {
   const parts = segments(execPath);
   const triple = parts[parts.length - 2];
@@ -207,7 +257,20 @@ function seaInstallRoot(execPath: string): string | null {
  */
 export function classifyInstall(probe: ChannelProbe): InstallChannel {
   if (probe.sea) {
-    return { kind: 'sea', execPath: probe.execPath, installRoot: seaInstallRoot(probe.execPath) };
+    const parts = segments(probe.execPath);
+    const leading = leadingSeparators(probe.execPath);
+    const managedBy =
+      brewKeg(parts) === 'aka'
+        ? SEA_OWNER.Homebrew
+        : isScoopApp(probe, parts, leading)
+          ? SEA_OWNER.Scoop
+          : SEA_OWNER.Standalone;
+    return {
+      kind: 'sea',
+      execPath: probe.execPath,
+      managedBy,
+      installRoot: managedBy === SEA_OWNER.Standalone ? seaInstallRoot(probe.execPath) : null,
+    };
   }
   if (probe.moduleDir === undefined) {
     return { kind: 'unknown', detail: 'the running module has no resolvable path' };
@@ -229,7 +292,7 @@ export function classifyInstall(probe: ChannelProbe): InstallChannel {
   // Homebrew owns its Cellar outright — an npm/pnpm write into it is fought
   // by the next `brew upgrade`, so brew is named even though the tree below
   // Cellar is an ordinary node_modules layout.
-  if (isHomebrewCellar(parts)) {
+  if (brewKeg(parts) !== null) {
     return { kind: 'homebrew', packageDir };
   }
 
@@ -391,6 +454,38 @@ const INSTALLER_SH =
 const INSTALLER_PS1 =
   'irm https://raw.githubusercontent.com/akasecurity/ai-tc/bin-latest/tools/installer/install.ps1 | iex';
 
+// The line each owner of the standalone binary is updated with, as a table over
+// the vocabulary rather than a nested switch: annotated `Record<SeaOwner, …>`,
+// so a member added to `SEA_OWNER` fails to compile here instead of falling
+// through to the installer one-liner — which would tell a user whose package
+// manager owns the files to unpack a second copy beside them.
+//
+// The reason carries no channel note. That sentence is about the REQUEST rather
+// than the owner, so the caller appends it and every owner keeps one shape.
+const SEA_UPDATE: Record<
+  SeaOwner,
+  (platform: NodeJS.Platform) => { display: string; reason: string }
+> = {
+  [SEA_OWNER.Homebrew]: () => ({
+    display: 'brew upgrade aka',
+    reason:
+      'this standalone binary is managed by Homebrew — brew owns the files under ' +
+      'Cellar, and re-running the installer would leave a second copy beside them',
+  }),
+  [SEA_OWNER.Scoop]: () => ({
+    display: 'scoop update aka',
+    reason:
+      'this standalone binary is managed by Scoop — scoop owns the files under its ' +
+      'apps directory, and re-running the installer would leave a second copy beside them',
+  }),
+  [SEA_OWNER.Standalone]: (platform) => ({
+    display: platform === 'win32' ? INSTALLER_PS1 : INSTALLER_SH,
+    reason:
+      'this is the standalone binary — it embeds its own runtime and has no npm ' +
+      'package behind it, so re-run the installer to replace it',
+  }),
+};
+
 // Each manager's own global-install form, pinned to the store the running copy
 // was found in wherever the manager accepts a location flag. yarn and bun take
 // none, so those two rely on the manager resolving the same global dir it
@@ -419,16 +514,65 @@ function planGlobalUpdate(
   return { command: { bin: manager, args }, display };
 }
 
+// The sentence a plan appends when a non-stable release channel was asked for
+// and this install kind has no way to follow one. Printing the stable command
+// with no note would answer a request to switch channels by silently doing
+// something else.
+function cannotFollowChannel(releaseChannel: ReleaseChannel): string {
+  return `; it cannot follow the ${releaseChannel} channel, so there is nothing here to switch`;
+}
+
+/** What a plan installs when no report has resolved a version for it. */
+const STABLE_TARGET: CliUpdateTarget = { channel: RELEASE_CHANNEL.Stable, version: null };
+
+/**
+ * The npm spec an update installs.
+ *
+ * The RESOLVED VERSION wherever a report resolved one, so the version a surface
+ * PRINTS is the version npm FETCHES. A dist-tag spec cannot carry that promise:
+ * `beta` goes on serving 0.11.0-beta.3 after 0.11.0 ships, so a beta machine
+ * offered the stable re-installed the prerelease, reported success, and was
+ * offered the same update on every run afterwards.
+ *
+ * SECURITY: a resolved version is REGISTRY-SUPPLIED TEXT, and this string
+ * becomes a child process's argv — which `exec.ts` hands to cmd.exe on Windows,
+ * where Node concatenates argv without escaping it. So it crosses only through
+ * `isExactSemver`: anchored, untrimmed, over an alphabet carrying no shell
+ * metacharacter, no whitespace and no leading dash. Anything else is treated as
+ * UNRESOLVED and falls back to the tag, which comes from the DIST_TAG table
+ * keyed on a member of a closed union — so on every path the spec is built from
+ * this repo's own text plus a value that has passed that check.
+ *
+ * The tag is also why the fallback cannot be spelled with the channel token: a
+ * user types `stable` and the registry serves `latest`, so a spec built from
+ * the typed token asks npm for a tag nothing publishes.
+ */
+function cliInstallSpec(target: CliUpdateTarget): string {
+  const { channel, version } = target;
+  const resolved = version !== null && isExactSemver(version) ? version : DIST_TAG[channel];
+  return `${CLI_PACKAGE}@${resolved}`;
+}
+
 /**
  * The update action for a channel. Every runnable plan is pinned to the
  * location the running CLI was found in, so it can only ever replace THIS
  * install — never create a second one somewhere else on PATH.
+ *
+ * `target` carries both the published line to follow and the version a report
+ * already resolved on it, as one value rather than two parameters: the row a
+ * surface shows, the line it prints and the spec it runs all read the same
+ * field, and a plan given only the channel installed whatever that channel's
+ * tag happened to serve. See `cliInstallSpec` for what reaches the spec.
  */
 export function planCliUpdate(
   channel: InstallChannel,
   platform: NodeJS.Platform = process.platform,
+  target: CliUpdateTarget = STABLE_TARGET,
 ): UpdatePlan {
-  const spec = `${CLI_PACKAGE}@latest`;
+  const spec = cliInstallSpec(target);
+  const releaseChannel = target.channel;
+  const channelNote =
+    releaseChannel === RELEASE_CHANNEL.Stable ? '' : cannotFollowChannel(releaseChannel);
   switch (channel.kind) {
     case 'global':
       return planGlobalUpdate(channel.manager, channel.root, spec, platform);
@@ -436,16 +580,12 @@ export function planCliUpdate(
       return {
         command: null,
         display: 'brew upgrade aka',
-        reason: 'this copy is managed by Homebrew — brew owns the files under Cellar',
+        reason: `this copy is managed by Homebrew — brew owns the files under Cellar${channelNote}`,
       };
-    case 'sea':
-      return {
-        command: null,
-        display: platform === 'win32' ? INSTALLER_PS1 : INSTALLER_SH,
-        reason:
-          'this is the standalone binary — it embeds its own runtime and has no npm ' +
-          'package behind it, so re-run the installer to replace it',
-      };
+    case 'sea': {
+      const advice = SEA_UPDATE[channel.managedBy](platform);
+      return { command: null, display: advice.display, reason: `${advice.reason}${channelNote}` };
+    }
     case 'dev':
       return {
         command: null,
@@ -475,6 +615,25 @@ export function planCliUpdate(
   }
 }
 
+// The standalone binary's own line, which names the owner because the update
+// command differs by owner and this preamble is what precedes it. A switch
+// rather than a table, since only one arm has an install root to report; its
+// own function with a `string` return so the exhaustiveness is the compiler's —
+// with no `default`, a member added to `SEA_OWNER` leaves a path returning
+// nothing and fails to build here.
+function describeSea(channel: Extract<InstallChannel, { kind: 'sea' }>): string {
+  switch (channel.managedBy) {
+    case SEA_OWNER.Homebrew:
+      return `Homebrew-managed standalone binary at ${channel.execPath}`;
+    case SEA_OWNER.Scoop:
+      return `Scoop-managed standalone binary at ${channel.execPath}`;
+    case SEA_OWNER.Standalone:
+      return channel.installRoot === null
+        ? `standalone binary at ${channel.execPath}`
+        : `standalone binary at ${channel.execPath} (installer root ${channel.installRoot})`;
+  }
+}
+
 /** One-line description of the channel, for `aka update`'s preamble. */
 export function describeChannel(channel: InstallChannel): string {
   switch (channel.kind) {
@@ -483,9 +642,7 @@ export function describeChannel(channel: InstallChannel): string {
     case 'homebrew':
       return `Homebrew install at ${channel.packageDir}`;
     case 'sea':
-      return channel.installRoot === null
-        ? `standalone binary at ${channel.execPath}`
-        : `standalone binary at ${channel.execPath} (installer root ${channel.installRoot})`;
+      return describeSea(channel);
     case 'dev':
       return `source checkout at ${channel.packageDir}`;
     case 'project':

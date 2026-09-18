@@ -1,16 +1,27 @@
 name: CI
 
 on:
+  # Both lists name `main` and every `release/**` branch, so a pull request
+  # based on a release branch runs every job below and reports the same check
+  # names as one based on main. The two lists move together: a branch matched on
+  # `pull_request` but not on `push` gets a pre-merge verdict and no post-merge
+  # one, and a branch matched on `push` but not on `pull_request` gets the
+  # reverse. `release/**` rather than `release/*` because a glob segment stops
+  # at a `/`, so the single-star form would miss `release/0.9/stable`.
+  #
+  # Which of these names branch protection actually requires is a repository
+  # setting and is not visible in this tree; CONTRIBUTING.md records the table
+  # of check names, and required-checks.test.js drives it against these jobs.
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
     # `edited` is on top of the three default types (opened, synchronize,
     # reopened) because retargeting a PR's BASE fires only `edited`. Without it
-    # a stacked PR moved onto main after its parent merged never runs this
-    # workflow at all: the branch filter above now matches, but no event does,
-    # so the required checks stay absent and the merge is blocked forever with
-    # nothing to re-run. The cost is a run on title/body edits too — GitHub
+    # a stacked PR moved onto a matched base after its parent merged never runs
+    # this workflow at all: the branch filter above now matches, but no event
+    # does, so the required checks stay absent and the merge is blocked forever
+    # with nothing to re-run. The cost is a run on title/body edits too — GitHub
     # gives one `edited` type for all three — which the concurrency group below
     # bounds, since it cancels a superseded run per PR ref.
     types: [opened, synchronize, reopened, edited]

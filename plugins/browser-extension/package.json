@@ -1,6 +1,6 @@
 {
   "name": "@akasecurity/plugin-browser-extension",
-  "version": "0.9.4",
+  "version": "0.9.11",
   "description": "AI Traffic Control \u2014 inspect and govern AI prompts in ChatGPT and Claude.ai web chat",
   "private": true,
   "type": "module",
@@ -14,6 +14,7 @@
     "build": "node scripts/build.mjs",
     "dev": "node scripts/build.mjs --watch",
     "lint": "eslint src test *.config.* && eslint --no-config-lookup -c eslint.scripts.config.mjs scripts",
+    "package:zip": "node scripts/package-zip.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

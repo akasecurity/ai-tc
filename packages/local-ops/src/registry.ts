@@ -14,8 +14,9 @@ export interface AgentPlugin {
   description: string;
   // Install/update coordinates — present for agents distributed through a host
   // CLI's own plugin marketplace. `npmPackage` is the registry package the
-  // marketplace resolves (used for `npm view <pkg> version` to learn the latest
-  // version); `pluginName`@`marketplace` is the ref the host's install/update
+  // marketplace resolves (used for `npm view <pkg> dist-tags --json` to learn
+  // the version published on each release channel);
+  // `pluginName`@`marketplace` is the ref the host's install/update
   // verbs expect (they differ per host — see cli-plugin-manager.ts); and
   // `marketplaceSource` is the GitHub repo to `<cliBin> plugin marketplace add`
   // if the marketplace isn't registered yet. Absent for agents installed by

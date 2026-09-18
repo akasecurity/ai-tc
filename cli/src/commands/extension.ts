@@ -28,12 +28,15 @@ function cliRoot(): string {
 // already hardcodes small per-plugin facts this way (see AGENT_PLUGINS in
 // packages/local-ops/src/registry.ts).
 //
-// A LIST rather than one id: the Chrome Web Store signs a listing with a key
-// it holds and ignores the committed one, so a store build and an unpacked
-// from-source build have DIFFERENT ids. Granting both is what lets an already
-// installed unpacked build keep reaching the native host across that switch —
-// an id missing here is not a build error but a silent runtime one, since
-// Chrome refuses connectNative for an origin the host manifest omits.
+// A LIST rather than one id, because the id a build gets is derived from the
+// key its manifest carries. A store item holds its own key pair and assigns the
+// id from that; Chrome documents the manifest `key` field as the way an unpacked
+// build takes a store item's id, by carrying that item's public key. The key
+// committed here is a locally generated one, so a build from this source and a
+// build carrying a store item's key have DIFFERENT ids, and every id the host
+// may be reached from is listed. An id missing here is not a build error but a
+// silent runtime one, since Chrome refuses connectNative for an origin the host
+// manifest omits.
 //
 // Every entry is a live grant: an extension whose id is listed may talk to the
 // native host, so add one deliberately and drop a legacy id once it is dead.

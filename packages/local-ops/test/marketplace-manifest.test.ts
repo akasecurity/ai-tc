@@ -273,3 +273,57 @@ describe('marketplacePinnedVersion', () => {
     ).toBeNull();
   });
 });
+
+/**
+ * A pin is an EXACT version or it is no pin.
+ *
+ * The `version` field of an npm source may also hold a RANGE, and a host may
+ * document a dist-tag there. Neither is something this report can compare:
+ * compareSemver returns 0 for what it cannot parse, so a range became
+ * `ComponentStatus.latest` and froze `updateAvailable` at false — a row
+ * rendering `Latest: ^0.11.0-beta.0` that could never move and never said why.
+ *
+ * Refusing hands the caller back to npm's answer for the channel that machine
+ * follows, which is the version the host will really resolve such a pin to. So
+ * the refusal is what makes a non-exact pin usable rather than a dead row.
+ */
+describe('marketplacePinnedVersion — only an exact version is a pin', () => {
+  const pinOf = (version: unknown): string | null => {
+    registerMarketplace('akasecurity', [
+      { name: 'ai-tc', source: { source: 'npm', package: 'x', version } },
+    ]);
+    return marketplacePinnedVersion(
+      agent({ marketplace: 'akasecurity', pluginName: 'ai-tc' }),
+      claudeHome,
+    );
+  };
+
+  it.each([
+    ['a caret range', '^0.11.0-beta.0'],
+    ['a tilde range', '~0.9.9'],
+    ['a comparator range', '>=0.9.9 <0.10.0'],
+    ['an x-range', '0.9.x'],
+    ['a wildcard', '*'],
+    ['a dist-tag', 'beta'],
+    ['the stable dist-tag', 'latest'],
+    ['a v-prefixed version', 'v0.9.9'],
+    ['a two-part version', '0.9'],
+    ['an empty string', ''],
+    ['something that is not a string at all', 42],
+  ])('refuses %s', (_label, version) => {
+    expect(pinOf(version)).toBeNull();
+  });
+
+  it.each([
+    ['a release', '0.9.12'],
+    // The accepting control that keeps the refusal NARROW. A beta pin IS a
+    // prerelease, so a check that refused every prerelease would refuse the
+    // pins this whole channel surface exists to make work.
+    ['a beta prerelease', '0.11.0-beta.3'],
+    ['a nightly prerelease', '0.9.13-nightly.20260918.gabc1234'],
+    ['an rc prerelease', '1.0.0-rc.1'],
+    ['a version with surrounding whitespace, which the grammar trims', ' 0.9.12 '],
+  ])('accepts %s', (_label, version) => {
+    expect(pinOf(version)).toBe(version);
+  });
+});

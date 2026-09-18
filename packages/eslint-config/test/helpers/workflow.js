@@ -67,3 +67,134 @@ export function jobBlock(source, key) {
   }
   return body;
 }
+
+// One step of a workflow, and nothing else.
+//
+// Steps are list items at six spaces, so splitting on that anchor gives one
+// slice per step running from its own first key to the next step's `- `. Deeper
+// list items — a `subject-path:`/`files:` block scalar's lines, a build matrix's
+// `- { os: … }` at ten — are indented past the anchor and cannot split it.
+//
+// The slice matters rather than being tidy: matching a value against a whole job
+// is INERT wherever a neighbouring step names the same string, which is the
+// normal case for a list of assets published by one step and attested by
+// another. Read inside the step or read nothing.
+//
+// @param {string} source a job body, or the whole workflow
+export function steps(source) {
+  return source.split(/^ {6}- /m).slice(1);
+}
+
+/** A name as a regular-expression literal. */
+const escape = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The one step carrying a `name:`, asserted to occur exactly once.
+ *
+ * Exactly one rather than the first: every assertion a caller makes over a slice
+ * is a presence check, and one against a slice that captured the WRONG step
+ * passes for the wrong reason.
+ *
+ * @param {string} source a job body, or the whole workflow
+ * @param {string} name the step's `name:` value
+ */
+export function stepNamed(source, name) {
+  const matching = steps(source).filter((step) =>
+    new RegExp(`^name: ${escape(name)}[^\\S\\n]*$`, 'm').test(step),
+  );
+  expect(
+    matching,
+    `the workflow has no single step named \`${name}\` — the slice below would read nothing`,
+  ).toHaveLength(1);
+  return matching[0];
+}
+
+/**
+ * The same step, read from the workflow's OWN BYTES, comments and all.
+ *
+ * Every structural reader here goes through the comment-dropping job reader, and
+ * for structure that is what keeps a sentence about a step from being mistaken
+ * for the step. A `run:` script is the one place it would be wrong: a `#` line
+ * inside a shell block is part of that shell block, so executing a copy with
+ * them removed is executing something the repository does not contain.
+ *
+ * @param {string} source the workflow file's own text
+ * @param {string} name the step's `name:` value
+ */
+export function rawStepNamed(source, name) {
+  // The control that makes executing an extracted `run:` faithful: this has to
+  // be the file's own text and not a job body another reader has already
+  // stripped, which is what the `jobs:` key at column 0 distinguishes. Handed a
+  // stripped body, every executing case below a caller would run a script this
+  // repository does not contain.
+  expect(
+    /^jobs:[^\S\n]*$/m.test(source),
+    'this reader takes the workflow file, not a job body',
+  ).toBe(true);
+  return stepNamed(source, name);
+}
+
+/**
+ * The entries of one block-scalar input of a step, and only those.
+ *
+ * An entry sitting under a NEIGHBOURING key in the same step is not one of them,
+ * and the difference is the whole property: the same three lines moved under a
+ * mistyped or neighbouring key leave the action with no input at all, at which
+ * point it falls back to a default nobody chose.
+ *
+ * @param {string} step one step slice
+ * @param {string} key the input key
+ */
+export function blockScalarLines(step, key) {
+  const opener = new RegExp(`^([^\\S\\n]*)${escape(key)}: \\|[^\\S\\n]*$`, 'm').exec(step);
+  expect(opener, `the step declares no \`${key}:\` block scalar`).not.toBeNull();
+  const indent = opener[1].length;
+  const entries = [];
+  for (const line of step
+    .slice(opener.index + opener[0].length)
+    .split('\n')
+    .slice(1)) {
+    if (line.trim() === '') continue;
+    // A line indented no further than the opener closes the scalar.
+    if (line.search(/\S/) <= indent) break;
+    entries.push(line.trim());
+  }
+  // Non-emptiness first. Every assertion the caller makes over this list is
+  // satisfied vacuously by an empty one, which is the exact failure a glob list
+  // emptied of its entries would be.
+  expect(entries.length, `\`${key}:\` opens a block scalar with no entries`).toBeGreaterThan(0);
+  return entries;
+}
+
+/**
+ * One block-scalar input of a step as TEXT, dedented, relative indentation kept.
+ *
+ * The sibling above returns trimmed entries, which is right for a glob list and
+ * wrong for a script: a `case` arm's own indentation is part of the bytes a
+ * shell is handed, and the body's offset is read from its first non-empty line
+ * rather than assumed, because YAML takes it from there too.
+ *
+ * @param {string} step one step slice
+ * @param {string} key the input key
+ */
+export function blockScalarText(step, key) {
+  const opener = new RegExp(`^([^\\S\\n]*)${escape(key)}: \\|[^\\S\\n]*$`, 'm').exec(step);
+  expect(opener, `the step declares no \`${key}:\` block scalar`).not.toBeNull();
+  const keyIndent = opener[1].length;
+  const body = [];
+  for (const line of step
+    .slice(opener.index + opener[0].length)
+    .split('\n')
+    .slice(1)) {
+    // A non-blank line indented no further than the opener closes the scalar.
+    if (line.trim() !== '' && line.search(/\S/) <= keyIndent) break;
+    body.push(line);
+  }
+  while (body.length > 0 && body[body.length - 1].trim() === '') body.pop();
+  // Non-emptiness first, for the reason the entry reader asserts it: a script
+  // that came back empty is a shell that exits 0 and routes nothing, which every
+  // acceptance case reading it would take for a pass.
+  expect(body.length, `\`${key}:\` opens a block scalar with no body`).toBeGreaterThan(0);
+  const offsets = body.filter((line) => line.trim() !== '').map((line) => line.search(/\S/));
+  return body.map((line) => line.slice(Math.min(...offsets))).join('\n');
+}

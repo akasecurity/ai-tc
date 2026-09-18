@@ -538,9 +538,9 @@ describe('the workflows behind those checks', () => {
   });
 
   // Retargeting a PR's base fires ONLY `edited`. `ci.yml` needs that type to
-  // avoid a permanent deadlock, because its `branches: [main]` filter means a
-  // stacked PR matches no event until it is retargeted. `codeql.yml` has no
-  // such filter, so the deadlock is unreachable there — but the retarget still
+  // avoid a permanent deadlock, because its `branches:` filter means a stacked
+  // PR matches no event until it is retargeted. `codeql.yml` has no such
+  // filter, so the deadlock is unreachable there — but the retarget still
   // changes the MERGE COMMIT, so an analysis that does not re-run describes a
   // tree nobody will merge while reporting green. Both workflows carry the type
   // for those two different reasons; pin both, since the second is the one a
@@ -562,6 +562,129 @@ describe('the workflows behind those checks', () => {
   // and report nothing.
   it('codeql.yml grants security-events: write', () => {
     expect(readWorkflow('codeql.yml')).toMatch(/^\s*security-events: write$/m);
+  });
+});
+
+// A pull request is gated only where a workflow's `branches:` filter matches its
+// BASE, and every check CONTRIBUTING.md records as enforced belongs to ci.yml —
+// so a base ci.yml does not match receives none of them. That is not a red
+// check, it is no check: the merge is not blocked, it is unguarded. Release
+// branches are bases like any other, which is why both of ci.yml's lists name
+// them.
+//
+// The two lists are read SEPARATELY rather than as one pattern over the block.
+// They are two positions in the file, and a single pattern is satisfied by
+// either one — reporting green on a file carrying the glob in only one of them,
+// which is the half-edit this describe exists to catch. Each list is parsed to
+// its ITEMS, so a misspelling (`release/*`, `releases/**`) reads as a missing
+// member rather than as a substring that happens to still match.
+describe('the branch filters in ci.yml', () => {
+  // Spelled once. `**` and not `*`: a glob segment stops at a `/`, so the
+  // single-star form matches `release/stable` and misses `release/0.9/stable`.
+  const RELEASE_GLOB = 'release/**';
+
+  // A YAML scalar's surrounding quotes, where it carries a matching pair.
+  const unquote = (item) => item.trim().replace(/^(['"])([\s\S]*)\1$/, '$2');
+
+  /**
+   * The branch filter one event in an `on:` block declares, as its list ITEMS —
+   * or null where the event declares no `branches:` key at all. A declared but
+   * EMPTY list comes back as `[]` rather than null, because the two are
+   * different facts and the callers assert on them separately: an absent key
+   * matches every base, an empty list matches none, and a reader folding either
+   * into the other reports the wrong one of those in its failure message.
+   *
+   * Both YAML spellings are read: the flow form `branches: [a, b]` and the block
+   * form `branches:` over `- a` lines. Which one is written is a formatting
+   * choice and the property here is the SET of bases matched, so a reformat must
+   * not empty this reader while leaving the filter itself intact.
+   *
+   * @param {string} on the `on:` block, comments already dropped
+   * @param {string} event the event key, at two spaces inside `on:`
+   * @returns {string[] | null}
+   */
+  const branchFilter = (on, event) => {
+    // The event's OWN sub-block, ending at the next two-space key or at the end
+    // of the block — scoping is what makes reading the two lists separately mean
+    // anything. `$(?![\s\S])` rather than a bare `$`: under /m a bare `$`
+    // matches the end of the FIRST line, which stops the lazy quantifier at once
+    // and captures nothing, the trap `gatingWorkflows` above records.
+    const block = new RegExp(
+      `^ {2}${event}:[^\\S\\n]*$([\\s\\S]*?)(?=^ {2}\\S|$(?![\\s\\S]))`,
+      'm',
+    ).exec(on);
+    if (block === null) return null;
+    const flow = /^ {4}branches: \[([^\]]*)\]$/m.exec(block[1]);
+    const listed = /^ {4}branches:[^\S\n]*$([\s\S]*?)(?=^ {4}\S|$(?![\s\S]))/m.exec(block[1]);
+    if (flow === null && listed === null) return null;
+    const items =
+      flow !== null
+        ? flow[1].split(',').map(unquote)
+        : [...listed[1].matchAll(/^ {6}- (.+)$/gm)].map(([, item]) => unquote(item));
+    return items.filter((item) => item !== '');
+  };
+
+  // The reader's own positive control, and the only place the block form is
+  // driven at all: ci.yml is written in the flow form, so that half of
+  // `branchFilter` is exercised by nothing the real file can reach, and a reader
+  // half that parses nothing reports an intact filter as absent. Both spellings
+  // of one list must read as the same items, an empty list must read as `[]`
+  // rather than as a missing key, and an event carrying no `branches:` key at
+  // all must read as null.
+  it.each([
+    { form: 'flow', list: `    branches: [main, '${RELEASE_GLOB}']\n` },
+    { form: 'block', list: `    branches:\n      - main\n      - '${RELEASE_GLOB}'\n` },
+  ])('reads a $form branch list as its items', ({ list }) => {
+    expect(branchFilter(`  push:\n${list}  pull_request:\n`, 'push')).toEqual([
+      'main',
+      RELEASE_GLOB,
+    ]);
+  });
+
+  it.each([
+    { shape: 'an empty flow list', list: '    branches: []\n', items: [] },
+    { shape: 'an empty block list', list: '    branches:\n', items: [] },
+    { shape: 'no branches key', list: '    types: [opened]\n', items: null },
+  ])('reads $shape as $items', ({ list, items }) => {
+    expect(branchFilter(`  pull_request:\n${list}  merge_group:\n`, 'pull_request')).toEqual(items);
+  });
+
+  it.each(['push', 'pull_request'])('the %s filter names main and a release branch', (event) => {
+    const filter = branchFilter(triggerBlock('ci.yml'), event);
+    expect(filter, `ci.yml's \`${event}:\` declares no branches filter`).not.toBeNull();
+    // Non-emptiness first, and separately from the absence check above: a
+    // membership assertion over an empty list fails naming the member it wanted,
+    // which reads as one base missing from a working filter rather than as a
+    // filter that matches no base at all.
+    expect(filter.length, `ci.yml's \`${event}:\` branch list is empty`).toBeGreaterThan(0);
+    expect(filter).toContain('main');
+    expect(filter).toContain(RELEASE_GLOB);
+  });
+
+  // A base matched on one of the two events and not the other is a half-gate:
+  // matched on `pull_request` alone it gets a pre-merge verdict and no
+  // post-merge one, and matched on `push` alone the reverse. Compared as sets,
+  // since the order bases are listed in decides nothing.
+  it('matches the same bases before and after a merge', () => {
+    const on = triggerBlock('ci.yml');
+    const push = branchFilter(on, 'push');
+    const pull = branchFilter(on, 'pull_request');
+    expect(push, 'ci.yml has no push branches filter').not.toBeNull();
+    expect(pull, 'ci.yml has no pull_request branches filter').not.toBeNull();
+    expect([...push].sort()).toEqual([...pull].sort());
+  });
+
+  // The reader's negative control, and the one trigger no branch filter can
+  // reach: a merge-queue entry is not a branch a list can name, so
+  // `merge_group` carries no `branches:` key and widening the two lists must
+  // leave it standing rather than appear to cover it. It is also what keeps the
+  // `not.toBeNull()` assertions above from being tautological — a reader that
+  // searched the whole `on:` block instead of the event's own sub-block would
+  // report a filter here, and would read both lists as one.
+  it('still reaches the merge queue, which no branch filter can name', () => {
+    const on = triggerBlock('ci.yml');
+    expect(on).toMatch(/^ {2}merge_group:[^\S\n]*$/m);
+    expect(branchFilter(on, 'merge_group')).toBeNull();
   });
 });
 
@@ -977,7 +1100,7 @@ describe('the Windows legs', () => {
   // second copy of the count is the thing that goes stale.
   it('every lint script carries the glob this job exists to observe', () => {
     const scripts = workspaceLintScripts();
-    expect(scripts).toHaveLength(26);
+    expect(scripts).toHaveLength(27);
     for (const { dir, lintScript } of scripts) {
       expect(lintScript, `${dir} declares no lint script`).not.toBe('');
       expect(lintScript, `${dir}'s lint script targets no *.config.* glob`).toContain('*.config.*');

@@ -10,6 +10,11 @@
 // it back). The two must stay semantically identical — mirror any change to the
 // ordering rules or the parse grammar in both files, and in both test suites
 // (this one and packages/persistence/test/semver.test.ts).
+//
+// A READER over the existing grammar is not such a change and is NOT owed a
+// mirror: `prereleaseIdentifiers` below projects what `parse` already produces,
+// so copying it into the twin would leave that package exporting something no
+// caller in it needs. Only the ordering rules and the grammar are twinned.
 
 interface Parsed {
   core: [number, number, number];
@@ -31,6 +36,35 @@ function parse(version: string): Parsed | null {
 // can survive a reduce it should never have entered.
 export function isSemver(version: string): boolean {
   return parse(version) !== null;
+}
+
+// Is `version` EXACTLY a version this grammar accepts, with nothing around it?
+//
+// `isSemver` trims first, so ` 1.0.0 ` and `1.0.0\n` pass it. That is harmless
+// for a comparison and not harmless for a string that becomes a child process's
+// argv: `local-ops`' shelled spawn routes through cmd.exe on Windows and Node
+// concatenates argv there without escaping it, so a space splits the spec into
+// two arguments and a line break ends the command line. This is the predicate
+// to reach for before a registry-supplied version goes anywhere near a spawn.
+//
+// What survives it is digits, dots and the prerelease alphabet `[0-9A-Za-z-.]`,
+// which holds no shell metacharacter, no whitespace and no leading dash npm
+// would read as a flag.
+//
+// Derived from the same `parse` rather than written as a second regex: a
+// private copy is free to accept a form the comparator rejects, and a spec
+// built from one would reach npm as a version nothing publishes.
+export function isExactSemver(version: string): boolean {
+  return version === version.trim() && isSemver(version);
+}
+
+// The prerelease identifiers of `version`, or `[]` for a release AND for
+// anything unparseable. Collapsing those two is deliberate: both answer "not on
+// a prerelease channel", which is the conservative direction for a reader
+// deciding which release channel a machine follows — it falls back to stable,
+// the behaviour that shipped before channels existed.
+export function prereleaseIdentifiers(version: string): readonly string[] {
+  return parse(version)?.pre ?? [];
 }
 
 function comparePre(a: string[], b: string[]): -1 | 0 | 1 {

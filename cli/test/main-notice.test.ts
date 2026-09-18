@@ -1,4 +1,7 @@
+import type * as LocalOps from '@akasecurity/local-ops';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type * as Extension from '../src/commands/extension.ts';
 
 // The passive update notice runs after a command, when stdout is a TTY. Under
 // `__native-host` stdout is Chrome's native-messaging channel, so the notice
@@ -11,12 +14,12 @@ const { notifyFromCache, runNativeHost } = vi.hoisted(() => ({
 }));
 
 vi.mock('@akasecurity/local-ops', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@akasecurity/local-ops')>()),
+  ...(await importOriginal<typeof LocalOps>()),
   notifyFromCache,
 }));
 
 vi.mock('../src/commands/extension.ts', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../src/commands/extension.ts')>()),
+  ...(await importOriginal<typeof Extension>()),
   runNativeHost,
 }));
 

@@ -18,6 +18,14 @@
 //                          guard demands is derived from the reads rather than
 //                          listed beside them.
 //
+// That derivation holds for a read spelled as ONE relative literal, and only
+// for one. A read assembled from an anchor plus a segment —
+// `new URL('../../..' + '/cli/README.md', import.meta.url)`, or
+// `join(repoRoot, 'cli', 'package.json')` — is invisible to it: the anchor is
+// skipped as a directory the package sits inside, and the segment is not a
+// relative literal at all. Nothing goes red for such a read, so spell a
+// cross-package read as one literal, or name its file in turbo.json by hand.
+//
 // It sits at the repo root for the reason `remove-tree.ts` does: several
 // packages need the same rule and a package wall blocks the import. Its suite
 // is `packages/plugin-sdk/test/helpers/turbo-inputs.test.ts`, since the repo
@@ -82,7 +90,12 @@ export interface CrossPackageScan {
  * those are code, reached through the shared `test/` trees turbo hashes
  * globally. Every other literal counts, including one in a comment or one
  * carrying an interpolation — both come back as paths no input will match, so
- * the scan errs toward demanding an input rather than toward missing a read.
+ * those two err toward demanding an input rather than toward missing a read.
+ *
+ * The read it does miss is one assembled from an anchor plus a segment, such
+ * as `'../../..' + '/cli/README.md'` or `join(repoRoot, 'cli', 'package.json')`:
+ * the anchor is left out and the segment is not a relative literal, so the
+ * result carries nothing for it.
  */
 export function crossPackageSpecifiers({
   testFile,

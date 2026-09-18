@@ -179,6 +179,20 @@ describe('crossPackageSpecifiers', () => {
     ).toEqual(['cli/src/main.ts', 'test/setup/x.ts']);
   });
 
+  it('does not see a read assembled from an anchor plus a segment (a known limit)', () => {
+    // Pinned as behaviour so the limit crossPackageSpecifiers documents cannot
+    // drift from the code: a scanner that learns this shape goes red here, and
+    // the doc comment is updated in the same change.
+    expect(
+      scan(
+        [
+          "read(new URL('../../..' + '/cli/README.md', import.meta.url));",
+          "read(join(repoRoot, 'cli', 'package.json'));",
+        ].join('\n'),
+      ),
+    ).toEqual([]);
+  });
+
   it('returns an interpolated literal as a path no input can match', () => {
     const found = scan('read(`../../../${name}/package.json`);');
     expect(found).toHaveLength(1);

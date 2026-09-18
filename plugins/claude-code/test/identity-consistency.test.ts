@@ -114,7 +114,11 @@ describe('turbo hashes every cross-package file this suite reads', () => {
   // reading it exists to fail.
   //
   // The files are derived from this file's own relative literals rather than
-  // listed, so a read added above is demanded here without anyone remembering.
+  // listed, so a read added above is demanded here without anyone remembering
+  // — PROVIDED it is spelled as one relative literal. A read assembled from an
+  // anchor plus a segment (`'../../..' + '/cli/…'`, `join(repoRoot, 'cli', …)`)
+  // is invisible to the scan, and the pin below moves only for what the scan
+  // sees, so that shape stays green unnamed. Spell the read as one literal.
   const packageDir = fileURLToPath(new URL('..', import.meta.url));
   const reads = crossPackageSpecifiers({
     testFile: fileURLToPath(import.meta.url),

@@ -417,7 +417,7 @@ harnessVersion, harnessInterface })`, provider recorded `unknown` with the model
       record `userPromptTransformed.transformedPrompt` **separately**, never conflated.
       Block/rewrite only where the matrix marks it verified; otherwise record-only, and say
       so in `SKILL.md`.
-- [ ] E3. `src/hooks/post-tool-use.ts` + `tool-response.ts` + `scan-response.ts` — CLI
+- [x] E3. `src/hooks/post-tool-use.ts` + `tool-response.ts` + `scan-response.ts` — CLI
       `modifiedResult`; VS Code block-only. **Never read `toolResult.resultType` as the
       command's exit status** — add a case driven by the recorded `false`-command fixture,
       whose `resultType` is `"success"`.

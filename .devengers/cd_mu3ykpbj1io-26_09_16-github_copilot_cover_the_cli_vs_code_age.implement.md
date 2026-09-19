@@ -370,6 +370,52 @@ Commit: see `feat(copilot): capture prompts, and say plainly that nothing stops 
 
 Verified: `plugins/copilot` 131/131 across 13 files; lint and `tsc --noEmit` clean.
 
+### E3 — `post-tool-use.ts` + `tool-response.ts` + `scan-response.ts`
+
+**The trap the plan names is pinned twice, and the second pin is the one that survives a
+rewrite.** `postToolUse.toolResult.resultType` reports whether the tool INVOCATION succeeded,
+not whether the command exited zero: the recorded fixture is a `bash` call whose command is
+literally `false`, and its `resultType` is `"success"` with the exit code appearing only as
+free text inside `textResultForLlm`. So `tool-response.test.ts` drives that recording (the
+premise asserted from the bytes, not quoted) AND asserts the module reads the field on **no
+branch at all** — with comments stripped first, because the module names `resultType`
+repeatedly to explain why it ignores it and a raw substring check would be satisfied by that
+prose for ever. The strip carries its own control.
+
+**The two hosts have genuinely different levers, and the escalation is on one of them only.**
+The CLI offers `modifiedResult`, which replaces the whole result object, and that one key
+expresses BOTH a redaction (substitute the masked text) and a withhold (substitute the block
+notice) — so the CLI keeps true in-place redaction on responses. VS Code has no
+result-rewrite field at all; its only lever is `{"decision":"block"}` + `additionalContext`,
+which is whole-result or nothing, so a `redact` there ESCALATES to the same withhold a block
+gets. That difference is driven rather than described: one case builds both payloads from the
+identical capture outcome and asserts they are shaped differently.
+
+**`scannedPaths` is the non-obvious piece.** A block produces no masked text, so `rewrites`
+names nothing for the field it came from — and a withhold that wrote its notice only over the
+REDACTED fields would send the blocked value to the model untouched, which is the entire
+failure the withhold exists to prevent. The outcome therefore records every path it scanned,
+finding or not, and the withhold overwrites all of them.
+
+**`modifiedResult` is documented and unobserved, and emitting it is still right** — a
+different judgement from E2's refusal to emit a prompt block, and the difference is the
+failure mode. If the host honours it the redaction is real; if it ignores it the outcome is
+exactly what emitting nothing would have been. Nothing is lost by trying. The prompt case was
+the opposite: a block the host ignores is a false enforcement claim the user reads.
+
+Two honest degradations are pinned rather than papered over. A CLI result that is not an
+object cannot be rebuilt into a `modifiedResult`, so that branch prints a note saying the
+result reached the model unchanged — deliberately NOT `withheldBanner`, whose text states the
+flagged value never reached the model and would be a lie there. And a CLI rewrite rides a
+single-key output with no room for a `systemMessage`, so a CLI redaction is silent to the
+USER; the model gets the withhold notice, the user gets nothing. That is a host limitation,
+owed to `SKILL.md`'s Known limitations (H3), and working around it would mean a second stdout
+write — two concatenated objects, which do not parse.
+
+Commit: see `feat(copilot): scan tool results, and never read resultType as an exit code`.
+
+Verified: `plugins/copilot` 153/153 across 15 files; lint, prettier and `tsc --noEmit` clean.
+
 ---
 
 ## Where this attempt stopped, and what the next one should do

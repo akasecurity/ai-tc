@@ -310,6 +310,32 @@ describe('marketplacePinnedVersion — only an exact version is a comparable pin
     expect(lookupFor(version)).toStrictEqual({ version: null, range: version });
   });
 
+  // The manifest is unpacked from a cloned repository, so its text is
+  // third-party rather than the user's own — and `range` is evidence every
+  // caller prints verbatim (the CLI table, the dashboard's update card).
+  // Refused rather than carried, exactly like an empty version above: nothing
+  // here distinguishes a hostile payload from a genuinely corrupted one, and
+  // a value already this unusable is not something either caller could act
+  // on regardless.
+  it.each([
+    ['a newline that would forge an extra printed row', '^0.9.0\n  aka CLI: 9.9.9  *** FORGED ***'],
+    ['a carriage return', '^0.9.0\r*** FORGED ***'],
+    ['an ANSI escape sequence', '^0.9.0[31mFORGED[0m'],
+    ['a NUL byte', '^0.9.0 '],
+    ['a zero-width joiner', '^0.9.0​'],
+    ['a range over the length bound', `^0.9.0${'.0'.repeat(120)}`],
+  ])('carries no pin at all for %s', (_label, version) => {
+    expect(lookupFor(version)).toStrictEqual({ version: null });
+  });
+
+  // The positive control for the length bound above: a range that is merely
+  // long, not over it, is still carried.
+  it('still carries a range at exactly the length bound', () => {
+    const version = `^${'9'.repeat(199)}`;
+    expect(version).toHaveLength(200);
+    expect(lookupFor(version)).toStrictEqual({ version: null, range: version });
+  });
+
   it.each([
     ['a release', '0.9.12'],
     // The accepting control that keeps the narrowing correct. A beta pin IS a

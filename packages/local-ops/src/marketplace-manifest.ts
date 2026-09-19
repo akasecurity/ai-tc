@@ -2,10 +2,23 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { printable } from '@akasecurity/schema';
+
 import type { AgentPlugin } from './registry.ts';
 // `semver.ts` imports nothing from this module, so reaching for it here keeps
 // the LEAF property the header below protects.
 import { isExactSemver } from './semver.ts';
+
+// A range is carried as EVIDENCE and printed verbatim by every caller —
+// `update-render.ts`'s CLI table and the dashboard's update card — so it gets
+// the same guarantee `printable` gives every other string this tree writes
+// into a terminal or a page (`@akasecurity/schema`'s control-plane shapes).
+// The manifest is the host's own file, but it is unpacked from a cloned
+// repository rather than typed by the user, so a control character, a
+// newline or an ANSI escape in it is third-party text landing on a surface
+// whose whole point is that what it prints is true.
+const MAX_RANGE_LENGTH = 200;
+const printableRange = printable(MAX_RANGE_LENGTH);
 
 // What the HOST will actually install, read from the marketplace manifest it
 // resolved — as distinct from what npm has published.
@@ -134,5 +147,12 @@ export function marketplacePinnedVersion(
   // `range` instead lets the caller explain the pin rather than mistake it for
   // none at all — which is what let the row offer npm's own latest as an
   // update a host resolving within the range would never install.
-  return isExactSemver(version) ? { version } : { version: null, range: version };
+  //
+  // A range that fails `printableRange` reads as no pin rather than as
+  // sanitized evidence: nothing distinguishes "a genuine range with stray
+  // bytes" from a hostile one at this point, and half of this function's own
+  // job is deciding what is safe to carry forward — a value already this
+  // corrupted is not something a caller can act on either way.
+  if (isExactSemver(version)) return { version };
+  return printableRange.safeParse(version).success ? { version: null, range: version } : NO_PIN;
 }

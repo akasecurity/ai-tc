@@ -95,8 +95,13 @@ mkdir -p "$dest"
 tar -xzf "${tmp}/${archive}" -C "$dest"
 binroot="${dest}/aka-${triple}"
 [ -x "${binroot}/aka" ] || { echo "aka: binary missing after extract." >&2; exit 1; }
+# A stable `current` link at this version's binroot, re-pointed on every install.
+# Anything that records where `aka` lives (the PATH link below, the browser
+# extension's native-messaging launcher) names it rather than the versioned dir.
+# Relative, so it resolves inside INSTALL_DIR wherever that is.
+ln -sfn "${version}/aka-${triple}" "${INSTALL_DIR}/current"
 mkdir -p "$BIN_DIR"
-ln -sf "${binroot}/aka" "${BIN_DIR}/aka"
+ln -sf "${INSTALL_DIR}/current/aka" "${BIN_DIR}/aka"
 echo "aka: installed ${binroot}/aka"
 echo "aka: linked ${BIN_DIR}/aka"
 

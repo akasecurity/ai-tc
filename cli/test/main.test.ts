@@ -1,3 +1,7 @@
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ExternalSpawn } from '../src/lib/external-dispatch.ts';
@@ -103,5 +107,64 @@ describe('main — external dispatch wiring', () => {
 
     expect(spawn).not.toHaveBeenCalled();
     expect(written(stderr)).toContain("unknown command '--nope'");
+  });
+});
+
+// The native host's detached children are spawned as `<process.execPath>
+// <script>`. Under the standalone binary process.execPath is `aka` itself, so
+// the script's path arrives here as the command, and main runs it the way a
+// Node runtime would. Built on disk rather than stubbed: the property is that
+// the script RUNS.
+describe('main — native-host child scripts', () => {
+  let root: string;
+  let script: string;
+  let ran: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'aka-main-host-child-'));
+    mkdirSync(join(root, 'native-host'));
+    script = join(root, 'native-host', 'child.js');
+    ran = join(root, 'native-host', 'ran.txt');
+    writeFileSync(
+      script,
+      "import { writeFileSync } from 'node:fs';\n" +
+        "writeFileSync(new URL('./ran.txt', import.meta.url), 'ok');\n",
+    );
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('runs a script beside the host under the standalone binary', async () => {
+    const spawn = spawnExiting(0);
+
+    await main([script], { spawn, platform: 'darwin' }, { sea: true, root });
+
+    expect(existsSync(ran)).toBe(true);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(written(stderr)).toBe('');
+    expect(process.exitCode).not.toBe(1);
+  });
+
+  it('refuses the same path outside the standalone binary', async () => {
+    const spawn = spawnExiting(0);
+
+    await main([script], { spawn, platform: 'darwin' }, { sea: false, root });
+
+    expect(existsSync(ran)).toBe(false);
+    expect(written(stderr)).toContain('unknown command');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('refuses a script outside the install it belongs to', async () => {
+    const spawn = spawnExiting(0);
+    const otherRoot = join(root, 'other-install');
+
+    await main([script], { spawn, platform: 'darwin' }, { sea: true, root: otherRoot });
+
+    expect(existsSync(ran)).toBe(false);
+    expect(written(stderr)).toContain('unknown command');
+    expect(process.exitCode).toBe(1);
   });
 });

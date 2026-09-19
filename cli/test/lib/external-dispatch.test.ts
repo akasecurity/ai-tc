@@ -28,7 +28,7 @@ describe('shouldDispatchExternal', () => {
     expect(shouldDispatchExternal(name, true)).toBe(false);
   });
 
-  it.each(['__update-refresh', '__dashboard-server'])(
+  it.each(['__update-refresh', '__dashboard-server', '__native-host'])(
     'never dispatches hidden command %s',
     (name) => {
       expect(shouldDispatchExternal(name, true)).toBe(false);

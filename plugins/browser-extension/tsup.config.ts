@@ -48,6 +48,11 @@ export default defineConfig({
     // — and the trigger resolves the script as a sibling of the running one, so
     // it lands here beside host.js for the same reason scan-worker does.
     sync: 'src/native-host/sync.ts',
+    // The detached history-drain and body-expiry children, triggered by the
+    // same handleSessionStart call and resolved the same way, as siblings of
+    // host.js.
+    'history-sync': 'src/native-host/history-sync.ts',
+    'content-retention': 'src/native-host/content-retention.ts',
   },
   format: ['esm'],
   platform: 'node',

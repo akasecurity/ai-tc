@@ -21,7 +21,6 @@
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync } from 'node:fs';
-import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +31,7 @@ import { HISTORY_SYNC_SCRIPT_NAME as HISTORY_SCRIPT } from '@akasecurity/plugin-
 import { describe, expect, it } from 'vitest';
 
 import { removeTree } from '../../../../test/helpers/remove-tree.ts';
+import { declaredEntryKeys } from '../helpers/tsup-entries.ts';
 
 // test/e2e -> plugins/claude-code
 const PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -43,17 +43,20 @@ describe('the built history-drain child', () => {
   it('is DECLARED under the name the trigger resolves', () => {
     // Asserted against the tsup CONFIG rather than the emitted file: the build
     // runs before every suite, so an existsSync here is restored by the build
-    // itself and could not fail for the reason it appears to check. The entry
-    // KEY is what tsup turns into the emitted filename.
-    const config = readFileSync(join(PLUGIN_ROOT, 'tsup.config.ts'), 'utf8');
+    // itself and could not fail for the reason it appears to check.
+    //
+    // Read from the EVALUATED config rather than the file's text: a regex over
+    // the source matches a commented-out entry exactly as readily as a real
+    // one, so it cannot tell "removed" from "declared". The entry KEY is what
+    // tsup turns into the emitted filename.
     const key = HISTORY_SCRIPT.replace(/\.js$/, '');
     expect(
-      new RegExp(`(^|\\s)'?${key}'?: '`, 'm').test(config),
+      declaredEntryKeys(),
       `tsup declares no \`${key}\` entry, so scripts/${HISTORY_SCRIPT} is never emitted and ` +
         'triggerHistorySync resolves a path that does not exist. The spawn then fails with ' +
         'ENOENT on a later tick, spawnDetached swallows it, and attached machines never send ' +
         'their recorded history with nothing recording the gap.',
-    ).toBe(true);
+    ).toContain(key);
 
     expect(existsSync(built(HISTORY_SCRIPT))).toBe(true);
   });

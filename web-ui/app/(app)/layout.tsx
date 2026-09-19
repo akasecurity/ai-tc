@@ -13,9 +13,18 @@ import { storeVersionSkew } from '../lib/db';
 // The skew check sits HERE rather than in each page because it is the one store
 // failure a page cannot report for itself: a throw from `db()` reaches the error
 // boundary, which shows a digest and no cause. Checking once, above the pages,
-// turns that into a notice naming the remedy. It costs a healthy dashboard
-// nothing — `db()` memoises its handle, so this is the same open the page below
-// was going to perform.
+// turns that into a notice naming the remedy.
+//
+// What it costs depends on the store, and only the healthy path is free. There,
+// `db()` memoises its handle, so this is the same open the page below was going
+// to perform. On a skew store the page segment still renders: the App Router
+// renders it IN PARALLEL with this layout, whether or not `children` is placed,
+// so the page's own `db()` runs, finds nothing memoised (a FAILED open memoises
+// nothing) and throws a second `StoreAheadOfBuildError` that Next logs with a
+// digest. The browser still gets this notice with a 200, and the error boundary
+// never mounts because the slot that would have held the page is unused — but
+// the server log stays loud until the update, which is the price of saying what
+// happened instead of showing a digest.
 //
 // Only SKEW short-circuits. Every other store failure returns null here and
 // still reaches the boundary from the page, so a genuinely unreadable store is

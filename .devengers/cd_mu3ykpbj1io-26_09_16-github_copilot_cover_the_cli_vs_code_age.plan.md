@@ -519,7 +519,7 @@ content-retention,reconcile,scan-worker}.ts` and `src/remediation/*` from the Co
       antigravity template, tag-vs-manifest version gate included. Its smoke test feeds junk
       to `preToolUse` and requires an **explicit allow**, and junk to every other hook and
       requires **silence**.
-- [ ] K7. `CLAUDE.md`: hook-contract bullets (_Copilot CLI: `preToolUse` denies on crash,
+- [x] K7. `CLAUDE.md`: hook-contract bullets (_Copilot CLI: `preToolUse` denies on crash,
       allows on timeout, other events fail open — documentation until the two probes run;
       VS Code Local: exit 2 blocks, everything else fails open, matchers ignored_), the
       package-dependency graph, the repository-layout block, and the releasing section's

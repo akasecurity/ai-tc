@@ -578,6 +578,38 @@ Commit: see `feat(copilot): make the capability matrix code and derive the skill
 
 Verified: `plugins/copilot` 225/225 across 20 files; lint, prettier and `tsc --noEmit` clean.
 
+### K7 — CLAUDE.md is true again, and a guard caught what I had missed
+
+Four edits. Two hook-contract bullets: one for the two-hosts-one-file shape (two payload
+dialects, two never-merged field tables, the event name on argv and what that does to the
+manifest offset, prompts record-only on both surfaces, and `modifiedResult` on the CLI alone),
+and one for the failure convention — `preToolUse` denies on a crash and allows on a timeout
+while every other event fails open, with exit-0-and-empty-stdout unobserved, which is why
+that one event prints an explicit allow and the rest stay silent. Plus the package-dependency
+graph, the repository-layout block, and a bullet in the releasing section.
+
+**That last one says what the section would otherwise imply and should not.** `plugins/copilot`
+bundles the same core as the three shipping plugins, so a bundled-package change rebuilds its
+`scripts/*.js` — and ships to nobody, because it is `"private": true` with no release
+workflow. The bullet says so and names what has to move WITH `private` when somebody unsets
+it: the release workflow, the derived published-package set in `required-checks.test.js`, and
+the `ci.yml` prose explaining the temporary Windows pin. Adding copilot to the bump list
+today would be a claim about an artifact nobody can install.
+
+**`posture-build-wiring.test.js` caught a real gap from E1, three commits late.**
+`plugins/copilot/src/hooks/session-start.ts` is a session-pass caller and that guard pins the
+caller set EXACTLY, so it reddened the moment I ran the eslint-config suite — which I should
+have run in the E1 commit rather than here. The file already threads `pluginBuild:`, so the
+second half of that guard passed on the first run; only the membership needed the edit.
+
+Lesson worth carrying: `packages/eslint-config`'s suite hashes the whole workspace and is the
+one place several cross-cutting guards live. Run it after any commit that adds a `src/` file
+to a plugin, not only after touching CLAUDE.md.
+
+Commit: see `docs: describe the Copilot adapter's two hosts and its split fail convention`.
+
+Verified: `packages/eslint-config` 1531/1531 across 23 files; prettier clean on CLAUDE.md.
+
 ---
 
 ## Where this attempt stopped, and what the next one should do

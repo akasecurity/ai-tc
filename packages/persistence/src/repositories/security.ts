@@ -60,6 +60,20 @@ const ENFORCEMENT_KINDS: readonly EnforcementActionKind[] = ['blocked', 'redacte
 // and PostToolUse is record-only. Tool calls are covered across every tool in
 // the CLI; the IDE fires no hooks at all (see
 // plugins/antigravity/skills/setup/SKILL.md).
+// GitHub Copilot sits at 30 and the argument is about what this adapter SHIPS
+// today, not about what the host can do. The Copilot CLI's contract is the
+// richest of the terminal harnesses — prompt capture, an observed input
+// rewrite (`modifiedArgs`) and a documented output rewrite (`modifiedResult`)
+// — and VS Code agent mode's is poorer (no output rewrite, and no prompt
+// channel that has been shown to block or rewrite). But only the pre-tool-use
+// event is implemented: shell command text and its model-authored description
+// are scanned and enforced before the call runs, on both surfaces. Prompts,
+// tool RESULTS and the history backfill are not yet wired, so nothing on those
+// paths is covered — which is why this sits below Antigravity's 60 rather than
+// above it. Raise it as each event lands; do not raise it for a capability the
+// host has and this package does not use. The cloud coding agent shares the
+// CLI's protocol and has no local store, so it is captured by the repo hook
+// alone (see plugins/copilot/skills/setup/SKILL.md).
 // The two web-chat surfaces sit lowest of the supported rows, and what bounds
 // them is structural: content.ts watches ONE element. findComposer() is
 // firstMatch(COMPOSER_SELECTORS) — the first match of the first selector that
@@ -105,7 +119,7 @@ const SCAN_COVERAGE: Record<Provider, { coverage: number; supported: boolean }> 
   [HARNESS.ClaudeAi]: { coverage: 40, supported: true },
   [HARNESS.ClaudeCode]: { coverage: 100, supported: true },
   [HARNESS.Codex]: { coverage: 80, supported: true },
-  [HARNESS.Copilot]: { coverage: 0, supported: false },
+  [HARNESS.Copilot]: { coverage: 30, supported: true },
   [HARNESS.Cursor]: { coverage: 0, supported: false },
 };
 

@@ -68,4 +68,30 @@ describe('resolveHarnessId over rows the capture path actually writes', () => {
     seedScannedHarness('some-unknown-agent');
     expect((await inv.listHarnesses()).items).toEqual([]);
   });
+
+  // resolveHarnessId's ladder is a hand-written chain of `if`s: extending
+  // HarnessId makes HARNESS_LABELS and TITLE_NEEDLES compile errors and says
+  // NOTHING about the dispatch. The derived case above would still pass with
+  // the Copilot arm missing — its set comparison is over what came back, and a
+  // member that resolves to null simply yields no card, which reads as an
+  // ordinary absence. So Copilot's arm is driven by name, and with the label
+  // asserted, since that is the other half of what a card renders.
+  it('resolves the Copilot wire id and labels the card', async () => {
+    seedScannedHarness(SOURCE_TOOL.Copilot);
+    const { items } = await inv.listHarnesses();
+    expect(items.map((h) => ({ id: h.id, label: h.label }))).toEqual([
+      { id: HARNESS.Copilot, label: 'GitHub Copilot' },
+    ]);
+  });
+
+  // The needle is the stripped WIRE id ('githubcopilot'), not the display id
+  // ('copilot'), so a row titled with the bare word resolves to nothing. Pinned
+  // because the two ids differ here exactly as they do for Claude Code, and a
+  // needle respelled from HARNESS would silently widen this arm to match any
+  // title carrying the word.
+  it('does not resolve a bare "copilot" title', async () => {
+    expect(SOURCE_TOOL.Copilot).not.toBe(HARNESS.Copilot);
+    seedScannedHarness(HARNESS.Copilot);
+    expect((await inv.listHarnesses()).items).toEqual([]);
+  });
 });

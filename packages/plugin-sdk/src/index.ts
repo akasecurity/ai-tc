@@ -121,6 +121,8 @@ export type {
   ResolvedCodexProvider,
 } from './provider-codex.ts';
 export { codexProviderFromModelId, resolveCodexProvider } from './provider-codex.ts';
+export type { CopilotProvider, ResolvedCopilotProvider } from './provider-copilot.ts';
+export { resolveCopilotProvider } from './provider-copilot.ts';
 export type { EgressHit } from './raw-egress.ts';
 export { assertRawFree, maskContextSlice, RawEgressError, safeMaskedMatch } from './raw-egress.ts';
 export {

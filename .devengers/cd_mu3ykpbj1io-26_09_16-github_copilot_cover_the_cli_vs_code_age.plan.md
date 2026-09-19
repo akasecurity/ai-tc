@@ -408,7 +408,7 @@ WATCHDOG_MS)` ported from Antigravity. Restate the blocking-body limit in the he
 
 ### E. The remaining events
 
-- [ ] E1. `src/hooks/session-start.ts` — `handleSessionStart({ tool: SOURCE_TOOL.Copilot,
+- [x] E1. `src/hooks/session-start.ts` — `handleSessionStart({ tool: SOURCE_TOOL.Copilot,
 harnessVersion, harnessInterface })`, provider recorded `unknown` with the model id.
       The once-per-session pass must tolerate running **after** the session's first prompt
       (the recordings show `userPromptSubmitted` 20 ms _before_ `sessionStart`); add a case

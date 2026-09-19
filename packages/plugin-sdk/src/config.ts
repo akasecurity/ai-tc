@@ -15,6 +15,7 @@ import type { ResolvedProvider } from './provider.ts';
 import { resolveProvider } from './provider.ts';
 import type { ResolvedAntigravityProvider } from './provider-antigravity.ts';
 import type { ResolvedCodexProvider } from './provider-codex.ts';
+import type { ResolvedCopilotProvider } from './provider-copilot.ts';
 
 // The settings file readers and writer live in @akasecurity/persistence
 // (shared with the CLI and the web-ui); re-exported so the SDK's public
@@ -34,11 +35,17 @@ export interface PluginConfig {
   // The provider backend this session talks to, resolved from the
   // contemporaneous env via ./provider.ts (Claude Code: anthropic | bedrock |
   // vertex | gateway) or ./provider-codex.ts (Codex CLI: openai | gateway) —
-  // whichever resolver `loadConfig`'s caller passed. Resolved here so
+  // whichever resolver `loadConfig`'s caller passed. One host resolves NO env:
+  // Copilot publishes no base-url variable, so ./provider-copilot.ts answers
+  // 'unknown' rather than fabricating a backend. Resolved here so
   // SessionStart can snapshot it onto the session-root as an immutable
   // per-session fact (it can't reach the reconciler, which runs detached
   // without the session's env).
-  provider: ResolvedProvider | ResolvedCodexProvider | ResolvedAntigravityProvider;
+  provider:
+    | ResolvedProvider
+    | ResolvedCodexProvider
+    | ResolvedAntigravityProvider
+    | ResolvedCopilotProvider;
 }
 
 /**
@@ -52,14 +59,18 @@ export interface PluginConfig {
  * passes its own resolver from the ONE hook that snapshots the provider onto
  * the session root — `resolveCodexProvider` from
  * plugins/codex/src/hooks/session-start.ts, `resolveAntigravityProvider` from
- * plugins/antigravity/src/hooks/pre-invocation.ts. Every other hook loads
+ * plugins/antigravity/src/hooks/pre-invocation.ts, `resolveCopilotProvider`
+ * from plugins/copilot/src/hooks/session-start.ts. Every other hook loads
  * config for its data dir / settings only and never reads `.provider`, so the
  * default is harmless there even though it's Claude-shaped.
  */
 export function loadConfig(
   base: string = defaultDataDir(),
   resolveProviderFn: () =>
-    ResolvedProvider | ResolvedCodexProvider | ResolvedAntigravityProvider = resolveProvider,
+    | ResolvedProvider
+    | ResolvedCodexProvider
+    | ResolvedAntigravityProvider
+    | ResolvedCopilotProvider = resolveProvider,
 ): PluginConfig {
   // Self-heal the store's at-rest modes on the plugin's entry path, so a
   // group/other-readable base or settings.json left by an older release (or the
@@ -100,8 +111,13 @@ export function loadConfig(
  * genuinely unexpected resolver bug).
  */
 function resolveProviderSafe(
-  resolveProviderFn: () => ResolvedProvider | ResolvedCodexProvider | ResolvedAntigravityProvider,
-): ResolvedProvider | ResolvedCodexProvider | ResolvedAntigravityProvider {
+  resolveProviderFn: () =>
+    | ResolvedProvider
+    | ResolvedCodexProvider
+    | ResolvedAntigravityProvider
+    | ResolvedCopilotProvider,
+):
+  ResolvedProvider | ResolvedCodexProvider | ResolvedAntigravityProvider | ResolvedCopilotProvider {
   try {
     return resolveProviderFn();
   } catch {

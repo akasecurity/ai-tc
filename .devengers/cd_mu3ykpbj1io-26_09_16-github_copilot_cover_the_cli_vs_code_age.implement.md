@@ -266,6 +266,71 @@ second case reading the first one's answer.
 
 Verified: `plugins/copilot` 107/107 across 10 files, lint and typecheck clean.
 
+### E1 — `src/hooks/session-start.ts` (second attempt)
+
+The prior attempt's landed work was re-verified before anything new was written:
+`plugins/copilot` reported 107/107 across 10 files on a fresh `pnpm install`, matching the
+journal above. So this attempt starts at E1, the first unticked step whose dependencies
+were all present.
+
+**The provider seam had to move, and it moved in `plugin-sdk` rather than in the plugin.**
+`PluginConfig['provider']` is a union of the three existing `Resolved*Provider` shapes and
+none of them can carry `'unknown'`, which is what the plan requires this host to record. So
+`packages/plugin-sdk/src/provider-copilot.ts` is new, the union gained a fourth member, and
+`loadConfig`/`resolveProviderSafe` widened with it.
+
+That module is deliberately unlike its three siblings and the difference is the whole of it:
+Copilot publishes no base-url environment variable, so there is nothing to read and the
+resolver answers `'unknown'` unconditionally. Two consequences worth stating because both
+are easy to get wrong later. It reads NO environment, so it carries **no**
+`n/no-process-env` opt-out and adds **no** row to CLAUDE.md §3 — `provider-copilot.test.ts`
+pins that structurally (the source must not contain `process.env`) as well as behaviourally
+(three stubbed base-url variables move the answer not at all). And there is deliberately no
+`copilotProviderFromModelId` sibling: a Copilot session can be running Claude, GPT or Gemini
+through GitHub's own endpoint, so the model FAMILY says nothing about which backend billed
+it, and a heuristic that answered `'unknown'` for every id would read as a gap somebody
+forgot to fill. The argument is in the module header instead, where it is not dead code.
+`test/index.test.ts`'s pinned public-symbol set gained `resolveCopilotProvider` — that set is
+exact, so the export could not land without it.
+
+**The hook itself** is the Codex sibling's shape with three changes. The manifest version
+comes from `harnessVersionFromArgv()` (slot 3, this host's offset — A5). `harnessInterface`
+is derived from the payload DIALECT rather than from a transcript originator, because the two
+hosts this package covers are told apart by their wire shape and by nothing else. And
+`triggerReconcile` is **not** wired yet: it needs `history/reconcile-trigger.ts` plus a
+`reconcile` build entry, which is F3, and a `triggerReconcile` call whose target script the
+build does not emit would spawn nothing while reading as a safety net. It is owed when F3
+lands, and E5's `stop.ts` is the step that brings it.
+
+**The pure half is split into `session-start-payload.ts`**, the way Codex splits
+`stop-payload.ts`: a hook entry runs `main()` on import, so anything a test needs to reach
+cannot live in the entry. `harnessInterfaceFor` reports `cli` for the CLI dialect and never
+`cloud` — a terminal `copilot` and the cloud coding agent speak the same wire, so nothing in
+the payload separates them and `cloud` would be a fabricated fact on a durable per-session
+row. Phase C names that surface through the installed launcher instead.
+
+**The ordering case the plan asks for is driven, not restated.**
+`test/hooks/session-start-order.test.ts` opens a real temp store, writes a prompt capture
+through the product's own runtime, and only THEN calls `handleSessionStart` — the recorded
+order, in which `userPromptSubmitted` is stamped 20 ms before `sessionStart`. It asserts the
+root opened under the right id and that the capture written before it still hangs off it. Its
+first case asserts the PREMISE from the fixtures' own timestamps rather than quoting the
+README, so a recording that stopped showing the inversion would say so rather than leaving a
+case that silently describes nothing.
+
+Commit: see `feat(copilot): open the session root, and resolve no provider for it`.
+
+Verified: `plugins/copilot` 117/117 across 12 files; `packages/plugin-sdk` 660 passed / 2
+skipped across 43 files; `packages/plugin-runtime` 576 passed / 3 skipped. Lint and
+`tsc --noEmit` clean for both changed packages.
+
+**Two `packages/persistence` failures pre-date this diff and are environmental**, not caused
+by it — that package takes no `plugin-sdk` dependency. `test/helpers/temp-store.test.ts`'s
+undeletable-tree case and `test/helpers/settings-writers.test.ts`'s parent-exit case both
+fail because this container runs as **uid 0**, and `test/internal/sql-functions.test.ts`'s two
+`aka_lower` NUL cases fail on this container's Node 22 `node:sqlite`. Same environment note as
+the previous attempt's.
+
 ---
 
 ## Where this attempt stopped, and what the next one should do

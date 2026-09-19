@@ -501,7 +501,7 @@ content-retention,reconcile,scan-worker}.ts` and `src/remediation/*` from the Co
 
 ### K. Ship gates
 
-- [ ] K1. `test/e2e/fail-open.e2e.test.ts` against the **built** scripts. Fault rows (empty,
+- [x] K1. `test/e2e/fail-open.e2e.test.ts` against the **built** scripts. Fault rows (empty,
       malformed, truncated, scalar, null, binary, oversized stdin, unopenable store) prove
       `preToolUse` emits exactly one explicit allow and every other hook emits nothing.
       Enforcement rows prove block, redact, warn and monitor each emit the shape their cell

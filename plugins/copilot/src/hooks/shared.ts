@@ -91,10 +91,20 @@ export function getString(record: Record<string, unknown>, key: string): string 
 
 // ─── The wire ────────────────────────────────────────────────────────────────
 
-/** Copilot CLI (and cloud): `preToolUse` permission verdict. */
+/**
+ * Copilot CLI (and cloud): `preToolUse` permission verdict.
+ *
+ * `systemMessage` rides ALONGSIDE the verdict rather than replacing it, and
+ * that is load-bearing on this event. A note with no `permissionDecision` is a
+ * payload the host has to interpret — on an event where a crash is a deny and
+ * where exit-0-with-empty-stdout has never been observed, the one thing
+ * `preToolUse` must never do is leave the verdict out. So the store-unavailable
+ * notice is carried here instead of being emitted on its own.
+ */
 export interface CliPermissionOutput {
   permissionDecision: 'allow' | 'deny' | 'ask';
   permissionDecisionReason?: string;
+  systemMessage?: string;
 }
 
 /** Copilot CLI: `preToolUse` input rewrite — the executed call is replaced. */
@@ -165,10 +175,14 @@ export type HookOutput =
  * a crash is a deny. On VS Code silence is a documented no-opinion, but printing
  * the same explicit allow costs nothing and keeps one wrapper covering both.
  *
+ * `systemMessage` is optional and rides WITH the allow rather than instead of
+ * it, so a note (a store that will not open, say) can never cost this event its
+ * verdict. Both dialects have a slot for one.
+ *
  * Deliberately NOT a shared frozen constant: `emit` serializes whatever it is
  * handed, and a single object handed to two hosts invites someone to mutate it.
  */
-export function allowPayload(dialect: Dialect): HookOutput {
+export function allowPayload(dialect: Dialect, systemMessage?: string): HookOutput {
   return dialect === 'vscode'
     ? {
         hookSpecificOutput: {
@@ -176,8 +190,9 @@ export function allowPayload(dialect: Dialect): HookOutput {
           permissionDecision: 'allow',
           updatedInput: {},
         },
+        ...(systemMessage === undefined ? {} : { systemMessage }),
       }
-    : { permissionDecision: 'allow' };
+    : { permissionDecision: 'allow', ...(systemMessage === undefined ? {} : { systemMessage }) };
 }
 
 // Hook output protocol: write one JSON object to stdout and exit 0.

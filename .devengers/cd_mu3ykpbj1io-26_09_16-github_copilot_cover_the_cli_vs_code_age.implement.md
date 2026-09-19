@@ -456,6 +456,49 @@ Commit: see `feat(copilot): register every hook under both hosts' event spelling
 
 Verified: `plugins/copilot` 174/174 across 17 files; lint and `tsc --noEmit` clean.
 
+### K1 — the fail-open e2e, and the defect it found
+
+This is the only suite in the repository whose two halves assert OPPOSITE bytes, because one
+of this host's events has a different failure convention from the rest: `preToolUse` must
+print exactly one `{"permissionDecision":"allow"}` on every fault, and the other three hooks
+must print nothing. So `''` is a pass on three and a failure on the fourth, and the two are
+never checked by the same assertion — `silent()` is an exact equality rather than a
+`not.toContain`, which would pass on the very value under test.
+
+**It found a real defect in already-landed work, which is what it is for.** On a store that
+will not open, `pre-tool-use.ts` returned a bare `{ systemMessage: … }` — a payload with NO
+verdict, on the one event where a payload the host has to interpret is exactly the risk the
+explicit allow exists to remove. Fixed by giving `CliPermissionOutput` an optional
+`systemMessage` and having `allowPayload(dialect, note?)` carry it, so the note rides WITH
+the verdict instead of replacing it. Both dialects have a slot for one. The variant map in
+`hook-output-shapes.test.ts` is keyed on `permissionDecision` and so did not move.
+
+**Two rows are deliberately weaker than the rest, and the weakening is bounded.** A broken or
+relocated store is a condition AKA is DESIGNED to speak about — the once-per-session
+store-unavailable notice and the first-run nudge are both deliberate `systemMessage` writes
+on hooks whose ordinary answer is silence — so demanding `''` there would forbid a feature
+rather than catch a regression. Those two rows assert the property that actually matters
+instead: a hook may say something, but it may not DECIDE. Silence, or one object whose ONLY
+key is `systemMessage`; any decision key of either dialect fails.
+
+That weakening then needs its own control, because `expectFailOpenOrNote` passes on a bare
+allow and so cannot see the note being dropped entirely — which would leave every fault row
+green while the user's store silently stopped recording. `pre-tool-use over an unopenable
+store` is that control and asserts both halves in one object.
+
+**The enforcement half is five cells, driven from a shipped rule's own example** so no
+secret-shaped literal is written by hand: deny under `block`; `modifiedArgs` carrying the
+WHOLE argument object under `redact` on `description` (which does not execute); the call let
+THROUGH under `redact` on `command` (which does — the runtime degrades to `redactFallback`,
+shipped as `warn`), pinned so nobody "fixes" it into an unconditional deny; a `systemMessage`
+under `warn`; and the plain explicit allow under `monitor`, which is the row that would make
+every other one vacuous if the rule stopped matching. Each also asserts the raw value never
+rides back out on stdout.
+
+Commit: see `test(copilot): drive the built hooks, and carry the store note with the verdict`.
+
+Verified: `plugins/copilot` 216/216 across 18 files; lint and `tsc --noEmit` clean.
+
 ---
 
 ## Where this attempt stopped, and what the next one should do

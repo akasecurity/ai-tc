@@ -80,10 +80,13 @@ async function main(): Promise<HookOutput | undefined> {
   warnIfStoreRedirected(config, sessionId);
   const gateway = openGatewayOrNull(config);
   if (gateway === null) {
-    // Still an explicit allow on this host — the note rides the systemMessage
-    // channel only when there is a store-unavailable warning to claim.
+    // STILL AN EXPLICIT ALLOW, with the note riding beside it rather than
+    // replacing it. A bare `{systemMessage}` carries no verdict, and on this
+    // event a payload the host has to interpret is exactly what the explicit
+    // allow exists to avoid. `undefined` hands the wrapper its own allow, which
+    // is the same shape without the note.
     return claimStoreUnavailableWarning(config.dataDir, sessionId)
-      ? { systemMessage: storeUnavailableMessage(config.dbPath) }
+      ? allowPayload(dialect, storeUnavailableMessage(config.dbPath))
       : undefined;
   }
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });

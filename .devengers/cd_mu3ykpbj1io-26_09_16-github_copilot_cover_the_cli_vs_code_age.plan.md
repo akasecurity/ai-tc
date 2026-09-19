@@ -465,11 +465,11 @@ harnessVersion, harnessInterface })`, provider recorded `unknown` with the model
 ### H. Skills, wizard and presentation
 
 - [ ] H1. Copy the ten `skills/*/SKILL.md` from `plugins/codex`, changing host wording.
-- [ ] H2. `src/capabilities.ts` — the typed matrix with its `verified` column.
-- [ ] H3. `skills/setup/SKILL.md` Known limitations rendered from the matrix, stating plainly
+- [x] H2. `src/capabilities.ts` — the typed matrix with its `verified` column.
+- [x] H3. `skills/setup/SKILL.md` Known limitations rendered from the matrix, stating plainly
       that VS Code enforcement is built to the published contract and **not confirmed against
       a live install**.
-- [ ] H4. `test/capability-matrix.test.ts` — fails when matrix and `SKILL.md` disagree.
+- [x] H4. `test/capability-matrix.test.ts` — fails when matrix and `SKILL.md` disagree.
 - [ ] H5. `src/{present,render,setup-show,setup-frame-json,intro,start-light,firstrun,
 firstrun-core,posture,calibration,onboard,query,dashboard,dashboard-launch,
 skills-registry,exception-guidance,filescan,apply-suppressions,sync,history-sync,

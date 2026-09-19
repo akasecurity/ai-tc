@@ -538,6 +538,46 @@ Commit: see `feat(copilot): pin the worker bundle, and give the coverage row its
 Verified: `plugins/copilot` 219/219 across 19 files; `packages/persistence`
 `security.test.ts` 38/38; lint, prettier and `tsc --noEmit` clean for both packages.
 
+### H2, H3 and H4 — the matrix as code, and the skill held to it
+
+`src/capabilities.ts` carries nine rows of surface × event × subject →
+`{ channel, verified }`, and `skills/setup/SKILL.md`'s Known limitations section is derived
+from it: a table of the rows plus a sentence per row.
+`test/capability-matrix.test.ts` holds the two together in BOTH directions, because they
+fail differently — a matrix row with no sentence is a limit nobody was told about, and a
+sentence with no row is a claim about a surface that has changed underneath it.
+
+Four things in that guard are load-bearing beyond the row-set comparison. It carries a
+positive control, because every other case iterates one of the two collections and an empty
+matrix or table would satisfy them all for free. It requires each row's SENTENCE in the prose,
+not just its cells — a one-word cell reading `none` explains nothing, and the sentence is
+where the limitation actually lives. It requires the document to say IN ITS OWN WORDS that
+the unverified rows have never been seen working, rather than leaving that to a `no` in a
+cell somebody may not read as a warning. And it pins the CLOUD surface's ABSENCE from the
+matrix, which is exactly the kind of fact a reader supplies from memory: no hook runs there,
+so a row claiming it speaks the CLI's wire would be true of the host and false of AKA.
+
+The prose comparison collapses whitespace, because the document is hard-wrapped and
+list-indented while the matrix's notes are single lines. Without that the guard would fail on
+a reflow and quietly reward writing the file unwrapped.
+
+**One deviation from the plan, and it is a scoping one.** H3 asks for the Known limitations
+section of the setup skill; H1 and H5 ask for the other nine skills and the whole wizard
+surface, and neither is done. So this `SKILL.md` is NOT the guided calibration wizard the
+other three plugins ship, and it says so in its second paragraph — nothing here reads Copilot
+session history, so a wizard that proposed a posture would be proposing it from nothing. It
+documents what AKA covers, points at the shared `aka` CLI verbs, and carries the matrix. A
+guard case pins that disclaimer, so a later attempt cannot wire a wizard in and leave the
+skill claiming to be one it is not — or remove the sentence without wiring one.
+
+It also records two host limits the matrix's channel column cannot express: a CLI redaction
+is SILENT to the user (the rewrite channel is a single-key output with nowhere for a note, so
+the model is told and the user is not), and the cloud agent is uncovered.
+
+Commit: see `feat(copilot): make the capability matrix code and derive the skill from it`.
+
+Verified: `plugins/copilot` 225/225 across 20 files; lint, prettier and `tsc --noEmit` clean.
+
 ---
 
 ## Where this attempt stopped, and what the next one should do

@@ -176,14 +176,38 @@ session's own tool-selection log were `bash`, `read_bash`, `stop_bash`,
 `github-mcp-server` MCP server wired in by default and contributing several
 `github-mcp-server-*` tools.
 
+## Settled by the vendor reference, not by a recording
+
+These were listed here as unmeasured, and the listing was wrong: the Copilot
+hooks reference answers them outright, in its "Exit codes for command hooks"
+table and its `preToolUse` decision-control table. Nothing here observed them —
+what changed is that a recording is no longer what would settle them.
+
+- **Exit 0 with empty stdout.** "Empty output uses default behavior", i.e. the
+  call goes to the host's own permission flow. It is **not** a deny, and not an
+  allow either — which is why the adapter writes nothing when it has no verdict.
+- **A non-zero exit other than 2.** "`preToolUse` is fail-closed—a non-zero exit
+  (other than exit 2) denies the tool call."
+- **Exit 2.** Denies, and "any `stdout` JSON is merged with the deny decision and
+  the tool call is denied even if that JSON reports `permissionDecision:
+\"allow\"`".
+- **A timeout.** "Timeouts are fail-open for every event, including
+  `preToolUse`."
+- **`systemMessage`.** Not an output field on this event at all: the reference
+  documents `permissionDecision`, `permissionDecisionReason` and `modifiedArgs`,
+  and the string `systemMessage` appears nowhere in it. A notice on the CLI
+  therefore goes to stderr.
+
+A recording would still be worth having — the reference describes the contract
+and these files describe one build's behaviour, and the two have already
+disagreed once (see `hookName` under field notes). But no claim in this adapter
+now rests on the gap.
+
 ## Not measured
 
 Each of these decides something a hook written against this host depends on,
 and none was observed:
 
-- `preToolUse` with **exit 0 and empty stdout** — allow or deny.
-- `preToolUse` with a **non-zero exit** — allow or deny.
-- `preToolUse` past its timeout; `preToolUse` with exit 2.
 - `postToolUse.modifiedResult` replacing what the model sees.
 - `userPromptSubmitted.modifiedPrompt` from a command hook.
 - The seven unrecorded events above.

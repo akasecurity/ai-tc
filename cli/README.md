@@ -82,7 +82,16 @@ aka extension status    # verify the wiring
 
 Then load the extension in Chrome: open `chrome://extensions`, enable
 Developer mode, click "Load unpacked", and select the directory the install
-command prints. The native host needs a Node.js runtime on the machine.
+command prints. The standalone binary runs the native host itself; the npm
+package runs it under the same Node.js runtime as the CLI.
+
+The registration names `aka` through the link your package manager keeps
+pointed at the current version (Homebrew's `opt/aka`, the installers' and
+Scoop's `current`), so upgrading keeps it working. A copy of `aka` placed by
+hand is registered where it sits: after moving or replacing it, run
+`aka extension install` again. `aka extension status` reports a registration
+whose launcher names something that is gone, a versioned path an upgrade will
+remove, or a version other than the one your package manager now points at.
 
 ## Docs
 

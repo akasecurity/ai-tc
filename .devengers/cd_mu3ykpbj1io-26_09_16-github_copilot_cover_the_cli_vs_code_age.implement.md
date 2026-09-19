@@ -610,6 +610,26 @@ Commit: see `docs: describe the Copilot adapter's two hosts and its split fail c
 
 Verified: `packages/eslint-config` 1531/1531 across 23 files; prettier clean on CLAUDE.md.
 
+### I3, and the coverage floor re-taken
+
+**I3 is ticked as satisfied-by-inspection, and the honest reading is that it was a no-op.**
+The step says "extend `test/cli-fixture-shapes.test.ts` for any new recording", and this
+attempt captured no new recording — there is no Copilot CLI on this container and none could
+be installed. The existing file-set case still pins the eight recordings exactly, so it fails
+the moment a ninth lands, which is the property the step exists for. No edit was owed and
+none was made.
+
+**K5's floor was re-taken, which it needed.** It was measured at 29 (against 30.95) when the
+package held one decision module; the package now reports **50.61**, so the floor moves to
+**49**. Both numbers are measured rather than estimated. The second move is the reason the
+first should not have been left alone: a floor four-fifths of the way below what the suite
+reports forbids almost nothing, so it goes on reading as a gate while a regression walks
+under it. The comment beside it now records both readings and what is still uncovered — the
+hook ENTRY files, which a test can never import and which the e2e reaches only as BUILT
+scripts v8 does not instrument.
+
+Commit: see `test(copilot): re-take the coverage floor now the suite reaches the built hooks`.
+
 ---
 
 ## Where this attempt stopped, and what the next one should do

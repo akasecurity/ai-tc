@@ -130,17 +130,26 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   // is 30.95, so it moves DOWN, which is the direction the plan predicted.
   //
   // Read it as a floor over a package that is PART-BUILT rather than as this
-  // adapter's steady state. What the suite drives today is the wrapper, the two
-  // envelope readers and the whole preToolUse decision surface; what it does
-  // not is the hook ENTRY (hook entries run main() on import and can never be
-  // imported by a test — only the built-script e2e reaches them) or the four
-  // modules copied from the Codex sibling to satisfy the decision module's
-  // imports. The three sibling plugins read 59-72 with their full hook sets and
-  // their e2e suites, and this rises toward them as those land. Re-take it then
-  // rather than raising it on faith. Node 24 was unavailable where this was
-  // measured (the container ships 22.23); the reading is not platform-sensitive
-  // in the way the keychain-backed packages below are, but it is one platform's.
-  '@akasecurity/ai-tc-copilot': 29, //              30.95
+  // adapter's steady state. RE-TAKEN once the remaining hooks and the two e2e
+  // suites landed: 30.95 → 50.61, so the floor moves 29 → 49. Both moves were
+  // measured rather than estimated, and the second is the reason the first
+  // should not have been left alone — a floor four-fifths of the way below what
+  // a suite reports forbids almost nothing, so it goes on reading as a gate
+  // while a regression walks under it.
+  //
+  // What the suite drives today is the wrapper, both envelope readers, the whole
+  // preToolUse decision surface, the prompt and response surfaces, the capability
+  // matrix, and the built hooks end to end through the fail-open and scan-worker
+  // e2e suites. What it does not is the hook ENTRY files themselves (a hook entry
+  // runs main() on import and can never be imported by a test — the e2e drives
+  // the BUILT script, which v8 does not instrument) or the modules copied from
+  // the Codex sibling to satisfy the decision module's imports. The three sibling
+  // plugins read 59-72 with their full wizard and history surfaces, and this
+  // rises toward them as those land. Re-take it then rather than raising it on
+  // faith. Node 24 was unavailable where this was measured (the container ships
+  // 22.23); the reading is not platform-sensitive in the way the keychain-backed
+  // packages below are, but it is one platform's.
+  '@akasecurity/ai-tc-copilot': 49, //              50.61
   '@akasecurity/dashboard-ui': 23, //               55.55 (macOS)
   '@akasecurity/web-ui': 23, //                     56.78 (macOS)
   '@akasecurity/ui-kit': 1, //                       2.13

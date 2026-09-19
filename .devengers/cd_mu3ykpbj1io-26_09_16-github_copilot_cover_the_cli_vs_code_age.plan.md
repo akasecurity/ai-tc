@@ -482,7 +482,7 @@ content-retention,reconcile,scan-worker}.ts` and `src/remediation/*` from the Co
       README naming the vendor pages and every unverified field.
 - [x] I2. `test/fixture-provenance.test.ts` — a file in `cli/` with no README paragraph
       describing its capture fails.
-- [ ] I3. Extend `test/cli-fixture-shapes.test.ts` for any new recording.
+- [x] I3. Extend `test/cli-fixture-shapes.test.ts` for any new recording.
 
 ### J. Install channel
 

@@ -19,6 +19,9 @@ plugins/codex/scripts/
 plugins/antigravity/scripts/
 plugins/copilot/scripts/
 plugins/browser-extension/native-host/
+# `package:zip`'s output. A bare `dist` above matches a path component named
+# exactly that, so it does not reach this one.
+plugins/browser-extension/store-dist/
 
 # written by tools/audit-gate on every run, always at the repo root
 /audit-report.md

@@ -51,13 +51,20 @@ export interface UpdateStatusCardViewProps {
  * fact; a surface that has the data and does not say it is the worse half of
  * the pair.
  *
- * Only when the pin is strictly BEHIND npm. A pin that equals it explains
- * nothing, and on the happy path the two agree — so a note on every pinned row
- * would be noise everywhere and signal nowhere.
+ * An exact pin gets one only when it is strictly BEHIND npm. A pin that equals
+ * it explains nothing, and on the happy path the two agree — so a note on every
+ * pinned row would be noise everywhere and signal nowhere. A RANGE pin always
+ * gets one: it is not a single version to compare npm against, and the host
+ * installs whatever it resolves within the range.
  */
 function pinNote(s: ComponentStatus): string | undefined {
   const pin = s.marketplacePin;
-  if (!pin || !pin.npmAhead || s.latest === null || pin.npmLatest === null) return undefined;
+  if (!pin) return undefined;
+  if (pin.range !== undefined) {
+    const npm = pin.npmLatest !== null ? ` npm has v${pin.npmLatest}.` : '';
+    return `${pin.marketplace} pins ${pin.range}, which the host resolves within — not a single version this page can compare.${npm}`;
+  }
+  if (!pin.npmAhead || s.latest === null || pin.npmLatest === null) return undefined;
   return `${pin.marketplace} pins v${s.latest} — npm has v${pin.npmLatest}, which this machine cannot install until that marketplace moves.`;
 }
 

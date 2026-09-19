@@ -1,3 +1,6 @@
+import type { CliUpdateTarget } from '@akasecurity/schema';
+import { RELEASE_CHANNEL } from '@akasecurity/schema';
+
 import { type CliPluginBin, createCliPluginManager } from './cli-plugin-manager.ts';
 import { binExists, runCapture, runInherit } from './exec.ts';
 import type { InstallChannel } from './install-channel.ts';
@@ -12,9 +15,12 @@ import { installedPluginScope } from './updates.ts';
 // returns the combined output (the web-ui, which has no TTY to stream to).
 //
 // SECURITY: no user-controlled string ever reaches a child process. The CLI
-// update's arguments are the CLI_PACKAGE constant plus the install root the
-// running code was found at — a path derived from the caller's own location on
-// disk, never from argv, stdin or the environment; plugin arguments are refs
+// update's arguments are the CLI_PACKAGE constant, the install root the running
+// code was found at — a path derived from the caller's own location on disk,
+// never from argv, stdin or the environment — and the version the update report
+// resolved, which is REGISTRY-SUPPLIED TEXT and therefore crosses only through
+// `isExactSemver` inside `planCliUpdate`; anything that check refuses falls back
+// to a dist-tag from the closed DIST_TAG table. Plugin arguments are refs
 // resolved from the static AGENT_PLUGINS registry after validating the
 // caller-supplied id against it. An unknown id fails closed with no spawn.
 // The install root is the first argument here that is a PATH rather than a
@@ -93,8 +99,14 @@ export function applyCliUpdate(
   // runnable channel reaching a real package manager on the developer's own
   // machine — the reason this file's other cases only ever drive refusals.
   hasBin: (bin: string) => boolean = binExists,
+  // Which published line to install, AND the version the report resolved on it.
+  // Last rather than third so every existing caller's positional `hasBin` keeps
+  // its place. Both fields are required inside the object: the channel is a
+  // closed union, and the version is the value that makes the spec name what
+  // the caller's own row showed rather than whatever the channel's tag serves.
+  target: CliUpdateTarget = { channel: RELEASE_CHANNEL.Stable, version: null },
 ): ApplyResult {
-  const plan = planCliUpdate(channel);
+  const plan = planCliUpdate(channel, process.platform, target);
   if (plan.command === null) {
     return {
       ok: false,

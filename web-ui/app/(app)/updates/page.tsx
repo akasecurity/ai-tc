@@ -1,23 +1,18 @@
 import { PageHead, relativeTime } from '@akasecurity/dashboard-ui';
 import {
   AGENT_PLUGINS,
-  CLI_PACKAGE,
-  cliVersion,
   createCliPluginManager,
   detectInstallChannel,
-  gatherReport,
-  installedAgentPluginVersions,
   installedPluginScope,
-  marketplacePinnedVersion,
   planCliUpdate,
   pluginRef,
   readCache,
 } from '@akasecurity/local-ops';
 import { defaultDataDir } from '@akasecurity/persistence';
-import type { UpdateCache } from '@akasecurity/schema';
 
 import { dashboardInstallOrigin } from '../../lib/install-origin';
 import { renderInstant } from '../../lib/rendered-at';
+import { cliUpdateTarget, updatesReport } from './report';
 import type { UpdateAdvisory } from './UpdatesClient';
 import { UpdatesClient } from './UpdatesClient';
 
@@ -26,36 +21,11 @@ export const dynamic = 'force-dynamic';
 
 export const metadata = { title: 'Updates' };
 
-// Latest-version lookups by component id from the passive-notice cache — page
-// load never touches the network; "Check now" refreshes the cache via npm.
-function cachedLatestById(cache: UpdateCache | null): Map<string, string | null> {
-  const latest = new Map<string, string | null>();
-  if (!cache) return latest;
-  for (const s of cache.report.statuses) latest.set(s.id, s.latest);
-  for (const p of cache.report.availablePlugins) latest.set(p.id, p.latest);
-  return latest;
-}
-
 export default function UpdatesPage() {
+  // Page load never touches the network: `latest` comes from the passive-notice
+  // cache, and "Check now" is what refreshes it via npm.
   const cache = readCache(defaultDataDir());
-  const latestOf = cachedLatestById(cache);
-
-  // Installed versions are read fresh (the ledger + this package's own
-  // package.json); only `latest` comes from the cache.
-  const report = gatherReport({
-    viewVersion: (pkg) => {
-      if (pkg === CLI_PACKAGE) return latestOf.get('cli') ?? null;
-      const agent = AGENT_PLUGINS.find((a) => a.npmPackage === pkg);
-      return agent ? (latestOf.get(agent.id) ?? null) : null;
-    },
-    installed: installedAgentPluginVersions(),
-    cliInstalled: cliVersion(process.cwd()),
-    // Read live rather than from the cache, unlike `latest` above: the pin is a
-    // local file the host itself wrote, so there is no request to amortise, and
-    // a stale pin would put this page back to offering an update the host
-    // cannot deliver — the defect the pin exists to close.
-    marketplacePin: (agent) => marketplacePinnedVersion(agent),
-  });
+  const report = updatesReport(cache);
 
   // The CLI's command depends on how THIS copy was installed (npm global under
   // one nvm version, a pnpm/bun store, the standalone binary…), so it is derived
@@ -68,7 +38,22 @@ export default function UpdatesPage() {
   // there with "This runs the following command on this machine" — and for the
   // binary that line is the installer's curl-pipe-to-shell one-liner, which is
   // the last thing to present as something the dashboard is about to execute.
-  const cliPlan = planCliUpdate(detectInstallChannel(dashboardInstallOrigin()));
+  //
+  // The target — channel AND resolved version — is read off the report row this
+  // page is about to render, through the same `cliUpdateTarget` that
+  // `applyUpdate` in ./actions.ts calls. That shares the DERIVATION, not the
+  // input: the action re-reads `readCache` at CLICK time rather than taking
+  // what this render computed, so a cache rewritten in between (a background
+  // refresh, or "Check now") can change what gets installed — the version this
+  // line names is what the plan resolved to at render time, and the button may
+  // resolve a newer one by the time it runs. A plan given only the channel
+  // installed whatever that channel's dist-tag served instead, which is the
+  // narrower defect this line does still prevent.
+  const cliPlan = planCliUpdate(
+    detectInstallChannel(dashboardInstallOrigin()),
+    process.platform,
+    cliUpdateTarget(report),
+  );
   const commands: Record<string, string> = {};
   const advisories: Record<string, UpdateAdvisory> = {};
   if (cliPlan.command === null) {

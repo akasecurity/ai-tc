@@ -157,6 +157,7 @@ const WALL_EXEMPT_PACKAGES = [
   { dir: 'tools/codeql-alerts-gate', why: 'repo tooling, never shipped' },
   { dir: 'tools/coverage-gate', why: 'repo tooling, never shipped' },
   { dir: 'tools/installer', why: 'repo tooling, never shipped' },
+  { dir: 'tools/package-manifests', why: 'repo tooling, never shipped' },
   { dir: 'tools/portability-gate', why: 'repo tooling, never shipped' },
   { dir: 'tools/required-checks-gate', why: 'repo tooling, never shipped' },
 ];

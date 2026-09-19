@@ -17,6 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { bundledDetections } from '@akasecurity/plugin-sdk';
@@ -27,6 +28,10 @@ import { expectNoEchoOf } from '../helpers/no-echo.ts';
 import { runHook, tempHomeEnv, withTempHome } from '../helpers/run-hook.ts';
 
 const SESSION_ID = 'fail-open-e2e-session';
+
+// Lexically past every real tag, so it sorts last and cannot collide with one a
+// future migration adds.
+const FUTURE_MIGRATION_TAG = '9999_from_a_newer_build';
 
 function projectDir(home: string): string {
   const dir = join(home, 'project');
@@ -251,6 +256,28 @@ describe('fail-open: an unavailable store never breaks a hook', () => {
     );
   }
 
+  // A store this build cannot use BECAUSE IT IS NEWER, not because it is
+  // damaged: a ledger tag from a migration this build does not define, plus a
+  // table its repositories prepare against turned into a view — the shape
+  // `0014_drop_legacy_events_findings` gave `events`/`findings`. Every byte is
+  // intact and an up-to-date build reads it fine.
+  function seedStoreAheadOfBuild(home: string): void {
+    const storeDir = join(home, '.aka', 'data');
+    mkdirSync(storeDir, { recursive: true });
+    openLocalDatabase(storeDir).close();
+    const raw = new DatabaseSync(join(storeDir, 'aka.db'));
+    try {
+      raw.exec('ALTER TABLE classified_data RENAME TO classified_data_backing');
+      raw.exec('CREATE VIEW classified_data AS SELECT * FROM classified_data_backing');
+      raw
+        .prepare('INSERT OR IGNORE INTO migration_ledger (tag, applied_at) VALUES (?, ?)')
+        .run(FUTURE_MIGRATION_TAG, Date.now());
+      raw.exec('PRAGMA user_version = 9999');
+    } finally {
+      raw.close();
+    }
+  }
+
   // ~/.aka exists but is unwritable, so any mkdir/write under it (a fresh
   // data dir, settings.json, a throttle marker) hits EACCES.
   function seedReadOnlyAkaHome(home: string): void {
@@ -282,6 +309,23 @@ describe('fail-open: an unavailable store never breaks a hook', () => {
         });
       });
 
+      it('valid input, store written by a newer build → exit 0', () => {
+        withTempHome((home) => {
+          seedStoreAheadOfBuild(home);
+          const payload = hook.validPayload(home);
+          const result = runHook(hook.name, payload, { env: tempHomeEnv(home) });
+          expect(result.status).toBe(0);
+          expectNoActionKey(result.stdout);
+          // A hook that surfaces the degradation must surface THIS cause: the
+          // remedy is updating AKA, and the generic advice would send the user
+          // to move an intact corpus aside over a stale binary.
+          if (result.stdout.includes('could not open its local store')) {
+            expect(result.stdout).toContain(FUTURE_MIGRATION_TAG);
+            expect(result.stdout).not.toMatch(/aside/i);
+          }
+        });
+      });
+
       it('valid input, read-only ~/.aka → exit 0', (ctx) => {
         // The fault IS the chmod, and chmod is a no-op on Windows: the home
         // stays writable, the hook takes its ordinary path, and every assertion
@@ -306,6 +350,30 @@ describe('fail-open: an unavailable store never breaks a hook', () => {
       });
     });
   }
+
+  // The non-vacuity control for the conditional assertion in the row above. That
+  // row only checks the wording IF a hook printed the notice, so with nothing
+  // printing one it would pass for every hook forever. `user-prompt-submit`
+  // reaches the store on every turn and has a systemMessage channel, so it is
+  // the one hook that must actually say it.
+  it('a hook with a message channel really does report the skew', () => {
+    withTempHome((home) => {
+      seedStoreAheadOfBuild(home);
+      const payload = JSON.stringify({
+        prompt: 'what does this function do?',
+        session_id: SESSION_ID,
+        cwd: projectDir(home),
+        hook_event_name: 'UserPromptSubmit',
+      });
+
+      const result = runHook('user-prompt-submit', payload, { env: tempHomeEnv(home) });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('could not open its local store');
+      expect(result.stdout).toContain(FUTURE_MIGRATION_TAG);
+      expect(result.stdout).not.toMatch(/aside/i);
+    });
+  });
 });
 
 // A hostile home is the fault class the store-fault rows above cannot reach: the

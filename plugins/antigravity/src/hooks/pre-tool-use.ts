@@ -36,8 +36,8 @@ import {
 } from './shared.ts';
 import {
   claimStoreUnavailableWarning,
-  openGatewayOrNull,
-  storeUnavailableMessage,
+  openGateway,
+  storeDegradedMessage,
   warnIfStoreRedirected,
 } from './store-health.ts';
 
@@ -67,17 +67,18 @@ async function main(): Promise<unknown> {
   // A symlinked store path redirects the corpus without failing anything;
   // say so once per session (stderr, so the stdout contract is untouched).
   warnIfStoreRedirected(config, getString(input, 'conversationId'));
-  const gateway = openGatewayOrNull(config);
-  if (gateway === null) {
+  const opened = openGateway(config);
+  if (opened.gateway === null) {
     // Nothing is scanned or recorded with no store. PreToolUse has no message
     // channel of its own (the payload carries `reason`, which accompanies a
     // deny), so the once-per-session notice goes to stderr rather than being
     // smuggled into an allow the host may not surface.
     if (claimStoreUnavailableWarning(config.dataDir, getString(input, 'conversationId'))) {
-      process.stderr.write(`[aka] ${storeUnavailableMessage(config.dbPath)}\n`);
+      process.stderr.write(`[aka] ${storeDegradedMessage(config.dbPath, opened.error)}\n`);
     }
     return ALLOW;
   }
+  const gateway = opened.gateway;
   const runtime = createPluginRuntime(gateway, config.settings, { dataDir: config.dataDir });
 
   // A file write is durable content the agent authors, recorded as

@@ -11,13 +11,15 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { dataDir as dataDirOf } from '@akasecurity/persistence';
+import { dataDir as dataDirOf, StoreAheadOfBuildError } from '@akasecurity/persistence';
 import type { PluginConfig } from '@akasecurity/plugin-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   claimStoreUnavailableWarning,
+  openGateway,
   openGatewayOrNull,
+  storeDegradedMessage,
   storeRedirectedMessage,
   storeUnavailableMessage,
   warnIfStoreRedirected,
@@ -100,6 +102,74 @@ describe('storeUnavailableMessage', () => {
     expect(message).toContain('/home/u/.aka/data/aka.db');
     expect(message).toContain('OFF for this session');
     expect(message).toContain('fails open');
+  });
+});
+
+// Which message the user gets is decided by WHY the open failed, so the reason
+// has to survive the open. It used to be swallowed by a bare catch, which made
+// a store written by a newer AKA build read exactly like an unreadable one —
+// and sent the user to move an intact corpus aside over a stale binary.
+describe('openGateway — the reason survives the failure', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'aka-store-reason-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('carries the failure out instead of collapsing it to null', () => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'aka.db'), 'garbage bytes, definitely not sqlite');
+
+    const opened = openGateway(configFor(dir));
+
+    expect(opened.gateway).toBeNull();
+    expect(opened.error).toBeInstanceOf(Error);
+  });
+
+  it('reports no error at all when the store opens', async () => {
+    const opened = openGateway(configFor(dir));
+
+    expect(opened.gateway).not.toBeNull();
+    expect(opened.error).toBeUndefined();
+    await opened.gateway?.close();
+  });
+});
+
+describe('storeDegradedMessage — one message per cause', () => {
+  const DB = '/home/u/.aka/data/aka.db';
+  const skew = new StoreAheadOfBuildError(
+    { storeVersion: 42, buildVersion: 35, unknownTags: ['0035_from_a_newer_build'] },
+    new Error('cannot UPSERT a view'),
+  );
+
+  it('names the version gap for a store written by a newer build', () => {
+    const message = storeDegradedMessage(DB, skew);
+
+    expect(message).toContain(DB);
+    expect(message).toContain('0035_from_a_newer_build');
+    expect(message).toContain('42');
+    expect(message).toContain('35');
+    expect(message).toContain('OFF for this session');
+  });
+
+  it('never tells the user to move an intact store aside', () => {
+    expect(storeDegradedMessage(DB, skew)).not.toMatch(/aside|recreate|corrupt|permission/i);
+  });
+
+  // The positive control for the assertion above: the GENERIC message really
+  // does carry that advice, so the absence check is a property of the skew
+  // branch rather than something both branches satisfy by accident.
+  it('keeps the file-repair advice for a failure that is not skew', () => {
+    const message = storeDegradedMessage(DB, new Error('database disk image is malformed'));
+
+    expect(message).toBe(storeUnavailableMessage(DB));
+    expect(message).toMatch(/aside/i);
+  });
+
+  it('falls back to the generic message when there is no error to read', () => {
+    expect(storeDegradedMessage(DB, undefined)).toBe(storeUnavailableMessage(DB));
   });
 });
 

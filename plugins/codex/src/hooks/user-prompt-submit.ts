@@ -47,8 +47,8 @@ import { handleProhibitedTurn } from './model-guard.ts';
 import { baseMetadata, emit, getString, parseJson, readStdin } from './shared.ts';
 import {
   claimStoreUnavailableWarning,
-  openGatewayOrNull,
-  storeUnavailableMessage,
+  openGateway,
+  storeDegradedMessage,
   warnIfStoreRedirected,
 } from './store-health.ts';
 
@@ -64,13 +64,14 @@ async function main(): Promise<void> {
   warnIfStoreRedirected(config, sessionId);
   const metadata = input ? baseMetadata(input) : undefined;
 
-  const gateway = openGatewayOrNull(config);
-  if (gateway === null) {
+  const opened = openGateway(config);
+  if (opened.gateway === null) {
     if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
-      await emit({ systemMessage: storeUnavailableMessage(config.dbPath) });
+      await emit({ systemMessage: storeDegradedMessage(config.dbPath, opened.error) });
     }
     return;
   }
+  const gateway = opened.gateway;
   // PROHIBITED-MODEL CONTAINMENT, ahead of the scan on purpose. It is the
   // cheaper verdict (two small local reads against a detection pass over the
   // whole prompt) and the stronger one: if this turn cannot run at all, what the

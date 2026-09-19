@@ -38,8 +38,9 @@ import { inputEventKind, inputFilePath, scannableInputFields } from './pre-tool-
 import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
 import {
   claimStoreUnavailableWarning,
+  openGateway,
   openGatewayOrNull,
-  storeUnavailableMessage,
+  storeDegradedMessage,
   warnIfStoreRedirected,
 } from './store-health.ts';
 
@@ -189,13 +190,14 @@ async function main(): Promise<void> {
   // A store that cannot open means NOTHING is scanned or enforced for this
   // call. Still allow — fail-open — but say so once per session instead of
   // silently passing everything through.
-  const gateway = openGatewayOrNull(config);
-  if (gateway === null) {
+  const opened = openGateway(config);
+  if (opened.gateway === null) {
     if (claimStoreUnavailableWarning(config.dataDir, sessionId)) {
-      await emit({ systemMessage: storeUnavailableMessage(config.dbPath) });
+      await emit({ systemMessage: storeDegradedMessage(config.dbPath, opened.error) });
     }
     return;
   }
+  const gateway = opened.gateway;
   // One runtime held across the field loop: a per-field open would re-parse the
   // policy bundle and could even evaluate two fields of one payload under
   // different policy snapshots. We own its lifetime here and close it in the

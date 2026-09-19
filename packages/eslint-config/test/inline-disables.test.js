@@ -119,6 +119,14 @@ const EXPECTED_INLINE_DISABLES = {
   'plugins/codex/test/remediation/entry-posture-close-fault.test.ts': [ENV_RULE],
   'plugins/antigravity/test/e2e/scan-worker-bundle.e2e.test.ts': [ENV_RULE],
   'plugins/antigravity/test/remediation/entry-posture-close-fault.test.ts': [ENV_RULE],
+  // `homedir()` resolves from the process env, so a suite that drives a hook
+  // ENTRY in-process rather than spawning the built script has no other seam to
+  // point at a throwaway home — and it needs one, because the HOME it inherits
+  // is the developer's (or the runner's) real store. Peer copies, one per
+  // plugin, like the path shims above.
+  'plugins/antigravity/test/hooks/store-degraded-in-process.test.ts': [ENV_RULE],
+  'plugins/claude-code/test/hooks/store-degraded-in-process.test.ts': [ENV_RULE],
+  'plugins/codex/test/hooks/store-degraded-in-process.test.ts': [ENV_RULE],
   // The same boundary for the fourth harness: the native-messaging host is a
   // spawned script like the hooks, and its bundle suite drives it the way
   // Chrome does.

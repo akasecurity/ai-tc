@@ -19,7 +19,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import type { SymlinkedStorePath } from '@akasecurity/persistence';
-import { symlinkedStorePaths } from '@akasecurity/persistence';
+import { StoreAheadOfBuildError, symlinkedStorePaths } from '@akasecurity/persistence';
 import { resolveDataGateway } from '@akasecurity/plugin-runtime';
 import type { DataGateway, PluginConfig } from '@akasecurity/plugin-sdk';
 import { DATA_DIR_MODE, DATA_FILE_MODE } from '@akasecurity/plugin-sdk';
@@ -35,21 +35,68 @@ const STORE_WARNING_MARKER = 'store-warning-last-session';
 // once it can. One marker would let whichever fired first silence the other.
 const STORE_REDIRECT_MARKER = 'store-redirect-last-session';
 
+/** A gateway, or the reason there is none. */
+export type GatewayOpen =
+  | { readonly gateway: DataGateway; readonly error?: undefined }
+  | { readonly gateway: null; readonly error: unknown };
+
 /**
  * Open the data gateway, fail-open: any store-open failure (corrupt aka.db,
- * bad permissions, a held lock) yields null instead of a throw, so the caller
- * can both keep the session alive AND know that detection is off — a silent
- * catch at the hook entry can't tell those apart.
+ * bad permissions, a held lock, a store written by a NEWER AKA build) yields a
+ * null gateway instead of a throw, so the caller can both keep the session
+ * alive AND know that detection is off — a silent catch at the hook entry
+ * can't tell those apart.
+ *
+ * The reason is carried out rather than swallowed, because it decides what the
+ * user is told: see `storeDegradedMessage`. A bare catch made every cause read
+ * as the same one, and the advice that generic message gives is wrong — and
+ * destructive — for the newer-store case.
  */
-export function openGatewayOrNull(config: PluginConfig): DataGateway | null {
+export function openGateway(config: PluginConfig): GatewayOpen {
   try {
-    return resolveDataGateway(config);
-  } catch {
-    return null;
+    return { gateway: resolveDataGateway(config) };
+  } catch (error) {
+    return { gateway: null, error };
   }
 }
 
-/** The once-per-session degradation warning shown when the store cannot open. */
+/**
+ * The same open, for the callers that only branch on whether they got one.
+ * A caller that WARNS wants `openGateway` — it cannot say anything true about
+ * the failure from a null alone.
+ */
+export function openGatewayOrNull(config: PluginConfig): DataGateway | null {
+  return openGateway(config).gateway;
+}
+
+/**
+ * The once-per-session degradation warning, chosen by what actually failed.
+ *
+ * Two causes, two opposite remedies. A store this build cannot READ is a file
+ * problem, and moving it aside is a real (if costly) repair. A store written by
+ * a NEWER AKA build is intact — every up-to-date surface on the machine reads
+ * it correctly — so moving it aside would destroy the corpus to work around a
+ * binary that is merely behind. The skew branch therefore names the version gap
+ * and says nothing about the file.
+ */
+export function storeDegradedMessage(dbPath: string, error: unknown): string {
+  return error instanceof StoreAheadOfBuildError
+    ? storeAheadMessage(dbPath, error)
+    : storeUnavailableMessage(dbPath);
+}
+
+/** The degradation warning for a store written by a newer AKA build. */
+export function storeAheadMessage(dbPath: string, skew: StoreAheadOfBuildError): string {
+  return (
+    `AKA could not open its local store (${dbPath}) because this AKA build is older than the store: ` +
+    `it carries migration(s) ${skew.unknownTags.join(', ')} that this build does not define ` +
+    `(store schema ${String(skew.storeVersion)}, this build ${String(skew.buildVersion)}). ` +
+    'Detection, enforcement, and recording are OFF for this session (fails open, so your session keeps working). ' +
+    'The store is intact and needs no repair — update AKA so every surface on this machine is on one version line.'
+  );
+}
+
+/** The degradation warning shown when the store itself cannot be opened. */
 export function storeUnavailableMessage(dbPath: string): string {
   return (
     `AKA could not open its local store (${dbPath}) — detection, enforcement, and recording are OFF for this session (fails open, so your session keeps working). ` +

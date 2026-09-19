@@ -13,6 +13,13 @@
 // up-to-date surface on the machine, and is repaired by updating the stale one.
 // Advice to move it aside is data loss in the second case — the prompt corpus
 // is destroyed to work around a binary that is behind.
+//
+// TWO QUESTIONS DECIDE THE RE-DESCRIPTION, and the ledger answers only the
+// first: is the store ahead, and is this the kind of failure a schema this
+// build does not know can produce. "Ahead" on its own is not a cause — an
+// ahead-but-compatible store fails for the same environmental reasons any
+// store does, and describing a chmod'd or contended file as "intact, update
+// AKA" would be false on exactly the machines this exists for.
 import type { DatabaseSync } from 'node:sqlite';
 
 import { SQLITE_MIGRATIONS } from '@akasecurity/schema';
@@ -62,9 +69,54 @@ export function describeStoreSkew(db: DatabaseSync): StoreSkew | null {
   }
 }
 
+// SQLITE_ERROR — the generic code every schema mismatch reports: `cannot UPSERT
+// a view`, `no such column`, `no such table` and a column count that no longer
+// matches all arrive as 1. node:sqlite gives every SQLite failure the same
+// `code` ('ERR_SQLITE_ERROR'), so only `errcode` separates one from another.
+const SQLITE_ERROR = 1;
+// SQLITE_CONSTRAINT — a newer schema refusing a write this build still makes.
+// The NOT NULL column a newer migration added is the one that bites first: the
+// INSERT this build prepares omits it, and the engine refuses.
+const SQLITE_CONSTRAINT = 19;
+
 /**
- * The store could not be opened, and the reason is that this binary is behind
- * it.
+ * Whether a failure is one a schema this build does not know can produce.
+ *
+ * The gate on `StoreAheadOfBuildError`, and the reason "the store is ahead" is
+ * not a cause on its own: a chmod'd store answers SQLITE_READONLY and a
+ * contended one SQLITE_BUSY whatever its ledger says, and re-describing either
+ * as "the store is intact — update AKA" would be false, would bury the result
+ * code the caller needs, and would repeat that noise on every hook that loses
+ * the race.
+ *
+ * An ALLOWLIST, not the denylist of codes that name the store or its host
+ * (BUSY, LOCKED, READONLY, IOERR, FULL, CORRUPT, NOTADB, CANTOPEN). Both keep
+ * those out; they differ on the codes nobody has thought about yet, and the
+ * re-description is the claim that has to be earned — an unrecognised failure
+ * keeps the message every other failure gets.
+ *
+ * The two codes here are the shapes a newer schema produces. The first was
+ * measured in the field — `cannot UPSERT a view`, from a build predating the
+ * migration that turned `events`/`findings` into compat views; the second is
+ * the refusal the NOT NULL column a newer migration added produces, which no
+ * store in this suite reaches but which no longer needs `cause` read to be
+ * told apart from a damaged file.
+ */
+export function isSchemaShapedFailure(err: unknown): boolean {
+  // `errcode` carries the EXTENDED code — the primary code plus a refinement in
+  // its high bits, so SQLITE_READONLY_DIRECTORY is 1544 and SQLITE_BUSY_SNAPSHOT
+  // is 517 — hence the low byte. Anything that is not an error at all (a
+  // repository constructor throwing a TypeError, a bare string) carries no code
+  // and is not this.
+  const code = (err as { errcode?: unknown } | null | undefined)?.errcode;
+  if (typeof code !== 'number') return false;
+  const primary = code & 0xff;
+  return primary === SQLITE_ERROR || primary === SQLITE_CONSTRAINT;
+}
+
+/**
+ * The store could not be opened, and what refused it is the schema this build
+ * does not know — the store is ahead AND the failure is one that explains.
  *
  * Carries the underlying SQLite failure as `cause` — a maintainer still needs
  * the statement that actually threw, while nothing above this has to read it to

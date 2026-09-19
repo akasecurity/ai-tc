@@ -73,7 +73,7 @@ import { SqliteSecurityRepository } from './repositories/security.ts';
 import { SqliteSharesRepository } from './repositories/shares.ts';
 import { SqliteSourceProjectRepository } from './repositories/source-project.ts';
 import { purgeSampleData } from './sample-purge.ts';
-import { describeStoreSkew, StoreAheadOfBuildError } from './store-skew.ts';
+import { describeStoreSkew, isSchemaShapedFailure, StoreAheadOfBuildError } from './store-skew.ts';
 
 // InventoryContext / ResolvedInventory / InventoryFacets are the cross-mode
 // shapes — they live in @akasecurity/schema (the contract spine) so the resolver
@@ -382,8 +382,9 @@ function backupLegacyStore(db: DatabaseSync, file: string): string {
  * is one window over the whole sequence rather than one per known thrower.
  *
  * That newer-binary case is the one failure here whose remedy is not the store,
- * so it is the one the guard re-describes rather than re-throwing: see
- * `describeStoreSkew`. Everything else propagates exactly as it arrived.
+ * so it is the one the guard re-describes rather than re-throwing — and only
+ * when BOTH halves hold: see `describeStoreSkew` and `isSchemaShapedFailure`.
+ * Everything else propagates exactly as it arrived.
  */
 function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<string>) {
   let db = openWithPragmas(file);
@@ -451,7 +452,15 @@ function openAndInitialize(file: string, base: string, skipTags?: ReadonlySet<st
     // opening a second one on a store that has already refused once.
     const skew = describeStoreSkew(db);
     closeQuietly(db);
-    throw skew === null ? err : new StoreAheadOfBuildError(skew, err);
+    // BOTH halves, or the re-description is a claim about the store that this
+    // failure does not support. `skew` says the store is AHEAD; the second
+    // question is whether the skew is why this failed — an ahead-but-compatible
+    // store refuses a chmod'd file with SQLITE_READONLY and a contended one
+    // with SQLITE_BUSY, and telling its user to update AKA would be false and
+    // would bury the result code they need. The predicate is an allowlist of
+    // the schema shapes, so anything it does not recognise keeps the message it
+    // already had — see `isSchemaShapedFailure`.
+    throw skew !== null && isSchemaShapedFailure(err) ? new StoreAheadOfBuildError(skew, err) : err;
   }
 }
 

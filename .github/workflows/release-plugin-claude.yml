@@ -157,14 +157,17 @@ jobs:
       # exchange this job's OIDC token for a short-lived publish credential — no
       # NPM_TOKEN needed. NPM_CONFIG_PROVENANCE has npm attach a Sigstore
       # attestation binding the published package to this repository and workflow.
-      # Pre-release versions (any `-` suffix) publish under the `rc` dist-tag;
-      # stable versions publish under `latest`.
+      # A `-beta.*` version publishes under the `beta` dist-tag, a `-nightly.*`
+      # version under `nightly`, any other pre-release under `rc`, and a bare
+      # X.Y.Z under `latest`.
       - name: Publish to npm
         if: github.event_name == 'push' || inputs.publish
         run: |
           case "$PKG_VERSION" in
-            *-*) dist_tag="rc" ;;
-            *)   dist_tag="latest" ;;
+            *-beta.*)    dist_tag="beta" ;;
+            *-nightly.*) dist_tag="nightly" ;;
+            *-*)         dist_tag="rc" ;;
+            *)           dist_tag="latest" ;;
           esac
           pnpm --filter @akasecurity/ai-tc-claude-code publish --no-git-checks --tag "$dist_tag"
         env:
@@ -218,8 +221,10 @@ jobs:
         run: |
           version=$(node -p "require('./${PLUGIN_MANIFEST}').version")
           case "$version" in
-            *-*) dist_tag="rc" ;;
-            *)   dist_tag="latest" ;;
+            *-beta.*)    dist_tag="beta" ;;
+            *-nightly.*) dist_tag="nightly" ;;
+            *-*)         dist_tag="rc" ;;
+            *)           dist_tag="latest" ;;
           esac
           pnpm --filter @akasecurity/ai-tc-claude-code publish --registry https://npm.pkg.github.com --no-git-checks --tag "$dist_tag"
         env:

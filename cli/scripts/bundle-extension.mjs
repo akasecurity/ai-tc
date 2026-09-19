@@ -8,9 +8,11 @@
 // workspace checkout. Same "build once, copy into cli/" shape as
 // bundle-web-ui.mjs.
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { manifestVersionFields } from '@akasecurity/plugin-browser-extension/src/packaging/store-zip.ts';
 
 const cliDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = resolve(cliDir, '..');
@@ -37,16 +39,32 @@ const extensionDest = join(cliDir, 'extension');
 rmSync(extensionDest, { recursive: true, force: true });
 cpSync(distSrc, extensionDest, { recursive: true });
 
-// Stamp the bundled manifest's version from the CLI's own — the extension is
-// a shipped artifact of the CLI release line, and chrome://extensions shows
-// this number. The source manifest keeps a fixed placeholder so the version
-// bump stays a five-file release concern (see CLAUDE.md's Releasing section).
+// The bundled manifest's version is NOT stamped here. It comes from the
+// extension's own package.json, which plugins/browser-extension/scripts/
+// build.mjs writes into dist/manifest.json, and this checks it against the
+// CLI's: chrome://extensions shows that number and the native host stamps the
+// same package.json version into every session, so one tarball recording two
+// different versions is a release defect rather than something to paper over.
+//
+// Chrome's `version` takes no pre-release suffix, so a suffixed package version
+// is built as its numeric core in `version` plus the whole string in
+// `version_name`. Both halves are checked: the whole string must be the CLI's,
+// and `version` must be that string's core — read through `manifestVersionFields`,
+// the one place that split lives, so this check and the build it verifies
+// cannot disagree about what "bare" means.
 const cliVersion = JSON.parse(readFileSync(join(cliDir, 'package.json'), 'utf8')).version;
+const cliCore = manifestVersionFields(cliVersion).version;
 const bundledManifestPath = join(extensionDest, 'manifest.json');
 const bundledManifest = JSON.parse(readFileSync(bundledManifestPath, 'utf8'));
-bundledManifest.version = cliVersion;
-writeFileSync(bundledManifestPath, JSON.stringify(bundledManifest, null, 2) + '\n');
-log(`stamped extension manifest version ${cliVersion}`);
+const bundledVersion = bundledManifest.version_name ?? bundledManifest.version;
+if (bundledVersion !== cliVersion || bundledManifest.version !== cliCore) {
+  throw new Error(
+    `extension manifest version ${bundledVersion} (version field ${bundledManifest.version}) ` +
+      `does not match the CLI's ${cliVersion} — plugins/browser-extension/package.json and ` +
+      `cli/package.json must carry the same version`,
+  );
+}
+log(`bundled extension manifest version ${bundledVersion}`);
 
 const hostDest = join(cliDir, 'native-host');
 rmSync(hostDest, { recursive: true, force: true });

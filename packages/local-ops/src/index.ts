@@ -42,6 +42,7 @@ export type {
   InstallChannel,
   InstallManager,
   InstallOrigin,
+  SeaOwner,
   UpdatePlan,
 } from './install-channel.ts';
 export {
@@ -49,15 +50,25 @@ export {
   describeChannel,
   detectInstallChannel,
   planCliUpdate,
+  SEA_OWNER,
 } from './install-channel.ts';
+export type { MarketplacePinLookup } from './marketplace-manifest.ts';
 export { marketplacePinnedVersion } from './marketplace-manifest.ts';
 export type { ProjectInventoryResult } from './project-inventory.ts';
 export { recordProjectInventory } from './project-inventory.ts';
 export type { AgentPlugin } from './registry.ts';
 export { AGENT_PLUGINS, findAgent, pluginRef } from './registry.ts';
+export type { ChannelResolution } from './release-channel.ts';
+export {
+  channelOfVersion,
+  latestForChannel,
+  parseSwitchableChannel,
+  resolveChannel,
+  SWITCHABLE_CHANNELS,
+} from './release-channel.ts';
 export type { Reinvocation } from './self-exec.ts';
 export { isSea, reinvokeArgv } from './self-exec.ts';
-export { compareSemver, isNewer } from './semver.ts';
+export { compareSemver, isExactSemver, isNewer, prereleaseIdentifiers } from './semver.ts';
 export type {
   SharesForwardConnection,
   SharesForwardDeps,
@@ -88,5 +99,5 @@ export {
   installedCodexPluginVersions,
   installedPluginScope,
   installedPluginVersions,
-  npmViewVersion,
+  npmViewDistTags,
 } from './updates.ts';

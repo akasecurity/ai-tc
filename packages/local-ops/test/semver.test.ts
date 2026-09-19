@@ -5,7 +5,7 @@
 // duplication is intentional (OSS/CLI boundary); see the note atop semver.ts.
 import { describe, expect, it } from 'vitest';
 
-import { compareSemver, isNewer } from '../src/semver.ts';
+import { compareSemver, isExactSemver, isNewer, isSemver } from '../src/semver.ts';
 
 describe('compareSemver', () => {
   it('orders by major/minor/patch', () => {
@@ -40,5 +40,99 @@ describe('isNewer', () => {
     expect(isNewer('0.0.2-alpha.0', '0.0.2-alpha.1')).toBe(false);
     expect(isNewer('0.0.2', '0.0.2-alpha.1')).toBe(true);
     expect(isNewer('unknown', '0.0.2')).toBe(false);
+  });
+});
+
+/**
+ * The predicate a registry-supplied version must pass before it can become a
+ * command-line argument.
+ *
+ * `isSemver` trims first, which is harmless for a comparison and not harmless
+ * here: `local-ops`' shelled spawn routes through cmd.exe on Windows and Node
+ * concatenates argv there without escaping it, so a space splits an npm spec
+ * into two arguments and a line break ends the command line.
+ */
+describe('isExactSemver', () => {
+  it('accepts the forms a registry really serves', () => {
+    for (const version of [
+      '0.11.0',
+      '1.0.0',
+      '0.11.0-beta.4',
+      '0.9.13-nightly.20260918.gabc1234',
+      '0.11.0-rc.1',
+      '10.20.30',
+    ]) {
+      expect(isExactSemver(version), version).toBe(true);
+    }
+  });
+
+  it('refuses the surrounding whitespace isSemver tolerates', () => {
+    // Stated as a DIFFERENCE from `isSemver`, because a predicate that merely
+    // agreed with it everywhere would be the hole this one exists to close.
+    for (const version of [' 0.11.0', '0.11.0 ', ' 0.11.0 ', '0.11.0\n', '0.11.0\t', '\r0.11.0']) {
+      expect(isSemver(version), `isSemver ${JSON.stringify(version)}`).toBe(true);
+      expect(isExactSemver(version), JSON.stringify(version)).toBe(false);
+    }
+  });
+
+  it('refuses every shell metacharacter, and a leading dash', () => {
+    for (const version of [
+      '0.11.0; id',
+      '0.11.0 && id',
+      '0.11.0 | id',
+      '0.11.0`id`',
+      '0.11.0$(id)',
+      '0.11.0%PATH%',
+      '0.11.0"x"',
+      "0.11.0'x'",
+      '0.11.0&0.11.1',
+      '0.11.0 --prefix=/tmp',
+      '-0.11.0',
+      '--prefix=/tmp',
+      '0.11.0/../x',
+      '0.11.0\\x',
+      '',
+      'latest',
+      '__proto__',
+      '0.11.0+build.1',
+    ]) {
+      expect(isExactSemver(version), JSON.stringify(version)).toBe(false);
+    }
+  });
+
+  it('is never true where the comparator cannot order the value', () => {
+    // The spec has to be a version the report could also have compared: a
+    // string this accepts and `isSemver` rejects would be offered by nobody and
+    // installed anyway.
+    for (const version of ['0.11.0', ' 0.11.0 ', 'latest', '0.11.0; id', '1.2', 'v1.2.3']) {
+      if (isExactSemver(version)) expect(isSemver(version), version).toBe(true);
+    }
+  });
+
+  it('refuses a non-string rather than throwing', () => {
+    // `readCache`'s validation checks only `checkedAt` and that `report` is an
+    // object — a `latest` of `42` in the JSON on disk passes it untouched and
+    // arrives here typed `string` by a cast the runtime never checked. `.trim()`
+    // on a number throws, which took down the Updates page render before this
+    // was total.
+    for (const value of [42, null, undefined, true, {}, [], ['0.11.0']]) {
+      expect(() => isExactSemver(value)).not.toThrow();
+      expect(isExactSemver(value), JSON.stringify(value)).toBe(false);
+    }
+  });
+
+  it("refuses anything over npm's own 256-character limit", () => {
+    const atLimit = `1.0.0-${'a'.repeat(250)}`;
+    const overLimit = `1.0.0-${'a'.repeat(251)}`;
+    expect(atLimit).toHaveLength(256);
+    expect(overLimit).toHaveLength(257);
+
+    expect(isSemver(atLimit)).toBe(true);
+    expect(isExactSemver(atLimit)).toBe(true);
+    // The comparator would still order this — a length bound is a floor
+    // `isSemver` does not carry, added because this predicate is what a
+    // registry-supplied version crosses into argv through.
+    expect(isSemver(overLimit)).toBe(true);
+    expect(isExactSemver(overLimit)).toBe(false);
   });
 });

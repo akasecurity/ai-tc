@@ -104,6 +104,14 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
     argHint: '[what]',
     summary: 'Update the CLI and/or plugins (what: cli | <plugin-id> | all)',
     args: ['cli', 'all'],
+    flags: [
+      {
+        name: '--channel',
+        summary:
+          'Switch the CLI to a release channel: stable | beta | nightly. ' +
+          'Default: the channel this copy is already on.',
+      },
+    ],
   },
   {
     name: 'completion',

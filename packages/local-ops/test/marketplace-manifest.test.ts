@@ -20,6 +20,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { marketplacePinnedVersion } from '../src/marketplace-manifest.ts';
 import type { AgentPlugin } from '../src/registry.ts';
 
+/** The comparable-version half of a lookup, or null for "no pin". */
+const versionOf = (agentUnder: AgentPlugin, claudeHomeUnder: string): string | null =>
+  marketplacePinnedVersion(agentUnder, claudeHomeUnder).version;
+
 /** A Claude-Code-hosted agent with the coordinates a lookup needs. */
 const agent = (over: Partial<AgentPlugin> = {}): AgentPlugin => ({
   id: 'claude-code',
@@ -72,12 +76,9 @@ describe('marketplacePinnedVersion', () => {
   it('reads the version the host would install', () => {
     registerMarketplace('akasecurity', [npmEntry('ai-tc', '0.9.9')]);
 
-    expect(
-      marketplacePinnedVersion(
-        agent({ marketplace: 'akasecurity', pluginName: 'ai-tc' }),
-        claudeHome,
-      ),
-    ).toBe('0.9.9');
+    expect(versionOf(agent({ marketplace: 'akasecurity', pluginName: 'ai-tc' }), claudeHome)).toBe(
+      '0.9.9',
+    );
   });
 
   it('picks the named plugin out of a manifest listing several', () => {
@@ -89,18 +90,12 @@ describe('marketplacePinnedVersion', () => {
       npmEntry('other', '1.2.3'),
     ]);
 
-    expect(
-      marketplacePinnedVersion(
-        agent({ marketplace: 'akasecurity', pluginName: 'ai-tc' }),
-        claudeHome,
-      ),
-    ).toBe('0.9.9');
-    expect(
-      marketplacePinnedVersion(
-        agent({ marketplace: 'akasecurity', pluginName: 'other' }),
-        claudeHome,
-      ),
-    ).toBe('1.2.3');
+    expect(versionOf(agent({ marketplace: 'akasecurity', pluginName: 'ai-tc' }), claudeHome)).toBe(
+      '0.9.9',
+    );
+    expect(versionOf(agent({ marketplace: 'akasecurity', pluginName: 'other' }), claudeHome)).toBe(
+      '1.2.3',
+    );
   });
 
   it('says nothing for an entry that carries no pin', () => {
@@ -113,10 +108,7 @@ describe('marketplacePinnedVersion', () => {
     ]);
 
     expect(
-      marketplacePinnedVersion(
-        agent({ marketplace: 'akasecurity', pluginName: 'preflight' }),
-        claudeHome,
-      ),
+      versionOf(agent({ marketplace: 'akasecurity', pluginName: 'preflight' }), claudeHome),
     ).toBeNull();
   });
 
@@ -138,12 +130,9 @@ describe('marketplacePinnedVersion', () => {
       'utf8',
     );
 
-    expect(
-      marketplacePinnedVersion(
-        agent({ marketplace: 'akasecurity', pluginName: 'ai-tc' }),
-        claudeHome,
-      ),
-    ).toBe('1.1.1');
+    expect(versionOf(agent({ marketplace: 'akasecurity', pluginName: 'ai-tc' }), claudeHome)).toBe(
+      '1.1.1',
+    );
   });
 
   it.each([
@@ -210,10 +199,7 @@ describe('marketplacePinnedVersion', () => {
     seed();
 
     expect(
-      marketplacePinnedVersion(
-        agent({ marketplace: 'akasecurity', pluginName: 'ai-tc' }),
-        claudeHome,
-      ),
+      versionOf(agent({ marketplace: 'akasecurity', pluginName: 'ai-tc' }), claudeHome),
     ).toBeNull();
   });
 
@@ -227,7 +213,7 @@ describe('marketplacePinnedVersion', () => {
     registerMarketplace('ai-tc', [npmEntry('aka-codex', '9.9.9')]);
 
     expect(
-      marketplacePinnedVersion(
+      versionOf(
         agent({ cliBin: 'codex', marketplace: 'ai-tc', pluginName: 'aka-codex' }),
         claudeHome,
       ),
@@ -235,7 +221,7 @@ describe('marketplacePinnedVersion', () => {
     // The control on the line above: that manifest IS readable, so the null is
     // the host check rather than a lookup that failed for its own reasons.
     expect(
-      marketplacePinnedVersion(
+      versionOf(
         agent({ cliBin: 'claude', marketplace: 'ai-tc', pluginName: 'aka-codex' }),
         claudeHome,
       ),
@@ -256,7 +242,7 @@ describe('marketplacePinnedVersion', () => {
         Object.entries(agent()).filter(([key]) => key !== field),
       ) as AgentPlugin;
 
-      expect(marketplacePinnedVersion(incomplete, claudeHome)).toBeNull();
+      expect(versionOf(incomplete, claudeHome)).toBeNull();
     },
   );
 
@@ -266,10 +252,99 @@ describe('marketplacePinnedVersion', () => {
     registerMarketplace('akasecurity', [npmEntry('ai-tc', '0.9.9')]);
 
     expect(
-      marketplacePinnedVersion(
-        agent({ marketplace: 'some-other-marketplace', pluginName: 'ai-tc' }),
-        claudeHome,
-      ),
+      versionOf(agent({ marketplace: 'some-other-marketplace', pluginName: 'ai-tc' }), claudeHome),
     ).toBeNull();
+  });
+});
+
+/**
+ * A pin is a COMPARABLE version, EVIDENCE of an uncomparable one, or no pin
+ * at all — three outcomes, not two.
+ *
+ * The `version` field of an npm source may also hold a semver RANGE, and a
+ * host may document a dist-tag there. Neither is something this report can
+ * compare: compareSemver returns 0 for what it cannot parse, so a range used
+ * to become `ComponentStatus.latest` and froze `updateAvailable` at false — a
+ * row rendering `Latest: ^0.11.0-beta.0` that could never move and never said
+ * why. Worse, collapsing it into "no pin" let the row fall back to npm's own
+ * latest and offer an update the host, resolving within the range, would
+ * never actually install — re-nagging on every run.
+ *
+ * So an uncomparable, non-empty manifest value is carried as `range`
+ * evidence rather than dropped, and only a genuinely empty or absent value —
+ * or something that arrived as not-a-string at all — reads as no pin.
+ */
+describe('marketplacePinnedVersion — only an exact version is a comparable pin', () => {
+  const lookupFor = (version: unknown): ReturnType<typeof marketplacePinnedVersion> => {
+    registerMarketplace('akasecurity', [
+      { name: 'ai-tc', source: { source: 'npm', package: 'x', version } },
+    ]);
+    return marketplacePinnedVersion(
+      agent({ marketplace: 'akasecurity', pluginName: 'ai-tc' }),
+      claudeHome,
+    );
+  };
+
+  it.each([
+    ['an empty string', ''],
+    ['something that is not a string at all', 42],
+  ])('carries no pin at all for %s', (_label, version) => {
+    expect(lookupFor(version)).toStrictEqual({ version: null });
+  });
+
+  it.each([
+    ['a caret range', '^0.11.0-beta.0'],
+    ['a tilde range', '~0.9.9'],
+    ['a comparator range', '>=0.9.9 <0.10.0'],
+    ['an x-range', '0.9.x'],
+    ['a wildcard', '*'],
+    ['a dist-tag', 'beta'],
+    ['the stable dist-tag', 'latest'],
+    ['a v-prefixed version', 'v0.9.9'],
+    ['a two-part version', '0.9'],
+    // Flipped from "accepted" — a padded pin is not usable as-is either, and
+    // is now carried as evidence like any other uncomparable value rather
+    // than silently trimmed and installed.
+    ['a version with surrounding whitespace', ' 0.9.12 '],
+  ])('carries %s as range evidence, not a comparable version', (_label, version) => {
+    expect(lookupFor(version)).toStrictEqual({ version: null, range: version });
+  });
+
+  // The manifest is unpacked from a cloned repository, so its text is
+  // third-party rather than the user's own — and `range` is evidence every
+  // caller prints verbatim (the CLI table, the dashboard's update card).
+  // Refused rather than carried, exactly like an empty version above: nothing
+  // here distinguishes a hostile payload from a genuinely corrupted one, and
+  // a value already this unusable is not something either caller could act
+  // on regardless.
+  it.each([
+    ['a newline that would forge an extra printed row', '^0.9.0\n  aka CLI: 9.9.9  *** FORGED ***'],
+    ['a carriage return', '^0.9.0\r*** FORGED ***'],
+    ['an ANSI escape sequence', '^0.9.0[31mFORGED[0m'],
+    ['a NUL byte', '^0.9.0 '],
+    ['a zero-width joiner', '^0.9.0​'],
+    ['a range over the length bound', `^0.9.0${'.0'.repeat(120)}`],
+  ])('carries no pin at all for %s', (_label, version) => {
+    expect(lookupFor(version)).toStrictEqual({ version: null });
+  });
+
+  // The positive control for the length bound above: a range that is merely
+  // long, not over it, is still carried.
+  it('still carries a range at exactly the length bound', () => {
+    const version = `^${'9'.repeat(199)}`;
+    expect(version).toHaveLength(200);
+    expect(lookupFor(version)).toStrictEqual({ version: null, range: version });
+  });
+
+  it.each([
+    ['a release', '0.9.12'],
+    // The accepting control that keeps the narrowing correct. A beta pin IS a
+    // prerelease, so a check that refused every prerelease would refuse the
+    // pins this whole channel surface exists to make work.
+    ['a beta prerelease', '0.11.0-beta.3'],
+    ['a nightly prerelease', '0.9.13-nightly.20260918.gabc1234'],
+    ['an rc prerelease', '1.0.0-rc.1'],
+  ])('accepts %s as a comparable pin', (_label, version) => {
+    expect(lookupFor(version)).toStrictEqual({ version });
   });
 });

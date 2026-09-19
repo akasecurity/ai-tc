@@ -21,7 +21,26 @@ The local store keeps your prompts and tool calls verbatim apart from the spans 
 npm install -g @akasecurity/cli
 ```
 
-Or use the bootstrap installer (downloads the self-contained binary — no Node.js required):
+Requires **Node.js 24+** (the CLI uses the built-in `node:sqlite`).
+
+Or install the self-contained binary, which needs no Node.js:
+
+macOS / Linux, with [Homebrew](https://brew.sh):
+
+```bash
+brew install akasecurity/tap/aka
+```
+
+Windows, with [Scoop](https://scoop.sh):
+
+```powershell
+scoop bucket add akasecurity https://github.com/akasecurity/scoop-bucket
+scoop install aka
+# or, without adding the bucket:
+scoop install https://github.com/akasecurity/ai-tc/releases/download/bin-latest/aka.json
+```
+
+Or the bootstrap installer, which downloads the same archive:
 
 ```bash
 # macOS / Linux
@@ -31,7 +50,22 @@ curl -fsSL https://raw.githubusercontent.com/akasecurity/ai-tc/bin-latest/tools/
 irm https://raw.githubusercontent.com/akasecurity/ai-tc/bin-latest/tools/installer/install.ps1 | iex
 ```
 
-Requires **Node.js 24+** (the CLI uses the built-in `node:sqlite`).
+Or download an archive directly — these four links always serve the newest binary release. The binary is ad-hoc signed and not notarized, so a browser download is quarantined and Gatekeeper refuses to run it, while `brew`, `curl` and command-line `tar` don't quarantine what they fetch.
+
+| Platform              | Download                                                                                                             |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| macOS (Apple silicon) | [aka-darwin-arm64.tar.gz](https://github.com/akasecurity/ai-tc/releases/download/bin-latest/aka-darwin-arm64.tar.gz) |
+| Linux x64             | [aka-linux-x64.tar.gz](https://github.com/akasecurity/ai-tc/releases/download/bin-latest/aka-linux-x64.tar.gz)       |
+| Linux arm64           | [aka-linux-arm64.tar.gz](https://github.com/akasecurity/ai-tc/releases/download/bin-latest/aka-linux-arm64.tar.gz)   |
+| Windows x64           | [aka-win32-x64.zip](https://github.com/akasecurity/ai-tc/releases/download/bin-latest/aka-win32-x64.zip)             |
+
+Intel macOS (`darwin-x64`) has no binary build — install this package from npm instead (above), which needs Node.js 24+.
+
+Each archive extracts to its own `aka-<platform>-<arch>/` directory; the binary has to stay inside it to find the files it loads at startup. Then run `aka init`.
+
+Check a download against [SHA256SUMS](https://github.com/akasecurity/ai-tc/releases/download/bin-latest/SHA256SUMS) and its build provenance with `gh attestation verify` — [tools/installer/README.md](https://github.com/akasecurity/ai-tc/blob/main/tools/installer/README.md) sets out the trust chain and what each check does and does not establish. The Homebrew tap and Scoop bucket entries above are published by each binary release.
+
+Upgrade the way you installed: `brew upgrade aka`, `scoop update aka`, `npm install -g @akasecurity/cli@latest`, or re-run the one-liner.
 
 ## Quick start
 

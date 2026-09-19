@@ -4,7 +4,9 @@ import { parseArgs } from 'node:util';
 import {
   applyCliUpdate as applyCliUpdateShared,
   applyPluginUpdate as applyPluginUpdateShared,
+  channelOfVersion,
   clearCache,
+  cliVersion,
   createCliPluginManager,
   describeChannel,
   detectInstallChannel,
@@ -12,11 +14,14 @@ import {
   gatherReportLive,
   installedPluginScope,
   outdated,
+  parseSwitchableChannel,
   planCliUpdate,
   pluginRef,
   renderReport,
+  SWITCHABLE_CHANNELS,
 } from '@akasecurity/local-ops';
-import type { ComponentStatus } from '@akasecurity/schema';
+import type { CliUpdateTarget, ComponentStatus, ReleaseChannel } from '@akasecurity/schema';
+import { RELEASE_CHANNEL, RELEASE_TAG_SOURCE } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 import { cliInstallOrigin } from '../lib/install-origin.ts';
@@ -28,18 +33,112 @@ import { cliInstallOrigin } from '../lib/install-origin.ts';
 // what `npm` on PATH happens to point at (see local-ops' install-channel.ts);
 // plugins update through the `claude` plugin manager. With no target it updates
 // everything that's behind.
+//
+// `--channel <stable|beta|nightly>` moves THIS copy of the CLI onto another
+// published line. With no flag, every component follows the channel its own
+// installed version says it is on, so a bare run never changes a machine's
+// channel in either direction.
 export async function runUpdate(argv: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args: argv,
-    options: { ...HOME_OPTION, yes: { type: 'boolean', short: 'y' } },
+    options: {
+      ...HOME_OPTION,
+      yes: { type: 'boolean', short: 'y' },
+      channel: { type: 'string' },
+    },
     allowPositionals: true,
   });
   const home = homeBase(values.home);
   const target = positionals[0];
 
+  // The FIRST argv-sourced token on this path that could reach a child
+  // process's argv, so it is parsed against the closed union HERE — before the
+  // registry is read and before anything is spawned — and a miss returns
+  // without running any of it. `local-ops`' shelled spawn routes through
+  // cmd.exe on Windows, where Node concatenates argv without escaping it, so
+  // nothing a user typed may travel further than this line.
+  //
+  // The refusal names the values it accepts and never echoes what was typed:
+  // the accepted set is what a user needs, and the rejected token is the one
+  // string on this path that is not from this repo.
+  const rawChannel = values.channel;
+  const requestedChannel = rawChannel === undefined ? null : parseSwitchableChannel(rawChannel);
+  if (rawChannel !== undefined && requestedChannel === null) {
+    process.stderr.write(
+      `aka update: --channel must be one of ${SWITCHABLE_CHANNELS.join(', ')}.\n`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (requestedChannel !== null && target !== undefined && target !== 'all' && target !== 'cli') {
+    process.stderr.write(pluginChannelRefusal(target, requestedChannel));
+    process.exitCode = 1;
+    return;
+  }
+
+  // One value for the whole run: the report resolves the CLI row against it,
+  // and the install builds its spec from that row's own resolved version, so
+  // the version this command prints is the version it fetches. Deriving the
+  // channel twice lets the two disagree, and resolving the report against the
+  // channel being LEFT makes a switch report nothing to do — `updateAvailable`
+  // is what decides whether anything is applied.
+  const cliChannel = requestedChannel ?? channelOfVersion(cliVersion());
+
   const out = process.stdout;
   out.write('Checking for updates…\n\n');
-  const report = gatherReportLive();
+  const report = gatherReportLive(cliChannel);
+
+  // A channel asked for BY NAME is refused here in either of two registry
+  // states — after the one registry read that can answer the question, and
+  // before the table is rendered, before the confirmation, and before any
+  // install spawn.
+  //
+  // Unpublished: the channel serves no tag at all. The report still carries a
+  // version there, because falling back to the stable tag is the right offer
+  // for a machine whose own prerelease tag has been retired. It is the wrong
+  // answer for a request: the install would ask the registry for a tag
+  // nothing publishes and fail there instead. So the refusal reads the row's
+  // `latestFrom` rather than its version, which is the only field that
+  // separates the two cases.
+  //
+  // Graduated: the channel HAD a tag, but the stable release has since
+  // overtaken it — `resolveChannel` returns the STABLE version as `latest`
+  // there, not a version the requested line ever published. Left unrefused,
+  // `aka update --channel beta` would render that stable version beside
+  // `(beta)`, which is the same false sentence the Unpublished case exists to
+  // prevent: a line the user named printed beside a version it never served,
+  // while this machine stays on stable.
+  //
+  // Both come BEFORE the render because the row itself is the false claim: the
+  // table would say a version is available on a line that never published it,
+  // and that sentence is the one a user acts on.
+  //
+  // Scoped to `requestedChannel`, so the DERIVED path keeps graduating as
+  // before — a beta machine with no flag on the command line must still move
+  // onto the stable release rather than being stranded on its own tag.
+  const cliRow = report.statuses.find((s) => s.id === 'cli');
+  if (requestedChannel !== null && cliRow?.latestFrom === RELEASE_TAG_SOURCE.Unpublished) {
+    process.stderr.write(
+      `aka update: nothing has been published on the ${requestedChannel} channel — ` +
+        'there is no release there to install.\n',
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (requestedChannel !== null && cliRow?.latestFrom === RELEASE_TAG_SOURCE.Graduated) {
+    const ownRelease =
+      cliRow.channelLatest !== undefined
+        ? `${requestedChannel}'s newest release is ${cliRow.channelLatest}, and `
+        : '';
+    process.stderr.write(
+      `aka update: the ${requestedChannel} channel has graduated — ${ownRelease}the stable ` +
+        `release (${String(cliRow.latest)}) is newer than anything published there. Run ` +
+        '`aka update` (no --channel) to install the stable.\n',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   out.write(`${renderReport(report)}\n\n`);
 
   if (target && target !== 'all' && !report.statuses.some((s) => s.id === target)) {
@@ -59,6 +158,16 @@ export async function runUpdate(argv: string[]): Promise<void> {
       out.write(
         'Could not reach the package registry (offline, or missing auth). Try again later.\n',
       );
+    } else if (requestedChannel !== null) {
+      // A switch with nothing to install is a different sentence from a machine
+      // that is current. The asked-for channel publishes nothing this copy is
+      // behind, and this command only ever moves forward, so reporting
+      // "everything is up to date" would read as the switch having happened.
+      out.write(
+        `Nothing to install on the ${requestedChannel} channel — it publishes nothing newer ` +
+          'than what is here. `aka update` only moves forward, so going back to an older ' +
+          'line means installing that version by name.\n',
+      );
     } else {
       out.write(
         target && target !== 'all'
@@ -71,7 +180,12 @@ export async function runUpdate(argv: string[]): Promise<void> {
 
   out.write('Will update:\n');
   for (const c of candidates) {
-    out.write(`  • ${c.name}: ${c.installed ?? '—'} → ${String(c.latest)}\n`);
+    // The channel is named only when it is not stable: every default machine
+    // is on stable, so printing it there is noise, and a machine that is not is
+    // the one case where the version pair does not say what is being followed.
+    const channel =
+      c.channel === undefined || c.channel === RELEASE_CHANNEL.Stable ? '' : ` (${c.channel})`;
+    out.write(`  • ${c.name}: ${c.installed ?? '—'} → ${String(c.latest)}${channel}\n`);
   }
   out.write('\n');
 
@@ -90,7 +204,19 @@ export async function runUpdate(argv: string[]): Promise<void> {
   let updatedPlugin = false;
   let anyFailed = false;
   for (const c of candidates) {
-    const ok = c.kind === 'cli' ? applyCliUpdate() : applyPluginUpdate(c);
+    // With no `--channel`, `cliChannel` is the channel THIS copy is already on,
+    // derived from its own version: a bare `aka update` on a beta machine must
+    // not quietly move it back to stable.
+    //
+    // The VERSION comes off the candidate row — the same field the bullet above
+    // printed — so the line a user just read names the spec that is about to
+    // run. Re-resolving it here, or letting the install fall back to the
+    // channel's dist-tag, is what let a graduating beta machine be offered
+    // 0.11.0 and re-install 0.11.0-beta.3.
+    const ok =
+      c.kind === 'cli'
+        ? applyCliUpdate({ channel: cliChannel, version: c.latest })
+        : applyPluginUpdate(c);
     if (c.kind === 'plugin' && ok) updatedPlugin = true;
     if (!ok) anyFailed = true;
   }
@@ -115,9 +241,38 @@ async function confirm(question: string): Promise<boolean> {
   }
 }
 
-function applyCliUpdate(): boolean {
+/**
+ * Why `--channel` cannot be carried out for a plugin target.
+ *
+ * A plugin's channel is decided by the marketplace registration its host
+ * resolves installs through, which only that host's CLI can change — so there
+ * is nothing this command could do with the flag. Accepting and ignoring it
+ * would tell a user they had switched a plugin's channel while the one thing
+ * that decides it was untouched.
+ *
+ * The line to run instead is taken from the host's own verb table rather than
+ * written here, so it names the right binary and the right verbs for every
+ * host, including the one with no update verb at all.
+ */
+function pluginChannelRefusal(target: string, channel: ReleaseChannel): string {
+  const agent = findAgent(target);
+  const ref = agent ? pluginRef(agent) : undefined;
+  const head =
+    `aka update: --channel ${channel} applies to the CLI only — a plugin's channel is its ` +
+    `marketplace registration, which the host CLI owns.\n`;
+  if (!agent || !ref || !agent.cliBin) {
+    return `${head}  Update ${target} through its host, then re-run \`aka check-updates\`.\n`;
+  }
+  const recipe = createCliPluginManager(agent.cliBin).updateRecipe(ref, agent.marketplaceSource);
+  return (
+    `${head}  To move ${agent.name} onto another channel, register the marketplace that ` +
+    `serves it and re-install:\n\n    ${recipe.join(' && ')}\n\n`
+  );
+}
+
+function applyCliUpdate(target: CliUpdateTarget): boolean {
   const channel = detectInstallChannel(cliInstallOrigin());
-  const plan = planCliUpdate(channel);
+  const plan = planCliUpdate(channel, process.platform, target);
   if (plan.command === null) {
     process.stderr.write(
       `✗ aka CLI: ${plan.reason ?? 'this install cannot be updated automatically'}.\n` +
@@ -128,9 +283,11 @@ function applyCliUpdate(): boolean {
   }
   process.stdout.write(`Updating the aka CLI — ${describeChannel(channel)}\n`);
   process.stdout.write(`  ${plan.display}\n`);
-  // The same channel that produced the line above, so the command printed is
-  // the command run.
-  const { ok } = applyCliUpdateShared(channel, 'inherit');
+  // The same install channel AND the same target that produced the line above,
+  // so the command printed is the command run — down to the version in the spec.
+  // `hasBin` is left at its default: that parameter is a probe seam for tests,
+  // and this caller wants the real PATH lookup.
+  const { ok } = applyCliUpdateShared(channel, 'inherit', undefined, target);
   process.stdout.write(
     ok ? '✓ CLI updated.\n' : `✗ CLI update failed (see the ${plan.command.bin} output above).\n`,
   );

@@ -196,6 +196,7 @@ const EXPECTED_VITEST_PACKAGES = [
   '@akasecurity/extract',
   '@akasecurity/installer',
   '@akasecurity/local-ops',
+  '@akasecurity/package-manifests',
   '@akasecurity/persistence',
   '@akasecurity/plugin-browser-extension',
   '@akasecurity/plugin-runtime',

@@ -81,3 +81,130 @@ describe('renderReport — the marketplace-pin note', () => {
     ).not.toContain('Pinned by a marketplace');
   });
 });
+
+/**
+ * A RANGE pin is never orderable, so it gets a note UNCONDITIONALLY — unlike
+ * an exact pin, which is only worth explaining when it is behind npm. Without
+ * this the "Latest" column shows npm's own answer beside a status the machine
+ * will never reach that way, and nothing says the version came from npm
+ * rather than from what the host actually resolves the range to.
+ */
+describe('renderReport — the range-pin note', () => {
+  it('notes a range pin even though npmAhead reads false for one', () => {
+    // `npmAhead` is always false on a range row (there is no single pin
+    // version to compare npm against) — the note must not be gated on it.
+    const out = renderReport(
+      report({
+        marketplacePin: {
+          marketplace: 'akasecurity',
+          npmLatest: '0.12.0',
+          npmAhead: false,
+          range: '^0.11.0-beta.0',
+        },
+      }),
+    );
+
+    expect(out).toContain('Pinned by a marketplace');
+    expect(out).toContain('akasecurity');
+    expect(out).toContain('^0.11.0-beta.0');
+    expect(out).toContain('npm has v0.12.0');
+  });
+
+  it('says nothing about npm when there is no npm answer to name', () => {
+    const out = renderReport(
+      report({
+        marketplacePin: {
+          marketplace: 'akasecurity',
+          npmLatest: null,
+          npmAhead: false,
+          range: '^0.11.0-beta.0',
+        },
+      }),
+    );
+
+    expect(out).toContain('^0.11.0-beta.0');
+    expect(out).not.toContain('npm has');
+  });
+
+  it('never prints the exact-pin sentence for a range row', () => {
+    // The two branches of pinNotes must not both fire for one row. `gatherReport`
+    // never actually produces `npmAhead: true` alongside a `range` (npmAhead is
+    // forced false whenever a pin is a range), but this render function does not
+    // itself enforce that invariant — it trusts a `continue` after the range
+    // branch to skip the exact-pin branch. Set every field the exact-pin branch
+    // needs (`npmAhead: true`, a non-null `latest`, a non-null `npmLatest`) so a
+    // dropped `continue` produces a second, visibly wrong note rather than
+    // silently agreeing with a fixture that happened not to reach it.
+    const out = renderReport(
+      report({
+        latest: '0.9.9',
+        marketplacePin: {
+          marketplace: 'akasecurity',
+          npmLatest: '0.12.0',
+          npmAhead: true,
+          range: '^0.11.0-beta.0',
+        },
+      }),
+    );
+
+    expect(out).toContain('^0.11.0-beta.0');
+    expect(out).not.toContain('cannot install until that');
+    // The stronger form of the same assertion: a dropped `continue` pushes a
+    // SECOND note for this row (the exact-pin branch, alongside the range
+    // one) rather than merely mentioning the exact-pin sentence — count the
+    // row's own note lines directly instead of `.not.toContain`ing one string
+    // the exact-pin branch happens to use.
+    const rowNotes = out.split('\n').filter((line) => line.includes('Claude Code plugin:'));
+    expect(rowNotes).toHaveLength(1);
+  });
+});
+
+/**
+ * The release channel a row's versions were resolved against.
+ *
+ * Shown only when it is not stable. A column repeating `stable` on every row of
+ * every default machine is noise that pushes the status off the width of a
+ * terminal, while a row on another channel is the one case where the version
+ * alone does not say what the machine is following.
+ */
+describe('renderReport — the channel column', () => {
+  const headerOf = (out: string): string => out.split('\n')[0] ?? '';
+
+  it('carries no channel column on a default report', () => {
+    // Both readings of "default": a producer that predates channels and sets
+    // nothing, and one that resolved stable and said so.
+    for (const row of [report(), report({ channel: 'stable' })]) {
+      const out = renderReport(row);
+      expect(headerOf(out)).not.toContain('Channel');
+      expect(out).not.toContain('stable');
+      // The positive control: an empty render satisfies both absences above.
+      expect(out).toContain('Claude Code plugin');
+      expect(out).toContain('up to date');
+    }
+  });
+
+  it('names the channel of a row that is not on stable', () => {
+    const out = renderReport(report({ channel: 'beta', installed: '0.11.0-beta.2' }));
+
+    expect(headerOf(out)).toContain('Channel');
+    expect(out).toContain('beta');
+    // The column is a column, not a note appended somewhere: the row carrying
+    // the version has to be the row carrying the channel.
+    const row = out.split('\n').find((line) => line.includes('0.11.0-beta.2'));
+    expect(row).toBeDefined();
+    expect(row).toContain('beta');
+  });
+
+  it('keeps the status readable beside it', () => {
+    // The failure a hand-built column produces: the status ends up inside the
+    // channel cell, or the cell swallows the padding and the two run together.
+    const out = renderReport(
+      report({ channel: 'nightly', updateAvailable: true, latest: '0.9.13' }),
+    );
+    const row = out.split('\n').find((line) => line.includes('0.9.13'));
+    expect(row).toBeDefined();
+    expect(row).toContain('nightly');
+    expect(row).toContain('update available');
+    expect(row).toMatch(/nightly\s+update available/);
+  });
+});

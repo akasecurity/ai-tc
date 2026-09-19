@@ -167,6 +167,26 @@ describe('parseNpmAuditPayload', () => {
   it('rejects a transport error reported as JSON', () => {
     const stdout = JSON.stringify({ error: { code: 'ECONNREFUSED', summary: 'request failed' } });
     expect(() => parseNpmAuditPayload(stdout)).toThrow(/ECONNREFUSED/);
+    expect(() => parseNpmAuditPayload(stdout)).toThrow(/request failed/);
+  });
+
+  // Observed 2026-09-19 against the real registry: npm 11 reports an
+  // HTTP-level failure of the bulk advisory endpoint (a 503 during
+  // maintenance) with error.summary and error.detail BOTH empty, so the
+  // gate's old code+summary reader produced "npm audit did not complete: "
+  // with no reason at all. The actual failure sits at the top level.
+  it('falls back to statusCode/message/body.error when error.summary and error.detail are empty', () => {
+    const stdout = JSON.stringify({
+      message:
+        '503 Service Unavailable - POST https://registry.npmjs.org/-/npm/v1/security/advisories/bulk - We are currently performing maintenance and will be back shortly.',
+      error: { summary: '', detail: '' },
+      statusCode: 503,
+      body: {
+        error: 'We are currently performing maintenance and will be back shortly.',
+      },
+    });
+    expect(() => parseNpmAuditPayload(stdout)).toThrow(/503/);
+    expect(() => parseNpmAuditPayload(stdout)).toThrow(/maintenance/i);
   });
 
   it('rejects non-JSON output', () => {

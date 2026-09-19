@@ -172,6 +172,14 @@ export interface NpmAuditPayload {
 
 // The same completed-audit test as parseAuditPayload, for npm's v2 output:
 // JSON that carries a "vulnerabilities" object and no top-level "error".
+//
+// npm's own error.code/error.summary/error.detail are not the only place the
+// reason can live: npm 11 reports an HTTP-level registry failure (observed
+// against the bulk advisory endpoint returning a 503 during maintenance) with
+// error.summary and error.detail BOTH empty, while the real reason sits at
+// the top level (statusCode + message) or in body.error. Fall back to those
+// only when the error object itself said nothing, so an ordinary
+// {error:{code,summary}} payload keeps reporting code+summary unchanged.
 export function parseNpmAuditPayload(stdout: string, stderr = ''): NpmAuditPayload {
   let parsed: unknown;
   try {
@@ -186,10 +194,25 @@ export function parseNpmAuditPayload(stdout: string, stderr = ''): NpmAuditPaylo
     'error' in parsed ||
     !('vulnerabilities' in parsed)
   ) {
-    const transport = (parsed as { error?: { code?: string; summary?: string } } | null)?.error;
-    const detail = transport
-      ? `${transport.code ?? ''} ${transport.summary ?? ''}`.trim()
-      : 'output has no "vulnerabilities" field';
+    const failure = parsed as {
+      error?: { code?: string; summary?: string; detail?: string };
+      statusCode?: number;
+      message?: string;
+      body?: { error?: string };
+    } | null;
+    const transport = failure?.error;
+    const fromErrorObject = transport
+      ? `${transport.code ?? ''} ${transport.summary ?? ''} ${transport.detail ?? ''}`.trim()
+      : '';
+    const fromHttpFailure = [
+      failure?.statusCode !== undefined ? String(failure.statusCode) : '',
+      failure?.message ?? '',
+    ]
+      .filter((part) => part !== '')
+      .join(' ');
+    const bodyError = failure?.body?.error ?? '';
+    const detail =
+      fromErrorObject || fromHttpFailure || bodyError || 'output has no "vulnerabilities" field';
     throw new Error(`npm audit did not complete: ${detail.slice(0, 400)}`);
   }
   return parsed as NpmAuditPayload;

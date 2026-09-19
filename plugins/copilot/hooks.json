@@ -1,11 +1,99 @@
 {
   "hooks": {
+    "sessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${AKA_COPILOT_ROOT:-$HOME/.copilot/plugins/aka-copilot}/scripts/session-start.js\" sessionStart \"${AKA_COPILOT_ROOT:-$HOME/.copilot/plugins/aka-copilot}/plugin.json\"",
+            "timeoutSec": 30
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${AKA_COPILOT_ROOT:-$HOME/.copilot/plugins/aka-copilot}/scripts/session-start.js\" SessionStart \"${AKA_COPILOT_ROOT:-$HOME/.copilot/plugins/aka-copilot}/plugin.json\"",
+            "timeoutSec": 30
+          }
+        ]
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${AKA_COPILOT_ROOT:-$HOME/.copilot/plugins/aka-copilot}/scripts/user-prompt-submit.js\" userPromptSubmitted",
+            "timeoutSec": 30
+          }
+        ]
+      }
+    ],
+    "userPromptTransformed": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${AKA_COPILOT_ROOT:-$HOME/.copilot/plugins/aka-copilot}/scripts/user-prompt-submit.js\" userPromptTransformed",
+            "timeoutSec": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${AKA_COPILOT_ROOT:-$HOME/.copilot/plugins/aka-copilot}/scripts/user-prompt-submit.js\" UserPromptSubmit",
+            "timeoutSec": 30
+          }
+        ]
+      }
+    ],
     "preToolUse": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "node \"${AKA_COPILOT_ROOT:-$HOME/.copilot/plugins/aka-copilot}/scripts/pre-tool-use.js\" preToolUse",
+            "timeoutSec": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${AKA_COPILOT_ROOT:-$HOME/.copilot/plugins/aka-copilot}/scripts/pre-tool-use.js\" PreToolUse",
+            "timeoutSec": 30
+          }
+        ]
+      }
+    ],
+    "postToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${AKA_COPILOT_ROOT:-$HOME/.copilot/plugins/aka-copilot}/scripts/post-tool-use.js\" postToolUse",
+            "timeoutSec": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${AKA_COPILOT_ROOT:-$HOME/.copilot/plugins/aka-copilot}/scripts/post-tool-use.js\" PostToolUse",
             "timeoutSec": 30
           }
         ]

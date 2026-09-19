@@ -416,6 +416,46 @@ Commit: see `feat(copilot): scan tool results, and never read resultType as an e
 
 Verified: `plugins/copilot` 153/153 across 15 files; lint, prettier and `tsc --noEmit` clean.
 
+### E4, E6 and A6 — the collision, the store-health suite, and the full manifest
+
+**E4.** `preToolUse` and `permissionRequest` both fire for one tool call, 41 ms apart, even
+under `--allow-all` — so this host offers two places to scan one call. The scan point is
+`preToolUse`, and `test/hooks/permission-request.test.ts` asserts WHY rather than restating
+it: `permissionRequest.toolInput` carries `command` alone while `preToolUse.toolArgs` also
+carries `description`, which this package's CLI field table scans and can redact in place.
+The subset relation is derived from the two recordings; the missing field is derived from the
+table. A fourth case is the structural backstop and explains why a mis-routed entry would be
+QUIET rather than loud: the CLI envelope reader looks for `toolArgs`, which a
+`permissionRequest` payload does not have, so the call would be read with an empty argument
+bag — every field skipped, no finding, an explicit allow emitted, a clean run reported.
+
+**E6.** `store-health.ts` was already present (copied in with the pre-tool-use work) and had
+no suite. Its sibling's 15 cases are copied in as a PEER copy, for the reason `no-echo.ts` is
+copied: a package wall blocks the import, the module is itself a peer copy, and a copy
+without its suite is a module nothing here checks. The one host-specific value is the
+config's `provider`, `'unknown'` here. Its module header also had a stale paragraph claiming
+this adapter passes no provider resolver — true when it was written, false since E1 — and
+that is corrected rather than left beside the code that contradicts it.
+
+**A6.** The manifest now registers all four hook scripts under BOTH hosts' spellings: nine
+entries over `sessionStart`/`SessionStart`, `userPromptSubmitted`/`userPromptTransformed`/
+`UserPromptSubmit`, `preToolUse`/`PreToolUse` and `postToolUse`/`PostToolUse`. The two
+`session-start` entries carry the plugin manifest path as a SECOND trailing token, which is
+the argv-offset-3 contract A5 landed.
+
+Two new cases in `hooks-manifest.test.ts` close the directions the existing five could not
+see. A script the build emits that NO entry names is a capture surface the host never spawns
+— nothing fails and nothing is logged, so it reads exactly like a host that does not fire
+those events; that case differences the built `scripts/` against the registered set, with
+`scan-worker.js` excluded by name because no hook is meant to name it. And a script
+registered under ONE dialect's spelling silently covers one host: the CLI's names are the
+ones a developer reaches for first, so VS Code is the half that goes missing.
+`userPromptTransformed` is the one exemption, because VS Code fires no counterpart event.
+
+Commit: see `feat(copilot): register every hook under both hosts' event spellings`.
+
+Verified: `plugins/copilot` 174/174 across 17 files; lint and `tsc --noEmit` clean.
+
 ---
 
 ## Where this attempt stopped, and what the next one should do

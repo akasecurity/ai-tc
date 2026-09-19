@@ -8,7 +8,7 @@
 // restatement: the script path against the BUILT `scripts/` directory (the
 // suite's globalSetup runs the real tsup first), and the event token against
 // the same frozen vocabulary the dispatcher validates with.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -87,6 +87,66 @@ describe('hooks.json', () => {
 
   it('declares every entry as a command hook', () => {
     for (const { command } of entries) expect(command.type).toBe('command');
+  });
+
+  /**
+   * The other direction, and the one the checks above cannot see: a hook script
+   * the build emits that NO entry names is a capture surface the host never
+   * spawns. Nothing fails, nothing is logged, and the events it was written for
+   * are simply not covered — which reads exactly like a host that does not fire
+   * them.
+   *
+   * `scan-worker.js` is deliberately excluded: no hook names it, because
+   * plugin-sdk starts it by path from whichever hook is running (see
+   * `src/scan-worker.ts`), and `test/e2e/scan-worker-bundle.e2e.test.ts` is
+   * what holds it to landing beside its siblings.
+   */
+  it('registers every hook script the build emits', () => {
+    const emitted = readdirSync(`${PLUGIN_ROOT}scripts`)
+      .filter((name) => name.endsWith('.js') && name !== 'scan-worker.js')
+      .sort();
+    // The positive control: an empty scripts/ would satisfy the subset check
+    // below for free.
+    expect(emitted.length).toBeGreaterThan(0);
+
+    const registered = new Set(
+      entries.map(
+        ({ command }) => /\/scripts\/([A-Za-z0-9-]+\.js)/.exec(command.command ?? '')?.[1],
+      ),
+    );
+    expect(emitted.filter((name) => !registered.has(name))).toEqual([]);
+  });
+
+  /**
+   * BOTH DIALECTS OR NEITHER. This package covers two hosts that read the same
+   * hooks FILE and spell their event names differently (camelCase on the CLI,
+   * PascalCase in VS Code). A script registered under one spelling alone is a
+   * surface that silently covers one host — and the CLI's names are the ones a
+   * developer reaches for first, so VS Code is the half that goes missing.
+   *
+   * `userPromptTransformed` is deliberately exempt and is the one asymmetry
+   * here: VS Code fires no counterpart event, so there is no PascalCase name
+   * for it to be registered under.
+   */
+  it('registers each script under both hosts’ spellings of the event', () => {
+    const CLI_ONLY = new Set(['userPromptTransformed']);
+    const byScript = new Map<string, string[]>();
+    for (const { event, command } of entries) {
+      const script = /\/scripts\/([A-Za-z0-9-]+\.js)/.exec(command.command ?? '')?.[1] ?? '';
+      byScript.set(script, [...(byScript.get(script) ?? []), event]);
+    }
+    expect(byScript.size).toBeGreaterThan(0);
+
+    // A PascalCase first letter is VS Code's; a lowercase one is the CLI's.
+    const pascal = (event: string): boolean => /^[A-Z]/.test(event);
+    for (const [script, events] of byScript) {
+      const named = events.filter((event) => !CLI_ONLY.has(event));
+      expect(named.some(pascal), `${script}: no VS Code (PascalCase) event`).toBe(true);
+      expect(
+        named.some((event) => !pascal(event)),
+        `${script}: no CLI (camelCase) event`,
+      ).toBe(true);
+    }
   });
 });
 

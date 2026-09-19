@@ -354,7 +354,7 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
       to `TIMEOUTS` in `packages/eslint-config/test/hook-timeout-ratchet.test.js`.
 - [x] A5. Copy `src/build-info.ts` with the manifest read moved from `argv[2]` to
       **`argv[3]`**; add `test/build-info.test.ts` pinning that offset explicitly.
-- [ ] A6. Write `plugin.json` and `hooks.json` (one entry per event, event name as a literal
+- [x] A6. Write `plugin.json` and `hooks.json` (one entry per event, event name as a literal
       argv token, `timeoutSec: 30`). Add a test asserting every command in `hooks.json`
       resolves to an emitted `scripts/*.js` and carries a valid event token.
 
@@ -421,12 +421,12 @@ harnessVersion, harnessInterface })`, provider recorded `unknown` with the model
       `modifiedResult`; VS Code block-only. **Never read `toolResult.resultType` as the
       command's exit status** — add a case driven by the recorded `false`-command fixture,
       whose `resultType` is `"success"`.
-- [ ] E4. Ensure `preToolUse` and `permissionRequest` do not both record a tool-use event for
+- [x] E4. Ensure `preToolUse` and `permissionRequest` do not both record a tool-use event for
       one call. Scan point is `preToolUse` only; `permissionRequest.toolInput` is a strict
       subset (`command` only) and scanning it would silently skip `description`.
 - [ ] E5. `src/hooks/stop.ts` + `stop-payload.ts` — `agentStop`/`Stop` → throttled reconcile;
       `sessionEnd` → runner-mode drain when attached.
-- [ ] E6. `src/hooks/store-health.ts`.
+- [x] E6. `src/hooks/store-health.ts`.
 
 ### F. History, backfill, transcripts
 

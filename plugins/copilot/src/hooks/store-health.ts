@@ -192,13 +192,12 @@ function formatMode(mode: number): string {
  * Called from all FIVE hooks that load config: `session-start`,
  * `user-prompt-submit`, `pre-tool-use`, `post-tool-use` and `stop`.
  * `session-start` is on that list rather than excluded from it, and it is the
- * earliest point a redirect can be reported.
- *
- * Unlike the sibling hosts this adapter passes NO provider resolver. Copilot
- * exposes no environment interface naming the LLM provider — the model id
- * reaches a hook only inside the session's own event stream — so the provider
- * is recorded `unknown` rather than guessed at from the host's env. See
- * `session-start.ts`.
+ * earliest point a redirect can be reported. It loads config EXPLICITLY
+ * (`loadConfig(undefined, resolveCopilotProvider)`) rather than through
+ * `handleSessionStart`'s default, which resolves Claude Code's provider shape.
+ * This host's resolver reads no environment at all and answers `'unknown'`:
+ * Copilot publishes no base-url variable, and the model id reaches a hook only
+ * inside the session's own event stream. See `session-start.ts`.
  *
  * Wholly best-effort: every step is inside the try, so a hostile or unreadable
  * home makes this a no-op rather than an exception on the hook's entry path.

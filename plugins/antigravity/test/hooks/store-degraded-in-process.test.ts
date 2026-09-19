@@ -1,20 +1,26 @@
 /**
- * The store-unavailable branch, driven IN-PROCESS.
+ * The store-open branch, driven IN-PROCESS — both halves of it.
  *
  * The fail-open e2e matrix already drives this branch against the BUILT hooks —
  * but in a child process, where v8 collects nothing, so the branch that decides
- * WHAT THE USER IS TOLD reads as untested to the diff-coverage gate while the
- * e2e proves it runs. A built hook cannot be imported either (`scripts/` is
- * spawn-only), so this file drives the SOURCE entry with the one input a test
- * cannot hand a hook — its stdin — replaced, and everything else left real: the
- * config, the store, the failure, and the message.
+ * WHAT THE USER IS TOLD (and the pass-through it returns from) read as untested
+ * to the diff-coverage gate while the e2e proves they run. A built hook cannot
+ * be imported either (`scripts/` is spawn-only), so this file drives the SOURCE
+ * entry with the one input a test cannot hand a hook — its stdin — replaced, and
+ * everything else left real: the config, the store, the failure, the message.
  *
- * The store it opens is the SKEW shape rather than a corrupt file, which is the
- * stricter of the two. The message is chosen by `instanceof
+ * Both halves are here because either alone proves the wrong thing. The store
+ * this build cannot open shows that the warning is raised and is caused; the
+ * store that opens shows that the capture really reaches the store through the
+ * gateway the pass-through hands over. A file with only the first half would
+ * pass with an entry that warned and then did nothing.
+ *
+ * The store it fails on is the SKEW shape rather than a corrupt file, which is
+ * the stricter of the two. The message is chosen by `instanceof
  * StoreAheadOfBuildError` reaching across the package boundary, so a case that
  * gets the skew wording out of the entry has proven that identity survives this
- * host's own import graph, and it has proven it for the wrapped case — a
- * corrupt store fails earlier, in the applier, and never reaches the repository
+ * host's own import graph, and it has proven it for the wrapped case — a corrupt
+ * store fails earlier, in the applier, and never reaches the repository
  * constructors this branch exists for.
  *
  * This host has no message channel on PreToolUse, so the once-per-session
@@ -38,6 +44,11 @@ import type * as Shared from '../../src/hooks/shared.ts';
 // future migration adds.
 const FUTURE_MIGRATION_TAG = '9999_from_a_newer_build';
 
+// A value the bundled rules detect, so the healthy case has something that MUST
+// reach the store. The canonical AWS example key, which is what the detection
+// suites plant when they need a real match rather than a stub.
+const PLANTED_SECRET = 'AKIAIOSFODNN7EXAMPLE';
+
 // The one thing a test cannot hand a hook: its stdin. `readStdin` is replaced
 // with a holder the cases fill in; every other export of the module stays real,
 // `emit` and `runHookFailOpen` included, so the payloads asserted below are the
@@ -48,6 +59,11 @@ vi.mock('../../src/hooks/shared.ts', async (importOriginal) => ({
   readStdin: () => Promise.resolve(stdin.payload),
 }));
 
+/** `<home>/.aka/data` — the store directory `loadConfig` resolves for this home. */
+function storeDir(home: string): string {
+  return join(home, '.aka', 'data');
+}
+
 /**
  * A store this build cannot use BECAUSE IT IS NEWER: a ledger tag from a
  * migration it does not define, plus a table its repositories prepare against
@@ -56,10 +72,9 @@ vi.mock('../../src/hooks/shared.ts', async (importOriginal) => ({
  * fine.
  */
 function seedStoreAheadOfBuild(home: string): void {
-  const storeDir = join(home, '.aka', 'data');
-  mkdirSync(storeDir, { recursive: true });
-  openLocalDatabase(storeDir).close();
-  const raw = new DatabaseSync(join(storeDir, 'aka.db'));
+  mkdirSync(storeDir(home), { recursive: true });
+  openLocalDatabase(storeDir(home)).close();
+  const raw = new DatabaseSync(join(storeDir(home), 'aka.db'));
   try {
     raw.exec('ALTER TABLE classified_data RENAME TO classified_data_backing');
     raw.exec('CREATE VIEW classified_data AS SELECT * FROM classified_data_backing');
@@ -69,6 +84,16 @@ function seedStoreAheadOfBuild(home: string): void {
     raw.exec('PRAGMA user_version = 9999');
   } finally {
     raw.close();
+  }
+}
+
+/** How many findings the hook committed to the store on this home. */
+async function storedFindings(home: string): Promise<number> {
+  const db = openLocalDatabase(storeDir(home));
+  try {
+    return (await db.findings.recentFindings()).length;
+  } finally {
+    db.close();
   }
 }
 
@@ -84,7 +109,7 @@ function onlyStderrLine(writes: readonly string[]): string {
   return writes[0] ?? '';
 }
 
-describe('a store written by a newer build, driven through the hook entry', () => {
+describe('the store-open branch, driven through the hook entry', () => {
   let home: string;
   let originalHome: string | undefined;
   let originalUserProfile: string | undefined;
@@ -95,8 +120,7 @@ describe('a store written by a newer build, driven through the hook entry', () =
   let stderrWrites: string[];
 
   beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), 'aka-entry-store-degraded-'));
-    seedStoreAheadOfBuild(home);
+    home = mkdtempSync(join(tmpdir(), 'aka-entry-store-open-'));
     // BOTH variables: `homedir()` reads $HOME on POSIX and %USERPROFILE% on
     // Windows, so pointing only one at the throwaway home would have this open
     // the developer's own store on the other — a silent contamination rather
@@ -151,26 +175,68 @@ describe('a store written by a newer build, driven through the hook entry', () =
     removeTree(home);
   });
 
-  it('pre-tool-use names the version gap on stderr, and still fails open on stdout', async () => {
-    stdin.payload = JSON.stringify({
-      toolCall: { name: 'run_command', args: { CommandLine: 'echo hello' } },
-      conversationId: 'in-process-pre-tool-use',
-      stepIdx: 0,
-      workspacePaths: [home],
+  describe('when the store was written by a newer build', () => {
+    // Each case runs the entry's top-level `main()` again, and the module
+    // registry would otherwise hand back the evaluation the case before it
+    // already ran.
+    it('pre-tool-use names the version gap on stderr, and still fails open on stdout', async () => {
+      seedStoreAheadOfBuild(home);
+      vi.resetModules();
+      stdin.payload = JSON.stringify({
+        toolCall: { name: 'run_command', args: { CommandLine: 'echo hello' } },
+        conversationId: 'in-process-pre-tool-use-ahead',
+        stepIdx: 0,
+        workspacePaths: [home],
+      });
+
+      await import('../../src/hooks/pre-tool-use.ts');
+
+      const notice = onlyStderrLine(stderrWrites);
+      expect(notice).toContain(FUTURE_MIGRATION_TAG);
+      // The remedy is updating AKA. Advice to move the store aside is data loss
+      // here: the corpus is intact and an up-to-date build reads it fine.
+      expect(notice).not.toMatch(/aside/i);
+      // Fail-open, with the allow payload the fail-closed host requires —
+      // asserting on it is the positive control for the stderr write being a
+      // side channel and not the whole output.
+      const payload = onlyWrite(stdoutWrites);
+      expect(payload).toEqual({ decision: 'allow' });
+      expect(exit).toHaveBeenCalledWith(0);
     });
+  });
 
-    await import('../../src/hooks/pre-tool-use.ts');
+  describe('when the store opens', () => {
+    // The other half of the branch, and the reason the warning above is worth
+    // anything: with a store that opens, the entry must take the gateway and
+    // get on with the call. The capture reaching the STORE is what makes that a
+    // presence assertion rather than "nothing was printed" — only the
+    // pass-through hands a gateway to the runtime that commits it.
+    it('pre-tool-use takes the gateway, commits the capture, and still allows', async () => {
+      vi.resetModules();
+      stdin.payload = JSON.stringify({
+        toolCall: { name: 'run_command', args: { CommandLine: `echo ${PLANTED_SECRET}` } },
+        conversationId: 'in-process-pre-tool-use-open',
+        stepIdx: 0,
+        workspacePaths: [home],
+      });
 
-    const notice = onlyStderrLine(stderrWrites);
-    expect(notice).toContain(FUTURE_MIGRATION_TAG);
-    // The remedy is updating AKA. Advice to move the store aside is data loss
-    // here: the corpus is intact and an up-to-date build reads it fine.
-    expect(notice).not.toMatch(/aside/i);
-    // Fail-open, with the allow payload the fail-closed host requires —
-    // asserting on it is the positive control for the stderr write being a
-    // side channel and not the whole output.
-    const payload = onlyWrite(stdoutWrites);
-    expect(payload).toEqual({ decision: 'allow' });
-    expect(exit).toHaveBeenCalledWith(0);
+      await import('../../src/hooks/pre-tool-use.ts');
+
+      // A healthy store records a shell command ONLY when a rule matched it —
+      // the capture is persisted `with-findings`, so an ordinary command is not
+      // copied into the store — which is why the payload carries a value the
+      // bundled rules detect. The findings row is the whole control.
+      // `> 0` rather than an exact count: how many rules match this key is the
+      // detection suite's business, and a rule change must not redden this file.
+      expect(await storedFindings(home)).toBeGreaterThan(0);
+      // Under the default log-only enforcement the decision is the plain allow,
+      // and it is asserted rather than assumed: this host always emits a
+      // payload, so "still allow" is a presence assertion here, not an absence.
+      expect(onlyWrite(stdoutWrites)).toEqual({ decision: 'allow' });
+      // No store trouble to report, so the stderr side channel stays silent —
+      // the case in the describe above is the positive control for this absence.
+      expect(stderrWrites).toEqual([]);
+      expect(exit).toHaveBeenCalledWith(0);
+    });
   });
 });

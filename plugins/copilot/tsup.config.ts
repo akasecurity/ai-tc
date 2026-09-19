@@ -47,6 +47,7 @@ export default defineConfig({
   entry: {
     'pre-tool-use': 'src/hooks/pre-tool-use.ts',
     'session-start': 'src/hooks/session-start.ts',
+    'user-prompt-submit': 'src/hooks/user-prompt-submit.ts',
     // The isolated scan's worker thread. No hook names it — plugin-sdk starts it
     // by path from whichever hook script is running, so the emitted script has to
     // land in this same directory. See src/scan-worker.ts.

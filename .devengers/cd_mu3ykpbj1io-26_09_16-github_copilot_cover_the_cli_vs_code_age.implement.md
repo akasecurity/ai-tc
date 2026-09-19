@@ -331,6 +331,45 @@ fail because this container runs as **uid 0**, and `test/internal/sql-functions.
 `aka_lower` NUL cases fail on this container's Node 22 `node:sqlite`. Same environment note as
 the previous attempt's.
 
+### E2 — `src/hooks/user-prompt-submit.ts`
+
+**One script, three event names, and the argv dispatcher is what makes that safe.**
+`userPromptTransformed` re-carries `prompt` alongside `transformedPrompt`, so a reader keyed
+on which fields the payload happens to have would answer with the untransformed text — the
+user's words scanned a second time, the scaffolding never seen. `readPromptCapture` is keyed
+on the ARGV event name instead, which is the first real use `event-name.ts` has had, and the
+test drives the recorded `userPromptTransformed.json` to prove it takes the transformed field
+while the untransformed one is sitting right beside it.
+
+**The transformed event is recorded at `with-findings` and emits nothing.** Its text
+CONTAINS the submitted prompt verbatim, so persisting both unconditionally would double-count
+every clean turn, and a second message for the same secret milliseconds later is noise. What
+it buys is the case that matters: a secret the TRANSFORMATION introduced, which
+`userPromptSubmitted.prompt` cannot show.
+
+**This hook blocks nothing, and the wording is the whole of the work.** The plan says
+"block/rewrite only where the matrix marks it verified; otherwise record-only, and say so" —
+and nothing is verified on either surface (the CLI's `modifiedPrompt` from a COMMAND hook is
+in the fixtures README's "Not measured"; VS Code's `UserPromptSubmit` block channel has never
+been driven). Emitting a block the host silently ignores is strictly worse than emitting
+none, because the user reads an enforcement claim while the prompt goes to the model. So a
+`block` or `redact` policy prints what actually happened — flagged, recorded, sent unchanged —
+in a sentence deliberately DIFFERENT from the `warn` one, so a user whose policy says block
+can tell it did not take effect. The test pins the difference in both directions and pins
+that the payload carries no decision key of EITHER dialect.
+
+`promptEmitPayload` takes **no** dialect parameter. `decidePreToolUse` does, because the two
+hosts really do differ there; here neither has a channel to shape, `systemMessage` is a
+top-level key both accept, and taking a parameter only to ignore it would read as a per-host
+difference that does not exist. That cost the first draft a lint failure
+(`no-unused-vars`), which is the right gate for exactly this.
+
+Owed to H3: `skills/setup/SKILL.md`'s Known limitations must carry the no-prompt-stop fact.
+
+Commit: see `feat(copilot): capture prompts, and say plainly that nothing stops them`.
+
+Verified: `plugins/copilot` 131/131 across 13 files; lint and `tsc --noEmit` clean.
+
 ---
 
 ## Where this attempt stopped, and what the next one should do

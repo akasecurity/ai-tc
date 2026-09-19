@@ -413,7 +413,7 @@ harnessVersion, harnessInterface })`, provider recorded `unknown` with the model
       The once-per-session pass must tolerate running **after** the session's first prompt
       (the recordings show `userPromptSubmitted` 20 ms _before_ `sessionStart`); add a case
       that drives that order.
-- [ ] E2. `src/hooks/user-prompt-submit.ts` — capture from `userPromptSubmitted.prompt`;
+- [x] E2. `src/hooks/user-prompt-submit.ts` — capture from `userPromptSubmitted.prompt`;
       record `userPromptTransformed.transformedPrompt` **separately**, never conflated.
       Block/rewrite only where the matrix marks it verified; otherwise record-only, and say
       so in `SKILL.md`.

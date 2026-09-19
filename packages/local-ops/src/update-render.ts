@@ -4,21 +4,39 @@ import { RELEASE_CHANNEL } from '@akasecurity/schema';
 /**
  * The lines explaining a `latest` that came from a marketplace pin.
  *
- * Only where the pin is BEHIND npm, because that is the only case a reader
- * cannot account for on their own: the row says "up to date" at a version they
- * can see is not the newest published, and without this the output is
- * indistinguishable from a stale report or a failed update. A pin that equals
- * npm's latest explains nothing and is left unsaid.
+ * Two cases, and each explains something a reader cannot see on their own.
  *
- * It names the marketplace rather than only the version, because the marketplace
- * is the thing that has to move — and under a marketplace registered at a pinned
- * ref, nothing else ever will.
+ * A RANGE pin (`range` set) is never orderable, so it gets a note regardless
+ * of `npmAhead` — which is always false for one, since there is no single pin
+ * version to compare npm against. Without this the row's "Latest" column
+ * shows npm's own answer beside a status this machine will never reach that
+ * way, and nothing says the version came from npm rather than from what the
+ * host will actually resolve the range to.
+ *
+ * An EXACT pin gets a note only where it is BEHIND npm, because that is the
+ * only case a reader cannot account for on their own: the row says "up to
+ * date" at a version they can see is not the newest published, and without
+ * this the output is indistinguishable from a stale report or a failed
+ * update. A pin that equals npm's latest explains nothing and is left unsaid.
+ *
+ * Both name the marketplace rather than only the version, because the
+ * marketplace is the thing that has to move — and under a marketplace
+ * registered at a pinned ref, nothing else ever will.
  */
 function pinNotes(report: UpdateReport): string[] {
   const notes: string[] = [];
   for (const s of report.statuses) {
     const pin = s.marketplacePin;
-    if (!pin || !pin.npmAhead || s.latest === null || pin.npmLatest === null) continue;
+    if (!pin) continue;
+    if (pin.range !== undefined) {
+      const npmPart = pin.npmLatest !== null ? ` npm has v${pin.npmLatest}.` : '';
+      notes.push(
+        `    ${s.name}: the ${pin.marketplace} marketplace pins ${pin.range}, which the host ` +
+          `resolves within — not a single version this report can compare.${npmPart}`,
+      );
+      continue;
+    }
+    if (!pin.npmAhead || s.latest === null || pin.npmLatest === null) continue;
     notes.push(
       `    ${s.name}: the ${pin.marketplace} marketplace pins v${s.latest}. ` +
         `npm has v${pin.npmLatest}, which this machine cannot install until that ` +

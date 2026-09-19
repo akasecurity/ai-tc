@@ -454,7 +454,7 @@ describe('aka update — the offer and the install name one version', () => {
       viewDistTags: (pkg) => (pkg === CLI_PACKAGE ? tags : null),
       installed: new Map(),
       cliInstalled: installed,
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
       ...(requested === undefined ? {} : { cliChannel: requested }),
     });
   }
@@ -492,15 +492,11 @@ describe('aka update — the offer and the install name one version', () => {
       },
       '0.11.0-beta.4',
     ],
-    [
-      'an explicit --channel beta installs the stable once it has overtaken',
-      {
-        installed: '0.9.11',
-        tags: { latest: '0.12.0', beta: '0.11.0-beta.4' },
-        requested: RELEASE_CHANNEL.Beta,
-      },
-      '0.12.0',
-    ],
+    // No row here for an EXPLICIT --channel beta once stable has overtaken it:
+    // that state is `Graduated`, and printing the stable version beside the
+    // requested channel's name is exactly the false sentence the refusal in
+    // "a channel the stable release has graduated past" below exists to
+    // prevent. It is a REQUEST refused, not an offer — see that describe block.
   ];
 
   it.each(offering)('%s', async (_name, registry, expected) => {
@@ -570,7 +566,7 @@ describe('aka update --channel — a channel nothing publishes', () => {
       viewDistTags: (pkg) => (pkg === CLI_PACKAGE ? tags : null),
       installed: new Map(),
       cliInstalled: installed,
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
       cliChannel: requested,
     });
   }
@@ -629,7 +625,7 @@ describe('aka update --channel — a channel nothing publishes', () => {
       viewDistTags: (pkg) => (pkg === CLI_PACKAGE ? { latest: '0.12.0' } : null),
       installed: new Map(),
       cliInstalled: '0.11.0-beta.3',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
     const { code, out } = await run(['--yes']);
 
@@ -648,6 +644,134 @@ describe('aka update --channel — a channel nothing publishes', () => {
     expect(code).toBe(1);
     expect(err).toContain(RELEASE_CHANNEL.Beta);
     expect(seams.applied).toHaveLength(0);
+  });
+});
+
+/**
+ * An explicitly requested channel the stable release has GRADUATED past.
+ *
+ * `resolveChannel` answers such a request with the STABLE version — that is
+ * the whole graduation mechanism, so a beta machine's own tag does not strand
+ * it once stable has caught up. Rendering that answer beside the requested
+ * channel's own name is the false sentence this refusal exists to prevent:
+ * `aka update --channel beta` printing the stable release as `(beta)`, while
+ * `beta` itself never published it and this machine never leaves stable.
+ */
+describe('aka update --channel — a channel the stable release has graduated past', () => {
+  function graduated(tags: DistTags, installed: string, requested: ReleaseChannel): UpdateReport {
+    return gatherReport({
+      viewDistTags: (pkg) => (pkg === CLI_PACKAGE ? tags : null),
+      installed: new Map(),
+      cliInstalled: installed,
+      marketplacePin: () => ({ version: null }),
+      cliChannel: requested,
+    });
+  }
+
+  it('refuses before the confirmation and before any install spawn', async () => {
+    seams.cliVersion = '0.9.11';
+    seams.report = graduated(
+      { latest: '0.12.0', beta: '0.11.0-beta.4' },
+      '0.9.11',
+      RELEASE_CHANNEL.Beta,
+    );
+    // The row this fixture produces really is the graduated shape — the
+    // non-vacuity control for the assertions below.
+    const row = graduated(
+      { latest: '0.12.0', beta: '0.11.0-beta.4' },
+      '0.9.11',
+      RELEASE_CHANNEL.Beta,
+    ).statuses.find((s) => s.id === 'cli');
+    expect(row?.latestFrom).toBe(RELEASE_TAG_SOURCE.Graduated);
+    expect(row?.latest).toBe('0.12.0');
+    expect(row?.channelLatest).toBe('0.11.0-beta.4');
+
+    const { err, out, code } = await run([`--channel=${RELEASE_CHANNEL.Beta}`]);
+
+    expect(code).toBe(1);
+    // Nothing was planned, rendered or installed — not merely that the
+    // command failed, which it would also do if the row reached the install
+    // and npm resolved the spec back to what was already there.
+    expect(seams.planned).toHaveLength(0);
+    expect(seams.applied).toHaveLength(0);
+    expect(seams.specs).toHaveLength(0);
+    // No `--yes` on that run, so a refusal that came AFTER the confirmation
+    // would have stopped at the prompt instead.
+    expect(out).not.toContain('Will update:');
+    expect(out).not.toContain('Apply these updates?');
+    expect(out).not.toContain('update available');
+    // The message names the requested channel, the channel's own newest
+    // release, the stable version that outranks it, and how to get the
+    // stable instead.
+    expect(err).not.toBe('');
+    expect(err).toContain(RELEASE_CHANNEL.Beta);
+    expect(err).toContain('0.11.0-beta.4');
+    expect(err).toContain('0.12.0');
+    expect(err.toLowerCase()).toContain('graduated');
+    expect(err).toContain('aka update');
+  });
+
+  it('says so even with no channelLatest to name', async () => {
+    // A row built by hand rather than through the real resolution — the field
+    // is optional precisely because a caller may not have it, and the refusal
+    // must still fire and still name the stable version.
+    seams.cliVersion = '0.9.11';
+    seams.report = {
+      statuses: [
+        {
+          id: 'cli',
+          name: 'aka CLI',
+          kind: 'cli',
+          installed: '0.9.11',
+          latest: '0.12.0',
+          updateAvailable: true,
+          channel: RELEASE_CHANNEL.Beta,
+          latestFrom: RELEASE_TAG_SOURCE.Graduated,
+        },
+      ],
+      availablePlugins: [],
+    };
+    const { err, code } = await run(['--yes', `--channel=${RELEASE_CHANNEL.Beta}`]);
+
+    expect(code).toBe(1);
+    expect(seams.applied).toHaveLength(0);
+    expect(err).toContain(RELEASE_CHANNEL.Beta);
+    expect(err).toContain('0.12.0');
+  });
+
+  it('keeps the DERIVED path graduating, with no --channel on the command line', async () => {
+    // The control that scopes the refusal to a REQUEST: a beta machine with no
+    // flag must still move onto the stable release exactly as before —
+    // refusing here would strand it on its own tag forever.
+    seams.cliVersion = '0.11.0-beta.3';
+    seams.report = gatherReport({
+      viewDistTags: (pkg) =>
+        pkg === CLI_PACKAGE ? { latest: '0.11.0', beta: '0.11.0-beta.3' } : null,
+      installed: new Map(),
+      cliInstalled: '0.11.0-beta.3',
+      marketplacePin: () => ({ version: null }),
+    });
+    const { code, out } = await run(['--yes']);
+
+    expect(code).toBe(0);
+    expect(out).toContain('Will update:');
+    expect(seams.specs).toStrictEqual([`${CLI_PACKAGE}@0.11.0`]);
+  });
+
+  it('still proceeds when the requested channel has a newer release of its own', async () => {
+    // The positive control: an explicit --channel beta whose own tag LEADS
+    // stable has not graduated, and must reach the plan and the apply exactly
+    // as an unrefused request would.
+    seams.cliVersion = '0.9.11';
+    seams.report = graduated(
+      { latest: '0.9.12', beta: '0.11.0-beta.4' },
+      '0.9.11',
+      RELEASE_CHANNEL.Beta,
+    );
+    const { code } = await run(['--yes', `--channel=${RELEASE_CHANNEL.Beta}`]);
+
+    expect(code).toBe(0);
+    expect(seams.specs).toStrictEqual([`${CLI_PACKAGE}@0.11.0-beta.4`]);
   });
 });
 
@@ -693,7 +817,7 @@ describe('aka update — a hostile registry answer never reaches argv', () => {
       viewDistTags: (pkg) => (pkg === CLI_PACKAGE ? { latest: version } : null),
       installed: new Map(),
       cliInstalled: INSTALLED,
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
     await run(['--yes']);
 
@@ -755,7 +879,7 @@ describe('aka update — a hostile registry answer never reaches argv', () => {
       viewDistTags: (pkg) => (pkg === CLI_PACKAGE ? { latest: '0.9.12' } : null),
       installed: new Map(),
       cliInstalled: '0.9.11',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
     await run(['--yes']);
 

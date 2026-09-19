@@ -48,7 +48,7 @@ gatherReport({
     return null;
   },
   cliInstalled: null,
-  marketplacePin: () => null,
+  marketplacePin: () => ({ version: null }),
   installed: new Map(),
 });
 

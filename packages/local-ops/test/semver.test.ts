@@ -108,4 +108,31 @@ describe('isExactSemver', () => {
       if (isExactSemver(version)) expect(isSemver(version), version).toBe(true);
     }
   });
+
+  it('refuses a non-string rather than throwing', () => {
+    // `readCache`'s validation checks only `checkedAt` and that `report` is an
+    // object — a `latest` of `42` in the JSON on disk passes it untouched and
+    // arrives here typed `string` by a cast the runtime never checked. `.trim()`
+    // on a number throws, which took down the Updates page render before this
+    // was total.
+    for (const value of [42, null, undefined, true, {}, [], ['0.11.0']]) {
+      expect(() => isExactSemver(value)).not.toThrow();
+      expect(isExactSemver(value), JSON.stringify(value)).toBe(false);
+    }
+  });
+
+  it("refuses anything over npm's own 256-character limit", () => {
+    const atLimit = `1.0.0-${'a'.repeat(250)}`;
+    const overLimit = `1.0.0-${'a'.repeat(251)}`;
+    expect(atLimit).toHaveLength(256);
+    expect(overLimit).toHaveLength(257);
+
+    expect(isSemver(atLimit)).toBe(true);
+    expect(isExactSemver(atLimit)).toBe(true);
+    // The comparator would still order this — a length bound is a floor
+    // `isSemver` does not carry, added because this predicate is what a
+    // registry-supplied version crosses into argv through.
+    expect(isSemver(overLimit)).toBe(true);
+    expect(isExactSemver(overLimit)).toBe(false);
+  });
 });

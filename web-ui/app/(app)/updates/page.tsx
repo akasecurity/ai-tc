@@ -41,9 +41,14 @@ export default function UpdatesPage() {
   //
   // The target — channel AND resolved version — is read off the report row this
   // page is about to render, through the same `cliUpdateTarget` that
-  // `applyUpdate` in ./actions.ts calls. So the version in the line shown here
-  // is the version in the spec that button runs; a plan given only the channel
-  // installed whatever that channel's dist-tag served instead.
+  // `applyUpdate` in ./actions.ts calls. That shares the DERIVATION, not the
+  // input: the action re-reads `readCache` at CLICK time rather than taking
+  // what this render computed, so a cache rewritten in between (a background
+  // refresh, or "Check now") can change what gets installed — the version this
+  // line names is what the plan resolved to at render time, and the button may
+  // resolve a newer one by the time it runs. A plan given only the channel
+  // installed whatever that channel's dist-tag served instead, which is the
+  // narrower defect this line does still prevent.
   const cliPlan = planCliUpdate(
     detectInstallChannel(dashboardInstallOrigin()),
     process.platform,

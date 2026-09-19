@@ -404,6 +404,21 @@ jobs:
               ;;
           esac
 
+      # The other half of the same race: this push's lease was for the value
+      # the decision step read, and a peer's move landed in between. That peer
+      # already won — this tag's own Release is published (Create GitHub
+      # Release ran above), but bin-latest, the rolling release and both
+      # package managers still serve whichever version got there first. No
+      # retry loop here: re-reading the tag and pushing again would only race
+      # the same peer a second time, and re-running this tag's whole workflow
+      # already is the safe repair, because it re-reads the tag from scratch
+      # and only ever moves forward — so if the peer's version is newer, the
+      # re-run is a no-op.
+      - name: Explain a bin-latest move that lost a race
+        if: failure() && steps.move.outcome == 'failure'
+        run: |
+          echo "::error::bin-latest was moved by another release between the decision and this push — ${GITHUB_REF_NAME} is published as its own GitHub Release, but bin-latest, the rolling release and both package managers still serve the other version. Re-run this tag's workflow: it re-reads the tag and only ever moves forward, so a newer winner makes the re-run a no-op."
+
       # A rolling release on the tag the installers already bootstrap from, so a
       # download link is a constant. It is published AFTER the tag move: the tag
       # has carried no release until now, and one cut ahead of the move would
@@ -537,6 +552,9 @@ jobs:
           # The file only ever moves forward: a re-run of an older release, or
           # two releases finishing out of order, leaves a newer one in place. Its
           # version is read off the versioned download URL both formats carry.
+          # A non-empty file that names no such URL — hand-edited, or written by
+          # something other than this renderer — has nothing to compare against,
+          # so it is warned about rather than silently either kept or clobbered.
           if [ -n "$existing" ]; then
             published=$(printf '%s' "$existing" | base64 -d | grep -oE 'releases/download/bin-v[0-9]+[.][0-9]+[.][0-9]+/' | head -n 1 | sed -e 's|^releases/download/bin-v||' -e 's|/$||' || true)
             if [ -n "$published" ]; then
@@ -545,6 +563,8 @@ jobs:
                 echo "${TARGET_REPO}:${TARGET_PATH} already serves aka ${published}, which is newer than ${version} — leaving it"
                 exit 0
               fi
+            else
+              echo "::warning::${TARGET_REPO}:${TARGET_PATH} already carries a file, but its version could not be compared — no releases/download/bin-vX.Y.Z/ URL was found in it to weigh against ${version}"
             fi
           fi
 
@@ -560,7 +580,10 @@ jobs:
           if [ -n "$sha" ]; then
             args+=(-f "sha=${sha}")
           fi
-          gh api "${args[@]}"
+          if ! gh api "${args[@]}"; then
+            echo "::error::the write to ${TARGET_REPO}:${TARGET_PATH} was refused — re-run this job: it re-reads the file and leaves a newer one alone"
+            exit 1
+          fi
           echo "${TARGET_REPO}:${TARGET_PATH} now serves aka ${version}"
 
   # The same shape against the Scoop bucket. Every step name differs from its
@@ -628,6 +651,8 @@ jobs:
                 echo "${TARGET_REPO}:${TARGET_PATH} already serves aka ${published}, which is newer than ${version} — leaving it"
                 exit 0
               fi
+            else
+              echo "::warning::${TARGET_REPO}:${TARGET_PATH} already carries a file, but its version could not be compared — no releases/download/bin-vX.Y.Z/ URL was found in it to weigh against ${version}"
             fi
           fi
 
@@ -641,5 +666,8 @@ jobs:
           if [ -n "$sha" ]; then
             args+=(-f "sha=${sha}")
           fi
-          gh api "${args[@]}"
+          if ! gh api "${args[@]}"; then
+            echo "::error::the write to ${TARGET_REPO}:${TARGET_PATH} was refused — re-run this job: it re-reads the file and leaves a newer one alone"
+            exit 1
+          fi
           echo "${TARGET_REPO}:${TARGET_PATH} now serves aka ${version}"

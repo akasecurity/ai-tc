@@ -2,6 +2,7 @@ import type { DistTags, ReleaseChannel, ReleaseTagSource } from '@akasecurity/sc
 import { DIST_TAG, RELEASE_CHANNEL, RELEASE_TAG_SOURCE } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
+import type { MarketplacePinLookup } from '../src/marketplace-manifest.ts';
 import { AGENT_PLUGINS, pluginRef } from '../src/registry.ts';
 import { resolveChannel } from '../src/release-channel.ts';
 import { gatherReport } from '../src/updates.ts';
@@ -33,7 +34,7 @@ describe('gatherReport', () => {
       viewDistTags: views({ [CLI]: '0.0.3', [PLUGIN]: '0.0.2-alpha.0' }),
       installed: new Map([[REF, '0.0.2-alpha.0']]),
       cliInstalled: '0.0.2-alpha.0',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
     const cli = report.statuses.find((s) => s.id === 'cli');
     expect(cli?.updateAvailable).toBe(true);
@@ -45,7 +46,7 @@ describe('gatherReport', () => {
       viewDistTags: views({ [CLI]: '0.0.2', [PLUGIN]: '0.0.3' }),
       installed: new Map([[REF, '0.0.2']]),
       cliInstalled: '0.0.2',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
     // Codex CLI is a separate, uninstalled registry entry (a distinct ref —
     // see registry.ts's pluginName comment) so it still surfaces as available;
@@ -61,7 +62,7 @@ describe('gatherReport', () => {
       viewDistTags: views({ [CLI]: '0.0.2', [PLUGIN]: '0.0.3', [CODEX_PLUGIN]: '0.1.0' }),
       installed: new Map(), // nothing installed
       cliInstalled: '0.0.2',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
     expect(report.statuses.map((s) => s.id)).toEqual(['cli']);
     // Every registered agent with no installed version surfaces here — both
@@ -77,7 +78,7 @@ describe('gatherReport', () => {
       viewDistTags: views({ [CLI]: '9.9.9', [PLUGIN]: '0.0.1' }),
       installed: new Map([[REF, '0.0.1']]),
       cliInstalled: null, // package.json walk-up missed
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
     const cli = report.statuses.find((s) => s.id === 'cli');
     expect(cli?.installed).toBeNull();
@@ -89,7 +90,7 @@ describe('gatherReport', () => {
       viewDistTags: views({}), // every lookup returns null
       installed: new Map([[REF, '0.0.1']]),
       cliInstalled: '0.0.1',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
     for (const s of report.statuses) {
       expect(s.latest).toBeNull();
@@ -107,7 +108,7 @@ describe('gatherReport', () => {
 // The two agree on the happy path, which is why this was latent rather than
 // obvious. Every case below is a state where they come apart.
 describe('gatherReport — the marketplace pin decides what "latest" means', () => {
-  const pinned = (version: string | null) => (): string | null => version;
+  const pinned = (version: string | null) => (): MarketplacePinLookup => ({ version });
 
   it('reports the PIN as latest, not npm', () => {
     const report = gatherReport({
@@ -222,6 +223,55 @@ describe('gatherReport — the marketplace pin decides what "latest" means', () 
   });
 });
 
+// A RANGE pin (or a dist-tag) is not a version this report can compare, so it
+// must not be reported as npm's own latest was before it — a bounded range
+// that excludes npm's answer would otherwise offer an update the host can
+// never resolve to, and re-nag on every run once the host installed within
+// the range instead. This is `gatherReport`'s own wiring of
+// `marketplacePinnedVersion`'s `range` evidence, not a re-test of that
+// function in isolation.
+describe("gatherReport — a RANGE pin must not offer npm's answer as an update", () => {
+  const rangePinned = (range: string) => (): MarketplacePinLookup => ({ version: null, range });
+
+  it("does NOT offer npm's latest when the manifest pins a range", () => {
+    const report = gatherReport({
+      viewDistTags: views({ [CLI]: '0.0.1', [PLUGIN]: '0.12.0' }),
+      installed: new Map([[REF, '0.11.0-beta.0']]),
+      cliInstalled: '0.0.1',
+      marketplacePin: rangePinned('^0.11.0-beta.0'),
+    });
+
+    const plugin = report.statuses.find((s) => s.id === 'claude-code');
+    // npm's answer is kept for the "Latest" column — informational, the pin's
+    // own note is what explains it — but the row must not claim an update is
+    // available for a version the host cannot resolve the range to.
+    expect(plugin?.latest).toBe('0.12.0');
+    expect(plugin?.updateAvailable).toBe(false);
+    expect(plugin?.marketplacePin).toEqual({
+      marketplace: 'akasecurity',
+      npmLatest: '0.12.0',
+      npmAhead: false,
+      range: '^0.11.0-beta.0',
+    });
+  });
+
+  it('still offers the update with the SAME data and no pin (positive control)', () => {
+    // Identical installed/npm data, only the pin removed: proves the refusal
+    // above comes from the range rather than from anything else in the
+    // fixture, so the case above cannot pass vacuously.
+    const report = gatherReport({
+      viewDistTags: views({ [CLI]: '0.0.1', [PLUGIN]: '0.12.0' }),
+      installed: new Map([[REF, '0.11.0-beta.0']]),
+      cliInstalled: '0.0.1',
+      marketplacePin: () => ({ version: null }),
+    });
+
+    const plugin = report.statuses.find((s) => s.id === 'claude-code');
+    expect(plugin?.latest).toBe('0.12.0');
+    expect(plugin?.updateAvailable).toBe(true);
+  });
+});
+
 // The channel a component follows is DERIVED from the version that component is
 // running, per component, every time the report is built. Nothing stores it, so
 // there is no state here to go stale — but there is a whole class of defect that
@@ -236,7 +286,7 @@ describe('gatherReport — each row resolves its own channel', () => {
       viewDistTags: tagged({ [CLI]: STABLE_AND_BETA, [PLUGIN]: STABLE_AND_BETA }),
       installed: new Map([[REF, '0.11.0-beta.2']]),
       cliInstalled: '0.9.11',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
 
     const cli = report.statuses.find((s) => s.id === 'cli');
@@ -255,7 +305,7 @@ describe('gatherReport — each row resolves its own channel', () => {
       viewDistTags: tagged({ [CLI]: STABLE_AND_BETA }),
       installed: new Map(),
       cliInstalled: '0.9.11',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
 
     expect(report.statuses.find((s) => s.id === 'cli')?.latest).toBe('0.9.12');
@@ -270,7 +320,7 @@ describe('gatherReport — each row resolves its own channel', () => {
       viewDistTags: tagged({ [PLUGIN]: { latest: '0.11.0', beta: '0.11.0-beta.3' } }),
       installed: new Map([[REF, '0.11.0-beta.2']]),
       cliInstalled: '0.9.11',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
 
     const plugin = report.statuses.find((s) => s.id === 'claude-code');
@@ -285,7 +335,7 @@ describe('gatherReport — each row resolves its own channel', () => {
       viewDistTags: tagged({ [CLI]: { latest: '0.9.12' } }),
       installed: new Map(),
       cliInstalled: '0.11.0-beta.2',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
 
     const cli = report.statuses.find((s) => s.id === 'cli');
@@ -301,7 +351,7 @@ describe('gatherReport — each row resolves its own channel', () => {
       }),
       installed: new Map(),
       cliInstalled: '0.9.13-nightly.20260918.gabc1234',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
 
     const cli = report.statuses.find((s) => s.id === 'cli');
@@ -318,7 +368,7 @@ describe('gatherReport — each row resolves its own channel', () => {
       viewDistTags: tagged({ [PLUGIN]: STABLE_AND_BETA, [CODEX_PLUGIN]: STABLE_AND_BETA }),
       installed: new Map(),
       cliInstalled: '0.9.11',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
 
     expect(report.availablePlugins.length).toBeGreaterThan(0);
@@ -336,7 +386,7 @@ describe('gatherReport — each row resolves its own channel', () => {
       viewDistTags: tagged({ [PLUGIN]: STABLE_AND_BETA }),
       installed: new Map([[REF, '0.11.0-beta.2']]),
       cliInstalled: '0.9.11',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
 
     const plugin = report.statuses.find((s) => s.id === 'claude-code');
@@ -351,7 +401,7 @@ describe('gatherReport — each row resolves its own channel', () => {
       viewDistTags: () => null,
       installed: new Map([[REF, '0.11.0-beta.2']]),
       cliInstalled: '0.11.0-beta.2',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
 
     expect(report.statuses.length).toBeGreaterThan(1);
@@ -376,7 +426,7 @@ describe('gatherReport — an explicitly requested CLI channel', () => {
       viewDistTags: tagged({ [CLI]: STABLE_AND_BETA, [PLUGIN]: STABLE_AND_BETA }),
       installed: new Map([[REF, '0.9.11']]),
       cliInstalled: '0.9.12',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
       ...deps,
     }).statuses.find((s) => s.id === 'cli');
 
@@ -413,7 +463,7 @@ describe('gatherReport — an explicitly requested CLI channel', () => {
       viewDistTags: tagged({ [CLI]: STABLE_AND_BETA, [PLUGIN]: STABLE_AND_BETA }),
       installed: new Map([[REF, '0.9.11']]),
       cliInstalled: '0.9.12',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
       cliChannel: RELEASE_CHANNEL.Beta,
     });
 
@@ -481,7 +531,7 @@ describe('gatherReport — exactly one registry read per package', () => {
       viewDistTags: seam,
       installed: new Map([[REF, '0.11.0-beta.2']]),
       cliInstalled: '0.9.11',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
 
     expect(calls).toStrictEqual(EXPECTED_LOOKUPS);
@@ -497,7 +547,7 @@ describe('gatherReport — exactly one registry read per package', () => {
       viewDistTags: seam,
       installed: new Map([[REF, '0.11.0-beta.2']]),
       cliInstalled: '0.11.0-beta.2',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
 
     expect(calls).toStrictEqual(EXPECTED_LOOKUPS);
@@ -512,7 +562,7 @@ describe('gatherReport — exactly one registry read per package', () => {
       viewDistTags: empty.seam,
       installed: new Map(),
       cliInstalled: null,
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
 
     expect(empty.calls).toStrictEqual(EXPECTED_LOOKUPS);
@@ -551,7 +601,7 @@ describe('gatherReport — where a row’s `latest` was resolved from', () => {
       installed: new Map(),
       cliInstalled: '0.9.11',
       cliChannel: channel,
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
 
     const cli = report.statuses.find((s) => s.id === 'cli');
@@ -579,7 +629,7 @@ describe('gatherReport — where a row’s `latest` was resolved from', () => {
       viewDistTags: views({ [CLI]: '0.0.1', [PLUGIN]: '0.9.10' }),
       installed: new Map([[REF, '0.9.8']]),
       cliInstalled: '0.0.1',
-      marketplacePin: () => '0.9.9',
+      marketplacePin: () => ({ version: '0.9.9' }),
     });
 
     const plugin = report.statuses.find((s) => s.id === 'claude-code');
@@ -595,7 +645,7 @@ describe('gatherReport — where a row’s `latest` was resolved from', () => {
       viewDistTags: views({ [CLI]: '0.0.1', [PLUGIN]: '0.9.10' }),
       installed: new Map([[REF, '0.9.8']]),
       cliInstalled: '0.0.1',
-      marketplacePin: () => null,
+      marketplacePin: () => ({ version: null }),
     });
 
     const plugin = report.statuses.find((s) => s.id === 'claude-code');
@@ -605,4 +655,60 @@ describe('gatherReport — where a row’s `latest` was resolved from', () => {
       sourceFor({ [DIST_TAG[RELEASE_CHANNEL.Stable]]: '0.9.10' }, RELEASE_CHANNEL.Stable),
     );
   });
+});
+
+// `channelLatest` is what a caller refusing an explicitly requested GRADUATED
+// channel needs: `latest` on that row is the STABLE version that won the
+// comparison, so without this the channel's own answer is nowhere on the row
+// at all. Read from the same tag map `resolveChannel` was already given, so
+// this costs no second registry request.
+describe('gatherReport — the CLI row’s own channel tag, when the stable graduated past it', () => {
+  it('carries the channel’s own tag beside the stable version that outranks it', () => {
+    const report = gatherReport({
+      viewDistTags: (pkg) => (pkg === CLI ? { latest: '0.12.0', beta: '0.11.0-beta.4' } : null),
+      installed: new Map(),
+      cliInstalled: '0.9.11',
+      cliChannel: RELEASE_CHANNEL.Beta,
+      marketplacePin: () => ({ version: null }),
+    });
+
+    const cli = report.statuses.find((s) => s.id === 'cli');
+    expect(cli?.latestFrom).toBe(RELEASE_TAG_SOURCE.Graduated);
+    expect(cli?.latest).toBe('0.12.0');
+    expect(cli?.channelLatest).toBe('0.11.0-beta.4');
+  });
+
+  it.each([
+    [
+      'the channel’s own tag still leads — Channel, not Graduated',
+      { latest: '0.9.12', beta: '0.11.0-beta.4' },
+      RELEASE_CHANNEL.Beta,
+    ],
+    [
+      'the channel publishes nothing — Unpublished, not Graduated',
+      { latest: '0.9.12' },
+      RELEASE_CHANNEL.Nightly,
+    ],
+    ['no tag map at all — Unknown, not Graduated', null, RELEASE_CHANNEL.Beta],
+    [
+      'the stable channel itself, which can never graduate past its own tag',
+      { latest: '0.9.12' },
+      RELEASE_CHANNEL.Stable,
+    ],
+  ] satisfies [string, DistTags | null, ReleaseChannel][])(
+    'is ABSENT on every other source — %s',
+    (_label, tags, channel) => {
+      const report = gatherReport({
+        viewDistTags: (pkg) => (pkg === CLI ? tags : null),
+        installed: new Map(),
+        cliInstalled: '0.9.11',
+        cliChannel: channel,
+        marketplacePin: () => ({ version: null }),
+      });
+
+      const cli = report.statuses.find((s) => s.id === 'cli');
+      expect(cli?.latestFrom).not.toBe(RELEASE_TAG_SOURCE.Graduated);
+      expect(cli).not.toHaveProperty('channelLatest');
+    },
+  );
 });

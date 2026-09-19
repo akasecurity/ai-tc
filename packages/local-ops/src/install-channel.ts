@@ -211,6 +211,14 @@ function isScoopApp(probe: ChannelProbe, parts: string[], leading: string): bool
   const at = lastRunIndex(parts, ['apps', 'aka']);
   // `apps`, `aka`, a version or `current`, then at least the executable.
   if (at < 1 || parts.length < at + 4) return false;
+  // The segment between the run and the executable is what Scoop's own layout
+  // NAMES it — `current`, or a version starting with a digit. A bare length
+  // check accepts any word there, which is the standalone installer's own
+  // `install.ps1 --dir <…>\apps\aka` layout under a made-up subdirectory: the
+  // `shims` sibling below bounds the impact to a deliberate imitation, but the
+  // segment itself is free to validate and should not read as wildcarded.
+  const versionSegment = parts[at + 2];
+  if (versionSegment !== 'current' && !/^\d/.test(versionSegment ?? '')) return false;
   return probe.exists(join(toPath(parts.slice(0, at), leading), 'shims'));
 }
 

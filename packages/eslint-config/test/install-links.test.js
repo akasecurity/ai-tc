@@ -125,6 +125,40 @@ function brewCommand({ repo, path }) {
 /** The URL `scoop bucket add <name> <url>` names for a bucket's own `TARGET_REPO`. */
 const bucketUrl = ({ repo }) => `https://github.com/${repo}`;
 
+/**
+ * The `scoop bucket add <name> <url>` command a bucket's own `TARGET_REPO`
+ * resolves to — the bucket is added under its owner's name, exactly as the
+ * README does today.
+ */
+const scoopCommand = (target) =>
+  `scoop bucket add ${target.repo.split('/')[0]} ${bucketUrl(target)}`;
+
+/** Every `brew install <owner>/<tap>/<formula>` command a text carries, verbatim. */
+const brewCommands = (text) => [...text.matchAll(/\bbrew install \S+/g)].map((m) => m[0]);
+
+/** Every `scoop bucket add <name> <url>` command a text carries, verbatim. */
+const scoopCommands = (text) => [...text.matchAll(/\bscoop bucket add \S+ \S+/g)].map((m) => m[0]);
+
+/**
+ * Every `raw.githubusercontent.com/.../install.(sh|ps1)` URL a text carries —
+ * the bootstrap one-liners' download target, and nothing else that domain
+ * might be linked for.
+ */
+const rawInstallerUrls = (text) =>
+  [...text.matchAll(/https:\/\/raw\.githubusercontent\.com\/\S+/g)]
+    .map((m) => m[0])
+    .filter((url) => /\/install\.(?:sh|ps1)$/.test(url));
+
+/** The `raw.githubusercontent.com/.../install.(sh|ps1)` URL inside a one-liner command. */
+function rawUrlOf(command, label) {
+  const match = /https:\/\/raw\.githubusercontent\.com\/\S+/.exec(command);
+  expect(
+    match,
+    `install-channel.ts's ${label} carries no raw.githubusercontent.com URL`,
+  ).not.toBeNull();
+  return match[0];
+}
+
 /** Every `<name>` this text links under `releases/download/bin-latest/`. */
 function binLatestLinkedNames(text) {
   return [...text.matchAll(/releases\/download\/bin-latest\/([A-Za-z0-9._-]+)/g)].map((m) => m[1]);
@@ -183,20 +217,33 @@ describe('README install commands agree with the workflow they describe', () => 
   /** @type {string} */
   let BUCKET_URL;
   /** @type {string} */
+  let SCOOP_COMMAND;
+  /** @type {string} */
   let INSTALLER_SH;
   /** @type {string} */
   let INSTALLER_PS1;
+  /** @type {string} */
+  let INSTALLER_SH_URL;
+  /** @type {string} */
+  let INSTALLER_PS1_URL;
   beforeAll(() => {
+    const scoopTarget = publishTarget('publish-scoop-bucket');
     BREW_COMMAND = brewCommand(publishTarget('publish-homebrew-tap'));
-    BUCKET_URL = bucketUrl(publishTarget('publish-scoop-bucket'));
+    BUCKET_URL = bucketUrl(scoopTarget);
+    SCOOP_COMMAND = scoopCommand(scoopTarget);
     const installChannel = readFile(INSTALL_CHANNEL);
     INSTALLER_SH = stringConstant(installChannel, 'INSTALLER_SH');
     INSTALLER_PS1 = stringConstant(installChannel, 'INSTALLER_PS1');
+    INSTALLER_SH_URL = rawUrlOf(INSTALLER_SH, 'INSTALLER_SH');
+    INSTALLER_PS1_URL = rawUrlOf(INSTALLER_PS1, 'INSTALLER_PS1');
   });
 
   it('derives a non-empty brew command and bucket URL (positive control)', () => {
     expect(BREW_COMMAND).not.toBe('');
     expect(BUCKET_URL).not.toBe('');
+    expect(SCOOP_COMMAND).not.toBe('');
+    expect(INSTALLER_SH_URL).not.toBe('');
+    expect(INSTALLER_PS1_URL).not.toBe('');
   });
 
   it.each(README_ENTRIES)(
@@ -230,6 +277,59 @@ describe('README install commands agree with the workflow they describe', () => 
       expect(readFile(path), `${name} does not contain the INSTALLER_PS1 one-liner`).toContain(
         INSTALLER_PS1,
       );
+    },
+  );
+
+  // The four cases above are "is the derived string present somewhere" —
+  // satisfied by a README that keeps a STALE command alongside the current
+  // one, which is exactly the shape a retargeted tap or bucket leaves behind
+  // if only the new spelling is added. Mirrored here in the other direction,
+  // the way the alias-archive case above already reads both ways: every
+  // command of that SHAPE the README carries must be the one the workflow
+  // actually publishes to, not merely include it somewhere.
+  it.each(README_ENTRIES)(
+    '%s names no brew tap other than the one the workflow publishes to',
+    (name, path) => {
+      const commands = brewCommands(readFile(path));
+      expect(
+        commands,
+        `${name} carries no \`brew install\` command at all (positive control)`,
+      ).not.toHaveLength(0);
+      expect(
+        commands.filter((c) => c !== BREW_COMMAND),
+        `${name} carries a \`brew install\` command other than \`${BREW_COMMAND}\``,
+      ).toEqual([]);
+    },
+  );
+
+  it.each(README_ENTRIES)(
+    '%s names no scoop bucket other than the one the workflow publishes to',
+    (name, path) => {
+      const commands = scoopCommands(readFile(path));
+      expect(
+        commands,
+        `${name} carries no \`scoop bucket add\` command at all (positive control)`,
+      ).not.toHaveLength(0);
+      expect(
+        commands.filter((c) => c !== SCOOP_COMMAND),
+        `${name} carries a \`scoop bucket add\` command other than \`${SCOOP_COMMAND}\``,
+      ).toEqual([]);
+    },
+  );
+
+  it.each(README_ENTRIES)(
+    '%s links no raw.githubusercontent.com install script other than the derived ones',
+    (name, path) => {
+      const urls = rawInstallerUrls(readFile(path));
+      expect(
+        urls,
+        `${name} carries no raw.githubusercontent.com install.{sh,ps1} URL at all (positive control)`,
+      ).not.toHaveLength(0);
+      expect(
+        urls.filter((url) => url !== INSTALLER_SH_URL && url !== INSTALLER_PS1_URL),
+        `${name} links a raw.githubusercontent.com install script other than ${INSTALLER_SH_URL} or ` +
+          INSTALLER_PS1_URL,
+      ).toEqual([]);
     },
   );
 });

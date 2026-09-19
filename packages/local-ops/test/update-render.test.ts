@@ -83,6 +83,83 @@ describe('renderReport — the marketplace-pin note', () => {
 });
 
 /**
+ * A RANGE pin is never orderable, so it gets a note UNCONDITIONALLY — unlike
+ * an exact pin, which is only worth explaining when it is behind npm. Without
+ * this the "Latest" column shows npm's own answer beside a status the machine
+ * will never reach that way, and nothing says the version came from npm
+ * rather than from what the host actually resolves the range to.
+ */
+describe('renderReport — the range-pin note', () => {
+  it('notes a range pin even though npmAhead reads false for one', () => {
+    // `npmAhead` is always false on a range row (there is no single pin
+    // version to compare npm against) — the note must not be gated on it.
+    const out = renderReport(
+      report({
+        marketplacePin: {
+          marketplace: 'akasecurity',
+          npmLatest: '0.12.0',
+          npmAhead: false,
+          range: '^0.11.0-beta.0',
+        },
+      }),
+    );
+
+    expect(out).toContain('Pinned by a marketplace');
+    expect(out).toContain('akasecurity');
+    expect(out).toContain('^0.11.0-beta.0');
+    expect(out).toContain('npm has v0.12.0');
+  });
+
+  it('says nothing about npm when there is no npm answer to name', () => {
+    const out = renderReport(
+      report({
+        marketplacePin: {
+          marketplace: 'akasecurity',
+          npmLatest: null,
+          npmAhead: false,
+          range: '^0.11.0-beta.0',
+        },
+      }),
+    );
+
+    expect(out).toContain('^0.11.0-beta.0');
+    expect(out).not.toContain('npm has');
+  });
+
+  it('never prints the exact-pin sentence for a range row', () => {
+    // The two branches of pinNotes must not both fire for one row. `gatherReport`
+    // never actually produces `npmAhead: true` alongside a `range` (npmAhead is
+    // forced false whenever a pin is a range), but this render function does not
+    // itself enforce that invariant — it trusts a `continue` after the range
+    // branch to skip the exact-pin branch. Set every field the exact-pin branch
+    // needs (`npmAhead: true`, a non-null `latest`, a non-null `npmLatest`) so a
+    // dropped `continue` produces a second, visibly wrong note rather than
+    // silently agreeing with a fixture that happened not to reach it.
+    const out = renderReport(
+      report({
+        latest: '0.9.9',
+        marketplacePin: {
+          marketplace: 'akasecurity',
+          npmLatest: '0.12.0',
+          npmAhead: true,
+          range: '^0.11.0-beta.0',
+        },
+      }),
+    );
+
+    expect(out).toContain('^0.11.0-beta.0');
+    expect(out).not.toContain('cannot install until that');
+    // The stronger form of the same assertion: a dropped `continue` pushes a
+    // SECOND note for this row (the exact-pin branch, alongside the range
+    // one) rather than merely mentioning the exact-pin sentence — count the
+    // row's own note lines directly instead of `.not.toContain`ing one string
+    // the exact-pin branch happens to use.
+    const rowNotes = out.split('\n').filter((line) => line.includes('Claude Code plugin:'));
+    expect(rowNotes).toHaveLength(1);
+  });
+});
+
+/**
  * The release channel a row's versions were resolved against.
  *
  * Shown only when it is not stable. A column repeating `stable` on every row of

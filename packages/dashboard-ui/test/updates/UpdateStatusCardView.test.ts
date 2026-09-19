@@ -67,6 +67,27 @@ describe('UpdateStatusCardView — the marketplace-pin note', () => {
     expect(render(status({ marketplacePin }))).not.toContain(NOTE);
   });
 
+  // A range is not orderable against npm, so `npmAhead` is false for one — and
+  // the exact-pin rule above would say nothing while the row shows npm's answer
+  // beside a status the host, resolving within the range, may never reach.
+  it('explains a range pin, naming the range and the marketplace', () => {
+    const html = render(
+      status({
+        marketplacePin: {
+          marketplace: 'akasecurity',
+          npmLatest: '0.12.0',
+          npmAhead: false,
+          range: '^0.11.0-beta.0',
+        },
+      }),
+    );
+
+    expect(html).toContain(NOTE);
+    expect(html).toContain('^0.11.0-beta.0');
+    expect(html).toContain('akasecurity');
+    expect(html).toContain('0.12.0');
+  });
+
   it('says nothing when there is no pin', () => {
     expect(render(status())).not.toContain(NOTE);
   });

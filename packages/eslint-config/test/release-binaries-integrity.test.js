@@ -465,6 +465,45 @@ describe('the release job attests the assets it publishes', () => {
     );
     expect(block[1]).not.toMatch(/:[^\S\n]*write/);
   });
+
+  // The union above sees only `softprops/action-gh-release` steps, so a
+  // release cut any OTHER way contributes to neither list and ships with no
+  // provenance while the equality between them stays green. A `run:` script
+  // calling `gh release` directly, or `gh api` against a releases endpoint,
+  // is exactly that: it publishes bytes this attestation never learns about.
+  it('publishes a Release only through the pinned action, never a bare gh call', () => {
+    const job = releaseJob();
+
+    for (const script of runBlocksOf(job)) {
+      expect(script, 'a run: block in the release job calls gh release directly').not.toMatch(
+        /\bgh release\b/,
+      );
+      expect(
+        script,
+        'a run: block in the release job calls gh api against a releases endpoint',
+      ).not.toMatch(/\bgh api\b[^\n]*\breleases\b/);
+    }
+  });
+
+  // And the other direction: a step that carries its own `files:` block scalar
+  // is claiming to publish a set of assets. `releasePublishSteps` only reads
+  // that claim from a PINNED softprops step, so an unpinned or hand-rolled
+  // step with the same shaped input is invisible to the union above and would
+  // ship whatever it names with no provenance at all.
+  it('every files: block in the release job belongs to a pinned action-gh-release step', () => {
+    const job = releaseJob();
+    const withFiles = steps(job).filter((step) => /^[^\S\n]*files: \|[^\S\n]*$/m.test(step));
+
+    expect(withFiles.length, 'no step in the release job carries a files: block').toBeGreaterThan(
+      0,
+    );
+    for (const step of withFiles) {
+      expect(
+        step,
+        'a files: block belongs to a step that is not the pinned action-gh-release action',
+      ).toMatch(PINNED_RELEASE_ACTION);
+    }
+  });
 });
 
 // A tag the channel accepts, and the ones it must not.
@@ -731,6 +770,17 @@ describe('the packaged binary is stripped before the blob is injected', () => {
     const source = readPackageSea();
     expect(soleIndexOf(source, "'--remove-signature'", 'package-sea.mjs')).toBeLessThan(
       soleIndexOf(source, 'await inject(', 'package-sea.mjs'),
+    );
+  });
+
+  // The other half of the macOS order: injecting invalidates any signature, so
+  // the ad-hoc re-sign has to come after the inject, not before it — the tidy-up
+  // this file's header names as the move to fear, since a reader expects both
+  // signing calls to live together.
+  it('injects before the macOS ad-hoc re-sign, not after', () => {
+    const source = readPackageSea();
+    expect(soleIndexOf(source, 'await inject(', 'package-sea.mjs')).toBeLessThan(
+      soleIndexOf(source, "['--sign', '-'", 'package-sea.mjs'),
     );
   });
 
@@ -1639,12 +1689,45 @@ describe('bin-latest only moves forward', () => {
     const order = [
       at('- name: Decide whether bin-latest moves forward'),
       at('- name: Point bin-latest at this release'),
+      at('- name: Explain a bin-latest move that lost a race'),
       at('- name: Publish the rolling bin-latest release'),
       at('- name: Explain a bin-latest left half-published'),
       at('- uses: actions/upload-artifact@'),
     ];
 
     expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
+  // The CAS loser: the move step's own push was rejected because a peer's
+  // push landed first. That peer's Release has already published by the time
+  // this one runs (the versioned `Create GitHub Release` step sits above the
+  // move), so nothing here should retry the push — only name the repair.
+  it('explains a bin-latest move that lost a race, gated to the move step failing', () => {
+    const step = stepNamed(releaseJob(), 'Explain a bin-latest move that lost a race');
+
+    expect(soleIfCondition(step, 'the explanation step')).toBe(
+      "failure() && steps.move.outcome == 'failure'",
+    );
+    const script = blockScalarText(step, 'run');
+    expect(script).toMatch(/^echo "::error::/m);
+    expect(script, 'does not say the tag is already published').toContain('own GitHub Release');
+    expect(script, 'does not name what is still stale').toContain('package managers');
+    expect(script, 'does not name the repair').toMatch(/re-run/i);
+    // No retry loop: the fix is a re-run of the whole workflow, not another
+    // push from inside this step.
+    expect(script, 'retries the push instead of naming the repair').not.toContain('git push');
+  });
+
+  // Distinguished from its sibling explainer, which fires on the OTHER half of
+  // this same push: a step that fired on both conditions at once would leave
+  // either gate free to drift into the other's territory unnoticed.
+  it('fires on a different condition than the half-published explainer', () => {
+    const race = stepNamed(releaseJob(), 'Explain a bin-latest move that lost a race');
+    const halfPublished = stepNamed(releaseJob(), 'Explain a bin-latest left half-published');
+
+    expect(soleIfCondition(race, 'the race explainer')).not.toBe(
+      soleIfCondition(halfPublished, 'the half-published explainer'),
+    );
   });
 
   // The tag moves first and the assets follow one upload at a time, so the
@@ -2028,7 +2111,7 @@ describe.each(PUBLISH_JOBS)('$id writes through the contents API', (target) => {
   // reported by a green job.
   it('fails when the write itself is refused', (ctx) => {
     requireTools(ctx, TOOLS);
-    const { pushed, status, calls } = runPush(target, {
+    const { pushed, status, stdout, calls } = runPush(target, {
       mode: 'found',
       remote: '# an older render\n',
       rejectPut: true,
@@ -2037,6 +2120,33 @@ describe.each(PUBLISH_JOBS)('$id writes through the contents API', (target) => {
     expect(calls, 'the fixture never reached the write').toContain('PUT ');
     expect(pushed, 'a refused write was reported as a published manifest').toBe(false);
     expect(status, 'the script ended some way other than a non-zero exit').toBeGreaterThan(0);
+    expect(stdout).toMatch(/::error::/);
+    expect(stdout, 'the refusal does not name the repair').toMatch(/re-run/i);
+  });
+
+  // A non-empty existing file that names no versioned download URL — hand
+  // edited, or written by something other than this renderer — has nothing
+  // in it for the forward-only check to compare against. Refusing outright
+  // would fail closed on a legitimate first write to a hand-seeded repo, so
+  // this warns and proceeds rather than either silently keeping or silently
+  // overwriting it.
+  it('warns and still writes when the existing file names no comparable version', (ctx) => {
+    requireTools(ctx, TOOLS);
+    const { pushed, status, stdout, calls, rendered } = runPush(target, {
+      mode: 'found',
+      remote: '# a hand-edited file with no download URL in it\n',
+    });
+
+    expect(pushed, `the push exited ${status}:\n${stdout}`).toBe(true);
+    expect(stdout).toMatch(/::warning::/);
+    expect(stdout, 'the warning does not say the version could not be compared').toMatch(
+      /version could not be compared/,
+    );
+    expect(stdout, 'the warning does not name the file it is about').toContain(target.path);
+    expect(calls, 'nothing was written').toContain('PUT ');
+    expect(calls, 'the PUT carries something other than the rendered file').toContain(
+      contentField(rendered),
+    );
   });
 
   // A re-run after a transient failure must not add a commit that changes

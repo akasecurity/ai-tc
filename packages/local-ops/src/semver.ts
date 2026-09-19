@@ -38,7 +38,20 @@ export function isSemver(version: string): boolean {
   return parse(version) !== null;
 }
 
+// npm's own ceiling on a package version string. A version this predicate has
+// already refused on shape still needs a length bound: `1.0.0-` followed by a
+// megabyte of `a` is untrimmed, single-token, shell-metacharacter-free text
+// that would otherwise cross into a spawn's argv whole.
+const MAX_VERSION_LENGTH = 256;
+
 // Is `version` EXACTLY a version this grammar accepts, with nothing around it?
+//
+// TOTAL: the parameter is `unknown` rather than `string`, and `typeof` is the
+// first check, so a value that merely arrived typed as `string` — a cache file
+// read with `JSON.parse` and cast rather than validated, say — is REFUSED
+// rather than handed to `.trim()` and thrown on. A predicate meant to stand in
+// front of a spawn cannot itself take a process down on a value it was
+// supposed to be the thing refusing.
 //
 // `isSemver` trims first, so ` 1.0.0 ` and `1.0.0\n` pass it. That is harmless
 // for a comparison and not harmless for a string that becomes a child process's
@@ -49,13 +62,19 @@ export function isSemver(version: string): boolean {
 //
 // What survives it is digits, dots and the prerelease alphabet `[0-9A-Za-z-.]`,
 // which holds no shell metacharacter, no whitespace and no leading dash npm
-// would read as a flag.
+// would read as a flag — bounded at npm's own 256-character limit, so nothing
+// unbounded reaches argv even though that alphabet alone has no ceiling.
 //
 // Derived from the same `parse` rather than written as a second regex: a
 // private copy is free to accept a form the comparator rejects, and a spec
 // built from one would reach npm as a version nothing publishes.
-export function isExactSemver(version: string): boolean {
-  return version === version.trim() && isSemver(version);
+export function isExactSemver(version: unknown): version is string {
+  return (
+    typeof version === 'string' &&
+    version.length <= MAX_VERSION_LENGTH &&
+    version === version.trim() &&
+    isSemver(version)
+  );
 }
 
 // The prerelease identifiers of `version`, or `[]` for a release AND for

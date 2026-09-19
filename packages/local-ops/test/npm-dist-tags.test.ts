@@ -64,6 +64,16 @@ describe('npmViewDistTags — what it accepts', () => {
     const { capture } = capturing(ok('npm warn Unknown project config\n{"latest":"0.9.12"}'));
     expect(npmViewDistTags(PKG, capture)).toStrictEqual({ latest: '0.9.12' });
   });
+
+  it('tolerates a warning line that itself carries a brace before the payload', () => {
+    // A byte-scan for the first `{` anywhere in stdout lands inside this
+    // warning's own brace and never reaches the payload at all — the case a
+    // line-leading search is what closes.
+    const { capture } = capturing(
+      ok('npm warn using --force Recommended protections disabled. {config}\n{"latest":"1.0.0"}\n'),
+    );
+    expect(npmViewDistTags(PKG, capture)).toStrictEqual({ latest: '1.0.0' });
+  });
 });
 
 describe('npmViewDistTags — what it refuses', () => {

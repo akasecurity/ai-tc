@@ -122,6 +122,14 @@ export interface ComponentStatus {
   // absent value therefore means "not resolved from a dist-tag", never
   // "resolved from the channel's own".
   latestFrom?: ReleaseTagSource;
+  // Present only when `latestFrom` is `graduated`: the version `channel`'s OWN
+  // dist-tag was serving before the stable release overtook it. `latest`
+  // above is the stable version that won the comparison, so this is the only
+  // place the channel's own answer survives — which is what a caller refusing
+  // an explicitly requested graduated channel needs to say what that line
+  // actually publishes, rather than naming only the stable version that
+  // displaced it.
+  channelLatest?: string;
 }
 
 // Where a pinned `latest` came from, and what npm said instead.
@@ -138,8 +146,16 @@ export interface MarketplacePin {
   // path. Computed where semver comparison already lives rather than in each
   // renderer: `@akasecurity/dashboard-ui` may not import `local-ops` at all, so
   // a view deriving this would either cross a package wall or carry a second
-  // comparator that could disagree with the first.
+  // comparator that could disagree with the first. Always false when `range`
+  // below is set — a range is not a single version to compare npm against.
   npmAhead: boolean;
+  // The manifest's own text when the pin is a semver RANGE (`^2.0.0`) or a
+  // dist-tag (`beta`) rather than an exact version — present only then. Those
+  // are not values this report can compare against npm's answer, so they are
+  // carried as evidence for a note rather than silently read as "no pin",
+  // which is what let a row offer npm's own latest as an update the host,
+  // resolving within the range, would never actually install.
+  range?: string;
 }
 
 // An available agent plugin the user has NOT installed yet — surfaced so they

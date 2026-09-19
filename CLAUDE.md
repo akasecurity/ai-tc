@@ -654,9 +654,16 @@ takes `platform` and a resolution seam the way `judgeEnv`/`writeCommandShim` tak
 - `packages/local-ops/src/exec.ts` carries `USE_SHELL` **and** the `homedir()` anchor, so it has
   both halves of the cwd defence — but no quoting and no refusal, so on the shell path Node
   concatenates its argv unescaped exactly as DEP0190 describes. It is not exploitable today, and
-  the reason is written into `apply.ts`: the only `npm` argument is the `CLI_PACKAGE` constant,
-  and plugin arguments are refs resolved from the static `AGENT_PLUGINS` registry. That is a
-  **hand-maintained invariant in a comment** — the precise class this module converts into a
+  the reasons now differ per argument. The CLI update's npm argv is no longer built entirely from
+  the `CLI_PACKAGE` constant: it also carries a REGISTRY-SUPPLIED version — an update report's
+  resolved answer for a channel, which `npm view` supplied. That version crosses only through
+  `isExactSemver` inside `cliInstallSpec`, which is TOTAL (a non-string is refused rather than
+  thrown on), refuses anything over npm's own 256-character limit, and admits no whitespace and no
+  shell metacharacter — so nothing that reaches this argv can break out of the unescaped
+  concatenation, and anything the check refuses falls back to a dist-tag from the closed
+  `DIST_TAG` table instead. Plugin arguments are still refs resolved from the static
+  `AGENT_PLUGINS` registry after validating the caller-supplied id against it — that half remains
+  a **hand-maintained invariant in a comment**, the precise class this module converts into a
   structural one everywhere else — and `local-ops` already depends on `@akasecurity/plugin-sdk`,
   so routing it through `planBareCommand` is available rather than blocked by a package wall.
   Migrating it is tracked separately.
@@ -1451,11 +1458,18 @@ keys, never re-listed.
 target: a plugin's channel is its host's marketplace registration, which this process cannot
 change, so the flag is refused outright for a plugin target. The token is parsed against the
 closed union BEFORE any spawn, because the Windows shell path concatenates argv unescaped (§7).
-An explicitly requested channel that serves NO tag is refused before the report is rendered,
-before any confirmation and before any spawn — rendering first would print the stable version
-beside the requested channel's name, which is the sentence a user acts on. The derived path
-keeps its fallback to `latest`, which is intended: a beta machine whose tag has been retired is
-still offered the stable. The binary and Homebrew installs cannot express a channel and say so.
+An explicitly requested channel is refused before the report is rendered, before any
+confirmation and before any spawn, in either of two registry states — rendering first would
+print the stable version beside the requested channel's name, which is the sentence a user acts
+on in both. `Unpublished` is a channel that serves NO tag at all. `Graduated` is the other:
+the channel HAD a tag, but the stable release has since overtaken it, so `resolveChannel`
+answers the request with the stable version rather than one the requested line ever published —
+`resolveChannel({latest:'0.12.0',beta:'0.11.0-beta.4'},'beta')` answers `{version:'0.12.0',
+source:'graduated'}`, and unrefused that renders as `aka CLI: 0.9.11 → 0.12.0 (beta)`, a stable
+release captioned with a channel name it never carried. The derived path keeps its fallback to
+`latest` on BOTH states, which is intended: a beta machine whose tag has been retired, or that
+has already graduated onto stable, must still be offered the stable rather than refused for a
+request nobody made. The binary and Homebrew installs cannot express a channel and say so.
 A standalone binary's plan names WHO manages it: `SEA_OWNER` (Homebrew / Scoop / Standalone,
 `install-channel.ts`) is derived from the running executable's real path — a brew-prefix-anchored
 `Cellar/aka/` keg is Homebrew (`brew upgrade aka`); an `apps/aka/<version or current>/` run is
@@ -1559,7 +1573,13 @@ release channel** from the `cli-v*` npm publish:
   lease does not cover is two releases whose rolling UPLOADS overlap after both moved the tag in
   turn; the tag cannot go backward, the assets can end up mixed, and re-running the newer
   release's job makes them whole. A failure after the tag moved is named in the log by
-  `Explain a bin-latest left half-published`.
+  `Explain a bin-latest left half-published`. The CAS loser is the other half of the same race:
+  by the time its lease is rejected, its OWN versioned Release has already published (the
+  `Create GitHub Release` step runs before the move), so it ends with a real Release on a version
+  that `bin-latest`, the rolling release and both package managers do not yet serve.
+  `Explain a bin-latest move that lost a race` names that case in the log with no retry loop —
+  the repair is re-running this tag's whole workflow, which re-reads the tag from scratch and
+  only ever moves forward, so a newer winner makes the re-run a no-op.
 - **Package managers.** Two jobs after `release`, `publish-homebrew-tap` and
   `publish-scoop-bucket`, push the rendered `Formula/aka.rb` to `akasecurity/homebrew-tap` and
   `bucket/aka.json` to `akasecurity/scoop-bucket` through the contents API, with a fine-grained
@@ -1574,7 +1594,13 @@ release channel** from the `cli-v*` npm publish:
   makes a no-op. A fork skips. Each push only moves forward as well: the version already there is
   read off its versioned download URL, which both formats carry, and a file serving a newer one is
   left in place — so re-running an older release, or this job alone, cannot downgrade the tap or
-  the bucket. The formula
+  the bucket. A non-empty existing file that names no such URL at all — hand-edited, or written by
+  something other than this renderer — has nothing in it to compare against, so the push
+  `::warning::`s and still writes rather than either silently keeping it or silently overwriting
+  it. And the write itself is wrapped: a PUT the contents API refuses (two releases racing the
+  same file, say) ends the step with an `::error::` naming the repair — re-run this job, which
+  re-reads the file and leaves a newer one alone — instead of the script's own success line. The
+  formula
   installs the whole archive directory into `libexec` and symlinks `bin/aka` (Node resolves
   `process.execPath` through the symlink, which is how `boot.cjs` still finds its sidecars);
   `brew install ./aka.rb` from the attached copy is refused by current Homebrew, so the attached

@@ -405,7 +405,14 @@ does work.
 `bin-latest`, the tap and the bucket only move forward. Pushing an older `bin-v*` tag after a
 newer one, or re-running an older release, still cuts that version's own GitHub Release but leaves
 all three on the newer version. If a run fails after it moved `bin-latest` — the job log says so
-— re-run it: the same version is let through and every rolling asset is overwritten.
+— re-run it: the same version is let through and every rolling asset is overwritten. Two releases
+finishing close together can also make the SLOWER one lose the race to move `bin-latest` itself,
+even though its own GitHub Release has already published by then — the job log names that case too
+(`Explain a bin-latest move that lost a race`), and the repair is the same re-run, which is a
+no-op if the winner turns out to be newer. Each tap/bucket push only warns, rather than refusing
+outright, when the file it finds has nothing in it to compare a version against; and a write the
+contents API rejects fails the job with an error naming the same re-run repair, rather than a
+green run that quietly published nothing.
 
 Before the first release that publishes them, once:
 

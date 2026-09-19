@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { REPO_ROOT, trackedFiles } from './lint-invocations.js';
+import { dropComments } from './workflow.js';
 
 // The ONE reader of the release workflows, shared by the suites next to it for
 // the reason the lint-invocation walk is one: two readers of the same YAML are
@@ -117,6 +118,21 @@ export function shellVariableOf(token) {
 const PUBLISH = /pnpm\s+--filter\s+(\S+)\s+publish\b[^\n]*/g;
 
 /**
+ * Every `PUBLISH` match in a slice of text, comments dropped first.
+ *
+ * A line that comments a publish out is still `pnpm --filter <name> publish
+ * --tag $DIST_TAG` as far as a regex with no notion of `#` is concerned, so
+ * both readers below route it under a `case` block and report it as shipping —
+ * while the workflow runs nothing. Routing through `dropComments` first is
+ * what keeps a remark ABOUT a publish from reading as one.
+ * @param {string} text
+ * @returns {RegExpMatchArray[]}
+ */
+function publishMatches(text) {
+  return [...dropComments(text).matchAll(PUBLISH)];
+}
+
+/**
  * Every publish invocation across the tracked release workflows, ordered by
  * workflow path and then by position within it, so a failure names a stable
  * coordinate whatever order the filesystem hands the files back in.
@@ -136,7 +152,7 @@ export function publishSteps() {
     for (const step of stepSlices(source)) {
       const nameMatch = /^ {6}- name:[^\S\n]*(.*)$/m.exec(step);
       const name = nameMatch ? nameMatch[1].trim() : '';
-      for (const publish of step.matchAll(PUBLISH)) {
+      for (const publish of publishMatches(step)) {
         const command = publish[0];
         const tagMatch = /--tag\s+(\S+)/.exec(command);
         const tagVariable = tagMatch ? shellVariableOf(tagMatch[1]) : undefined;
@@ -171,7 +187,7 @@ export function publishSteps() {
  * @param {string} source the workflow file's text
  * @returns {string[]}
  */
-export const publishCommands = (source) => [...source.matchAll(PUBLISH)].map((m) => m[0]);
+export const publishCommands = (source) => publishMatches(source).map((m) => m[0]);
 
 /**
  * Each tracked release workflow with the publish invocations its text carries.

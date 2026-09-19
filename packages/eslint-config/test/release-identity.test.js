@@ -77,7 +77,9 @@ const readJson = (rel) => JSON.parse(readFileSync(join(REPO_ROOT, rel), 'utf8'))
  */
 
 /**
- * Every object literal in a `const <name> = [ … ]` array, read from the source.
+ * Every object literal in a `const <name> = [ … ]` array, read from source
+ * TEXT rather than a file — so the classifier below can be driven with a
+ * fixture as well as with the real registry.
  *
  * Parsed rather than imported, deliberately: this package is a leaf that
  * nothing in the workspace may depend on, so it cannot take `@akasecurity/local-ops`
@@ -85,13 +87,22 @@ const readJson = (rel) => JSON.parse(readFileSync(join(REPO_ROOT, rel), 'utf8'))
  * rather than its behaviour, so an entry cannot be assembled at import time in a
  * way that hides a missing coordinate from the audit.
  *
- * @param {string} rel repo-relative path
+ * Every member of every entry must be a plain `key: value` assignment with an
+ * identifier name. A spread, a shorthand, a computed name, a method or an
+ * accessor is not one, and skipping it silently is exactly what would hide a
+ * live coordinate from this audit: `has(entry, 'pluginName')` reads `false`
+ * for a `pluginName` that arrived through `...ref`, which the "all present or
+ * all absent" case downstream then reads as "all absent" rather than as
+ * "unreadable". An entry this parser cannot classify is one it cannot vouch
+ * for, so it throws instead.
+ *
+ * @param {string} source the file's text
+ * @param {string} label repo-relative path, for the error message
  * @param {string} name the declared const
  * @returns {Record<string, Prop>[]}
  */
-function objectArrayConst(rel, name) {
-  const source = readFileSync(join(REPO_ROOT, rel), 'utf8');
-  const sf = ts.createSourceFile(rel, source, ts.ScriptTarget.Latest, true);
+function parseObjectArrayConst(source, label, name) {
+  const sf = ts.createSourceFile(label, source, ts.ScriptTarget.Latest, true);
   /** @type {import('typescript').ArrayLiteralExpression | undefined} */
   let array;
   /** @param {import('typescript').Node} node */
@@ -108,7 +119,7 @@ function objectArrayConst(rel, name) {
   visit(sf);
   if (!array) {
     throw new Error(
-      `${rel} no longer declares \`${name}\` as an array literal. This guard parses that file ` +
+      `${label} no longer declares \`${name}\` as an array literal. This guard parses that file ` +
         'rather than importing it, so the declaration shape is part of what it depends on — ' +
         'building the array at runtime would put every coordinate below out of its reach.',
     );
@@ -117,7 +128,14 @@ function objectArrayConst(rel, name) {
     /** @type {Record<string, Prop>} */
     const props = {};
     for (const property of object.properties) {
-      if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)) continue;
+      if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name)) {
+        throw new Error(
+          `${label} declares a \`${name}\` entry with a ${ts.SyntaxKind[property.kind]} member — ` +
+            'not a plain `key: value` assignment. This audit reads coordinates by key presence, so ' +
+            'a member it cannot classify this way is one it cannot vouch for: spell it as ' +
+            '`key: value` or teach this parser the new shape.',
+        );
+      }
       const init = property.initializer;
       props[property.name.text] = {
         present: true,
@@ -133,6 +151,16 @@ function objectArrayConst(rel, name) {
     }
     return props;
   });
+}
+
+/**
+ * The file-reading half of {@link parseObjectArrayConst}.
+ * @param {string} rel repo-relative path
+ * @param {string} name the declared const
+ * @returns {Record<string, Prop>[]}
+ */
+function objectArrayConst(rel, name) {
+  return parseObjectArrayConst(readFileSync(join(REPO_ROOT, rel), 'utf8'), rel, name);
 }
 
 const ENTRIES = objectArrayConst(REGISTRY, 'AGENT_PLUGINS');
@@ -202,6 +230,38 @@ describe('the release-identity audit finds what it audits', () => {
     ).toBeGreaterThan(0);
     expect(PUBLISHABLE.length, 'no workspace package is publishable').toBeGreaterThan(0);
     expect(PLUGIN_PACKAGES.length, 'no plugins/* workspace package').toBeGreaterThan(0);
+  });
+});
+
+describe('the coordinate parser fails loudly on a member it cannot classify', () => {
+  const NAME = 'AGENT_PLUGINS';
+  const LABEL = 'fixture.ts';
+  /** A one-entry `AGENT_PLUGINS` array carrying the given member alongside `id`. */
+  const source = (member) =>
+    `export const ${NAME} = [\n  {\n    id: 'fixture',\n    ${member}\n  },\n];\n`;
+
+  // Wrapping live coordinates in a spread leaves `has(entry, 'pluginName')`
+  // reading `false` for a key the entry actually carries, so the "all present
+  // or all absent" case downstream is satisfied by "all absent" — a plugin can
+  // ship a working install ref while this audit reports it as having none. A
+  // shorthand, a computed name, a method and a getter are the same defect by a
+  // different route: none of them is a `PropertyAssignment` with an
+  // `Identifier` name, so a parser that silently drops what it cannot
+  // classify drops all of them the same way.
+  it.for([
+    ['a spread', "...{ pluginName: 'aka-x', marketplace: 'ai-tc', cliBin: 'agy' },"],
+    ['a shorthand', 'pluginName,'],
+    ['a computed name', "['plugin' + 'Name']: 'aka-x',"],
+    ['a method', "pluginName() { return 'aka-x'; },"],
+    ['a getter', "get pluginName() { return 'aka-x'; },"],
+  ])('%s member throws rather than being silently skipped', ([, member]) => {
+    expect(() => parseObjectArrayConst(source(member), LABEL, NAME)).toThrow(
+      /not a plain `key: value` assignment/,
+    );
+  });
+
+  it('a plain key: value member does not throw (positive control)', () => {
+    expect(() => parseObjectArrayConst(source("pluginName: 'aka-x',"), LABEL, NAME)).not.toThrow();
   });
 });
 

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { AgentPlugin } from './registry.ts';
 // `semver.ts` imports nothing from this module, so reaching for it here keeps
 // the LEAF property the header below protects.
-import { isSemver } from './semver.ts';
+import { isExactSemver } from './semver.ts';
 
 // What the HOST will actually install, read from the marketplace manifest it
 // resolved — as distinct from what npm has published.
@@ -63,15 +63,36 @@ function marketplaceRoot(claudeHome: string, marketplace: string): string | null
 }
 
 /**
- * The version a marketplace manifest pins an agent's plugin to, or null.
+ * What a marketplace manifest's `source.version` field decides.
  *
- * Null covers every way this can fail to produce an ANSWER — the agent is not
- * hosted by Claude Code, it carries no marketplace coordinates, the marketplace
- * is not registered, the manifest is absent or damaged, the plugin is not
- * listed, or its entry carries no version. That is deliberate rather than lazy:
- * an entry with no pin is the shape a `github` or `git-subdir` source really
- * has, and for those the host does follow the published head, so npm's latest is
- * the right answer and the caller falls back to it.
+ * `version` is the comparable answer — orderable against npm's own latest,
+ * and what a caller installs. `range` is EVIDENCE rather than a comparable
+ * value: present only when the manifest names something a report cannot
+ * compare (a semver RANGE such as `^2.0.0`, or a dist-tag) — `version` is then
+ * null, and a null `version` with no `range` means there is no pin at all.
+ * Collapsing "a range" into "no pin" was the defect: a bounded range that
+ * excludes npm's latest then read as unpinned, offered npm's answer as an
+ * update, and re-nagged on every run once the host installed within the
+ * range instead.
+ */
+export interface MarketplacePinLookup {
+  version: string | null;
+  range?: string;
+}
+
+const NO_PIN: MarketplacePinLookup = { version: null };
+
+/**
+ * What a marketplace manifest pins an agent's plugin to.
+ *
+ * `{ version: null }` covers every way this can fail to produce an ANSWER —
+ * the agent is not hosted by Claude Code, it carries no marketplace
+ * coordinates, the marketplace is not registered, the manifest is absent or
+ * damaged, the plugin is not listed, or its entry carries no version (or an
+ * empty one). That is deliberate rather than lazy: an entry with no pin is the
+ * shape a `github` or `git-subdir` source really has, and for those the host
+ * does follow the published head, so npm's latest is the right answer and the
+ * caller falls back to it.
  *
  * THE HOST CHECK IS HERE rather than at the call sites, and that is the whole
  * reason this takes an agent instead of two strings. Everything below reads
@@ -85,29 +106,33 @@ function marketplaceRoot(claudeHome: string, marketplace: string): string | null
 export function marketplacePinnedVersion(
   agent: AgentPlugin,
   claudeHome: string = join(homedir(), '.claude'),
-): string | null {
-  if (agent.cliBin !== 'claude') return null;
+): MarketplacePinLookup {
+  if (agent.cliBin !== 'claude') return NO_PIN;
   const { marketplace, pluginName } = agent;
-  if (marketplace === undefined || pluginName === undefined) return null;
+  if (marketplace === undefined || pluginName === undefined) return NO_PIN;
   const root = marketplaceRoot(claudeHome, marketplace);
-  if (root === null) return null;
+  if (root === null) return NO_PIN;
   const manifest = readJson(join(root, '.claude-plugin', 'marketplace.json'));
-  if (!isRecord(manifest) || !Array.isArray(manifest.plugins)) return null;
+  if (!isRecord(manifest) || !Array.isArray(manifest.plugins)) return NO_PIN;
   const entry = manifest.plugins.find(
     (candidate): candidate is Record<string, unknown> =>
       isRecord(candidate) && candidate.name === pluginName,
   );
-  if (entry === undefined || !isRecord(entry.source)) return null;
+  if (entry === undefined || !isRecord(entry.source)) return NO_PIN;
   const version = entry.source.version;
-  // An EXACT version only. A `version` field may also carry a RANGE (`^2.0.0`)
-  // or a dist-tag, and neither is something this report can compare:
-  // compareSemver returns 0 for anything it cannot parse, so a range was
-  // reported as `Latest: ^0.11.0-beta.0` with `updateAvailable` false for ever
-  // — a row that can never move and never says why.
+  if (typeof version !== 'string' || version.trim() === '') return NO_PIN;
+  // An EXACT version is the comparable answer. `isExactSemver` — not the
+  // looser `isSemver`, which trims — because a padded pin (` 0.9.12 `) is not
+  // usable as-is either: it is the same "not a single orderable version" case
+  // as a range, carried as evidence rather than silently trimmed and accepted.
   //
-  // Refusing falls the caller back to the npm answer for the channel this
-  // machine follows, which is the version the host will really resolve such a
-  // pin to. So the refusal is what makes a non-exact pin usable rather than
-  // freezing the row.
-  return typeof version === 'string' && isSemver(version) ? version : null;
+  // Anything else is a RANGE (`^2.0.0`, `~1.2.3`) or a dist-tag (`beta`,
+  // `latest`), and neither is something this report can compare:
+  // compareSemver returns 0 for anything it cannot parse, so a range used to
+  // be reported as `Latest: ^0.11.0-beta.0` with `updateAvailable` false for
+  // ever — a row that could never move and never said why. Carrying it as
+  // `range` instead lets the caller explain the pin rather than mistake it for
+  // none at all — which is what let the row offer npm's own latest as an
+  // update a host resolving within the range would never install.
+  return isExactSemver(version) ? { version } : { version: null, range: version };
 }

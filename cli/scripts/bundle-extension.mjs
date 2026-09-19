@@ -12,6 +12,8 @@ import { cpSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { manifestVersionFields } from '@akasecurity/plugin-browser-extension/src/packaging/store-zip.ts';
+
 const cliDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = resolve(cliDir, '..');
 const extensionDir = join(repoRoot, 'plugins', 'browser-extension');
@@ -47,9 +49,11 @@ cpSync(distSrc, extensionDest, { recursive: true });
 // Chrome's `version` takes no pre-release suffix, so a suffixed package version
 // is built as its numeric core in `version` plus the whole string in
 // `version_name`. Both halves are checked: the whole string must be the CLI's,
-// and `version` must be that string's core.
+// and `version` must be that string's core — read through `manifestVersionFields`,
+// the one place that split lives, so this check and the build it verifies
+// cannot disagree about what "bare" means.
 const cliVersion = JSON.parse(readFileSync(join(cliDir, 'package.json'), 'utf8')).version;
-const cliCore = cliVersion.split(/[-+]/, 1)[0];
+const cliCore = manifestVersionFields(cliVersion).version;
 const bundledManifestPath = join(extensionDest, 'manifest.json');
 const bundledManifest = JSON.parse(readFileSync(bundledManifestPath, 'utf8'));
 const bundledVersion = bundledManifest.version_name ?? bundledManifest.version;

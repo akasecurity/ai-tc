@@ -10,9 +10,11 @@ import type {
   ReleaseChannel,
   UpdateReport,
 } from '@akasecurity/schema';
+import { DIST_TAG, RELEASE_TAG_SOURCE } from '@akasecurity/schema';
 
 import type { RunResult } from './exec.ts';
 import { runCapture } from './exec.ts';
+import type { MarketplacePinLookup } from './marketplace-manifest.ts';
 import { marketplacePinnedVersion } from './marketplace-manifest.ts';
 import { AGENT_PLUGINS, type AgentPlugin, pluginRef } from './registry.ts';
 import { channelOfVersion, resolveChannel } from './release-channel.ts';
@@ -47,15 +49,19 @@ export interface ReportDeps {
   installed: Map<string, string>;
   cliInstalled: string | null;
   // What the HOST would install for this agent, from the marketplace manifest
-  // it resolved — null when no pin applies and npm's latest is the right
-  // answer. See marketplace-manifest.ts for why the two can differ.
+  // it resolved — `{ version: null }` when no pin applies and npm's latest is
+  // the right answer. See marketplace-manifest.ts for why the two can differ,
+  // and for why a RANGE or dist-tag pin is carried as `range` evidence rather
+  // than collapsed into "no pin" — the row still must not offer npm's latest
+  // as an update the host cannot resolve to.
   //
   // REQUIRED, not optional. An optional seam reads as safe at every call site
   // that omits it, which is every call site until somebody remembers — and the
   // one that omitted it would go back to reporting an update the host cannot
   // deliver, silently. Required, the compiler names each caller that has to
-  // decide; a caller with no marketplace to read says so with `() => null`.
-  marketplacePin: (agent: AgentPlugin) => string | null;
+  // decide; a caller with no marketplace to read says so with
+  // `() => ({ version: null })`.
+  marketplacePin: (agent: AgentPlugin) => MarketplacePinLookup;
   // The channel to resolve the CLI row against, when a caller is asking to move
   // this copy onto another published line rather than to follow the one it is
   // on. Absent means derive it, which is what every read-only surface wants.
@@ -278,27 +284,51 @@ export function installedAgentPluginVersions(
  * this repo fail OPEN, so an unstubbed probe reaches the developer's own npm
  * and the real registry.
  */
+/**
+ * The first line-leading `{` in `stdout` whose remaining text parses as a
+ * plain JSON object — trying each candidate IN ORDER rather than stopping at
+ * the first `{` anywhere in the buffer.
+ *
+ * npm may put a warning line on stdout ahead of the payload, and that line can
+ * itself carry a brace of its own (quoting a config value or a flag) —
+ * `npm warn using --force Recommended protections disabled. {config}`. A
+ * byte-scan for the first `{` lands inside that warning and fails the whole
+ * read on what is a cosmetic line, which is a narrower defence than the
+ * last-line read this replaced. Restricting a candidate to where a LINE begins
+ * (optional leading whitespace, then `{`) is what skips the warning without
+ * needing to recognise it: nothing before it on that line is whitespace, so it
+ * is never a candidate at all.
+ */
+function firstJsonObjectFromLines(stdout: string): Record<string, unknown> | null {
+  let offset = 0;
+  for (const line of stdout.split('\n')) {
+    const indent = /^[ \t]*/.exec(line)?.[0].length ?? 0;
+    if (line[indent] === '{') {
+      try {
+        const parsed: unknown = JSON.parse(stdout.slice(offset + indent));
+        // A successful parse from a line-leading `{` is a plain object by the
+        // JSON grammar — this narrows `unknown` rather than screening a shape
+        // that could arrive. An array or a scalar cannot start with `{`.
+        if (isRecord(parsed)) return parsed;
+      } catch {
+        // Not valid JSON starting here — a warning line's own brace, or a
+        // payload that continues past what looked like its close. Try the
+        // next line-leading `{`.
+      }
+    }
+    offset += line.length + 1; // +1 for the '\n' the split consumed.
+  }
+  return null;
+}
+
 export function npmViewDistTags(
   pkg: string,
   capture: (command: string, args: string[], timeoutMs?: number) => RunResult = runCapture,
 ): DistTags | null {
   const res = capture('npm', ['view', pkg, 'dist-tags', '--json'], 15_000);
   if (!res.ok || !res.stdout) return null;
-  // From the first `{`, because npm may put a warning line on stdout ahead of
-  // the payload — the version read this replaces tolerated that by taking the
-  // last line, and a bare parse of the whole buffer would drop that defence.
-  const at = res.stdout.indexOf('{');
-  if (at === -1) return null;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(res.stdout.slice(at));
-  } catch {
-    return null;
-  }
-  // The slice above starts at a `{`, so a successful parse is a plain object by
-  // the JSON grammar — this narrows `unknown` rather than screening a shape
-  // that could arrive. An array or a scalar was refused by the search itself.
-  if (!isRecord(raw)) return null;
+  const raw = firstJsonObjectFromLines(res.stdout);
+  if (raw === null) return null;
   const tags: Record<string, string> = {};
   for (const [tag, version] of Object.entries(raw)) {
     if (typeof version !== 'string') return null;
@@ -329,8 +359,17 @@ export function gatherReport(deps: ReportDeps): UpdateReport {
   // serves no tag has to be refusable there rather than offered the stable
   // version it would then fail to fetch. Carried onto the row so the refusal
   // costs no second registry request.
-  const cli = resolveChannel(deps.viewDistTags(CLI_PACKAGE), cliChannel);
+  const cliTags = deps.viewDistTags(CLI_PACKAGE);
+  const cli = resolveChannel(cliTags, cliChannel);
   const cliLatest = cli.version;
+  // Read from the SAME tag map `resolveChannel` was just given, so this costs
+  // no second registry request. Only meaningful for `Graduated`, the one
+  // source where the channel's own tag and `latest` (the stable winner) are
+  // two different versions — and only carried onto the row when it resolved
+  // to a real string, since `exactOptionalPropertyTypes` refuses an explicit
+  // `undefined` on an optional field.
+  const channelLatest =
+    cli.source === RELEASE_TAG_SOURCE.Graduated ? cliTags?.[DIST_TAG[cliChannel]] : undefined;
   const statuses: ComponentStatus[] = [
     {
       id: 'cli',
@@ -342,6 +381,7 @@ export function gatherReport(deps: ReportDeps): UpdateReport {
         deps.cliInstalled !== null && cliLatest !== null && isNewer(cliLatest, deps.cliInstalled),
       channel: cliChannel,
       latestFrom: cli.source,
+      ...(channelLatest !== undefined ? { channelLatest } : {}),
     },
   ];
   const availablePlugins: AvailablePlugin[] = [];
@@ -361,14 +401,23 @@ export function gatherReport(deps: ReportDeps): UpdateReport {
     // it is the only thing that can explain a machine reading "up to date" at a
     // version the user can see is behind.
     const pin = deps.marketplacePin(agent);
-    const latest = pin ?? npmLatest;
+    const latest = pin.version ?? npmLatest;
+    // A RANGE pin (or a dist-tag) is not a version this report can compare, so
+    // the row must not offer npm's answer as an update the host cannot resolve
+    // to — that is exactly the failure a range collapsing into "no pin" used to
+    // produce. `latest` above still reads npm's answer for the "Latest" column
+    // (informational — the pin's own note is what explains it), but
+    // `updateAvailable` is forced false rather than computed from it.
+    const rangePinned = pin.version === null && pin.range !== undefined;
     const pinned =
-      pin !== null && agent.marketplace !== undefined
+      (pin.version !== null || pin.range !== undefined) && agent.marketplace !== undefined
         ? {
             marketplacePin: {
               marketplace: agent.marketplace,
               npmLatest,
-              npmAhead: npmLatest !== null && isNewer(npmLatest, pin),
+              npmAhead:
+                pin.version !== null && npmLatest !== null && isNewer(npmLatest, pin.version),
+              ...(pin.range !== undefined ? { range: pin.range } : {}),
             },
           }
         : {};
@@ -382,12 +431,15 @@ export function gatherReport(deps: ReportDeps): UpdateReport {
       kind: 'plugin',
       installed,
       latest,
-      updateAvailable: latest !== null && isNewer(latest, installed),
+      updateAvailable: rangePinned ? false : latest !== null && isNewer(latest, installed),
       channel,
       // Set only where `latest` really is the dist-tag resolution. A pin wins
       // over npm's answer, and a field that went on describing the resolution
-      // the pin displaced would describe a version this row does not carry.
-      ...(pin === null ? { latestFrom: npm.source } : {}),
+      // the pin displaced would describe a version this row does not carry —
+      // which is true of a RANGE pin exactly as of an exact one, since `latest`
+      // above reads npm's answer only because there is no comparable version to
+      // prefer over it.
+      ...(pin.version === null ? { latestFrom: npm.source } : {}),
       ...pinned,
     });
   }

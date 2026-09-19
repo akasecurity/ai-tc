@@ -3,7 +3,11 @@ import { existsSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import { publishCommandsByWorkflow, publishSteps } from './helpers/release-workflows.js';
+import {
+  publishCommands,
+  publishCommandsByWorkflow,
+  publishSteps,
+} from './helpers/release-workflows.js';
 
 // Which npm dist-tag a release publishes under is decided by a `case` block
 // inside each publish step's `run:`, and it is the one piece of release logic a
@@ -35,6 +39,23 @@ const RAW = publishCommandsByWorkflow();
 // counted over the raw text, which pins whatever the current number happens to
 // be without anybody maintaining it.
 const MIN_PUBLISH_STEPS = 7;
+
+describe('a commented-out publish does not count as one', () => {
+  // Measured against the un-fixed `PUBLISH` regex: it carries no notion of `#`,
+  // so a remark that merely mentions a publish materializes as one and is
+  // routed under a `case` block exactly like the real thing, while the
+  // workflow itself runs nothing.
+  const COMMENTED = '      # pnpm --filter @akasecurity/plugin-codex publish --tag $DIST_TAG';
+  const LIVE = '      pnpm --filter @akasecurity/plugin-codex publish --tag $DIST_TAG';
+
+  it('is not returned by publishCommands', () => {
+    expect(publishCommands(COMMENTED)).toEqual([]);
+  });
+
+  it('is still returned live, at the same indentation (positive control)', () => {
+    expect(publishCommands(LIVE)).toEqual([LIVE.trim()]);
+  });
+});
 
 /**
  * A version and the dist-tag its publish must choose.

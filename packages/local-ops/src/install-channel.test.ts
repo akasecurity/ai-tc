@@ -362,6 +362,20 @@ describe('classifyInstall', () => {
       expect(channel).toMatchObject({ kind: 'sea', managedBy: SEA_OWNER.Standalone });
     });
 
+    it('needs that segment to actually BE a version or `current`, not merely present', () => {
+      // The length check above passes any word here — this is the layout no
+      // version and no `current` can produce, with a `shims` sibling that
+      // would otherwise be read as evidence on its own.
+      const channel = classifyInstall(
+        probe({
+          sea: true,
+          execPath: `${SCOOP_ROOT}/apps/aka/not-a-version/aka.exe`,
+          dirs: [`${SCOOP_ROOT}/shims`],
+        }),
+      );
+      expect(channel).toMatchObject({ kind: 'sea', managedBy: SEA_OWNER.Standalone });
+    });
+
     it('reads no Scoop root off a path that carries no apps/aka run at all', () => {
       // With the run absent there is no root to look for `shims` under. A
       // `shims` directory beside the executable itself is ordinary, and must

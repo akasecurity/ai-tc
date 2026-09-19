@@ -88,27 +88,52 @@ export async function runUpdate(argv: string[]): Promise<void> {
   out.write('Checking for updates…\n\n');
   const report = gatherReportLive(cliChannel);
 
-  // A channel asked for BY NAME that serves no dist-tag is refused here — after
-  // the one registry read that can answer the question, and before the table is
-  // rendered, before the confirmation, and before any install spawn.
+  // A channel asked for BY NAME is refused here in either of two registry
+  // states — after the one registry read that can answer the question, and
+  // before the table is rendered, before the confirmation, and before any
+  // install spawn.
   //
-  // The report still carries a version on such a channel, because falling back
-  // to the stable tag is the right offer for a machine whose own prerelease tag
-  // has been retired. It is the wrong answer for a request: the install would
-  // ask the registry for a tag nothing publishes and fail there instead. So the
-  // refusal reads the row's `latestFrom` rather than its version, which is the
-  // only field that separates the two cases.
+  // Unpublished: the channel serves no tag at all. The report still carries a
+  // version there, because falling back to the stable tag is the right offer
+  // for a machine whose own prerelease tag has been retired. It is the wrong
+  // answer for a request: the install would ask the registry for a tag
+  // nothing publishes and fail there instead. So the refusal reads the row's
+  // `latestFrom` rather than its version, which is the only field that
+  // separates the two cases.
   //
-  // It comes BEFORE the render because the row itself is the false claim: the
-  // table would say a version is available on a line that has never had a
-  // release, and that sentence is the one a user acts on.
+  // Graduated: the channel HAD a tag, but the stable release has since
+  // overtaken it — `resolveChannel` returns the STABLE version as `latest`
+  // there, not a version the requested line ever published. Left unrefused,
+  // `aka update --channel beta` would render that stable version beside
+  // `(beta)`, which is the same false sentence the Unpublished case exists to
+  // prevent: a line the user named printed beside a version it never served,
+  // while this machine stays on stable.
   //
-  // Scoped to `requestedChannel`, so the DERIVED path keeps the fallback.
+  // Both come BEFORE the render because the row itself is the false claim: the
+  // table would say a version is available on a line that never published it,
+  // and that sentence is the one a user acts on.
+  //
+  // Scoped to `requestedChannel`, so the DERIVED path keeps graduating as
+  // before — a beta machine with no flag on the command line must still move
+  // onto the stable release rather than being stranded on its own tag.
   const cliRow = report.statuses.find((s) => s.id === 'cli');
   if (requestedChannel !== null && cliRow?.latestFrom === RELEASE_TAG_SOURCE.Unpublished) {
     process.stderr.write(
       `aka update: nothing has been published on the ${requestedChannel} channel — ` +
         'there is no release there to install.\n',
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (requestedChannel !== null && cliRow?.latestFrom === RELEASE_TAG_SOURCE.Graduated) {
+    const ownRelease =
+      cliRow.channelLatest !== undefined
+        ? `${requestedChannel}'s newest release is ${cliRow.channelLatest}, and `
+        : '';
+    process.stderr.write(
+      `aka update: the ${requestedChannel} channel has graduated — ${ownRelease}the stable ` +
+        `release (${String(cliRow.latest)}) is newer than anything published there. Run ` +
+        '`aka update` (no --channel) to install the stable.\n',
     );
     process.exitCode = 1;
     return;

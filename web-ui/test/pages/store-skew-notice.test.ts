@@ -16,7 +16,8 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { dataDir, type LocalDatabase, openLocalDatabase } from '@akasecurity/persistence';
 import { SQLITE_MIGRATIONS } from '@akasecurity/schema';
-import type { ReactElement } from 'react';
+import { createElement, type ReactElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { tempHomes } from '../helpers/temp-home.ts';
@@ -153,5 +154,43 @@ describe('the (app) layout', () => {
     const rendered = AppLayout({ children }) as ReactElement;
 
     expect(childOf(rendered)).toBe(children);
+  });
+});
+
+describe('the notice itself', () => {
+  // The layout cases above prove WHICH element is chosen. This proves what it
+  // SAYS, which is the whole surface: it is what a user with a perfectly intact
+  // store reads, and it is the one thing the layout's own assertions cannot
+  // reach, since the copy is a tree of elements rather than a string.
+  function copy(unknownTags: readonly string[] = [FUTURE_TAG]): string {
+    return renderToStaticMarkup(
+      createElement(StoreSkewNotice, {
+        skew: {
+          storeVersion: SQLITE_MIGRATIONS.length + 1,
+          buildVersion: SQLITE_MIGRATIONS.length,
+          unknownTags,
+        },
+      }),
+    );
+  }
+
+  it('names the remedy, the version gap and the tags this build does not have', () => {
+    const html = copy();
+
+    expect(html).toContain('aka update');
+    expect(html).toContain(FUTURE_TAG);
+    // Both counts, each in its own row — a notice that named the gap without the
+    // numbers would leave the user unable to say how far behind the build is.
+    expect(html).toContain(String(SQLITE_MIGRATIONS.length + 1));
+    expect(html).toContain(String(SQLITE_MIGRATIONS.length));
+  });
+
+  it('never sends the user to repair a store that is intact', () => {
+    const html = copy();
+
+    // The positive control the absence below needs: this copy DOES speak about
+    // repair, and says the opposite of what a corrupt-store message would.
+    expect(html).toContain('needs no repair');
+    expect(html).not.toMatch(/move (?:it|the store) aside|recreate|delete the store|corrupt/i);
   });
 });

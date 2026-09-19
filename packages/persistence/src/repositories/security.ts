@@ -81,6 +81,28 @@ const ENFORCEMENT_KINDS: readonly EnforcementActionKind[] = ['blocked', 'redacte
 // is a curated position below every terminal-harness row rather than a fraction
 // computed from a channel count.
 //
+// Copilot sits BELOW Antigravity, which reads backwards until the reason is
+// stated, because this one row spans TWO surfaces of different strength and
+// must describe the weaker of them honestly. On the Copilot CLI the adapter is
+// richer than Antigravity's: prompts are captured (both the submitted text and
+// the host-transformed form), tool-call input is blockable with true in-place
+// redaction on the non-executable field, and a tool RESULT can be redacted or
+// withheld. In VS Code agent mode none of that is confirmed — no live session
+// has produced a payload here — and that host has no result-rewrite field at
+// all, so a redact on a response escalates to a whole-result withhold.
+// Three gaps bound the number and none is closed by anything shipping today.
+// Prompts are RECORD-ONLY on both surfaces: neither host has an observed
+// prompt-stop or prompt-rewrite channel, so a block policy on a prompt flags
+// and records it and the prompt still reaches the model (see
+// plugins/copilot/src/hooks/user-prompt-payload.ts). File-write content is not
+// scanned in either direction: `apply_patch` is the CLI's write tool and its
+// argument names have never been recorded, so its row in the field table is
+// INERT by construction — a payload whose names differ scans nothing rather
+// than scanning the wrong thing. And there is no history backfill for this
+// host yet, so nothing recovers either gap after the fact. Antigravity's 60
+// buys its position with tool-call coverage across EVERY tool in its CLI,
+// which is the axis this host is weakest on.
+//
 // This row also rests on weaker footing than the rows above it, which are
 // backed by a documented hook contract. Each adapter's selectors are
 // best-effort against a vendor's DOM, and a miss is silent by design
@@ -105,7 +127,7 @@ const SCAN_COVERAGE: Record<Provider, { coverage: number; supported: boolean }> 
   [HARNESS.ClaudeAi]: { coverage: 40, supported: true },
   [HARNESS.ClaudeCode]: { coverage: 100, supported: true },
   [HARNESS.Codex]: { coverage: 80, supported: true },
-  [HARNESS.Copilot]: { coverage: 0, supported: false },
+  [HARNESS.Copilot]: { coverage: 50, supported: true },
   [HARNESS.Cursor]: { coverage: 0, supported: false },
 };
 

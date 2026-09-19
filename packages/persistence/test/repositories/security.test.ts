@@ -826,7 +826,7 @@ describe('scanCoverage', () => {
     // reads as an oversight, a zero row reads as a decision.
     const res = await security().scanCoverage('30d');
     const unsupported = res.providers.filter((p) => !p.supported).map((p) => p.provider);
-    expect(unsupported).toEqual(['cursor', 'copilot', 'api']);
+    expect(unsupported).toEqual(['cursor', 'api']);
   });
 
   it('pins the codex row: supported at partial (80) coverage', async () => {
@@ -839,6 +839,37 @@ describe('scanCoverage', () => {
       coverage: 80,
       supported: true,
     });
+  });
+
+  it('pins the copilot row BELOW antigravity: supported at partial (50) coverage', async () => {
+    // Reads backwards until the reason is stated, which is why it is pinned
+    // with one: the row spans TWO surfaces and has to describe the weaker.
+    // The Copilot CLI adapter is richer than Antigravity's — it captures
+    // prompts, redacts tool input in place on the non-executable field, and can
+    // redact or withhold a tool RESULT — but VS Code agent mode is unconfirmed
+    // throughout and has no result-rewrite field at all. Three gaps bound it:
+    // prompts are record-only on both surfaces (neither host has an observed
+    // prompt-stop channel), file-write content is scanned in neither direction
+    // (`apply_patch`'s argument names have never been recorded, so its field
+    // table row is inert by construction), and there is no history backfill to
+    // recover either after the fact. Antigravity's 60 buys its place with
+    // tool-call coverage across EVERY tool in its CLI, which is exactly the
+    // axis this host is weakest on.
+    const res = await security().scanCoverage('30d');
+    expect(res.providers.find((p) => p.provider === 'copilot')).toEqual({
+      provider: 'copilot',
+      coverage: 50,
+      supported: true,
+    });
+
+    // The ordering claim, asserted rather than left to the prose above: this
+    // row must stay strictly below Antigravity's and strictly above the two
+    // web-chat rows, or the sentence explaining it has stopped describing the
+    // table.
+    const coverageOf = (provider: string): number =>
+      res.providers.find((p) => p.provider === provider)?.coverage ?? -1;
+    expect(coverageOf('copilot')).toBeLessThan(coverageOf('antigravity'));
+    expect(coverageOf('copilot')).toBeGreaterThan(coverageOf('chatgpt'));
   });
 
   it('pins the antigravity row BELOW codex: supported at partial (60) coverage', async () => {

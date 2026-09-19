@@ -367,7 +367,7 @@ path-shim.test.ts,run-hook.ts}`; `test/history/*.test.ts`; `test/triage/judge.te
 - [x] B3. Add the `TITLE_NEEDLES` row as `stripSeparators(SOURCE_TOOL.Copilot)`.
 - [x] B4. Add the `resolveHarnessId` dispatch line by hand — **the compiler will not ask for
       it** — and a test that drives a Copilot harness row end to end through it.
-- [ ] B5. Flip `SCAN_COVERAGE`'s Copilot row to a justified number with the argument in a
+- [x] B5. Flip `SCAN_COVERAGE`'s Copilot row to a justified number with the argument in a
       comment beside it (see Risks: this is open question 3).
 
 ### C. The wrapper and the wire (the load-bearing half)
@@ -506,7 +506,7 @@ content-retention,reconcile,scan-worker}.ts` and `src/remediation/*` from the Co
       `preToolUse` emits exactly one explicit allow and every other hook emits nothing.
       Enforcement rows prove block, redact, warn and monitor each emit the shape their cell
       expects. Both halves, or the absence assertions go vacuous.
-- [ ] K2. `test/e2e/scan-worker-bundle.e2e.test.ts` — the worker resolves as a **sibling of
+- [x] K2. `test/e2e/scan-worker-bundle.e2e.test.ts` — the worker resolves as a **sibling of
       the built scripts**, driven with a pulled rule against a throwaway home.
 - [ ] K3. Unset `"private": true`.
 - [ ] K4. Retire or re-justify the temporary Windows pin in `required-checks.test.js`, and

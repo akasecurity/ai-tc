@@ -499,6 +499,45 @@ Commit: see `test(copilot): drive the built hooks, and carry the store note with
 
 Verified: `plugins/copilot` 216/216 across 18 files; lint and `tsc --noEmit` clean.
 
+### K2 and B5 — the worker bundle, and a coverage number with an argument
+
+**K2** is a peer copy of the three siblings' suite, with one deliberate difference from the
+Antigravity original it was taken from: that copy spawns the built hook with
+`{ ...process.env, HOME, USERPROFILE }` behind an inline `n/no-process-env` disable. This one
+passes `{ HOME, USERPROFILE }` alone — `process.execPath` is an absolute node path, so the
+child needs no host PATH — which keeps the file out of the tree-wide inline-disable
+inventory entirely rather than adding a row to it.
+
+`KNOWN_RUNTIME_SCRIPTS` is this host's own set: `pre-tool-use.js`, `post-tool-use.js` and
+`user-prompt-submit.js` all build a runtime, and `session-start.js` deliberately does not —
+that event has no text to scan. If it ever starts carrying the runtime marker, that list is
+what makes someone notice the hook's job changed.
+
+**B5.** `SCAN_COVERAGE`'s Copilot row goes from `{ 0, false }` to `{ 50, true }`, which places
+it BELOW Antigravity's 60 — and that reads backwards until the reason is stated, so it is
+pinned with one. The row spans TWO surfaces and has to describe the weaker. The CLI adapter
+is genuinely richer than Antigravity's: it captures prompts (both the submitted text and the
+host-transformed form), redacts tool input in place on the non-executable field, and can
+redact or withhold a tool RESULT — none of which Antigravity can do at all. VS Code agent
+mode is unconfirmed throughout and has no result-rewrite field.
+
+Three gaps bound the number, and none is closed by anything shipping today. Prompts are
+RECORD-ONLY on both surfaces, because neither host has an observed prompt-stop channel. File
+-write content is scanned in neither direction: `apply_patch` is the CLI's write tool and its
+argument names have never been recorded, so its row in the field table is INERT by
+construction. And there is no history backfill for this host, so nothing recovers either gap
+after the fact. Antigravity's 60 buys its place with tool-call coverage across EVERY tool in
+its CLI, which is exactly the axis this host is weakest on.
+
+The ordering is asserted rather than left to the prose: strictly below Antigravity, strictly
+above the two web-chat rows. A sentence explaining a position is worth nothing once the
+position moves out from under it.
+
+Commit: see `feat(copilot): pin the worker bundle, and give the coverage row its argument`.
+
+Verified: `plugins/copilot` 219/219 across 19 files; `packages/persistence`
+`security.test.ts` 38/38; lint, prettier and `tsc --noEmit` clean for both packages.
+
 ---
 
 ## Where this attempt stopped, and what the next one should do

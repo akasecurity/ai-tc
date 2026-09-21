@@ -923,6 +923,24 @@ so each command falls back to the default CLI install location
 installed somewhere else, edit `hooks.json` and replace `${PLUGIN_ROOT:-…}` with
 the absolute path to the plugin directory.
 
+**On an Antigravity older than 1.1.10, the `Stop` hook never runs**, and that is
+the host's own behaviour rather than a misconfiguration: hooks declared in
+`hooks.json` used to be ordered behind the built-in termination checks, so a
+`Stop` entry loaded, listed under the host's hook commands, and was never
+reached. 1.1.10 moved them in front. What it costs is narrower than losing the
+event sounds — AKA's `Stop` hook triggers the background pass that reads the
+transcript, and `PreInvocation` and `PostToolUse` trigger it too, so capture
+still happens and what is missing is the trigger that reconciles the tail of a
+turn once nothing further is coming. On an older host that tail waits for the
+next turn — and if the user closes the session after that turn there is no next
+turn, so it waits until they reopen that conversation or run `aka backfill`.
+Check there first if a recent session looks like it is missing its last
+exchange. **AKA cannot detect this and will not warn about it**: this
+host tells a session nothing about its own version — no payload field, no
+transcript record, no environment variable carries one — so if a user asks why
+the last stretch of a turn showed up late, ask for their `agy` version rather
+than expecting AKA to have flagged it.
+
 **The reversible secret vault is not wired for Antigravity sessions**, so this
 wizard does not offer the vault-consent step: everything AKA redacts here is
 one-way (the safe direction), and nothing this plugin captures is ever vaulted —

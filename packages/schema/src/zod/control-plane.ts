@@ -335,11 +335,14 @@ export type StorePosturePolicyCounts = z.infer<typeof StorePosturePolicyCounts>;
 
 // Compile-time pin that the explicit object above still names every ActionTaken
 // member — `satisfies` checks assignability of what IS there; this checks
-// nothing is MISSING when the enum grows.
-const _BY_ACTION_EXHAUSTIVE: readonly (keyof z.infer<
-  typeof StorePosturePolicyCounts
->['byAction'])[] = ACTION_TAKEN_KEYS;
-void _BY_ACTION_EXHAUSTIVE;
+// nothing is MISSING when the enum grows. `pinExhaustive` is called (not
+// assigned) so the check needs no discarded binding to silence.
+function pinExhaustive<T extends readonly PropertyKey[]>(keys: T): T {
+  return keys;
+}
+pinExhaustive<readonly (keyof z.infer<typeof StorePosturePolicyCounts>['byAction'])[]>(
+  ACTION_TAKEN_KEYS,
+);
 
 /**
  * Identity of the REPORTING BINARY — which build sent this snapshot and which

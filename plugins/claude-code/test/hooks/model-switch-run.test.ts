@@ -89,7 +89,7 @@ describe('runPreModelSwitch', () => {
     // A refused switch never happened, so recording its target would make the
     // next turn enforce against a model the session is not running.
     const emit = vi.fn(() => Promise.resolve());
-    return runPreModelSwitch({}, 'claude-opus-5', 's1', {
+    return runPreModelSwitch('claude-opus-5', 's1', {
       config: config(),
       openGateway: () => gatewayWith(['claude-opus-5']),
       emit,
@@ -103,7 +103,7 @@ describe('runPreModelSwitch', () => {
 
   it('allows an approved switch, emits nothing, and records the new model', async () => {
     const emit = vi.fn(() => Promise.resolve());
-    const refused = await runPreModelSwitch({}, 'claude-sonnet-4-5', 's1', {
+    const refused = await runPreModelSwitch('claude-sonnet-4-5', 's1', {
       config: config(),
       openGateway: () => gatewayWith(['claude-opus-5']),
       emit,
@@ -118,7 +118,7 @@ describe('runPreModelSwitch', () => {
     // Fail-open: no store means no bundle means no prohibition to enforce, and
     // this hook deliberately does not explain store health.
     const emit = vi.fn(() => Promise.resolve());
-    const refused = await runPreModelSwitch({}, 'claude-opus-5', 's1', {
+    const refused = await runPreModelSwitch('claude-opus-5', 's1', {
       config: config(),
       openGateway: () => null,
       emit,
@@ -134,7 +134,7 @@ describe('runPreModelSwitch', () => {
       ['claude-sonnet-4-5', 'allow'],
     ] as const) {
       const close = vi.fn(() => Promise.resolve());
-      await runPreModelSwitch({}, target, 's1', {
+      await runPreModelSwitch(target, 's1', {
         config: config(),
         openGateway: () => gatewayWith(['claude-opus-5'], close),
         emit: vi.fn(() => Promise.resolve()),
@@ -146,7 +146,7 @@ describe('runPreModelSwitch', () => {
 
   it('surfaces a redirected home before deciding', async () => {
     const warn = vi.fn();
-    await runPreModelSwitch({}, 'claude-opus-5', 's1', {
+    await runPreModelSwitch('claude-opus-5', 's1', {
       config: config(),
       openGateway: () => gatewayWith([]),
       emit: vi.fn(() => Promise.resolve()),
@@ -159,7 +159,7 @@ describe('runPreModelSwitch', () => {
 describe('runPreModelSwitch records the refusal', () => {
   it('writes a model_refusal naming the model and the switch seam', async () => {
     const rec = recorder();
-    await runPreModelSwitch({}, 'claude-opus-5', 's1', {
+    await runPreModelSwitch('claude-opus-5', 's1', {
       config: config(),
       openGateway: () => gatewayWith(['claude-opus-5'], vi.fn(), rec.fn),
       emit: vi.fn(() => Promise.resolve()),
@@ -175,7 +175,7 @@ describe('runPreModelSwitch records the refusal', () => {
 
   it('records nothing when the switch is ALLOWED', async () => {
     const rec = recorder();
-    await runPreModelSwitch({}, 'claude-sonnet-4-5', 's1', {
+    await runPreModelSwitch('claude-sonnet-4-5', 's1', {
       config: config(),
       openGateway: () => gatewayWith(['claude-opus-5'], vi.fn(), rec.fn),
       emit: vi.fn(() => Promise.resolve()),
@@ -189,7 +189,7 @@ describe('runPreModelSwitch records the refusal', () => {
     // outer catch would turn a deny into a fail-open allow, leaving the session
     // LESS governed than before the audit trail existed.
     const emit = vi.fn(() => Promise.resolve());
-    const refused = await runPreModelSwitch({}, 'claude-opus-5', 's1', {
+    const refused = await runPreModelSwitch('claude-opus-5', 's1', {
       config: config(),
       openGateway: () =>
         gatewayWith(

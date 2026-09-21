@@ -20,8 +20,8 @@
     "@akasecurity/detections": "workspace:*",
     "@akasecurity/persistence": "workspace:*",
     "@akasecurity/schema": "workspace:*",
-    "ignore": "^7.0.6",
-    "zod": "^4.5.4"
+    "ignore": "^7.0.9",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",

@@ -22,8 +22,8 @@ describe('MaskedSecretFinding', () => {
   });
 
   it('parses a summary whose location carries only a filePath (span optional)', () => {
-    const { span, ...whereWithoutSpan } = maskedFinding.where;
-    void span;
+    const whereWithoutSpan = { ...maskedFinding.where };
+    delete (whereWithoutSpan as { span?: { start: number; end: number } }).span;
     expect(
       MaskedSecretFinding.safeParse({ ...maskedFinding, where: whereWithoutSpan }).success,
     ).toBe(true);

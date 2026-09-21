@@ -66,8 +66,12 @@ const PORT_METHODS = [
 // If the port gains a method that is not in PORT_METHODS, `Missing` stops being
 // `never` and this line fails to compile.
 type Missing = Exclude<keyof DataGateway, (typeof PORT_METHODS)[number]>;
-const _portIsFullyListed: Missing extends never ? true : Missing = true;
-void _portIsFullyListed;
+// A call rather than a binding: the type argument is checked at compile time
+// and nothing is left over to discard.
+function pinNever<T extends never>(): T[] {
+  return [];
+}
+pinNever<Missing>();
 
 const MAINTENANCE_METHODS = [
   'sweepTerminalExceptions',
@@ -83,9 +87,7 @@ type MissingMaintenance = Exclude<
   keyof LocalStoreMaintenance,
   (typeof MAINTENANCE_METHODS)[number]
 >;
-const _maintenanceIsFullyListed: MissingMaintenance extends never ? true : MissingMaintenance =
-  true;
-void _maintenanceIsFullyListed;
+pinNever<MissingMaintenance>();
 
 // ── fakes ───────────────────────────────────────────────────────────────────
 
@@ -109,9 +111,8 @@ function makeLocal(
 ) {
   const base: Record<string, unknown> = {};
   for (const name of PORT_METHODS) {
-    base[name] = vi.fn((...args: unknown[]) => {
+    base[name] = vi.fn(() => {
       calls.order.push(`local.${name}`);
-      void args;
       // Shapes the composite passes straight through; the delegation test only
       // asserts the call happened and the value came back.
       if (name === 'ensureInventory') return Promise.resolve({});
@@ -594,10 +595,9 @@ describe('ensureInventory and the two id spaces', () => {
     const local = makeLocal(calls, {
       ensureInventory: vi.fn(() => Promise.resolve({ hostId: 'local-host' })),
     });
-    const recordAuditEvent = vi.fn((event: AuditEventInput) => {
-      void event;
-      return Promise.resolve();
-    });
+    const recordAuditEvent = vi.fn<(event: AuditEventInput) => Promise<void>>(() =>
+      Promise.resolve(),
+    );
     const client = makeClient(calls, {
       ingestInventory: vi.fn(() => Promise.resolve({ hostId: 'tenant-host' })),
       recordAuditEvent,
@@ -617,10 +617,9 @@ describe('ensureInventory and the two id spaces', () => {
     // nothing threw. The id-space cases below use a LIVE forward with a failing
     // inventory call, which is the state that actually reaches the wire.
     const calls: Calls = { order: [], delivered: [], batchSizes: [] };
-    const recordAuditEvent = vi.fn((event: AuditEventInput) => {
-      void event;
-      return Promise.resolve();
-    });
+    const recordAuditEvent = vi.fn<(event: AuditEventInput) => Promise<void>>(() =>
+      Promise.resolve(),
+    );
     const client = makeClient(calls, { recordAuditEvent });
     const { gateway } = build({ client, forward: deadForward(calls) });
     await gateway.ensureInventory({});
@@ -636,10 +635,9 @@ describe('ensureInventory and the two id spaces', () => {
     // every descendant silently never reaches the tenant copy. Omitting the
     // field costs one degraded join instead.
     const calls: Calls = { order: [], delivered: [], batchSizes: [] };
-    const recordAuditEvent = vi.fn((event: AuditEventInput) => {
-      void event;
-      return Promise.resolve();
-    });
+    const recordAuditEvent = vi.fn<(event: AuditEventInput) => Promise<void>>(() =>
+      Promise.resolve(),
+    );
     const client = makeClient(calls, {
       ingestInventory: vi.fn(() => Promise.reject(new Error('backend down'))),
       recordAuditEvent,
@@ -671,10 +669,9 @@ describe('ensureInventory and the two id spaces', () => {
     // SUCCEEDS while attributing a whole session to the wrong repository, which
     // is worse than not forwarding it.
     const calls: Calls = { order: [], delivered: [], batchSizes: [] };
-    const recordAuditEvent = vi.fn((event: AuditEventInput) => {
-      void event;
-      return Promise.resolve();
-    });
+    const recordAuditEvent = vi.fn<(event: AuditEventInput) => Promise<void>>(() =>
+      Promise.resolve(),
+    );
     let call = 0;
     const client = makeClient(calls, {
       ingestInventory: vi.fn(() => {
@@ -1045,7 +1042,9 @@ describe('the live forward stamps what it delivered', () => {
     } as unknown as ForwardPolicy;
 
     const calls: Calls = { order: [], delivered: [], batchSizes: [] };
-    const recordAuditEvent = vi.fn(() => Promise.resolve());
+    const recordAuditEvent = vi.fn<(event: AuditEventInput) => Promise<void>>(() =>
+      Promise.resolve(),
+    );
     const client = {
       ...makeClient(calls),
       recordAuditEvents: vi.fn(() =>
@@ -2144,7 +2143,6 @@ describe('posture reporting stays strictly after inventory settles', () => {
   });
 
   it('a throwing posture phase never reaches the session', async () => {
-    const calls: Calls = { order: [], delivered: [], batchSizes: [] };
     const posture = {
       prepare: vi.fn(() => {
         throw new Error('sync boom');
@@ -2153,6 +2151,5 @@ describe('posture reporting stays strictly after inventory settles', () => {
     };
     const { gateway } = build({ posture: posture });
     await expect(gateway.ensureInventory({})).resolves.toEqual({});
-    void calls;
   });
 });

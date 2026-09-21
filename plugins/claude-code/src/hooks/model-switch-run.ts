@@ -33,12 +33,10 @@ export interface PreModelSwitchDeps {
  * verdict without reading stdout; the entry ignores it.
  */
 export async function runPreModelSwitch(
-  input: Record<string, unknown>,
   toModel: string,
   sessionId: string | undefined,
   deps: PreModelSwitchDeps,
 ): Promise<boolean> {
-  void input;
   const { config } = deps;
   // A symlinked home redirects the policy cache this hook decides from, so the
   // prohibitions it reads may not be the ones this machine was attached with.

@@ -12,16 +12,16 @@ import type { CaptureStateResponse } from '../src/native-host/protocol.ts';
 // (including the popup's own), which a plain top-level statement cannot do:
 // ES module imports are evaluated before any of this file's own statements,
 // regardless of where they are written.
-const relayImpl = vi.hoisted(() => ({
-  current: (message: unknown): Promise<unknown> => {
-    void message;
-    return Promise.resolve({
+type RelayFn = (message: unknown) => Promise<unknown>;
+
+const relayImpl: { current: RelayFn } = vi.hoisted(() => ({
+  current: () =>
+    Promise.resolve({
       type: 'error',
       requestId: undefined,
       ok: false,
       message: 'unset stub',
-    });
-  },
+    }),
 }));
 
 vi.hoisted(() => {

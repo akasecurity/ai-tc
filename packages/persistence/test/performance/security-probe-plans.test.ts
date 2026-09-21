@@ -123,9 +123,8 @@ function seed(raw: DatabaseSync): void {
      VALUES (?, ?, ?, 0, 8, 'A******E', ?, 1.0, ?)`,
   );
   raw.exec('BEGIN');
-  for (const [i, severity] of ['critical', 'high', 'medium', 'low'].entries()) {
+  for (const severity of ['critical', 'high', 'medium', 'low']) {
     def.run(`def-${severity}`, `rule.${severity}`, severity, 'secret', severity, '{}', '1');
-    void i;
   }
   for (let i = 0; i < EVENTS; i += 1) {
     const kind = CAPTURE_KINDS[i % CAPTURE_KINDS.length] ?? 'prompt';

@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@akasecurity/schema": "workspace:*",
-    "zod": "^4.5.4"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",

@@ -5,9 +5,11 @@
 // identical from outside. An event name the host does not recognise is dropped
 // from the manifest while the rest of the file loads. An event it recognises but
 // cannot reach — `Stop` was unreachable behind the built-in termination checks
-// until 1.1.10 — loads, lists, and never fires. Either way the plugin installs
-// clean, reports healthy, and the protection behind that entry is absent with
-// nothing at runtime saying so.
+// until 1.1.10 — loads and never fires. Either way the plugin installs clean,
+// reports healthy, and the protection behind that entry is absent with nothing
+// at runtime saying so. Nor does the host's own hook listing show it over that
+// range: it omitted plugin-bundled hooks until 1.2.3, and AKA's are
+// plugin-bundled.
 //
 // What it cannot degrade into is a DENIAL. This host reads a hook that ran
 // and said nothing as a `deny`, but a dropped or unreachable entry spawns no

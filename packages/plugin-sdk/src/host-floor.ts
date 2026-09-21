@@ -417,12 +417,33 @@ export const CODEX_BASELINE_HOOK_EVENTS: readonly string[] = [
  * not recognise therefore degrades to DENIAL rather than to absence — i.e. that
  * a stale host would wedge every tool call rather than quietly drop a
  * protection. It does not, and the distinction is that the fail-closed reading
- * applies to a hook that RAN. An unrecognised event name is dropped from the
- * manifest, so no process is ever spawned for it, so there is no exit code and
- * no empty stdout for the host to interpret; the tool call follows the host's
- * own permission flow exactly as it would with no plugin installed. The failure
- * here is therefore the SAME silent absence the other two hosts have, and this
- * host is not the sharper case on that axis.
+ * applies to a hook that RAN. A registration the host does not act on spawns no
+ * process at all, so there is no exit code and no empty stdout for it to
+ * interpret; the tool call follows the host's own permission flow exactly as it
+ * would with no plugin installed. The failure here is therefore the SAME silent
+ * absence the other two hosts have, and this host is not the sharper case on
+ * that axis.
+ *
+ * BE PRECISE ABOUT WHAT IS SOURCED, because the drop itself is the one premise
+ * here with no vendor statement behind it. The other three harnesses each name
+ * theirs — Codex from `HookEventName` in `protocol.rs` per tag, Claude Code
+ * from the host's own `unknown hook event; entry ignored`, Copilot from a
+ * recorded `Ignoring unknown hook event(s)` log line. This host's hooks
+ * reference documents the event set, the `enabled` toggle and the matcher
+ * semantics, and says nothing whatever about a name it does not recognise: the
+ * words unknown, unrecognised, dropped and silently do not appear in it, and
+ * every occurrence of "ignored" is about the MATCHER being ignored for
+ * PreInvocation, PostInvocation and Stop. So treat "an unrecognised name is
+ * dropped" as INFERRED — from the absence of any documented rejection path, and
+ * from all three sibling hosts behaving that way — rather than as documented,
+ * and replace this sentence with a citation if one ever appears.
+ *
+ * What IS vendor-documented is that this host drops hook configuration
+ * silently, by a route this table cannot express at all: 1.2.4 fixed
+ * "`hooks.json` configurations being silently dropped when customization token
+ * budget truncation is active". That is not a version floor — it is a runtime
+ * condition — so no row here can describe it, and it is recorded because it
+ * means a present, current-version entry can still be absent.
  *
  * WHERE A VERSION COMES FROM: NOWHERE, AND THAT IS THE FINDING. The Claude Code
  * reader does not transfer, and neither does the Codex one, because this host
@@ -459,9 +480,17 @@ export const CODEX_BASELINE_HOOK_EVENTS: readonly string[] = [
  * 0-indexed counter, so `invocationNum === 0` identifies a genuinely fresh first
  * invocation — the equivalent of the fresh-start gate Codex needs and the
  * soundness Claude Code gets from firing after a write. And `PreInvocation` is
- * the one place a line can be SAID: its stderr is already the channel two other
- * notices use, while `PreToolUse` has no message channel at all (its `reason`
- * accompanies a deny, so saying anything there means denying the call).
+ * the natural place to SAY a line, though not the only possible one: stderr is
+ * the channel every hook here already uses (`warnIfStoreRedirected` is called
+ * from all four, and `pre-tool-use.ts` writes the store-degraded notice on its
+ * own allow path). What `PreToolUse` lacks is a message channel OF ITS OWN —
+ * its output carries `decision`, `reason` and `permissionOverrides`, and the
+ * host documents `reason` as the explanation for THE DECISION rather than as a
+ * deny-only field. Attaching a line to an allow is therefore possible and
+ * declined, because the host may not surface it; that is this package's choice,
+ * not a constraint the host imposes. `PreInvocation` is preferred because it is
+ * the session opener on a host with no SessionStart, not because it is the only
+ * hook that can print.
  */
 export const ANTIGRAVITY_HOST_FEATURE = {
   EndOfTurnCapture: 'end-of-turn-capture',
@@ -479,8 +508,17 @@ export type AntigravityHostFeature =
  * termination checks, "which lets `PostInvocation` hooks observe the final
  * invocation of a turn and lets `Stop` hooks run at all instead of sitting
  * unreachable behind the built-ins". Every earlier release therefore accepts a
- * `Stop` registration, loads it, reports it under the host's own hook listing —
- * and never runs it.
+ * `Stop` registration, loads it — and never runs it.
+ *
+ * IT IS NOT EVEN VISIBLE IN THE HOST'S OWN LISTING over the range this row
+ * covers, which cuts against the instinct to say "but the user could see it was
+ * registered". 1.2.3 fixed "the `/hooks` command and hook inspection utilities
+ * omitting hooks bundled inside enabled plugins when listing active
+ * `hooks.json` configurations", and AKA's hooks are plugin-bundled
+ * (`plugins/antigravity/plugin.json` declares `"hooks": "./hooks.json"`), so
+ * every version this floor describes — 1.0.0 through 1.1.9, and on past it to
+ * 1.2.2 — showed the user nothing at all. The absence is more invisible than a
+ * dropped entry, not less.
  *
  * THAT IS A DIFFERENT MECHANISM FROM A DROPPED ENTRY, AND THE SAME OUTCOME.
  * The name parsed; the handler was simply unreachable. The partition is about

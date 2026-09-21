@@ -339,8 +339,8 @@ describe('ShareDestinationSummary', () => {
   });
 
   it('rejects a missing providerId', () => {
-    const { providerId, ...rest } = validSummary;
-    void providerId;
+    const rest = { ...validSummary };
+    delete (rest as { providerId?: string }).providerId;
     expect(ShareDestinationSummary.safeParse(rest).success).toBe(false);
   });
 });
@@ -359,9 +359,9 @@ describe('ShareDestinationDetail', () => {
   });
 
   it('note accepts null', () => {
-    const { endpointCount, callSiteCount, ...rest } = validSummary;
-    void endpointCount;
-    void callSiteCount;
+    const rest = { ...validSummary };
+    delete (rest as { endpointCount?: number }).endpointCount;
+    delete (rest as { callSiteCount?: number }).callSiteCount;
     const detail = { ...rest, note: null, endpoints: [{ ...validEndpoint, sites: [] }] };
     expect(ShareDestinationDetail.safeParse(detail).success).toBe(true);
   });

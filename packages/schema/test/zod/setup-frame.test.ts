@@ -117,8 +117,8 @@ describe('CalibrationFrame', () => {
   });
 
   it('rejects a frame whose posture map omits a category', () => {
-    const { config, ...partial } = populatedFrame.posture;
-    void config;
+    const partial = { ...populatedFrame.posture };
+    delete (partial as { config?: string }).config;
     expect(CalibrationFrame.safeParse({ ...populatedFrame, posture: partial }).success).toBe(false);
   });
 
@@ -132,8 +132,8 @@ describe('CalibrationFrame', () => {
   });
 
   it('rejects a frame missing a required top-level field', () => {
-    const { counts, ...rest } = populatedFrame;
-    void counts;
+    const rest = { ...populatedFrame };
+    delete (rest as { counts?: typeof populatedFrame.counts }).counts;
     expect(CalibrationFrame.safeParse(rest).success).toBe(false);
   });
 });

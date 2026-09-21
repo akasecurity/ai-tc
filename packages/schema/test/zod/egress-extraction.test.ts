@@ -171,8 +171,8 @@ describe('ResolvedEgressHit', () => {
   });
 
   it('rejects a missing providerId', () => {
-    const { providerId, ...rest } = validHit;
-    void providerId;
+    const rest = { ...validHit };
+    delete (rest as { providerId?: string }).providerId;
     expect(ResolvedEgressHit.safeParse(rest).success).toBe(false);
   });
 });

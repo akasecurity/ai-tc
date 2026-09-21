@@ -364,8 +364,8 @@ describe('EgressIngestHit', () => {
   });
 
   it('accepts a hit without providerId, as a sender built before the field posts it', () => {
-    const { providerId, ...rest } = hit;
-    void providerId;
+    const rest = { ...hit };
+    delete (rest as { providerId?: string }).providerId;
     expect(EgressIngestHit.safeParse(rest).success).toBe(true);
   });
 });

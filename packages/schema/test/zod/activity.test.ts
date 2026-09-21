@@ -149,9 +149,9 @@ describe('AuditEvent', () => {
   });
 
   it('rejects a missing internal/flagged pair', () => {
-    const { internal, flagged, ...rest } = validEvent;
-    void internal;
-    void flagged;
+    const rest = { ...validEvent };
+    delete (rest as { internal?: boolean }).internal;
+    delete (rest as { flagged?: boolean }).flagged;
     expect(AuditEvent.safeParse(rest).success).toBe(false);
   });
 

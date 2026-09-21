@@ -35,7 +35,7 @@ async function main(): Promise<void> {
   const toModel = getString(input, 'to_model');
   if (toModel === undefined || toModel === '') return;
   const config = loadConfig();
-  await runPreModelSwitch(input, toModel, getString(input, 'session_id'), {
+  await runPreModelSwitch(toModel, getString(input, 'session_id'), {
     config,
     openGateway: () => openGatewayOrNull(config),
     emit,

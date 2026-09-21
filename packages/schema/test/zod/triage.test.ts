@@ -23,8 +23,8 @@ describe('TriageHit', () => {
   });
 
   it('rejects a hit missing rawMatch', () => {
-    const { rawMatch, ...rest } = validHit;
-    void rawMatch;
+    const rest = { ...validHit };
+    delete (rest as { rawMatch?: string }).rawMatch;
     expect(TriageHit.safeParse(rest).success).toBe(false);
   });
 

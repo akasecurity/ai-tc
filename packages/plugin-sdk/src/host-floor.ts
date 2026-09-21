@@ -383,7 +383,7 @@ export type CodexHostFeature = (typeof CODEX_HOST_FEATURE)[keyof typeof CODEX_HO
  * `X.Y.0-alpha.N` user, including the ones whose build already carries the
  * feature.
  */
-export const CODEX_HOST_FLOORS: Record<CodexHostFeature, HostFloorRow> = {};
+export const CODEX_HOST_FLOORS: Record<CodexHostFeature, HostFloorRow> & object = {};
 
 /**
  * The Codex events old enough that no supported host is missing them.

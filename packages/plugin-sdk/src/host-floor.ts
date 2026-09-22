@@ -50,7 +50,13 @@ export interface HostFloorRow {
   readonly label: string;
   /** The `hooks.json` events this protection is delivered through. */
   readonly hookEvents: readonly string[];
-  /** First host version that recognises every one of those events. */
+  /**
+   * First host version that actually DELIVERS every one of those events —
+   * which is not always the version that first recognised them. A host can
+   * parse an event name, list it among its loaded hooks, and still never reach
+   * the handler (Antigravity's `Stop` did exactly that until 1.1.10). Read the
+   * release that made the event FIRE, not the one that introduced the name.
+   */
   readonly since: string;
 }
 
@@ -397,4 +403,189 @@ export const CODEX_BASELINE_HOOK_EVENTS: readonly string[] = [
   'PreToolUse',
   'PostToolUse',
   'Stop',
+];
+
+/**
+ * ANTIGRAVITY. The same partition again, for the host that reaches every one of
+ * these decisions differently a THIRD time — so, as with Codex, none of the
+ * reasoning above transfers by default.
+ *
+ * THE FAIL-CLOSED QUESTION, ANSWERED FIRST, BECAUSE IT DECIDES HOW BAD THIS IS.
+ * This host reads a hook that exits non-zero, is killed on its timeout, or
+ * prints nothing as a `deny` on every tool call, which is why the adapter always
+ * prints an explicit allow. The obvious worry is that an event this host does
+ * not recognise therefore degrades to DENIAL rather than to absence — i.e. that
+ * a stale host would wedge every tool call rather than quietly drop a
+ * protection. It does not, and the distinction is that the fail-closed reading
+ * applies to a hook that RAN. A registration the host does not act on spawns no
+ * process at all, so there is no exit code and no empty stdout for it to
+ * interpret; the tool call follows the host's own permission flow exactly as it
+ * would with no plugin installed. The failure here is therefore the SAME silent
+ * absence the other two hosts have, and this host is not the sharper case on
+ * that axis.
+ *
+ * BE PRECISE ABOUT WHAT IS SOURCED, because the drop itself is the one premise
+ * here with no vendor statement behind it. The other three harnesses each name
+ * theirs — Codex from `HookEventName` in `protocol.rs` per tag, Claude Code
+ * from the host's own `unknown hook event; entry ignored`, Copilot from a
+ * recorded `Ignoring unknown hook event(s)` log line. This host's hooks
+ * reference documents the event set, the `enabled` toggle and the matcher
+ * semantics, and says nothing whatever about a name it does not recognise: the
+ * words unknown, unrecognised, dropped and silently do not appear in it, and
+ * every occurrence of "ignored" is about the MATCHER being ignored for
+ * PreInvocation, PostInvocation and Stop. So treat "an unrecognised name is
+ * dropped" as INFERRED — from the absence of any documented rejection path, and
+ * from all three sibling hosts behaving that way — rather than as documented,
+ * and replace this sentence with a citation if one ever appears.
+ *
+ * What IS vendor-documented is that this host drops hook configuration
+ * silently, by a route this table cannot express at all: 1.2.4 fixed
+ * "`hooks.json` configurations being silently dropped when customization token
+ * budget truncation is active". That is not a version floor — it is a runtime
+ * condition — so no row here can describe it, and it is recorded because it
+ * means a present, current-version entry can still be absent.
+ *
+ * WHERE A VERSION COMES FROM: NOWHERE, AND THAT IS THE FINDING. The Claude Code
+ * reader does not transfer, and neither does the Codex one, because this host
+ * publishes its version to a session through no channel at all. Three were
+ * checked and each is negative:
+ *
+ *   - THE HOOK PAYLOAD. The host documents one closed set of common fields
+ *     delivered to every event — `conversationId`, `workspacePaths`,
+ *     `transcriptPath`, `artifactDirectoryPath` and `modelName`. Note the last
+ *     one: the payload is not merely sparse, it carries a per-invocation fact
+ *     the host had to look up, and still carries no host version.
+ *   - THE TRANSCRIPT. Its records are FLAT — `source`, `type`, `created_at`,
+ *     `status`, `step_index`, and optionally `content`, `thinking`,
+ *     `tool_calls`, `exit_code`, `truncated_fields`. There is no header record
+ *     of any kind, so Codex's `session_meta.cli_version` has no counterpart and
+ *     the Claude Code trick of a version stamped on every record has nothing to
+ *     read. Both ends of the file were considered; neither carries one.
+ *   - THE HOST ENV. What this host exports is provider selection
+ *     (`GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_GEMINI_BASE_URL`). No version var.
+ *
+ * A fourth avenue — spawning the CLI to ask it — is the one `hostCliVersion()`
+ * already covers at INSTALL time and is unsound inside a session for the reason
+ * it is unsound on the other hosts: it reports the binary on PATH rather than
+ * the process running this turn. On this host it is worse than unsound, because
+ * a spawn is a blocking stretch on a hook thread whose watchdog cannot preempt
+ * it, and a hook that outlasts the host is a denied tool call.
+ *
+ * SO NOTHING BELOW HAS A RUNTIME READER, and none is wired. `hostFloorGaps`
+ * reads the Claude Code table alone; that is deliberate, not an omission. The
+ * table is still worth stating, for the reason the next paragraph gives.
+ *
+ * WHERE IT WOULD BE OBSERVED AND SAID, if a reader ever appears, so that work
+ * does not start from scratch. `PreInvocation` carries `invocationNum`, a
+ * 0-indexed counter, so `invocationNum === 0` identifies a genuinely fresh first
+ * invocation — the equivalent of the fresh-start gate Codex needs and the
+ * soundness Claude Code gets from firing after a write. And `PreInvocation` is
+ * the natural place to SAY a line, though not the only possible one: stderr is
+ * the channel every hook here already uses (`warnIfStoreRedirected` is called
+ * from all four, and `pre-tool-use.ts` writes the store-degraded notice on its
+ * own allow path). What `PreToolUse` lacks is a message channel OF ITS OWN —
+ * its output carries `decision`, `reason` and `permissionOverrides`, and the
+ * host documents `reason` as the explanation for THE DECISION rather than as a
+ * deny-only field. Attaching a line to an allow is therefore possible and
+ * declined, because the host may not surface it; that is this package's choice,
+ * not a constraint the host imposes. `PreInvocation` is preferred because it is
+ * the session opener on a host with no SessionStart, not because it is the only
+ * hook that can print.
+ */
+export const ANTIGRAVITY_HOST_FEATURE = {
+  EndOfTurnCapture: 'end-of-turn-capture',
+} as const;
+
+export type AntigravityHostFeature =
+  (typeof ANTIGRAVITY_HOST_FEATURE)[keyof typeof ANTIGRAVITY_HOST_FEATURE];
+
+/**
+ * Antigravity floors — ONE row, and unlike the Codex table its emptiness was
+ * not an option.
+ *
+ * `Stop` is the row. Read from the host's own release notes at 1.1.10:
+ * hooks declared in `hooks.json` were moved to run BEFORE the built-in
+ * termination checks, "which lets `PostInvocation` hooks observe the final
+ * invocation of a turn and lets `Stop` hooks run at all instead of sitting
+ * unreachable behind the built-ins". Every earlier release therefore accepts a
+ * `Stop` registration, loads it — and never runs it.
+ *
+ * IT IS NOT EVEN VISIBLE IN THE HOST'S OWN LISTING over the range this row
+ * covers, which cuts against the instinct to say "but the user could see it was
+ * registered". 1.2.3 fixed "the `/hooks` command and hook inspection utilities
+ * omitting hooks bundled inside enabled plugins when listing active
+ * `hooks.json` configurations", and AKA's hooks are plugin-bundled
+ * (`plugins/antigravity/plugin.json` declares `"hooks": "./hooks.json"`), so
+ * every version this floor describes — 1.0.0 through 1.1.9, and on past it to
+ * 1.2.2 — showed the user nothing at all. The absence is more invisible than a
+ * dropped entry, not less.
+ *
+ * THAT IS A DIFFERENT MECHANISM FROM A DROPPED ENTRY, AND THE SAME OUTCOME.
+ * The name parsed; the handler was simply unreachable. The partition is about
+ * which protections a host version actually delivers, so "recognised but never
+ * reached" belongs in it exactly as "not recognised" does — from the outside
+ * they are one event: the plugin installs clean and the protection is absent.
+ *
+ * WHAT IS LOST BELOW 1.1.10 is narrower than losing the event suggests, and
+ * saying so is the point of a per-protection label. This plugin's `Stop` hook
+ * does two things, and both have another caller: it TRIGGERS the background
+ * reconcile worker, which `PreInvocation` and `PostToolUse` also trigger, and
+ * it makes the once-per-session store-redirect check, which `PreInvocation`
+ * makes too behind the same marker. So the capture path survives and what goes
+ * is the end-of-turn trigger — the one that reconciles the tail of a turn once
+ * no further tool call or invocation is coming. Below 1.1.10 that tail waits
+ * for the next turn, and when the lost `Stop` was the session's last event
+ * there is no next turn: it waits until that conversation is resumed or a
+ * backfill sweeps it.
+ *
+ * WHY THE ROW EXISTS WITH NO READER TO ACT ON IT — the question the Codex table
+ * answers the other way, and the two are not inconsistent. The partition forces
+ * every registered event into one of two halves, and the baseline half asserts
+ * that no supported host is missing the event. For Codex that assertion is TRUE
+ * of all five, so an empty floor table states a fact. Putting `Stop` in this
+ * host's baseline would state a FALSEHOOD, because 1.0.0 through 1.1.9 are
+ * exactly the hosts that are missing it. A row is the only honest encoding, and
+ * it costs nothing to be right early: it warns nobody today for want of a
+ * version reader, and it is already correct on the day one lands.
+ *
+ * EVERY `since` HERE IS ON THE CLI's 1.x LINE, and that has to be stated
+ * because this product family ships more than one. The `agy` CLI versions as
+ * 1.x (1.1.10, 1.2.7); "Antigravity 2.0" versions as 2.x; the IDE build is a
+ * third. `compareBinaryVersions` compares numeric cores and knows nothing about
+ * which line a string came from, so handing it a 2.x version against a 1.x
+ * floor yields a confident answer computed across two unrelated histories — it
+ * reads "no gap" today only because 2 > 1. A reader that observes a version
+ * must therefore establish WHICH build it belongs to before comparing it here,
+ * and a floor for a non-CLI line needs its own table rather than a row in this
+ * one. Hooks are what this plugin registers and hooks run in the CLI, which is
+ * why one line is enough for now.
+ *
+ * Read any further `since` off that line's own release history, as this one was,
+ * and confirm it parses — `compareBinaryVersions` answers 0 for an unparseable
+ * input and 0 is not < 0, so a typo makes its row silently never fire.
+ */
+export const ANTIGRAVITY_HOST_FLOORS: Record<AntigravityHostFeature, HostFloorRow> = {
+  [ANTIGRAVITY_HOST_FEATURE.EndOfTurnCapture]: {
+    label: 'end-of-turn history capture',
+    hookEvents: ['Stop'],
+    since: '1.1.10',
+  },
+};
+
+/**
+ * The Antigravity events old enough that no supported host is missing them.
+ *
+ * All three date from the initial 1.0.0 release, which shipped with the hook
+ * system already in place — the host's release notes carry fixes to the
+ * pre-tool hook decision path and to its own hook-listing command within the
+ * first sixteen patches, and add none of these three events after it.
+ *
+ * `PostInvocation` is absent from both halves because this plugin does not
+ * register it, which the partition guard checks in that direction too: a floor
+ * for an event nobody registers is a warning nobody needs.
+ */
+export const ANTIGRAVITY_BASELINE_HOOK_EVENTS: readonly string[] = [
+  'PreInvocation',
+  'PreToolUse',
+  'PostToolUse',
 ];

@@ -48,8 +48,16 @@ export {
   readHookFailOpens,
   recordHookFailOpen,
 } from './hook-fail-opens.ts';
-export type { CodexHostFeature, HostFeature, HostFloorRow } from './host-floor.ts';
+export type {
+  AntigravityHostFeature,
+  CodexHostFeature,
+  HostFeature,
+  HostFloorRow,
+} from './host-floor.ts';
 export {
+  ANTIGRAVITY_BASELINE_HOOK_EVENTS,
+  ANTIGRAVITY_HOST_FEATURE,
+  ANTIGRAVITY_HOST_FLOORS,
   BASELINE_HOOK_EVENTS,
   CODEX_BASELINE_HOOK_EVENTS,
   CODEX_HOST_FEATURE,

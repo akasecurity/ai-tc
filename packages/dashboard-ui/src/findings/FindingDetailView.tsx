@@ -6,7 +6,7 @@ import type { ReactNode } from 'react';
 
 import { relativeTime } from '../lib/relativeTime.ts';
 import { MetaItem, SectionLabel } from '../shared/DetailFields.tsx';
-import { ChevronLeftIcon, ChevronRightIcon, EyeOffIcon, KeyIcon } from '../shared/icons.tsx';
+import { ChevronLeftIcon, ChevronRightIcon, KeyIcon } from '../shared/icons.tsx';
 import { Provider } from '../shared/Provider.tsx';
 import { ActionTag } from './ActionTag.tsx';
 import { DeploymentMetaItem } from './DeploymentMetaItem.tsx';
@@ -193,10 +193,7 @@ export function FindingDetailView({
 function MatchedContent({ code, snippet, file }: { code: string; snippet: string; file: string }) {
   return (
     <div>
-      <SectionLabel className="flex items-center gap-2">
-        Matched content
-        <EyeOffIcon aria-hidden focusable={false} className="size-3.5" />
-      </SectionLabel>
+      <SectionLabel className="flex items-center gap-2">Matched content</SectionLabel>
       <div className="rounded-lg border border-border bg-ink p-3.5 font-mono text-xs leading-relaxed text-code-fg">
         <div className="text-code-muted wrap-break-word">{`// ${file}`}</div>
         <div>

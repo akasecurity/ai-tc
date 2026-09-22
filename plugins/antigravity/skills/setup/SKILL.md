@@ -937,11 +937,12 @@ for the next turn — and if the user closes the session after that turn there i
 no next turn, so it waits until they reopen that conversation or a history sweep
 picks it up — `node "${PLUGIN_ROOT}/scripts/backfill.js"`, the plain
 human-output form of the scan this skill runs during calibration. It covers the
-last 30 days and needs the historical-read grant, so it is not a fallback for a
-user who declined that; do **not** reach for `--triage` here, which is the
+last 30 days and needs the historical-read grant, so it is not a fallback for
+a user who declined that; do **not** reach for `--triage` here, which is the
 machine JSONL channel for the judge pipeline: it carries `rawMatch` and its
 surrounding context unmasked, and its own contract requires a consumer to run
-the raw-egress guardrails before either reaches a log or a rendered surface.
+the raw-egress guardrails before either reaches a persisted row, a log, or a
+rendered surface.
 Check there first if a recent session looks like it is missing its last
 exchange. **AKA cannot detect this and will not warn about it**: this host tells
 a session nothing about its own version — no payload field, no transcript

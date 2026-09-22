@@ -928,23 +928,26 @@ the host's own behaviour rather than a misconfiguration: hooks declared in
 `hooks.json` used to be ordered behind the built-in termination checks, so a
 `Stop` entry loaded and was never reached. 1.1.10 moved them in front. The
 host's own `/hooks` listing did not show it either — that command omitted
-plugin-bundled hooks, which AKA's are, until 1.2.3. What it costs is narrower than losing the
-event sounds — AKA's `Stop` hook triggers the background pass that reads the
-transcript, and `PreInvocation` and `PostToolUse` trigger it too, so capture
-still happens and what is missing is the trigger that reconciles the tail of a
-turn once nothing further is coming. On an older host that tail waits for the
-next turn — and if the user closes the session after that turn there is no next
-turn, so it waits until they reopen that conversation or a history sweep picks
-it up — `node "${PLUGIN_ROOT}/scripts/backfill.js"`, the plain human-output form
-of the scan this skill runs during calibration. It covers the last 30 days and
-needs the historical-read grant, so it is not a fallback for a user who declined
-that; do **not** reach for `--triage` here, which is the machine JSONL channel
-for the judge pipeline and emits nothing without model-judge consent. Check
-there first if a recent session looks like it is missing its last exchange. **AKA cannot detect this and will not warn about it**: this
-host tells a session nothing about its own version — no payload field, no
-transcript record, no environment variable carries one — so if a user asks why
-the last stretch of a turn showed up late, ask for their `agy` version rather
-than expecting AKA to have flagged it.
+plugin-bundled hooks, which AKA's are, until 1.2.3. What it costs is narrower
+than losing the event sounds — AKA's `Stop` hook triggers the background pass
+that reads the transcript, and `PreInvocation` and `PostToolUse` trigger it too,
+so capture still happens and what is missing is the trigger that reconciles the
+tail of a turn once nothing further is coming. On an older host that tail waits
+for the next turn — and if the user closes the session after that turn there is
+no next turn, so it waits until they reopen that conversation or a history sweep
+picks it up — `node "${PLUGIN_ROOT}/scripts/backfill.js"`, the plain
+human-output form of the scan this skill runs during calibration. It covers the
+last 30 days and needs the historical-read grant, so it is not a fallback for a
+user who declined that; do **not** reach for `--triage` here, which is the
+machine JSONL channel for the judge pipeline: it carries `rawMatch` and its
+surrounding context unmasked, and its own contract requires a consumer to run
+the raw-egress guardrails before either reaches a log or a rendered surface.
+Check there first if a recent session looks like it is missing its last
+exchange. **AKA cannot detect this and will not warn about it**: this host tells
+a session nothing about its own version — no payload field, no transcript
+record, no environment variable carries one — so if a user asks why the last
+stretch of a turn showed up late, ask for their `agy` version rather than
+expecting AKA to have flagged it.
 
 **The reversible secret vault is not wired for Antigravity sessions**, so this
 wizard does not offer the vault-consent step: everything AKA redacts here is

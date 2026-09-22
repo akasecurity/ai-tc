@@ -77,7 +77,7 @@ export function FindingDetailView({
       <SheetHeader className="flex-row items-center gap-2.5 border-b border-border p-4 pr-12">
         <SeverityBadge severity={finding.severity} />
         {/* Doubles as the dialog's accessible name (Radix aria-labelledby). */}
-        <SheetTitle className="font-mono text-xs font-semibold text-text-3">
+        <SheetTitle className="min-w-0 font-mono text-xs font-semibold text-text-3 wrap-break-word">
           {grouped ? category : instance.id}
         </SheetTitle>
       </SheetHeader>

@@ -140,6 +140,27 @@ describe('hostFloorGaps', () => {
     expect(gaps.map((g) => g.since)).toEqual(['2.1.251']);
   });
 
+  it("reads the Claude Code table alone, never a sibling host's row", () => {
+    // The separation is stated as deliberate in host-floor.ts and was held by
+    // nothing: merging ANTIGRAVITY_HOST_FLOORS into this loop left this file
+    // 31/31 and the plugin's notice suite 14/14 green. Every other case here
+    // drives a 2.x version, and every sibling floor is below that, so an
+    // injected row clears the comparison and surfaces in no assertion.
+    //
+    // 0.0.1 is the whole point: a version below EVERY table's floors is the only
+    // one at which a sibling row can appear, so this is the one shape that can
+    // see the defect. Compared against the table's own keys rather than a
+    // literal list, so adding a Claude Code row does not red it — only a row
+    // from another host's table does.
+    //
+    // It matters because `hostFloorGaps` and `requiredHostVersion` back
+    // `aka plugins install`'s pre-install warning and `hostCompatibilityLines`
+    // backs `aka status`: a sibling row reached from any of them renders another
+    // host's label to a Claude Code user, and hands `requiredHostVersion` a
+    // floor from a different version line to compare against.
+    expect(hostFloorGaps('0.0.1').map((g) => g.feature)).toEqual(Object.keys(HOST_FLOORS));
+  });
+
   it('is SILENT on a version it cannot read, rather than guessing', () => {
     // A false "update Claude Code" on a correct install costs more than a
     // missed warning, so every unknown resolves to no gaps.

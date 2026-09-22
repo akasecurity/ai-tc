@@ -68,6 +68,9 @@ import * as barrel from '../src/index.ts';
  * would show in review.
  */
 const PUBLIC_VALUE_EXPORTS = [
+  'ANTIGRAVITY_BASELINE_HOOK_EVENTS',
+  'ANTIGRAVITY_HOST_FEATURE',
+  'ANTIGRAVITY_HOST_FLOORS',
   'BASELINE_HOOK_EVENTS',
   'CODEX_BASELINE_HOOK_EVENTS',
   'CODEX_HOST_FEATURE',

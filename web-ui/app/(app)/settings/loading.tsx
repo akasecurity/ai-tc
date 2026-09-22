@@ -5,7 +5,7 @@ import { CardSkeleton, PageHeadSkeleton } from '../../components/skeletons';
 // skeleton followed by a compact page is a layout jump, not a loading state.
 export default function Loading() {
   return (
-    <div aria-busy className="flex max-w-4xl flex-col gap-7 p-6">
+    <div aria-busy className="flex max-w-3xl flex-col gap-7 p-6">
       <PageHeadSkeleton />
       <CardSkeleton className="h-28 rounded-xl" />
       <CardSkeleton className="h-16 rounded-xl" />

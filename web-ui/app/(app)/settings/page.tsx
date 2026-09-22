@@ -42,7 +42,7 @@ export default function SettingsPage() {
           reads "Review it above to resume", which names the control in the
           section this sits under. */}
       {sync !== null && (
-        <div className="mt-4">
+        <div className="mt-7 max-w-3xl">
           <SyncPanel sync={sync} renderedAt={renderedAt} />
         </div>
       )}

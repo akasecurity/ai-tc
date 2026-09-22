@@ -254,7 +254,7 @@ export function InventoryClient({
           if (!open) push({ sel: activeSel, path, fq });
         }}
       >
-        <SheetContent className="max-w-120 p-0" aria-describedby={undefined}>
+        <SheetContent className="p-0" aria-describedby={undefined}>
           {proj &&
             drawer !== null &&
             (fileDetail ? (

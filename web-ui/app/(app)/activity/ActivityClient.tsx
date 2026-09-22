@@ -240,7 +240,7 @@ export function ActivityClient({
       >
         {/* No description in this panel — opt out of Radix's aria-describedby. */}
         <SheetContent
-          className="w-320 max-w-[96%] gap-0 overflow-hidden p-0"
+          className="w-7xl max-w-[96%] gap-0 overflow-hidden p-0"
           aria-describedby={undefined}
         >
           {/* The view renders its own visible heading; this is the accessible

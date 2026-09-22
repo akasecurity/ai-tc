@@ -846,7 +846,12 @@ export function WorkspaceSettingsFormView({
     webChatTouched;
 
   return (
-    <div className="flex max-w-3xl flex-col gap-7">
+    // No width of its own: the host decides how wide the settings column is, and
+    // a cap here would silently outrank a narrower one it chose. That is not
+    // theoretical — with both declaring a width and only the page retuned, the
+    // form stays put while the panel below it does not, which is the divergence
+    // this view's own page was fixed for.
+    <div className="flex flex-col gap-7">
       {unrecognized !== undefined && (
         <p className="text-xs text-text-3" data-slot="managed-unrecognized">
           {unrecognized}

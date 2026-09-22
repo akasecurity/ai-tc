@@ -273,10 +273,7 @@ export function DataSharesClient({
         onOpenChange={makeReviewSheetOpenChangeHandler(drawerOpen, closeDrawer, setReviewOpen)}
       >
         <SheetContent
-          className={cn(
-            'transition-[width] duration-200 ease-out',
-            drawerOpen ? 'w-117 max-w-[92%] gap-0 p-0' : 'w-160 max-w-[94%] gap-0 p-0',
-          )}
+          className="gap-0 p-0"
           {...(drawerOpen ? { 'aria-describedby': undefined } : {})}
         >
           {drawerOpen ? (

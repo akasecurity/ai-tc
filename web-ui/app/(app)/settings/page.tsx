@@ -30,7 +30,16 @@ export default function SettingsPage() {
   const renderedAt = renderInstant();
   const sync = readSyncPanel(settings, credentialState, renderedAt);
   return (
-    <div className="p-6">
+    // ONE width for the page: the heading, the form and the panel below it all
+    // sit in this container rather than each naming a width. A second copy is
+    // how the panel came to overhang the form it sits under.
+    //
+    // `box-content` is load-bearing: `max-w-3xl` otherwise caps the BORDER box,
+    // so the padding would come out of the column and the cards would measure
+    // 720px rather than 768px. It is what lets the width and the padding share
+    // one element, which keeps this page a flat list of children — the shape
+    // its route tests read.
+    <div className="box-content max-w-3xl p-6">
       <PageHead title="Settings" sub="Workspace configuration for this machine." />
       <SettingsClient
         settings={settings}
@@ -42,7 +51,7 @@ export default function SettingsPage() {
           reads "Review it above to resume", which names the control in the
           section this sits under. */}
       {sync !== null && (
-        <div className="mt-4">
+        <div className="mt-7">
           <SyncPanel sync={sync} renderedAt={renderedAt} />
         </div>
       )}

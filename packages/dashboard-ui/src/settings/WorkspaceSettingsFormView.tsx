@@ -464,7 +464,7 @@ function SettingRow<T extends string>({
       // reads "Allow vaulting" on a machine where vaulting is paused.
       open={defaultOpen === true}
     >
-      <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 hover:bg-surface-2">
+      <summary className="flex cursor-pointer list-none items-start gap-3 px-4 py-3 hover:bg-surface-2">
         <ChevronRight />
         <span className="flex-1">
           <span id={headingId} className="block text-sm font-medium text-text">
@@ -496,7 +496,7 @@ function SettingRow<T extends string>({
           </span>
         )}
       </summary>
-      <div className="px-4 pb-4 pl-11">
+      <div className="px-4 pb-4 pl-11 pt-3">
         {notice}
         {managed !== undefined && (
           <p className="mb-3 text-xs text-text-3" data-slot="managed-notice">
@@ -580,7 +580,7 @@ function ChoiceGroup<T extends string>({
             className="mt-1 accent-primary"
           />
           <span>
-            <span className="block text-sm font-semibold text-text">{c.label}</span>
+            <span className="block text-sm font-medium text-text">{c.label}</span>
             <span className="mt-0.5 block text-xs text-text-2">{c.description}</span>
           </span>
         </label>
@@ -846,7 +846,15 @@ export function WorkspaceSettingsFormView({
     webChatTouched;
 
   return (
-    <div className="flex max-w-4xl flex-col gap-7">
+    // No width of its own: the host decides how wide the settings column is. A
+    // cap here could never make the form NARROWER than a host that already
+    // bounds it — a block flex root resolves `width: auto` against its parent,
+    // so its own `max-width` only binds when the host is WIDER. What it does
+    // then is pin the form at its own number while siblings outside this
+    // element follow the host. That is not theoretical: with both declaring a
+    // width and only the page retuned, the form stays put while the panel below
+    // it does not, which is the divergence this view's own page was fixed for.
+    <div className="flex flex-col gap-7">
       {unrecognized !== undefined && (
         <p className="text-xs text-text-3" data-slot="managed-unrecognized">
           {unrecognized}

@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import type { CredentialState, ManagedContext, WorkspaceSettings } from '@akasecurity/schema';
 import {
   BUILTIN_POLICIES,
@@ -1527,5 +1530,53 @@ describe('body-expiry section', () => {
     // which is how this assertion first went green with the lock deleted.
     const field = html.slice(html.indexOf('data-slot="retain-days"'));
     expect(field.slice(0, field.indexOf('</div>'))).toContain('disabled=""');
+  });
+});
+
+// The view declares no width, because the host owns the settings column. That
+// is a property of the SOURCE rather than of any render: the cap it replaced
+// was inert against the page's equal one, so re-adding it changes no markup and
+// no assertion in this file — verified by putting `max-w-3xl` back and watching
+// all 749 cases here and all 1081 in web-ui stay green.
+//
+// Same shape as the sheet panel's default (packages/ui-kit/test/sheet.test.ts):
+// something a caller inherits by the component saying nothing, which no
+// rendering test can see it stop saying. Reading page source for a claim
+// nothing else observes has precedent here — web-ui's settings-page-head suite
+// does it.
+//
+// What makes the cap worth forbidding rather than merely noting: it binds only
+// when the host is WIDER (a block flex root resolves `width: auto` against its
+// parent, so it cannot lose to a narrower one), and then it pins the form while
+// siblings outside this element follow the host — which is the 768-against-1129
+// divergence the page was fixed for.
+describe('WorkspaceSettingsFormView width ownership', () => {
+  const VIEW_SOURCE = readFileSync(
+    fileURLToPath(new URL('../../src/settings/WorkspaceSettingsFormView.tsx', import.meta.url)),
+    'utf8',
+  );
+
+  /** The className on the view's own root element. */
+  function rootClassName(): string {
+    const start = VIEW_SOURCE.indexOf('export function WorkspaceSettingsFormView(');
+    if (start === -1)
+      throw new Error('no `export function WorkspaceSettingsFormView(` in the view');
+    const match = /<div className="([^"]*)"/.exec(VIEW_SOURCE.slice(start));
+    if (match?.[1] === undefined) throw new Error('no root `<div className="…">` after the export');
+    return match[1];
+  }
+
+  it('declares no width on its root — the host supplies the column', () => {
+    expect(rootClassName()).not.toMatch(/\b(?:max-w|min-w|w)-/);
+  });
+
+  it('reads the ROOT, not an inner element that legitimately sets a width', () => {
+    // Without this the pin is only as good as the locator: an inner element
+    // carrying `w-20` (the retain-days field) would satisfy the assertion above
+    // in the reverse direction — it would fail — but a locator that drifted to
+    // some OTHER inner element with no width would pass it vacuously forever.
+    expect(VIEW_SOURCE).toMatch(/\bw-20\b/); // the decoy is really in this file
+    expect(rootClassName()).not.toContain('w-20');
+    expect(rootClassName()).toContain('flex-col'); // and the root is what we got
   });
 });

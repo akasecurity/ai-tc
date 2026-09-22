@@ -612,7 +612,9 @@ describe('findings drawer — the Deployment row', () => {
     mount({ instances: onePage() });
     click(byText('tr', 'MASK-f1', panel()));
     // The drawer did open, so the absence below is not the absence of a drawer.
-    expect(document.body.textContent).toContain('Back to finding');
+    // Anchored on a label only the drawer renders — the row behind it carries a
+    // "Source" column but never these two words together.
+    expect(document.body.textContent).toContain('Matched content');
     expect(document.body.textContent).not.toContain('Based on its latest detection.');
   });
 });

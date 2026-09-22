@@ -1,13 +1,11 @@
 'use client';
 
-import type { FindingInstance } from '@akasecurity/schema';
-import { Button, cn, SeverityBadge, SheetHeader, SheetTitle } from '@akasecurity/ui-kit';
+import { cn, SeverityBadge, SheetHeader, SheetTitle } from '@akasecurity/ui-kit';
 import type { ReactNode } from 'react';
 
 import { relativeTime } from '../lib/relativeTime.ts';
 import { MetaItem, SectionLabel } from '../shared/DetailFields.tsx';
-import { ChevronLeftIcon, ChevronRightIcon, EyeOffIcon, KeyIcon } from '../shared/icons.tsx';
-import { Provider } from '../shared/Provider.tsx';
+import { KeyIcon } from '../shared/icons.tsx';
 import { ActionTag } from './ActionTag.tsx';
 import { DeploymentMetaItem } from './DeploymentMetaItem.tsx';
 import {
@@ -36,22 +34,20 @@ function Confidence({ confidence }: { confidence: number }) {
 }
 
 /**
- * Right-drawer body for a finding — grouped (locations list) or single instance.
+ * Right-drawer body for ONE finding instance. Every caller opens the drawer
+ * already narrowed to a row, so there is no group to render or step back to —
+ * `Selection.instance` is required, which is what keeps that true.
  * Presentational: no data fetching, no mutations. App-specific affordances
  * (matched policy, Resolve, Action) are injected by the app via `footer`; the
  * OSS web-ui passes none.
  */
 export function FindingDetailView({
   selection,
-  onSelectInstance,
-  onBack,
   footer,
   deployment,
   renderedAt,
 }: {
   selection: Selection;
-  onSelectInstance: (instance: FindingInstance) => void;
-  onBack: () => void;
   footer?: ReactNode;
   /**
    * The deployment this machine sends to, or null/absent where it is not
@@ -68,8 +64,6 @@ export function FindingDetailView({
 }) {
   const { finding, instance } = selection;
   const Icon = CATEGORY_ICON_FALLBACK[finding.category] ?? KeyIcon;
-  const grouped = !instance;
-  const providerCount = finding.providers.length;
   const category = categoryLabel(finding.category);
 
   return (
@@ -77,19 +71,11 @@ export function FindingDetailView({
       <SheetHeader className="flex-row items-center gap-2.5 border-b border-border p-4 pr-12">
         <SeverityBadge severity={finding.severity} />
         {/* Doubles as the dialog's accessible name (Radix aria-labelledby). */}
-        <SheetTitle className="font-mono text-xs font-semibold text-text-3">
-          {grouped ? category : instance.id}
+        <SheetTitle className="min-w-0 font-mono text-xs font-semibold text-text-3 wrap-break-word">
+          {instance.id}
         </SheetTitle>
       </SheetHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
-        {/* Back link to the grouped view (single-instance, multi-location only). */}
-        {!grouped && (
-          <Button variant="link" tone="primary" size="sm" onClick={onBack} className="self-start">
-            <ChevronLeftIcon aria-hidden focusable={false} className="size-4" />
-            Back to finding
-          </Button>
-        )}
-
         {/* Title */}
         <div className="flex items-start gap-3">
           <span
@@ -103,9 +89,8 @@ export function FindingDetailView({
           <div className="flex flex-col">
             <span className="font-display text-base font-semibold">{finding.subtype}</span>
             <span className="text-xs text-text-3">
-              {grouped
-                ? `${String(finding.instanceCount)} locations · ${String(providerCount)} tool${providerCount > 1 ? 's' : ''}`
-                : `${category} · ${instance.repo} · detected ${relativeTime(instance.detectedAt, renderedAt)}`}
+              {category} · {instance.repo} · detected{' '}
+              {relativeTime(instance.detectedAt, renderedAt)}
             </span>
           </div>
         </div>
@@ -114,73 +99,44 @@ export function FindingDetailView({
         <MatchedContent
           code={finding.match.contextPrefix}
           snippet={finding.match.maskedValue}
-          file={
-            grouped ? `${String(finding.instanceCount)} locations` : instanceLocationLabel(instance)
-          }
+          file={instanceLocationLabel(instance)}
         />
 
-        {grouped ? (
-          <div>
-            <SectionLabel>Locations</SectionLabel>
-            <div className="flex flex-col gap-2">
-              {finding.instances.map((i) => (
-                <LocationRow
-                  key={i.id}
-                  instance={i}
-                  onClick={() => {
-                    onSelectInstance(i);
-                  }}
-                />
-              ))}
-            </div>
-            {/* `instances` is the newest slice of a large group, not all of it —
-              and under a status filter the store narrows it further, possibly
-              to none (every matching location older than the preview). */}
-            {finding.instances.length < finding.instanceCount && (
-              <p className="pt-2 text-xs text-text-3">
-                {finding.instances.length === 0
-                  ? `No locations here match the current filters — the group has ${String(finding.instanceCount)} locations in total.`
-                  : `Showing the ${String(finding.instances.length)} most recent of ${String(finding.instanceCount)} locations.`}
-              </p>
-            )}
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-x-3 gap-y-3.5">
-            <MetaItem label="Source tool">
-              <ProviderTag provider={instance.provider} />
-            </MetaItem>
-            <MetaItem label="Repository">
-              <span className="font-mono text-xs wrap-break-word">{instance.repo}</span>
-            </MetaItem>
-            <MetaItem label="Location">
-              <span className="font-mono text-xs wrap-break-word">
-                {instanceLocationLabel(instance)}
+        <div className="grid grid-cols-2 gap-x-3 gap-y-3.5">
+          <MetaItem label="Source tool">
+            <ProviderTag provider={instance.provider} />
+          </MetaItem>
+          <MetaItem label="Repository">
+            <span className="font-mono text-xs wrap-break-word">{instance.repo}</span>
+          </MetaItem>
+          <MetaItem label="Location">
+            <span className="font-mono text-xs wrap-break-word">
+              {instanceLocationLabel(instance)}
+            </span>
+          </MetaItem>
+          <MetaItem label="Action taken">
+            <ActionTag action={instance.action} />
+          </MetaItem>
+          <MetaItem label="Detected">{relativeTime(instance.detectedAt, renderedAt)}</MetaItem>
+          <MetaItem label="Confidence">
+            <Confidence confidence={instance.confidence} />
+          </MetaItem>
+          {/* Only a store that attributes findings to people sets `user`. */}
+          {instance.user !== undefined && (
+            <MetaItem label="User">
+              <span title={USER_COLUMN_TITLE}>
+                <UserCell user={instance.user} />
               </span>
             </MetaItem>
-            <MetaItem label="Action taken">
-              <ActionTag action={instance.action} />
-            </MetaItem>
-            <MetaItem label="Detected">{relativeTime(instance.detectedAt, renderedAt)}</MetaItem>
-            <MetaItem label="Confidence">
-              <Confidence confidence={instance.confidence} />
-            </MetaItem>
-            {/* Only a store that attributes findings to people sets `user`. */}
-            {instance.user !== undefined && (
-              <MetaItem label="User">
-                <span title={USER_COLUMN_TITLE}>
-                  <UserCell user={instance.user} />
-                </span>
-              </MetaItem>
-            )}
-            {deployment !== undefined && deployment !== null && instance.delivery !== undefined && (
-              <DeploymentMetaItem
-                delivery={instance.delivery}
-                deployment={deployment}
-                renderedAt={renderedAt}
-              />
-            )}
-          </div>
-        )}
+          )}
+          {deployment !== undefined && deployment !== null && instance.delivery !== undefined && (
+            <DeploymentMetaItem
+              delivery={instance.delivery}
+              deployment={deployment}
+              renderedAt={renderedAt}
+            />
+          )}
+        </div>
 
         {/* App-injected sections (matched policy / Resolve / Action) render here. */}
         {footer}
@@ -193,10 +149,7 @@ export function FindingDetailView({
 function MatchedContent({ code, snippet, file }: { code: string; snippet: string; file: string }) {
   return (
     <div>
-      <SectionLabel className="flex items-center gap-2">
-        Matched content
-        <EyeOffIcon aria-hidden focusable={false} className="size-3.5" />
-      </SectionLabel>
+      <SectionLabel>Matched content</SectionLabel>
       <div className="rounded-lg border border-border bg-ink p-3.5 font-mono text-xs leading-relaxed text-code-fg">
         <div className="text-code-muted wrap-break-word">{`// ${file}`}</div>
         <div>
@@ -206,33 +159,5 @@ function MatchedContent({ code, snippet, file }: { code: string; snippet: string
         </div>
       </div>
     </div>
-  );
-}
-
-/** One clickable location in the grouped view's Locations list. */
-function LocationRow({ instance, onClick }: { instance: FindingInstance; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex items-center cursor-pointer gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-left transition-colors hover:bg-surface-2"
-    >
-      <Provider id={instance.provider} />
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <span className="text-xs font-medium text-text">{instance.repo}</span>
-        <span className="font-mono text-label text-text-3 wrap-break-word">
-          {instanceLocationLabel(instance)}
-        </span>
-        {/* Attribution, on the one view where "who owns this" matters most: a
-          group whose locations span several people named nobody here, because
-          only the single-instance branch rendered `user`. Set only by a store
-          that attributes findings to people. */}
-        {instance.user !== undefined && (
-          <span className="text-label text-text-3 wrap-break-word">{instance.user.name}</span>
-        )}
-      </div>
-      <ActionTag action={instance.action} />
-      <ChevronRightIcon className="size-4 shrink-0 text-text-3" />
-    </button>
   );
 }

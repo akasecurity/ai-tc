@@ -831,12 +831,10 @@ function InstancesPanel({
               renderedAt={renderedAt}
               deployment={deployment}
               // Every row IS a single finding, so the drawer opens narrowed and
-              // stays there — there is no group to step back to.
+              // stays there — there is no group to step back to. Closing runs
+              // through the Sheet's own onOpenChange above, which every route
+              // reaches: the ×, Escape, and a pointer down outside.
               selection={{ finding: instanceAsGroup(selected), instance: selected }}
-              onSelectInstance={() => undefined}
-              onBack={() => {
-                setSelectedInstanceId('');
-              }}
               {...(renderDrawerFooter ? { footer: renderDrawerFooter(selected) } : {})}
             />
           )}

@@ -341,9 +341,13 @@ export const FINDINGS_VIEW_LABEL: Record<FindingsView, string> = {
   files: 'By location',
 };
 
-/** The findings drawer target: a group, optionally narrowed to one instance. */
+/** The findings drawer target: one instance, plus the group it is folded from. */
 export interface Selection {
   finding: FindingGroup;
-  /** When present the drawer shows a single location; otherwise the grouped view. */
-  instance?: FindingInstance;
+  /**
+   * The row the drawer shows. Required, because every caller opens the drawer
+   * already narrowed to one instance — optional, it would describe a grouped
+   * rendering the drawer does not have.
+   */
+  instance: FindingInstance;
 }

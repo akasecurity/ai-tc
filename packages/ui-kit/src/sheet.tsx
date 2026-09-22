@@ -38,7 +38,7 @@ export function SheetContent({ className, children, side = 'right', ...props }: 
       <Dialog.Content
         data-slot="sheet-content"
         className={cn(
-          'fixed inset-y-0 z-50 flex h-full w-full max-w-md flex-col gap-4 overflow-y-auto border-border bg-surface p-6 shadow-lg outline-none',
+          'fixed inset-y-0 z-50 flex h-full w-full max-w-xl flex-col gap-4 overflow-y-auto border-border bg-surface p-6 shadow-lg outline-none',
           // Chosen here rather than left to the caller: `left-0` does not displace
           // `right-0` and `border-r` does not displace `border-l`, so a className
           // can add the new edge without ever removing the old one.

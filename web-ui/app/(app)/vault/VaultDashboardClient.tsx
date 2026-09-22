@@ -504,7 +504,7 @@ export function VaultDashboardClient({
 
   return (
     <Tabs defaultValue="inventory" className="flex flex-col gap-4">
-      <TabsList>
+      <TabsList className="self-start">
         <TabsTrigger value="inventory">Vaulted values</TabsTrigger>
         <TabsTrigger value="reuse">Reuse</TabsTrigger>
         <TabsTrigger value="audit">De-reference audit</TabsTrigger>

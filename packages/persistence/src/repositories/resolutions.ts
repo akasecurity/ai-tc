@@ -4,6 +4,7 @@ import type { DatabaseSync, StatementSync } from 'node:sqlite';
 import { FindingStatus, ResolutionMethod } from '@akasecurity/schema';
 
 import { allRows, getRow } from '../internal/rows.ts';
+import { withTransaction } from '../internal/transactions.ts';
 import { latestResolutionStatusSql } from './resolution-sql.ts';
 
 // What a caller supplies to record one disposition of a finding. `status`/
@@ -151,6 +152,37 @@ export class SqliteResolutionsRepository {
       evidence: r.evidence,
       createdAt: this.now(),
     });
+  }
+
+  /**
+   * Insert many dispositions as ONE transaction — all of them or none.
+   *
+   * A dashboard dismissal closes every open finding of a rule, which is one
+   * write per key; run loose, a fault partway leaves half a rule closed with
+   * nothing recording that the other half was meant to be. The caller then has
+   * no way to tell a partial run from a complete one, because the card it
+   * refreshes into just shows a smaller number either way.
+   *
+   * It THROWS rather than failing open, unlike the capture path. A capture
+   * dropped on the floor costs a record; a dismissal dropped on the floor is
+   * reported to the person as done, and the findings they believe they closed
+   * stay open with nobody looking at them.
+   */
+  insertResolutions(rows: readonly ResolutionInput[]): void {
+    if (rows.length === 0) return;
+    withTransaction(
+      this.db,
+      () => {
+        for (const r of rows) this.insertResolution(r);
+      },
+      // IMMEDIATE, because this writes and nothing else. A DEFERRED BEGIN takes
+      // a read lock and upgrades on the first INSERT, and SQLite will not run
+      // the busy handler for an upgrade that could deadlock — so a plugin hook
+      // holding the write lock fails the whole batch with SQLITE_BUSY however
+      // long busy_timeout is, on a machine that is merely busy. Taking the lock
+      // at BEGIN makes the wait an ordinary one that busy_timeout covers.
+      'IMMEDIATE',
+    );
   }
 
   /** The newest disposition recorded for a finding key, or undefined if none. */

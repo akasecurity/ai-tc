@@ -130,6 +130,15 @@ const HOT_READS: readonly HotRead[] = [
   { name: '/security topSources', run: (c) => c.security.topSources('30d', { limit: 5 }) },
   { name: '/security recentlyResolved', run: (c) => c.security.recentlyResolved() },
   { name: '/security recommendationInputs', run: (c) => c.security.recommendationInputs() },
+  // Not a page read: this one is on the Recommended Actions card's WRITE path,
+  // resolving the keys a dismissal writes against. It is here because it shares
+  // `LATEST_RESOLUTION_BY_KEY_SQL` with the rollup above and so carries the same
+  // full scan of `finding_resolution` — a plan that would otherwise change
+  // unobserved on the one read a user's click blocks on.
+  {
+    name: '/security openFindingKeysForRule',
+    run: (c) => c.security.openFindingKeysForRule('secrets/aws-access-key'),
+  },
   // NOT a `/security` read any more — the recommendations card reads the
   // status-scoped rollup above instead. It stays here because it is still the hot read behind
   // `aka tui`, `aka stats`, `aka plugins` and all three plugins' recommend and
@@ -245,6 +254,7 @@ const EXPECTED_FULL_INDEX_SCANS: Readonly<Record<string, readonly string[]>> = {
   // rule × category × severity) however large the store — which is why it is not on
   // the flat-ratio list in `security-page-scale.test.ts` either.
   '/security recommendationInputs': ['finding_resolution'],
+  '/security openFindingKeysForRule': ['finding_resolution'],
   // The ONE entry in this set that does not grow with the store, and the reason the
   // paragraph above says "usually" rather than "always". `recentFindings` scans
   // `idx_audit_started_at` in DESC order precisely so its `LIMIT` can stop the scan

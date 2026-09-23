@@ -204,6 +204,18 @@ export interface SecurityViews {
    * `?status=open&type=<rule>` opens.
    */
   recommendationInputs(): Promise<RecommendationInputRow[]>;
+
+  /**
+   * The distinct `finding_key`s behind one rule's {@link recommendationInputs}
+   * tally — the set a dashboard dismissal of that row writes against.
+   *
+   * Derived from the same "open at-rest" predicate as the tally, so the write
+   * cannot act on a different set than the count the user was shown. Its length
+   * is NOT that count: findings are keyed by value, so duplicates of one secret
+   * collapse to a single key, and a legacy at-rest row carries no key at all and
+   * is therefore countable but not dismissible. Both shrink it.
+   */
+  openFindingKeysForRule(ruleId: string): Promise<string[]>;
 }
 
 /**

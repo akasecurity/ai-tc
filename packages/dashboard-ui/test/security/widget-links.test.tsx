@@ -1,5 +1,6 @@
 import type {
   EnforcementAction,
+  RecommendedAction,
   ResolvedFeedItem,
   SeveritySummaryItem,
   TopSource,
@@ -162,6 +163,7 @@ describe('RecentlyResolvedCardView', () => {
 
 describe('RecommendedActionsCardView', () => {
   const noop = (): void => undefined;
+  const noDismiss = (): Promise<boolean> => Promise.resolve(false);
   const render = (props: Partial<Parameters<typeof RecommendedActionsCardView>[0]> = {}) =>
     renderToStaticMarkup(
       <RecommendedActionsCardView
@@ -169,7 +171,7 @@ describe('RecommendedActionsCardView', () => {
         isLoading={false}
         error={null}
         applyAction={noop}
-        dismissAction={noop}
+        dismissAction={noDismiss}
         isMutating={false}
         mutationError={null}
         {...props}
@@ -221,5 +223,44 @@ describe('RecommendedActionsCardView', () => {
     // It used to render as an enabled button with no handler — a control that looks
     // live and does nothing is worse than one that is absent.
     expect(render()).not.toContain('View all');
+  });
+
+  const row = (subjects: RecommendedAction['subjects']): RecommendedAction => ({
+    id: 'local-secret',
+    category: 'secret',
+    severity: 'critical' as const,
+    title: 'Exposed secret detected',
+    description: 'Rotate it.',
+    subjects,
+    action: { mode: 'navigate' as const, type: 'review_findings', label: 'Review findings' },
+  });
+
+  it('renders Dismiss for a row that names a rule', () => {
+    const html = render({
+      items: [row([{ type: 'rule', id: 'secrets/aws-access-key', label: 'aws · 3 findings' }])],
+    });
+    expect(html).toContain('Dismiss');
+  });
+
+  it('renders no Dismiss at all for a row naming no rule', () => {
+    // A dismissal writes against a rule, so a row carrying none has nothing to
+    // act on. Same rule the absent href follows one branch above: a control that
+    // cannot act is not drawn as though it can.
+    const html = render({ items: [row([{ type: 'repo', id: 'r1', label: 'acme/api' }])] });
+    expect(html).not.toContain('Dismiss');
+    // The control: the row itself still renders, so what went is the BUTTON
+    // rather than the whole item.
+    expect(html).toContain('Exposed secret detected');
+  });
+
+  it('keeps the dialog closed until a row is chosen', () => {
+    // The dialog is portalled and modal. Rendering it unconditionally would put
+    // its overlay over the page on first paint, and its confirmation copy into
+    // the markup of a card nobody has clicked.
+    const html = render({
+      items: [row([{ type: 'rule', id: 'secrets/aws-access-key', label: 'aws · 3 findings' }])],
+    });
+    expect(html).not.toContain('to confirm');
+    expect(html).not.toContain('dismiss-confirmation');
   });
 });

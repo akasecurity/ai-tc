@@ -11,6 +11,9 @@
 //   - SqliteSecurityRepository.mttrTrend (latest status/method/resolved_at)
 //   - SqliteSecurityRepository.recentlyResolved (latest status/method/resolved_at)
 //   - SqliteSecurityRepository.recommendationInputs (latest status)
+//   - SqliteSecurityRepository.openFindingKeysForRule (latest status; shares
+//     one predicate with recommendationInputs so the set a dismissal writes
+//     against is the set that read counted)
 //   - SqliteFindingsRepository.listFindingTypes (grouped per-rule status, via
 //     groupAggregates)
 //   - SqliteFindingsRepository.listFindingInstances (per-finding status column,

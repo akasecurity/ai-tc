@@ -30,6 +30,39 @@ import { LATEST_RESOLUTION_BY_KEY_SQL } from './resolution-sql.ts';
 
 const DAY_MS = 86_400_000;
 
+/**
+ * The FROM + WHERE of "an open at-rest finding", shared by the two reads that
+ * must agree about that set: {@link SqliteSecurityRepository.recommendationInputs},
+ * which counts them for the Recommended Actions card, and
+ * {@link SqliteSecurityRepository.openFindingKeysForRule}, which enumerates one
+ * rule's for a dismissal to write against. A caller appends its own further
+ * `AND` clauses and its own GROUP BY.
+ *
+ * `open` mirrors `deriveFindingStatus` — at-rest, minus resolved and dismissed.
+ * Note that is NOT `severitySummary`'s `openAtRest`, which keeps dismissed
+ * findings (a dismissal is a judgement, not a remediation) and drops untracked
+ * legacy rows. The two answer different questions, and only this one has to
+ * match both a link and a write.
+ *
+ * The redundant-looking `e.event_type` pair is deliberate and load-bearing for
+ * the PLAN, not for the result: `idx_audit_capture_rollup` is partial over the
+ * four capture kinds, so the `IN` is what makes the index eligible while the
+ * equality is what narrows to at-rest. Dropping either costs the index or
+ * widens the set.
+ */
+const OPEN_AT_REST_FINDINGS_SQL = `FROM inspection_findings f
+         JOIN audit_events e INDEXED BY idx_audit_capture_rollup ON e.id = f.audit_event_id
+         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
+         LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
+           ON latest.finding_key = f.finding_key
+         WHERE e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
+           AND e.event_type = 'code_change'
+           AND (
+             f.finding_key IS NULL
+             OR latest.status IS NULL
+             OR latest.status NOT IN ('resolved', 'dismissed')
+           )`;
+
 // All severities, highest-first — the contract requires every level present
 // (count may be 0), so we project onto this fixed list, not just what GROUP BY found.
 const SEVERITIES: readonly Severity[] = ['critical', 'high', 'medium', 'low'];
@@ -670,18 +703,7 @@ export class SqliteSecurityRepository implements SecurityViews {
                 d.category AS category,
                 d.severity AS severity,
                 COUNT(*) AS count
-         FROM inspection_findings f
-         JOIN audit_events e INDEXED BY idx_audit_capture_rollup ON e.id = f.audit_event_id
-         JOIN inspection_definitions d ON d.id = f.inspection_definition_id
-         LEFT JOIN ${LATEST_RESOLUTION_BY_KEY_SQL} latest
-           ON latest.finding_key = f.finding_key
-         WHERE e.event_type IN (${CAPTURE_EVENT_TYPES_SQL})
-           AND e.event_type = 'code_change'
-           AND (
-             f.finding_key IS NULL
-             OR latest.status IS NULL
-             OR latest.status NOT IN ('resolved', 'dismissed')
-           )
+         ${OPEN_AT_REST_FINDINGS_SQL}
          GROUP BY d.rule_id, d.category, d.severity`,
       ),
     );
@@ -693,6 +715,37 @@ export class SqliteSecurityRepository implements SecurityViews {
         count: r.count,
       })),
     );
+  }
+
+  /**
+   * The distinct `finding_key`s behind ONE rule's {@link recommendationInputs}
+   * tally — what a dashboard dismissal of that row writes a disposition for.
+   *
+   * It shares {@link OPEN_AT_REST_FINDINGS_SQL} with the count rather than
+   * restating the predicate, because a dismissal has to act on exactly the set
+   * its own row counted. Two hand-written copies of "open" would be free to
+   * drift, and the drift is invisible from either side: a narrower dismiss
+   * leaves rows the card goes on counting (the row returns, apparently
+   * ignoring the click), a wider one closes findings the label never named.
+   *
+   * Two reasons the length of this is NOT the row's count, and a caller must
+   * not present it as one. Findings are keyed by value, so several findings of
+   * the same secret share one key and collapse here. And a legacy at-rest row
+   * carries no `finding_key` at all — the resolution lifecycle is keyed by it,
+   * so such a row can be counted as open and can never be dismissed. Both make
+   * this set SMALLER than the tally, never larger.
+   */
+  openFindingKeysForRule(ruleId: string): Promise<string[]> {
+    const rows = allRows<{ finding_key: string }>(
+      this.db.prepare(
+        `SELECT DISTINCT f.finding_key AS finding_key
+         ${OPEN_AT_REST_FINDINGS_SQL}
+           AND d.rule_id = :ruleId
+           AND f.finding_key IS NOT NULL`,
+      ),
+      { ruleId },
+    );
+    return Promise.resolve(rows.map((r) => r.finding_key));
   }
 
   // Findings whose parent event occurred in [fromMs, toMs), with the parent's

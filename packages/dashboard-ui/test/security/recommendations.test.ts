@@ -1,8 +1,10 @@
 import type { FindingView, HealthStatus, HealthSummary } from '@akasecurity/schema';
 import {
   buildRecommendations as schemaBuildRecommendations,
+  DetectionCategory,
   findingStatus as schemaFindingStatus,
   healthScore as schemaHealthScore,
+  recommendationCopy,
 } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
@@ -105,5 +107,34 @@ describe('buildRecommendedActions', () => {
   it('coerces an unknown severity string to low (closed enum)', () => {
     const actions = buildRecommendedActions([finding({ severity: 'bogus' })]);
     expect(actions[0]?.severity).toBe('low');
+  });
+
+  it('labels a navigate action for where it GOES, never with a remediation verb', () => {
+    // The label is the text on a button that opens a list and changes nothing.
+    // `recommendationCopy(category).action` is the verb — Rotate, Remove, Strip,
+    // Fix — and it is right where the CLI and the three plugins print it, as
+    // advice in prose. On a button it promises work the click does not do, which
+    // is the same defect as the enabled-but-dead "View all" this card removed.
+    //
+    // Driven across every category, and each is checked against that category's
+    // OWN verb rather than a list written here: a table of verbs would have to
+    // be kept in step with schema's, and would pass while both drifted together.
+    for (const category of DetectionCategory.options) {
+      const actions = buildRecommendedActions([finding({ category, severity: 'critical' })]);
+      const label = actions[0]?.action.label;
+      expect(label).toBe('Review findings');
+      expect(label).not.toBe(recommendationCopy(category).action);
+    }
+  });
+
+  it('keeps the same label when the host supplies no destination', () => {
+    // The disabled branch is where a remediation verb read worst: a row offering
+    // to "Rotate" that cannot even navigate. The label must not vary with the
+    // href, or the two branches make different promises.
+    const withHref = buildRecommendedActions([finding({ severity: 'critical' })], {
+      hrefForRule: () => '/findings?view=flat',
+    });
+    const without = buildRecommendedActions([finding({ severity: 'critical' })]);
+    expect(without[0]?.action.label).toBe(withHref[0]?.action.label);
   });
 });

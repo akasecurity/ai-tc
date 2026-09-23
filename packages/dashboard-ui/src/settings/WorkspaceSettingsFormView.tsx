@@ -24,11 +24,8 @@ import { Button, cn, Input } from '@akasecurity/ui-kit';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
 
-interface Choice<T extends string> {
-  value: T;
-  label: string;
-  description: string;
-}
+import type { Choice } from '../shared/ChoiceGroup.tsx';
+import { ChoiceGroup } from '../shared/ChoiceGroup.tsx';
 
 // Enforcement is NOT configured here, and this section exists to say so rather
 // than to offer a control.
@@ -531,61 +528,6 @@ function ChevronRight() {
     >
       <path d="M6 4l4 4-4 4" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
-  );
-}
-
-function ChoiceGroup<T extends string>({
-  name,
-  labelledBy,
-  choices,
-  value,
-  onChange,
-  disabled,
-}: {
-  name: string;
-  labelledBy?: string;
-  choices: Choice<T>[];
-  value: T;
-  onChange: (value: T) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <div
-      className="flex flex-col gap-2"
-      role="radiogroup"
-      // Points at the visible heading rather than repeating the field NAME.
-      // This announced "vaultConsent" and "historicalAccess" to a screen reader
-      // — the storage key, which names the setting to nobody but us.
-      aria-labelledby={labelledBy}
-    >
-      {choices.map((c) => (
-        <label
-          key={c.value}
-          className={cn(
-            'flex items-start gap-3 rounded-lg border p-3 transition-colors',
-            disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
-            value === c.value
-              ? 'border-primary bg-primary-tint'
-              : cn('border-border bg-surface', !disabled && 'hover:bg-surface-2'),
-          )}
-        >
-          <input
-            type="radio"
-            name={name}
-            checked={value === c.value}
-            disabled={disabled}
-            onChange={() => {
-              onChange(c.value);
-            }}
-            className="mt-1 accent-primary"
-          />
-          <span>
-            <span className="block text-sm font-medium text-text">{c.label}</span>
-            <span className="mt-0.5 block text-xs text-text-2">{c.description}</span>
-          </span>
-        </label>
-      ))}
-    </div>
   );
 }
 

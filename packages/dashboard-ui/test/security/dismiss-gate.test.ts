@@ -72,12 +72,22 @@ describe('dismissConsequences', () => {
     expect(lines.join(' ')).toContain('secrets/aws-access-key');
   });
 
-  it('states that a later scan will not reopen them', () => {
-    // The fact a reader can discover nowhere else in the product. The scanner's
-    // redetect pass reopens a key whose latest disposition is `resolved`, and a
-    // dismissal is deliberately not that — so a still-present secret stays
-    // closed. A dialog that omits this describes a reversible act.
-    expect(lines.some((l) => /not\b.*reopen/i.test(l))).toBe(true);
+  it('qualifies the no-reopen claim instead of making it unconditional', () => {
+    // A dismissal survives re-detection and does NOT survive removal followed by
+    // re-addition: once the value leaves the file the removal sweep writes
+    // `resolved`/`fixed-at-source` over the dismissal, and the next scan that
+    // finds the value again supersedes THAT with `open`/`redetected`. The
+    // behaviour is pinned in
+    // packages/persistence/test/repositories/resolutions.test.ts; what this
+    // file can hold is that the copy does not overstate it.
+    const noReopen = lines.filter((l) => /not reopen/i.test(l));
+    expect(noReopen).toHaveLength(1);
+    // Carries its own condition, rather than asserting it for every case.
+    expect(noReopen[0]).toMatch(/while the value stays/i);
+    // And the other half is stated rather than left out — a reader who only
+    // saw the qualified sentence would still conclude it never comes back.
+    expect(lines.some((l) => /removed and later re-added/i.test(l))).toBe(true);
+    expect(lines.some((l) => /does reopen/i.test(l))).toBe(true);
   });
 
   it('states there is no undo', () => {

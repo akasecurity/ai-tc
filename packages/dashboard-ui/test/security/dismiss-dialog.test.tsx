@@ -294,10 +294,55 @@ describe('what happens after the host answers', () => {
   });
 
   it('shows the host error inside the dialog, not behind its overlay', () => {
-    render({ mutationError: 'The local store refused the write.' });
-    click(byText('button', 'Dismiss'));
+    // Shown only once this session has submitted, so the refusal has to be
+    // provoked rather than handed in as a prop: rendering with an error set and
+    // opening a dialog is exactly the stale case the next test forbids.
+    outcome = false;
+    arm();
+    click(confirmButton());
+    render({ mutationError: 'The local store refused the write.', isMutating: false });
     const dialog = document.querySelector<HTMLElement>('[data-slot="dialog-content"]');
     expect(dialog?.textContent).toContain('The local store refused the write.');
+  });
+
+  it("does not carry one rule's refusal into another rule's dialog", () => {
+    // `mutationError` is host state and the host clears it only on the next
+    // successful write, so it outlives the dialog that produced it. Without a
+    // per-session gate the reader cancels a refused dismissal, opens Dismiss on
+    // a different rule, and is met with "Nothing changed" about something they
+    // have not attempted.
+    const second: RecommendedAction = {
+      ...ITEM,
+      id: 'local-pii',
+      title: 'Personal data in a prompt',
+      subjects: [{ type: 'rule', id: 'pii/email', label: 'pii/email · 2 findings' }],
+    };
+    renderRoot(
+      mounted.root,
+      <RecommendedActionsCardView
+        items={[ITEM, second]}
+        isLoading={false}
+        error={null}
+        applyAction={() => undefined}
+        dismissAction={(request) => {
+          requests.push(request);
+          return Promise.resolve(outcome);
+        }}
+        isMutating={false}
+        mutationError={'The local store refused the write.'}
+      />,
+    );
+
+    // The SECOND row's dialog, opened with the host still holding the error.
+    const dismissButtons = all('button').filter((b) => b.textContent === 'Dismiss');
+    expect(dismissButtons).toHaveLength(2);
+    click(dismissButtons[1]);
+
+    const dialog = document.querySelector<HTMLElement>('[data-slot="dialog-content"]');
+    // The control: this really is the second rule's dialog, so the absence
+    // below is the message being withheld rather than nothing having opened.
+    expect(dialog?.textContent).toContain('pii/email');
+    expect(dialog?.textContent).not.toContain('The local store refused the write.');
   });
 
   it('disables both the confirm and the cancel while a write is in flight', () => {

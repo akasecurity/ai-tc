@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type * as NodeOs from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import {
   dataDir,
@@ -92,6 +94,27 @@ function seed(db: LocalDatabase, opts: { ruleId?: string; findingKey?: string } 
   return findingKey;
 }
 
+/**
+ * One at-rest finding with NO `finding_key` — the shape a store carried before
+ * `ALTER TABLE inspection_findings ADD finding_key`.
+ *
+ * Cleared through a direct handle rather than a repository, because there is no
+ * product path that writes it: `recordCapture` always mints a key, which is
+ * exactly why the row can only arrive from a store older than the column. The
+ * raw seam `packages/persistence` uses for this is deliberately not exported
+ * from its index, so this opens the file itself.
+ */
+function seedLegacy(db: LocalDatabase): void {
+  seed(db);
+  db.close();
+  const raw = new DatabaseSync(join(dataDir(), 'aka.db'));
+  try {
+    raw.exec('UPDATE inspection_findings SET finding_key = NULL');
+  } finally {
+    raw.close();
+  }
+}
+
 /** The store the action itself writes through, reopened for assertions. */
 function store(): LocalDatabase {
   return openLocalDatabase(dataDir());
@@ -162,6 +185,29 @@ describe('dismissRecommendation — what it writes', () => {
     // Asserted as the exact value: a hardcoded 'acknowledged' would satisfy a
     // "some method was written" check while discarding the reader's answer.
     expect(latest(after.resolutions, key)?.method).toBe('false-positive');
+    after.close();
+  });
+
+  it('refuses when the open findings are all legacy rows it cannot close', async () => {
+    // A row written before the `finding_key` column has no key, so the card
+    // counts it as open while a disposition can never be written against it.
+    // Reported as a success this closed the dialog and left the same row with
+    // the same count — indistinguishable from a completed dismissal, and
+    // repeatable for ever.
+    seedLegacy(store());
+    resetSingleton();
+
+    const res = await expectNoRejection(() => dismissRecommendation(valid));
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('predate');
+    expect(res.dismissed).toBeUndefined();
+
+    resetSingleton();
+    const after = store();
+    // The control, and the reason this is a refusal rather than a success: the
+    // card still counts the rule, so the reader would have been shown an
+    // unchanged row and no explanation.
+    expect(await openRules(after)).toEqual([RULE]);
     after.close();
   });
 

@@ -1,6 +1,5 @@
 'use server';
 
-import type { ActionInputFailure } from '@akasecurity/schema';
 import {
   DISMISS_CONFIRMATION,
   DismissMethod as DismissMethodSchema,
@@ -9,6 +8,7 @@ import {
 } from '@akasecurity/schema';
 import { revalidatePath } from 'next/cache';
 
+import { malformedInput } from '../../lib/action-refusals';
 import { db } from '../../lib/db';
 
 // The Recommended Actions card's one mutation. It writes the same
@@ -21,23 +21,19 @@ import { db } from '../../lib/db';
 // 127.0.0.1; Next enforces Origin/Host on server actions). No raw content is
 // read, written or echoed: the only caller-supplied value that reaches a query
 // is a rule id, and it goes in as a bind parameter.
+//
+// The malformed-payload wording comes from ../../lib/action-refusals, which is
+// where it lives so it can be tested: every export of a `'use server'` module
+// must be an async Server Action, so a formatter defined here is reachable only
+// by performing the whole write it describes. Its generic "did not arrive as
+// expected" is also the right wording now that `ruleId` carries a `.max()` —
+// this schema is no longer one where every failure is a type failure.
 
 export interface DismissResult {
   ok: boolean;
   /** How many finding keys were closed. Present only on success. */
   dismissed?: number;
   error?: string;
-}
-
-// Same wording as the exception surface's: a failure names the schema KEY that
-// failed, never the payload, so nothing a caller sent can be reflected back.
-function malformedInput(failure: ActionInputFailure): string {
-  if (failure.field === null) {
-    return 'The request did not arrive in the expected shape — reload the page and try again.';
-  }
-  return failure.wrongType
-    ? `The '${failure.field}' field did not arrive as text — reload the page and try again.`
-    : `The '${failure.field}' field was not in the expected form — reload the page and try again.`;
 }
 
 /**
@@ -79,12 +75,55 @@ export async function dismissRecommendation(input: unknown): Promise<DismissResu
   let dismissed: number;
   try {
     const store = db();
-    // Resolved and written in the same call: the keys come from the same
-    // predicate that counted them for the card, so what is written is what was
-    // shown. A key closed by another surface between the read and the write is
-    // harmless — the append-only table takes a superseding row and the latest
-    // one still reads `dismissed`.
+    // The keys come from the same predicate that counted them for the card, so
+    // what is written is what was shown.
+    //
+    // The read is an AUTOCOMMIT read and the write opens its own transaction
+    // after it, so there is a window, and it is not harmless in both
+    // directions. A key another surface DISMISSES in between is fine: the
+    // append-only table takes a superseding row and the latest still reads
+    // `dismissed`. A key a scan RESOLVES in between is not: the dismissal
+    // carries the later `created_at`, so a finding the scanner had just
+    // recorded as fixed-at-source reads `dismissed` again — and
+    // `severitySummary`'s open-at-rest bucket excludes only `resolved`, so it
+    // re-enters "needs remediation" until that path is scanned afresh.
+    //
+    // Selecting the keys inside the same IMMEDIATE transaction would close it,
+    // which needs one repository call that reads and writes; tracked separately.
+    // The window is narrow and the failure is a false alarm rather than a
+    // missed detection, so it is stated here rather than plumbed now.
     const keys = await store.security.openFindingKeysForRule(ruleId);
+
+    // Nothing to write is TWO different situations, and reporting success for
+    // both is what made this control dishonest.
+    //
+    // The card counts a legacy at-rest row — one written before
+    // `ALTER TABLE inspection_findings ADD finding_key`, so `finding_key` is
+    // NULL — as open, while a disposition can only ever be written against a
+    // key. On a store old enough to hold them, a rule whose open rows are ALL
+    // such rows offered a working Dismiss that returned success, closed the
+    // dialog, and left the same row with the same count for the reader to try
+    // again. Nothing on screen distinguished it from a completed dismissal.
+    //
+    // So the two are separated here: if the card still counts this rule as
+    // open after finding no dismissible key, what is left is undismissable and
+    // the reader is told so. Otherwise there was genuinely nothing to do —
+    // another surface got there first — and closing the dialog is right. The
+    // extra read costs a grouped scan and runs only on this path.
+    if (keys.length === 0) {
+      const stillCounted = (await store.security.recommendationInputs()).some(
+        (row) => row.ruleId === ruleId,
+      );
+      if (stillCounted) {
+        return {
+          ok: false,
+          error:
+            'These findings predate this version of the local store, so they cannot be closed from here. Re-scan the affected files to record them in a form the dashboard can act on.',
+        };
+      }
+      return { ok: true, dismissed: 0 };
+    }
+
     const at = Date.now();
     store.resolutions.insertResolutions(
       keys.map((findingKey) => ({

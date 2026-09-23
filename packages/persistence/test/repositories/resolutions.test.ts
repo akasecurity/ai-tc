@@ -208,3 +208,80 @@ describe('latest-resolution-wins: redetection reopens a resolved key', () => {
     expect(repo.resolvedAtRestKeysForPath('src/a.ts')).toEqual([]);
   });
 });
+
+describe('a DISMISSED key is not shielded from the resolve/redetect cycle', () => {
+  // The dashboard's Dismiss dialog tells the reader a later scan will not
+  // reopen what they closed. That is true only while the value stays put, and
+  // this is the sequence where it stops being true — pinned as BEHAVIOUR,
+  // because the dialog's own suite can only assert the wording of its copy and
+  // would go on passing while the product did the opposite.
+
+  it('is counted OPEN at rest, so the removal sweep resolves it like any other', () => {
+    // The load-bearing link, and the one that is easy to assume goes the other
+    // way: `openAtRestKeysForPath` classifies on `IS NOT 'resolved'`, so a
+    // dismissal — which is not a fix — leaves the key in the set the scanner
+    // diffs against. `resolveRemovedFindings` therefore has it in `prior`.
+    const repo = resolutions(() => 1000);
+    recordAtRestFinding('src/b.ts', 'key-b');
+    repo.insertResolution({
+      findingKey: 'key-b',
+      status: 'dismissed',
+      method: 'acknowledged',
+      resolvedAt: 1000,
+      evidence: '{}',
+    });
+
+    expect(repo.openAtRestKeysForPath('src/b.ts')).toEqual(['key-b']);
+    // The control: it is not in the caught set either, so what is asserted
+    // above is the dismissal failing to shield it rather than a read that
+    // returns every key whatever its disposition.
+    expect(repo.resolvedAtRestKeysForPath('src/b.ts')).toEqual([]);
+  });
+
+  it('dismiss -> remove -> re-add identical: the key comes back OPEN', () => {
+    // The whole cycle, written out because each step is individually
+    // unsurprising and only the sequence shows the outcome. A reader who
+    // dismissed this finding is told it will not come back; it does.
+    let clock = 1000;
+    const repo = resolutions(() => clock);
+    recordAtRestFinding('src/c.ts', 'key-c');
+
+    clock = 2000;
+    repo.insertResolution({
+      findingKey: 'key-c',
+      status: 'dismissed',
+      method: 'acknowledged',
+      resolvedAt: 2000,
+      evidence: '{}',
+    });
+    expect(repo.openAtRestKeysForPath('src/c.ts')).toEqual(['key-c']);
+
+    // The secret leaves the file. It was in `prior` and is not in the scan's
+    // current keys, so the removal sweep resolves it fixed-at-source — the
+    // dismissal is superseded by a row nobody asked for.
+    clock = 3000;
+    repo.insertResolution({
+      findingKey: 'key-c',
+      status: 'resolved',
+      method: 'fixed-at-source',
+      resolvedAt: 3000,
+      evidence: JSON.stringify({ deleted: true }),
+    });
+    expect(repo.resolvedAtRestKeysForPath('src/c.ts')).toEqual(['key-c']);
+
+    // The identical value is re-added. It is now a currently-produced key whose
+    // latest disposition reads 'resolved', which is exactly what
+    // reopenRedetectedFindings exists to supersede.
+    clock = 4000;
+    repo.insertResolution({
+      findingKey: 'key-c',
+      status: 'open',
+      method: 'redetected',
+      resolvedAt: 4000,
+      evidence: JSON.stringify({ reason: 'redetected' }),
+    });
+
+    expect(repo.openAtRestKeysForPath('src/c.ts')).toEqual(['key-c']);
+    expect(repo.latestByKey('key-c')?.status).toBe('open');
+  });
+});

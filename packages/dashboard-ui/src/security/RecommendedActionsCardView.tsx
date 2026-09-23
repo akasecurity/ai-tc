@@ -126,15 +126,27 @@ export function RecommendedActionsCardView({
   );
   const [method, setMethod] = useState<DismissMethod | null>(null);
   const [confirmation, setConfirmation] = useState('');
+  // Whether THIS dialog session has submitted anything yet.
+  //
+  // `mutationError` is host state and the host clears it only on the next
+  // successful write, so it outlives the dialog that produced it: a refusal on
+  // one rule, Cancel, then Dismiss on another, and the fresh dialog opened
+  // holding the previous rule's failure — "Nothing changed" about something
+  // not yet attempted. The view cannot clear host state, but it does know
+  // whether the message can possibly belong to what is on screen, and before
+  // the first submit of a session it cannot.
+  const [submitted, setSubmitted] = useState(false);
 
   const closeDialog = () => {
     setPending(null);
     setMethod(null);
     setConfirmation('');
+    setSubmitted(false);
   };
 
   const confirmDismiss = () => {
     if (pending === null || method === null) return;
+    setSubmitted(true);
     // Guarded on both paths a host can fail on, and neither is expressible in
     // `dismissAction`'s return type: it may reject, and it may throw
     // synchronously. Each leaves the dialog open over whatever the host put in
@@ -360,10 +372,12 @@ export function RecommendedActionsCardView({
                 />
               </div>
 
-              {/* Rendered INSIDE the dialog: the card's own copy sits behind the
-                  overlay, so a refusal shown only there is a refusal nobody
-                  reads while the dialog that caused it is still open. */}
-              {mutationError !== null && <WidgetError message={mutationError} />}
+              {/* Rendered INSIDE the dialog, because a refusal shown only on the
+                  card sits behind this overlay and is read by nobody while the
+                  dialog that caused it is still open — and only once THIS
+                  session has submitted, because the host's error outlives the
+                  dialog it came from. */}
+              {submitted && mutationError !== null && <WidgetError message={mutationError} />}
             </DialogBody>
             <DialogFooter>
               <Button

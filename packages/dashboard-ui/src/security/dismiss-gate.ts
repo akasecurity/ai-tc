@@ -66,17 +66,31 @@ export function canConfirmDismiss(state: {
 /**
  * What the dialog tells the reader will happen, in one sentence per consequence.
  *
- * Kept here rather than inline so the claims are assertable: each is a fact
- * about the write this button performs, and the third is the one a reader
- * cannot discover anywhere else in the product — a dismissed finding is not
- * reopened by a later scan that detects the same value again, because the
- * scanner's redetect pass reopens only `resolved` keys.
+ * Kept here rather than inline so the claims are assertable. The third is the
+ * one a reader cannot discover anywhere else in the product, and it is
+ * CONDITIONAL — the qualifier is the whole sentence, not a hedge:
+ *
+ * A dismissal is not a fix, so `openAtRestKeysForPath` goes on counting the key
+ * as open at rest. While the value stays where it is, every scan finds it among
+ * the current keys and nothing supersedes the dismissal. But if the value
+ * LEAVES that file, the key is in `prior` and absent from the scan's current
+ * keys, so `resolveRemovedFindings` writes it `resolved`/`fixed-at-source` —
+ * and a later scan that finds the identical value again then sees a
+ * currently-produced key whose latest disposition is `resolved`, which is
+ * precisely what `reopenRedetectedFindings` supersedes with `open`/`redetected`.
+ *
+ * So a dismissal survives re-detection, and does not survive removal followed by
+ * re-addition. Stating the unconditional version was wrong, and the dialog is
+ * the only place a reader would ever learn otherwise.
+ * `packages/persistence/test/repositories/resolutions.test.ts` pins the
+ * behaviour, because this module's own suite can only assert the wording.
  */
 export function dismissConsequences(ruleId: string): readonly string[] {
   return [
     `Closes every open finding for ${ruleId}, across every file and session.`,
     'The findings stay in the store and keep their history — they are closed, not deleted.',
-    'A later scan that finds the same value again will NOT reopen them.',
+    'While the value stays where it is, a later scan that finds it again will not reopen it.',
+    'If the value is removed and later re-added, a scan does reopen it.',
     'There is no undo in the dashboard.',
   ];
 }

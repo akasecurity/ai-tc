@@ -439,6 +439,35 @@ describe('scanWorktree — re-scan resolver', () => {
     expect(evidence.contentHash).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it('sweeps a key that is open-at-rest because it was DISMISSED, like any other', async () => {
+    // The sweep is disposition-blind: it resolves whatever
+    // openAtRestKeysForPath returns, and that read classifies on
+    // `IS NOT 'resolved'` — so a dismissal, which is a judgement rather than a
+    // fix, leaves its key in the backlog. (That the repository really returns a
+    // dismissed key is pinned in
+    // packages/persistence/test/repositories/resolutions.test.ts; what is
+    // driven here is the real resolveRemovedFindings acting on one.)
+    //
+    // This is what makes the dashboard's dismissal reversible by removal: the
+    // value leaves the file, this sweep writes `resolved`/`fixed-at-source`
+    // over the dismissal, and a later scan that finds the value again
+    // redetects it. The Dismiss dialog's copy states that outcome, so a change
+    // here that taught the sweep to skip dismissed keys must go red rather than
+    // silently make that copy wrong in the other direction.
+    write('src/a.ts', 'const a = 1; // the dismissed secret was removed');
+    openAtRestKeysForPath.mockResolvedValue(['key-dismissed']);
+    capture.mockResolvedValue({ action: 'log', text: 'const a = 1;', findings: [] });
+
+    await scanWorktree(config, { rootDir: tmp, sourceTool: 'claude-code' });
+
+    expect(insertedResolutions()).toHaveLength(1);
+    expect(insertedResolutions()[0]).toMatchObject({
+      findingKey: 'key-dismissed',
+      status: 'resolved',
+      method: 'fixed-at-source',
+    });
+  });
+
   it('does not re-open a brand-new finding_key with no resolution history', async () => {
     write('src/a.ts', 'const secret = "never-seen-before";');
     capture.mockResolvedValue({

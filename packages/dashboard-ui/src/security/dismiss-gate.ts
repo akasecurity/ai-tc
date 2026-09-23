@@ -66,9 +66,19 @@ export function canConfirmDismiss(state: {
 /**
  * What the dialog tells the reader will happen, in one sentence per consequence.
  *
- * Kept here rather than inline so the claims are assertable. The third is the
- * one a reader cannot discover anywhere else in the product, and it is
- * CONDITIONAL — the qualifier is the whole sentence, not a hedge:
+ * Kept here rather than inline so the claims are assertable.
+ *
+ * The first says "the open findings" rather than "every open finding", and the
+ * weaker word is deliberate. A row written before
+ * `ALTER TABLE inspection_findings ADD finding_key` carries no key, so the card
+ * counts it as open while no disposition can ever be written against it. On a
+ * rule holding both kinds the action closes the keyed ones and reports success,
+ * and the row stays with a smaller count — so the universal claim would be
+ * false exactly there. (Where the remainder is ALL legacy the action refuses
+ * and explains; it is the mixed case the wording has to survive.)
+ *
+ * The third is the one a reader cannot discover anywhere else in the product,
+ * and it is CONDITIONAL — the qualifier is the whole sentence, not a hedge:
  *
  * A dismissal is not a fix, so `openAtRestKeysForPath` goes on counting the key
  * as open at rest. While the value stays where it is, every scan finds it among
@@ -87,7 +97,7 @@ export function canConfirmDismiss(state: {
  */
 export function dismissConsequences(ruleId: string): readonly string[] {
   return [
-    `Closes every open finding for ${ruleId}, across every file and session.`,
+    `Closes the open findings for ${ruleId}, across every file and session.`,
     'The findings stay in the store and keep their history — they are closed, not deleted.',
     'While the value stays where it is, a later scan that finds it again will not reopen it.',
     'If the value is removed and later re-added, a scan does reopen it.',

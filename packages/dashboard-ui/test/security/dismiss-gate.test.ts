@@ -72,6 +72,16 @@ describe('dismissConsequences', () => {
     expect(lines.join(' ')).toContain('secrets/aws-access-key');
   });
 
+  it('does not claim to close EVERY open finding', () => {
+    // A pre-`finding_key` row is counted as open by the card and can never be
+    // dismissed, so on a rule holding both kinds the action closes the keyed
+    // ones and leaves the row standing with a smaller count. The universal
+    // claim is false exactly there — the same shape of defect as the
+    // unconditional no-reopen sentence this file already guards.
+    expect(lines.some((l) => /closes the open findings/i.test(l))).toBe(true);
+    expect(lines.some((l) => /every open finding/i.test(l))).toBe(false);
+  });
+
   it('qualifies the no-reopen claim instead of making it unconditional', () => {
     // A dismissal survives re-detection and does NOT survive removal followed by
     // re-addition: once the value leaves the file the removal sweep writes

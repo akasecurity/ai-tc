@@ -71,7 +71,19 @@ export function buildRecommendedActions(
       action: {
         mode: 'navigate' as const,
         type: 'review_findings',
-        label: copy.action,
+        // NOT `copy.action`. That is a remediation verb — Rotate, Remove, Strip,
+        // Fix — and it is right where the three plugins and the CLI print it, as
+        // advice in prose. On this card it is the text ON the button, and this
+        // button navigates: it opens the rule's open-findings list and changes
+        // nothing. A button reading "Rotate" that rotates nothing is the same
+        // defect as the enabled-but-dead "View all" this card already removed,
+        // and it is worse on the no-href branch, where the row renders disabled
+        // under a verb promising work it cannot even navigate to.
+        //
+        // The verb stays in the contract for `mode: 'apply'`, which is where a
+        // label may name an action because the control performs one. Nothing
+        // here emits that mode today; the local store has no apply endpoint.
+        label: 'Review findings',
         ...(href === undefined ? {} : { href }),
       },
     };

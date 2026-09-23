@@ -336,6 +336,97 @@ describe('recommendationInputs', () => {
   });
 });
 
+describe('openFindingKeysForRule', () => {
+  // The set a dashboard dismissal writes against. Every case here is really one
+  // claim: it is the SAME set recommendationInputs counted, narrowed to one rule
+  // — so each asserts the two reads together rather than this one alone. A
+  // dismissal that acted on a different set would either leave the row on screen
+  // after a successful write or close findings the row never named.
+
+  it('returns one key per open finding of the named rule, and nothing else', async () => {
+    record({ daysAgo: 1, kind: 'code_change', findingKey: 'k-1' });
+    record({ daysAgo: 2, kind: 'code_change', findingKey: 'k-2' });
+    record({ daysAgo: 3, kind: 'code_change', ruleId: 'other', findingKey: 'k-other' });
+
+    expect((await security().openFindingKeysForRule('r')).sort()).toEqual(['k-1', 'k-2']);
+    // The control: the rule filter is doing the work, not an empty store.
+    expect(await security().openFindingKeysForRule('other')).toEqual(['k-other']);
+  });
+
+  it('agrees with the count the card was shown', async () => {
+    record({ daysAgo: 1, kind: 'code_change', findingKey: 'k-1' });
+    record({ daysAgo: 2, kind: 'code_change', findingKey: 'k-2' });
+    record({ daysAgo: 3, kind: 'code_change', ruleId: 'other', findingKey: 'k-other' });
+
+    const counted = (await security().recommendationInputs()).find((row) => row.ruleId === 'r');
+    expect(counted?.count).toBe(2);
+    expect(await security().openFindingKeysForRule('r')).toHaveLength(2);
+  });
+
+  it('excludes a key already resolved or dismissed', async () => {
+    // Same exclusion as the count: dismissing twice must not write a second row
+    // per key, and a fixed finding is not a dismissable one.
+    record({ daysAgo: 1, kind: 'code_change', findingKey: 'k-open' });
+    record({ daysAgo: 1, kind: 'code_change', findingKey: 'k-res' });
+    record({ daysAgo: 1, kind: 'code_change', findingKey: 'k-dis' });
+    db.resolutions.insertResolution({
+      findingKey: 'k-res',
+      status: 'resolved',
+      method: 'fixed-at-source',
+      resolvedAt: NOW,
+      evidence: '',
+    });
+    db.resolutions.insertResolution({
+      findingKey: 'k-dis',
+      status: 'dismissed',
+      method: 'acknowledged',
+      resolvedAt: NOW,
+      evidence: '',
+    });
+
+    expect(await security().openFindingKeysForRule('r')).toEqual(['k-open']);
+  });
+
+  it('excludes an in-flight finding — only at-rest findings are dismissable here', async () => {
+    // A prompt secret derives as `handled`: enforcement already ran, there is
+    // nothing left on disk, and the card never counted it.
+    record({ daysAgo: 1, kind: 'prompt', findingKey: 'k-inflight' });
+    record({ daysAgo: 1, kind: 'code_change', findingKey: 'k-atrest' });
+
+    expect(await security().openFindingKeysForRule('r')).toEqual(['k-atrest']);
+  });
+
+  it('omits a legacy row with no finding_key, which the count still includes', async () => {
+    // The one place the two reads deliberately disagree, and the reason the
+    // returned length is not the row's count. The resolution lifecycle is keyed
+    // by finding_key, so a row without one is countable and undismissable — a
+    // key of NULL would write a disposition that classifies nothing.
+    record({ daysAgo: 1, kind: 'code_change' });
+    record({ daysAgo: 1, kind: 'code_change', findingKey: 'k-keyed' });
+
+    expect(await security().openFindingKeysForRule('r')).toEqual(['k-keyed']);
+    // The control, and the whole point: the card counted BOTH.
+    expect((await security().recommendationInputs())[0]?.count).toBe(2);
+  });
+
+  it('collapses several findings of one value into a single key', async () => {
+    // Findings dedup by value, so one secret in three files is one key. A caller
+    // must not report this length as "3 findings dismissed".
+    record({ daysAgo: 1, kind: 'code_change', findingKey: 'k-same' });
+    record({ daysAgo: 2, kind: 'code_change', findingKey: 'k-same' });
+
+    expect(await security().openFindingKeysForRule('r')).toEqual(['k-same']);
+  });
+
+  it('binds the rule id rather than interpolating it', async () => {
+    record({ daysAgo: 1, kind: 'code_change', findingKey: 'k-1' });
+
+    // A quote-bearing id that would break an interpolated literal returns
+    // nothing and throws nothing.
+    expect(await security().openFindingKeysForRule("r' OR '1'='1")).toEqual([]);
+  });
+});
+
 describe('mttrTrend', () => {
   it('buckets mean MTTR by resolved_at, split by severity, over 7d', async () => {
     // Two critical findings resolved fixed-at-source in the "today" bucket

@@ -34,6 +34,7 @@ import { UNSAFE_TEST_ONLY_RAW_HANDLE } from '../../src/database.ts';
 import { failOpenTransaction } from '../../src/internal/transactions.ts';
 import { applyMigrations } from '../../src/migrations.ts';
 import { SqliteAuditEventsRepository } from '../../src/repositories/audit-events.ts';
+import { SqliteResolutionsRepository } from '../../src/repositories/resolutions.ts';
 import { captureEvent, captureFinding } from '../helpers/capture-fixtures.ts';
 import { errorFrom } from '../helpers/errors.ts';
 import type { FilledStore } from '../helpers/fault-injection.ts';
@@ -175,6 +176,108 @@ describe('a repository write that runs the store out of room', () => {
       expect(integrityOf(reader)).toBe('ok');
     } finally {
       reader.close();
+    }
+  });
+});
+
+describe('a batch of dispositions that runs the store out of room', () => {
+  // `insertResolutions` is the one write on the resolution table that is NOT
+  // fail-open: a dismissal dropped on the floor is reported to a person as
+  // done, and the findings they believe they closed stay open with nobody
+  // looking at them. So the claims here are the opposite pair to the facade's
+  // — it must THROW, and it must leave nothing behind.
+  const store = useTempStore('aka-fault-diskfull-resolutions-', { migrated: true });
+
+  const countResolutions = (raw: DatabaseSync): number =>
+    (raw.prepare('SELECT COUNT(*) AS n FROM finding_resolution').get() as { n: number }).n;
+
+  /** A batch big enough that the cap bites partway through it, never on row 1. */
+  const batch = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      findingKey: `k-${String(i)}-${randomUUID()}`,
+      status: 'dismissed' as const,
+      method: 'acknowledged' as const,
+      resolvedAt: 1_700_000_000_000,
+      evidence: JSON.stringify({ source: 'dashboard', pad: 'x'.repeat(512) }),
+    }));
+
+  it('raises rather than swallowing, and commits not one row of the batch', () => {
+    store.open().close();
+    const raw = store.openRaw();
+    const resolutions = new SqliteResolutionsRepository(raw);
+    const before = countResolutions(raw);
+
+    const filled = fillStore(raw);
+    const err = errorFrom(() => {
+      resolutions.insertResolutions(batch(2000));
+    });
+    filled.restore();
+
+    // THROWS. The capture path is allowed to discard a write; this one is not,
+    // because its caller reports success to a person on the strength of it.
+    expect(err).toBeDefined();
+    expect(primaryCode(err)).toBe(SQLITE_FULL);
+    // ALL OF THEM OR NONE. A half-written dismissal leaves a rule partly
+    // closed, and the card it refreshes into reports a smaller number either
+    // way — so a partial commit is indistinguishable from a complete one.
+    expect(countResolutions(raw)).toBe(before);
+  });
+
+  it('leaves no transaction open on the handle', () => {
+    store.open().close();
+    const raw = store.openRaw();
+    const resolutions = new SqliteResolutionsRepository(raw);
+
+    const filled = fillStore(raw);
+    expect(
+      errorFrom(() => {
+        resolutions.insertResolutions(batch(2000));
+      }),
+    ).toBeDefined();
+    filled.restore();
+
+    assertNoOpenTransaction(raw);
+  });
+
+  it('writes the whole batch once there is room — the control', () => {
+    // Without this, every assertion above holds for a batch that could never
+    // have been written at all.
+    store.open().close();
+    const raw = store.openRaw();
+    const resolutions = new SqliteResolutionsRepository(raw);
+    const before = countResolutions(raw);
+
+    resolutions.insertResolutions(batch(2000));
+
+    expect(countResolutions(raw)).toBe(before + 2000);
+  });
+
+  it('takes the write lock at BEGIN, not by upgrading mid-batch', () => {
+    // IMMEDIATE, because SQLite will not run the busy handler for an upgrade
+    // that could deadlock: a DEFERRED batch meeting a concurrent writer fails
+    // with SQLITE_BUSY however long busy_timeout is, on a machine that is
+    // merely busy.
+    //
+    // Pinned on the statement rather than by racing a second connection. The
+    // only moment the two modes are distinguishable from outside is between
+    // BEGIN and the first INSERT, and reaching into that window needs a probe
+    // planted in the row data itself — which pins where `insertResolution`
+    // happens to read its parameters, not the mode. `withTransaction` is the
+    // one place BEGIN is spelled, so reading what it emitted says exactly what
+    // this test is about.
+    store.open().close();
+    const raw = store.openRaw();
+    const resolutions = new SqliteResolutionsRepository(raw);
+
+    const exec = vi.spyOn(raw, 'exec');
+    try {
+      resolutions.insertResolutions(batch(1));
+      expect(exec).toHaveBeenCalledWith('BEGIN IMMEDIATE');
+      // The control: a DEFERRED envelope emits the bare form, so this is the
+      // string that must NOT appear.
+      expect(exec).not.toHaveBeenCalledWith('BEGIN');
+    } finally {
+      exec.mockRestore();
     }
   });
 });

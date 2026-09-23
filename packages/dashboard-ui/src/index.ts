@@ -211,6 +211,11 @@ export { ProjectPane } from './inventory/ProjectPane.tsx';
 
 // Security widget views — props-driven (no data fetching); the apps supply data.
 export {
+  canConfirmDismiss,
+  DISMISS_METHODS,
+  dismissConsequences,
+} from './security/dismiss-gate.ts';
+export {
   type EnforcementActionsView,
   EnforcementCardView,
 } from './security/EnforcementCardView.tsx';

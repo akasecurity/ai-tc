@@ -15,6 +15,7 @@ import {
 } from '@akasecurity/local-ops';
 import { openLocalDatabase } from '@akasecurity/persistence';
 import { dataDir, dbPath, hostFloorGaps, requiredHostVersion } from '@akasecurity/plugin-sdk';
+import { MANAGED_PLUGIN_ADVICE } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 import type { Prompter } from '../lib/prompter.ts';
@@ -89,19 +90,37 @@ async function listPlugins(argv: string[]): Promise<void> {
 
   const out = process.stdout;
   out.write('Agent plugins (the CLI is an optional hub — plugins also self-install):\n\n');
+  let anyManaged = false;
   for (const a of AGENT_PLUGINS) {
     const ref = pluginRef(a);
+    // Asked before the installed map, which drops a managed record that names
+    // no version and would list the organization's install as `available`.
+    const managed = managedPluginInstall(a);
+    if (managed !== null) anyManaged = true;
     const version = ref ? installed.get(ref) : undefined;
-    const state = version
-      ? `installed v${version}`
-      : active.has(a.sourceTool)
-        ? 'active'
-        : 'available';
+    const state =
+      managed !== null
+        ? managedState(managed.version)
+        : version
+          ? `installed v${version}`
+          : active.has(a.sourceTool)
+            ? 'active'
+            : 'available';
     out.write(`  ${a.id.padEnd(16)} ${state.padEnd(16)} ${a.name}\n`);
     out.write(`  ${' '.padEnd(16)} ${' '.padEnd(16)} ${a.description}\n`);
   }
   out.write('\nInstall:  aka plugins install <agent>\n');
   out.write('Update:   aka update            (or: aka check-updates)\n');
+  // Beside the two lines above because neither applies to a managed row.
+  if (anyManaged) {
+    out.write(
+      `Managed:  \`aka plugins install\` and \`aka update\` leave a managed plugin alone. ${MANAGED_PLUGIN_ADVICE}\n`,
+    );
+  }
+}
+
+function managedState(version: string | null): string {
+  return version !== null ? `managed v${version}` : 'managed';
 }
 
 async function installPlugin(argv: string[], deps: InstallDeps): Promise<void> {

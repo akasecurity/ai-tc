@@ -400,6 +400,8 @@ to force.
 | `packages/setup-wizard` | **205 passed** |
 | `packages/scanner` | **88 passed** |
 | `packages/remote` | **109 passed** |
+| `plugins/codex` | **593 passed**, 3 skipped |
+| `plugins/antigravity` | **579 passed**, 4 skipped |
 | `pnpm lint:root` equivalent | clean |
 | `pnpm typecheck:root` equivalent | clean |
 | `tsc --noEmit` per package | clean in copilot, plugin-sdk, cli, and all three sibling plugins |
@@ -416,3 +418,19 @@ to force.
   suites exceed the session's command window. Its floor is unchanged.
 - **The repository end-to-end suite**, per this card's contract — THE SENTINEL runs it once
   against the integrated candidate.
+
+
+---
+
+## Complete
+
+All 26 tasks landed and ticked. The pull request is open against
+`devengers/release/ai-tc-copilot-plugin-cd_mu5m4ugj6vs`.
+
+One late fix worth recording: `tools/ci/__aka_turbo_hash_control__.txt` — an artifact the
+eslint-config hash-control case plants and a crashed teardown left on disk — was swept into
+the task-26 commit by a `git add -A` and removed in `chore: drop a turbo-hash probe artifact
+a suite left behind`.
+
+The two sibling plugins that bundle the widened `plugin-sdk` were run last and are green:
+codex 593 passed / 3 skipped, antigravity 579 passed / 4 skipped.

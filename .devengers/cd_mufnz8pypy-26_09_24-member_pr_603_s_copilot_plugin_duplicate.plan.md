@@ -221,14 +221,14 @@ Specifically **not** touched, and a diff naming any of them is a failed implemen
 
 ## Ordered implementation tasks
 
-- [ ] **1. Fetch and re-derive the premise table.** `git fetch origin --prune`, then re-run
+- [x] **1. Fetch and re-derive the premise table.** `git fetch origin --prune`, then re-run
       every row of `## Premise check` against the freshly fetched refs — `gh pr view 603`,
       `gh pr view 558`, `git rev-parse` / `rev-list` / `merge-base` on the member ref, and
       `git merge-tree --write-tree --name-only origin/main <member>` for the conflict count.
       Record the numbers you get, not the ones in this plan. If any row disagrees with this
       plan, **stop and report it** — a premise that moved between planning and execution is
       the one thing that can make retirement the wrong call.
-- [ ] **2. Confirm the branch cannot be deleted by automation.** Re-check
+- [x] **2. Confirm the branch cannot be deleted by automation.** Re-check
       `gh api repos/akasecurity/ai-tc --jq .delete_branch_on_merge` is `false`, and grep
       `.github/workflows/` for any ref deletion. Both were clean at plan time; re-confirm,
       because task 4 is irreversible from the UI's point of view and this is the check that

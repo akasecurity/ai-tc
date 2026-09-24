@@ -88,6 +88,7 @@ export {
   writeCache,
 } from './update-cache.ts';
 export {
+  managedInstallRefusal,
   managedUpdateRefusal,
   nothingToApplyLine,
   outdated,

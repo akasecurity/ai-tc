@@ -10,6 +10,7 @@ import { MANAGED_PLUGIN_ADVICE } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import {
+  managedInstallRefusal,
   managedUpdateRefusal,
   nothingToApplyLine,
   outdated,
@@ -330,5 +331,22 @@ describe('managedUpdateRefusal', () => {
     expect(line).toContain('Claude Code is managed by your organization');
     expect(line).toContain('nothing was run');
     expect(line).toContain(MANAGED_PLUGIN_ADVICE);
+  });
+});
+
+describe('managedInstallRefusal', () => {
+  it('says the plugin is already there, that nothing ran, and how it moves', () => {
+    const line = managedInstallRefusal('Claude Code');
+
+    expect(line).toContain('Claude Code is managed by your organization');
+    expect(line).toContain('already installed');
+    expect(line).toContain('nothing was run');
+    expect(line).toContain(MANAGED_PLUGIN_ADVICE);
+  });
+
+  it('is not the update refusal, which answers a question nobody asked', () => {
+    // An install refused with "an update was refused" reads as this command
+    // having tried to update something.
+    expect(managedInstallRefusal('Claude Code')).not.toBe(managedUpdateRefusal('Claude Code'));
   });
 });

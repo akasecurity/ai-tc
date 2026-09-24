@@ -1,7 +1,17 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import type * as LocalOps from '@akasecurity/local-ops';
-import { AGENT_PLUGINS, createCliPluginManager, pluginRef } from '@akasecurity/local-ops';
+import {
+  AGENT_PLUGINS,
+  createCliPluginManager,
+  managedInstallRefusal,
+  pluginRef,
+} from '@akasecurity/local-ops';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import type { Prompter } from '../../src/lib/prompter.ts';
 
 // What `aka plugins install` PRINTS before it spawns, which nothing else
@@ -19,9 +29,11 @@ import type { Prompter } from '../../src/lib/prompter.ts';
 // `available()` is forced rather than probed: the real one shells out to
 // `command -v claude`, so this case would assert one thing on a developer's
 // machine and skip the branch entirely on a CI runner without the host CLI.
+// It answers true unless a case sets `spawned.available` to drive the
+// not-on-PATH branch.
 // `installAgentPlugin` is stubbed because the announce line is printed BEFORE
 // the spawn, and this suite is about the copy, not the child process.
-const spawned = vi.hoisted(() => ({ calls: [] as string[] }));
+const spawned = vi.hoisted(() => ({ calls: [] as string[], available: true }));
 
 vi.mock('@akasecurity/local-ops', async (importActual) => {
   const actual = await importActual<typeof LocalOps>();
@@ -29,7 +41,7 @@ vi.mock('@akasecurity/local-ops', async (importActual) => {
     ...actual,
     createCliPluginManager: (bin: 'claude' | 'codex') => ({
       ...actual.createCliPluginManager(bin),
-      available: () => true,
+      available: () => spawned.available,
     }),
     installAgentPlugin: (agentId: string) => {
       spawned.calls.push(agentId);
@@ -62,13 +74,27 @@ async function captureAsync(fn: () => void | Promise<void>): Promise<string> {
 // developer's own installed CLI and make the copy depend on their machine.
 const NO_HOST_VERSION = { hostVersion: () => undefined };
 
+// A controlled home. The command reads Claude Code's install ledger out of it
+// to learn whether an organization manages the plugin, and without this every
+// case here would depend on the ledger of whoever runs the suite: a machine
+// with a managed install would see each install below refused. `os.homedir()`
+// reads these two variables, and `n/no-process-env` is why the write goes
+// through vitest rather than an assignment.
+let home: string;
+
 beforeEach(() => {
   spawned.calls = [];
+  spawned.available = true;
   process.exitCode = undefined;
+  home = mkdtempSync(join(tmpdir(), 'aka-plugins-install-'));
+  vi.stubEnv('HOME', home);
+  vi.stubEnv('USERPROFILE', home);
 });
 
 afterEach(() => {
   process.exitCode = undefined;
+  vi.unstubAllEnvs();
+  removeTree(home);
 });
 
 describe('aka plugins install discloses every command it is about to run', () => {
@@ -231,6 +257,127 @@ describe('the install gate respects consent already given', () => {
     });
     expect(io.out_.join('')).toContain('older than AKA needs');
     expect(spawned.calls).toEqual(['claude-code']);
+    expect(process.exitCode).toBeUndefined();
+  });
+});
+
+/** Seed Claude Code's install ledger for the AKA plugin inside the stubbed home. */
+function writeLedger(records: unknown[]): void {
+  const dir = join(home, '.claude', 'plugins');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'installed_plugins.json'),
+    JSON.stringify({ version: 2, plugins: { 'ai-tc@akasecurity': records } }),
+  );
+}
+
+async function captureBoth(fn: () => void | Promise<void>): Promise<{ out: string; err: string }> {
+  let err = '';
+  const spy = vi
+    .spyOn(process.stderr, 'write')
+    .mockImplementation((chunk: string | Uint8Array): boolean => {
+      err += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+      return true;
+    });
+  try {
+    const out = await captureAsync(fn);
+    return { out, err };
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+// On a machine where an organization's managed settings installed the plugin.
+// The install path's first spawn is `claude plugin marketplace add` with no
+// ref, which a host that accepts it turns into an unpinned registration in
+// place of the organization's pinned one. So nothing is announced, nothing is
+// asked and nothing reaches the apply seam: the refusal is the whole output.
+describe('aka plugins install over an install an organization manages', () => {
+  it('refuses before announcing anything, and fails the command', async () => {
+    writeLedger([{ scope: 'managed', version: '0.9.14' }]);
+
+    const { out, err } = await captureBoth(() =>
+      runPlugins(['install', 'claude-code'], NO_HOST_VERSION),
+    );
+
+    expect(spawned.calls).toEqual([]);
+    expect(out).toBe('');
+    expect(err).toBe(`aka plugins install: ${managedInstallRefusal('Claude Code')}\n`);
+    // Non-zero because the install that was asked for did not happen. The
+    // plugin IS on the machine, but not by this command, and a script reading
+    // success as "I installed it" would be told something untrue.
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('refuses before the host-floor question, which would ask about an install that cannot happen', async () => {
+    writeLedger([{ scope: 'managed', version: '0.9.14' }]);
+    const hostVersion = vi.fn(() => '2.0.0');
+    const io = fakePrompter(['y']);
+
+    await captureBoth(() => runPlugins(['install', 'claude-code'], { hostVersion, prompter: io }));
+
+    expect(hostVersion).not.toHaveBeenCalled();
+    expect(io.out_).toEqual([]);
+    expect(spawned.calls).toEqual([]);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('refuses where `claude` is not on PATH, instead of printing a recipe to run by hand', async () => {
+    // That recipe starts with the same unpinned `marketplace add`, so typing
+    // it in does exactly what the refusal exists to prevent.
+    writeLedger([{ scope: 'managed', version: '0.9.14' }]);
+    spawned.available = false;
+
+    const { out, err } = await captureBoth(() =>
+      runPlugins(['install', 'claude-code'], NO_HOST_VERSION),
+    );
+
+    expect(out).not.toContain('marketplace add');
+    expect(err).toContain(managedInstallRefusal('Claude Code'));
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('refuses a managed record that names no version', async () => {
+    writeLedger([{ scope: 'managed' }]);
+
+    const { out, err } = await captureBoth(() =>
+      runPlugins(['install', 'claude-code'], NO_HOST_VERSION),
+    );
+
+    expect(spawned.calls).toEqual([]);
+    expect(out).toBe('');
+    expect(err).toContain(managedInstallRefusal('Claude Code'));
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('installs over a user-scope record exactly as before (positive control)', async () => {
+    writeLedger([{ scope: 'user', version: '0.9.14' }]);
+
+    const { out, err } = await captureBoth(() =>
+      runPlugins(['install', 'claude-code'], NO_HOST_VERSION),
+    );
+
+    expect(spawned.calls).toEqual(['claude-code']);
+    expect(out).toContain('Installed Claude Code');
+    expect(err).toBe('');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('installs where the ledger names no install of it (positive control)', async () => {
+    // The ledger exists and was parsed; it just has nothing for this ref.
+    const dir = join(home, '.claude', 'plugins');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'installed_plugins.json'),
+      JSON.stringify({ version: 2, plugins: { 'other@elsewhere': [{ scope: 'managed' }] } }),
+    );
+
+    const { err } = await captureBoth(() =>
+      runPlugins(['install', 'claude-code'], NO_HOST_VERSION),
+    );
+
+    expect(spawned.calls).toEqual(['claude-code']);
+    expect(err).toBe('');
     expect(process.exitCode).toBeUndefined();
   });
 });

@@ -8,6 +8,8 @@ import {
   hostCliVersion,
   installAgentPlugin,
   installedAgentPluginVersions,
+  managedInstallRefusal,
+  managedPluginInstall,
   pluginRef,
 } from '@akasecurity/local-ops';
 import { openLocalDatabase } from '@akasecurity/persistence';
@@ -110,6 +112,17 @@ async function installPlugin(argv: string[], deps: InstallDeps): Promise<void> {
   const agent = findAgent(id);
   if (!agent) {
     process.stderr.write(`aka plugins install: unknown agent '${id}' (try: aka plugins list)\n`);
+    process.exitCode = 1;
+    return;
+  }
+  // Checked here, before anything is printed or asked, rather than left to the
+  // refusal `installAgentPlugin` returns: in 'inherit' mode that output is not
+  // printed, and by then the plan below would have announced three commands
+  // that never run. It also has to come before the not-on-PATH hint, whose
+  // recipe opens with the unpinned `marketplace add` the refusal exists to
+  // keep off a managed machine.
+  if (managedPluginInstall(agent) !== null) {
+    process.stderr.write(`aka plugins install: ${managedInstallRefusal(agent.name)}\n`);
     process.exitCode = 1;
     return;
   }

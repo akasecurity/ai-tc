@@ -3,6 +3,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { managedInstallRefusal, managedUpdateRefusal } from '@akasecurity/local-ops';
+import { MANAGED_PLUGIN_ADVICE } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { tempHomes } from '../helpers/temp-home.ts';
@@ -118,13 +119,16 @@ describe('installPlugin — an install an organization manages', () => {
   });
 
   it('reaches the install path for a user-scope record (positive control)', async () => {
+    // The absence checks below name the advice sentence, which every managed
+    // refusal carries, rather than the refusal's lead wording: a literal lead
+    // would pass vacuously the moment that wording changed.
     writeLedger([{ scope: 'user', version: '0.9.13' }]);
 
     const result = await installPlugin('claude-code');
 
     expect(result.ok).toBe(false);
     expect(result.output).toContain("the `claude` CLI isn't on your PATH");
-    expect(result.output).not.toContain('managed by your organization');
+    expect(result.output).not.toContain(MANAGED_PLUGIN_ADVICE);
   });
 
   it('reaches the install path where nothing is installed (positive control)', async () => {
@@ -133,6 +137,6 @@ describe('installPlugin — an install an organization manages', () => {
 
     expect(result.ok).toBe(false);
     expect(result.output).toContain("the `claude` CLI isn't on your PATH");
-    expect(result.output).not.toContain('managed by your organization');
+    expect(result.output).not.toContain(MANAGED_PLUGIN_ADVICE);
   });
 });

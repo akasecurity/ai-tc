@@ -23,7 +23,7 @@ import {
 } from '@akasecurity/plugin-sdk';
 
 import { triggerReconcile } from '../history/reconcile-trigger.ts';
-import { parseJson, readStdin } from './shared.ts';
+import { countFailOpen, parseJson, readStdin } from './shared.ts';
 import { parseStopPayload } from './stop-payload.ts';
 import { warnIfStoreRedirected } from './store-health.ts';
 
@@ -56,6 +56,8 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch {
-  // Fail-open: never break the user's session
+  // Fail-open: never break the user's session — but count the exit, so
+  // `aka status` can say the hooks have been failing open on this machine.
+  countFailOpen();
 }
 process.exit(0);

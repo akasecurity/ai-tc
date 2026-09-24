@@ -13,6 +13,9 @@ import {
   findAgent,
   gatherReportLive,
   installedPluginScope,
+  managedPluginInstall,
+  managedUpdateRefusal,
+  nothingToApplyLine,
   outdated,
   parseSwitchableChannel,
   planCliUpdate,
@@ -21,7 +24,7 @@ import {
   SWITCHABLE_CHANNELS,
 } from '@akasecurity/local-ops';
 import type { CliUpdateTarget, ComponentStatus, ReleaseChannel } from '@akasecurity/schema';
-import { RELEASE_CHANNEL, RELEASE_TAG_SOURCE } from '@akasecurity/schema';
+import { MANAGED_PLUGIN_ADVICE, RELEASE_CHANNEL, RELEASE_TAG_SOURCE } from '@akasecurity/schema';
 
 import { HOME_OPTION, homeBase } from '../lib/args.ts';
 import { cliInstallOrigin } from '../lib/install-origin.ts';
@@ -150,6 +153,19 @@ export async function runUpdate(argv: string[]): Promise<void> {
     return;
   }
 
+  // A plugin an organization's managed settings installed is never applied
+  // here — `outdated` already leaves it out — and naming it explicitly is
+  // refused rather than answered with "already up to date", which would read
+  // as this command having checked and found nothing to do. The version is
+  // the organization's to set, and the host's own autoupdate moves it.
+  const targetRow =
+    target && target !== 'all' ? report.statuses.find((s) => s.id === target) : undefined;
+  if (targetRow?.managedInstall) {
+    process.stderr.write(`aka update: ${managedUpdateRefusal(targetRow.name)}\n`);
+    process.exitCode = 1;
+    return;
+  }
+
   let candidates = outdated(report);
   if (target && target !== 'all') candidates = candidates.filter((s) => s.id === target);
 
@@ -172,7 +188,7 @@ export async function runUpdate(argv: string[]): Promise<void> {
       out.write(
         target && target !== 'all'
           ? `${target} is already up to date.\n`
-          : 'Everything is up to date.\n',
+          : `${nothingToApplyLine(report)}\n`,
       );
     }
     return;
@@ -263,6 +279,13 @@ function pluginChannelRefusal(target: string, channel: ReleaseChannel): string {
   if (!agent || !ref || !agent.cliBin) {
     return `${head}  Update ${target} through its host, then re-run \`aka check-updates\`.\n`;
   }
+  // The recipe below re-registers the marketplace from its source with no
+  // ref. On a host that accepts that, a managed install's pinned registration
+  // is replaced with an unpinned one, so it is never offered for a plugin an
+  // organization manages.
+  if (managedPluginInstall(agent) !== null) {
+    return `${head}  ${agent.name} is managed by your organization. ${MANAGED_PLUGIN_ADVICE}\n`;
+  }
   const recipe = createCliPluginManager(agent.cliBin).updateRecipe(ref, agent.marketplaceSource);
   return (
     `${head}  To move ${agent.name} onto another channel, register the marketplace that ` +
@@ -302,6 +325,13 @@ function applyPluginUpdate(status: ComponentStatus): boolean {
     process.stderr.write(`✗ ${status.name}: no update coordinates in the registry.\n`);
     return false;
   }
+  // Checked again here, not only through the report: the ledger can gain a
+  // managed record after the report was built, and the plan below is
+  // announced before the shared apply gets its own chance to refuse.
+  if (managedPluginInstall(agent) !== null) {
+    process.stderr.write(`✗ ${managedUpdateRefusal(status.name)}\n`);
+    return false;
+  }
   // Two renders off the host's own verb table — a hardcoded `plugin update` is
   // wrong for Codex, which has no such subcommand — and they are NOT
   // interchangeable.
@@ -337,7 +367,11 @@ function applyPluginUpdate(status: ComponentStatus): boolean {
   process.stdout.write(
     `Updating ${status.name}, running:\n` + plan.map((command) => `  ${command}\n`).join(''),
   );
-  const { ok } = applyPluginUpdateShared(status.id, 'inherit');
+  const { ok, output } = applyPluginUpdateShared(status.id, 'inherit');
   process.stdout.write(ok ? `✓ ${status.name} updated.\n` : `✗ ${status.name} update failed.\n`);
+  // Inherit mode streams what the host printed, so `output` is empty after a
+  // spawn. It is non-empty only when the shared apply refused before spawning,
+  // and then it is the one explanation there is.
+  if (!ok && output !== '') process.stderr.write(`  ${output}\n`);
   return ok;
 }

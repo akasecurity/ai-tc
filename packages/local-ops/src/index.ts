@@ -87,8 +87,13 @@ export {
   refreshCache,
   writeCache,
 } from './update-cache.ts';
-export { outdated, renderReport } from './update-render.ts';
-export type { ReportDeps } from './updates.ts';
+export {
+  managedUpdateRefusal,
+  nothingToApplyLine,
+  outdated,
+  renderReport,
+} from './update-render.ts';
+export type { ManagedInstallLookup, ReportDeps } from './updates.ts';
 export {
   CLI_PACKAGE,
   cliRecordedBy,
@@ -99,5 +104,6 @@ export {
   installedCodexPluginVersions,
   installedPluginScope,
   installedPluginVersions,
+  managedPluginInstall,
   npmViewDistTags,
 } from './updates.ts';

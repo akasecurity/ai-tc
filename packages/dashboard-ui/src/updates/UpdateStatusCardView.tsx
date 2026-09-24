@@ -1,5 +1,6 @@
 'use client';
 import type { ComponentStatus } from '@akasecurity/schema';
+import { MANAGED_PLUGIN_ADVICE, managedPluginNoteParts } from '@akasecurity/schema';
 import {
   Badge,
   Button,
@@ -59,7 +60,10 @@ export interface UpdateStatusCardViewProps {
  */
 function pinNote(s: ComponentStatus): string | undefined {
   const pin = s.marketplacePin;
-  if (!pin) return undefined;
+  // A managed row's own note says who decides its version. A pin note naming a
+  // marketplace "that has to move" would hand the reader their organization's
+  // job.
+  if (!pin || s.managedInstall) return undefined;
   if (pin.range !== undefined) {
     const npm = pin.npmLatest !== null ? ` npm has v${pin.npmLatest}.` : '';
     return `${pin.marketplace} pins ${pin.range}, which the host resolves within — not a single version this page can compare.${npm}`;
@@ -68,7 +72,25 @@ function pinNote(s: ComponentStatus): string | undefined {
   return `${pin.marketplace} pins v${s.latest} — npm has v${pin.npmLatest}, which this machine cannot install until that marketplace moves.`;
 }
 
+/**
+ * The line explaining a row an organization's managed settings installed.
+ *
+ * Every such row gets one, pending or not. There is no Update button for it,
+ * and without this the page shows a version behind the organization's pin
+ * beside nothing to press and no reason why. The advice sentence and the
+ * ref/pending fragments come from `@akasecurity/schema`, the same ones
+ * `aka check-updates` prints.
+ */
+function managedNote(s: ComponentStatus): string | undefined {
+  if (!s.managedInstall) return undefined;
+  const { ref, lead } = managedPluginNoteParts(s);
+  return `Managed by your organization${ref}. ${lead}${MANAGED_PLUGIN_ADVICE}`;
+}
+
 function statusBadge(s: ComponentStatus) {
+  // First: a managed row's target can be unknown without the row being
+  // unknown, and it is never "update available" here.
+  if (s.managedInstall) return <Badge variant="default">managed</Badge>;
   if (s.installed === null || s.latest === null) return <Badge variant="default">unknown</Badge>;
   if (s.updateAvailable) return <Badge variant="high">update available</Badge>;
   return <Badge variant="success">up to date</Badge>;
@@ -114,6 +136,10 @@ export function UpdateStatusCardView({
             // Bound once: the presence check and the render must not be free to
             // disagree if this grows a branch.
             const note = pinNote(s);
+            const managed = managedNote(s);
+            // The pending version is shown the way an available one is, so the
+            // reader sees what is on its way as well as who delivers it.
+            const incoming = s.updateAvailable || s.managedInstall?.pending === true;
             return (
               <div key={s.id} className={cn('py-3', i > 0 && 'border-t border-hairline')}>
                 <div className="flex items-center gap-3">
@@ -121,11 +147,16 @@ export function UpdateStatusCardView({
                     <div className="text-sm font-semibold text-text">{s.name}</div>
                     <div className="mt-0.5 font-mono text-xs text-text-3">
                       {s.installed ?? '—'}
-                      {s.latest && s.updateAvailable && ` → ${s.latest}`}
+                      {s.latest && incoming && ` → ${s.latest}`}
                     </div>
                     {note !== undefined && (
                       <div className="mt-1 text-xs text-text-3" data-slot="marketplace-pin-note">
                         {note}
+                      </div>
+                    )}
+                    {managed !== undefined && (
+                      <div className="mt-1 text-xs text-text-3" data-slot="managed-install-note">
+                        {managed}
                       </div>
                     )}
                   </div>

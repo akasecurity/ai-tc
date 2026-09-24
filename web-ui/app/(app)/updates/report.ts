@@ -4,6 +4,7 @@ import {
   cliVersion,
   gatherReport,
   installedAgentPluginVersions,
+  managedPluginInstall,
   marketplacePinnedVersion,
 } from '@akasecurity/local-ops';
 import type { CliUpdateTarget, UpdateCache, UpdateReport } from '@akasecurity/schema';
@@ -67,6 +68,10 @@ export function updatesReport(cache: UpdateCache | null): UpdateReport {
     // a stale pin would put this page back to offering an update the host
     // cannot deliver — the defect the pin exists to close.
     marketplacePin: (agent) => marketplacePinnedVersion(agent),
+    // Read live for the same reason as the pin: a managed install is a local
+    // fact the host recorded, and reading it from the cache would let this
+    // page offer an Update button for an install the organization manages.
+    managedInstall: (agent) => managedPluginInstall(agent),
   });
 }
 

@@ -70,6 +70,11 @@ vi.mock('@akasecurity/local-ops', async (importActual) => {
       return seams.report;
     },
     cliVersion: (): string | null => seams.cliVersion,
+    // No install is organization-managed in this suite. Read live, the lookup
+    // would answer from the developer's own Claude Code ledger, and a machine
+    // enrolled with a managed drop-in would turn the plugin-target refusal
+    // below into the managed one. update-managed.test.ts owns that case.
+    managedPluginInstall: (): null => null,
     // A synthetic npm-global install, so the REAL planCliUpdate below produces
     // a runnable plan. This checkout classifies as a source tree, whose plan is
     // advice rather than a command — which would refuse before the apply and
@@ -455,6 +460,7 @@ describe('aka update — the offer and the install name one version', () => {
       installed: new Map(),
       cliInstalled: installed,
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
       ...(requested === undefined ? {} : { cliChannel: requested }),
     });
   }
@@ -567,6 +573,7 @@ describe('aka update --channel — a channel nothing publishes', () => {
       installed: new Map(),
       cliInstalled: installed,
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
       cliChannel: requested,
     });
   }
@@ -626,6 +633,7 @@ describe('aka update --channel — a channel nothing publishes', () => {
       installed: new Map(),
       cliInstalled: '0.11.0-beta.3',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
     const { code, out } = await run(['--yes']);
 
@@ -664,6 +672,7 @@ describe('aka update --channel — a channel the stable release has graduated pa
       installed: new Map(),
       cliInstalled: installed,
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
       cliChannel: requested,
     });
   }
@@ -750,6 +759,7 @@ describe('aka update --channel — a channel the stable release has graduated pa
       installed: new Map(),
       cliInstalled: '0.11.0-beta.3',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
     const { code, out } = await run(['--yes']);
 
@@ -818,6 +828,7 @@ describe('aka update — a hostile registry answer never reaches argv', () => {
       installed: new Map(),
       cliInstalled: INSTALLED,
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
     await run(['--yes']);
 
@@ -880,6 +891,7 @@ describe('aka update — a hostile registry answer never reaches argv', () => {
       installed: new Map(),
       cliInstalled: '0.9.11',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
     await run(['--yes']);
 

@@ -322,3 +322,62 @@ describe('the Updates route’s confirm-dialog copy', () => {
     }
   });
 });
+
+// A plugin an organization's managed settings installed: the route reads the
+// ledger and the organization's marketplace live, and hands the view a row
+// that names the pin and offers nothing to apply. Seeded in the shapes a
+// managed install leaves on disk.
+describe('the Updates route and an install an organization manages', () => {
+  function seedManagedInstall(scope: string): void {
+    const plugins = join(osHome.dir, '.claude', 'plugins');
+    const marketplace = join(plugins, 'marketplaces', 'akasecurity');
+    mkdirSync(join(marketplace, '.claude-plugin'), { recursive: true });
+    writeFileSync(
+      join(plugins, 'installed_plugins.json'),
+      JSON.stringify({
+        version: 2,
+        plugins: { 'ai-tc@akasecurity': [{ scope, version: '0.9.13' }] },
+      }),
+    );
+    writeFileSync(
+      join(plugins, 'known_marketplaces.json'),
+      JSON.stringify({
+        akasecurity: {
+          source: { source: 'github', repo: 'akasecurity/marketplace', ref: 'org-release-8' },
+          installLocation: marketplace,
+        },
+      }),
+    );
+    writeFileSync(
+      join(marketplace, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({
+        plugins: [
+          {
+            name: 'ai-tc',
+            source: { source: 'npm', package: '@akasecurity/ai-tc-claude-code', version: '0.9.14' },
+          },
+        ],
+      }),
+    );
+  }
+
+  it('hands the view a managed row, with the organization’s pin and no update', () => {
+    seedManagedInstall('managed');
+
+    const row = renderPage().statuses.find((s) => s.id === 'claude-code');
+
+    expect(row?.installed).toBe('0.9.13');
+    expect(row?.latest).toBe('0.9.14');
+    expect(row?.updateAvailable).toBe(false);
+    expect(row?.managedInstall).toEqual({ ref: 'org-release-8', pending: true });
+  });
+
+  it('offers the same install as an update when it is the user’s (positive control)', () => {
+    seedManagedInstall('user');
+
+    const row = renderPage().statuses.find((s) => s.id === 'claude-code');
+
+    expect(row?.updateAvailable).toBe(true);
+    expect(row).not.toHaveProperty('managedInstall');
+  });
+});

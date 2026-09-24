@@ -287,7 +287,7 @@ guarantee.
 - [x] 18. Add `plugins/copilot/test/hooks/scan-response.test.ts` with a high-entropy non-credential-shaped fixture, `expectNoEchoOf` on every banner, and a per-dialect difference case.
 - [x] 19. Add `plugins/copilot/src/hooks/post-tool-use.ts` (capture `kind: 'response'`, `{ persist: 'with-findings', rewritable: false }`), add its `tsup` entry, and register `postToolUse` in `hooks.json`.
 - [x] 20. Update `test/hooks-manifest.test.ts`'s exact key list to the final four and confirm no PascalCase key was introduced.
-- [ ] 21. Extend `test/e2e/fail-open.e2e.test.ts` to drive `session-start.js`, `user-prompt-submit.js` and `post-tool-use.js` through every fault row (empty, malformed, truncated, scalar, binary, oversized stdin; unopenable store) asserting exit 0, and add one positive control per script so the absence assertions are not vacuous.
+- [x] 21. Extend `test/e2e/fail-open.e2e.test.ts` to drive `session-start.js`, `user-prompt-submit.js` and `post-tool-use.js` through every fault row (empty, malformed, truncated, scalar, binary, oversized stdin; unopenable store) asserting exit 0, and add one positive control per script so the absence assertions are not vacuous.
 - [ ] 22. Update `src/capabilities.ts` — new `sessionStart`/`SessionStart` rows, rewritten notes on the four prompt/result rows.
 - [ ] 23. Re-render the table in `skills/setup/SKILL.md` and rewrite the "Only the pre-tool-use event is wired" paragraph; update the matching regex in `test/capability-matrix.test.ts`.
 - [ ] 24. Update `CLAUDE.md` line ~898 to the plural event list, leaving the "spawns the hook twice per call" sentence intact; re-run `pnpm --filter @akasecurity/ai-tc-copilot test` so `hook-output-shapes.test.ts` re-reads it.

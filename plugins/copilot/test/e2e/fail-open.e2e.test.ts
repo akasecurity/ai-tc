@@ -20,6 +20,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 import { openLocalDatabase } from '@akasecurity/persistence';
@@ -351,3 +352,301 @@ describe.each(DIALECTS)('pre-tool-use enforcement [$event]', (d) => {
     noObject(enforce('block', 'echo hello'));
   });
 });
+
+// ─── The three CAPTURE hooks ────────────────────────────────────────────────
+//
+// `sessionStart`, `userPromptSubmitted` and `postToolUse` enforce nothing —
+// none of them can stop or rewrite anything on either host — so the exit code
+// is the whole of what they owe the host, exactly as it is for `preToolUse`.
+// Nothing above reaches them: each is its own built script, so a fault the
+// pre-tool-use rows prove is handled says nothing about these three.
+//
+// The same two halves apply. The fault rows are absence checks and prove
+// nothing alone; the control beside each one is what shows the script DOES the
+// work it stayed silent about. For the two that can speak, the control reads
+// their message. For `session-start.js`, which emits nothing on any path, the
+// control is the SESSION ROW it leaves in the store — the only observable that
+// separates "declined quietly" from "was never built".
+
+const CAPTURE_HOOKS = [
+  { script: 'session-start.js', cli: 'sessionStart', vscode: 'SessionStart' },
+  { script: 'user-prompt-submit.js', cli: 'userPromptSubmitted', vscode: 'UserPromptSubmit' },
+  { script: 'post-tool-use.js', cli: 'postToolUse', vscode: 'PostToolUse' },
+] as const;
+
+function runScript(script: string, event: string, home: string, input: string | Buffer): HookRun {
+  const result = spawnSync(
+    process.execPath,
+    [join(PLUGIN_ROOT, 'scripts', script), event, MANIFEST],
+    {
+      env: { HOME: home, USERPROFILE: home },
+      input,
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    },
+  );
+  const { error, status, stdout, stderr } = result as unknown as {
+    error?: Error;
+    status: number | null;
+    stdout: string | null;
+    stderr: string | null;
+  };
+  if (error && stdout === null && stderr === null) {
+    return { stdout: '', stderr: error.message, status: 1 };
+  }
+  return { stdout: stdout ?? '', stderr: stderr ?? '', status: status ?? 1 };
+}
+
+describe.each(CAPTURE_HOOKS)('$script — fails open by EXITING 0 and saying nothing', (hook) => {
+  // Both event tokens, because each script handles both dialects and a fault
+  // can be reached through either.
+  const events = [hook.cli, hook.vscode];
+
+  it.each(events.flatMap((event) => FAULTS.map((fault) => ({ event, ...fault }))))(
+    'reaches no verdict and writes nothing on $label [$event]',
+    (fault) => {
+      const run = withTempHome(
+        (home) => runScript(hook.script, fault.event, home, fault.input),
+        `aka-copilot-failopen-${hook.script}-`,
+      );
+      noObject(run);
+    },
+  );
+
+  it.each(events)('writes nothing over a store that cannot be opened [%s]', (event) => {
+    // Not the "SQLite format 3\0" header, so the first PRAGMA fails
+    // SQLITE_NOTADB. `openGatewayOrNull` catches it and the body returns a
+    // normal answer, so this proves the degraded path answers — not that the
+    // wrapper's catch works, which `test/hooks/fail-open-wrapper.test.ts` owns.
+    const run = withTempHome((home) => {
+      const dataDir = join(home, '.aka', 'data');
+      mkdirSync(dataDir, { recursive: true });
+      writeFileSync(
+        join(dataDir, 'aka.db'),
+        'AKA corrupt-store fixture — not a database\n'.repeat(64),
+      );
+      return runScript(
+        hook.script,
+        event,
+        home,
+        JSON.stringify(capturePayload(hook.script, event, 'echo hello')),
+      );
+    }, `aka-copilot-corrupt-${hook.script}-`);
+
+    // The CLI has no message field on any of these three events, so its notice
+    // is stderr and stdout stays exactly empty. On VS Code the two that can
+    // speak carry it on stdout; `session-start.js` never emits on either host.
+    if (event === hook.cli || hook.script === 'session-start.js') {
+      noObject(run);
+    } else {
+      const decided = soleObject(run) as Record<string, unknown>;
+      expect(String(decided.systemMessage)).toContain('could not open its local store');
+    }
+    // No verdict on ANY of these paths, on either dialect — these three hooks
+    // have no enforcement channel at all, so a key from one is a defect
+    // whichever channel it appeared on.
+    expect(run.stdout).not.toContain('permissionDecision');
+    expect(run.stdout).not.toContain('"decision"');
+    expect(run.stdout).not.toContain('modifiedResult');
+  });
+});
+
+/**
+ * A well-formed payload for one of the three capture scripts, in the dialect
+ * the event token selects.
+ *
+ * `text` is where the scannable content goes, which is a different field per
+ * script — the prompt, the tool result, or nothing at all for a session start.
+ * Built here rather than per case so the fault rows and the controls below
+ * drive the same shapes.
+ */
+function capturePayload(script: string, event: string, text: string): Record<string, unknown> {
+  // The CASING is what selects the dialect on this host — the CLI's own
+  // reference says so — so it is what selects the envelope built here.
+  const vscode = /^[A-Z]/u.test(event);
+  const envelope = vscode
+    ? { hook_event_name: event, session_id: SESSION_ID, cwd: '/tmp' }
+    : { sessionId: SESSION_ID, timestamp: 1788547866483, cwd: '/tmp' };
+  if (script === 'session-start.js') return { ...envelope, source: 'new' };
+  if (script === 'user-prompt-submit.js') return { ...envelope, prompt: text };
+  return vscode
+    ? {
+        ...envelope,
+        tool_name: 'run_in_terminal',
+        tool_input: { command: 'cat x' },
+        tool_response: text,
+      }
+    : {
+        ...envelope,
+        toolName: 'bash',
+        toolArgs: { command: 'cat x' },
+        toolResult: { resultType: 'success', textResultForLlm: text },
+      };
+}
+
+const SESSION_ID = 'c1779e76-9889-419b-ab12-f7bb8a957e15';
+
+// `config.onboarded` is `settings.onboardedAt != null` — the single field that
+// decides whether a clean prompt is silent or carries the calibration nudge.
+function markOnboarded(home: string): void {
+  const dir = join(home, '.aka', 'settings');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'settings.json'),
+    JSON.stringify({ onboardedAt: '2026-01-01T00:00:00Z' }),
+  );
+}
+
+// ─── The controls, without which every absence row above is vacuous ─────────
+
+describe('session-start built hook — the control is the row it leaves, not a payload', () => {
+  // This script emits NOTHING on any path on either host, so no stdout
+  // assertion can separate "declined" from "was never built". The session root
+  // it opens is the only observable that can, which is why the control for this
+  // one script reads the store rather than the wire.
+  it.each(['sessionStart', 'SessionStart'])(
+    'opens a session root in a real store [%s]',
+    (event) => {
+      withTempHome((home) => {
+        const run = runScript(
+          'session-start.js',
+          event,
+          home,
+          JSON.stringify(capturePayload('session-start.js', event, '')),
+        );
+        // Silent and clean — the property every other row here asserts.
+        noObject(run);
+
+        const db = new DatabaseSync(join(home, '.aka', 'data', 'aka.db'));
+        try {
+          const rows = db.prepare("SELECT id FROM audit_events WHERE event_type = 'session'").all();
+          expect(rows).toEqual([{ id: SESSION_ID }]);
+        } finally {
+          db.close();
+        }
+      }, `aka-copilot-sessionstart-control-${event}-`);
+    },
+    60_000,
+  );
+});
+
+describe.each(DIALECTS.map((d) => (d.event === 'preToolUse' ? 'cli' : 'vscode')))(
+  'the two capture hooks that CAN speak do speak [%s]',
+  (kind) => {
+    const isCli = kind === 'cli';
+
+    /** The channel this dialect actually has for a message on these events. */
+    function notice(run: HookRun): string {
+      if (isCli) {
+        // The CLI documents no message field on either event, so stdout must be
+        // exactly empty — asserted rather than ignored, because a build that
+        // drifted back to a stdout `systemMessage` would still satisfy a search
+        // across both channels.
+        expect(run.stdout).toBe('');
+        return run.stderr;
+      }
+      return String((soleObject(run) as Record<string, unknown>).systemMessage);
+    }
+
+    function speak(script: string, event: string): HookRun {
+      return withTempHome((home) => {
+        seedPolicy(home, 'warn');
+        return runScript(
+          script,
+          event,
+          home,
+          JSON.stringify(capturePayload(script, event, `deploy ${FIXTURE.example}`)),
+        );
+      }, `aka-copilot-speak-${script}-${kind}-`);
+    }
+
+    it('user-prompt-submit names the rule and says the prompt went out unchanged', () => {
+      const run = speak(
+        'user-prompt-submit.js',
+        isCli ? 'userPromptSubmitted' : 'UserPromptSubmit',
+      );
+      expect(run.status, run.stderr).toBe(0);
+      const text = notice(run);
+      expect(text).toContain(RULE_ID);
+      expect(text).toContain('unchanged');
+      // No verdict, ever: there is no prompt-stop channel on either host that
+      // this repository has confirmed, and exit 2 is VS Code's block channel.
+      expect(run.status).not.toBe(2);
+      expect(run.stdout).not.toContain('permissionDecision');
+      expect(run.stdout).not.toContain('"decision"');
+    });
+
+    it('post-tool-use names the rule and says the output reached the model', () => {
+      const run = speak('post-tool-use.js', isCli ? 'postToolUse' : 'PostToolUse');
+      expect(run.status, run.stderr).toBe(0);
+      const text = notice(run);
+      expect(text).toContain(RULE_ID);
+      expect(text).toContain('reached the model');
+      // The claim this path may never make — the tool has already run and the
+      // result was not withheld.
+      expect(text).not.toMatch(/never reached|withheld/iu);
+      expect(run.stdout).not.toContain('modifiedResult');
+      expect(run.stdout).not.toContain('"decision"');
+    });
+
+    it('says nothing at all for clean text, so the two rows above are not vacuous', () => {
+      // The control on the controls: a hook that spoke on every capture would
+      // satisfy both cases above.
+      //
+      // `markOnboarded` is load-bearing rather than tidying. On an unonboarded
+      // home a clean SUBMITTED prompt carries the first-run calibration nudge,
+      // which is correct behaviour and not a flag — so without it this case
+      // would have to weaken to "said nothing about a finding", and a hook that
+      // printed a flag message under another wording would slip through. With
+      // it the claim stays exact: nothing at all.
+      for (const [script, event] of [
+        ['user-prompt-submit.js', isCli ? 'userPromptSubmitted' : 'UserPromptSubmit'],
+        ['post-tool-use.js', isCli ? 'postToolUse' : 'PostToolUse'],
+      ] as const) {
+        const run = withTempHome((home) => {
+          seedPolicy(home, 'warn');
+          markOnboarded(home);
+          return runScript(
+            script,
+            event,
+            home,
+            JSON.stringify(capturePayload(script, event, 'nothing to see here')),
+          );
+        }, `aka-copilot-clean-${script}-${kind}-`);
+        noObject(run);
+        // Not `toBe('')`: node prints its own `ExperimentalWarning` for
+        // node:sqlite on this channel, which belongs to the runtime rather
+        // than to the hook. Every message this package writes names itself, so
+        // the absence of that name is the exact claim — and it holds whatever
+        // wording a future notice takes, which `not.toContain('AKA flagged')`
+        // would not.
+        expect(run.stderr).not.toMatch(/\bAKA\b/u);
+      }
+    });
+
+    it('carries the first-run nudge on a clean prompt when the home is NOT onboarded', () => {
+      // Attributes the silence above to `onboardedAt` specifically. Without
+      // this the case above passes just as well against a hook that lost the
+      // nudge entirely, and the nudge is the only thing that tells a new user
+      // AKA is running at all.
+      const run = withTempHome((home) => {
+        seedPolicy(home, 'warn');
+        return runScript(
+          'user-prompt-submit.js',
+          isCli ? 'userPromptSubmitted' : 'UserPromptSubmit',
+          home,
+          JSON.stringify(
+            capturePayload(
+              'user-prompt-submit.js',
+              isCli ? 'userPromptSubmitted' : 'UserPromptSubmit',
+              'nothing to see here',
+            ),
+          ),
+        );
+      }, `aka-copilot-nudge-${kind}-`);
+      expect(run.status, run.stderr).toBe(0);
+      expect(notice(run)).toContain('AKA is active');
+    });
+  },
+  120_000,
+);

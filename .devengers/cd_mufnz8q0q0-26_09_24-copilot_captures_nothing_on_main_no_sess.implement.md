@@ -273,3 +273,42 @@ introduced.
 - `plugins/copilot` full suite: **24 files, 339 passed**.
 - `tsc --noEmit` + `eslint src test *.config.*`: clean.
 - Coverage floor 74 → **71** (367/498 = 73.69 here; Windows ≈ 72.08). Finalized at task 25.
+
+---
+
+## Task 21 — the e2e fail-open suite
+
+`test/e2e/fail-open.e2e.test.ts` now drives all four BUILT scripts. The file went from 46
+to **102** cases.
+
+Each of the three new scripts runs every fault row (empty, malformed, truncated, scalar,
+null, array, binary, neither-dialect, oversized-past-the-pipe-buffer) under BOTH event
+tokens, plus an unopenable store, asserting exit 0 and an empty stdout on the CLI. Every one
+of those rows additionally refuses `permissionDecision`, `"decision"` and `modifiedResult`
+anywhere on stdout — these three hooks have no enforcement channel at all, so a key from one
+is a defect whichever channel it appeared on.
+
+**The controls, which is where the work was.** An absence row proves nothing on its own.
+
+- `session-start.js` emits NOTHING on any path on either host, so no stdout assertion can
+  separate "declined" from "was never built". Its control reads the **store** instead: the
+  script runs against a real temp home and the suite asserts `audit_events` holds exactly
+  one `session` row with the payload's own id. That is the only observable that can tell the
+  two apart.
+- `user-prompt-submit.js` and `post-tool-use.js` are driven against a real finding under a
+  seeded `warn` policy, taken from the bundled rule's own `examples` (no credential-shaped
+  literal is written into this public repo). Each asserts the rule id, the honest verb
+  (`unchanged` / `reached the model`), that the run did not exit 2, and that no verdict key
+  appears. The post-tool-use case additionally refuses `never reached` and `withheld`.
+- A **clean-text** case asserts both scripts say nothing at all, and a fourth case attributes
+  that silence to `onboardedAt` specifically by showing the first-run nudge DOES fire on an
+  unonboarded home. Without that pairing the clean case passes equally against a hook that
+  lost the nudge entirely.
+
+Two assertions were weakened deliberately and both are explained in place. The clean control
+asserts `stderr` carries no `\bAKA\b` rather than `toBe('')`, because node prints its own
+`ExperimentalWarning` for `node:sqlite` on that channel — that belongs to the runtime, and
+every message this package writes names itself, so the name's absence is the exact claim and
+it survives a future re-wording.
+
+Gates: **24 files, 409 passed**; `tsc` and `eslint` clean.

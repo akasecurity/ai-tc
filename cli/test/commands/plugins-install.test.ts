@@ -33,7 +33,13 @@ import type { Prompter } from '../../src/lib/prompter.ts';
 // not-on-PATH branch.
 // `installAgentPlugin` is stubbed because the announce line is printed BEFORE
 // the spawn, and this suite is about the copy, not the child process.
-const spawned = vi.hoisted(() => ({ calls: [] as string[], available: true }));
+const spawned = vi.hoisted(() => ({
+  calls: [] as string[],
+  available: true,
+  // What the stubbed shared apply does and returns. A case replaces it to stand
+  // in for a refusal the shared path makes on its own, before any spawn.
+  apply: (): { ok: boolean; output: string } => ({ ok: true, output: '' }),
+}));
 
 vi.mock('@akasecurity/local-ops', async (importActual) => {
   const actual = await importActual<typeof LocalOps>();
@@ -45,7 +51,7 @@ vi.mock('@akasecurity/local-ops', async (importActual) => {
     }),
     installAgentPlugin: (agentId: string) => {
       spawned.calls.push(agentId);
-      return { ok: true, output: '' };
+      return spawned.apply();
     },
   };
 });
@@ -85,6 +91,7 @@ let home: string;
 beforeEach(() => {
   spawned.calls = [];
   spawned.available = true;
+  spawned.apply = () => ({ ok: true, output: '' });
   process.exitCode = undefined;
   home = mkdtempSync(join(tmpdir(), 'aka-plugins-install-'));
   vi.stubEnv('HOME', home);
@@ -379,5 +386,127 @@ describe('aka plugins install over an install an organization manages', () => {
     expect(spawned.calls).toEqual(['claude-code']);
     expect(err).toBe('');
     expect(process.exitCode).toBeUndefined();
+  });
+});
+
+// The ledger read at the top of the command and the one inside the shared
+// apply are two moments, and between them the command can wait on a human: the
+// host-floor question. A managed record landing in that gap (the organization's
+// drop-in arriving, or the host's own autoupdate rewriting the ledger) must not
+// get the announce line for three commands that never run, and must never be
+// answered with the fallback recipe, which opens with the unpinned
+// `marketplace add` for the user to paste by hand.
+describe('aka plugins install when the plugin becomes managed mid-command', () => {
+  const MANAGED = [{ scope: 'managed', version: '0.9.14' }];
+
+  it('refuses before announcing when the record lands during the floor question', async () => {
+    const io: Prompter & { out_: string[] } = {
+      ...fakePrompter([]),
+      ask: () => {
+        writeLedger(MANAGED);
+        return Promise.resolve('y');
+      },
+    };
+
+    const { out, err } = await captureBoth(() =>
+      runPlugins(['install', 'claude-code'], { hostVersion: () => '2.0.0', prompter: io }),
+    );
+
+    expect(spawned.calls).toEqual([]);
+    expect(out).not.toContain('running:');
+    expect(err).toContain(managedInstallRefusal('Claude Code'));
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('prints the shared refusal, and no recipe, when the record lands during the apply', async () => {
+    spawned.apply = () => {
+      writeLedger(MANAGED);
+      return { ok: false, output: managedInstallRefusal('Claude Code') };
+    };
+
+    const { out, err } = await captureBoth(() =>
+      runPlugins(['install', 'claude-code'], NO_HOST_VERSION),
+    );
+
+    // The positive control that the apply was reached, so the refusal below
+    // is the shared path's rather than one of the command's own checks.
+    expect(spawned.calls).toEqual(['claude-code']);
+    expect(err).toContain(managedInstallRefusal('Claude Code'));
+    expect(err).not.toContain('marketplace add');
+    // Only the announce line may name it, and that line printed before the
+    // record existed.
+    expect(out.split('marketplace add').length - 1).toBe(1);
+    expect(err).not.toContain('see the output above');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('prints any other refusal the shared path returns before spawning', async () => {
+    // Inherit mode streams what the host printed, so `output` is non-empty only
+    // for a refusal made before any spawn, and then it is the one explanation.
+    spawned.apply = () => ({ ok: false, output: 'the shared path said why' });
+
+    const { err } = await captureBoth(() =>
+      runPlugins(['install', 'claude-code'], NO_HOST_VERSION),
+    );
+
+    expect(err).toContain('the shared path said why');
+    expect(err).not.toContain('see the output above');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('keeps the recipe for a spawn that failed on a machine nobody manages (positive control)', async () => {
+    spawned.apply = () => ({ ok: false, output: '' });
+
+    const { err } = await captureBoth(() =>
+      runPlugins(['install', 'claude-code'], NO_HOST_VERSION),
+    );
+
+    expect(err).toContain('Install failed — see the output above');
+    expect(err).toContain('claude plugin marketplace add akasecurity/marketplace');
+    expect(process.exitCode).toBe(1);
+  });
+});
+
+// `aka init` offers the plugin as an optional extra once its own work is done,
+// and passes `declineIsFailure: false` so passing on it does not fail init. An
+// install the organization already manages is the same outcome for init:
+// nothing installed and nothing wrong, the plugin already present.
+describe('who owns the exit code when the organization already manages the plugin', () => {
+  it('does not fail `aka init` for it', async () => {
+    writeLedger([{ scope: 'managed', version: '0.9.14' }]);
+
+    const { err } = await captureBoth(() =>
+      runPlugins(['install', 'claude-code'], { ...NO_HOST_VERSION, declineIsFailure: false }),
+    );
+
+    expect(spawned.calls).toEqual([]);
+    expect(err).toContain(managedInstallRefusal('Claude Code'));
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('does not fail `aka init` when the record lands during the apply', async () => {
+    spawned.apply = () => {
+      writeLedger([{ scope: 'managed', version: '0.9.14' }]);
+      return { ok: false, output: managedInstallRefusal('Claude Code') };
+    };
+
+    const { err } = await captureBoth(() =>
+      runPlugins(['install', 'claude-code'], { ...NO_HOST_VERSION, declineIsFailure: false }),
+    );
+
+    expect(err).toContain(managedInstallRefusal('Claude Code'));
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('still fails `aka init` for a genuine install failure (positive control)', async () => {
+    // The flag covers the two outcomes where nothing went wrong, not every
+    // failure, so a broken install still reports non-zero to init.
+    spawned.apply = () => ({ ok: false, output: '' });
+
+    await captureBoth(() =>
+      runPlugins(['install', 'claude-code'], { ...NO_HOST_VERSION, declineIsFailure: false }),
+    );
+
+    expect(process.exitCode).toBe(1);
   });
 });

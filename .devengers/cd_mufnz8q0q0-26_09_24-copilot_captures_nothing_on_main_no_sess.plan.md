@@ -267,10 +267,10 @@ guarantee.
 
 ## Ordered implementation tasks
 
-- [ ] 1. Add `packages/plugin-sdk/src/provider-copilot.ts`, ported from the member branch, with its "no env read, therefore no §3 row" paragraph intact.
-- [ ] 2. Widen `PluginConfig['provider']` and `loadConfig`'s `resolveProviderFn` type in `packages/plugin-sdk/src/config.ts` to include `ResolvedCopilotProvider`; export the trio from `src/index.ts`.
-- [ ] 3. Add `packages/plugin-sdk/test/provider-copilot.test.ts`, including a case asserting the module source contains no `process.env`.
-- [ ] 4. Run `pnpm --filter @akasecurity/plugin-sdk test typecheck lint` and `pnpm lint` at the root; confirm no new §3 row is demanded by `effective-config.test.js` or `inline-disables.test.js`.
+- [x] 1. Add `packages/plugin-sdk/src/provider-copilot.ts`, ported from the member branch, with its "no env read, therefore no §3 row" paragraph intact.
+- [x] 2. Widen `PluginConfig['provider']` and `loadConfig`'s `resolveProviderFn` type in `packages/plugin-sdk/src/config.ts` to include `ResolvedCopilotProvider`; export the trio from `src/index.ts`.
+- [x] 3. Add `packages/plugin-sdk/test/provider-copilot.test.ts`, including a case asserting the module source contains no `process.env`.
+- [x] 4. Run `pnpm --filter @akasecurity/plugin-sdk test typecheck lint` and `pnpm lint` at the root; confirm no new §3 row is demanded by `effective-config.test.js` or `inline-disables.test.js`.
 - [ ] 5. Add `plugins/copilot/src/hooks/session-start-payload.ts`, rewritten against main's dialect-first argument order.
 - [ ] 6. Add `plugins/copilot/test/hooks/session-start-payload.test.ts`, driven from the existing `cli/sessionStart.json` and `vscode-provisional/SessionStart.json` fixtures plus a `null` and a wrong-casing case.
 - [ ] 7. Add `plugins/copilot/src/{sync,history-sync,content-retention}.ts`, copied from their `plugins/codex/src/` counterparts.

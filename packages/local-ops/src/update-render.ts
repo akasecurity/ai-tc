@@ -188,3 +188,16 @@ export function nothingToApplyLine(report: UpdateReport): string {
 export function managedUpdateRefusal(name: string): string {
   return `${name} is managed by your organization, so nothing was run. ${MANAGED_PLUGIN_ADVICE}`;
 }
+
+/**
+ * Why an install over a managed one was refused. The plugin is already on the
+ * machine, so the answer is that it is there and how it moves, not that an
+ * update was refused. `aka plugins install` prints it, and the shared apply
+ * path returns it to the dashboard's Install action.
+ */
+export function managedInstallRefusal(name: string): string {
+  return (
+    `${name} is managed by your organization and is already installed, so nothing was run. ` +
+    MANAGED_PLUGIN_ADVICE
+  );
+}

@@ -10,7 +10,7 @@ import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import type { ApplyMode } from '../src/apply.ts';
 import { applyPluginUpdate, installAgentPlugin } from '../src/apply.ts';
 import { createCliPluginManager } from '../src/cli-plugin-manager.ts';
-import { managedUpdateRefusal } from '../src/update-render.ts';
+import { managedInstallRefusal, managedUpdateRefusal } from '../src/update-render.ts';
 import {
   assertShimResolves,
   SHIM_NEEDS_SHELL,
@@ -436,6 +436,117 @@ describe('an install an organization manages', () => {
     armShims(['codex']);
 
     const res = applyPluginUpdate('codex', 'capture');
+
+    expect(res.ok).toBe(true);
+    expect(commandLines()).toContain('codex plugin add aka-codex@ai-tc');
+  });
+});
+
+/**
+ * An INSTALL asked for over a managed one.
+ *
+ * The install path runs the same unpinned prep as the update path before its
+ * op, so the harm is the same and it lands before `plugin install` is reached.
+ * A user-scope copy installed beside the managed one would not be what the
+ * host loads either: the host resolves the managed record.
+ */
+describe('an install asked for where an organization already manages one', () => {
+  it('refuses and spawns nothing at all', () => {
+    writeInstalledLedger({ 'ai-tc@akasecurity': [{ version: '0.9.13', scope: 'managed' }] });
+    armShims(['claude']);
+
+    const res = installAgentPlugin('claude-code', 'capture');
+
+    expect(calls()).toEqual([]);
+    expect(res.ok).toBe(false);
+    expect(res.output).toBe(managedInstallRefusal('Claude Code'));
+  });
+
+  it('refuses in inherit mode too, where the CLI would have streamed the prep', () => {
+    writeInstalledLedger({ 'ai-tc@akasecurity': [{ version: '0.9.13', scope: 'managed' }] });
+    armShims(['claude']);
+
+    const res = installAgentPlugin('claude-code', 'inherit');
+
+    expect(calls()).toEqual([]);
+    expect(res.ok).toBe(false);
+    // Returned rather than streamed: nothing ran, so there is no child output
+    // for the caller's terminal to have seen, and the reason has to reach it.
+    expect(res.output).toBe(managedInstallRefusal('Claude Code'));
+  });
+
+  it('refuses when a user copy sits beside the managed one', () => {
+    writeInstalledLedger({
+      'ai-tc@akasecurity': [
+        { version: '0.9.14', scope: 'user' },
+        { version: '0.9.13', scope: 'managed' },
+      ],
+    });
+    armShims(['claude']);
+
+    const res = installAgentPlugin('claude-code', 'capture');
+
+    expect(calls()).toEqual([]);
+    expect(res.ok).toBe(false);
+  });
+
+  it('refuses a managed record that names no version', () => {
+    // The comparison reader drops this record entirely, so a guard keyed on
+    // "is a version installed" would read the machine as having nothing.
+    writeInstalledLedger({ 'ai-tc@akasecurity': [{ scope: 'managed' }] });
+    armShims(['claude']);
+
+    const res = installAgentPlugin('claude-code', 'capture');
+
+    expect(calls()).toEqual([]);
+    expect(res.output).toBe(managedInstallRefusal('Claude Code'));
+  });
+
+  it('refuses before the PATH probe, so no hand-run recipe is offered', () => {
+    // With the host CLI absent the next thing reached is the "not on your
+    // PATH" hint, whose recipe starts with the same unpinned `marketplace add`
+    // for the user to type by hand.
+    writeInstalledLedger({ 'ai-tc@akasecurity': [{ version: '0.9.13', scope: 'managed' }] });
+    vi.stubEnv('PATH', emptyDir);
+
+    const res = installAgentPlugin('claude-code', 'capture');
+
+    expect(res.ok).toBe(false);
+    expect(res.output).not.toContain('marketplace add');
+    expect(res.output).toBe(managedInstallRefusal('Claude Code'));
+  });
+
+  it('installs over a user-scope record exactly as before (positive control)', () => {
+    writeInstalledLedger({ 'ai-tc@akasecurity': [{ version: '0.9.13', scope: 'user' }] });
+    armShims(['claude']);
+
+    const res = installAgentPlugin('claude-code', 'capture');
+
+    expect(res.ok).toBe(true);
+    expect(commandLines()).toEqual([
+      'claude plugin marketplace add akasecurity/marketplace',
+      'claude plugin marketplace update akasecurity',
+      'claude plugin install ai-tc@akasecurity',
+    ]);
+  });
+
+  it('installs where the ledger names no install at all (positive control)', () => {
+    // A ledger that exists and lists another plugin, rather than no file: the
+    // reader parsed it and found nothing for this ref.
+    writeInstalledLedger({ 'other@elsewhere': [{ version: '1.0.0', scope: 'managed' }] });
+    armShims(['claude']);
+
+    const res = installAgentPlugin('claude-code', 'capture');
+
+    expect(res.ok).toBe(true);
+    expect(commandLines()).toContain('claude plugin install ai-tc@akasecurity');
+  });
+
+  it('reads the managed scope for Claude Code only', () => {
+    writeInstalledLedger({ 'aka-codex@ai-tc': [{ version: '0.9.13', scope: 'managed' }] });
+    armShims(['codex']);
+
+    const res = installAgentPlugin('codex', 'capture');
 
     expect(res.ok).toBe(true);
     expect(commandLines()).toContain('codex plugin add aka-codex@ai-tc');

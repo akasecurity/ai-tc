@@ -2,18 +2,20 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
-import { managedUpdateRefusal } from '@akasecurity/local-ops';
+import { managedInstallRefusal, managedUpdateRefusal } from '@akasecurity/local-ops';
+import { MANAGED_PLUGIN_ADVICE } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { tempHomes } from '../helpers/temp-home.ts';
 
-// The dashboard's Update action for a plugin an organization's managed
-// settings installed.
+// The dashboard's Update and Install actions for a plugin an organization's
+// managed settings installed.
 //
-// The page offers no Update button for such a row, but a Server Action takes
-// its id over a POST, so the button's absence is not what stops it. The shared
-// apply path is, and this drives it through the action unmocked, reading a real
-// ledger in a redirected home.
+// The page offers no Update button for such a row, and never lists it under
+// the plugins available to install, because it counts as installed. But a
+// Server Action takes its id over a POST, so neither button's absence is what
+// stops it. The shared apply path is, and this drives it through each action
+// unmocked, reading a real ledger in a redirected home.
 //
 // PATH is stubbed to an empty directory for every case. The refusal happens
 // before anything is probed or spawned; if it ever stopped doing so, the next
@@ -27,7 +29,7 @@ vi.mock('node:os', async (importActual) => {
 });
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 
-const { applyUpdate } = await import('../../app/(app)/updates/actions.ts');
+const { applyUpdate, installPlugin } = await import('../../app/(app)/updates/actions.ts');
 
 const newHome = tempHomes('aka-web-updates-managed-home-');
 const newEmptyPath = tempHomes('aka-web-updates-managed-path-');
@@ -83,5 +85,58 @@ describe('applyUpdate — an install an organization manages', () => {
     expect(result.ok).toBe(false);
     expect(result.output).toContain("the `claude` CLI isn't on your PATH");
     expect(result.output).not.toContain('managed by your organization');
+  });
+});
+
+describe('installPlugin — an install an organization manages', () => {
+  it('refuses it, and says it is already installed', async () => {
+    writeLedger([{ scope: 'managed', version: '0.9.13' }]);
+
+    const result = await installPlugin('claude-code');
+
+    expect(result.ok).toBe(false);
+    expect(result.output).toBe(managedInstallRefusal('Claude Code'));
+    expect(result.restartRequired).toBe(false);
+  });
+
+  it('refuses it when a user copy sits beside the managed one', async () => {
+    writeLedger([
+      { scope: 'user', version: '0.9.14' },
+      { scope: 'managed', version: '0.9.13' },
+    ]);
+
+    const result = await installPlugin('claude-code');
+
+    expect(result.output).toBe(managedInstallRefusal('Claude Code'));
+  });
+
+  it('refuses a managed record that names no version', async () => {
+    writeLedger([{ scope: 'managed' }]);
+
+    const result = await installPlugin('claude-code');
+
+    expect(result.output).toBe(managedInstallRefusal('Claude Code'));
+  });
+
+  it('reaches the install path for a user-scope record (positive control)', async () => {
+    // The absence checks below name the advice sentence, which every managed
+    // refusal carries, rather than the refusal's lead wording: a literal lead
+    // would pass vacuously the moment that wording changed.
+    writeLedger([{ scope: 'user', version: '0.9.13' }]);
+
+    const result = await installPlugin('claude-code');
+
+    expect(result.ok).toBe(false);
+    expect(result.output).toContain("the `claude` CLI isn't on your PATH");
+    expect(result.output).not.toContain(MANAGED_PLUGIN_ADVICE);
+  });
+
+  it('reaches the install path where nothing is installed (positive control)', async () => {
+    // No ledger at all, which is what the Install button is for.
+    const result = await installPlugin('claude-code');
+
+    expect(result.ok).toBe(false);
+    expect(result.output).toContain("the `claude` CLI isn't on your PATH");
+    expect(result.output).not.toContain(MANAGED_PLUGIN_ADVICE);
   });
 });

@@ -752,8 +752,9 @@ describe('gatherReport — the CLI row’s own channel tag, when the stable grad
 // must not drive. Every case holds npm AHEAD of what is installed, because npm
 // being ahead is exactly what used to put the row in front of `aka update`.
 describe('gatherReport — an install an organization manages', () => {
-  const managed = (lookup: { version: string; ref?: string } | null) => (agent: { id: string }) =>
-    agent.id === 'claude-code' ? lookup : null;
+  const managed =
+    (lookup: { version: string | null; ref?: string } | null) => (agent: { id: string }) =>
+      agent.id === 'claude-code' ? lookup : null;
 
   it('reports the organization’s pin as the target, and offers no update', () => {
     const report = gatherReport({
@@ -825,6 +826,28 @@ describe('gatherReport — an install an organization manages', () => {
     expect(plugin?.installed).toBe('0.9.13');
     expect(plugin?.managedInstall).toEqual({ pending: true });
     expect(plugin?.updateAvailable).toBe(false);
+  });
+
+  it('keeps a managed install with no readable version a managed row', () => {
+    // The comparison reader drops a record with no version, so `installed`
+    // has nothing for this ref. Checking `installed === null` first used to
+    // file the row under "available, not installed", which advertised
+    // `aka plugins install` for the organization's own install.
+    const report = gatherReport({
+      viewDistTags: views({ [CLI]: '0.0.1', [PLUGIN]: '0.9.15' }),
+      installed: new Map(),
+      cliInstalled: '0.0.1',
+      marketplacePin: () => ({ version: '0.9.14' }),
+      managedInstall: managed({ version: null, ref: 'org-release-8' }),
+    });
+
+    expect(report.availablePlugins.map((p) => p.id)).not.toContain('claude-code');
+    const plugin = report.statuses.find((s) => s.id === 'claude-code');
+    expect(plugin?.installed).toBeNull();
+    expect(plugin?.latest).toBe('0.9.14');
+    expect(plugin?.updateAvailable).toBe(false);
+    // Not pending: nothing says the installed copy is behind the pin.
+    expect(plugin?.managedInstall).toEqual({ ref: 'org-release-8', pending: false });
   });
 
   it('still asks npm, which is what the egress disclosure counts', () => {

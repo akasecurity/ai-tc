@@ -325,6 +325,13 @@ function applyPluginUpdate(status: ComponentStatus): boolean {
     process.stderr.write(`✗ ${status.name}: no update coordinates in the registry.\n`);
     return false;
   }
+  // Checked again here, not only through the report: the ledger can gain a
+  // managed record after the report was built, and the plan below is
+  // announced before the shared apply gets its own chance to refuse.
+  if (managedPluginInstall(agent) !== null) {
+    process.stderr.write(`✗ ${managedUpdateRefusal(status.name)}\n`);
+    return false;
+  }
   // Two renders off the host's own verb table — a hardcoded `plugin update` is
   // wrong for Codex, which has no such subcommand — and they are NOT
   // interchangeable.
@@ -360,7 +367,11 @@ function applyPluginUpdate(status: ComponentStatus): boolean {
   process.stdout.write(
     `Updating ${status.name}, running:\n` + plan.map((command) => `  ${command}\n`).join(''),
   );
-  const { ok } = applyPluginUpdateShared(status.id, 'inherit');
+  const { ok, output } = applyPluginUpdateShared(status.id, 'inherit');
   process.stdout.write(ok ? `✓ ${status.name} updated.\n` : `✗ ${status.name} update failed.\n`);
+  // Inherit mode streams what the host printed, so `output` is empty after a
+  // spawn. It is non-empty only when the shared apply refused before spawning,
+  // and then it is the one explanation there is.
+  if (!ok && output !== '') process.stderr.write(`  ${output}\n`);
   return ok;
 }

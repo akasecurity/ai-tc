@@ -1,6 +1,6 @@
 'use client';
 import type { ComponentStatus } from '@akasecurity/schema';
-import { MANAGED_PLUGIN_ADVICE } from '@akasecurity/schema';
+import { MANAGED_PLUGIN_ADVICE, managedPluginNoteParts } from '@akasecurity/schema';
 import {
   Badge,
   Button,
@@ -77,14 +77,13 @@ function pinNote(s: ComponentStatus): string | undefined {
  *
  * Every such row gets one, pending or not. There is no Update button for it,
  * and without this the page shows a version behind the organization's pin
- * beside nothing to press and no reason why. The wording comes from
- * `@akasecurity/schema`, the same sentence `aka check-updates` prints.
+ * beside nothing to press and no reason why. The advice sentence and the
+ * ref/pending fragments come from `@akasecurity/schema`, the same ones
+ * `aka check-updates` prints.
  */
 function managedNote(s: ComponentStatus): string | undefined {
-  const managed = s.managedInstall;
-  if (!managed) return undefined;
-  const ref = managed.ref !== undefined ? ` (marketplace ref ${managed.ref})` : '';
-  const lead = managed.pending && s.latest !== null ? `v${s.latest} is on its way. ` : '';
+  if (!s.managedInstall) return undefined;
+  const { ref, lead } = managedPluginNoteParts(s);
   return `Managed by your organization${ref}. ${lead}${MANAGED_PLUGIN_ADVICE}`;
 }
 

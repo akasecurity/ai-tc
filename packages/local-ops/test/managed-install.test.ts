@@ -138,10 +138,24 @@ describe('managedPluginInstall', () => {
     expect(lookup).not.toHaveProperty('ref');
   });
 
-  it('ignores a managed record carrying no version', () => {
-    writeLedger({ [REF]: [{ scope: 'managed' }] });
+  it.each([
+    ['no version at all', { scope: 'managed' }],
+    ['a non-string version', { scope: 'managed', version: 8 }],
+    ['an empty version', { scope: 'managed', version: '' }],
+    ['a blank version', { scope: 'managed', version: '  ' }],
+  ])('still reports a managed record carrying %s, with no version', (_label, record) => {
+    // Null from this reader is what every caller reads as "nobody manages this
+    // install, so this command may drive it". A managed record whose version
+    // is unreadable is still the organization's install, so it must not come
+    // back null: that would let the apply path spawn the very `marketplace add`
+    // the refusal exists to stop.
+    writeLedger({ [REF]: [record] });
+    writeKnownMarketplaces(pinnedMarketplace('org-release-8'));
 
-    expect(managedPluginInstall(claudeCode, claudeHome)).toBeNull();
+    expect(managedPluginInstall(claudeCode, claudeHome)).toEqual({
+      version: null,
+      ref: 'org-release-8',
+    });
   });
 
   it.each([

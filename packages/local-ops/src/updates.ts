@@ -210,8 +210,11 @@ const MANAGED_SCOPE = 'managed';
 
 /** What a managed install is running, and where the host resolved it from. */
 export interface ManagedInstallLookup {
-  // The version the managed-scope record carries.
-  version: string;
+  // The version the managed-scope record carries, or null when it names no
+  // usable one (absent, not a string, or blank). The lookup itself is still
+  // non-null then: the record is what makes the install the organization's,
+  // and the version is only what the report shows.
+  version: string | null;
   // The ref the organization's marketplace is checked out at, when the host's
   // record of that marketplace names one.
   ref?: string;
@@ -244,12 +247,17 @@ export function managedPluginInstall(
   const record = ledgerRecords(claudeHome)
     .get(ref)
     ?.find((r): r is Record<string, unknown> => isRecord(r) && r.scope === MANAGED_SCOPE);
-  if (record === undefined || typeof record.version !== 'string') return null;
+  // Null means ONLY "no managed record" (or not this host). Both the report
+  // and the apply path read null as "this command may drive the install", so
+  // a managed record whose version is unreadable must not produce it.
+  if (record === undefined) return null;
+  const version =
+    typeof record.version === 'string' && record.version.trim() !== '' ? record.version : null;
   const sourceRef =
     agent.marketplace === undefined
       ? undefined
       : marketplaceSourceRef(claudeHome, agent.marketplace);
-  return { version: record.version, ...(sourceRef !== undefined ? { ref: sourceRef } : {}) };
+  return { version, ...(sourceRef !== undefined ? { ref: sourceRef } : {}) };
 }
 
 // The version-only projection every version comparison takes.
@@ -456,12 +464,14 @@ export function gatherReport(deps: ReportDeps): UpdateReport {
     const ref = pluginRef(agent);
     if (!ref || !agent.npmPackage) continue;
     // A managed install's version is the managed record's, even where a user
-    // copy sits beside it: that is the copy the host resolves.
+    // copy sits beside it: that is the copy the host resolves. It is null when
+    // that record names no usable version, and the user copy's version is NOT
+    // substituted for it.
     const managed = deps.managedInstall(agent);
     // A plugin nobody has installed resolves stable: a machine with nothing
     // installed has opted into nothing, and advertising it a prerelease would
     // be this report choosing a channel on the user's behalf.
-    const installed = managed?.version ?? deps.installed.get(ref) ?? null;
+    const installed = managed !== null ? managed.version : (deps.installed.get(ref) ?? null);
     const channel = channelOfVersion(installed);
     const npm = resolveChannel(deps.viewDistTags(agent.npmPackage), channel);
     const npmLatest = npm.version;
@@ -490,10 +500,9 @@ export function gatherReport(deps: ReportDeps): UpdateReport {
             },
           }
         : {};
-    if (installed === null) {
-      availablePlugins.push({ id: agent.id, name: agent.name, latest });
-      continue;
-    }
+    // Checked BEFORE the not-installed branch below: a managed record with no
+    // readable version has a null `installed`, and filing it under "available"
+    // would advertise `aka plugins install` for the organization's own install.
     if (managed !== null) {
       // The organization's EXACT pin is the only target this report can name.
       // npm's answer (and a range, which is not one version) is not what
@@ -511,9 +520,13 @@ export function gatherReport(deps: ReportDeps): UpdateReport {
         ...pinned,
         managedInstall: {
           ...(managed.ref !== undefined ? { ref: managed.ref } : {}),
-          pending: pin.version !== null && isNewer(pin.version, installed),
+          pending: pin.version !== null && installed !== null && isNewer(pin.version, installed),
         },
       });
+      continue;
+    }
+    if (installed === null) {
+      availablePlugins.push({ id: agent.id, name: agent.name, latest });
       continue;
     }
     statuses.push({

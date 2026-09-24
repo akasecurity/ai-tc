@@ -135,6 +135,8 @@ export interface ComponentStatus {
   // drive that install, and `latest` is the version the organization's
   // marketplace pins, or null when no exact pin could be read. npm's latest
   // is not what decides a managed install, so it is never offered as one.
+  // `installed` is null on such a row when the host's managed record names no
+  // usable version; the row is still the organization's.
   managedInstall?: ManagedPluginInstall;
 }
 
@@ -155,6 +157,21 @@ export interface ManagedPluginInstall {
 // How a managed plugin install moves, in the one wording every surface uses:
 // the CLI's report and refusals, the apply path's refusal, and the dashboard.
 // Spelled once so the surfaces cannot drift into describing different routes.
+/**
+ * The two fragments every surface puts around `MANAGED_PLUGIN_ADVICE` for one
+ * managed row: the ref the organization's marketplace is at, and what is on
+ * its way when the pin is ahead. Each surface frames the note its own way;
+ * these parts are shared so they cannot drift apart. Empty when absent.
+ */
+export function managedPluginNoteParts(s: ComponentStatus): { ref: string; lead: string } {
+  const managed = s.managedInstall;
+  if (managed === undefined) return { ref: '', lead: '' };
+  return {
+    ref: managed.ref !== undefined ? ` (marketplace ref ${managed.ref})` : '',
+    lead: managed.pending && s.latest !== null ? `v${s.latest} is on its way. ` : '',
+  };
+}
+
 export const MANAGED_PLUGIN_ADVICE =
   "Your organization's managed settings install it and pin its version. Updates arrive " +
   "through Claude Code's own plugin autoupdate when a new session starts, or /plugin → " +

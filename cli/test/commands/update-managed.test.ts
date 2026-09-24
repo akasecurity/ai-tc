@@ -26,11 +26,13 @@ const seams = vi.hoisted(
     managed: LocalOps.ManagedInstallLookup | null;
     cliApplied: number;
     pluginApplied: string[];
+    pluginResult: LocalOps.ApplyResult;
   } => ({
     report: { statuses: [], availablePlugins: [] },
     managed: null,
     cliApplied: 0,
     pluginApplied: [],
+    pluginResult: { ok: true, output: '' },
   }),
 );
 
@@ -55,7 +57,7 @@ vi.mock('@akasecurity/local-ops', async (importActual) => {
     },
     applyPluginUpdate: (id: string): LocalOps.ApplyResult => {
       seams.pluginApplied.push(id);
-      return { ok: true, output: '' };
+      return seams.pluginResult;
     },
     // The host binary is reported present, so a plugin row that IS offered
     // reaches the recorded apply above instead of stopping at a PATH probe that
@@ -102,6 +104,7 @@ beforeEach(() => {
   seams.managed = null;
   seams.cliApplied = 0;
   seams.pluginApplied = [];
+  seams.pluginResult = { ok: true, output: '' };
   // A home with no data directory, so `check-updates` writes no cache.
   home = mkdtempSync(join(tmpdir(), 'aka-update-managed-'));
   process.exitCode = undefined;
@@ -242,6 +245,50 @@ describe('aka update — a managed install', () => {
 
     expect(code).toBe(0);
     expect(seams.pluginApplied).toEqual(['claude-code']);
+  });
+});
+
+/**
+ * The ledger can gain a managed record between the report and the apply loop:
+ * an organization's drop-in landing mid-run, or a report read from a stale
+ * state. The row then still says "update available", so the CLI must check
+ * again itself — the shared apply refuses, but in inherit mode its refusal is
+ * returned rather than streamed, and the CLI had already announced commands
+ * that were never going to run.
+ */
+describe('aka update — a plugin that became managed after the report', () => {
+  const behindRow: ComponentStatus = {
+    id: 'claude-code',
+    name: 'Claude Code',
+    kind: 'plugin',
+    installed: '0.9.13',
+    latest: '0.9.14',
+    updateAvailable: true,
+  };
+
+  it('refuses before announcing a plan it will not run', async () => {
+    seams.report = { statuses: [cliRow(), behindRow], availablePlugins: [] };
+    seams.managed = { version: '0.9.13' };
+
+    const { out, err, code } = await update(['--yes']);
+
+    expect(code).toBe(1);
+    expect(seams.pluginApplied).toEqual([]);
+    expect(out).not.toContain('Updating Claude Code, running:');
+    expect(err).toContain(managedUpdateRefusal('Claude Code'));
+  });
+
+  it('prints a refusal the shared apply returns instead of discarding it', async () => {
+    // The narrower window: managed after the CLI's own check, so the shared
+    // apply is the one that refuses. Its sentence is the only explanation.
+    seams.report = { statuses: [cliRow(), behindRow], availablePlugins: [] };
+    seams.pluginResult = { ok: false, output: managedUpdateRefusal('Claude Code') };
+
+    const { err, code } = await update(['--yes']);
+
+    expect(code).toBe(1);
+    expect(seams.pluginApplied).toEqual(['claude-code']);
+    expect(err).toContain(managedUpdateRefusal('Claude Code'));
   });
 });
 

@@ -378,6 +378,23 @@ describe('an install an organization manages', () => {
     expect(calls()).toEqual([]);
   });
 
+  it.each([
+    ['no version at all', { scope: 'managed' }],
+    ['an empty version', { scope: 'managed', version: '' }],
+  ])('refuses a managed record carrying %s, and spawns nothing', (_label, record) => {
+    // The comparison reader drops a versionless record, so without its own
+    // reading this install looks absent: the apply path would run the unpinned
+    // `marketplace add`, then `plugin update` with no scope at all.
+    writeInstalledLedger({ 'ai-tc@akasecurity': [record] });
+    armShims(['claude']);
+
+    const res = applyPluginUpdate('claude-code', 'capture');
+
+    expect(res.ok).toBe(false);
+    expect(res.output).toBe(managedUpdateRefusal('Claude Code'));
+    expect(calls()).toEqual([]);
+  });
+
   it('refuses when a user copy sits beside the managed one', () => {
     // The host resolves the managed copy, and the prep is what does the harm
     // whichever scope the op would then target.

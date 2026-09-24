@@ -1,5 +1,9 @@
 import type { ComponentStatus, UpdateReport } from '@akasecurity/schema';
-import { MANAGED_PLUGIN_ADVICE, RELEASE_CHANNEL } from '@akasecurity/schema';
+import {
+  MANAGED_PLUGIN_ADVICE,
+  managedPluginNoteParts,
+  RELEASE_CHANNEL,
+} from '@akasecurity/schema';
 
 /**
  * The lines explaining a `latest` that came from a marketplace pin.
@@ -60,10 +64,8 @@ function pinNotes(report: UpdateReport): string[] {
 function managedNotes(report: UpdateReport): string[] {
   const notes: string[] = [];
   for (const s of report.statuses) {
-    const managed = s.managedInstall;
-    if (!managed) continue;
-    const ref = managed.ref !== undefined ? ` (marketplace ref ${managed.ref})` : '';
-    const lead = managed.pending && s.latest !== null ? `v${s.latest} is on its way. ` : '';
+    if (!s.managedInstall) continue;
+    const { ref, lead } = managedPluginNoteParts(s);
     notes.push(
       `    ${s.name}${ref}: ${lead}${MANAGED_PLUGIN_ADVICE} \`aka update\` leaves it alone.`,
     );
@@ -76,7 +78,9 @@ function statusLabel(s: ComponentStatus): string {
   // can be unknown without the row being unknown: the version it runs is the
   // organization's call, and saying so is the whole answer.
   if (s.managedInstall) {
-    if (s.latest === null) return 'managed';
+    // Either end unknown means there is no comparison to state — including a
+    // managed record that names no version, which must not read as current.
+    if (s.installed === null || s.latest === null) return 'managed';
     return s.managedInstall.pending ? 'managed — update pending' : 'managed — up to date';
   }
   // Not-installed plugins are reported under availablePlugins, never here — so a null

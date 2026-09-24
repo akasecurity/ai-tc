@@ -269,6 +269,19 @@ describe('renderReport — an install an organization manages', () => {
     expect(out).toContain('Claude Code: ');
   });
 
+  it('reads as managed, not up to date, when the installed version is unknown', () => {
+    // A managed record with no readable version: the row cannot claim to be
+    // current against a pin it has nothing to compare with.
+    const out = renderReport(
+      managedRow({ installed: null, managedInstall: { ref: 'org-release-8', pending: false } }),
+    );
+
+    const row = out.split('\n').find((line) => line.includes('Claude Code  ')) ?? '';
+    expect(row).toMatch(/managed$/);
+    expect(row).not.toContain('up to date');
+    expect(out).toContain(MANAGED_PLUGIN_ADVICE);
+  });
+
   it('explains a managed row once, not also as a marketplace pin', () => {
     // The same row carrying pin evidence that WOULD earn a pin note: npm is
     // ahead of the organization's pin. The managed note already says who

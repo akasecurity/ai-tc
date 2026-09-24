@@ -366,3 +366,53 @@ statement-bearing lines became 498 while the covered set went 306 → 367, becau
 entries and three detached children were added and every one of them executes only as a
 child process. It also records that this reading was taken on Linux / Node 22 rather than
 the table's macOS / Node 24, so a CI disagreement is re-taken rather than widened.
+
+---
+
+## Task 26 — full sweep
+
+### Two gates the plan did not list, both found by the sweep and both real
+
+- **`packages/eslint-config/test/posture-build-wiring.test.js`** pins the EXACT set of files
+  carrying a `handleSessionStart(` call — because one caller reaching the inventory pass
+  without `meta.pluginBuild` makes the attached fleet row flicker to null whenever that path
+  wins the hourly throttle. The new `plugins/copilot/src/hooks/session-start.ts` is a sixth
+  and was added to `EXPECTED_SESSION_PASS_FILES`. Its sibling case — that every file in that
+  set spells `pluginBuild:` — passes unchanged, which is the point: the entry was written
+  threading it.
+- **`packages/plugin-sdk/test/index.test.ts`** pins the barrel's public symbol set exactly;
+  `resolveCopilotProvider` was added.
+
+Both are deliberate one-line edits to a pinned list, which is exactly what those suites exist
+to force.
+
+### Results
+
+| Suite | Result |
+|---|---|
+| `plugins/copilot` | 24 files, **411 passed** |
+| `packages/eslint-config` (the tree-wide audits) | 28 files, **1779 passed**, 18 skipped |
+| `packages/plugin-sdk` | 45 files, **725 passed**, 2 skipped |
+| `packages/plugin-runtime` | 31 files, **610 passed**, 3 skipped |
+| `packages/schema` | 44 files, **1125 passed** |
+| `packages/detections` | **1421 passed** |
+| `packages/local-ops` | **517 passed**, 3 skipped |
+| `packages/setup-wizard` | **205 passed** |
+| `packages/scanner` | **88 passed** |
+| `packages/remote` | **109 passed** |
+| `pnpm lint:root` equivalent | clean |
+| `pnpm typecheck:root` equivalent | clean |
+| `tsc --noEmit` per package | clean in copilot, plugin-sdk, cli, and all three sibling plugins |
+| `eslint` per package | clean in copilot, plugin-sdk, plugin-runtime, schema, eslint-config |
+
+### Not run here, and why
+
+- **`turbo run test` / `turbo run lint` as a whole.** Turbo spawns `pnpm run <task>`, and
+  pnpm refuses on this container's Node 22 against the repo's `>=24` floor — `--env-mode=loose`
+  does not carry `npm_config_engine_strict` through to those children. Every package was run
+  directly against the repo-root `vitest` binary instead. One `turbo run lint` leg
+  (`web-ui`) was additionally OOM-killed (exit 137); `web-ui` is untouched by this change.
+- **`packages/persistence`, `dashboard-ui`, `ui-kit`.** Untouched, and persistence's scale
+  suites exceed the session's command window. Its floor is unchanged.
+- **The repository end-to-end suite**, per this card's contract — THE SENTINEL runs it once
+  against the integrated candidate.

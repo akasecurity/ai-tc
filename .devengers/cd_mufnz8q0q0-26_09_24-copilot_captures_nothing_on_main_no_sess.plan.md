@@ -292,7 +292,7 @@ guarantee.
 - [x] 23. Re-render the table in `skills/setup/SKILL.md` and rewrite the "Only the pre-tool-use event is wired" paragraph; update the matching regex in `test/capability-matrix.test.ts`.
 - [x] 24. Update `CLAUDE.md` line ~898 to the plural event list, leaving the "spawns the hook twice per call" sentence intact; re-run `pnpm --filter @akasecurity/ai-tc-copilot test` so `hook-output-shapes.test.ts` re-reads it.
 - [x] 25. Re-measure the package's coverage, update `'@akasecurity/ai-tc-copilot'` in `test/vitest/coverage.ts` to one point below the measured number, and record the measurement in the comment.
-- [ ] 26. Full sweep: `pnpm lint && pnpm typecheck && pnpm test`, then `pnpm --filter @akasecurity/ai-tc-copilot build` and re-run that package's suite against the freshly emitted `scripts/`.
+- [x] 26. Full sweep: `pnpm lint && pnpm typecheck && pnpm test`, then `pnpm --filter @akasecurity/ai-tc-copilot build` and re-run that package's suite against the freshly emitted `scripts/`.
 
 ## Dependencies
 

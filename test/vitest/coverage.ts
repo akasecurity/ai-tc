@@ -118,11 +118,25 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/ai-tc-antigravity': 59, //          60.96
   // Windows reports LOWEST here and the floor belongs to it: three symlink
   // cases in store-health.test.ts cannot run unprivileged there, costing 8
-  // covered lines. macOS reads 86.68 (306/353), the Windows executed set 84.41
-  // (298/353) — the latter measured by forcing those three to skip, a method
-  // whose earlier reading matched the real Windows leg's covered-line count
-  // exactly (208/353). Re-measure as the adapter grows — K5.
-  '@akasecurity/ai-tc-copilot': 83, //              84.41 (Windows), 86.68 (macOS)
+  // covered lines.
+  //
+  // RE-TAKEN after the sessionStart / userPromptSubmitted / postToolUse capture
+  // hooks landed — which is exactly the growth the previous note (86.68 macOS,
+  // 84.41 Windows, floor 83) asked to re-measure on. It fell 13 points and the
+  // drop is structural rather than a gap in the new tests: four hook ENTRIES
+  // and three detached children were added, and every one of them runs only as
+  // a CHILD PROCESS (the e2e suite spawns the built scripts), so the parent's
+  // v8 coverage counts none of their lines. 353 statement-bearing lines became
+  // 498 while the covered set went 306 -> 367. The pure modules those entries
+  // call — session-start-payload, user-prompt-payload, tool-response,
+  // scan-response — are driven directly and are the reason it did not fall
+  // further.
+  //
+  // 367/498 = 73.69 measured; the Windows executed set is 359/498 = 72.09, and
+  // the floor is one below that. Taken on Linux / Node 22 in the container this
+  // landed from, which is NOT the macOS / Node 24 the rest of this table was
+  // taken on — re-take it on macOS if CI disagrees, rather than widening.
+  '@akasecurity/ai-tc-copilot': 71, //              72.09 (Windows), 73.69 (Linux)
   '@akasecurity/ai-tc-codex': 58, //                59.78
   '@akasecurity/plugin-browser-extension': 81, //   82.44
   '@akasecurity/cli': 51, //                        52.66

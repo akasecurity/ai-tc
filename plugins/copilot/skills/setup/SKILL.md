@@ -34,11 +34,24 @@ and the fixtures it was written from sit in a separate
 `test/fixtures/vscode-provisional/` directory saying so. Treat those rows as
 what the vendor documents, not as what was seen to happen.
 
-**Only the pre-tool-use event is wired.** Prompts are not captured on any
-surface here, tool results are not scanned, and there is no history backfill —
-so a secret pasted into a prompt reaches the model, is not recorded by this
-plugin, and appears in no finding. `aka scan` and the dashboard cover the
-working tree after the fact; nothing covers the conversation.
+**Only the pre-tool-use event ENFORCES.** Four events are wired — the session
+start, the prompt, the tool call and the tool result — but only the tool call
+can be stopped or rewritten. Your prompts and the tool output the model reads
+**are** captured, scanned and recorded, so a secret in either shows up as a
+finding on the dashboard; **neither can be withheld or masked.** A `block` or
+`redact` policy on one of those is recorded as a finding and the text goes to
+the model unchanged, which AKA says on stderr (the CLI) or as a message (VS
+Code) rather than pretending it enforced.
+
+The reason is that neither host has a channel for it that has been seen to
+work: the CLI's `modifiedPrompt` and `modifiedResult` are documented and were
+never observed, and VS Code blocks through exit 2, which no path in this plugin
+takes. A tool result is also too late by construction — the tool has already
+run, and what is at stake is only whether its output reaches the model.
+
+**There is still no history backfill.** Nothing reads the sessions that
+happened before AKA was installed, or any session's own transcript on disk.
+`aka scan` and the dashboard cover the working tree after the fact.
 
 **Command text is never masked in place.** Rewriting a shell command changes
 what runs, so a `redact` policy on command text follows this workspace's
@@ -82,16 +95,18 @@ it has no local store of its own.
 
 ### Capability matrix
 
-| Surface | Event               | Subject                 | Channel | Verified | Why                                                                                                                                                                                   |
-| ------- | ------------------- | ----------------------- | ------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| cli     | preToolUse          | bash.command            | block   | yes      | A deny on stdout with exit 0 blocks the call; masking command text would change what runs, so a redact policy follows redactFallback instead of rewriting.                            |
-| cli     | preToolUse          | bash.description        | rewrite | yes      | Model-authored prose that rides along with the call, rewritten in place through modifiedArgs.                                                                                         |
-| cli     | preToolUse          | apply_patch.input       | rewrite | no       | No payload for this tool was recorded, so the argument name is unverified; a wrong name costs a silent skip rather than a wrong answer.                                               |
-| cli     | userPromptSubmitted | prompt                  | none    | no       | Not wired. The host documents modifiedPrompt, but whether a command hook can use it is contradicted between vendor pages and was not probed.                                          |
-| cli     | postToolUse         | toolResult              | none    | no       | Not wired. modifiedResult is documented and was not observed replacing what the model sees.                                                                                           |
-| cli     | permissionRequest   | toolInput               | none    | yes      | Deliberately not a scan point: it fires for the same call as preToolUse and carries a strict subset of its arguments, so scanning here would double-count and still miss description. |
-| vscode  | PreToolUse          | run_in_terminal.command | block   | no       | Built to the published hookSpecificOutput contract; confirmed against no live install.                                                                                                |
-| vscode  | PreToolUse          | file-write content      | rewrite | no       | updatedInput is validated against the tool input schema and LAST HOOK WINS, so a user or repo hook returning one discards this.                                                       |
-| vscode  | UserPromptSubmit    | prompt                  | none    | no       | Not wired, and no block or rewrite channel has been observed on this event.                                                                                                           |
-| vscode  | PostToolUse         | tool_response           | none    | no       | Not wired. This host has no output-rewrite field at all — block or warn are the only channels it would ever offer.                                                                    |
-| cloud   | preToolUse          | bash.command            | block   | no       | Speaks the CLI protocol, so the adapter behaves identically — but it runs only where the repository commits a hook on its default branch, and ask is coerced to deny there.           |
+| Surface | Event               | Subject                 | Channel | Verified | Why                                                                                                                                                                                                                                |
+| ------- | ------------------- | ----------------------- | ------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| cli     | preToolUse          | bash.command            | block   | yes      | A deny on stdout with exit 0 blocks the call; masking command text would change what runs, so a redact policy follows redactFallback instead of rewriting.                                                                         |
+| cli     | preToolUse          | bash.description        | rewrite | yes      | Model-authored prose that rides along with the call, rewritten in place through modifiedArgs.                                                                                                                                      |
+| cli     | preToolUse          | apply_patch.input       | rewrite | no       | No payload for this tool was recorded, so the argument name is unverified; a wrong name costs a silent skip rather than a wrong answer.                                                                                            |
+| cli     | sessionStart        | session                 | none    | yes      | Opens the session root every later capture hangs off, and records the host, harness and project inventory. It decides nothing and emits nothing — there is no verdict to reach on a session start.                                 |
+| cli     | userPromptSubmitted | prompt                  | none    | yes      | Captured and scanned; nothing can be stopped or rewritten. modifiedPrompt is documented and was not observed from a command hook, so a block or redact policy is recorded and the prompt is sent unchanged.                        |
+| cli     | postToolUse         | toolResult              | none    | yes      | Captured and scanned; nothing can be withheld. The tool has already run, and modifiedResult is documented but was not observed replacing what the model sees, so a finding is recorded and the output reaches the model unchanged. |
+| cli     | permissionRequest   | toolInput               | none    | yes      | Deliberately not a scan point: it fires for the same call as preToolUse and carries a strict subset of its arguments, so scanning here would double-count and still miss description.                                              |
+| vscode  | PreToolUse          | run_in_terminal.command | block   | no       | Built to the published hookSpecificOutput contract; confirmed against no live install.                                                                                                                                             |
+| vscode  | PreToolUse          | file-write content      | rewrite | no       | updatedInput is validated against the tool input schema and LAST HOOK WINS, so a user or repo hook returning one discards this.                                                                                                    |
+| vscode  | SessionStart        | session                 | none    | no       | Opens the session root, as on the CLI. A payload carrying no cwd declines without opening the store, because this host spawns a hook from the home directory unless the entry declared one.                                        |
+| vscode  | UserPromptSubmit    | prompt                  | none    | no       | Captured and scanned; nothing can be stopped or rewritten. This host blocks through exit 2, which no path in this adapter takes, so a block or redact policy is recorded and the prompt is sent unchanged.                         |
+| vscode  | PostToolUse         | tool_response           | none    | no       | Captured and scanned; nothing can be withheld. This host has no output-rewrite field at all, and its whole-result block has never been driven, so a finding is recorded and the output reaches the model unchanged.                |
+| cloud   | preToolUse          | bash.command            | block   | no       | Speaks the CLI protocol, so the adapter behaves identically — but it runs only where the repository commits a hook on its default branch, and ask is coerced to deny there.                                                        |

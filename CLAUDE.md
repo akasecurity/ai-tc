@@ -895,8 +895,16 @@ changes. The gaps that exist today:
   selects the format by the event name's casing, so a manifest registering `preToolUse` and
   `PreToolUse` together spawns the hook twice per call — the second time with a payload whose
   `tool_name` is the Claude spelling (`Bash`, not `bash`) that the snake_case table has no row
-  for. `plugins/copilot/hooks.json` therefore registers the camelCase event **alone**, and a
-  VS Code entry belongs in the file that host itself reads.
+  for. `plugins/copilot/hooks.json` therefore registers **camelCase events alone** — the four
+  it carries are `sessionStart`, `userPromptSubmitted`, `preToolUse` and `postToolUse`, each
+  once — and a VS Code entry belongs in the file that host itself reads. Of those four only
+  `preToolUse` ENFORCES: the other three capture, scan and record, and pass
+  `rewritable: false` because neither host has a prompt-stop or result-withhold channel this
+  repository has observed, so a `redact` resolves to `redactFallback` inside the runtime
+  rather than the hook claiming an enforcement the host would ignore.
+  `userPromptTransformed` is handled by the prompt entry and deliberately NOT registered: its
+  payload re-carries `prompt` verbatim, so registering it beside `userPromptSubmitted` records
+  every prompt twice.
   The VS Code half is built to the published contract and **confirmed against no live
   install**: its fixtures live in a separate `test/fixtures/vscode-provisional/` directory,
   every capability it claims is marked unverified, and

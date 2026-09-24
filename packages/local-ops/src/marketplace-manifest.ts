@@ -68,11 +68,39 @@ function readJson(path: string): unknown {
  * of a wrong one.
  */
 function marketplaceRoot(claudeHome: string, marketplace: string): string | null {
+  const entry = knownMarketplace(claudeHome, marketplace);
+  if (entry === null) return null;
+  return typeof entry.installLocation === 'string' ? entry.installLocation : null;
+}
+
+/** The host's own record of one registered marketplace, or null. */
+function knownMarketplace(claudeHome: string, marketplace: string): Record<string, unknown> | null {
   const known = readJson(knownMarketplacesPath(claudeHome));
   if (!isRecord(known)) return null;
   const entry = known[marketplace];
-  if (!isRecord(entry)) return null;
-  return typeof entry.installLocation === 'string' ? entry.installLocation : null;
+  return isRecord(entry) ? entry : null;
+}
+
+// A git ref is short; anything near this bound is not one.
+const MAX_REF_LENGTH = 200;
+const printableRef = printable(MAX_REF_LENGTH);
+
+/**
+ * The ref (a tag or a branch) a registered marketplace is checked out at, as
+ * the host recorded it, or undefined when its record names none.
+ *
+ * Evidence for a message, never a decision: it is what lets a report say
+ * which of an organization's pinned releases a managed install follows. It
+ * gets the same printable guard as a range pin. The ref comes from an
+ * organization's settings by way of the host's file, and it is printed into
+ * a terminal.
+ */
+export function marketplaceSourceRef(claudeHome: string, marketplace: string): string | undefined {
+  const entry = knownMarketplace(claudeHome, marketplace);
+  if (entry === null || !isRecord(entry.source)) return undefined;
+  const ref = entry.source.ref;
+  if (typeof ref !== 'string' || ref.trim() === '') return undefined;
+  return printableRef.safeParse(ref).success ? ref : undefined;
 }
 
 /**

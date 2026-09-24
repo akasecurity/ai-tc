@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 
 import {
   gatherReportLive,
+  nothingToApplyLine,
   outdated,
   readCache,
   renderReport,
@@ -34,7 +35,7 @@ export function runCheckUpdates(argv: string[]): void {
         'network connection and try again.\n',
     );
   } else if (ups.length === 0 && report.availablePlugins.length === 0) {
-    out.write('Everything is up to date.\n');
+    out.write(`${nothingToApplyLine(report)}\n`);
   } else if (ups.length > 0) {
     out.write(`${String(ups.length)} update(s) available — run \`aka update\` to apply.\n`);
   }

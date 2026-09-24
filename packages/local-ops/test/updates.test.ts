@@ -35,6 +35,7 @@ describe('gatherReport', () => {
       installed: new Map([[REF, '0.0.2-alpha.0']]),
       cliInstalled: '0.0.2-alpha.0',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
     const cli = report.statuses.find((s) => s.id === 'cli');
     expect(cli?.updateAvailable).toBe(true);
@@ -47,6 +48,7 @@ describe('gatherReport', () => {
       installed: new Map([[REF, '0.0.2']]),
       cliInstalled: '0.0.2',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
     // Codex CLI is a separate, uninstalled registry entry (a distinct ref —
     // see registry.ts's pluginName comment) so it still surfaces as available;
@@ -63,6 +65,7 @@ describe('gatherReport', () => {
       installed: new Map(), // nothing installed
       cliInstalled: '0.0.2',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
     expect(report.statuses.map((s) => s.id)).toEqual(['cli']);
     // Every registered agent with no installed version surfaces here — both
@@ -79,6 +82,7 @@ describe('gatherReport', () => {
       installed: new Map([[REF, '0.0.1']]),
       cliInstalled: null, // package.json walk-up missed
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
     const cli = report.statuses.find((s) => s.id === 'cli');
     expect(cli?.installed).toBeNull();
@@ -91,6 +95,7 @@ describe('gatherReport', () => {
       installed: new Map([[REF, '0.0.1']]),
       cliInstalled: '0.0.1',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
     for (const s of report.statuses) {
       expect(s.latest).toBeNull();
@@ -116,6 +121,7 @@ describe('gatherReport — the marketplace pin decides what "latest" means', () 
       installed: new Map([[REF, '0.9.8']]),
       cliInstalled: '0.0.1',
       marketplacePin: pinned('0.9.9'),
+      managedInstall: () => null,
     });
 
     const plugin = report.statuses.find((s) => s.id === 'claude-code');
@@ -138,6 +144,7 @@ describe('gatherReport — the marketplace pin decides what "latest" means', () 
       installed: new Map([[REF, '0.9.9']]),
       cliInstalled: '0.0.1',
       marketplacePin: pinned('0.9.9'),
+      managedInstall: () => null,
     });
 
     expect(report.statuses.find((s) => s.id === 'claude-code')?.updateAvailable).toBe(false);
@@ -152,6 +159,7 @@ describe('gatherReport — the marketplace pin decides what "latest" means', () 
       installed: new Map([[REF, '0.9.8']]),
       cliInstalled: '0.0.1',
       marketplacePin: pinned('0.9.9'),
+      managedInstall: () => null,
     });
 
     expect(report.statuses.find((s) => s.id === 'claude-code')?.updateAvailable).toBe(true);
@@ -163,6 +171,7 @@ describe('gatherReport — the marketplace pin decides what "latest" means', () 
       installed: new Map([[REF, '0.9.8']]),
       cliInstalled: '0.0.1',
       marketplacePin: pinned(null),
+      managedInstall: () => null,
     });
 
     const plugin = report.statuses.find((s) => s.id === 'claude-code');
@@ -181,6 +190,7 @@ describe('gatherReport — the marketplace pin decides what "latest" means', () 
       installed: new Map(),
       cliInstalled: '0.0.1',
       marketplacePin: pinned('0.9.9'),
+      managedInstall: () => null,
     });
 
     expect(report.availablePlugins.find((p) => p.id === 'claude-code')?.latest).toBe('0.9.9');
@@ -194,6 +204,7 @@ describe('gatherReport — the marketplace pin decides what "latest" means', () 
       installed: new Map([[REF, '0.9.9']]),
       cliInstalled: '0.0.1',
       marketplacePin: pinned('0.9.9'),
+      managedInstall: () => null,
     });
 
     const cli = report.statuses.find((s) => s.id === 'cli');
@@ -212,6 +223,7 @@ describe('gatherReport — the marketplace pin decides what "latest" means', () 
       installed: new Map([[REF, '0.9.9']]),
       cliInstalled: '0.0.1',
       marketplacePin: pinned('0.9.9'),
+      managedInstall: () => null,
     });
 
     expect(report.statuses.find((s) => s.id === 'claude-code')?.marketplacePin).toEqual({
@@ -239,6 +251,7 @@ describe("gatherReport — a RANGE pin must not offer npm's answer as an update"
       installed: new Map([[REF, '0.11.0-beta.0']]),
       cliInstalled: '0.0.1',
       marketplacePin: rangePinned('^0.11.0-beta.0'),
+      managedInstall: () => null,
     });
 
     const plugin = report.statuses.find((s) => s.id === 'claude-code');
@@ -264,6 +277,7 @@ describe("gatherReport — a RANGE pin must not offer npm's answer as an update"
       installed: new Map([[REF, '0.11.0-beta.0']]),
       cliInstalled: '0.0.1',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
 
     const plugin = report.statuses.find((s) => s.id === 'claude-code');
@@ -287,6 +301,7 @@ describe('gatherReport — each row resolves its own channel', () => {
       installed: new Map([[REF, '0.11.0-beta.2']]),
       cliInstalled: '0.9.11',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
 
     const cli = report.statuses.find((s) => s.id === 'cli');
@@ -306,6 +321,7 @@ describe('gatherReport — each row resolves its own channel', () => {
       installed: new Map(),
       cliInstalled: '0.9.11',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
 
     expect(report.statuses.find((s) => s.id === 'cli')?.latest).toBe('0.9.12');
@@ -321,6 +337,7 @@ describe('gatherReport — each row resolves its own channel', () => {
       installed: new Map([[REF, '0.11.0-beta.2']]),
       cliInstalled: '0.9.11',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
 
     const plugin = report.statuses.find((s) => s.id === 'claude-code');
@@ -336,6 +353,7 @@ describe('gatherReport — each row resolves its own channel', () => {
       installed: new Map(),
       cliInstalled: '0.11.0-beta.2',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
 
     const cli = report.statuses.find((s) => s.id === 'cli');
@@ -352,6 +370,7 @@ describe('gatherReport — each row resolves its own channel', () => {
       installed: new Map(),
       cliInstalled: '0.9.13-nightly.20260918.gabc1234',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
 
     const cli = report.statuses.find((s) => s.id === 'cli');
@@ -369,6 +388,7 @@ describe('gatherReport — each row resolves its own channel', () => {
       installed: new Map(),
       cliInstalled: '0.9.11',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
 
     expect(report.availablePlugins.length).toBeGreaterThan(0);
@@ -387,6 +407,7 @@ describe('gatherReport — each row resolves its own channel', () => {
       installed: new Map([[REF, '0.11.0-beta.2']]),
       cliInstalled: '0.9.11',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
 
     const plugin = report.statuses.find((s) => s.id === 'claude-code');
@@ -402,6 +423,7 @@ describe('gatherReport — each row resolves its own channel', () => {
       installed: new Map([[REF, '0.11.0-beta.2']]),
       cliInstalled: '0.11.0-beta.2',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
 
     expect(report.statuses.length).toBeGreaterThan(1);
@@ -427,6 +449,7 @@ describe('gatherReport — an explicitly requested CLI channel', () => {
       installed: new Map([[REF, '0.9.11']]),
       cliInstalled: '0.9.12',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
       ...deps,
     }).statuses.find((s) => s.id === 'cli');
 
@@ -464,6 +487,7 @@ describe('gatherReport — an explicitly requested CLI channel', () => {
       installed: new Map([[REF, '0.9.11']]),
       cliInstalled: '0.9.12',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
       cliChannel: RELEASE_CHANNEL.Beta,
     });
 
@@ -532,6 +556,7 @@ describe('gatherReport — exactly one registry read per package', () => {
       installed: new Map([[REF, '0.11.0-beta.2']]),
       cliInstalled: '0.9.11',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
 
     expect(calls).toStrictEqual(EXPECTED_LOOKUPS);
@@ -548,6 +573,7 @@ describe('gatherReport — exactly one registry read per package', () => {
       installed: new Map([[REF, '0.11.0-beta.2']]),
       cliInstalled: '0.11.0-beta.2',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
 
     expect(calls).toStrictEqual(EXPECTED_LOOKUPS);
@@ -563,6 +589,7 @@ describe('gatherReport — exactly one registry read per package', () => {
       installed: new Map(),
       cliInstalled: null,
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
 
     expect(empty.calls).toStrictEqual(EXPECTED_LOOKUPS);
@@ -602,6 +629,7 @@ describe('gatherReport — where a row’s `latest` was resolved from', () => {
       cliInstalled: '0.9.11',
       cliChannel: channel,
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
 
     const cli = report.statuses.find((s) => s.id === 'cli');
@@ -630,6 +658,7 @@ describe('gatherReport — where a row’s `latest` was resolved from', () => {
       installed: new Map([[REF, '0.9.8']]),
       cliInstalled: '0.0.1',
       marketplacePin: () => ({ version: '0.9.9' }),
+      managedInstall: () => null,
     });
 
     const plugin = report.statuses.find((s) => s.id === 'claude-code');
@@ -646,6 +675,7 @@ describe('gatherReport — where a row’s `latest` was resolved from', () => {
       installed: new Map([[REF, '0.9.8']]),
       cliInstalled: '0.0.1',
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
 
     const plugin = report.statuses.find((s) => s.id === 'claude-code');
@@ -670,6 +700,7 @@ describe('gatherReport — the CLI row’s own channel tag, when the stable grad
       cliInstalled: '0.9.11',
       cliChannel: RELEASE_CHANNEL.Beta,
       marketplacePin: () => ({ version: null }),
+      managedInstall: () => null,
     });
 
     const cli = report.statuses.find((s) => s.id === 'cli');
@@ -704,6 +735,7 @@ describe('gatherReport — the CLI row’s own channel tag, when the stable grad
         cliInstalled: '0.9.11',
         cliChannel: channel,
         marketplacePin: () => ({ version: null }),
+        managedInstall: () => null,
       });
 
       const cli = report.statuses.find((s) => s.id === 'cli');
@@ -711,4 +743,139 @@ describe('gatherReport — the CLI row’s own channel tag, when the stable grad
       expect(cli).not.toHaveProperty('channelLatest');
     },
   );
+});
+
+// A plugin an organization's managed settings installed. Its version is the
+// one the organization's marketplace declaration pins, and the host's own
+// plugin autoupdate is what moves it — so the row reports what it runs and
+// what the organization targets, and never offers `aka update` an install it
+// must not drive. Every case holds npm AHEAD of what is installed, because npm
+// being ahead is exactly what used to put the row in front of `aka update`.
+describe('gatherReport — an install an organization manages', () => {
+  const managed = (lookup: { version: string; ref?: string } | null) => (agent: { id: string }) =>
+    agent.id === 'claude-code' ? lookup : null;
+
+  it('reports the organization’s pin as the target, and offers no update', () => {
+    const report = gatherReport({
+      viewDistTags: views({ [CLI]: '0.0.1', [PLUGIN]: '0.9.15' }),
+      installed: new Map([[REF, '0.9.13']]),
+      cliInstalled: '0.0.1',
+      marketplacePin: () => ({ version: '0.9.14' }),
+      managedInstall: managed({ version: '0.9.13', ref: 'org-release-8' }),
+    });
+
+    const plugin = report.statuses.find((s) => s.id === 'claude-code');
+    expect(plugin?.installed).toBe('0.9.13');
+    expect(plugin?.latest).toBe('0.9.14');
+    expect(plugin?.updateAvailable).toBe(false);
+    // Pending: the organization's pin is ahead and the host has yet to move.
+    expect(plugin?.managedInstall).toEqual({ ref: 'org-release-8', pending: true });
+    // Not a dist-tag resolution, so nothing may say it was one.
+    expect(plugin).not.toHaveProperty('latestFrom');
+  });
+
+  it('is not pending once the host has installed the pin', () => {
+    const report = gatherReport({
+      viewDistTags: views({ [CLI]: '0.0.1', [PLUGIN]: '0.9.15' }),
+      installed: new Map([[REF, '0.9.14']]),
+      cliInstalled: '0.0.1',
+      marketplacePin: () => ({ version: '0.9.14' }),
+      managedInstall: managed({ version: '0.9.14' }),
+    });
+
+    const plugin = report.statuses.find((s) => s.id === 'claude-code');
+    expect(plugin?.updateAvailable).toBe(false);
+    expect(plugin?.managedInstall).toEqual({ pending: false });
+  });
+
+  it.each([
+    ['no pin could be read', { version: null }],
+    ['the pin is a range', { version: null, range: '^0.9.0' }],
+  ])('never offers npm’s latest as the target when %s', (_label, pin) => {
+    // npm does not decide what a managed install runs — the organization's
+    // declaration does — so with no exact pin in hand the target is unknown,
+    // not npm's answer.
+    const report = gatherReport({
+      viewDistTags: views({ [CLI]: '0.0.1', [PLUGIN]: '0.9.15' }),
+      installed: new Map([[REF, '0.9.13']]),
+      cliInstalled: '0.0.1',
+      marketplacePin: () => pin,
+      managedInstall: managed({ version: '0.9.13' }),
+    });
+
+    const plugin = report.statuses.find((s) => s.id === 'claude-code');
+    expect(plugin?.latest).toBeNull();
+    expect(plugin?.updateAvailable).toBe(false);
+    expect(plugin?.managedInstall).toEqual({ pending: false });
+  });
+
+  it('reports the managed copy’s version when a user copy sits beside it', () => {
+    // `installed` is the comparison reader's projection, which prefers the
+    // user record. The host resolves the managed one, so that is the version
+    // this machine runs and the one the row must name.
+    const report = gatherReport({
+      viewDistTags: views({ [CLI]: '0.0.1', [PLUGIN]: '0.9.15' }),
+      installed: new Map([[REF, '0.9.15']]),
+      cliInstalled: '0.0.1',
+      marketplacePin: () => ({ version: '0.9.14' }),
+      managedInstall: managed({ version: '0.9.13' }),
+    });
+
+    const plugin = report.statuses.find((s) => s.id === 'claude-code');
+    expect(plugin?.installed).toBe('0.9.13');
+    expect(plugin?.managedInstall).toEqual({ pending: true });
+    expect(plugin?.updateAvailable).toBe(false);
+  });
+
+  it('still asks npm, which is what the egress disclosure counts', () => {
+    const asked: string[] = [];
+    gatherReport({
+      viewDistTags: (pkg) => {
+        asked.push(pkg);
+        return null;
+      },
+      installed: new Map([[REF, '0.9.13']]),
+      cliInstalled: '0.0.1',
+      marketplacePin: () => ({ version: '0.9.14' }),
+      managedInstall: managed({ version: '0.9.13' }),
+    });
+
+    expect(asked).toContain(PLUGIN);
+  });
+
+  it('leaves an install nobody manages exactly as it was (positive control)', () => {
+    // The same data with the seam answering null: the row offers the update,
+    // so the refusals above come from the managed lookup and from nothing else
+    // in the fixture.
+    const report = gatherReport({
+      viewDistTags: views({ [CLI]: '0.0.1', [PLUGIN]: '0.9.15' }),
+      installed: new Map([[REF, '0.9.13']]),
+      cliInstalled: '0.0.1',
+      marketplacePin: () => ({ version: null }),
+      managedInstall: managed(null),
+    });
+
+    const plugin = report.statuses.find((s) => s.id === 'claude-code');
+    expect(plugin?.latest).toBe('0.9.15');
+    expect(plugin?.updateAvailable).toBe(true);
+    expect(plugin).not.toHaveProperty('managedInstall');
+  });
+
+  it('asks the seam per agent and applies its answer to that agent only', () => {
+    const report = gatherReport({
+      viewDistTags: views({ [CLI]: '0.0.1', [PLUGIN]: '0.9.15', [CODEX_PLUGIN]: '0.9.15' }),
+      installed: new Map([
+        [REF, '0.9.13'],
+        ['aka-codex@ai-tc', '0.9.13'],
+      ]),
+      cliInstalled: '0.0.1',
+      marketplacePin: () => ({ version: null }),
+      managedInstall: managed({ version: '0.9.13' }),
+    });
+
+    const codex = report.statuses.find((s) => s.id === 'codex');
+    expect(codex?.updateAvailable).toBe(true);
+    expect(codex).not.toHaveProperty('managedInstall');
+    expect(report.statuses.find((s) => s.id === 'claude-code')?.managedInstall).toBeDefined();
+  });
 });

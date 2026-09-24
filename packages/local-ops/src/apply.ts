@@ -6,7 +6,8 @@ import { binExists, runCapture, runInherit } from './exec.ts';
 import type { InstallChannel } from './install-channel.ts';
 import { planCliUpdate } from './install-channel.ts';
 import { findAgent, pluginRef } from './registry.ts';
-import { installedPluginScope } from './updates.ts';
+import { managedUpdateRefusal } from './update-render.ts';
+import { installedPluginScope, managedPluginInstall } from './updates.ts';
 
 // Apply-side of the update surface, shared by `aka update` / `aka plugins
 // install` and the web-ui's Updates page. One implementation of "validate id →
@@ -216,8 +217,25 @@ function prepare(
   }
 }
 
-/** Update an installed agent plugin through its host CLI's own update path. */
+/**
+ * Update an installed agent plugin through its host CLI's own update path.
+ *
+ * An install an organization's managed settings put in place is refused before
+ * anything runs, including the PATH probe. The prep this path spawns names the
+ * marketplace source with no ref. A host that accepts that (Claude Code
+ * 2.1.250 does) writes the unpinned source into the user's own settings and
+ * replaces the organization's pinned registration with it. Newer hosts refuse
+ * the add, and where the managed marketplace was never materialized every step
+ * fails. Either way the version is the organization's to set, and the host's
+ * own autoupdate is what moves it. The check is here as well as in the report,
+ * because the dashboard's Server Action takes an id over a POST and reaches
+ * this with no report in between.
+ */
 export function applyPluginUpdate(agentId: string, mode: ApplyMode = 'capture'): ApplyResult {
+  const agent = findAgent(agentId);
+  if (agent !== undefined && managedPluginInstall(agent) !== null) {
+    return { ok: false, output: managedUpdateRefusal(agent.name) };
+  }
   const resolved = resolveRef(agentId);
   if ('ok' in resolved) return resolved;
   prepare(resolved, mode);

@@ -10,6 +10,7 @@ import { removeTree } from '../../../test/helpers/remove-tree.ts';
 import type { ApplyMode } from '../src/apply.ts';
 import { applyPluginUpdate, installAgentPlugin } from '../src/apply.ts';
 import { createCliPluginManager } from '../src/cli-plugin-manager.ts';
+import { managedUpdateRefusal } from '../src/update-render.ts';
 import {
   assertShimResolves,
   SHIM_NEEDS_SHELL,
@@ -270,13 +271,14 @@ describe('what an install/update really spawns', () => {
   it('targets the scope the plugin is really installed at', () => {
     // The end of the chain, across the process boundary. `claude plugin update`
     // defaults to `--scope user`, while the version comparison reads a record
-    // at ANY scope — so on a machine where an enterprise drop-in put the plugin
-    // at `managed`, the update was reported as available and then refused with
-    // `Plugin "ai-tc" is not installed at scope user`, for ever.
+    // at ANY scope — so a plugin installed at another scope was reported as
+    // available and then refused with `Plugin "ai-tc" is not installed at
+    // scope user`, for ever. (`managed` is the one scope this never targets:
+    // an organization's install is refused before anything spawns, below.)
     //
     // Asserted on the ARGV the child received rather than on a rendered string:
     // every other surface here is a projection, and this is the one that runs.
-    writeInstalledLedger({ 'ai-tc@akasecurity': [{ version: '0.9.8', scope: 'managed' }] });
+    writeInstalledLedger({ 'ai-tc@akasecurity': [{ version: '0.9.8', scope: 'project' }] });
     armShims(['claude']);
 
     const res = applyPluginUpdate('claude-code', 'capture');
@@ -287,7 +289,7 @@ describe('what an install/update really spawns', () => {
       'update',
       'ai-tc@akasecurity',
       '--scope',
-      'managed',
+      'project',
     ]);
   });
 
@@ -335,6 +337,91 @@ describe('what an install/update really spawns', () => {
       'claude plugin marketplace update akasecurity',
       'claude plugin install ai-tc@akasecurity',
     ]);
+  });
+});
+
+/**
+ * An install an organization's managed settings put in place.
+ *
+ * Nothing may spawn for one, and the first spawn is the one that matters most:
+ * `claude plugin marketplace add akasecurity/marketplace` names the source with
+ * no ref. A host that accepts it (measured on Claude Code 2.1.250) writes that
+ * unpinned source into the USER's settings and replaces the organization's
+ * pinned registration with it, so the managed install follows the default
+ * branch from then on. Current hosts refuse the add, and on a machine whose
+ * managed marketplace was never materialized every step fails. Either way the
+ * organization's pin, not this command, decides the version.
+ *
+ * So these cases assert on the RECORDED CALLS, not just the result: a refusal
+ * that still ran the prep would report `ok: false` and have done the damage.
+ */
+describe('an install an organization manages', () => {
+  it('refuses a managed install and spawns nothing at all', () => {
+    writeInstalledLedger({ 'ai-tc@akasecurity': [{ version: '0.9.13', scope: 'managed' }] });
+    armShims(['claude']);
+
+    const res = applyPluginUpdate('claude-code', 'capture');
+
+    expect(res.ok).toBe(false);
+    expect(res.output).toBe(managedUpdateRefusal('Claude Code'));
+    expect(calls()).toEqual([]);
+  });
+
+  it('refuses in inherit mode too, where the CLI would have streamed the prep', () => {
+    writeInstalledLedger({ 'ai-tc@akasecurity': [{ version: '0.9.13', scope: 'managed' }] });
+    armShims(['claude']);
+
+    const res = applyPluginUpdate('claude-code', 'inherit');
+
+    expect(res.ok).toBe(false);
+    expect(res.output).toBe(managedUpdateRefusal('Claude Code'));
+    expect(calls()).toEqual([]);
+  });
+
+  it('refuses when a user copy sits beside the managed one', () => {
+    // The host resolves the managed copy, and the prep is what does the harm
+    // whichever scope the op would then target.
+    writeInstalledLedger({
+      'ai-tc@akasecurity': [
+        { version: '0.9.14', scope: 'user' },
+        { version: '0.9.13', scope: 'managed' },
+      ],
+    });
+    armShims(['claude']);
+
+    const res = applyPluginUpdate('claude-code', 'capture');
+
+    expect(res.ok).toBe(false);
+    expect(calls()).toEqual([]);
+  });
+
+  it('updates a user-scope install exactly as before (positive control)', () => {
+    // The same shims and the same ledger path with the record at `user`: the
+    // whole plan runs, so the refusals above come from the scope and from
+    // nothing else in this harness.
+    writeInstalledLedger({ 'ai-tc@akasecurity': [{ version: '0.9.13', scope: 'user' }] });
+    armShims(['claude']);
+
+    const res = applyPluginUpdate('claude-code', 'capture');
+
+    expect(res.ok).toBe(true);
+    expect(commandLines()).toEqual([
+      'claude plugin marketplace add akasecurity/marketplace',
+      'claude plugin marketplace update akasecurity',
+      'claude plugin update ai-tc@akasecurity --scope user',
+    ]);
+  });
+
+  it('reads the managed scope for Claude Code only', () => {
+    // A `managed` record under Codex's ref in Claude Code's ledger says nothing
+    // about how Codex was installed, so Codex's update still runs.
+    writeInstalledLedger({ 'aka-codex@ai-tc': [{ version: '0.9.13', scope: 'managed' }] });
+    armShims(['codex']);
+
+    const res = applyPluginUpdate('codex', 'capture');
+
+    expect(res.ok).toBe(true);
+    expect(commandLines()).toContain('codex plugin add aka-codex@ai-tc');
   });
 });
 

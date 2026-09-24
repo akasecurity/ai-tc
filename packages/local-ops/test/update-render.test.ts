@@ -6,9 +6,15 @@
 // latest. Without the note that renders as a report that is simply wrong, or as
 // a failed update — the issue this closes reported it as indistinguishable from
 // both.
+import { MANAGED_PLUGIN_ADVICE } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
-import { renderReport } from '../src/update-render.ts';
+import {
+  managedUpdateRefusal,
+  nothingToApplyLine,
+  outdated,
+  renderReport,
+} from '../src/update-render.ts';
 
 const status = (over: Record<string, unknown> = {}): never =>
   ({
@@ -206,5 +212,110 @@ describe('renderReport — the channel column', () => {
     expect(row).toContain('nightly');
     expect(row).toContain('update available');
     expect(row).toMatch(/nightly\s+update available/);
+  });
+});
+
+/**
+ * A row an organization's managed settings installed.
+ *
+ * The report never offers it as an update, so the table has to say why a
+ * version behind the organization's pin is not "update available", and the
+ * note has to name the route that DOES move it — or a reader concludes the
+ * report is stale and goes looking for a command to run.
+ */
+describe('renderReport — an install an organization manages', () => {
+  const managedRow = (over: Record<string, unknown> = {}): never =>
+    report({
+      name: 'Claude Code',
+      installed: '0.9.13',
+      latest: '0.9.14',
+      managedInstall: { ref: 'org-release-8', pending: true },
+      ...over,
+    });
+  const rowOf = (out: string): string =>
+    out.split('\n').find((line) => line.includes('0.9.13')) ?? '';
+
+  it('says a pending update is the organization’s, never that one is available', () => {
+    const out = renderReport(managedRow());
+
+    expect(rowOf(out)).toContain('managed — update pending');
+    expect(out).not.toContain('update available');
+    expect(out).toContain('Managed by your organization:');
+    expect(out).toContain('Claude Code (marketplace ref org-release-8): v0.9.14 is on its way.');
+    expect(out).toContain(MANAGED_PLUGIN_ADVICE);
+    expect(out).toContain('`aka update` leaves it alone.');
+  });
+
+  it('says a current managed install is current', () => {
+    const out = renderReport(
+      managedRow({ installed: '0.9.14', managedInstall: { ref: 'org-release-8', pending: false } }),
+    );
+
+    const row = out.split('\n').find((line) => line.includes('0.9.14')) ?? '';
+    expect(row).toContain('managed — up to date');
+    expect(out).not.toContain('on its way');
+    // Still explained: the note is what says `aka update` will not touch it.
+    expect(out).toContain(MANAGED_PLUGIN_ADVICE);
+  });
+
+  it('reads as managed, not unknown, when the organization’s pin could not be read', () => {
+    const out = renderReport(managedRow({ latest: null, managedInstall: { pending: false } }));
+
+    expect(rowOf(out)).toMatch(/managed$/);
+    // The Latest cell may honestly read unknown; the STATUS must not, since the
+    // row is not unknown — it is the organization's.
+    expect(rowOf(out)).not.toMatch(/unknown$/);
+    expect(out).not.toContain('marketplace ref');
+    expect(out).toContain('Claude Code: ');
+  });
+
+  it('explains a managed row once, not also as a marketplace pin', () => {
+    // The same row carrying pin evidence that WOULD earn a pin note: npm is
+    // ahead of the organization's pin. The managed note already says who
+    // decides the version, and a second note naming a marketplace "that has to
+    // move" hands the reader a job that is not theirs.
+    const out = renderReport(
+      managedRow({
+        marketplacePin: { marketplace: 'akasecurity', npmLatest: '0.9.15', npmAhead: true },
+      }),
+    );
+
+    expect(out).toContain('Managed by your organization:');
+    expect(out).not.toContain('Pinned by a marketplace');
+    expect(out.split('\n').filter((line) => line.includes('Claude Code ('))).toHaveLength(1);
+  });
+
+  it('is never counted as something `aka update` can apply', () => {
+    expect(outdated(managedRow())).toEqual([]);
+  });
+});
+
+describe('nothingToApplyLine', () => {
+  const withRows = (...rows: Record<string, unknown>[]): never =>
+    ({ statuses: rows.map((row) => status(row)), availablePlugins: [] }) as never;
+
+  it('says everything is up to date when nothing is pending anywhere', () => {
+    expect(nothingToApplyLine(withRows({}))).toBe('Everything is up to date.');
+    expect(nothingToApplyLine(withRows({ managedInstall: { pending: false } }))).toBe(
+      'Everything is up to date.',
+    );
+  });
+
+  it('does not call a machine current while its organization has an update on the way', () => {
+    const line = nothingToApplyLine(withRows({}, { managedInstall: { pending: true } }));
+
+    expect(line).not.toContain('up to date');
+    expect(line).toContain('Nothing for `aka update` to apply');
+    expect(line).toContain('Claude Code');
+  });
+});
+
+describe('managedUpdateRefusal', () => {
+  it('names the component, says nothing ran, and gives the route that does apply', () => {
+    const line = managedUpdateRefusal('Claude Code');
+
+    expect(line).toContain('Claude Code is managed by your organization');
+    expect(line).toContain('nothing was run');
+    expect(line).toContain(MANAGED_PLUGIN_ADVICE);
   });
 });

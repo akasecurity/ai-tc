@@ -130,7 +130,35 @@ export interface ComponentStatus {
   // actually publishes, rather than naming only the stable version that
   // displaced it.
   channelLatest?: string;
+  // Present only when an organization's managed settings installed this
+  // plugin. `updateAvailable` is then always false, because nothing here may
+  // drive that install, and `latest` is the version the organization's
+  // marketplace pins, or null when no exact pin could be read. npm's latest
+  // is not what decides a managed install, so it is never offered as one.
+  managedInstall?: ManagedPluginInstall;
 }
+
+// A plugin install an organization's managed settings put in place — the
+// host records it at its `managed` scope. The organization's marketplace
+// declaration decides the version, and the host's own plugin autoupdate is
+// what moves it.
+export interface ManagedPluginInstall {
+  // The ref (a tag or a branch) the host checked the organization's
+  // marketplace out at, when its own record names one.
+  ref?: string;
+  // Whether `latest` is ahead of `installed`: the organization's pin has moved
+  // and the host has not installed it yet. Computed where semver comparison
+  // lives, for the same reason as `MarketplacePin.npmAhead`.
+  pending: boolean;
+}
+
+// How a managed plugin install moves, in the one wording every surface uses:
+// the CLI's report and refusals, the apply path's refusal, and the dashboard.
+// Spelled once so the surfaces cannot drift into describing different routes.
+export const MANAGED_PLUGIN_ADVICE =
+  "Your organization's managed settings install it and pin its version. Updates arrive " +
+  "through Claude Code's own plugin autoupdate when a new session starts, or /plugin → " +
+  'update inside a session.';
 
 // Where a pinned `latest` came from, and what npm said instead.
 export interface MarketplacePin {

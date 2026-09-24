@@ -440,6 +440,26 @@ describe('aka plugins install when the plugin becomes managed mid-command', () =
     expect(process.exitCode).toBe(1);
   });
 
+  it('refuses, and hands out no recipe, when the record lands while the spawn fails', async () => {
+    // The shared apply reads the ledger before it spawns, so a record arriving
+    // while the spawn is failing leaves `output` empty. The recipe is then the
+    // only thing left to print, and the check after the apply is all that keeps
+    // it off the machine.
+    spawned.apply = () => {
+      writeLedger(MANAGED);
+      return { ok: false, output: '' };
+    };
+
+    const { err } = await captureBoth(() =>
+      runPlugins(['install', 'claude-code'], NO_HOST_VERSION),
+    );
+
+    expect(spawned.calls).toEqual(['claude-code']);
+    expect(err).toContain(managedInstallRefusal('Claude Code'));
+    expect(err).not.toContain('marketplace add');
+    expect(process.exitCode).toBe(1);
+  });
+
   it('prints any other refusal the shared path returns before spawning', async () => {
     // Inherit mode streams what the host printed, so `output` is non-empty only
     // for a refusal made before any spawn, and then it is the one explanation.

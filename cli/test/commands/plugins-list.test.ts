@@ -63,6 +63,12 @@ async function list(): Promise<string> {
 
 const CLAUDE_CODE_NAME = findAgent('claude-code')?.name ?? 'claude-code agent missing';
 
+// The footer's own claim, asserted whole: the advice it interpolates says how
+// a managed plugin moves, not that these two commands leave it alone.
+const MANAGED_FOOTER =
+  'Managed:  `aka plugins install` and `aka update` leave a managed plugin alone. ' +
+  MANAGED_PLUGIN_ADVICE;
+
 /**
  * The state column of the Claude Code row: everything between the padded id
  * and the agent's name. Not a fixed-width slice, because a state longer than
@@ -83,7 +89,7 @@ describe('aka plugins list — an install an organization manages', () => {
     const out = await list();
 
     expect(claudeCodeState(out)).toBe('managed');
-    expect(out).toContain(MANAGED_PLUGIN_ADVICE);
+    expect(out).toContain(`${MANAGED_FOOTER}\n`);
   });
 
   it('names the version a managed record carries', async () => {
@@ -92,7 +98,7 @@ describe('aka plugins list — an install an organization manages', () => {
     const out = await list();
 
     expect(claudeCodeState(out)).toBe('managed v0.9.14');
-    expect(out).toContain(MANAGED_PLUGIN_ADVICE);
+    expect(out).toContain(`${MANAGED_FOOTER}\n`);
   });
 
   it('reads a user-scope install as installed (positive control)', async () => {
@@ -101,6 +107,7 @@ describe('aka plugins list — an install an organization manages', () => {
     const out = await list();
 
     expect(claudeCodeState(out)).toBe('installed v0.9.14');
+    expect(out).not.toContain('Managed:');
     expect(out).not.toContain(MANAGED_PLUGIN_ADVICE);
   });
 
@@ -108,6 +115,7 @@ describe('aka plugins list — an install an organization manages', () => {
     const out = await list();
 
     expect(claudeCodeState(out)).toBe('available');
+    expect(out).not.toContain('Managed:');
     expect(out).not.toContain(MANAGED_PLUGIN_ADVICE);
   });
 });

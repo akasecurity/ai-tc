@@ -100,12 +100,25 @@ export function DialogDescription({
   );
 }
 
+/**
+ * The action row at the foot of a dialog. Right-aligned, which is the part a
+ * caller should not have to remember: this carried no `justify` and so laid its
+ * buttons out from the LEFT edge, and every consumer wanted the other thing —
+ * some said so with a `justify-end`, others with a `<span className="flex-1" />`
+ * spacer, and the ones that said nothing simply shipped left-aligned.
+ *
+ * A caller that genuinely wants another arrangement still passes its own
+ * `justify-*`, which `cn` resolves in its favour. A footer that stacks rows
+ * (`flex-col`) is the case to watch: `justify-end` then pushes content to the
+ * BOTTOM rather than the right, so those pass `justify-start` here and align
+ * their own action row instead.
+ */
 export function DialogFooter({ className, ...props }: ComponentPropsWithRef<'div'>) {
   return (
     <div
       data-slot="dialog-footer"
       className={cn(
-        'flex shrink-0 items-center gap-2.5 border-t border-border px-5 py-3.5',
+        'flex shrink-0 items-center justify-end gap-2.5 border-t border-border px-5 py-3.5',
         className,
       )}
       {...props}

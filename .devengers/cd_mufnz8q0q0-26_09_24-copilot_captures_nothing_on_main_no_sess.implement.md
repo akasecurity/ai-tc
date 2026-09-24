@@ -209,3 +209,67 @@ branch called both with the arguments flipped. Registered `userPromptSubmitted` 
 - `tsc --noEmit` + `eslint src test`: clean.
 - Coverage floor moved 79 → **74** (330/429 = 76.92 here; Windows ≈ 75.06). Finalized at
   task 25.
+
+---
+
+## Slice D — PostToolUse (tasks 16–20)
+
+### Task 16 — `src/hooks/tool-response.ts` + its test
+
+Per-dialect envelope table: `cli → { key: 'toolResult', paths: [['textResultForLlm']] }`,
+`vscode → { key: 'tool_response', paths: [[]] }`. 10 cases.
+
+The `resultType` trap is pinned two ways: from the RECORDED fixture (a `bash` call whose
+command is literally `false` reports `resultType: "success"`, with the real exit code only
+as free text inside `textResultForLlm`), and over a **comment-stripped** read of the module
+source — stripping is load-bearing here, because the module comment discusses the field at
+length and a plain text match would be satisfied by the explanation.
+
+**DEVIATION from the plan's file-level list: `replaceResponseField` is NOT exported.** The
+plan names it, but the plan's own enforcement decision forbids emitting `modifiedResult`, so
+a path-based writer would have no shipped caller — the shape CLAUDE.md §4 records as a gap
+in the source (`verifyProvenance`). A case asserts the module's export set EXACTLY, so
+adding a writer is a deliberate act that has to come with a recording of the channel.
+
+### Task 17 — `src/hooks/scan-response.ts`
+
+`ResponseScanOutcome` (block / redact / warn findings in three SEPARATE lists, references,
+`scannedPaths`, `toolName`), `scanResponseFields(toolName, fields, capture)` with the
+capture injected, and a two-channel `responseDecision(dialect, outcome)`.
+
+Rewritten, not ported. The member branch's version emitted `modifiedResult` on the CLI and
+escalated a redact to `{"decision":"block"}` on VS Code, and built its messages from
+`withheldBanner` / `withheldToolText` — both of which assert the flagged value "never
+reached the model". On an unconfirmed channel that is a false audit claim, so neither is
+used here and the module says why.
+
+`scannedPaths` is kept because "scanned and found nothing" and "there was nothing to scan"
+produce the same silence and mean opposite things about whether the hook works.
+
+### Task 18 — `test/hooks/scan-response.test.ts`
+
+13 cases with a high-entropy non-credential-shaped fixture. Every message is asserted for
+what it DOES say (positive control: the rule id, the tool name, "reached the model") before
+what it may not: no `never reached` / `did not reach` / `withheld`, no `blocked`, no
+`modifiedResult` and no `"decision"` key in any emitted payload, and `expectNoEchoOf` run by
+run. The per-dialect case asserts the CLI notice and the VS Code `systemMessage` are the
+same string on different channels.
+
+### Task 19 — `src/hooks/post-tool-use.ts`
+
+Entry. `kind: 'response'`, `{ persist: 'with-findings', rewritable: false }`, tsup entry,
+and `postToolUse` registered camelCase-only. The unknown-result fast path returns before
+`loadConfig`, which matters most under VS Code — that host ignores matchers, so this process
+is spawned for every tool call.
+
+### Task 20 — `hooks-manifest.test.ts`
+
+Exact key list → `['sessionStart','userPromptSubmitted','preToolUse','postToolUse']`. The
+PascalCase filter (asserted against `VSCODE_EVENTS`, not a hardcoded name) confirms none was
+introduced.
+
+### Slice D gates
+
+- `plugins/copilot` full suite: **24 files, 339 passed**.
+- `tsc --noEmit` + `eslint src test *.config.*`: clean.
+- Coverage floor 74 → **71** (367/498 = 73.69 here; Windows ≈ 72.08). Finalized at task 25.

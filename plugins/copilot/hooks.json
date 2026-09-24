@@ -32,6 +32,17 @@
           }
         ]
       }
+    ],
+    "postToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/scripts/post-tool-use.js\" postToolUse \"${PLUGIN_ROOT}/plugin.json\"",
+            "timeoutSec": 30
+          }
+        ]
+      }
     ]
   }
 }

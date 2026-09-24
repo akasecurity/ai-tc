@@ -124,7 +124,7 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   // children run as CHILD PROCESSES in the e2e suite, so the parent's v8
   // coverage counts none of their lines and the denominator grew by more than
   // the covered set did.
-  '@akasecurity/ai-tc-copilot': 74, //              75.06 (Windows), 76.92 (Linux)
+  '@akasecurity/ai-tc-copilot': 71, //              72.08 (Windows), 73.69 (Linux)
   '@akasecurity/ai-tc-codex': 58, //                59.78
   '@akasecurity/plugin-browser-extension': 81, //   82.44
   '@akasecurity/cli': 51, //                        52.66

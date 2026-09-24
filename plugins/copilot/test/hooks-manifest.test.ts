@@ -88,6 +88,7 @@ describe('hooks.json', () => {
       'sessionStart',
       'userPromptSubmitted',
       'preToolUse',
+      'postToolUse',
     ]);
   });
 

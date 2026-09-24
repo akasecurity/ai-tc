@@ -51,6 +51,7 @@ export default defineConfig({
     'pre-tool-use': 'src/hooks/pre-tool-use.ts',
     'session-start': 'src/hooks/session-start.ts',
     'user-prompt-submit': 'src/hooks/user-prompt-submit.ts',
+    'post-tool-use': 'src/hooks/post-tool-use.ts',
     // The three detached children `handleSessionStart` spawns, resolved as
     // SIBLINGS of the running script rather than by package name — so they are
     // entries here or the spawn names a file that does not exist. Two are inert

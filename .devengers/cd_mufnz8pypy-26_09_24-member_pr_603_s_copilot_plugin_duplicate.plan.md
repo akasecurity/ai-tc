@@ -269,13 +269,13 @@ Specifically **not** touched, and a diff naming any of them is a failed implemen
 - [x] **8. Prove the diff.** `git diff origin/main --name-only` must name **exactly one**
       file, this card's implement document (plus this plan, if it has not merged yet). Any
       other path is a failed implementation — revert it and re-run.
-- [ ] **9. Commit and push.** `docs(copilot): retire PR #603 as superseded by #558` or
+- [x] **9. Commit and push.** `docs(copilot): retire PR #603 as superseded by #558` or
       similar Conventional Commit (commitlint runs on `commit-msg` and *will* reject a bare
       subject). The pre-push `pnpm lint` gate is refused by the Node 22 container against the
       `>=24` floor, so push with `--no-verify` **and record that the gate did not run** in the
       implement document, exactly as `2de9c675` did. Nothing in this diff is lintable source,
       which is what makes that tolerable here and would not make it tolerable for a code change.
-- [ ] **10. Open this card's PR** against `main`, body naming: no product change, the closed
+- [x] **10. Open this card's PR** against `main`, body naming: no product change, the closed
       #603, the preserved ref, and issue #411. Link it back from the #603 comment thread if
       the number was not known when task 4 ran.
 

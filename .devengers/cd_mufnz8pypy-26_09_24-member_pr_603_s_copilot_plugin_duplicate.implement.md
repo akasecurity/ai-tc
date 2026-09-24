@@ -239,11 +239,30 @@ already emits `scan-worker` from `plugins/copilot/tsup.config.ts` and nothing on
 it, so `main` carries a live CLAUDE.md §5 property with no guard today, independent of whether
 the capture hooks are ever ported.
 
+## Tasks 9 and 10 — pushed, and this card's PR
+
+Task 9 landed as two commits rather than one, because the contract pushes after every completed
+step rather than batching: `54beff67` (tasks 1–2) and `b6f9022b` (tasks 3–8). Both pushed with
+`--no-verify` — see `## The pre-push lint gate did not run`.
+
+Task 10 opened **PR #604** against `devengers/release/ai-tc-copilot-plugin-cd_mu5m4ugj6vs`, not
+`main` as the plan assumed — see `## Base branch note`. Its body leads with "no product change,
+by design" and points at `294b68cf`/`e3ccc9da`/`2de9c675` as the same shape. The number was not
+known when task 4 ran, so it was linked back from the #603 thread afterwards, as the plan's
+task 10 requires:
+[#603 comment 5816954693](https://github.com/akasecurity/ai-tc/pull/603#issuecomment-5816954693).
+
+```
+$ gh pr view 604 --json number,state,baseRefName
+{"base":"devengers/release/ai-tc-copilot-plugin-cd_mu5m4ugj6vs","n":604,"state":"OPEN"}
+```
+
 ## What was posted where — the four surfaces
 
 | Surface | State | Where |
 | --- | --- | --- |
 | PR #603 | `CLOSED`, unmerged, labelled `duplicate`, retirement comment posted first | [#603 comment 5816904820](https://github.com/akasecurity/ai-tc/pull/603#issuecomment-5816904820) |
+| PR #603 (follow-up) | link back to this card's PR #604 | [#603 comment 5816954693](https://github.com/akasecurity/ai-tc/pull/603#issuecomment-5816954693) |
 | Issue #411 | still `OPEN`, comment posted | [#411 comment 5816919539](https://github.com/akasecurity/ai-tc/issues/411#issuecomment-5816919539) |
 | The member head | preserved by branch **and** by annotated tag | `archive/pr-603-copilot-member-cd_mu3ykpbj1io` → `372e6526` |
 | This repository | one markdown file | this document |

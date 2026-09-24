@@ -40,7 +40,7 @@ function result(
     findings: findings(...ruleIds),
     text: null,
     ...(refs ? { blockedReferences: refs } : {}),
-  } as unknown as CaptureResult;
+  };
 }
 
 const CLI_FIELD: ScannableResponseField = {

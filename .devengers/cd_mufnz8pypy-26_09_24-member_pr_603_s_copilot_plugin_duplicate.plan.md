@@ -233,7 +233,7 @@ Specifically **not** touched, and a diff naming any of them is a failed implemen
       `.github/workflows/` for any ref deletion. Both were clean at plan time; re-confirm,
       because task 4 is irreversible from the UI's point of view and this is the check that
       makes it safe.
-- [ ] **3. Draft the retirement comment.** One comment body, written to a scratch file (not
+- [x] **3. Draft the retirement comment.** One comment body, written to a scratch file (not
       committed), containing: PR #558 (`aa4381d1`) as the landing PR; the re-derived conflict
       count with the 36-vs-38 correction stated; the three contradictions by commit
       (`801cc2c6` event registration, `ac9330a5` the stderr notice channel, and the
@@ -242,17 +242,17 @@ Specifically **not** touched, and a diff naming any of them is a failed implemen
       lacks; the full 19-path salvage manifest split 16/3; the member head SHA `372e6526`;
       issue #411 as where the work continues; and the sentence *do not re-attempt this merge —
       `git merge-tree --write-tree` reproduces the same conflict set without a working tree.*
-- [ ] **4. Post the comment, label, and close PR #603 — in that order.**
+- [x] **4. Post the comment, label, and close PR #603 — in that order.**
       `gh pr comment 603 --body-file <scratch>`, then `gh pr edit 603 --add-label duplicate`,
       then `gh pr close 603` **without** `--delete-branch`. Order matters: a PR closed before
       its comment lands is, for however long the gap is, a silently abandoned PR — and that is
       the reading this whole card exists to prevent. `duplicate` already exists in the
       repository's label set; do not create a new label.
-- [ ] **5. Comment on issue #411.** Name the retirement of #603, link it, restate the salvage
+- [x] **5. Comment on issue #411.** Name the retirement of #603, link it, restate the salvage
       manifest, and add the two items this card deliberately declines to decide: the install-root
       contract, and the unpinned `scan-worker` build entry described under `## The salvage
       manifest`. Do **not** close #411 — the feature is unshipped.
-- [ ] **6. Preserve `372e6526` against a stray click.** Push an annotated tag,
+- [x] **6. Preserve `372e6526` against a stray click.** Push an annotated tag,
       `git tag -a archive/pr-603-copilot-member-cd_mu3ykpbj1io 372e6526 -m "…" && git push
       origin archive/pr-603-copilot-member-cd_mu3ykpbj1io`. A tag is not offered for deletion
       by the closed-PR UI and is not reachable by the *Delete branch* button, which is the
@@ -263,10 +263,10 @@ Specifically **not** touched, and a diff naming any of them is a failed implemen
       vetoes a new ref namespace**, the fallback is a branch-protection ruleset on the member
       branch name; if that is also vetoed, record `372e6526` in the implement document and in
       the PR comment as the recovery point and say plainly that the branch is unprotected.
-- [ ] **7. Write `.devengers/cd_mufnz8pypy-…implement.md`.** Sections as listed under
+- [x] **7. Write `.devengers/cd_mufnz8pypy-…implement.md`.** Sections as listed under
       `## File-level changes`. Paste the real `gh` output, not a summary of it. Include the
       premise corrections. State that this card lands no product change and why.
-- [ ] **8. Prove the diff.** `git diff origin/main --name-only` must name **exactly one**
+- [x] **8. Prove the diff.** `git diff origin/main --name-only` must name **exactly one**
       file, this card's implement document (plus this plan, if it has not merged yet). Any
       other path is a failed implementation — revert it and re-run.
 - [ ] **9. Commit and push.** `docs(copilot): retire PR #603 as superseded by #558` or

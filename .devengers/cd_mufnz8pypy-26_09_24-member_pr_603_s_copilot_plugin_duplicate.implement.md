@@ -95,20 +95,100 @@ Commit carrying tasks 1 and 2: see the commit that introduced this section.
 ## Task 3 — the retirement comment
 
 Drafted to a scratch file outside the repository (`/tmp/pr-603-retirement.md`), not committed,
-per the plan. Its body is reproduced in full under `## What was posted where` below so the
-record does not depend on a file that only existed in this container.
+per the plan. It carries every element the plan's task 3 lists: #558 / `aa4381d1` as the
+landing PR; the re-derived 44-path conflict count with the 36-vs-38 correction stated and the
+reproducing command quoted; the three contradictions by commit (`801cc2c6` event registration,
+`ac9330a5` the stderr notice channel, and the `${PLUGIN_ROOT}` vs `${AKA_COPILOT_ROOT:-…}`
+install contract, the last named **undecided** rather than a defect); the five test files
+`main` has and the member lacks; the full 19-path manifest split 16/3; the member head
+`372e652685df837cfa076acf2fa6f6d22471654d`; issue #411; and the explicit instruction not to
+re-attempt the merge, with `git merge-tree --write-tree` named as the non-destructive way to
+re-check.
 
-## Task 4 — comment, label, close
+## Task 4 — comment, label, close (in that order)
 
-Run in that order. Real output under `## What was posted where`.
+The comment was posted **before** the close, so PR #603 was never a silently abandoned PR.
+
+```
+$ gh pr comment 603 --body-file /tmp/pr-603-retirement.md
+https://github.com/akasecurity/ai-tc/pull/603#issuecomment-5816904820
+
+$ gh pr edit 603 --add-label duplicate
+GraphQL: Your token has not been granted the required scopes to execute this query.
+The 'login' field requires one of the following scopes: ['read:org'], but your token
+has only been granted the: ['repo', 'write:packages'] scopes. […]
+
+$ gh api -X POST repos/akasecurity/ai-tc/issues/603/labels -f "labels[]=duplicate"
+[{"id":11487509650,"name":"duplicate","color":"cfd3d7","default":true,
+  "description":"This issue or pull request already exists"}]
+
+$ gh pr close 603
+✓ Closed pull request akasecurity/ai-tc#603 (GitHub Copilot: cover the CLI, VS Code agent mode, and the cloud coding agent)
+
+$ gh api repos/akasecurity/ai-tc/issues/603 --jq '{state:.state,labels:[.labels[].name]}'
+{"labels":["duplicate"],"state":"closed"}
+```
+
+**The labelling deviation, stated plainly.** `gh pr edit --add-label` goes through GraphQL and
+failed on token scope — the flight's token carries `repo` and `write:packages`, not `read:org`.
+The plan's risk section anticipated label friction and said not to create a label and not to
+retry under a different name. Neither was done: the retry went through the **REST** endpoint
+with the **same existing** `duplicate` label (`"default": true`, id `11487509650` — the
+repository's own label, not a new one), which needs only `repo`. The label is a convenience; the
+comment is the load-bearing part, and it had already landed.
+
+`--delete-branch` was **not** passed.
 
 ## Task 5 — issue #411
 
-Commented, not closed. Real output under `## What was posted where`.
+```
+$ gh issue comment 411 --body-file /tmp/issue-411-comment.md
+https://github.com/akasecurity/ai-tc/issues/411#issuecomment-5816919539
 
-## Task 6 — preservation ref
+$ gh issue view 411 --json state,number --jq '{n:.number,state:.state}'
+{"n":411,"state":"OPEN"}
+```
 
-Recorded under `## The preserved ref`.
+Not closed — the feature is unshipped. The comment restates the 19-path manifest, links the
+retirement, and records the two questions this card declined to decide (below).
+
+## Task 6 — the preservation ref
+
+```
+$ git ls-remote origin 'refs/tags/archive/*'
+(empty — the name was free before the push)
+
+$ git tag -a archive/pr-603-copilot-member-cd_mu3ykpbj1io 372e652685df837cfa076acf2fa6f6d22471654d -m "…"
+$ git push origin archive/pr-603-copilot-member-cd_mu3ykpbj1io
+ * [new tag]  archive/pr-603-copilot-member-cd_mu3ykpbj1io -> archive/pr-603-copilot-member-cd_mu3ykpbj1io
+
+$ git ls-remote origin refs/tags/archive/pr-603-copilot-member-cd_mu3ykpbj1io
+6d62fa2aff7a21aa54b1e46d32d214f9b94ad3d7  refs/tags/archive/pr-603-copilot-member-cd_mu3ykpbj1io
+
+$ git rev-parse archive/pr-603-copilot-member-cd_mu3ykpbj1io^{commit}
+372e652685df837cfa076acf2fa6f6d22471654d
+```
+
+The remote ref is the **annotated tag object** `6d62fa2a`, which peels to the member head
+`372e6526`. The tag was pushed **before** the close, which is the more paranoid ordering the
+plan allows and costs nothing.
+
+All 19 manifest paths were then re-verified reachable **from the tag** (not merely from the
+branch) with `git cat-file -e "<tag>^{commit}:<path>"` — all 19 resolve, none missing.
+
+**This introduces a seventh tag prefix, `archive/`**, beside `bin-latest`, `bin-v*`,
+`cli-latest`, `cli-v*`, `plugin-antigravity-v*`, `plugin-claude-v*`, `plugin-codex-v*` and
+`plugin-v*` as seen on `origin`. Confirmed harmless:
+
+- It creates **no GitHub Release** — only the API does that. `gh release view
+  archive/pr-603-copilot-member-cd_mu3ykpbj1io` → `release not found`, and `gh release list`
+  shows the same five pre-releases as before (`bin-latest`, `bin-v0.9.14`, `cli-v0.9.14`, …).
+- It matches no `bin-v*` / `cli-v*` glob any workflow reads, so `release-binaries.yml`'s
+  `bin-latest` election is untouched.
+
+No operator veto was issued, so the fallback paths (a branch-protection ruleset, or recording
+the SHA and declaring the branch unprotected) were not needed. The branch is protected by the
+tag and by the absence of deletion automation, both verified.
 
 ## Task 7 — this document
 
@@ -159,21 +239,81 @@ already emits `scan-worker` from `plugins/copilot/tsup.config.ts` and nothing on
 it, so `main` carries a live CLAUDE.md §5 property with no guard today, independent of whether
 the capture hooks are ever ported.
 
-## What was posted where
+## What was posted where — the four surfaces
 
-Filled in as each surface lands.
+| Surface | State | Where |
+| --- | --- | --- |
+| PR #603 | `CLOSED`, unmerged, labelled `duplicate`, retirement comment posted first | [#603 comment 5816904820](https://github.com/akasecurity/ai-tc/pull/603#issuecomment-5816904820) |
+| Issue #411 | still `OPEN`, comment posted | [#411 comment 5816919539](https://github.com/akasecurity/ai-tc/issues/411#issuecomment-5816919539) |
+| The member head | preserved by branch **and** by annotated tag | `archive/pr-603-copilot-member-cd_mu3ykpbj1io` → `372e6526` |
+| This repository | one markdown file | this document |
 
-## The preserved ref
+## The preserved ref, and the branch, verified *after* the close
 
-Filled in at task 6.
+```
+$ git ls-remote --heads origin devengers/github-copilot-cover-the-cli-vs-code-agent-mode-cd_mu3ykpbj1io
+372e652685df837cfa076acf2fa6f6d22471654d  refs/heads/devengers/github-copilot-cover-the-cli-vs-code-agent-mode-cd_mu3ykpbj1io
+
+$ git ls-remote origin refs/tags/archive/pr-603-copilot-member-cd_mu3ykpbj1io
+6d62fa2aff7a21aa54b1e46d32d214f9b94ad3d7  refs/tags/archive/pr-603-copilot-member-cd_mu3ykpbj1io
+```
+
+Both run **after** `gh pr close 603`, which is the only ordering that proves anything about
+what the close did. The remote is checked rather than the local ref — a tag that never left the
+container preserves nothing.
 
 ## The diff, proved
 
-Filled in at task 8.
+Against the contracted base `devengers/release/ai-tc-copilot-plugin-cd_mu5m4ugj6vs`:
+
+```
+$ git diff --name-only origin/devengers/release/ai-tc-copilot-plugin-cd_mu5m4ugj6vs...HEAD
+.devengers/cd_mufnz8pypy-26_09_24-member_pr_603_s_copilot_plugin_duplicate.implement.md
+.devengers/cd_mufnz8pypy-26_09_24-member_pr_603_s_copilot_plugin_duplicate.plan.md
+.devengers/cd_mufnz8pypy-26_09_24-member_pr_603_s_copilot_plugin_duplicate.spec.md
+```
+
+Exactly this card's three `.devengers/` documents and nothing else. The plan file appears
+because its checkboxes are ticked as each step lands, which is the only edit made to it.
+
+Against `origin/main` the same three appear plus
+`.devengers/cd_mu5m4ugj6vs-26_09_17-ai_tc_copilot_plugin.integrate.md`, which this branch
+**inherits** from the release-branch commits it was cut from (`294b68cf`, `e3ccc9da`,
+`2de9c675`) and does not modify. That is a property of the base, not of this card's work.
+
+No source path is touched, by either reading:
+
+```
+$ git diff --name-only <base>...HEAD -- plugins/ packages/ cli/ web-ui/ tools/ .github/ test/
+(empty)
+$ git diff --name-only origin/main...HEAD -- plugins/ packages/ cli/ web-ui/ tools/ .github/ test/
+(empty)
+```
+
+No `.git/MERGE_HEAD` exists and `git status --short` is clean: no merge, rebase or cherry-pick
+was performed at any point.
 
 ## Open questions this card deliberately did not decide
 
-Filled in with the rest.
+Both are recorded on issue #411 rather than settled here, and both are stated as open rather
+than as answered:
+
+1. **The install-root contract.** `${PLUGIN_ROOT}` (what `main` ships, and therefore what is in
+   force) against `${AKA_COPILOT_ROOT:-$HOME/.copilot/plugins/aka-copilot}` (the retired
+   branch's). These are different installation contracts. Deciding between them is a product
+   call and would have been buried inside a bookkeeping PR.
+2. **`main` carries an unpinned `scan-worker` build entry today.**
+   `plugins/copilot/test/e2e/scan-worker-bundle.e2e.test.ts` sits in the 16-path manifest but
+   is not a capture-hook test. `main` already emits `scan-worker` from
+   `plugins/copilot/tsup.config.ts` and nothing on `main` pins it — a live CLAUDE.md §5
+   property with no guard, independent of the hook port. Flagged on #411 so it is not scoped
+   away with the hooks. **Not implemented here**: a new e2e test inside a retirement PR is
+   scope creep.
+
+Two further things this card did not do, each by design: it did not port any of the member's
+16 files (that is issue #411 / card `cd_mufnz8q0q0` — none of them cherry-picks, and a partial
+port that compiles is worse than none because the gates are per-package), and it did not touch
+`.devengers/cd_mu5m4ugj6vs-…integrate.md`, which is another card's record.
 
 ## The pre-push lint gate did not run
 

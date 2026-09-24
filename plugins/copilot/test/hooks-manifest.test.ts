@@ -80,7 +80,24 @@ describe('hooks.json', () => {
     expect(ENTRIES.map(({ event }) => event).filter((event) => pascal.has(event))).toEqual([]);
     // …and the camelCase half is really there, or the line above passes on an
     // empty manifest and says nothing at all.
-    expect(Object.keys(MANIFEST.hooks ?? {})).toEqual(['preToolUse']);
+    //
+    // EXACT, and deliberately not "no more than one entry per event": the
+    // double-casing defect adds a key rather than removing one, so a floor
+    // would let every one of them back in.
+    expect(Object.keys(MANIFEST.hooks ?? {})).toEqual(['sessionStart', 'preToolUse']);
+  });
+
+  it('resolves every path against ${PLUGIN_ROOT}', () => {
+    // The install convention, and nothing else in this file would catch a
+    // command that used another one: the script and manifest assertions below
+    // match only the `scripts/<name>.js` and `plugin.json` TAILS, so a command
+    // anchored at `${AKA_COPILOT_ROOT:-$HOME/…}` passes every one of them and
+    // installs wrong — a hook that never runs, reported by nothing.
+    for (const { event, entry } of ENTRIES) {
+      const command = String(entry.command);
+      expect(command, event).toContain('"${PLUGIN_ROOT}/scripts/');
+      expect(command, event).toContain('"${PLUGIN_ROOT}/plugin.json"');
+    }
   });
 
   it('names a script that is a build entry AND was emitted', () => {

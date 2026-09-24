@@ -271,13 +271,13 @@ guarantee.
 - [x] 2. Widen `PluginConfig['provider']` and `loadConfig`'s `resolveProviderFn` type in `packages/plugin-sdk/src/config.ts` to include `ResolvedCopilotProvider`; export the trio from `src/index.ts`.
 - [x] 3. Add `packages/plugin-sdk/test/provider-copilot.test.ts`, including a case asserting the module source contains no `process.env`.
 - [x] 4. Run `pnpm --filter @akasecurity/plugin-sdk test typecheck lint` and `pnpm lint` at the root; confirm no new §3 row is demanded by `effective-config.test.js` or `inline-disables.test.js`.
-- [ ] 5. Add `plugins/copilot/src/hooks/session-start-payload.ts`, rewritten against main's dialect-first argument order.
-- [ ] 6. Add `plugins/copilot/test/hooks/session-start-payload.test.ts`, driven from the existing `cli/sessionStart.json` and `vscode-provisional/SessionStart.json` fixtures plus a `null` and a wrong-casing case.
-- [ ] 7. Add `plugins/copilot/src/{sync,history-sync,content-retention}.ts`, copied from their `plugins/codex/src/` counterparts.
-- [ ] 8. Add `plugins/copilot/src/hooks/session-start.ts` — dialect-resolved facts, `loadConfig(undefined, resolveCopilotProvider)`, `handleSessionStart`, stale notice through `writeNotice`, `await runHookFailOpen(main)` with no fail-open payload.
-- [ ] 9. Add the four `tsup.config.ts` entries for slice B (`session-start`, `sync`, `history-sync`, `content-retention`) and register `sessionStart` in `hooks.json` with the manifest path at argv[3].
-- [ ] 10. Add `plugins/copilot/test/hooks/session-start-order.test.ts` — a real temp store; assert the recorded 20 ms prompt-before-session ordering, that a capture preceding the root still carries `root_session_id`, and that three `handleSessionStart` calls leave exactly one session row.
-- [ ] 11. Update `test/hooks-manifest.test.ts`'s exact key list to `['preToolUse','sessionStart']`; run `pnpm --filter @akasecurity/ai-tc-copilot test` and confirm the build-driven manifest cases pass against the real emitted scripts.
+- [x] 5. Add `plugins/copilot/src/hooks/session-start-payload.ts`, rewritten against main's dialect-first argument order.
+- [x] 6. Add `plugins/copilot/test/hooks/session-start-payload.test.ts`, driven from the existing `cli/sessionStart.json` and `vscode-provisional/SessionStart.json` fixtures plus a `null` and a wrong-casing case.
+- [x] 7. Add `plugins/copilot/src/{sync,history-sync,content-retention}.ts`, copied from their `plugins/codex/src/` counterparts.
+- [x] 8. Add `plugins/copilot/src/hooks/session-start.ts` — dialect-resolved facts, `loadConfig(undefined, resolveCopilotProvider)`, `handleSessionStart`, stale notice through `writeNotice`, `await runHookFailOpen(main)` with no fail-open payload.
+- [x] 9. Add the four `tsup.config.ts` entries for slice B (`session-start`, `sync`, `history-sync`, `content-retention`) and register `sessionStart` in `hooks.json` with the manifest path at argv[3].
+- [x] 10. Add `plugins/copilot/test/hooks/session-start-order.test.ts` — a real temp store; assert the recorded 20 ms prompt-before-session ordering, that a capture preceding the root still carries `root_session_id`, and that three `handleSessionStart` calls leave exactly one session row.
+- [x] 11. Update `test/hooks-manifest.test.ts`'s exact key list to `['preToolUse','sessionStart']`; run `pnpm --filter @akasecurity/ai-tc-copilot test` and confirm the build-driven manifest cases pass against the real emitted scripts.
 - [ ] 12. Copy `plugins/codex/test/helpers/no-echo.ts` **and** `no-echo.test.ts` into `plugins/copilot/test/helpers/`, adapting the masked-preview control to call `maskMatch` rather than a literal.
 - [ ] 13. Add `plugins/copilot/src/hooks/user-prompt-payload.ts` with a two-channel `promptDecision` — `writeNotice` text on `cli`, `systemMessage` on `vscode`, `null` output on both when there is nothing to say.
 - [ ] 14. Add `plugins/copilot/test/hooks/user-prompt-payload.test.ts`, including the discriminating case that `userPromptTransformed` re-carries `prompt` verbatim, and `expectNoEchoOf` on every message built from a finding.

@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "sessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/scripts/session-start.js\" sessionStart \"${PLUGIN_ROOT}/plugin.json\"",
+            "timeoutSec": 30
+          }
+        ]
+      }
+    ],
     "preToolUse": [
       {
         "hooks": [

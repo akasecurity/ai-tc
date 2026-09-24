@@ -49,6 +49,16 @@ export default defineConfig({
     // `hooks.json` names each emitted script by the key it is registered under,
     // and `test/hooks-manifest.test.ts` holds the two to each other.
     'pre-tool-use': 'src/hooks/pre-tool-use.ts',
+    'session-start': 'src/hooks/session-start.ts',
+    // The three detached children `handleSessionStart` spawns, resolved as
+    // SIBLINGS of the running script rather than by package name — so they are
+    // entries here or the spawn names a file that does not exist. Two are inert
+    // until the machine attaches; `content-retention` is gated on
+    // `bodyRetention.enabled` alone, so it is reachable on a standalone machine
+    // and ships with the hook rather than after it.
+    sync: 'src/sync.ts',
+    'history-sync': 'src/history-sync.ts',
+    'content-retention': 'src/content-retention.ts',
     // The isolated scan's worker thread. No hook names it — plugin-sdk starts it
     // by path from whichever hook script is running, so the emitted script has to
     // land in this same directory. See src/scan-worker.ts.

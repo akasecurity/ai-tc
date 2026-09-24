@@ -118,11 +118,13 @@ export const COVERAGE_FLOORS: Readonly<Record<string, number>> = Object.freeze({
   '@akasecurity/ai-tc-antigravity': 59, //          60.96
   // Windows reports LOWEST here and the floor belongs to it: three symlink
   // cases in store-health.test.ts cannot run unprivileged there, costing 8
-  // covered lines. macOS reads 86.68 (306/353), the Windows executed set 84.41
-  // (298/353) — the latter measured by forcing those three to skip, a method
-  // whose earlier reading matched the real Windows leg's covered-line count
-  // exactly (208/353). Re-measure as the adapter grows — K5.
-  '@akasecurity/ai-tc-copilot': 83, //              84.41 (Windows), 86.68 (macOS)
+  // covered lines. Re-taken after the sessionStart / userPromptSubmitted /
+  // postToolUse capture hooks landed, which is exactly the growth the previous
+  // note asked to re-measure on: those four entries and the three detached
+  // children run as CHILD PROCESSES in the e2e suite, so the parent's v8
+  // coverage counts none of their lines and the denominator grew by more than
+  // the covered set did.
+  '@akasecurity/ai-tc-copilot': 79, //              80.00 (Windows), 82.10 (Linux)
   '@akasecurity/ai-tc-codex': 58, //                59.78
   '@akasecurity/plugin-browser-extension': 81, //   82.44
   '@akasecurity/cli': 51, //                        52.66

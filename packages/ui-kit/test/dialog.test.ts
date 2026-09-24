@@ -21,6 +21,16 @@ import { describe, expect, it } from 'vitest';
 // `flex` + `justify-end` PAIRING is pinned separately because `justify-end`
 // alone does nothing without a flex container, and a sweep that dropped
 // `flex` would leave the other reading as intact.
+//
+// The row check refuses `flex-col` AT ANY BREAKPOINT, and the unanchored
+// `\b` is what makes it — `sm:flex-col` matches, because `\b` sits after the
+// `:`. That is the intended reach rather than a stray match. `justify-end` is
+// inherited from the default, and on a column it aligns along the vertical
+// main axis: a footer that becomes a column at ANY width has that default
+// meaning "bottom" there, silently, while the class string still reads as a
+// right-aligned row. An anchored token (`/(^|\s)flex-col(?=\s|$)/`) would pin
+// only the BASE utility set and let `flex sm:flex-col` through, which is the
+// one shape most likely to be written by accident.
 
 const SOURCE = readFileSync(fileURLToPath(new URL('../src/dialog.tsx', import.meta.url)), 'utf8');
 
@@ -32,9 +42,10 @@ function footerClasses(): string {
 }
 
 describe('DialogFooter default alignment', () => {
-  it('lays its actions out in a row', () => {
+  it('lays its actions out in a row at every breakpoint', () => {
     // Both halves, or the assertion passes on a footer that is one or the other.
     expect(footerClasses()).toMatch(/\bflex\b/);
+    // Unanchored on purpose: this rejects `sm:flex-col` too. See the header.
     expect(footerClasses()).not.toMatch(/\bflex-col\b/);
   });
 

@@ -11,6 +11,17 @@
         ]
       }
     ],
+    "userPromptSubmitted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/scripts/user-prompt-submit.js\" userPromptSubmitted \"${PLUGIN_ROOT}/plugin.json\"",
+            "timeoutSec": 30
+          }
+        ]
+      }
+    ],
     "preToolUse": [
       {
         "hooks": [

@@ -149,3 +149,63 @@ floor is **79**, one below the platform that reads lowest.
 - `plugins/copilot` full suite: **20 files, 287 passed**.
 - `plugins/copilot` `tsc --noEmit` and `eslint src test *.config.*`: clean.
 - `packages/eslint-config` `coverage-config.test.js`: 17 passed.
+
+---
+
+## Slice C — UserPromptSubmit (tasks 12–15)
+
+### Task 12 — `test/helpers/no-echo.{ts,test.ts}`
+
+Copied from `plugins/codex/test/helpers/` — **both** files, control assertions included.
+Two adaptations: the peer list now names all eight copies (it was three files out of date),
+and limit 3's wording was rewritten because it named a codex-only suite. The masked-preview
+control already calls `maskMatch` rather than a literal, which is what task 12 asked for.
+
+Added one case beyond the codex copy: `maskMatch`'s **email** branch reveals the whole
+domain, so it fills the window on purpose and `expectNoEchoOf` refuses it. That boundary is
+written down here rather than re-derived, so a suite that binds the helper to a pii preview
+reads as out of scope rather than as a leak it found. 11 passed.
+
+### Task 13 — `src/hooks/user-prompt-payload.ts`
+
+`PromptEvent`, `PromptCapture`, `readPromptCapture`, `promptPersist`, and a **two-channel**
+`promptDecision(event, dialect, result) → { output, notice? }`. Three rewrites against main:
+
+- The member branch's `promptEmitPayload` returned a bare `SystemMessageOutput` for BOTH
+  dialects. On main `systemMessage` is not an output field on the CLI, so that object is a
+  payload the host drops — the user is told nothing while the test, which asserts on the
+  returned object, stays green. The CLI half now comes back as `notice` for stderr.
+- `HookEventName` → main's `HookEvent`.
+- `uniqueRuleIds` takes a mutable array on main, so the readonly findings are spread.
+
+`userPromptTransformed` keeps its row in the field table and is deliberately absent from
+`hooks.json`: the set says what the script can HANDLE, the manifest says what it is SPAWNED
+for, so wiring it later is a manifest-only change.
+
+### Task 14 — `test/hooks/user-prompt-payload.test.ts`
+
+18 cases. The discriminating one asserts from the FIXTURES that
+`userPromptTransformed.prompt` equals `userPromptSubmitted.prompt` verbatim and that the
+transformed text is a strict superset — which is what makes the double-count argument
+checkable rather than quoted. The two-channel case asserts the CLI notice and the VS Code
+`systemMessage` are the same string on different channels, so a decision returning one
+object for both dialects fails. Every message built from a finding is run through
+`expectNoEchoOf` with a positive control (`toContain('generic.secret')`) on the same bytes,
+and the block/redact cases refuse the words `blocked`, `redacted`, `never reached` and
+`withheld` — the enforcement claims this surface cannot make.
+
+Fixture is high-entropy and deliberately **not** credential-shaped (public repository).
+
+### Task 15 — `src/hooks/user-prompt-submit.ts`
+
+Entry. `kind: 'prompt'`, `rewritable: false`, `persist` from `promptPersist`, onboarding
+nudge on the clean path routed per dialect, `await runHookFailOpen(main)` with no fail-open
+payload. `baseMetadata(dialect, input)` and `readSessionId(dialect, input)` — the member
+branch called both with the arguments flipped. Registered `userPromptSubmitted` only.
+
+### Slice C gates
+
+- `plugins/copilot` full suite: **22 files, 316 passed**.
+- `tsc --noEmit` + `eslint src test`: clean.
+- Coverage floor moved 79 → **74** (330/429 = 76.92 here; Windows ≈ 75.06). Finalized at
+  task 25.

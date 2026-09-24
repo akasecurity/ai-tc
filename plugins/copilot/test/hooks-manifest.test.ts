@@ -84,7 +84,11 @@ describe('hooks.json', () => {
     // EXACT, and deliberately not "no more than one entry per event": the
     // double-casing defect adds a key rather than removing one, so a floor
     // would let every one of them back in.
-    expect(Object.keys(MANIFEST.hooks ?? {})).toEqual(['sessionStart', 'preToolUse']);
+    expect(Object.keys(MANIFEST.hooks ?? {})).toEqual([
+      'sessionStart',
+      'userPromptSubmitted',
+      'preToolUse',
+    ]);
   });
 
   it('resolves every path against ${PLUGIN_ROOT}', () => {

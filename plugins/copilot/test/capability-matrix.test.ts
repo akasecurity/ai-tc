@@ -95,14 +95,46 @@ describe('the capability matrix and the SKILL.md that renders it', () => {
     expect(surfaceIsVerified('cli')).toBe(true);
   });
 
-  it('says in prose that only the pre-tool-use event is wired, and the matrix agrees', () => {
+  it('says in prose that only the pre-tool-use event ENFORCES, and the matrix agrees', () => {
     // A cross-check rather than a restatement: the prose claim is falsifiable
-    // against the data, so wiring a second event without touching this section
-    // fails here.
-    expect(SKILL).toMatch(/Only the pre-tool-use event is wired/u);
+    // against the data, so giving a second event a channel without touching
+    // this section fails here.
+    //
+    // The sentence used to read "is wired", which was true while `preToolUse`
+    // was the only registration and became false the moment the capture hooks
+    // landed — the exact decay this file exists to catch. WIRED and ENFORCING
+    // are now different questions, and the matrix can only answer the second:
+    // `channel` says what can be done about a finding, so a captured-only event
+    // is `none` exactly like an unwired one. Registration is what
+    // `hooks-manifest.test.ts` holds.
+    expect(SKILL).toMatch(/Only the pre-tool-use event ENFORCES/u);
     const acting = CAPABILITY_MATRIX.filter((row) => row.channel !== 'none');
     expect(acting.length).toBeGreaterThan(0);
     expect([...new Set(acting.map((row) => row.event.toLowerCase()))]).toEqual(['pretooluse']);
+  });
+
+  it('says in prose that prompts and tool results are captured but cannot be withheld', () => {
+    // The other half of the sentence above, and the one a reader acts on: an
+    // event with `channel: 'none'` is either unwired or capture-only, and those
+    // mean opposite things about whether a secret shows up as a finding. The
+    // matrix cannot tell them apart on the channel alone, so the NOTE is what
+    // carries it and the note is what is checked.
+    expect(SKILL).toMatch(/are\*\* captured, scanned and recorded/u);
+    expect(SKILL).toMatch(/neither can be withheld or masked/u);
+
+    const capturing = CAPABILITY_MATRIX.filter((row) =>
+      /userpromptsubmit|posttooluse/u.test(row.event.toLowerCase()),
+    );
+    // The positive control: without it the loop below runs zero times.
+    expect(capturing.length).toBeGreaterThan(0);
+    for (const row of capturing) {
+      expect(row.channel, `${row.surface}/${row.event}`).toBe('none');
+      expect(row.note, `${row.surface}/${row.event}`).toMatch(/Captured and scanned/u);
+    }
+  });
+
+  it('still says there is no history backfill, which remains unimplemented', () => {
+    expect(SKILL).toMatch(/no history backfill/u);
   });
 
   it('says in prose that command text is never masked in place', () => {

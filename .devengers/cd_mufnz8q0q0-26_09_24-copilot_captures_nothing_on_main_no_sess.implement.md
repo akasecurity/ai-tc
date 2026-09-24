@@ -312,3 +312,57 @@ every message this package writes names itself, so the name's absence is the exa
 it survives a future re-wording.
 
 Gates: **24 files, 409 passed**; `tsc` and `eslint` clean.
+
+---
+
+## Tasks 22–25 — the documentation that describes the wiring
+
+### Task 22 — `src/capabilities.ts`
+
+Two new rows (`cli/sessionStart` and `vscode/SessionStart`, subject `session`, channel
+`none`, verified `true` / `false`), and the four prompt/result notes rewritten from "Not
+wired" to what they now are: captured and scanned, nothing can be stopped or withheld, and
+WHY per host. The CLI's prompt and result rows moved to `verified: true` — a recording backs
+each payload, matching the `permissionRequest` row's precedent, which is also `none` +
+`true`.
+
+The `Channel` doc comment was widened, because `none` now means one of **three** things
+rather than two: unwired, no host channel, or wired-and-capturing-with-nothing-to-enforce.
+The `note` is what tells them apart and the module says so.
+
+### Task 23 — `skills/setup/SKILL.md` + its test
+
+Table re-rendered row for row from the matrix (13 rows). The
+"Only the pre-tool-use event is wired" paragraph became
+"Only the pre-tool-use event **ENFORCES**", which states plainly that four events are wired,
+that prompts and tool results ARE captured and scanned and DO produce findings, that neither
+can be withheld or masked, and that a block/redact on one is recorded and the text goes to
+the model unchanged. The no-history-backfill claim was split into its own paragraph and kept.
+
+`capability-matrix.test.ts`: the prose regex moved, and **two cases were added rather than
+one**. The moved regex can only check that no event but `preToolUse` has a channel — it
+cannot distinguish an unwired event from a capture-only one, because both read `none`. So a
+second case checks the NOTE on every prompt/result row says `Captured and scanned`, with a
+positive control on the row count; a third pins the backfill sentence. The comment records
+why the old wording decayed: WIRED and ENFORCING became different questions the moment the
+capture hooks landed.
+
+### Task 24 — `CLAUDE.md`
+
+The "registers the camelCase event **alone**" sentence became the plural form naming all
+four, with the "spawns the hook twice per call" argument left intact (`hook-output-shapes`
+matches that phrase). Added: that only `preToolUse` enforces, that the other three pass
+`rewritable: false` and why, and that `userPromptTransformed` is handled but deliberately
+unregistered.
+
+### Task 25 — the coverage floor, finalized
+
+Measured **367/498 = 73.69** (411 tests, 24 files). Windows loses the same 8 covered lines
+to three unprivileged symlink skips → 359/498 = **72.09**, and the floor is **71**, one
+below the platform that reads lowest.
+
+The comment now records the whole arithmetic and says the drop from 86.68 is STRUCTURAL: 353
+statement-bearing lines became 498 while the covered set went 306 → 367, because four hook
+entries and three detached children were added and every one of them executes only as a
+child process. It also records that this reading was taken on Linux / Node 22 rather than
+the table's macOS / Node 24, so a CI disagreement is re-taken rather than widened.

@@ -276,15 +276,15 @@ export function DataShareDetailView({
       </div>
 
       <footer className="flex flex-col gap-2 border-t border-border p-3.5">
-        <div className="flex gap-2">
-          <Button variant="outline" className="flex-1">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button variant="outline">
             <PolicyIcon aria-hidden focusable={false} />
             Add policy
           </Button>
           {blocked ? (
             <Button
               variant="outline"
-              className="flex-1 border-ok-fill text-ok-ink hover:bg-ok-fill"
+              className="border-ok-fill text-ok-ink hover:bg-ok-fill"
               disabled={isSettingDecision}
               onClick={() => {
                 onSetDecision('allow');
@@ -297,7 +297,6 @@ export function DataShareDetailView({
             <Button
               variant="solid"
               tone="danger"
-              className="flex-1"
               disabled={isSettingDecision}
               onClick={() => {
                 onSetDecision('block');
@@ -313,7 +312,7 @@ export function DataShareDetailView({
             variant="ghost"
             size="sm"
             tone="neutral"
-            className="self-center text-xs text-text-3"
+            className="self-end text-xs text-text-3"
             disabled={isSettingDecision}
             onClick={() => {
               onSetDecision(null);

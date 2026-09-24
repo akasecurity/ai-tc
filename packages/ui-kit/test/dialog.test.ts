@@ -26,7 +26,7 @@ const SOURCE = readFileSync(fileURLToPath(new URL('../src/dialog.tsx', import.me
 
 /** The one class string that styles the footer, found by the anchor that opens it. */
 function footerClasses(): string {
-  const line = SOURCE.split('\n').find((l) => l.includes("border-t border-border px-5 py-3.5"));
+  const line = SOURCE.split('\n').find((l) => l.includes('border-t border-border px-5 py-3.5'));
   if (line === undefined) throw new Error('dialog.tsx: no line matching the footer class string');
   return line;
 }

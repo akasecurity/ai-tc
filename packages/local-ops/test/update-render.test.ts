@@ -325,6 +325,9 @@ describe('nothingToApplyLine', () => {
   it.each([
     ['the installed version is unknown', { installed: null }],
     ['the organization’s pin is unknown', { latest: null }],
+    // Present but not a version: the comparator answers `false` for what it
+    // cannot parse, which reads as "not behind", never as "current".
+    ['the installed version is not a version', { installed: 'garbage', latest: '0.9.14' }],
   ])('does not call a managed row current when %s', (_label, over) => {
     // `pending: false` means "not known to be behind", not "current". The row
     // itself reads bare `managed` here, so the closing line must not claim more

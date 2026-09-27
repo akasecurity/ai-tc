@@ -5,6 +5,8 @@ import {
   RELEASE_CHANNEL,
 } from '@akasecurity/schema';
 
+import { isSemver } from './semver.ts';
+
 /**
  * The lines explaining a `latest` that came from a marketplace pin.
  *
@@ -78,14 +80,16 @@ function managedNotes(report: UpdateReport): string[] {
  * speaks about it.
  *
  * Three answers, not two: `pending: false` means "not known to be behind",
- * which is only "current" when both ends are known. Either end unknown —
- * including a managed record that names no version — leaves no comparison to
+ * which is only "current" when both ends are known — present AND orderable.
+ * Either end missing, or present but not a version the comparator can order
+ * (it answers `false` for what it cannot parse), leaves no comparison to
  * state. The status cell and the closing line both read this, so they cannot
  * disagree about the same row.
  */
 function managedState(s: ComponentStatus): 'unknown' | 'pending' | 'current' | undefined {
   if (!s.managedInstall) return undefined;
   if (s.installed === null || s.latest === null) return 'unknown';
+  if (!isSemver(s.installed) || !isSemver(s.latest)) return 'unknown';
   return s.managedInstall.pending ? 'pending' : 'current';
 }
 

@@ -154,9 +154,6 @@ export interface ManagedPluginInstall {
   pending: boolean;
 }
 
-// How a managed plugin install moves, in the one wording every surface uses:
-// the CLI's report and refusals, the apply path's refusal, and the dashboard.
-// Spelled once so the surfaces cannot drift into describing different routes.
 /**
  * The two fragments every surface puts around `MANAGED_PLUGIN_ADVICE` for one
  * managed row: the ref the organization's marketplace is at, and what is on
@@ -172,6 +169,9 @@ export function managedPluginNoteParts(s: ComponentStatus): { ref: string; lead:
   };
 }
 
+// How a managed plugin install moves, in the one wording every surface uses:
+// the CLI's report and refusals, the apply path's refusal, and the dashboard.
+// Spelled once so the surfaces cannot drift into describing different routes.
 export const MANAGED_PLUGIN_ADVICE =
   "Your organization's managed settings install it and pin its version. Updates arrive " +
   "through Claude Code's own plugin autoupdate when a new session starts, or /plugin → " +

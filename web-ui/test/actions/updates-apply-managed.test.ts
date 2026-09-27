@@ -3,6 +3,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { managedUpdateRefusal } from '@akasecurity/local-ops';
+import { MANAGED_PLUGIN_ADVICE } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { tempHomes } from '../helpers/temp-home.ts';
@@ -82,6 +83,8 @@ describe('applyUpdate — an install an organization manages', () => {
 
     expect(result.ok).toBe(false);
     expect(result.output).toContain("the `claude` CLI isn't on your PATH");
-    expect(result.output).not.toContain('managed by your organization');
+    // The shared advice rather than a literal phrase, so a reword of the
+    // managed copy cannot leave this absence passing vacuously.
+    expect(result.output).not.toContain(MANAGED_PLUGIN_ADVICE);
   });
 });

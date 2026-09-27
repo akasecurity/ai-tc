@@ -73,16 +73,34 @@ function managedNotes(report: UpdateReport): string[] {
   return notes;
 }
 
+/**
+ * What a managed row says about the machine, read once for every line that
+ * speaks about it.
+ *
+ * Three answers, not two: `pending: false` means "not known to be behind",
+ * which is only "current" when both ends are known. Either end unknown —
+ * including a managed record that names no version — leaves no comparison to
+ * state. The status cell and the closing line both read this, so they cannot
+ * disagree about the same row.
+ */
+function managedState(s: ComponentStatus): 'unknown' | 'pending' | 'current' | undefined {
+  if (!s.managedInstall) return undefined;
+  if (s.installed === null || s.latest === null) return 'unknown';
+  return s.managedInstall.pending ? 'pending' : 'current';
+}
+
+const MANAGED_STATUS = {
+  unknown: 'managed',
+  pending: 'managed — update pending',
+  current: 'managed — up to date',
+} as const;
+
 function statusLabel(s: ComponentStatus): string {
   // First, because a managed row is never "update available" and its target
   // can be unknown without the row being unknown: the version it runs is the
   // organization's call, and saying so is the whole answer.
-  if (s.managedInstall) {
-    // Either end unknown means there is no comparison to state — including a
-    // managed record that names no version, which must not read as current.
-    if (s.installed === null || s.latest === null) return 'managed';
-    return s.managedInstall.pending ? 'managed — update pending' : 'managed — up to date';
-  }
+  const managed = managedState(s);
+  if (managed !== undefined) return MANAGED_STATUS[managed];
   // Not-installed plugins are reported under availablePlugins, never here — so a null
   // installed in a status row means "couldn't determine version" (the CLI's own
   // package.json walk-up missed), which reads as unknown, not "not installed".
@@ -169,14 +187,20 @@ export function outdated(report: UpdateReport): ComponentStatus[] {
  * The closing line when `aka update` has nothing to apply.
  *
  * "Everything is up to date" is false on a machine whose organization has an
- * update on the way: the managed row is behind, it is just not this command's
- * to apply. Shared by `aka check-updates` and `aka update` so both say the
- * same thing about the same report.
+ * update on the way, and unfounded on one where a managed row's version or
+ * target is unknown: either way the row is not this command's to apply, and
+ * its own status does not say "up to date". The sentence therefore claims no
+ * pending update, only who delivers one. Shared by `aka check-updates` and
+ * `aka update` so both say the same thing about the same report.
  */
 export function nothingToApplyLine(report: UpdateReport): string {
-  return report.statuses.some((s) => s.managedInstall?.pending === true)
-    ? "Nothing for `aka update` to apply — your organization's pending update arrives " +
-        'through Claude Code itself.'
+  const unsettled = report.statuses.some((s) => {
+    const managed = managedState(s);
+    return managed !== undefined && managed !== 'current';
+  });
+  return unsettled
+    ? 'Nothing for `aka update` to apply — updates to the plugin your organization manages ' +
+        'arrive through Claude Code itself.'
     : 'Everything is up to date.';
 }
 

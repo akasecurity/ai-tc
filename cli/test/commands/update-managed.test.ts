@@ -315,6 +315,8 @@ describe('aka update --channel — a managed plugin target', () => {
 
     expect(code).toBe(1);
     expect(err).toContain('marketplace add');
-    expect(err).not.toContain('managed by your organization');
+    // The shared advice rather than a literal phrase, so a reword of the
+    // managed copy cannot leave this absence passing vacuously.
+    expect(err).not.toContain(MANAGED_PLUGIN_ADVICE);
   });
 });

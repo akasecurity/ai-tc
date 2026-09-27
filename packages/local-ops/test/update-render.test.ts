@@ -322,6 +322,23 @@ describe('nothingToApplyLine', () => {
     expect(line).toContain('Nothing for `aka update` to apply');
     expect(line).toContain('Claude Code');
   });
+
+  it.each([
+    ['the installed version is unknown', { installed: null }],
+    ['the organization’s pin is unknown', { latest: null }],
+  ])('does not call a managed row current when %s', (_label, over) => {
+    // `pending: false` means "not known to be behind", not "current". The row
+    // itself reads bare `managed` here, so the closing line must not claim more
+    // than the row does.
+    const line = nothingToApplyLine(withRows({ managedInstall: { pending: false }, ...over }));
+
+    expect(line).not.toContain('up to date');
+    expect(line).toContain('Nothing for `aka update` to apply');
+    // The row's own status says the same thing, from the same reading.
+    expect(renderReport(withRows({ managedInstall: { pending: false }, ...over }))).toMatch(
+      /managed$/m,
+    );
+  });
 });
 
 describe('managedUpdateRefusal', () => {

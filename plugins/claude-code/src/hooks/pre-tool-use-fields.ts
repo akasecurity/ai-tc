@@ -21,6 +21,16 @@ import { stringAtPath } from './paths.ts';
 export interface ScannableField {
   path: PathSegment[];
   executable: boolean;
+  /**
+   * Present only for a synthetic scan unit whose text was computed during
+   * the MCP walk rather than addressable at `path` in the tool input — the
+   * joined-keys chunks `mcpFields` appends (see below). A caller resolves a
+   * field's text with `spec.text ?? stringAtPath(toolInput, spec.path)`, and
+   * must never attempt to rewrite one of these back through `path`: there is
+   * no such position in the real payload, and `executable: true` (below)
+   * already keeps a redact on one from ever reaching a rewrite attempt.
+   */
+  text?: string;
 }
 
 // Tools whose scannable text is durable content they author, recorded as
@@ -81,8 +91,21 @@ const MCP_MAX_LEAF_CHARS = 1_000_000;
 const MCP_MAX_TOTAL_CHARS = 5_000_000;
 const MCP_MAX_LEAF_COUNT = 2_000;
 
+// Separates keys inside a joined-keys chunk (see mcpKeyChunks): 'ab' + 'cd'
+// packed raw would read 'abcd', a string neither key is; joined with this
+// separator it reads 'ab\ncd', so a rule matching only the contiguous form
+// cannot fire across a key boundary that was never there in the payload.
+const MCP_KEY_JOIN = '\n';
+
+// The path segment every joined-keys chunk is addressed under. Never
+// dereferenced — see ScannableField.text — so it only has to be stable and
+// legible in a debugger, never resolvable against the real tool input.
+const MCP_KEYS_PATH_SEGMENT = '<mcp-object-keys>';
+
 /**
- * Every string leaf of an MCP tool's arguments, bounded by depth and size.
+ * Every string leaf of an MCP tool's arguments, bounded by depth and size —
+ * PLUS every string object key encountered along the way, packed into a few
+ * combined scan units (see mcpKeyChunks below).
  *
  * All of them are marked executable, i.e. a redact decision denies instead of
  * rewriting. An MCP tool's schema is defined by whatever server is on the other
@@ -91,10 +114,17 @@ const MCP_MAX_LEAF_COUNT = 2_000;
  * wrong silently changes semantics — the exact failure the executable rule
  * exists to prevent. Deny is visible and at least as strong as the policy's
  * redact, and the runtime has already ledgered the values, so the
- * `aka exception approve` escape hatch stays available.
+ * `aka exception approve` escape hatch stays available. A key is no
+ * different: there is no schema telling us a key can never itself be the
+ * secret (a bearer token used as a map key, a credential as an idempotency
+ * key), and unlike a value there is no way to rewrite a key in place at all —
+ * so a resolved redact on the joined-keys chunk degrades to the workspace's
+ * `redactFallback` exactly like any other unrewritable field, rather than
+ * silently allowing the call through.
  */
 function mcpFields(toolInput: Record<string, unknown>): ScannableField[] {
   const fields: ScannableField[] = [];
+  const keys: string[] = [];
   let remaining = MCP_MAX_TOTAL_CHARS;
 
   const walk = (node: unknown, path: PathSegment[], depth: number): void => {
@@ -111,12 +141,69 @@ function mcpFields(toolInput: Record<string, unknown>): ScannableField[] {
       return;
     }
     if (typeof node === 'object' && node !== null) {
-      for (const [key, value] of Object.entries(node)) walk(value, [...path, key], depth + 1);
+      for (const [key, value] of Object.entries(node)) {
+        // Charged against the SAME shared budget a value leaf draws from,
+        // and dropped under the same rule an over-long value leaf is: a key
+        // this large costs its own capture even alone, so scanning it is no
+        // cheaper than scanning an equivalently sized value would be.
+        // Symbols and array indices never reach here — only a real object's
+        // own string keys do, at every depth the walk still visits, which is
+        // exactly the set of positions whose VALUES are also still visited.
+        if (remaining > 0 && key.length > 0 && key.length <= MCP_MAX_LEAF_CHARS) {
+          remaining -= key.length;
+          if (remaining >= 0) keys.push(key);
+        }
+        walk(value, [...path, key], depth + 1);
+      }
     }
   };
 
   walk(toolInput, [], 0);
+  fields.push(...mcpKeyChunks(keys));
   return fields;
+}
+
+/**
+ * Bin-packs collected object keys into as few combined scan units as fit
+ * under the per-unit size cap, each addressed by a synthetic path (never
+ * dereferenced — see ScannableField.text).
+ *
+ * NOT one unit per key: that would roughly double the unit count for a
+ * typical payload and can trip MCP_MAX_LEAF_COUNT on its own, a bound whose
+ * whole point is capping the number of capture() calls a call this hook sees
+ * pays for. A few chunks cost only a few more.
+ *
+ * Each key is packed WHOLE into its chunk — never split at a fixed offset —
+ * because a fixed cut lets an attacker pad a key so the split falls in the
+ * middle of the next one, letting a secret key straddle a chunk boundary
+ * unscanned on either side. Bin-packing instead starts a fresh chunk the
+ * moment a key would no longer fit.
+ */
+function mcpKeyChunks(keys: readonly string[]): ScannableField[] {
+  const chunks: ScannableField[] = [];
+  let current: string[] = [];
+  let currentLen = 0;
+
+  const flush = (): void => {
+    if (current.length === 0) return;
+    chunks.push({
+      path: [MCP_KEYS_PATH_SEGMENT, chunks.length],
+      executable: true,
+      text: current.join(MCP_KEY_JOIN),
+    });
+    current = [];
+    currentLen = 0;
+  };
+
+  for (const key of keys) {
+    const joinChar = current.length > 0 ? MCP_KEY_JOIN.length : 0;
+    if (current.length > 0 && currentLen + joinChar + key.length > MCP_MAX_LEAF_CHARS) flush();
+    current.push(key);
+    currentLen += key.length + (current.length > 1 ? MCP_KEY_JOIN.length : 0);
+  }
+  flush();
+
+  return chunks;
 }
 
 /** One field per edit's replacement text. `old_string` is deliberately absent:
@@ -166,9 +253,12 @@ export function scannableInputFields(
         ((Object.hasOwn(STATIC_FIELDS, toolName) ? STATIC_FIELDS[toolName] : undefined) ?? []);
 
   // Empty and absent leaves are dropped here rather than at each call site, so
-  // every returned path is known to resolve to text worth scanning.
+  // every returned field is known to resolve to text worth scanning. A
+  // joined-keys chunk carries its own precomputed `text` (mcpKeyChunks never
+  // emits an empty one) rather than one resolvable via stringAtPath — see
+  // ScannableField.text.
   return candidates.filter((field) => {
-    const text = stringAtPath(toolInput, field.path);
+    const text = field.text ?? stringAtPath(toolInput, field.path);
     return text !== undefined && text !== '';
   });
 }

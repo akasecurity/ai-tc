@@ -103,6 +103,32 @@ describe('scannableInputFields — NotebookEdit and Task', () => {
   });
 });
 
+// A field with `text` set is one of the synthetic joined-keys chunks (see
+// mcpKeyChunks in pre-tool-use-fields.ts): its text was computed during the
+// walk rather than addressable at `path` in the tool input. Every other
+// field is a real value leaf, resolved by the caller via stringAtPath.
+function keyChunks(fields: readonly { path: unknown; executable: boolean; text?: string }[]) {
+  return fields.filter((f) => f.text !== undefined);
+}
+function valueLeaves(fields: readonly { path: unknown; executable: boolean; text?: string }[]) {
+  return fields.filter((f) => f.text === undefined);
+}
+
+// Asserts `fields` carries EXACTLY ONE joined-keys chunk, executable, with
+// this exact text — decomposed rather than one `toEqual` against a literal
+// carrying `expect.anything()` for `path`, which is deliberately synthetic
+// and untyped (see ScannableField.text) and trips no-unsafe-assignment when
+// assigned into a typed object literal.
+function expectOneKeyChunk(
+  fields: readonly { path: unknown; executable: boolean; text?: string }[],
+  text: string,
+): void {
+  const chunks = keyChunks(fields);
+  expect(chunks).toHaveLength(1);
+  expect(chunks[0]?.executable).toBe(true);
+  expect(chunks[0]?.text).toBe(text);
+}
+
 describe('scannableInputFields — MCP tools', () => {
   it('finds a secret-bearing leaf nested inside an arbitrary payload', () => {
     const fields = scannableInputFields('mcp__slack__post', {
@@ -126,10 +152,19 @@ describe('scannableInputFields — MCP tools', () => {
     expect(fields.every((f) => f.executable)).toBe(true);
   });
 
-  it('ignores non-string leaves and empty strings', () => {
-    expect(
-      scannableInputFields('mcp__x__y', { n: 1, b: true, nil: null, empty: '', s: 'scan me' }),
-    ).toEqual([{ path: ['s'], executable: true }]);
+  it('ignores non-string leaves and empty strings, but still scans the keys', () => {
+    const fields = scannableInputFields('mcp__x__y', {
+      n: 1,
+      b: true,
+      nil: null,
+      empty: '',
+      s: 'scan me',
+    });
+    expect(valueLeaves(fields)).toEqual([{ path: ['s'], executable: true }]);
+    // Every own key of the object, joined in encounter order — including
+    // `empty`'s, which has no scannable VALUE but is still a key someone
+    // could smuggle a secret into.
+    expectOneKeyChunk(fields, 'n\nb\nnil\nempty\ns');
   });
 
   it('stops descending past the depth bound instead of hanging on deep input', () => {
@@ -138,12 +173,18 @@ describe('scannableInputFields — MCP tools', () => {
     // strictly worse than scanning what fits.
     let deep: Record<string, unknown> = { leaf: 'too deep to reach' };
     for (let i = 0; i < 12; i++) deep = { nest: deep };
-    expect(scannableInputFields('mcp__x__y', deep)).toEqual([]);
+    // The leaf itself is unreachable, but the shallow `nest` keys up to the
+    // depth bound were still visited on the way down, and their key text is
+    // collected exactly like it would be for any other object visited within
+    // bounds — a key beyond the bound is not, matching the value leaves.
+    const deepFields = scannableInputFields('mcp__x__y', deep);
+    expect(valueLeaves(deepFields)).toEqual([]);
+    expectOneKeyChunk(deepFields, 'nest\nnest\nnest\nnest\nnest\nnest\nnest');
 
     const shallow = { a: { b: { c: 'reachable' } } };
-    expect(scannableInputFields('mcp__x__y', shallow)).toEqual([
-      { path: ['a', 'b', 'c'], executable: true },
-    ]);
+    const shallowFields = scannableInputFields('mcp__x__y', shallow);
+    expect(valueLeaves(shallowFields)).toEqual([{ path: ['a', 'b', 'c'], executable: true }]);
+    expectOneKeyChunk(shallowFields, 'a\nb\nc');
   });
 
   it('skips a leaf past the per-leaf size cap but keeps scanning its siblings', () => {
@@ -151,7 +192,8 @@ describe('scannableInputFields — MCP tools', () => {
       huge: 'x'.repeat(1_000_001),
       small: 'scan me',
     });
-    expect(fields).toEqual([{ path: ['small'], executable: true }]);
+    expect(valueLeaves(fields)).toEqual([{ path: ['small'], executable: true }]);
+    expectOneKeyChunk(fields, 'huge\nsmall');
   });
 
   it('bounds the leaf COUNT, not just total size', () => {
@@ -165,7 +207,12 @@ describe('scannableInputFields — MCP tools', () => {
       Array.from({ length: 5_000 }, (_, i) => [`k${String(i)}`, 'x']),
     );
     const fields = scannableInputFields('mcp__x__y', many);
-    expect(fields).toHaveLength(2_000);
+    expect(valueLeaves(fields)).toHaveLength(2_000);
+    // The 5,000 keys total well under MCP_MAX_LEAF_CHARS, so they collapse
+    // into ONE combined unit rather than one per key — the count grows by
+    // the chunk count (here, 1), never by the key count.
+    expect(keyChunks(fields)).toHaveLength(1);
+    expect(fields).toHaveLength(2_001);
   });
 
   it('caps a padded payload rather than letting it exhaust the budget', () => {
@@ -178,8 +225,105 @@ describe('scannableInputFields — MCP tools', () => {
     );
     padded.zzz_secret = 'deploy key here';
     const fields = scannableInputFields('mcp__x__y', padded);
-    expect(fields).toHaveLength(2_000);
+    expect(valueLeaves(fields)).toHaveLength(2_000);
+    expect(keyChunks(fields)).toHaveLength(1);
+    expect(fields).toHaveLength(2_001);
     expect(fields.every((f) => f.executable)).toBe(true);
+  });
+});
+
+describe('scannableInputFields — MCP object keys', () => {
+  it('scans a secret placed as a top-level object key', () => {
+    const fields = scannableInputFields('mcp__x__y', { ghp_secrettoken1234567890: 'x' });
+    const [chunk] = keyChunks(fields);
+    expect(chunk?.text).toContain('ghp_secrettoken1234567890');
+    // Marked executable like every other MCP field: there is no safe way to
+    // rewrite an object's key in place, so a redact on it must degrade to
+    // the same fallback an unrewritable value would — never a silent allow.
+    expect(chunk?.executable).toBe(true);
+  });
+
+  it('scans a secret placed as a key nested inside the payload', () => {
+    const fields = scannableInputFields('mcp__x__y', {
+      wrapper: { inner: { ghp_secrettoken1234567890: 'x' } },
+    });
+    expect(keyChunks(fields)[0]?.text).toContain('ghp_secrettoken1234567890');
+  });
+
+  it('scans a secret placed as a key inside an array of objects', () => {
+    const fields = scannableInputFields('mcp__x__y', {
+      items: [{ note: 'benign' }, { ghp_secrettoken1234567890: 'x' }],
+    });
+    expect(keyChunks(fields)[0]?.text).toContain('ghp_secrettoken1234567890');
+  });
+
+  it('scans a key alongside its sibling value in the same walk', () => {
+    const fields = scannableInputFields('mcp__x__y', {
+      ghp_secrettoken1234567890: 'harmless',
+      other: 'scan me too',
+    });
+    expect(keyChunks(fields)[0]?.text).toContain('ghp_secrettoken1234567890');
+    expect(valueLeaves(fields)).toContainEqual({ path: ['other'], executable: true });
+  });
+
+  it('joins keys with a newline so two keys cannot fuse into one match', () => {
+    // 'ab' + 'cd' concatenated raw would read 'abcd'; joined with the
+    // separator it reads 'ab\ncd' — a rule matching only the contiguous
+    // string cannot fire across the boundary.
+    const fields = scannableInputFields('mcp__x__y', { ab: 1, cd: 1 });
+    expectOneKeyChunk(fields, 'ab\ncd');
+  });
+
+  it('drops a single key over the per-unit size cap, like an over-long value', () => {
+    const fields = scannableInputFields('mcp__x__y', {
+      // Empty value: isolates the key-length drop from also exercising the
+      // (already-covered) over-long VALUE drop on the same entry.
+      ['k'.repeat(1_000_001)]: '',
+      small: 'scan me',
+    });
+    // The over-long key contributes nothing; 'small' — an ordinary key —
+    // still does.
+    expectOneKeyChunk(fields, 'small');
+    expect(valueLeaves(fields)).toEqual([{ path: ['small'], executable: true }]);
+  });
+
+  it('never splits a key across a chunk boundary, even under padding', () => {
+    // A filler key sized to leave just under 31 chars of room in the first
+    // chunk, then a 30-char secret key — joined with its separator that is
+    // 31 chars, one over. A fixed-offset cut would let the filler's exact
+    // length push the secret to straddle the boundary; bin-packing instead
+    // starts a fresh chunk and keeps the secret whole.
+    const filler = 'f'.repeat(1_000_000 - 30);
+    const secretKey = 's'.repeat(30);
+    const fields = scannableInputFields('mcp__x__y', { [filler]: 1, [secretKey]: 1 });
+    const chunks = keyChunks(fields);
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    // The secret key appears WHOLE in exactly one chunk, never split.
+    const withSecret = chunks.filter((c) => c.text?.includes(secretKey));
+    expect(withSecret).toHaveLength(1);
+    expect(withSecret[0]?.text).toBe(secretKey);
+    // No chunk exceeds the per-unit size cap.
+    for (const chunk of chunks) expect(chunk.text?.length).toBeLessThanOrEqual(1_000_000);
+  });
+
+  it('charges key characters against the SAME shared total-size budget as values', () => {
+    // Four value leaves at the per-leaf cap (1,000,000 chars each, plus
+    // their short keys) consume all but 999,992 of the 5,000,000 total
+    // budget. A later key of 999,995 chars — itself well under the per-key
+    // cap — cannot fit in what's left and is dropped, along with its value:
+    // proof keys and values draw from the SAME shared pool, not two
+    // independent ones.
+    const bigLeaves = Object.fromEntries(
+      Array.from({ length: 4 }, (_, i) => [`v${String(i)}`, 'x'.repeat(1_000_000)]),
+    );
+    const fields = scannableInputFields('mcp__x__y', {
+      ...bigLeaves,
+      [`y`.repeat(999_995)]: 'z',
+    });
+    expect(valueLeaves(fields)).toHaveLength(4);
+    // The four SHORT keys (v0..v3) fit easily and are still collected; only
+    // the budget-exhausting 999,995-char key was dropped.
+    expectOneKeyChunk(fields, 'v0\nv1\nv2\nv3');
   });
 });
 

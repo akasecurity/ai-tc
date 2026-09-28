@@ -109,6 +109,12 @@ async function main(): Promise<void> {
   // unresolved, which is exactly the deny/keep posture we need.
   const pointerFields: PointerField[] = [];
   for (const spec of fields) {
+    // A joined-keys chunk (spec.text set — see pre-tool-use-fields.ts) has no
+    // real position in the payload for a resolved pointer to be written back
+    // to, and a model does not echo a vault pointer as an object key it
+    // invents, so it never enters pointer resolution — only the secret scan
+    // below.
+    if (spec.text !== undefined) continue;
     const text = stringAtPath(toolInput, spec.path);
     if (text !== undefined && text !== '') {
       pointerFields.push({ path: spec.path, text, executable: spec.executable });
@@ -216,7 +222,12 @@ async function main(): Promise<void> {
   const scanned: ScannedField[] = [];
   try {
     for (const spec of fields) {
-      const text = stringAtPath(effectiveInput, spec.path);
+      // A joined-keys chunk (see pre-tool-use-fields.ts) carries its own
+      // text, computed during the walk rather than addressable at spec.path
+      // in the tool input — never a deref target, so effectiveInput (which
+      // only ever differs from toolInput at a real pointer's path) is
+      // irrelevant to it.
+      const text = spec.text ?? stringAtPath(effectiveInput, spec.path);
       if (text === undefined || text === '') continue;
 
       const result = await runtime.capture(

@@ -93,7 +93,9 @@ function toggleOption(title: string): HTMLButtonElement {
 }
 
 function refusedControls(): HTMLButtonElement[] {
-  return [...mounted.host.querySelectorAll('button[data-slot="access-control"]')];
+  return [
+    ...mounted.host.querySelectorAll<HTMLButtonElement>('button[data-slot="access-control"]'),
+  ];
 }
 
 function describedReason(el: HTMLElement): string | null {

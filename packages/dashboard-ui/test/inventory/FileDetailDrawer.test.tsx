@@ -60,7 +60,7 @@ function describedReason(el: HTMLElement): string | null {
   return document.getElementById(id)?.textContent ?? null;
 }
 
-const REASON = 'You do not have enough permissions.';
+const REASON = 'This control is not available here.';
 
 let mounted: MountedRoot;
 

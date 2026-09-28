@@ -104,7 +104,7 @@ function describedReason(el: HTMLElement): string | null {
   return document.getElementById(id)?.textContent ?? null;
 }
 
-const REASON = 'You do not have enough permissions.';
+const REASON = 'This control is not available here.';
 
 describe('ProjectPane per-file access control, live', () => {
   it('reaches onSetAccess on a real click', () => {

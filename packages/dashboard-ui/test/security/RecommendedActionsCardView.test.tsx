@@ -33,7 +33,7 @@ function action(overrides: Partial<RecommendedAction> = {}): RecommendedAction {
   };
 }
 
-const REASON = 'You do not have enough permissions.';
+const REASON = 'This control is not available here.';
 const noop = (): void => undefined;
 
 let mounted: MountedRoot;

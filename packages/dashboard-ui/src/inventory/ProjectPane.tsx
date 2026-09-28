@@ -26,6 +26,7 @@ import {
 } from '@akasecurity/ui-kit';
 import { Fragment } from 'react';
 
+import { RefusalReason } from '../shared/Refusal.tsx';
 import { SearchField } from '../shared/SearchField.tsx';
 import { AccessBar, AccessControl, AccessLabel, OriginTag, VisBadge } from './chips.tsx';
 import { ACCESS, ACCESS_ORDER, fmtDateTime, rationale } from './data.ts';
@@ -43,6 +44,14 @@ export interface ProjectPaneProps {
   error: string | null;
   // Fires the setFileAccess mutation for a single file.
   onSetAccess: (path: string, access: AccessLevel) => void;
+  /**
+   * Set when the per-file access control cannot be operated by the host:
+   * every instance this pane renders (the browse/search table and the
+   * "Recently blocked" strip) renders offered-and-disabled with this text
+   * as the reason, and `onSetAccess` is never called. Absent ⇒ identical
+   * to today.
+   */
+  accessRefusal?: string | undefined;
   onOpenFile: (path: string) => void;
   drawerPath: string | null;
   // Project-wide auto-blocked files (tree `filter=blocked`) for the strip below
@@ -294,7 +303,16 @@ function FileRow({
   onOpenFile,
   drawerPath,
   showPath,
+  accessRefusal,
 }: ProjectPaneProps & { file: FileSummary; showPath?: boolean | undefined }) {
+  // Keyed by path, not a minted id: this same file can also appear in
+  // BlockedStrip's own map, rendered independently on the same page, and
+  // the two must not collide on one aria-describedby target (see
+  // BlockedStrip's own suffix below).
+  const refusal =
+    accessRefusal === undefined
+      ? undefined
+      : { id: `${file.path}-access-refusal`, reason: accessRefusal };
   return (
     <TableRow
       className={cn(
@@ -318,8 +336,15 @@ function FileRow({
             onChange={(v) => {
               onSetAccess(file.path, v);
             }}
+            refusal={refusal}
           />
-          <AccessLabel value={file.access} />
+          {refusal ? (
+            <RefusalReason id={refusal.id} dataSlot="access-refusal-reason" className="min-w-23">
+              {refusal.reason}
+            </RefusalReason>
+          ) : (
+            <AccessLabel value={file.access} />
+          )}
         </div>
       </TableCell>
       <TableCell>
@@ -368,6 +393,7 @@ function BlockedStrip({
   onToggleBlocked,
   onSetAccess,
   onOpenFile,
+  accessRefusal,
 }: ProjectPaneProps) {
   return (
     <div className="border-b border-border bg-surface-2">
@@ -396,6 +422,13 @@ function BlockedStrip({
         <div className="flex flex-col gap-2 px-3.5 pb-3">
           {blocked.map((file) => {
             const dir = dirOf(file.path);
+            // A DIFFERENT id than FileRow's own for the same path — see
+            // FileRow's comment above; the two strips can render the same
+            // file at once.
+            const refusal =
+              accessRefusal === undefined
+                ? undefined
+                : { id: `${file.path}-blocked-access-refusal`, reason: accessRefusal };
             return (
               <div
                 key={file.path}
@@ -418,8 +451,19 @@ function BlockedStrip({
                   onChange={(v) => {
                     onSetAccess(file.path, v);
                   }}
+                  refusal={refusal}
                 />
-                <AccessLabel value={file.access} />
+                {refusal ? (
+                  <RefusalReason
+                    id={refusal.id}
+                    dataSlot="access-refusal-reason"
+                    className="min-w-23"
+                  >
+                    {refusal.reason}
+                  </RefusalReason>
+                ) : (
+                  <AccessLabel value={file.access} />
+                )}
                 <Button
                   variant="ghost"
                   tone="primary"

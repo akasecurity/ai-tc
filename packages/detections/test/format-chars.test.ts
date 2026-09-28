@@ -66,7 +66,9 @@ describe('normalizeFormatChars', () => {
   it('handles an astral (surrogate-pair) character alongside a format character', () => {
     const result = normalizeFormatChars('🔑​password');
     expect(result?.normalized).toBe('🔑password');
-    // The astral char is 2 UTF-16 units; both must map back to its own start.
+    // The astral char is 2 UTF-16 units, so it needs 2 index-map entries to
+    // stay index-for-index aligned with `normalized` — one per unit, each
+    // pointing at THAT unit's own original index (0 and 1), not both at 0.
     expect(result?.indexMap.slice(0, 2)).toEqual([0, 1]);
   });
 });

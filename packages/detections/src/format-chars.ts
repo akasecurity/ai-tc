@@ -33,6 +33,11 @@ import type { Span } from '@akasecurity/schema';
 // corrupting visible rendering rather than only defeating detection, which is
 // out of scope for this fix.
 const HAS_FORMAT_CHAR = /\p{Cf}/u;
+// Same class, `g` flag: used to walk every format character's position in one
+// native regex scan (see `normalizeFormatChars`) rather than testing each
+// code point individually. `u` still makes each match exactly one code point
+// — one or two UTF-16 units — never a split surrogate half.
+const FORMAT_CHAR_GLOBAL = /\p{Cf}/gu;
 
 export interface FormatCharNormalization {
   /** `text` with every \p{Cf} character removed. */
@@ -57,26 +62,27 @@ export interface FormatCharNormalization {
 export function normalizeFormatChars(text: string): FormatCharNormalization | undefined {
   if (!HAS_FORMAT_CHAR.test(text)) return undefined;
 
+  // One native regex scan over `text` locates every format character (never
+  // more than a handful in real input); everything BETWEEN two of them — or
+  // before the first / after the last — is copied as one run rather than
+  // tested and pushed code point by code point, which is what made this the
+  // one part of the fix `scan()`'s own fast path does not cover: real input
+  // on the slow path is still overwhelmingly ordinary text around a small
+  // number of format characters, not format characters throughout.
   const normalizedParts: string[] = [];
   const indexMap: number[] = [];
-  let i = 0;
-  while (i < text.length) {
-    // Walk by code point, not by UTF-16 code unit: a \p{Cf} match is a single
-    // logical character even when (rarely — the Egyptian hieroglyph and
-    // musical-symbol format controls, and the U+E0001/U+E0020-E007F tag
-    // characters) it takes a surrogate pair to represent. Slicing at a code
-    // unit that splits a pair would corrupt both the kept text and the map.
-    const codePoint = text.codePointAt(i);
-    const charLength = codePoint !== undefined && codePoint > 0xffff ? 2 : 1;
-    const char = text.slice(i, i + charLength);
-    if (!HAS_FORMAT_CHAR.test(char)) {
-      normalizedParts.push(char);
-      indexMap.push(i);
-      // A kept astral character occupies two UTF-16 units in `normalized`
-      // too, so it needs two map entries to keep index-for-index alignment.
-      if (charLength === 2) indexMap.push(i + 1);
+  let cursor = 0;
+  for (const match of text.matchAll(FORMAT_CHAR_GLOBAL)) {
+    const matchStart = match.index;
+    if (matchStart > cursor) {
+      normalizedParts.push(text.slice(cursor, matchStart));
+      for (let i = cursor; i < matchStart; i++) indexMap.push(i);
     }
-    i += charLength;
+    cursor = matchStart + match[0].length;
+  }
+  if (cursor < text.length) {
+    normalizedParts.push(text.slice(cursor));
+    for (let i = cursor; i < text.length; i++) indexMap.push(i);
   }
   return { normalized: normalizedParts.join(''), indexMap };
 }
@@ -98,9 +104,16 @@ export function normalizeFormatChars(text: string): FormatCharNormalization | un
  * including a second, unrelated finding starting right after it. A span
  * reaching the very end of the normalized text is the one case with no
  * "next kept character" to stop at, so it maps to the original text's own
- * length — pulling in any trailing format characters at the true end of the
- * input, which mirrors how a match starting at the very beginning already
- * pulls in a leading run via `indexMap[0]`.
+ * length instead — pulling in any trailing format characters at the true
+ * end of the input, since there is nothing after them to over-redact into.
+ *
+ * `start` has no equivalent special case, and is NOT symmetric with this: a
+ * match starting at normalized position 0 maps to `indexMap[0]` — the exact
+ * original index of its own first character — which EXCLUDES any leading
+ * format-character run rather than pulling it in. The end side needs the
+ * special case only because "the very end of the text" has no next kept
+ * character to stop before; the start side always has its OWN first matched
+ * character to start at, so it never needs one.
  */
 export function mapSpanToOriginal(
   span: Span,

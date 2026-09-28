@@ -167,44 +167,16 @@ export interface ScanContext {
   filePath?: string | undefined;
 }
 
-// Pure string-ops extension extraction (this package takes no Node-API deps, so
-// no node:path). Mirrors path.extname semantics: dotfiles (.eslintrc) and
-// extension-less names (Makefile) yield undefined. Lowercased for comparison.
-function extensionOf(filePath: string): string | undefined {
-  const base = filePath.slice(Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\')) + 1);
-  const dot = base.lastIndexOf('.');
-  return dot > 0 ? base.slice(dot).toLowerCase() : undefined;
-}
-
-// Should this rule run against text from this context? An `appliesTo`-scoped
-// rule is skipped only when the context provides a NON-matching extension.
-// With no file context (or no recognizable extension) the rule still runs:
-// pasted code in a prompt has no knowable language, and missing a real leak
-// costs more than a cross-language false positive there.
-function ruleApplies(rule: Rule, extension: string | undefined): boolean {
-  if (!rule.appliesTo || extension === undefined) return true;
-  return rule.appliesTo.extensions.some((e) => e.toLowerCase() === extension);
-}
-
-export function scan(text: string, rules?: Rule[], context?: ScanContext): MatchResult[] {
-  const ruleset = rules ?? getLoadedRules();
-  const extension = context?.filePath ? extensionOf(context.filePath) : undefined;
-
-  // An invisible Unicode format character (ZERO WIDTH SPACE, a bidi control,
-  // …) planted inside a secret defeats every regex/keyword rule
-  // character-for-character while leaving the secret itself unchanged, since
-  // nothing upstream of this package normalizes text before matching. Both
-  // passes below match against `matchText` — the normalized text when there
-  // is anything to strip, `text` itself otherwise, so ordinary input pays
-  // only the one-regex-test fast path in `normalizeFormatChars` and no map is
-  // ever built. Every span produced against `matchText` is mapped back onto
-  // `text` at the very end, so a finding's span and rawMatch always describe
-  // the ORIGINAL text — format characters included — which is what makes
-  // redact() remove the whole secret rather than the two halves either side
-  // of the character that defeated the match.
-  const normalization = normalizeFormatChars(text);
-  const matchText = normalization ? normalization.normalized : text;
-
+// Runs both passes (candidate matching, then proximity gating) against
+// `matchText` and returns findings with spans/rawMatch in `matchText`'s OWN
+// index space — no mapping. Shared by every caller of scan() below: the fast
+// path calls it once against `text`, the slow path calls it once against
+// `text` and once against the normalized text.
+function runPasses(
+  matchText: string,
+  ruleset: Rule[],
+  extension: string | undefined,
+): MatchResult[] {
   // Pass 1: run primitive matchers for ALL applicable rules → candidate matches.
   const candidates: Candidate[] = [];
   for (const rule of ruleset) {
@@ -251,14 +223,108 @@ export function scan(text: string, rules?: Rule[], context?: ScanContext): Match
     );
   }
 
-  if (!normalization) return findings;
+  return findings;
+}
 
-  // Map every finding's span (and re-slice rawMatch from it) back onto the
-  // original text — see the comment above `normalization` for why.
-  return findings.map((finding) => {
-    const span = mapSpanToOriginal(finding.span, normalization, text.length);
-    return { ...finding, span, rawMatch: text.slice(span.start, span.end) };
-  });
+function spansOverlap(a: Span, b: Span): boolean {
+  return a.start < b.end && a.end > b.start;
+}
+
+function spanWidth(span: Span): number {
+  return span.end - span.start;
+}
+
+// Combines an original-text pass with a (mapped-back) normalized-text pass.
+// `base`'s findings are kept in place — replaced in place only by a WIDER
+// same-rule, overlapping finding from `extra` — so redact() removes the
+// whole secret rather than whichever pass happened to match a shorter span.
+// Anything `extra` contributes with no overlapping same-rule finding already
+// in `base` is appended, in its own order, after everything in `base`.
+//
+// Deliberately keyed on ruleId + span overlap, not on pass identity: the
+// keyword matcher can already produce overlapping spans for the SAME rule
+// within a SINGLE pass (two keywords where one is a substring of the other),
+// and those are exactly as much "the same finding" as a genuine cross-pass
+// duplicate — redact() already folds overlapping spans into one replaced
+// region regardless of rule, so collapsing them here at the finding level
+// keeps a caller that counts findings (rather than redacting) from
+// double-counting one secret. This only runs on the slow path — see scan().
+function mergeAcrossPasses(base: MatchResult[], extra: MatchResult[]): MatchResult[] {
+  const merged = [...base];
+  for (const candidate of extra) {
+    let mergedIntoExisting = false;
+    for (let i = 0; i < merged.length; i++) {
+      const existing = merged[i];
+      if (existing === undefined) continue; // unreachable: i is always < merged.length
+      if (existing.ruleId !== candidate.ruleId || !spansOverlap(existing.span, candidate.span)) {
+        continue;
+      }
+      if (spanWidth(candidate.span) > spanWidth(existing.span)) merged[i] = candidate;
+      mergedIntoExisting = true;
+      break;
+    }
+    if (!mergedIntoExisting) merged.push(candidate);
+  }
+  return merged;
+}
+
+// Pure string-ops extension extraction (this package takes no Node-API deps, so
+// no node:path). Mirrors path.extname semantics: dotfiles (.eslintrc) and
+// extension-less names (Makefile) yield undefined. Lowercased for comparison.
+function extensionOf(filePath: string): string | undefined {
+  const base = filePath.slice(Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\')) + 1);
+  const dot = base.lastIndexOf('.');
+  return dot > 0 ? base.slice(dot).toLowerCase() : undefined;
+}
+
+// Should this rule run against text from this context? An `appliesTo`-scoped
+// rule is skipped only when the context provides a NON-matching extension.
+// With no file context (or no recognizable extension) the rule still runs:
+// pasted code in a prompt has no knowable language, and missing a real leak
+// costs more than a cross-language false positive there.
+function ruleApplies(rule: Rule, extension: string | undefined): boolean {
+  if (!rule.appliesTo || extension === undefined) return true;
+  return rule.appliesTo.extensions.some((e) => e.toLowerCase() === extension);
+}
+
+export function scan(text: string, rules?: Rule[], context?: ScanContext): MatchResult[] {
+  const ruleset = rules ?? getLoadedRules();
+  const extension = context?.filePath ? extensionOf(context.filePath) : undefined;
+
+  // An invisible Unicode format character (ZERO WIDTH SPACE, a bidi control,
+  // …) planted INSIDE a secret defeats every regex/keyword rule
+  // character-for-character while leaving the secret itself unchanged, since
+  // nothing upstream of this package normalizes text before matching — so
+  // matching against a normalized (stripped) copy is necessary. But `\b` (and
+  // this file's own `(?<![A-Za-z0-9])…(?![A-Za-z0-9])` label boundary) treats
+  // any non-word character, format characters included, as a boundary — so a
+  // rule can ALSO rely on a format character sitting *next to* a secret to
+  // satisfy a boundary the surrounding text alone would not (a word char
+  // then a format char then "AKIA…" matches `\bAKIA…` on the original text;
+  // stripped to a word char directly against "AKIA…", the boundary is gone
+  // and the same rule misses). Normalizing is therefore
+  // necessary for one shape of secret and can regress another — so on the
+  // slow path this runs BOTH passes and unions the results, rather than
+  // choosing one. `runPasses` on ordinary input (no format character present)
+  // is called exactly once, against `text` itself: the one-regex-test fast
+  // path in `normalizeFormatChars` returns `undefined` and neither a
+  // normalized copy nor an index map is ever built.
+  //
+  // Invariant: for any input, the set of ruleIds this returns findings for is
+  // a SUPERSET of what a build with no format-character handling at all
+  // would return — never a subset. Pinned by the "must not remove a
+  // boundary main relies on" suite in test/security/unicode.test.ts.
+  const normalization = normalizeFormatChars(text);
+  if (!normalization) return runPasses(text, ruleset, extension);
+
+  const originalFindings = runPasses(text, ruleset, extension);
+  const normalizedFindings = runPasses(normalization.normalized, ruleset, extension).map(
+    (finding) => {
+      const span = mapSpanToOriginal(finding.span, normalization, text.length);
+      return { ...finding, span, rawMatch: text.slice(span.start, span.end) };
+    },
+  );
+  return mergeAcrossPasses(originalFindings, normalizedFindings);
 }
 
 // Severity precedence for naming a merged region's placeholder — the most

@@ -275,3 +275,103 @@ describe('invisible format characters inside a match', () => {
     },
   );
 });
+
+// Regression guard: normalizing text before matching must never make a
+// bundled \b-anchored rule miss a secret main (with no normalization at all)
+// already detects. JS's `\b` treats a \p{Cf} character as non-word — the SAME
+// property that lets it split a secret in two also lets it SATISFY a `\b`
+// between a word character and the secret when nothing else would. Stripping
+// it can silently remove that boundary: a word char, a ZWSP, then "AKIA..."
+// matches `\b(AKIA|...)…` on the ORIGINAL text (ZWSP is non-word, so there is
+// a word/non-word transition right before "AKIA"), but on the stripped
+// "xAKIA..." there is no such transition at all — a rule that matched before
+// this package normalized ANYTHING must still match after.
+describe('a format character must not remove a boundary main relies on', () => {
+  const githubPat = loadRule(resolve(RULES_DIR, 'secrets'), 'github-pat');
+  const awsAccessKey = loadRule(resolve(RULES_DIR, 'secrets'), 'aws-access-key');
+  const devPlaceholderSecret = loadRule(resolve(RULES_DIR, 'code-flaws'), 'dev-placeholder-secret');
+  const ZWSP = '​';
+
+  it('still detects an AWS key preceded by <word char><format char>', () => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE';
+    const text = `const key = "x${ZWSP}${secret}";`;
+
+    const findings = scan(text, [awsAccessKey]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.rawMatch).toBe(secret);
+  });
+
+  it('still detects an AWS key followed by <format char><word char>', () => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE';
+    const text = `const key = "${secret}${ZWSP}x";`;
+
+    const findings = scan(text, [awsAccessKey]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.rawMatch).toBe(secret);
+  });
+
+  it('still detects a GitHub PAT preceded by <word char><format char>', () => {
+    const secret = 'ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890';
+    const text = `token: x${ZWSP}${secret}`;
+
+    const findings = scan(text, [githubPat]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.rawMatch).toBe(secret);
+  });
+
+  it('still detects a GitHub PAT followed by <format char><word char>', () => {
+    const secret = 'ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890';
+    const text = `token: ${secret}${ZWSP}x`;
+
+    const findings = scan(text, [githubPat]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.rawMatch).toBe(secret);
+  });
+
+  it('still corroborates via requiresNearby when a word char + format char sits right before the label', () => {
+    // rules/code-flaws/dev-placeholder-secret.json's label boundary is
+    // `(?<![A-Za-z0-9])label(?![A-Za-z0-9])` — the exact same non-word-neighbor
+    // test as `\b`, so it is subject to the identical regression: on the
+    // original text the ZWSP satisfies the lookbehind (not preceded by an
+    // alnum); stripped, the word char right before "key" does not.
+    const text = `abc${ZWSP}key = 'changeme'`;
+    const findings = scan(text, [devPlaceholderSecret]);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.ruleId).toBe('code-flaws/dev-placeholder-secret');
+  });
+
+  it('still detects a secret with a format character at the very start of the text', () => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE';
+    const text = `${ZWSP}${secret}`;
+
+    const findings = scan(text, [awsAccessKey]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.rawMatch).toBe(secret);
+  });
+
+  it('still detects a secret with a format character at the very end of the text', () => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE';
+    const text = `${secret}${ZWSP}`;
+
+    const findings = scan(text, [awsAccessKey]);
+    expect(findings).toHaveLength(1);
+    // Not a strict equality: the original-text pass matches exactly `secret`
+    // (the trailing ZWSP sits outside `\b`), while the normalized-text pass
+    // maps to a span reaching the text's own end (see format-chars.test.ts),
+    // which is WIDER and so wins the same-rule dedup. Either way the secret
+    // itself must be present and covered.
+    expect(findings[0]?.rawMatch).toContain(secret);
+  });
+
+  it('reports exactly one finding, not two, when both passes detect the same occurrence', () => {
+    // The dual-pass fix must not double-report: an original-text match and a
+    // normalized-text match of the same rule over the same (mapped) span are
+    // the SAME secret occurrence, not two findings.
+    const secret = 'AKIAIOSFODNN7EXAMPLE';
+    const text = `const key = "${secret.slice(0, 10)}${ZWSP}${secret.slice(10)}";`;
+
+    const findings = scan(text, [awsAccessKey]);
+    expect(findings).toHaveLength(1);
+  });
+});

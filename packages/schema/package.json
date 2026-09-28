@@ -16,14 +16,14 @@
     "gen:sqlite-ddl": "drizzle-kit generate --config drizzle.config.local.ts && node scripts/gen-sqlite-ddl.mjs"
   },
   "dependencies": {
-    "drizzle-orm": "^0.45.2",
+    "drizzle-orm": "^0.45.3",
     "zod": "^4.6.5"
   },
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",
     "@types/node": "^24.13.3",
     "@vitest/coverage-v8": "^4.1.11",
-    "drizzle-kit": "^0.31.0",
+    "drizzle-kit": "^0.31.11",
     "eslint": "^9.39.5",
     "typescript": "^5.8.0",
     "vitest": "^4.1.11"

@@ -46,7 +46,7 @@ function detection(overrides: Partial<DetectionDetail> = {}): DetectionDetail {
   };
 }
 
-const REASON = 'You do not have enough permissions.';
+const REASON = 'This control is not available here.';
 
 let mounted: MountedRoot;
 

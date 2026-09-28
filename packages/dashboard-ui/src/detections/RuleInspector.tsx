@@ -2,7 +2,7 @@
 // Read-only rule inspector. Detection rules are immutable version snapshots from
 // the registry — there is no in-place editing — so this shows what a rule matches
 // on, what gates that match has to clear, what it catches, and what its author
-// asserted about it, with no edit/save path. Shared by both dashboards, as the
+// asserted about it, with no edit/save path. Shared by every host app, as the
 // `MatcherModal` dialog and as the bare `RuleInspectorBody` a host can drop into a
 // side panel or an expanded row.
 import type { DetectionRule, Matcher, RuleFixture } from '@akasecurity/schema';

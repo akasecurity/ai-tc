@@ -408,7 +408,7 @@ export {
 export type { ShareSelection } from './data-shares/types.ts';
 
 // Theme — the light/dark/system preference store, the topbar picker, and the
-// pre-paint init script. Shared because both dashboards need the identical
+// pre-paint init script. Shared because every host app needs the identical
 // behaviour and only the script's INJECTION POINT is host-specific (Next root
 // layout vs Vite index.html). No `dark:` variants anywhere: ui-kit's theme.css
 // re-themes by overriding the same CSS variables its utilities read, so applying

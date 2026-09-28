@@ -1,6 +1,6 @@
 // Theme preference: the stored choice, and the script that applies it before paint.
 //
-// Shared by both dashboards, which is why it lives here rather than in either app.
+// Shared by every host app, which is why it lives here rather than in any one of them.
 // Nothing in it is host-specific: it reads `localStorage` and `matchMedia` and
 // writes `document.documentElement`, all lazily inside functions. Only the
 // INJECTION POINT of THEME_INIT_SCRIPT differs — the OSS web-ui puts it in the Next

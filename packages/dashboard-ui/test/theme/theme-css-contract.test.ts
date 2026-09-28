@@ -20,9 +20,9 @@ import { DARK_CLASS } from '../../src/theme/theme.ts';
 //
 // The split predates the theme module moving here. What moving it changed is the
 // COST: the constant used to sit in web-ui beside its only consumer, and it is now
-// a published export of a shared package whose next consumer is a different
-// product in a different repository — so a theme.css edit can silently break a
-// dashboard nobody working in ui-kit can see.
+// a published export of a shared package whose consumers need not live in this
+// repository — so a theme.css edit can silently break a dashboard nobody working
+// in ui-kit can see.
 //
 // Resolved through the package's own `./theme.css` export rather than by walking
 // `../../ui-kit/src/styles/`, so this also proves the export path consumers
@@ -40,7 +40,7 @@ describe('DARK_CLASS ↔ ui-kit theme.css', () => {
     expect(
       THEME_CSS,
       `@akasecurity/ui-kit's theme.css declares no @custom-variant for "${DARK_CLASS}". ` +
-        `applyTheme would write a class nothing styles, and both dashboards would ` +
+        `applyTheme would write a class nothing styles, and every host app would ` +
         `render permanently light with every suite still green.`,
     ).toMatch(new RegExp(`@custom-variant\\s+${CLASS}\\s*\\(`));
   });

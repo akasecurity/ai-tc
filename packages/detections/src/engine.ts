@@ -1,6 +1,7 @@
 import type { PostValidatorName, Rule, Span } from '@akasecurity/schema';
 
 import { escapeRegExp } from './escape-regexp.ts';
+import { mapSpanToOriginal, normalizeFormatChars } from './format-chars.ts';
 import { KeywordMatcher } from './matchers/keyword.ts';
 import { RegexMatcher } from './matchers/regex.ts';
 import { memoizedRegExpList } from './regex-cache.ts';
@@ -189,14 +190,32 @@ export function scan(text: string, rules?: Rule[], context?: ScanContext): Match
   const ruleset = rules ?? getLoadedRules();
   const extension = context?.filePath ? extensionOf(context.filePath) : undefined;
 
+  // An invisible Unicode format character (ZERO WIDTH SPACE, a bidi control,
+  // …) planted inside a secret defeats every regex/keyword rule
+  // character-for-character while leaving the secret itself unchanged, since
+  // nothing upstream of this package normalizes text before matching. Both
+  // passes below match against `matchText` — the normalized text when there
+  // is anything to strip, `text` itself otherwise, so ordinary input pays
+  // only the one-regex-test fast path in `normalizeFormatChars` and no map is
+  // ever built. Every span produced against `matchText` is mapped back onto
+  // `text` at the very end, so a finding's span and rawMatch always describe
+  // the ORIGINAL text — format characters included — which is what makes
+  // redact() remove the whole secret rather than the two halves either side
+  // of the character that defeated the match.
+  const normalization = normalizeFormatChars(text);
+  const matchText = normalization ? normalization.normalized : text;
+
   // Pass 1: run primitive matchers for ALL applicable rules → candidate matches.
   const candidates: Candidate[] = [];
   for (const rule of ruleset) {
     if (!ruleApplies(rule, extension)) continue;
-    const spans = MATCHERS[rule.matcher.type](text, rule);
+    const spans = MATCHERS[rule.matcher.type](matchText, rule);
 
     for (const span of spans) {
-      const rawMatch = text.slice(span.start, span.end);
+      // Post-validators (entropy, Luhn) run against the CLEAN value here —
+      // scoring a value with an invisible character still mixed in would
+      // misjudge the secret's actual entropy/checksum.
+      const rawMatch = matchText.slice(span.start, span.end);
       if (!passesPostValidators(rule, rawMatch)) continue;
       candidates.push({
         rule,
@@ -221,7 +240,7 @@ export function scan(text: string, rules?: Rule[], context?: ScanContext): Match
       findings.push(candidate.match);
       continue;
     }
-    if (!isCorroborated(candidate, candidates, text)) continue;
+    if (!isCorroborated(candidate, candidates, matchText)) continue;
     const boost = req.confidenceBoost;
     // Cap below 1.0 — a heuristic, corroboration-based match should never read as
     // mathematically "certain".
@@ -232,7 +251,14 @@ export function scan(text: string, rules?: Rule[], context?: ScanContext): Match
     );
   }
 
-  return findings;
+  if (!normalization) return findings;
+
+  // Map every finding's span (and re-slice rawMatch from it) back onto the
+  // original text — see the comment above `normalization` for why.
+  return findings.map((finding) => {
+    const span = mapSpanToOriginal(finding.span, normalization, text.length);
+    return { ...finding, span, rawMatch: text.slice(span.start, span.end) };
+  });
 }
 
 // Severity precedence for naming a merged region's placeholder — the most

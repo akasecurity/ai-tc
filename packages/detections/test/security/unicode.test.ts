@@ -1,7 +1,10 @@
+import { resolve } from 'node:path';
+
 import { Rule } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { redact, scan } from '../../src/index.ts';
+import { loadRule, RULES_DIR } from '../helpers/rules.ts';
 
 // Parsed through the real schema — these assert the shipped path end to end
 // (scan -> span -> rawMatch -> redact), not just a matcher in isolation.
@@ -135,4 +138,140 @@ describe('non-ascii inputs do not corrupt spans', () => {
   it('scans an empty string without matches', () => {
     expect(scan('', [keywordRule(['password'])])).toEqual([]);
   });
+});
+
+// A representative sample of \p{Cf} — see src/format-chars.ts for the full
+// 170-member category. One invisible character from any of these families,
+// inserted mid-secret, used to defeat every regex/keyword rule while leaving
+// the secret usable after trivial cleanup.
+const INVISIBLE_FORMAT_CHARS: readonly (readonly [string, string])[] = [
+  ['U+200B zero width space', '​'],
+  ['U+200C zero width non-joiner', '‌'],
+  ['U+200D zero width joiner', '‍'],
+  ['U+2060 word joiner', '⁠'],
+  ['U+FEFF byte order mark', '﻿'],
+  ['U+00AD soft hyphen', '­'],
+  ['U+202E right-to-left override', '‮'],
+  ['U+2066 left-to-right isolate', '⁦'],
+  ['U+E0020 tag space', '\u{E0020}'],
+];
+
+describe('invisible format characters inside a match', () => {
+  const githubPat = loadRule(resolve(RULES_DIR, 'secrets'), 'github-pat');
+  const awsAccessKey = loadRule(resolve(RULES_DIR, 'secrets'), 'aws-access-key');
+  const devPlaceholderSecret = loadRule(resolve(RULES_DIR, 'code-flaws'), 'dev-placeholder-secret');
+  // Kept as its own plain-quoted constant, referenced with `${ZWSP}` below,
+  // rather than written directly inside a template literal — ESLint's
+  // `no-irregular-whitespace` (correctly) flags a raw zero-width space
+  // sitting literally inside a template, and this is precisely the character
+  // family this whole fix is about.
+  const ZWSP = '​';
+
+  it('still detects a known secret rule (GitHub PAT) with a ZWSP inserted mid-secret', () => {
+    // Fixture secret from rules/secrets/fixtures/github-pat.json, split with a
+    // zero-width space planted in the middle of the 36-char body.
+    const body = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890';
+    const withZwsp = `ghp_${body.slice(0, 18)}${ZWSP}${body.slice(18)}`;
+    const text = `token: ${withZwsp}`;
+
+    const findings = scan(text, [githubPat]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.ruleId).toBe('secrets/github-pat');
+  });
+
+  it('maps the finding span onto the original text, covering the inserted character', () => {
+    const body = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890';
+    const withZwsp = `ghp_${body.slice(0, 18)}${ZWSP}${body.slice(18)}`;
+    const text = `token: ${withZwsp}`;
+
+    const [finding] = scan(text, [githubPat]);
+    expect(finding).toBeDefined();
+    if (!finding) return;
+
+    // The span, sliced out of the ORIGINAL text, must reproduce the whole
+    // matched secret including the zero-width space sitting inside it.
+    const sliced = text.slice(finding.span.start, finding.span.end);
+    expect(sliced).toBe(withZwsp);
+    expect(sliced).toContain(ZWSP);
+    // And the span is where the secret actually sits in the original string,
+    // not shifted by the character stripped ahead of it.
+    expect(finding.span).toEqual({ start: 7, end: 7 + withZwsp.length });
+  });
+
+  it('redacts the whole secret with no remnant, including the split halves', () => {
+    const body = 'aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890';
+    const withZwsp = `ghp_${body.slice(0, 18)}${ZWSP}${body.slice(18)}`;
+    const text = `token: ${withZwsp} end`;
+
+    const findings = scan(text, [githubPat]);
+    const output = redact(text, findings);
+
+    expect(output).not.toContain(ZWSP);
+    expect(output).not.toContain(body.slice(0, 18));
+    expect(output).not.toContain(body.slice(18));
+    expect(output).toBe('token: [REDACTED:SECRET] end');
+  });
+
+  it('leaves a text with no format characters completely unaffected', () => {
+    const text = 'token: ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890 end';
+    const findings = scan(text, [githubPat]);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.span).toEqual({ start: 7, end: 7 + 40 });
+    expect(findings[0]?.rawMatch).toBe('ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ1234567890');
+    expect(redact(text, findings)).toBe('token: [REDACTED:SECRET] end');
+  });
+
+  it('still corroborates a keyword rule via requiresNearby when the KEYWORD itself carries a format char', () => {
+    // rules/code-flaws/dev-placeholder-secret.json: keyword "changeme", gated on
+    // a "key"/"secret"/"password"/"token" label within 80 chars. The zero-width
+    // space sits inside the keyword match itself.
+    const text = `SECRET_KEY = 'change${ZWSP}me'`;
+    const findings = scan(text, [devPlaceholderSecret]);
+    const finding = findings[0];
+
+    expect(findings).toHaveLength(1);
+    expect(finding?.ruleId).toBe('code-flaws/dev-placeholder-secret');
+    expect(finding && text.slice(finding.span.start, finding.span.end)).toBe(`change${ZWSP}me`);
+  });
+
+  it('still corroborates via requiresNearby when the LABEL carries a format char', () => {
+    const text = `api_se${ZWSP}cret = 'changeme'`;
+    const findings = scan(text, [devPlaceholderSecret]);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.ruleId).toBe('code-flaws/dev-placeholder-secret');
+  });
+
+  it('runs entropy post-validation against the clean value, not the one with a format char mixed in', () => {
+    // rules/secrets/aws-access-key.json requires the "entropy" post-validator.
+    // If the invisible character were left in the value handed to the
+    // validator it would be scored as part of the secret's character content.
+    const secret = 'AKIAIOSFODNN7EXAMPLE';
+    const withZwsp = `${secret.slice(0, 10)}${ZWSP}${secret.slice(10)}`;
+    const text = `const key = "${withZwsp}";`;
+
+    const findings = scan(text, [awsAccessKey]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.ruleId).toBe('secrets/aws-access-key');
+  });
+
+  it.each(INVISIBLE_FORMAT_CHARS)(
+    'detects the secret with %s inserted mid-value',
+    (_label, char) => {
+      const secret = 'AKIAIOSFODNN7EXAMPLE';
+      const withChar = `${secret.slice(0, 10)}${char}${secret.slice(10)}`;
+      const text = `const key = "${withChar}";`;
+
+      const findings = scan(text, [awsAccessKey]);
+      expect(findings).toHaveLength(1);
+      const finding = findings[0];
+      const sliced = finding && text.slice(finding.span.start, finding.span.end);
+      expect(sliced).toBe(withChar);
+
+      const output = redact(text, findings);
+      expect(output).not.toContain(secret.slice(0, 10));
+      expect(output).not.toContain(secret.slice(10));
+    },
+  );
 });

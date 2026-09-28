@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import { mergeAcrossPasses } from '../src/engine.ts';
 import { mapSpanToOriginal, normalizeFormatChars } from '../src/format-chars.ts';
+import type { MatchResult } from '../src/types.ts';
 
 // A representative sample of \p{Cf} — not the whole 170-member category (see
 // format-chars.ts for the full picture), but every family a real attack or a
@@ -116,5 +118,44 @@ describe('mapSpanToOriginal', () => {
     const mapped = mapSpanToOriginal({ start: 0, end: 3 }, normalization, text.length);
     expect(mapped).toEqual({ start: 1, end: 4 });
     expect(text.slice(mapped.start, mapped.end)).toBe('ABC');
+  });
+});
+
+describe('mergeAcrossPasses', () => {
+  const text = 'abcdefghijklmnopqrstuvwxyz';
+  const finding = (ruleId: string, start: number, end: number): MatchResult => ({
+    ruleId,
+    category: 'secret',
+    severity: 'high',
+    span: { start, end },
+    rawMatch: text.slice(start, end),
+    confidence: 1,
+  });
+
+  it('keeps the union of two partly overlapping same-rule spans of equal width', () => {
+    // Keeping only one of [2,8) and [5,11) would leave 3 characters of the
+    // other one outside the span that redact() replaces.
+    const merged = mergeAcrossPasses(text, [finding('r', 2, 8)], [finding('r', 5, 11)]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.span).toEqual({ start: 2, end: 11 });
+    expect(merged[0]?.rawMatch).toBe(text.slice(2, 11));
+  });
+
+  it('keeps a contained span as the wider one', () => {
+    const merged = mergeAcrossPasses(text, [finding('r', 4, 6)], [finding('r', 2, 10)]);
+    expect(merged.map((f) => f.span)).toEqual([{ start: 2, end: 10 }]);
+  });
+
+  it('keeps overlapping findings of different rules apart, and appends non-overlapping ones', () => {
+    const merged = mergeAcrossPasses(
+      text,
+      [finding('a', 2, 8)],
+      [finding('b', 5, 11), finding('a', 20, 24)],
+    );
+    expect(merged.map((f) => [f.ruleId, f.span.start, f.span.end])).toEqual([
+      ['a', 2, 8],
+      ['b', 5, 11],
+      ['a', 20, 24],
+    ]);
   });
 });

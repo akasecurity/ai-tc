@@ -230,16 +230,13 @@ function spansOverlap(a: Span, b: Span): boolean {
   return a.start < b.end && a.end > b.start;
 }
 
-function spanWidth(span: Span): number {
-  return span.end - span.start;
-}
-
 // Combines an original-text pass with a (mapped-back) normalized-text pass.
-// `base`'s findings are kept in place — replaced in place only by a WIDER
-// same-rule, overlapping finding from `extra` — so redact() removes the
-// whole secret rather than whichever pass happened to match a shorter span.
-// Anything `extra` contributes with no overlapping same-rule finding already
-// in `base` is appended, in its own order, after everything in `base`.
+// A same-rule, overlapping finding from `extra` is folded into the `base`
+// finding it overlaps: the kept span is the UNION of the two, never just the
+// wider one, because two partly overlapping spans of equal width would
+// otherwise leave the tail of one of them unredacted. Anything `extra`
+// contributes with no overlapping same-rule finding already in `base` is
+// appended, in its own order, after everything in `base`.
 //
 // Deliberately keyed on ruleId + span overlap, not on pass identity: the
 // keyword matcher can already produce overlapping spans for the SAME rule
@@ -249,7 +246,12 @@ function spanWidth(span: Span): number {
 // region regardless of rule, so collapsing them here at the finding level
 // keeps a caller that counts findings (rather than redacting) from
 // double-counting one secret. This only runs on the slow path — see scan().
-function mergeAcrossPasses(base: MatchResult[], extra: MatchResult[]): MatchResult[] {
+// Exported for its own unit test only; not part of the package's public API.
+export function mergeAcrossPasses(
+  text: string,
+  base: MatchResult[],
+  extra: MatchResult[],
+): MatchResult[] {
   const merged = [...base];
   for (const candidate of extra) {
     let mergedIntoExisting = false;
@@ -259,7 +261,11 @@ function mergeAcrossPasses(base: MatchResult[], extra: MatchResult[]): MatchResu
       if (existing.ruleId !== candidate.ruleId || !spansOverlap(existing.span, candidate.span)) {
         continue;
       }
-      if (spanWidth(candidate.span) > spanWidth(existing.span)) merged[i] = candidate;
+      const span = {
+        start: Math.min(existing.span.start, candidate.span.start),
+        end: Math.max(existing.span.end, candidate.span.end),
+      };
+      merged[i] = { ...existing, span, rawMatch: text.slice(span.start, span.end) };
       mergedIntoExisting = true;
       break;
     }
@@ -324,7 +330,7 @@ export function scan(text: string, rules?: Rule[], context?: ScanContext): Match
       return { ...finding, span, rawMatch: text.slice(span.start, span.end) };
     },
   );
-  return mergeAcrossPasses(originalFindings, normalizedFindings);
+  return mergeAcrossPasses(text, originalFindings, normalizedFindings);
 }
 
 // Severity precedence for naming a merged region's placeholder — the most

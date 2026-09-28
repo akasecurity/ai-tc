@@ -39,7 +39,7 @@ function mcpAsset(overrides: Partial<AssetDetailShape> = {}): AssetDetailShape {
 
 function optionButton(host: HTMLElement, label: string): HTMLButtonElement {
   const buttons = [...host.querySelectorAll('button')];
-  const el = buttons.find((b) => b.textContent?.includes(label));
+  const el = buttons.find((b) => b.textContent.includes(label));
   if (!(el instanceof HTMLButtonElement)) throw new Error(`no "${label}" option rendered`);
   return el;
 }

@@ -37,6 +37,7 @@ export {
 } from './shared/charts.tsx';
 export { PageHead } from './shared/PageHead.tsx';
 export { Provider, type ProviderId, type ProviderMeta, PROVIDERS } from './shared/Provider.tsx';
+export { RefusalReason, refusedControlProps } from './shared/Refusal.tsx';
 export { ScrubbedValue } from './shared/ScrubbedValue.tsx';
 export { type FieldSurface, SearchField } from './shared/SearchField.tsx';
 export {

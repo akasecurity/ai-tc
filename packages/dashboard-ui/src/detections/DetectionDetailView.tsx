@@ -279,8 +279,8 @@ export function DetectionDetailView({
   // The origin-and-callback gate is explained once, in onAddRule's JSDoc
   // above; this just applies it. editRefusal/deleteRefusal are a SECOND,
   // independent gate — a custom detection's own origin may allow authoring
-  // it, but a caller (the enterprise dashboard) can still decide THIS
-  // viewer may not — so both must hold for a control to be live.
+  // it, but a caller can still decide THIS viewer may not operate it — so
+  // both must hold for a control to be live.
   const isCustomOrigin = d.origin === 'custom';
   const canAddRule = isCustomOrigin && onAddRule !== undefined && editRefusal === undefined;
   const canEditRules = isCustomOrigin && onEditRules !== undefined && editRefusal === undefined;

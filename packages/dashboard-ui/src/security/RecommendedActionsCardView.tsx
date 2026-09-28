@@ -43,6 +43,7 @@ import {
   SlashCircleIcon,
   SparklesIcon,
 } from '../shared/icons.tsx';
+import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
 import { canConfirmDismiss, DISMISS_METHODS, dismissConsequences } from './dismiss-gate.ts';
 import { WidgetError } from './widget-shared.tsx';
 
@@ -77,6 +78,16 @@ export interface RecommendedActionsView {
    * that looks live and does nothing reads as a broken feature.
    */
   viewAllHref?: string | undefined;
+  /**
+   * Set when Apply and Dismiss cannot be operated by the host: both controls
+   * (Apply only in its `mode === 'apply'` branch; Dismiss only for a row that
+   * has a rule subject to dismiss — a row without one renders no Dismiss
+   * control either way) render offered-and-disabled via
+   * `refusedControlProps`, with this text as the reason, and neither
+   * `applyAction` nor `dismissAction` is ever called. Absent ⇒ identical to
+   * today.
+   */
+  actionRefusal?: string | undefined;
   applyAction: (id: string) => void;
   /**
    * Close out every open finding of one rule. Resolves `true` when the write
@@ -116,6 +127,7 @@ export function RecommendedActionsCardView({
   isMutating,
   mutationError,
   viewAllHref,
+  actionRefusal,
 }: RecommendedActionsView) {
   // Which row's dialog is open, plus its form. Presentation state, so it lives
   // here rather than in the host: the host owns whether a write is in flight
@@ -246,10 +258,22 @@ export function RecommendedActionsCardView({
                         variant="solid"
                         tone="primary"
                         size="sm"
-                        disabled={isMutating}
-                        onClick={() => {
-                          applyAction(a.id);
-                        }}
+                        data-slot="recommended-action-apply"
+                        disabled={actionRefusal === undefined ? isMutating : undefined}
+                        onClick={
+                          actionRefusal === undefined
+                            ? () => {
+                                applyAction(a.id);
+                              }
+                            : undefined
+                        }
+                        {...(actionRefusal === undefined
+                          ? {}
+                          : refusedControlProps(
+                              `${a.id}-action-refusal`,
+                              actionRefusal,
+                              'hover:bg-primary-solid',
+                            ))}
                       >
                         {a.action.label}
                       </Button>
@@ -268,15 +292,32 @@ export function RecommendedActionsCardView({
                       <Button
                         variant="ghost"
                         size="sm"
-                        disabled={isMutating}
-                        onClick={() => {
-                          setPending({ action: a, ruleId: rule.id });
-                          setMethod(null);
-                          setConfirmation('');
-                        }}
+                        data-slot="recommended-action-dismiss"
+                        disabled={actionRefusal === undefined ? isMutating : undefined}
+                        onClick={
+                          actionRefusal === undefined
+                            ? () => {
+                                setPending({ action: a, ruleId: rule.id });
+                                setMethod(null);
+                                setConfirmation('');
+                              }
+                            : undefined
+                        }
+                        {...(actionRefusal === undefined
+                          ? {}
+                          : refusedControlProps(
+                              `${a.id}-action-refusal`,
+                              actionRefusal,
+                              'hover:bg-transparent hover:text-text-2',
+                            ))}
                       >
                         Dismiss
                       </Button>
+                    )}
+                    {actionRefusal !== undefined && (
+                      <RefusalReason id={`${a.id}-action-refusal`} dataSlot="action-refusal-reason">
+                        {actionRefusal}
+                      </RefusalReason>
                     )}
                   </div>
                 </div>

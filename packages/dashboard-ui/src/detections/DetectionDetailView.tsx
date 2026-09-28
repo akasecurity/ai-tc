@@ -272,7 +272,7 @@ export function DetectionDetailView({
   // editRefusal is the CALLER saying this viewer cannot touch the control
   // at all. Only meaningful when the host actually wired a write path
   // (onToggleEnabled), same as staysOn. editRefusal wins when both apply:
-  // lacking permission is the more fundamental reason a click goes nowhere.
+  // the caller-imposed lock is the more fundamental reason a click goes nowhere.
   const switchLocked = staysOn || (onToggleEnabled !== undefined && editRefusal !== undefined);
   const switchReason = editRefusal ?? DETECTION_STAYS_ON_REASON;
 

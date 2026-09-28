@@ -23,6 +23,10 @@
 //   - onAddRule, onEditRules, onDelete : rule-authoring actions. See
 //     onAddRule's own JSDoc below for the one statement of the
 //     origin-and-callback gate they share — nothing here repeats it.
+//   - editRefusal, deleteRefusal : a caller-imposed lock, independent of
+//     origin/policyFloor, covering the switch/picker/Add rule/Edit rules/
+//     Update (editRefusal) and Delete (deleteRefusal). See their own JSDoc
+//     on the props below.
 import type { DetectionDetail, DetectionRule } from '@akasecurity/schema';
 import {
   Button,
@@ -42,7 +46,14 @@ import type { IconComponent } from '../lib/icons.ts';
 import { SectionLabel } from '../shared/DetailFields.tsx';
 import { ChevronRightIcon, MoreVertIcon, PlusIcon } from '../shared/icons.tsx';
 import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
-import { CATEGORY_LABEL, MATCHER_META, matcherSummary, policyMeta } from './meta.ts';
+import {
+  BUILTIN_POLICY_IDS,
+  CATEGORY_LABEL,
+  MATCHER_META,
+  matcherSummary,
+  policyMeta,
+  provenanceState,
+} from './meta.ts';
 import {
   DETECTION_STAYS_ON_REASON,
   type DetectionPolicyFloor,
@@ -112,6 +123,8 @@ export function DetectionDetailView({
   onAddRule,
   onEditRules,
   onDelete,
+  editRefusal,
+  deleteRefusal,
 }: {
   d: DetectionDetail;
   onOpenRule: (id: string) => void;
@@ -195,6 +208,26 @@ export function DetectionDetailView({
    * present ⇒ a "Delete detection" item in the "More" menu.
    */
   onDelete?: (() => void) | undefined;
+  /**
+   * A caller-imposed reason this viewer may not edit this detection at
+   * all — distinct from origin (which decides whether the DETECTION can be
+   * edited in place) and from policyFloor (which decides whether a WEAKER
+   * choice can be made). Present ⇒ the enable/disable switch, the policy
+   * picker, "Add rule", and "Edit rules" (in the "More" menu) each render
+   * offered-and-disabled — focusable, `aria-disabled`, described by this
+   * reason — and their handlers are never called, regardless of origin or
+   * what the host wired. Also covers the "Update" button ProvenanceBlock
+   * would otherwise render below, refused the same way. Absent ⇒ every one
+   * of those controls renders exactly as it did before this prop existed.
+   */
+  editRefusal?: string | undefined;
+  /**
+   * The same, scoped to "Delete detection" (in the "More" menu) alone. A
+   * caller with edit but not delete access sets this without editRefusal,
+   * and vice versa — the two are independent, mirroring
+   * onEditRules/onDelete themselves.
+   */
+  deleteRefusal?: string | undefined;
 }) {
   // What is ENFORCED, not merely what is stored: a store written before this
   // machine was attached can hold an assignment weaker than the organization
@@ -208,10 +241,22 @@ export function DetectionDetailView({
   // Undefined when neither restricts anything, so an unconstrained detection
   // renders the control it rendered before either prop existed.
   const floorRestrictions = unavailableUnderFloor(policyFloor);
-  const restricted =
-    unavailablePolicies === undefined && floorRestrictions === undefined
+  // editRefusal restricts every archetype the same way a lock does — the
+  // caller cannot write ANY value here — reusing PolicyPicker's own
+  // per-option `unavailable` mechanism (see PolicyPicker.tsx) rather than a
+  // new whole-control state: every option dedupes to the one reason line
+  // PolicyPicker already renders, aria-disabled and aria-describedby
+  // included, for free.
+  const editRestrictions =
+    editRefusal === undefined
       ? undefined
-      : { ...unavailablePolicies, ...floorRestrictions };
+      : Object.fromEntries(BUILTIN_POLICY_IDS.map((id) => [id, editRefusal]));
+  const restricted =
+    unavailablePolicies === undefined &&
+    floorRestrictions === undefined &&
+    editRestrictions === undefined
+      ? undefined
+      : { ...unavailablePolicies, ...floorRestrictions, ...editRestrictions };
   // A governed detection may not be switched off — "not running" is below every
   // archetype, so the organization naming it at all is what settles this (see
   // isDisableRefused). Gated on the host having a write path at the toggle too:
@@ -221,13 +266,25 @@ export function DetectionDetailView({
   // Two panes on one page must not mint the same id; this one is the anchor the
   // Switch's aria-describedby points at.
   const staysOnId = useId();
+  // editRefusal locks the switch the same way staysOn does — inert, still
+  // in the tab order, its reason announced at it — but for a different
+  // cause: staysOn is the ORGANIZATION requiring this detection stay on;
+  // editRefusal is the CALLER saying this viewer cannot touch the control
+  // at all. Only meaningful when the host actually wired a write path
+  // (onToggleEnabled), same as staysOn. editRefusal wins when both apply:
+  // lacking permission is the more fundamental reason a click goes nowhere.
+  const switchLocked = staysOn || (onToggleEnabled !== undefined && editRefusal !== undefined);
+  const switchReason = editRefusal ?? DETECTION_STAYS_ON_REASON;
 
   // The origin-and-callback gate is explained once, in onAddRule's JSDoc
-  // above; this just applies it.
+  // above; this just applies it. editRefusal/deleteRefusal are a SECOND,
+  // independent gate — a custom detection's own origin may allow authoring
+  // it, but a caller (the enterprise dashboard) can still decide THIS
+  // viewer may not — so both must hold for a control to be live.
   const isCustomOrigin = d.origin === 'custom';
-  const canAddRule = isCustomOrigin && onAddRule !== undefined;
-  const canEditRules = isCustomOrigin && onEditRules !== undefined;
-  const canDelete = isCustomOrigin && onDelete !== undefined;
+  const canAddRule = isCustomOrigin && onAddRule !== undefined && editRefusal === undefined;
+  const canEditRules = isCustomOrigin && onEditRules !== undefined && editRefusal === undefined;
+  const canDelete = isCustomOrigin && onDelete !== undefined && deleteRefusal === undefined;
   const hasMoreActions = canEditRules || canDelete;
   // Scoped to what THIS control cannot do, never to authoring as a whole: a
   // custom detection with only a menu callback wired needs Add rule's own
@@ -235,18 +292,37 @@ export function DetectionDetailView({
   // it, and the "More" fallback needs the mirror image for the opposite
   // case. A library origin needs no such care — every control is refused
   // together there — so its copy can (and does) describe the detection
-  // itself rather than this host's surface.
+  // itself rather than this host's surface. editRefusal, when it applies to
+  // a control the host actually wired, takes over that control's reason —
+  // the caller's "you cannot operate this" is more specific than the
+  // detection's own origin story.
   const addRuleReason = !isCustomOrigin
     ? 'Library rules are not edited in place'
-    : 'Adding rules is not available here';
+    : editRefusal !== undefined && onAddRule !== undefined
+      ? editRefusal
+      : 'Adding rules is not available here';
+  // The "More" trigger's own reason, used only when EVERY item behind it is
+  // gone (see onEditRules' JSDoc — a menu item carries no reason of its
+  // own; a refused item is simply omitted, exactly like an absent
+  // callback). editRefusal wins over deleteRefusal when both would apply,
+  // since a refusal only contributes its reason here when the host
+  // actually wired that item (onEditRules/onDelete respectively) — a
+  // refusal prop set for a control this host never offered changes
+  // nothing, the same rule canAddRule/canEditRules/canDelete already apply
+  // individually.
   const moreReason = !isCustomOrigin
     ? 'Library detections are not edited in place'
-    : 'Editing and deleting are not available here';
+    : editRefusal !== undefined && onEditRules !== undefined
+      ? editRefusal
+      : deleteRefusal !== undefined && onDelete !== undefined
+        ? deleteRefusal
+        : 'Editing and deleting are not available here';
   // aria-describedby anchors for the two reasons above; minted unconditionally
   // (useId cannot be called conditionally) and only wired up when the button
   // they belong to is actually in its refused state.
   const addRuleReasonId = useId();
   const moreReasonId = useId();
+  const updateRefusalReasonId = useId();
   // null when live, so a spread/optional-chain at the call site is the one
   // place either state is decided — see shared/Refusal.tsx for what each
   // field means and why `neutralizeHover` cannot be a shared constant.
@@ -256,6 +332,24 @@ export function DetectionDetailView({
   const moreRefusal = hasMoreActions
     ? null
     : refusedControlProps(moreReasonId, moreReason, 'hover:bg-transparent hover:text-text-3');
+  // The Update button lives inside ProvenanceBlock, a separate component
+  // this pane renders rather than owns — and per the interface contract
+  // ProvenanceBlock gets no new prop of its own. So this is refused from OUT
+  // HERE: `onOpenUpdate` is withheld from ProvenanceBlock below (its own
+  // button only renders `{onOpenUpdate && ...}`, so it disappears
+  // entirely) and this pane renders the refused replacement itself,
+  // immediately after it. Only meaningful when there would otherwise be a
+  // live Update button to take the place of — a host that wired no update
+  // path, or a detection that is not update-available, gets nothing extra.
+  const updateRefusal =
+    editRefusal !== undefined &&
+    onOpenUpdate !== undefined &&
+    provenanceState(d) === 'update-available'
+      ? {
+          reason: editRefusal,
+          ...refusedControlProps(updateRefusalReasonId, editRefusal, 'hover:bg-surface-3'),
+        }
+      : null;
   // Built once and shared by both branches below.
   const moreTrigger = (
     <Button
@@ -299,23 +393,23 @@ export function DetectionDetailView({
               {onToggleEnabled && (
                 <Switch
                   checked={d.enabled}
-                  // Inert rather than absent when the organization requires this
-                  // detection to keep running: the handler is omitted (spread
-                  // rather than passed as undefined, which the prop's type does
-                  // not take), so activation does nothing — but no NATIVE
-                  // `disabled` goes on, because that would take the control out
-                  // of the tab order, and the whole point of leaving it there is
-                  // that the reason reaches whoever reaches for it. Same
-                  // contract as the picker's unassignable archetypes.
-                  {...(staysOn ? {} : { onCheckedChange: onToggleEnabled })}
-                  aria-disabled={staysOn || undefined}
+                  // Inert rather than absent when this control is locked: the
+                  // handler is omitted (spread rather than passed as undefined,
+                  // which the prop's type does not take), so activation does
+                  // nothing — but no NATIVE `disabled` goes on, because that
+                  // would take the control out of the tab order, and the whole
+                  // point of leaving it there is that the reason reaches
+                  // whoever reaches for it. Same contract as the picker's
+                  // unassignable archetypes.
+                  {...(switchLocked ? {} : { onCheckedChange: onToggleEnabled })}
+                  aria-disabled={switchLocked || undefined}
                   // Points at the line below the header, so the reason is
                   // announced AT the control rather than as prose to go and find.
-                  aria-describedby={staysOn ? staysOnId : undefined}
+                  aria-describedby={switchLocked ? staysOnId : undefined}
                   // The reason travels with the control as well, so a pointer
                   // user gets it without reading ahead.
-                  title={staysOn ? DETECTION_STAYS_ON_REASON : undefined}
-                  className={staysOn ? 'cursor-not-allowed opacity-50' : undefined}
+                  title={switchLocked ? switchReason : undefined}
+                  className={switchLocked ? 'cursor-not-allowed opacity-50' : undefined}
                   aria-label={d.enabled ? 'Disable detection' : 'Enable detection'}
                 />
               )}
@@ -358,13 +452,13 @@ export function DetectionDetailView({
             )}
           </div>
         </div>
-        {staysOn && (
+        {switchLocked && (
           // Full width under the header rather than beside the toggle: a tooltip
           // is invisible on touch and unreliable for assistive tech, and the
           // sentence does not fit the shrink-0 column the control sits in. This
           // is the accessible copy `aria-describedby` above points at.
           <p id={staysOnId} className="mt-2 text-xs text-text-3" data-slot="enabled-locked-reason">
-            {DETECTION_STAYS_ON_REASON}
+            {switchReason}
           </p>
         )}
         {enabledError && (
@@ -387,10 +481,27 @@ export function DetectionDetailView({
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-5">
         <ProvenanceBlock
           d={d}
-          onOpenUpdate={onOpenUpdate}
+          onOpenUpdate={updateRefusal ? undefined : onOpenUpdate}
           onRecheck={onRecheck}
           unknownHint={unknownHint}
         />
+        {updateRefusal && (
+          <div className="flex items-center gap-2.5">
+            <Button
+              size="sm"
+              data-slot="open-update"
+              aria-disabled={updateRefusal['aria-disabled']}
+              aria-describedby={updateRefusal['aria-describedby']}
+              title={updateRefusal.title}
+              className={updateRefusal.className}
+            >
+              Update
+            </Button>
+            <RefusalReason id={updateRefusalReasonId} dataSlot="open-update-reason">
+              {updateRefusal.reason}
+            </RefusalReason>
+          </div>
+        )}
 
         {/* policy block */}
         <div>

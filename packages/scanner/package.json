@@ -15,7 +15,7 @@
   "dependencies": {
     "@akasecurity/plugin-runtime": "workspace:*",
     "@akasecurity/plugin-sdk": "workspace:*",
-    "ignore": "^7.0.9"
+    "ignore": "^7.0.10"
   },
   "devDependencies": {
     "@akasecurity/eslint-config": "workspace:*",

@@ -370,6 +370,26 @@ export const StorePosturePlugin = z
     policyBundleVersion: z.string().max(200).nullable(),
     /** Epoch millis, on the CLIENT clock, of that fetch. */
     policyFetchedAt: z.number().int().min(0).max(MAX_DATE_MS).nullable(),
+    /**
+     * The newest version the host's own install record holds for this plugin —
+     * what is on disk. After an update it leads `version` (the running copy) by
+     * one launch. Null when there is no install record to read (a plugin run
+     * from a checkout); OPTIONAL, not required, so a build that predates the
+     * member keeps getting its 200. Bounded like `version`.
+     */
+    installedVersion: z.string().max(64).nullable().optional(),
+    /**
+     * The local-store schema version this running build migrates a store to:
+     * the number of store migrations it carries, the count it stamps into
+     * `PRAGMA user_version`. A snapshot whose `schemaVersion` is above it
+     * usually describes a store a newer build migrated. It is a hint, not a
+     * verdict: the stamp is write-only, so a store whose count ran past this
+     * build's while this build knows every migration in its ledger reads above
+     * it too, which is why describeStoreSkew decides skew on ledger tags and
+     * never on the count. OPTIONAL for the same reason as `installedVersion`;
+     * bounded like `schemaVersion`.
+     */
+    buildSchemaVersion: z.number().int().min(0).max(MAX_INT4).optional(),
   })
   .meta({ id: 'StorePosturePlugin' });
 export type StorePosturePlugin = z.infer<typeof StorePosturePlugin>;

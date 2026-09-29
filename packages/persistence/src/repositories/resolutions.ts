@@ -158,7 +158,10 @@ export class SqliteResolutionsRepository {
    * Insert many dispositions as ONE transaction — all of them or none.
    *
    * A dashboard dismissal closes every open finding of a rule, which is one
-   * write per key; run loose, a fault partway leaves half a rule closed with
+   * write per key. It reaches this through
+   * `LocalDatabase.dismissOpenFindingsForRule`, which calls it inside the
+   * transaction that selected the keys, so there it runs as a SAVEPOINT of
+   * that transaction. Run loose, a fault partway leaves half a rule closed with
    * nothing recording that the other half was meant to be. The caller then has
    * no way to tell a partial run from a complete one, because the card it
    * refreshes into just shows a smaller number either way.

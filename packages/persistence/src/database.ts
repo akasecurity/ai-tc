@@ -65,11 +65,11 @@ import { SqliteInventoryAssetsRepository } from './repositories/inventory-assets
 import { SqlitePoliciesRepository } from './repositories/policies.ts';
 import { SqlitePolicyCatalogRepository } from './repositories/policy-catalog.ts';
 import { SqliteProjectFilesRepository } from './repositories/project-files.ts';
-import { SqliteResolutionsRepository } from './repositories/resolutions.ts';
+import { type ResolutionInput, SqliteResolutionsRepository } from './repositories/resolutions.ts';
 import { SqliteRuleProbeCacheRepository } from './repositories/rule-probe-cache.ts';
 import { SqliteScanLedgerRepository } from './repositories/scan-ledger.ts';
 import { SqliteSecretVaultRepository } from './repositories/secret-vault.ts';
-import { SqliteSecurityRepository } from './repositories/security.ts';
+import { selectOpenFindingKeysForRule, SqliteSecurityRepository } from './repositories/security.ts';
 import { SqliteSharesRepository } from './repositories/shares.ts';
 import { SqliteSourceProjectRepository } from './repositories/source-project.ts';
 import { purgeSampleData } from './sample-purge.ts';
@@ -197,6 +197,22 @@ export interface LocalDatabase {
   // or a bad row rolls back and is swallowed — dropping telemetry never breaks
   // a session.
   recordCapture(event: IngestEvent, findings: DetectedFindingWithKey[]): void;
+  // Close every open at-rest finding of one rule with a `dismissed`
+  // disposition, and return how many finding keys that wrote. The keys are
+  // selected and their rows inserted under one `BEGIN IMMEDIATE`, which takes
+  // the write lock before the select, so no other writer can resolve a key
+  // between the read and the write — a scan's `fixed-at-source` landing in that
+  // gap would otherwise be superseded by the later dismissal and read as open
+  // again. Called inside a transaction the caller already holds, it runs in
+  // that transaction instead, and a resolve committed after its snapshot fails
+  // the write with SQLITE_BUSY rather than being superseded. The key set is the
+  // one `security.openFindingKeysForRule` returns. THROWS rather than failing
+  // open: a dismissal is reported to a person as done, so a dropped one must
+  // surface.
+  dismissOpenFindingsForRule(
+    ruleId: string,
+    disposition: Pick<ResolutionInput, 'method' | 'resolvedAt' | 'evidence'>,
+  ): number;
   // Stamp a capture the LIVE forward already delivered, so the outbox does not
   // offer it again. Keyed on the same tuple `recordCapture` writes the row
   // under, and settled through the same statement a drain uses, so the two
@@ -631,6 +647,35 @@ export function openLocalDatabase(
     });
   }
 
+  function dismissOpenFindingsForRule(
+    ruleId: string,
+    disposition: Pick<ResolutionInput, 'method' | 'resolvedAt' | 'evidence'>,
+  ): number {
+    let dismissed = 0;
+    withTransaction(
+      db,
+      () => {
+        const keys = selectOpenFindingKeysForRule(db, ruleId);
+        resolutions.insertResolutions(
+          keys.map((findingKey) => ({
+            findingKey,
+            status: 'dismissed' as const,
+            method: disposition.method,
+            resolvedAt: disposition.resolvedAt,
+            evidence: disposition.evidence,
+          })),
+        );
+        dismissed = keys.length;
+      },
+      // IMMEDIATE takes the write lock at BEGIN, before the select, which is
+      // what keeps a concurrent resolve out of the gap. It also makes waiting
+      // on a busy writer an ordinary busy_timeout wait rather than a
+      // read-to-write upgrade SQLite refuses to retry.
+      'IMMEDIATE',
+    );
+    return dismissed;
+  }
+
   function recordCapture(event: IngestEvent, detected: DetectedFindingWithKey[]): void {
     // Fail-open: dropping telemetry is acceptable; breaking the host session
     // is not. A locked/corrupt DB or a bad row leaves the session untouched.
@@ -901,6 +946,7 @@ export function openLocalDatabase(
     inspectionDefinitions,
     inspectionFindings,
     recordCapture,
+    dismissOpenFindingsForRule,
     markCaptureDelivered,
     markCaptureOwed,
     markAuditEventsDelivered,

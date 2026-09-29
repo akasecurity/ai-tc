@@ -3,7 +3,8 @@
 // (see provenanceState in meta.ts):
 //
 //   update-available → amber banner (+ Update button when the app supplies
-//                      `onOpenUpdate`)
+//                      `onOpenUpdate`; with `updateRefusal` that same button
+//                      renders in place, offered-and-disabled, beside its reason)
 //   up-to-date       → the store VERIFIED the installed snapshot matches what
 //                      the binaries ship (update.available === false)
 //   unknown          → nothing has recorded an inventory yet (update == null):
@@ -17,26 +18,43 @@
 // than the component hardcoding one remediation. Omitted
 // → just the neutral status line.
 import type { DetectionDetail } from '@akasecurity/schema';
-import { Button } from '@akasecurity/ui-kit';
-import type { ReactNode } from 'react';
+import { Button, cn } from '@akasecurity/ui-kit';
+import { type ReactNode, useId } from 'react';
 
 import { ArrowUpIcon, CheckCircleIcon, InfoIcon } from '../shared/icons.tsx';
+import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
 import { OriginBadge, PublisherTag } from './atoms.tsx';
 import { provenanceState } from './meta.ts';
 
 export function ProvenanceBlock({
   d,
   onOpenUpdate,
+  updateRefusal,
   onRecheck,
   unknownHint,
 }: {
   d: DetectionDetail;
   onOpenUpdate?: (() => void) | undefined;
+  /**
+   * Why this host cannot operate Update. Set (alongside `onOpenUpdate`, the
+   * control it stands in for), the same amber button renders in its place,
+   * offered-and-disabled — focusable, `aria-disabled`, its reason visible
+   * beside it — and never calls `onOpenUpdate`. Without `onOpenUpdate` there is
+   * no control to refuse, so nothing renders, exactly as before.
+   */
+  updateRefusal?: string | undefined;
   onRecheck?: (() => void) | undefined;
   unknownHint?: ReactNode;
 }) {
   const state = provenanceState(d);
   const latestVersion = d.update?.latestVersion ?? d.latestVersion ?? '';
+  const updateReasonId = useId();
+  // null when live. The hover string is the live button's own override — it
+  // cancels the default solid/primary hover, so the refused one repeats it.
+  const updateRefused =
+    updateRefusal === undefined
+      ? null
+      : refusedControlProps(updateReasonId, updateRefusal, 'hover:bg-sev-high-ink');
 
   return (
     <div className="overflow-hidden rounded-xl border border-border shrink-0">
@@ -63,15 +81,31 @@ export function ProvenanceBlock({
               A newer version is published upstream.
             </div>
           </div>
-          {onOpenUpdate && (
-            <Button
-              size="sm"
-              onClick={onOpenUpdate}
-              className="shrink-0 bg-sev-high-ink text-on-accent hover:bg-sev-high-ink"
-            >
-              Update
-            </Button>
-          )}
+          {onOpenUpdate &&
+            (updateRefused === null ? (
+              <Button
+                size="sm"
+                data-slot="open-update"
+                onClick={onOpenUpdate}
+                className="shrink-0 bg-sev-high-ink text-on-accent hover:bg-sev-high-ink"
+              >
+                Update
+              </Button>
+            ) : (
+              <div className="flex max-w-56 shrink-0 flex-col items-end gap-1 text-right">
+                <Button
+                  size="sm"
+                  data-slot="open-update"
+                  {...updateRefused}
+                  className={cn('shrink-0 bg-sev-high-ink text-on-accent', updateRefused.className)}
+                >
+                  Update
+                </Button>
+                <RefusalReason id={updateReasonId} dataSlot="open-update-reason">
+                  {updateRefusal}
+                </RefusalReason>
+              </div>
+            ))}
         </div>
       ) : state === 'up-to-date' ? (
         <div className="flex items-center gap-2.5 px-4 py-2.5 text-xs text-text-3">

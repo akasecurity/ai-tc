@@ -52,7 +52,6 @@ import {
   MATCHER_META,
   matcherSummary,
   policyMeta,
-  provenanceState,
 } from './meta.ts';
 import {
   DETECTION_STAYS_ON_REASON,
@@ -216,8 +215,8 @@ export function DetectionDetailView({
    * picker, "Add rule", and "Edit rules" (in the "More" menu) each render
    * offered-and-disabled — focusable, `aria-disabled`, described by this
    * reason — and their handlers are never called, regardless of origin or
-   * what the host wired. Also covers the "Update" button ProvenanceBlock
-   * would otherwise render below, refused the same way. Absent ⇒ every one
+   * what the host wired. Also covers the "Update" button in the provenance
+   * banner, which renders in place, refused the same way. Absent ⇒ every one
    * of those controls renders exactly as it did before this prop existed.
    */
   editRefusal?: string | undefined;
@@ -322,7 +321,6 @@ export function DetectionDetailView({
   // they belong to is actually in its refused state.
   const addRuleReasonId = useId();
   const moreReasonId = useId();
-  const updateRefusalReasonId = useId();
   // null when live, so a spread/optional-chain at the call site is the one
   // place either state is decided — see shared/Refusal.tsx for what each
   // field means and why `neutralizeHover` cannot be a shared constant.
@@ -332,24 +330,6 @@ export function DetectionDetailView({
   const moreRefusal = hasMoreActions
     ? null
     : refusedControlProps(moreReasonId, moreReason, 'hover:bg-transparent hover:text-text-3');
-  // The Update button lives inside ProvenanceBlock, a separate component
-  // this pane renders rather than owns — and per the interface contract
-  // ProvenanceBlock gets no new prop of its own. So this is refused from OUT
-  // HERE: `onOpenUpdate` is withheld from ProvenanceBlock below (its own
-  // button only renders `{onOpenUpdate && ...}`, so it disappears
-  // entirely) and this pane renders the refused replacement itself,
-  // immediately after it. Only meaningful when there would otherwise be a
-  // live Update button to take the place of — a host that wired no update
-  // path, or a detection that is not update-available, gets nothing extra.
-  const updateRefusal =
-    editRefusal !== undefined &&
-    onOpenUpdate !== undefined &&
-    provenanceState(d) === 'update-available'
-      ? {
-          reason: editRefusal,
-          ...refusedControlProps(updateRefusalReasonId, editRefusal, 'hover:bg-surface-3'),
-        }
-      : null;
   // Built once and shared by both branches below.
   const moreTrigger = (
     <Button
@@ -481,27 +461,11 @@ export function DetectionDetailView({
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-5">
         <ProvenanceBlock
           d={d}
-          onOpenUpdate={updateRefusal ? undefined : onOpenUpdate}
+          onOpenUpdate={onOpenUpdate}
+          updateRefusal={editRefusal}
           onRecheck={onRecheck}
           unknownHint={unknownHint}
         />
-        {updateRefusal && (
-          <div className="flex items-center gap-2.5">
-            <Button
-              size="sm"
-              data-slot="open-update"
-              aria-disabled={updateRefusal['aria-disabled']}
-              aria-describedby={updateRefusal['aria-describedby']}
-              title={updateRefusal.title}
-              className={updateRefusal.className}
-            >
-              Update
-            </Button>
-            <RefusalReason id={updateRefusalReasonId} dataSlot="open-update-reason">
-              {updateRefusal.reason}
-            </RefusalReason>
-          </div>
-        )}
 
         {/* policy block */}
         <div>

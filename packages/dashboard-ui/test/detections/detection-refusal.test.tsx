@@ -111,7 +111,7 @@ function open(): void {
 
 function updateButton(): HTMLButtonElement {
   const el = mounted.host.querySelector('button[data-slot="open-update"]');
-  if (!(el instanceof HTMLButtonElement)) throw new Error('no refused "Update" button rendered');
+  if (!(el instanceof HTMLButtonElement)) throw new Error('no "Update" button rendered');
   return el;
 }
 
@@ -338,7 +338,7 @@ describe('the "More" menu under editRefusal and deleteRefusal', () => {
 });
 
 describe('the Update button under editRefusal', () => {
-  it("refuses a live click, reason visible and linked, in place of ProvenanceBlock's own button", () => {
+  it('refuses a live click in place: inside the banner, amber, reason visible and linked', () => {
     const onOpenUpdate = vi.fn();
     mount(
       <DetectionDetailView
@@ -355,10 +355,24 @@ describe('the Update button under editRefusal', () => {
     expect(updateButtons).toHaveLength(1);
 
     const button = updateButton();
+    // In the banner that names the update, not a second control below the block.
+    const banner = button.closest('.bg-sev-high-fill');
+    expect(banner).not.toBeNull();
+    expect(banner?.textContent).toContain('Update available');
+    // The live button's own amber look, kept while refused.
+    expect(button.className).toContain('bg-sev-high-ink');
+    expect(button.className).toContain('text-on-accent');
+    // Cancels the live button's hover:bg-sev-high-ink override of the default
+    // solid/primary hover (hover:bg-primary-hover).
+    expect(button.className).toContain('hover:bg-sev-high-ink');
     expect(button.disabled).toBe(false);
     expect(button.getAttribute('aria-disabled')).toBe('true');
+    expect(button.getAttribute('title')).toBe(REASON);
     expect(describedReason(button)).toBe(REASON);
     expect(describedSlot(button)).toBe('open-update-reason');
+    expect(
+      banner?.contains(document.getElementById(button.getAttribute('aria-describedby') ?? '')),
+    ).toBe(true);
 
     act(() => {
       button.click();
@@ -366,7 +380,7 @@ describe('the Update button under editRefusal', () => {
     expect(onOpenUpdate).not.toHaveBeenCalled();
   });
 
-  it("renders ProvenanceBlock's own live button, and nothing else, when editRefusal is absent", () => {
+  it("renders ProvenanceBlock's own live button when editRefusal is absent, under the same data-slot", () => {
     const onOpenUpdate = vi.fn();
     mount(
       <DetectionDetailView
@@ -376,15 +390,31 @@ describe('the Update button under editRefusal', () => {
       />,
     );
 
-    expect(mounted.host.querySelector('[data-slot="open-update"]')).toBeNull();
     const updateButtons = [...mounted.host.querySelectorAll('button')].filter(
       (b) => b.textContent === 'Update',
     );
     expect(updateButtons).toHaveLength(1);
+    const button = updateButton();
+    expect(button).toBe(updateButtons[0]);
+    expect(button.getAttribute('aria-disabled')).toBeNull();
+    expect(mounted.host.querySelector('[data-slot="open-update-reason"]')).toBeNull();
     act(() => {
-      updateButtons[0]?.click();
+      button.click();
     });
     expect(onOpenUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders no Update control when the host wired no update path, even with editRefusal set', () => {
+    mount(
+      <DetectionDetailView
+        d={updateAvailable()}
+        onOpenRule={() => undefined}
+        editRefusal={REASON}
+      />,
+    );
+
+    expect(mounted.host.querySelector('[data-slot="open-update"]')).toBeNull();
+    expect(mounted.host.querySelector('[data-slot="open-update-reason"]')).toBeNull();
   });
 
   it('adds nothing when the detection is not update-available, even with editRefusal set', () => {

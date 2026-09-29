@@ -1409,9 +1409,9 @@ version it is publishing, with one shell `case`: a `-beta.*` version goes to the
 machine that did not ask for it. The binary channel gives the same guarantee by a DIFFERENT
 mechanism, and the difference is load-bearing: see "Binary (SEA) channel" below. There is no separate
 tag prefix for a pre-release: `cli-v0.10.0-beta.1` rides the existing prefix, which is what keeps
-each workflow's tag-to-manifest equality check in force. `notify-marketplace.yml` dispatches a
-suffixed version like any other and leaves declining it to the importer that owns the pin, which
-accepts only an exact `x.y.z` — that rule lives on that side, in one place.
+each workflow's tag-to-manifest equality check in force. Nothing here notifies the marketplace
+that pins the Claude Code plugin: its importer reads what it needs from npm and accepts only an
+exact `x.y.z`, so declining a suffixed version is a rule that lives on that side, in one place.
 
 `packages/eslint-config/test/release-channels.test.js` holds that by EXECUTING each publish
 step's extracted `case` block under bash against sample versions, rather than by reading the
@@ -1512,6 +1512,18 @@ rules as a workflow filter — `*` stops at a `/` — so `release/*` covers `rel
 matches is `release/**/*`. A branch named bare `release` matches neither list and gets no CI at
 all, so release branches are named `release/<something>`. On the push side, the dependency audit,
 CodeQL and the internal-path guard still run post-merge for `main` only.
+
+**Where a stable Claude Code plugin tag goes.** A bare `plugin-claude-v<X.Y.Z>` is cut only after
+its release pull request merges, on the commit that merge put on `main` (the merge commit, or the
+squash or rebase commit when the pull request used one), never on the release branch before the
+merge. The commit a stable version's npm provenance names is then one `main` holds, which is what
+verifying a release against reviewed code needs; a tag cut before a squash or rebase merge would
+name a commit `main` never holds. A pre-release is the exception above: it is cut on its release
+branch. `release-plugin-claude.yml` publishes only on the tag push: its manual dispatch has no
+publish input and is always a dry run, its npm publish sits behind the tag-to-manifest check, and
+its GitHub Packages job waits for that check's job. `release-plugin-claude-gates.test.js` (in
+`packages/eslint-config/test/`) pins those gates, and that the workflow reads no secret but its own
+`GITHUB_TOKEN`.
 
 ### Binary (SEA) channel — `bin-v*`
 

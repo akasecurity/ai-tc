@@ -8,8 +8,10 @@ name: Release plugin (Claude Code)
 # whose source resolves this package from public npm (GitHub Packages requires auth
 # even for public reads, so it is a secondary artifact, not the marketplace source).
 #
-# Release flow: bump version in package.json + .claude-plugin/plugin.json, then
-# push a tag `plugin-claude-v<version>` (e.g. plugin-claude-v0.1.0).
+# Release flow: bump version in package.json + .claude-plugin/plugin.json in the
+# release pull request. After it merges, push a tag `plugin-claude-v<version>`
+# (e.g. plugin-claude-v0.1.0) on the commit that merge put on `main`. A
+# pre-release is the one exception: it is tagged on its release branch.
 
 on:
   push:

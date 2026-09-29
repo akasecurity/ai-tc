@@ -4,8 +4,16 @@
 // SubstitutePointersResult shape, and grants/auditing are its business.
 import { describe, expect, it, vi } from 'vitest';
 
-import type { PointerField, PointerFieldOutcome } from '../../src/hooks/pointer-substitution.ts';
-import { decideInputPointers, denyPointerMessage } from '../../src/hooks/pointer-substitution.ts';
+import type {
+  PointerDenyField,
+  PointerField,
+  PointerFieldOutcome,
+} from '../../src/hooks/pointer-substitution.ts';
+import {
+  decideInputPointers,
+  decidePointerDeny,
+  denyPointerMessage,
+} from '../../src/hooks/pointer-substitution.ts';
 
 // A well-formed wire pointer: [[aka:<category>:<b32 key_version>.<b32 id ×26>.<b32 tag ×16>]].
 // `seed` must be a base32 character (A-Z, 2-7); distinct seeds give distinct pointers.
@@ -171,6 +179,61 @@ describe('decideInputPointers — field selection and independence', () => {
       { path: ['content'], disposition: 'keep' },
       { path: ['url'], disposition: 'deny' },
     ]);
+  });
+});
+
+describe('decidePointerDeny', () => {
+  function denyField(text: string, executable: boolean, synthetic = false): PointerDenyField {
+    return { text, executable, synthetic };
+  }
+
+  it('denies an ungranted pointer in an ordinary executable field', async () => {
+    const probe = vi.fn(() => Promise.resolve({ ungranted: [P1] }));
+    const result = await decidePointerDeny([denyField(`echo ${P1}`, true)], probe);
+    expect(result).toBe(true);
+    expect(probe).toHaveBeenCalledWith(`echo ${P1}`);
+  });
+
+  it('allows a fully granted pointer in an ordinary executable field', async () => {
+    const probe = vi.fn(() => Promise.resolve({ ungranted: [] }));
+    const result = await decidePointerDeny([denyField(`echo ${P1}`, true)], probe);
+    expect(result).toBe(false);
+  });
+
+  it('denies a GRANTED pointer used as a synthetic field (a joined-keys chunk)', async () => {
+    // A joined-keys chunk has no write-back target, so even a granted
+    // pointer there can never be dereferenced in place — only ever left as
+    // the literal token, which the caller must deny rather than emit.
+    const probe = vi.fn(() => Promise.resolve({ ungranted: [] }));
+    const result = await decidePointerDeny([denyField(P1, true, true)], probe);
+    expect(result).toBe(true);
+  });
+
+  it('allows a synthetic field carrying no pointer at all', async () => {
+    const probe = vi.fn(() => Promise.resolve({ ungranted: [] }));
+    const result = await decidePointerDeny([denyField('ordinary key text', true, true)], probe);
+    expect(result).toBe(false);
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('never probes a non-executable field, synthetic or not', async () => {
+    const probe = vi.fn(() => Promise.resolve({ ungranted: [] }));
+    const result = await decidePointerDeny(
+      [denyField(`token: ${P1}`, false, false), denyField(`token: ${P1}`, false, true)],
+      probe,
+    );
+    expect(result).toBe(false);
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('stops probing once a field has already decided the call denies', async () => {
+    const probe = vi.fn(() => Promise.resolve({ ungranted: [P1] }));
+    const result = await decidePointerDeny(
+      [denyField(`echo ${P1}`, true), denyField(`echo ${P2}`, true)],
+      probe,
+    );
+    expect(result).toBe(true);
+    expect(probe).toHaveBeenCalledTimes(1);
   });
 });
 

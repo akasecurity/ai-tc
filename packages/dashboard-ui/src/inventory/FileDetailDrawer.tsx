@@ -6,6 +6,7 @@
 // callback — the host owns both the load and the write.
 import type { AccessLevel, FileDetail } from '@akasecurity/schema';
 import { SheetHeader, SheetTitle } from '@akasecurity/ui-kit';
+import { useId } from 'react';
 
 import { MetaItem } from '../shared/DetailFields.tsx';
 import { OriginTag, RadioCardList, Section, VisBadge } from './chips.tsx';
@@ -15,12 +16,20 @@ import { Ico } from './Ico.tsx';
 export function FileDetailDrawer({
   file,
   onChange,
+  accessRefusal,
 }: {
   file: FileDetail;
   onChange: (v: AccessLevel) => void;
+  /**
+   * Set when this file's access control cannot be operated by the host:
+   * the picker renders offered-and-disabled with this text as the reason,
+   * and `onChange` is never called. Absent ⇒ identical to today.
+   */
+  accessRefusal?: string | undefined;
 }) {
   const om = originMeta[file.origin];
   const project = file.project;
+  const accessReasonId = useId();
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -57,6 +66,11 @@ export function FileDetailDrawer({
             // `accent`, not `bar`: this fills the check circle under a
             // `text-on-accent` glyph, so it needs the ink. `bar` is the hue.
             accentOf={(a) => a.accent}
+            refusal={
+              accessRefusal === undefined
+                ? undefined
+                : { id: accessReasonId, reason: accessRefusal }
+            }
           />
         </Section>
 

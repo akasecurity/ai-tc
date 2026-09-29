@@ -32,7 +32,7 @@ import {
   type Tone,
   TONE_SOFT,
 } from '@akasecurity/ui-kit';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 
 import type { IconComponent } from '../lib/icons.ts';
 import { ChoiceGroup } from '../shared/ChoiceGroup.tsx';
@@ -43,6 +43,7 @@ import {
   SlashCircleIcon,
   SparklesIcon,
 } from '../shared/icons.tsx';
+import { RefusalReason, refusedControlProps } from '../shared/Refusal.tsx';
 import { canConfirmDismiss, DISMISS_METHODS, dismissConsequences } from './dismiss-gate.ts';
 import { WidgetError } from './widget-shared.tsx';
 
@@ -77,6 +78,18 @@ export interface RecommendedActionsView {
    * that looks live and does nothing reads as a broken feature.
    */
   viewAllHref?: string | undefined;
+  /**
+   * Set when Apply and Dismiss cannot be operated by the host: both controls
+   * (Apply only in its `mode === 'apply'` branch; Dismiss only for a row that
+   * has a rule subject to dismiss — a row without one renders no Dismiss
+   * control either way) render offered-and-disabled via
+   * `refusedControlProps`, with this text as the reason, and neither
+   * `applyAction` nor `dismissAction` is ever called. That includes a
+   * refusal arriving while the dismiss dialog is already open: its confirm
+   * control then renders refused too, with the reason shown inside the dialog.
+   * Absent ⇒ identical to today.
+   */
+  actionRefusal?: string | undefined;
   applyAction: (id: string) => void;
   /**
    * Close out every open finding of one rule. Resolves `true` when the write
@@ -116,6 +129,7 @@ export function RecommendedActionsCardView({
   isMutating,
   mutationError,
   viewAllHref,
+  actionRefusal,
 }: RecommendedActionsView) {
   // Which row's dialog is open, plus its form. Presentation state, so it lives
   // here rather than in the host: the host owns whether a write is in flight
@@ -124,6 +138,9 @@ export function RecommendedActionsCardView({
   const [pending, setPending] = useState<{ action: RecommendedAction; ruleId: string } | null>(
     null,
   );
+  // Names the reason line inside the dialog, so the confirm control can point
+  // at it; per-instance so two cards on one page cannot share a target.
+  const dialogRefusalId = useId();
   const [method, setMethod] = useState<DismissMethod | null>(null);
   const [confirmation, setConfirmation] = useState('');
   // Whether THIS dialog session has submitted anything yet.
@@ -246,10 +263,22 @@ export function RecommendedActionsCardView({
                         variant="solid"
                         tone="primary"
                         size="sm"
-                        disabled={isMutating}
-                        onClick={() => {
-                          applyAction(a.id);
-                        }}
+                        data-slot="recommended-action-apply"
+                        disabled={actionRefusal === undefined ? isMutating : undefined}
+                        onClick={
+                          actionRefusal === undefined
+                            ? () => {
+                                applyAction(a.id);
+                              }
+                            : undefined
+                        }
+                        {...(actionRefusal === undefined
+                          ? {}
+                          : refusedControlProps(
+                              `${a.id}-action-refusal`,
+                              actionRefusal,
+                              'hover:bg-primary-solid',
+                            ))}
                       >
                         {a.action.label}
                       </Button>
@@ -268,16 +297,40 @@ export function RecommendedActionsCardView({
                       <Button
                         variant="ghost"
                         size="sm"
-                        disabled={isMutating}
-                        onClick={() => {
-                          setPending({ action: a, ruleId: rule.id });
-                          setMethod(null);
-                          setConfirmation('');
-                        }}
+                        data-slot="recommended-action-dismiss"
+                        disabled={actionRefusal === undefined ? isMutating : undefined}
+                        onClick={
+                          actionRefusal === undefined
+                            ? () => {
+                                setPending({ action: a, ruleId: rule.id });
+                                setMethod(null);
+                                setConfirmation('');
+                              }
+                            : undefined
+                        }
+                        {...(actionRefusal === undefined
+                          ? {}
+                          : refusedControlProps(
+                              `${a.id}-action-refusal`,
+                              actionRefusal,
+                              'hover:bg-transparent hover:text-text-2',
+                            ))}
                       >
                         Dismiss
                       </Button>
                     )}
+                    {/* Only where this row actually holds a refused control — Apply in
+                        its apply branch, Dismiss for a rule subject. A navigate link
+                        stays live, and a reason line beside it would point at nothing. */}
+                    {actionRefusal !== undefined &&
+                      (a.action.mode === 'apply' || rule !== undefined) && (
+                        <RefusalReason
+                          id={`${a.id}-action-refusal`}
+                          dataSlot="action-refusal-reason"
+                        >
+                          {actionRefusal}
+                        </RefusalReason>
+                      )}
                   </div>
                 </div>
               );
@@ -378,6 +431,11 @@ export function RecommendedActionsCardView({
                   session has submitted, because the host's error outlives the
                   dialog it came from. */}
               {submitted && mutationError !== null && <WidgetError message={mutationError} />}
+              {actionRefusal !== undefined && (
+                <RefusalReason id={dialogRefusalId} dataSlot="dismiss-refusal-reason">
+                  {actionRefusal}
+                </RefusalReason>
+              )}
             </DialogBody>
             <DialogFooter>
               <Button
@@ -394,8 +452,23 @@ export function RecommendedActionsCardView({
                 variant="solid"
                 tone="danger"
                 size="sm"
-                disabled={!canConfirmDismiss({ confirmation, method, isMutating })}
-                onClick={confirmDismiss}
+                disabled={
+                  actionRefusal === undefined
+                    ? !canConfirmDismiss({ confirmation, method, isMutating })
+                    : undefined
+                }
+                // The one place a refusal stops the dismiss: a refusal can land
+                // while the dialog is open (`pending` survives the re-render), and
+                // the confirm then has no handler to reach.
+                onClick={actionRefusal === undefined ? confirmDismiss : undefined}
+                {...(actionRefusal === undefined
+                  ? {}
+                  : // solid/danger hovers via hover:bg-sev-critical-hover.
+                    refusedControlProps(
+                      dialogRefusalId,
+                      actionRefusal,
+                      'hover:bg-sev-critical-ink',
+                    ))}
               >
                 {isMutating ? 'Dismissing…' : 'Dismiss findings'}
               </Button>

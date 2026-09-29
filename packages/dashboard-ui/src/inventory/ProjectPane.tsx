@@ -24,8 +24,9 @@ import {
   TableHeader,
   TableRow,
 } from '@akasecurity/ui-kit';
-import { Fragment } from 'react';
+import { Fragment, useId } from 'react';
 
+import { RefusalReason } from '../shared/Refusal.tsx';
 import { SearchField } from '../shared/SearchField.tsx';
 import { AccessBar, AccessControl, AccessLabel, OriginTag, VisBadge } from './chips.tsx';
 import { ACCESS, ACCESS_ORDER, fmtDateTime, rationale } from './data.ts';
@@ -43,6 +44,14 @@ export interface ProjectPaneProps {
   error: string | null;
   // Fires the setFileAccess mutation for a single file.
   onSetAccess: (path: string, access: AccessLevel) => void;
+  /**
+   * Set when the per-file access control cannot be operated by the host:
+   * every instance this pane renders (the browse/search table and the
+   * "Recently blocked" strip) renders offered-and-disabled with this text
+   * as the reason, and `onSetAccess` is never called. Absent ⇒ identical
+   * to today.
+   */
+  accessRefusal?: string | undefined;
   onOpenFile: (path: string) => void;
   drawerPath: string | null;
   // Project-wide auto-blocked files (tree `filter=blocked`) for the strip below
@@ -294,7 +303,15 @@ function FileRow({
   onOpenFile,
   drawerPath,
   showPath,
+  accessRefusal,
 }: ProjectPaneProps & { file: FileSummary; showPath?: boolean | undefined }) {
+  // A per-instance id, not one built from the path: a path can hold
+  // whitespace, which splits an aria-describedby IDREF list into tokens that
+  // match nothing (and is not a valid HTML id anyway). Each row component
+  // instance mints its own, so this same file also rendering in BlockedStrip's
+  // separate list cannot collide with it.
+  const reasonId = useId();
+  const refusal = accessRefusal === undefined ? undefined : { id: reasonId, reason: accessRefusal };
   return (
     <TableRow
       className={cn(
@@ -318,8 +335,15 @@ function FileRow({
             onChange={(v) => {
               onSetAccess(file.path, v);
             }}
+            refusal={refusal}
           />
-          <AccessLabel value={file.access} />
+          {refusal ? (
+            <RefusalReason id={refusal.id} dataSlot="access-refusal-reason" className="min-w-23">
+              {refusal.reason}
+            </RefusalReason>
+          ) : (
+            <AccessLabel value={file.access} />
+          )}
         </div>
       </TableCell>
       <TableCell>
@@ -357,6 +381,61 @@ function FileTable({
   );
 }
 
+/** One row of BlockedStrip's list — a component of its own so it can mint its own reason id. */
+function BlockedRow({
+  file,
+  onSetAccess,
+  onOpenFile,
+  accessRefusal,
+}: Pick<ProjectPaneProps, 'onSetAccess' | 'onOpenFile' | 'accessRefusal'> & {
+  file: FileSummary;
+}) {
+  const dir = dirOf(file.path);
+  // Per-instance, not path-derived — see FileRow: a path's whitespace would
+  // break the IDREF list, and this instance's id cannot collide with the
+  // table row's for the same file.
+  const reasonId = useId();
+  const refusal = accessRefusal === undefined ? undefined : { id: reasonId, reason: accessRefusal };
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-1.5 overflow-hidden whitespace-nowrap">
+          {dir.length > 0 && <span className="font-mono text-xs text-text-3">{dir}/</span>}
+          <span className="font-mono text-xs font-semibold text-text">{file.name}</span>
+        </div>
+        <div className="mt-0.5 text-xs text-text-3">
+          {file.note}
+          {file.blockedAt ? ` · blocked ${fmtDateTime(file.blockedAt)}` : ''}
+        </div>
+      </div>
+      <AccessControl
+        value={file.access}
+        onChange={(v) => {
+          onSetAccess(file.path, v);
+        }}
+        refusal={refusal}
+      />
+      {refusal ? (
+        <RefusalReason id={refusal.id} dataSlot="access-refusal-reason" className="min-w-23">
+          {refusal.reason}
+        </RefusalReason>
+      ) : (
+        <AccessLabel value={file.access} />
+      )}
+      <Button
+        variant="ghost"
+        tone="primary"
+        size="sm"
+        onClick={() => {
+          onOpenFile(file.path);
+        }}
+      >
+        Review
+      </Button>
+    </div>
+  );
+}
+
 /**
  * Collapsible strip above the file table listing every auto-blocked file across
  * the whole project (GET .../tree?filter=blocked). Each row carries the same
@@ -368,6 +447,7 @@ function BlockedStrip({
   onToggleBlocked,
   onSetAccess,
   onOpenFile,
+  accessRefusal,
 }: ProjectPaneProps) {
   return (
     <div className="border-b border-border bg-surface-2">
@@ -394,45 +474,15 @@ function BlockedStrip({
       </button>
       {showBlocked && (
         <div className="flex flex-col gap-2 px-3.5 pb-3">
-          {blocked.map((file) => {
-            const dir = dirOf(file.path);
-            return (
-              <div
-                key={file.path}
-                className="flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-1.5 overflow-hidden whitespace-nowrap">
-                    {dir.length > 0 && (
-                      <span className="font-mono text-xs text-text-3">{dir}/</span>
-                    )}
-                    <span className="font-mono text-xs font-semibold text-text">{file.name}</span>
-                  </div>
-                  <div className="mt-0.5 text-xs text-text-3">
-                    {file.note}
-                    {file.blockedAt ? ` · blocked ${fmtDateTime(file.blockedAt)}` : ''}
-                  </div>
-                </div>
-                <AccessControl
-                  value={file.access}
-                  onChange={(v) => {
-                    onSetAccess(file.path, v);
-                  }}
-                />
-                <AccessLabel value={file.access} />
-                <Button
-                  variant="ghost"
-                  tone="primary"
-                  size="sm"
-                  onClick={() => {
-                    onOpenFile(file.path);
-                  }}
-                >
-                  Review
-                </Button>
-              </div>
-            );
-          })}
+          {blocked.map((file) => (
+            <BlockedRow
+              key={file.path}
+              file={file}
+              onSetAccess={onSetAccess}
+              onOpenFile={onOpenFile}
+              accessRefusal={accessRefusal}
+            />
+          ))}
         </div>
       )}
     </div>

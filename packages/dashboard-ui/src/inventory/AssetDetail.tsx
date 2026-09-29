@@ -13,7 +13,7 @@ import type {
   TrustLevel,
 } from '@akasecurity/schema';
 import { Button, cn } from '@akasecurity/ui-kit';
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useId, useState } from 'react';
 
 import { FlagChips, RadioCardList, Section, TrustPill } from './chips.tsx';
 import { assetTile, TRUST, TRUST_ORDER } from './data.ts';
@@ -31,17 +31,29 @@ export function AssetDetail({
   asset,
   onTrust,
   onClose,
+  trustRefusal,
 }: {
   asset: AssetDetailShape;
   onTrust: (v: TrustLevel) => void;
   // Present only when the asset was opened from a harness — closes back to that
   // harness's overview. Omitted in the by-type view, where there's no harness.
   onClose?: (() => void) | undefined;
+  /**
+   * Set when the MCP trust control cannot be operated by the host: the
+   * picker renders offered-and-disabled with this text as the reason, and
+   * `onTrust` is never called. Absent ⇒ identical to today. Meaningful
+   * only for an MCP asset — there is no trust picker to refuse for any
+   * other asset type, and every other button this view renders
+   * (`actionsFor` below) is a visual affordance with no operation behind
+   * it, so it stays untouched either way.
+   */
+  trustRefusal?: string | undefined;
 }) {
   const isMcp = asset.type === 'mcp';
   const trust = asset.trust; // null for non-MCP assets
   const tile = assetTile(asset.type);
   const typeLabel = TYPE_LABEL[asset.type as Exclude<AssetType, 'project'>];
+  const trustReasonId = useId();
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -90,6 +102,9 @@ export function AssetDetail({
               value={trust}
               onChange={onTrust}
               accentOf={(t) => t.iconBg}
+              refusal={
+                trustRefusal === undefined ? undefined : { id: trustReasonId, reason: trustRefusal }
+              }
             />
           </Section>
         )}

@@ -407,16 +407,16 @@ describe('a refusal arriving while the dialog is open', () => {
     expect(confirm.getAttribute('title')).toBe(REASON);
     // The hover utility that cancels this danger button's own hover
     // (solid/danger hovers via hover:bg-sev-critical-hover).
-    expect(confirm.className).toContain('hover:bg-sev-critical-ink');
+    expect(confirm.className.split(' ')).toContain('hover:bg-sev-critical-ink');
 
     const id = confirm.getAttribute('aria-describedby');
     if (id === null) throw new Error('the refused confirm names no reason');
     const line = document.getElementById(id);
     expect(line?.textContent).toBe(REASON);
-    expect(
-      line?.closest('[role="dialog"]'),
-      'the reason must sit inside the dialog',
-    ).not.toBeNull();
+    // The same dialog content the confirm control sits in.
+    const content = confirm.closest('[data-slot="dialog-content"]');
+    expect(content, 'the confirm control must sit in the dialog').not.toBeNull();
+    expect(content?.contains(line), 'the reason must sit inside the dialog').toBe(true);
 
     click(confirm);
     expect(requests).toEqual([]);

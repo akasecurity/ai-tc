@@ -200,7 +200,55 @@ describe('Apply and Dismiss, refused', () => {
     expect(dismissButton()).toBeNull();
   });
 
-  it('leaves the navigate-mode Apply link unaffected (no applyAction to refuse)', () => {
+  it('leaves the navigate-mode Apply link unaffected and renders no reason line for a row holding no refused control', () => {
+    mount(
+      <RecommendedActionsCardView
+        items={[
+          action({
+            // No rule subject: neither Apply (a live link) nor Dismiss is refused here.
+            subjects: [{ type: 'repo', id: 'r1', label: 'acme/api' }],
+            action: { mode: 'navigate', type: 'open_policy', label: 'Review policy', href: '/x' },
+          }),
+        ]}
+        isLoading={false}
+        error={null}
+        applyAction={noop}
+        dismissAction={() => Promise.resolve(true)}
+        isMutating={false}
+        mutationError={null}
+        actionRefusal={REASON}
+      />,
+    );
+
+    expect(mounted.host.querySelector('a[href="/x"]')).not.toBeNull();
+    expect(mounted.host.querySelector('button[data-slot="recommended-action-apply"]')).toBeNull();
+    expect(mounted.host.querySelector('[data-slot="action-refusal-reason"]')).toBeNull();
+    expect(document.getElementById('ra_1-action-refusal')).toBeNull();
+  });
+
+  it('renders no reason line for a navigate action without an href and no rule subject', () => {
+    mount(
+      <RecommendedActionsCardView
+        items={[
+          action({
+            subjects: [{ type: 'repo', id: 'r1', label: 'acme/api' }],
+            action: { mode: 'navigate', type: 'open_policy', label: 'Review policy' },
+          }),
+        ]}
+        isLoading={false}
+        error={null}
+        applyAction={noop}
+        dismissAction={() => Promise.resolve(true)}
+        isMutating={false}
+        mutationError={null}
+        actionRefusal={REASON}
+      />,
+    );
+
+    expect(mounted.host.querySelector('[data-slot="action-refusal-reason"]')).toBeNull();
+  });
+
+  it('renders the reason line on a navigate row only for its refused Dismiss', () => {
     mount(
       <RecommendedActionsCardView
         items={[
@@ -218,7 +266,9 @@ describe('Apply and Dismiss, refused', () => {
       />,
     );
 
-    expect(mounted.host.querySelector('a[href="/x"]')).not.toBeNull();
-    expect(mounted.host.querySelector('button[data-slot="recommended-action-apply"]')).toBeNull();
+    expect(mounted.host.querySelector('a[href="/x"]')?.getAttribute('aria-describedby')).toBeNull();
+    const dismiss = dismissButton();
+    if (dismiss === null) throw new Error('no Dismiss button rendered');
+    expect(describedReason(dismiss)).toBe(REASON);
   });
 });

@@ -314,11 +314,18 @@ export function RecommendedActionsCardView({
                         Dismiss
                       </Button>
                     )}
-                    {actionRefusal !== undefined && (
-                      <RefusalReason id={`${a.id}-action-refusal`} dataSlot="action-refusal-reason">
-                        {actionRefusal}
-                      </RefusalReason>
-                    )}
+                    {/* Only where this row actually holds a refused control — Apply in
+                        its apply branch, Dismiss for a rule subject. A navigate link
+                        stays live, and a reason line beside it would point at nothing. */}
+                    {actionRefusal !== undefined &&
+                      (a.action.mode === 'apply' || rule !== undefined) && (
+                        <RefusalReason
+                          id={`${a.id}-action-refusal`}
+                          dataSlot="action-refusal-reason"
+                        >
+                          {actionRefusal}
+                        </RefusalReason>
+                      )}
                   </div>
                 </div>
               );

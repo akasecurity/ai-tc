@@ -1,5 +1,11 @@
 import type { ComponentStatus, UpdateReport } from '@akasecurity/schema';
-import { RELEASE_CHANNEL } from '@akasecurity/schema';
+import {
+  MANAGED_PLUGIN_ADVICE,
+  managedPluginNoteParts,
+  RELEASE_CHANNEL,
+} from '@akasecurity/schema';
+
+import { isSemver } from './semver.ts';
 
 /**
  * The lines explaining a `latest` that came from a marketplace pin.
@@ -27,7 +33,10 @@ function pinNotes(report: UpdateReport): string[] {
   const notes: string[] = [];
   for (const s of report.statuses) {
     const pin = s.marketplacePin;
-    if (!pin) continue;
+    // A managed row's note already says who decides its version. A pin note
+    // naming a marketplace "that has to move" would hand the reader a job that
+    // is their organization's.
+    if (!pin || s.managedInstall) continue;
     if (pin.range !== undefined) {
       const npmPart = pin.npmLatest !== null ? ` npm has v${pin.npmLatest}.` : '';
       notes.push(
@@ -46,7 +55,56 @@ function pinNotes(report: UpdateReport): string[] {
   return notes;
 }
 
+/**
+ * The lines explaining a row an organization's managed settings installed.
+ *
+ * Every such row gets one, pending or not, because the table alone cannot say
+ * the one thing a reader needs: that `aka update` will not touch it, and what
+ * will. The ref goes beside the name because it is the organization's release
+ * this machine follows, which is what someone asking their IT team would quote.
+ */
+function managedNotes(report: UpdateReport): string[] {
+  const notes: string[] = [];
+  for (const s of report.statuses) {
+    if (!s.managedInstall) continue;
+    const { ref, lead } = managedPluginNoteParts(s);
+    notes.push(
+      `    ${s.name}${ref}: ${lead}${MANAGED_PLUGIN_ADVICE} \`aka update\` leaves it alone.`,
+    );
+  }
+  return notes;
+}
+
+/**
+ * What a managed row says about the machine, read once for every line that
+ * speaks about it.
+ *
+ * Three answers, not two: `pending: false` means "not known to be behind",
+ * which is only "current" when both ends are known — present AND orderable.
+ * Either end missing, or present but not a version the comparator can order
+ * (it answers `false` for what it cannot parse), leaves no comparison to
+ * state. The status cell and the closing line both read this, so they cannot
+ * disagree about the same row.
+ */
+function managedState(s: ComponentStatus): 'unknown' | 'pending' | 'current' | undefined {
+  if (!s.managedInstall) return undefined;
+  if (s.installed === null || s.latest === null) return 'unknown';
+  if (!isSemver(s.installed) || !isSemver(s.latest)) return 'unknown';
+  return s.managedInstall.pending ? 'pending' : 'current';
+}
+
+const MANAGED_STATUS = {
+  unknown: 'managed',
+  pending: 'managed — update pending',
+  current: 'managed — up to date',
+} as const;
+
 function statusLabel(s: ComponentStatus): string {
+  // First, because a managed row is never "update available" and its target
+  // can be unknown without the row being unknown: the version it runs is the
+  // organization's call, and saying so is the whole answer.
+  const managed = managedState(s);
+  if (managed !== undefined) return MANAGED_STATUS[managed];
   // Not-installed plugins are reported under availablePlugins, never here — so a null
   // installed in a status row means "couldn't determine version" (the CLI's own
   // package.json walk-up missed), which reads as unknown, not "not installed".
@@ -105,6 +163,13 @@ export function renderReport(report: UpdateReport): string {
     lines.push(...notes);
   }
 
+  const managed = managedNotes(report);
+  if (managed.length > 0) {
+    lines.push('');
+    lines.push('  Managed by your organization:');
+    lines.push(...managed);
+  }
+
   if (report.availablePlugins.length > 0) {
     lines.push('');
     lines.push('  Available plugins (not installed):');
@@ -120,4 +185,34 @@ export function renderReport(report: UpdateReport): string {
 // Which statuses actually have an update to apply (installed, latest known, ahead).
 export function outdated(report: UpdateReport): ComponentStatus[] {
   return report.statuses.filter((s) => s.updateAvailable);
+}
+
+/**
+ * The closing line when `aka update` has nothing to apply.
+ *
+ * "Everything is up to date" is false on a machine whose organization has an
+ * update on the way, and unfounded on one where a managed row's version or
+ * target is unknown: either way the row is not this command's to apply, and
+ * its own status does not say "up to date". The sentence therefore claims no
+ * pending update, only who delivers one. Shared by `aka check-updates` and
+ * `aka update` so both say the same thing about the same report.
+ */
+export function nothingToApplyLine(report: UpdateReport): string {
+  const unsettled = report.statuses.some((s) => {
+    const managed = managedState(s);
+    return managed !== undefined && managed !== 'current';
+  });
+  return unsettled
+    ? 'Nothing for `aka update` to apply — updates to the plugin your organization manages ' +
+        'arrive through Claude Code itself.'
+    : 'Everything is up to date.';
+}
+
+/**
+ * Why an update to a managed install was refused, and what does apply one.
+ * The CLI prints it for an explicit target, and the shared apply path returns
+ * it to every caller, the dashboard included.
+ */
+export function managedUpdateRefusal(name: string): string {
+  return `${name} is managed by your organization, so nothing was run. ${MANAGED_PLUGIN_ADVICE}`;
 }

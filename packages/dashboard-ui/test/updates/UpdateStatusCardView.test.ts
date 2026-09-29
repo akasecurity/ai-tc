@@ -6,6 +6,7 @@
 // version, a green badge and nothing else — indistinguishable from a report
 // that is simply stale, which is the ambiguity carrying the pin here removes.
 import type { ComponentStatus } from '@akasecurity/schema';
+import { MANAGED_PLUGIN_ADVICE } from '@akasecurity/schema';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -102,5 +103,68 @@ describe('UpdateStatusCardView — the marketplace-pin note', () => {
         }),
       ),
     ).not.toContain(NOTE);
+  });
+});
+
+// A plugin an organization's managed settings installed. The report never
+// offers it as an update, so the card must not either — and has to say who
+// moves it, or a row behind the organization's pin reads as a stale page.
+describe('UpdateStatusCardView — an install an organization manages', () => {
+  const MANAGED_NOTE = 'data-slot="managed-install-note"';
+  const managed = (over: Partial<ComponentStatus> = {}): ComponentStatus =>
+    status({
+      installed: '0.9.13',
+      latest: '0.9.14',
+      managedInstall: { ref: 'org-release-8', pending: true },
+      ...over,
+    });
+
+  it('offers no Update button and badges the row as managed', () => {
+    const html = render(managed());
+
+    // The positive control: the row itself rendered.
+    expect(html).toContain('Claude Code plugin');
+    expect(html).not.toContain('>Update<');
+    expect(html).not.toContain('update available');
+    expect(html).toContain('>managed<');
+  });
+
+  it('names what is on its way and the route that delivers it', () => {
+    const html = render(managed());
+
+    expect(html).toContain(MANAGED_NOTE);
+    expect(html).toContain('0.9.13 → 0.9.14');
+    expect(html).toContain('org-release-8');
+    expect(html).toContain('v0.9.14 is on its way.');
+    // Rendered text, so compare against the HTML-escaped wording.
+    expect(html).toContain(MANAGED_PLUGIN_ADVICE.replaceAll("'", '&#x27;'));
+  });
+
+  it('explains a current managed install without claiming anything is on its way', () => {
+    const html = render(managed({ installed: '0.9.14', managedInstall: { pending: false } }));
+
+    expect(html).toContain(MANAGED_NOTE);
+    expect(html).not.toContain('on its way');
+    // The version arrow specifically: the advice itself spells `/plugin → update`.
+    expect(html).not.toContain(' → 0.9.14');
+    expect(html).toContain('0.9.14');
+  });
+
+  it('explains the row once, not also as a marketplace pin', () => {
+    const html = render(
+      managed({
+        marketplacePin: { marketplace: 'akasecurity', npmLatest: '0.9.15', npmAhead: true },
+      }),
+    );
+
+    expect(html).toContain(MANAGED_NOTE);
+    expect(html).not.toContain(NOTE);
+  });
+
+  it('keeps the Update button for a row nobody manages (positive control)', () => {
+    const html = render(status({ installed: '0.9.13', latest: '0.9.14', updateAvailable: true }));
+
+    expect(html).toContain('>Update<');
+    expect(html).not.toContain(MANAGED_NOTE);
   });
 });

@@ -82,6 +82,20 @@ describe('FindingsFlatTableView', () => {
     expect(count(html, 'td')).toBe(6);
   });
 
+  // A masked value is as long as the secret it stands for, so it must not grow
+  // the row: it is cut to one line with an ellipsis, and the whole value stays
+  // on the title.
+  it('truncates the masked value to one line and keeps it whole on the title', () => {
+    const long = `AKIA${'*'.repeat(120)}`;
+    const items = [instance({ match: { maskedValue: long, contextPrefix: '' } })];
+    for (const pinnedType of [false, true]) {
+      const html = render({ items, pinnedType });
+      expect(html).toContain(`title="${long}"`);
+      expect(html).toContain('truncate');
+      expect(html).not.toContain('wrap-anywhere">' + long);
+    }
+  });
+
   it('renders the same number of header and body cells with the User column on', () => {
     const alice = { id: 'u-alice', name: 'alice@example.com' };
     const html = render({ showUserColumn: true, items: [instance({ user: alice })] });

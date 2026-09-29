@@ -53,7 +53,7 @@ const FINDING_COLUMN_CLASS: Record<FlatColumnId, string> = {
   deployment: 'min-w-[130px] whitespace-nowrap',
   latest: 'min-w-[100px] whitespace-nowrap',
   location: 'min-w-[200px]',
-  type: 'min-w-[200px]',
+  type: 'min-w-[300px] max-w-0',
 };
 
 /**
@@ -202,7 +202,10 @@ export function FindingsFlatTableView({
                     )}
                     <TableCell className={FINDING_COLUMN_CLASS.type}>
                       {pinnedType ? (
-                        <span className="font-mono text-ui text-text wrap-anywhere">
+                        <span
+                          className="block truncate font-mono text-ui text-text"
+                          title={instance.match.maskedValue}
+                        >
                           {instance.match.maskedValue}
                         </span>
                       ) : (
@@ -219,7 +222,10 @@ export function FindingsFlatTableView({
                             <div className="text-ui font-semibold text-text wrap-anywhere">
                               {instance.subtype}
                             </div>
-                            <div className="font-mono text-xs text-text-3 wrap-anywhere">
+                            <div
+                              className="truncate font-mono text-xs text-text-3"
+                              title={instance.match.maskedValue}
+                            >
                               {instance.match.maskedValue}
                             </div>
                           </div>

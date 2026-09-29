@@ -137,7 +137,9 @@ describe('ProjectPane per-file access control, refused', () => {
     expect(button.getAttribute('aria-label')).toBe('LLM access: Approved only');
     // This control has no hover state of its own to cancel, so the call site
     // passes no neutralizer; pin that it stays that way (and stays inert).
-    expect(button.className).toContain('cursor-not-allowed opacity-50');
+    expect(button.className.split(' ')).toEqual(
+      expect.arrayContaining(['cursor-not-allowed', 'opacity-50']),
+    );
     expect(button.className).not.toContain('hover:');
 
     act(() => {

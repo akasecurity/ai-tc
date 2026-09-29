@@ -150,7 +150,7 @@ describe('Apply and Dismiss, refused', () => {
     expect(button.getAttribute('title')).toBe(REASON);
     expect(describedReason(button)).toBe(REASON);
     // Cancels the live solid/primary button's hover:bg-primary-hover.
-    expect(button.className).toContain('hover:bg-primary-solid');
+    expect(button.className.split(' ')).toEqual(expect.arrayContaining(['hover:bg-primary-solid']));
 
     act(() => {
       button.click();
@@ -179,7 +179,9 @@ describe('Apply and Dismiss, refused', () => {
     expect(button.getAttribute('title')).toBe(REASON);
     expect(describedReason(button)).toBe(REASON);
     // Cancels the live ghost/neutral button's hover:bg-surface-2 and hover:text-text.
-    expect(button.className).toContain('hover:bg-transparent hover:text-text-2');
+    expect(button.className.split(' ')).toEqual(
+      expect.arrayContaining(['hover:bg-transparent', 'hover:text-text-2']),
+    );
 
     act(() => {
       button.click();

@@ -223,8 +223,8 @@ describe('the Add rule button under editRefusal', () => {
     expect(describedReason(button)).toBe(REASON);
     expect(describedSlot(button)).toBe('add-rule-reason');
     // Cancels the live outline/neutral button's hover:bg-surface-2.
-    // A whole-token match: hover:bg-surface is a prefix of the hover:bg-surface-2 it cancels.
-    expect(button.className.split(' ')).toContain('hover:bg-surface');
+    // Whole-token matches throughout: hover:bg-surface is a prefix of the hover:bg-surface-2 it cancels.
+    expect(button.className.split(' ')).toEqual(expect.arrayContaining(['hover:bg-surface']));
 
     act(() => {
       button.click();
@@ -317,7 +317,9 @@ describe('the "More" menu under editRefusal and deleteRefusal', () => {
     expect(describedReason(trigger())).toBe(REASON);
     expect(describedSlot(trigger())).toBe('more-actions-reason');
     // Cancels the live ghost/neutral icon button's hover:bg-surface-2 and hover:text-text.
-    expect(trigger().className).toContain('hover:bg-transparent hover:text-text-3');
+    expect(trigger().className.split(' ')).toEqual(
+      expect.arrayContaining(['hover:bg-transparent', 'hover:text-text-3']),
+    );
 
     act(() => {
       trigger().click();
@@ -365,11 +367,12 @@ describe('the Update button under editRefusal', () => {
     expect(banner).not.toBeNull();
     expect(banner?.textContent).toContain('Update available');
     // The live button's own amber look, kept while refused.
-    expect(button.className).toContain('bg-sev-high-ink');
-    expect(button.className).toContain('text-on-accent');
+    expect(button.className.split(' ')).toEqual(
+      expect.arrayContaining(['bg-sev-high-ink', 'text-on-accent']),
+    );
     // Cancels the live button's hover:bg-sev-high-ink override of the default
     // solid/primary hover (hover:bg-primary-hover).
-    expect(button.className).toContain('hover:bg-sev-high-ink');
+    expect(button.className.split(' ')).toEqual(expect.arrayContaining(['hover:bg-sev-high-ink']));
     expect(button.disabled).toBe(false);
     expect(button.getAttribute('aria-disabled')).toBe('true');
     expect(button.getAttribute('title')).toBe(REASON);

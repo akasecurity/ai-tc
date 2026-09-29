@@ -14,6 +14,7 @@ import { DISMISS_CONFIRMATION } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { dismissRecommendation } from '../../app/(app)/security/actions.ts';
+import { db as actionStore } from '../../app/lib/db.ts';
 import { expectNoRejection } from '../helpers/no-throw.ts';
 import { emptyStore } from '../helpers/store-templates.ts';
 import { tempHomes } from '../helpers/temp-home.ts';
@@ -170,6 +171,29 @@ describe('dismissRecommendation — what it writes', () => {
     expect(latest(after.resolutions, theirs)).toBeUndefined();
     expect(await openRules(after)).toEqual([OTHER_RULE]);
     after.close();
+  });
+
+  it('reads the keys only inside the write, through one store call', async () => {
+    // A key read before the write's transaction leaves a window in which a scan
+    // can resolve that key and have the dismissal supersede it, so the fixed
+    // finding reads as open again. The store method closes it by selecting
+    // under the write lock; this pins that the action goes through it rather
+    // than the autocommit read.
+    const db = store();
+    seed(db);
+    db.close();
+    resetSingleton();
+
+    const live = actionStore();
+    const autocommitRead = vi.spyOn(live.security, 'openFindingKeysForRule');
+    const dismiss = vi.spyOn(live, 'dismissOpenFindingsForRule');
+
+    const res = await expectNoRejection(() => dismissRecommendation(valid));
+    // The control: the dismissal really wrote, so the absence below is not an
+    // action that refused before reaching the store.
+    expect(res).toEqual({ ok: true, dismissed: 1 });
+    expect(dismiss).toHaveBeenCalledTimes(1);
+    expect(autocommitRead).not.toHaveBeenCalled();
   });
 
   it('records the method the caller chose, not a fixed one', async () => {

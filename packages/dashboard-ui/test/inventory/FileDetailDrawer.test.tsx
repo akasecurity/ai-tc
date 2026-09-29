@@ -107,6 +107,10 @@ describe('FileDetailDrawer LLM-access picker, refused', () => {
     expect(button.getAttribute('aria-disabled')).toBe('true');
     expect(button.getAttribute('title')).toBe(REASON);
     expect(describedReason(button)).toBe(REASON);
+    // This control has no hover state of its own to cancel, so the call site
+    // passes no neutralizer; pin that it stays that way (and stays inert).
+    expect(button.className).toContain('cursor-not-allowed opacity-50');
+    expect(button.className).not.toContain('hover:');
 
     act(() => {
       button.click();

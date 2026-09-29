@@ -222,6 +222,9 @@ describe('the Add rule button under editRefusal', () => {
     expect(button.getAttribute('aria-disabled')).toBe('true');
     expect(describedReason(button)).toBe(REASON);
     expect(describedSlot(button)).toBe('add-rule-reason');
+    // Cancels the live outline/neutral button's hover:bg-surface-2.
+    // A whole-token match: hover:bg-surface is a prefix of the hover:bg-surface-2 it cancels.
+    expect(button.className.split(' ')).toContain('hover:bg-surface');
 
     act(() => {
       button.click();
@@ -313,6 +316,8 @@ describe('the "More" menu under editRefusal and deleteRefusal', () => {
     expect(trigger().getAttribute('aria-disabled')).toBe('true');
     expect(describedReason(trigger())).toBe(REASON);
     expect(describedSlot(trigger())).toBe('more-actions-reason');
+    // Cancels the live ghost/neutral icon button's hover:bg-surface-2 and hover:text-text.
+    expect(trigger().className).toContain('hover:bg-transparent hover:text-text-3');
 
     act(() => {
       trigger().click();

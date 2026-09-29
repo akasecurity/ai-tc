@@ -8,11 +8,15 @@
 // The `executable` flag is the other half: flipping one either reopens
 // in-place rewriting of text the host acts on (the incident pinned in
 // pre-tool-use-decision.test.ts) or breaks stored-text redaction.
+import { bundledDetections, scanText } from '@akasecurity/plugin-sdk';
 import { describe, expect, it } from 'vitest';
 
+import type { ScannableField } from '../../src/hooks/pre-tool-use-fields.ts';
 import {
   inputEventKind,
   inputFilePath,
+  isSyntheticField,
+  MCP_KEY_JOIN,
   scannableInputFields,
 } from '../../src/hooks/pre-tool-use-fields.ts';
 
@@ -103,30 +107,34 @@ describe('scannableInputFields — NotebookEdit and Task', () => {
   });
 });
 
-// A field with `text` set is one of the synthetic joined-keys chunks (see
-// mcpKeyChunks in pre-tool-use-fields.ts): its text was computed during the
-// walk rather than addressable at `path` in the tool input. Every other
+// A field synthetic per isSyntheticField (see pre-tool-use-fields.ts) is one
+// of the joined-keys chunks mcpKeyChunks builds: its text was computed during
+// the walk rather than addressable at `path` in the tool input. Every other
 // field is a real value leaf, resolved by the caller via stringAtPath.
-function keyChunks(fields: readonly { path: unknown; executable: boolean; text?: string }[]) {
-  return fields.filter((f) => f.text !== undefined);
+function keyChunks(fields: readonly ScannableField[]): ScannableField[] {
+  return fields.filter(isSyntheticField);
 }
-function valueLeaves(fields: readonly { path: unknown; executable: boolean; text?: string }[]) {
-  return fields.filter((f) => f.text === undefined);
+function valueLeaves(fields: readonly ScannableField[]): ScannableField[] {
+  return fields.filter((f) => !isSyntheticField(f));
 }
 
 // Asserts `fields` carries EXACTLY ONE joined-keys chunk, executable, with
-// this exact text — decomposed rather than one `toEqual` against a literal
-// carrying `expect.anything()` for `path`, which is deliberately synthetic
-// and untyped (see ScannableField.text) and trips no-unsafe-assignment when
-// assigned into a typed object literal.
-function expectOneKeyChunk(
-  fields: readonly { path: unknown; executable: boolean; text?: string }[],
-  text: string,
-): void {
+// this exact text.
+function expectOneKeyChunk(fields: readonly ScannableField[], text: string): void {
   const chunks = keyChunks(fields);
   expect(chunks).toHaveLength(1);
   expect(chunks[0]?.executable).toBe(true);
   expect(chunks[0]?.text).toBe(text);
+}
+
+// Asserts `fields` carries exactly these joined-keys chunk texts, one per
+// originating object — order-independent, since group-push order is the
+// walk's own post-order (deepest object first) and no test here depends on
+// that being stable.
+function expectKeyChunkTexts(fields: readonly ScannableField[], texts: readonly string[]): void {
+  const chunks = keyChunks(fields);
+  expect(chunks.every((c) => c.executable)).toBe(true);
+  expect(chunks.map((c) => c.text).sort()).toEqual([...texts].sort());
 }
 
 describe('scannableInputFields — MCP tools', () => {
@@ -161,10 +169,10 @@ describe('scannableInputFields — MCP tools', () => {
       s: 'scan me',
     });
     expect(valueLeaves(fields)).toEqual([{ path: ['s'], executable: true }]);
-    // Every own key of the object, joined in encounter order — including
-    // `empty`'s, which has no scannable VALUE but is still a key someone
-    // could smuggle a secret into.
-    expectOneKeyChunk(fields, 'n\nb\nnil\nempty\ns');
+    // Every own key of this ONE object, joined in encounter order —
+    // including `empty`'s, which has no scannable VALUE but is still a key
+    // someone could smuggle a secret into.
+    expectOneKeyChunk(fields, ['n', 'b', 'nil', 'empty', 's'].join(MCP_KEY_JOIN));
   });
 
   it('stops descending past the depth bound instead of hanging on deep input', () => {
@@ -173,18 +181,23 @@ describe('scannableInputFields — MCP tools', () => {
     // strictly worse than scanning what fits.
     let deep: Record<string, unknown> = { leaf: 'too deep to reach' };
     for (let i = 0; i < 12; i++) deep = { nest: deep };
-    // The leaf itself is unreachable, but the shallow `nest` keys up to the
-    // depth bound were still visited on the way down, and their key text is
-    // collected exactly like it would be for any other object visited within
-    // bounds — a key beyond the bound is not, matching the value leaves.
+    // The leaf itself is unreachable, but the shallow `nest`-keyed objects up
+    // to the depth bound were still visited on the way down, and each one's
+    // own key is collected exactly like it would be for any object visited
+    // within bounds — a key beyond the bound is not, matching the value
+    // leaves. Every one of those objects holds the SAME single key ('nest'),
+    // so their chunk texts are byte-identical and dedupe to one chunk.
     const deepFields = scannableInputFields('mcp__x__y', deep);
     expect(valueLeaves(deepFields)).toEqual([]);
-    expectOneKeyChunk(deepFields, 'nest\nnest\nnest\nnest\nnest\nnest\nnest');
+    expectOneKeyChunk(deepFields, 'nest');
 
+    // Three DISTINCT objects here, each with its own single key: partitioned
+    // by parent (see mcpFields' own comment), so 'a', 'b' and 'c' are three
+    // separate chunks rather than one joined string.
     const shallow = { a: { b: { c: 'reachable' } } };
     const shallowFields = scannableInputFields('mcp__x__y', shallow);
     expect(valueLeaves(shallowFields)).toEqual([{ path: ['a', 'b', 'c'], executable: true }]);
-    expectOneKeyChunk(shallowFields, 'a\nb\nc');
+    expectKeyChunkTexts(shallowFields, ['a', 'b', 'c']);
   });
 
   it('skips a leaf past the per-leaf size cap but keeps scanning its siblings', () => {
@@ -193,7 +206,8 @@ describe('scannableInputFields — MCP tools', () => {
       small: 'scan me',
     });
     expect(valueLeaves(fields)).toEqual([{ path: ['small'], executable: true }]);
-    expectOneKeyChunk(fields, 'huge\nsmall');
+    // Both keys are the SAME (root) object's own, so one chunk.
+    expectOneKeyChunk(fields, ['huge', 'small'].join(MCP_KEY_JOIN));
   });
 
   it('bounds the leaf COUNT, not just total size', () => {
@@ -208,35 +222,73 @@ describe('scannableInputFields — MCP tools', () => {
     );
     const fields = scannableInputFields('mcp__x__y', many);
     expect(valueLeaves(fields)).toHaveLength(2_000);
-    // The 5,000 keys total well under MCP_MAX_LEAF_CHARS, so they collapse
-    // into ONE combined unit rather than one per key — the count grows by
-    // the chunk count (here, 1), never by the key count.
+    // Every one of the 5,000 keys is this ONE (root) object's own — this
+    // loop is never gated by the value leaf count (see mcpFields' own
+    // comment) — and their combined length sits well under the per-chunk
+    // cap, so they collapse into ONE combined unit rather than one per key:
+    // the count grows by the chunk count (here, 1), never by the key count.
     expect(keyChunks(fields)).toHaveLength(1);
     expect(fields).toHaveLength(2_001);
   });
 
   it('caps a padded payload rather than letting it exhaust the budget', () => {
     // The evasion shape: bury the secret behind enough cheap leaves that the
-    // scan never reaches it. It stays unscanned either way — the fix is that
-    // the hook returns in bounded time instead of timing out into a
-    // fail-open allow of everything.
+    // scan never reaches it. Its VALUE stays unscanned, dropped by the same
+    // leaf-count cap as the test above — but its KEY, `zzz_secret`, is still
+    // collected: every key of this one root object is, regardless of the
+    // value leaf count (see mcpFields' own comment), so this padding shape
+    // no longer hides a secret placed in the key rather than the value.
     const padded: Record<string, unknown> = Object.fromEntries(
       Array.from({ length: 10_000 }, (_, i) => [`pad${String(i)}`, 'x']),
     );
     padded.zzz_secret = 'deploy key here';
     const fields = scannableInputFields('mcp__x__y', padded);
     expect(valueLeaves(fields)).toHaveLength(2_000);
-    expect(keyChunks(fields)).toHaveLength(1);
+    const chunks = keyChunks(fields);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.text).toContain('zzz_secret');
     expect(fields).toHaveLength(2_001);
     expect(fields.every((f) => f.executable)).toBe(true);
+  });
+
+  it('bounds the number of key-chunk GROUPS, not just their combined size', () => {
+    // MCP_MAX_KEY_GROUPS protects against the shape a shared char/leaf budget
+    // does not: many DISTINCT small sibling objects (an array of 1,000
+    // two-key records with a unique id each), where grouping by parent —
+    // needed to stop cross-branch proximity corroboration, see mcpFields'
+    // own comment — would otherwise cost close to one capture per record.
+    const items = Array.from({ length: 1_000 }, (_, i) => ({ [`id${String(i)}`]: i }));
+    const fields = scannableInputFields('mcp__x__y', { items });
+    // Each record's key is unique, so none of the 1,000 candidate chunks
+    // dedupe away — without MCP_MAX_KEY_GROUPS this would be ~1,000 chunks
+    // (plus the root's own 'items' chunk); with it, exactly the cap.
+    expect(keyChunks(fields)).toHaveLength(200);
+  });
+
+  it('dedupes identically-shaped sibling groups into one chunk', () => {
+    // A paginated array of uniformly-shaped records (the realistic version
+    // of the shape above) produces byte-identical chunk text per record —
+    // scanning the second one adds no coverage the first didn't already
+    // provide, so the repeat is skipped rather than captured again.
+    const items = Array.from({ length: 500 }, () => ({ id: 'x', status: 'active' }));
+    const fields = scannableInputFields('mcp__x__y', { items });
+    // 'items' (the root's own key) plus ONE deduped record chunk.
+    expect(keyChunks(fields)).toHaveLength(2);
+    const recordChunk = keyChunks(fields).find((c) => c.text !== 'items');
+    expect(recordChunk?.text).toBe(['id', 'status'].join(MCP_KEY_JOIN));
   });
 });
 
 describe('scannableInputFields — MCP object keys', () => {
+  // A neutral, distinctive marker rather than a credential-shaped literal:
+  // these tests exercise field COLLECTION, not detection, so nothing here
+  // needs to match a rule. See CLAUDE.md's Testing section.
+  const MARKER = 'key_marker_7f3a';
+
   it('scans a secret placed as a top-level object key', () => {
-    const fields = scannableInputFields('mcp__x__y', { ghp_secrettoken1234567890: 'x' });
+    const fields = scannableInputFields('mcp__x__y', { [MARKER]: 'x' });
     const [chunk] = keyChunks(fields);
-    expect(chunk?.text).toContain('ghp_secrettoken1234567890');
+    expect(chunk?.text).toBe(MARKER);
     // Marked executable like every other MCP field: there is no safe way to
     // rewrite an object's key in place, so a redact on it must degrade to
     // the same fallback an unrewritable value would — never a silent allow.
@@ -245,33 +297,29 @@ describe('scannableInputFields — MCP object keys', () => {
 
   it('scans a secret placed as a key nested inside the payload', () => {
     const fields = scannableInputFields('mcp__x__y', {
-      wrapper: { inner: { ghp_secrettoken1234567890: 'x' } },
+      wrapper: { inner: { [MARKER]: 'x' } },
     });
-    expect(keyChunks(fields)[0]?.text).toContain('ghp_secrettoken1234567890');
+    expect(keyChunks(fields).some((c) => c.text === MARKER)).toBe(true);
   });
 
   it('scans a secret placed as a key inside an array of objects', () => {
     const fields = scannableInputFields('mcp__x__y', {
-      items: [{ note: 'benign' }, { ghp_secrettoken1234567890: 'x' }],
+      items: [{ note: 'benign' }, { [MARKER]: 'x' }],
     });
-    expect(keyChunks(fields)[0]?.text).toContain('ghp_secrettoken1234567890');
+    // The marker's OWN object's keys are a separate chunk from 'note's and
+    // from 'items' — see mcpFields' own comment on why an unrelated key
+    // never rides along in the same unit.
+    expect(keyChunks(fields).some((c) => c.text === MARKER)).toBe(true);
   });
 
   it('scans a key alongside its sibling value in the same walk', () => {
     const fields = scannableInputFields('mcp__x__y', {
-      ghp_secrettoken1234567890: 'harmless',
+      [MARKER]: 'harmless',
       other: 'scan me too',
     });
-    expect(keyChunks(fields)[0]?.text).toContain('ghp_secrettoken1234567890');
+    // MARKER and 'other' are the SAME (root) object's own keys, so one chunk.
+    expectOneKeyChunk(fields, [MARKER, 'other'].join(MCP_KEY_JOIN));
     expect(valueLeaves(fields)).toContainEqual({ path: ['other'], executable: true });
-  });
-
-  it('joins keys with a newline so two keys cannot fuse into one match', () => {
-    // 'ab' + 'cd' concatenated raw would read 'abcd'; joined with the
-    // separator it reads 'ab\ncd' — a rule matching only the contiguous
-    // string cannot fire across the boundary.
-    const fields = scannableInputFields('mcp__x__y', { ab: 1, cd: 1 });
-    expectOneKeyChunk(fields, 'ab\ncd');
   });
 
   it('drops a single key over the per-unit size cap, like an over-long value', () => {
@@ -281,18 +329,18 @@ describe('scannableInputFields — MCP object keys', () => {
       ['k'.repeat(1_000_001)]: '',
       small: 'scan me',
     });
-    // The over-long key contributes nothing; 'small' — an ordinary key —
-    // still does.
+    // The over-long key contributes nothing; 'small' — an ordinary key of
+    // the SAME (root) object — still does.
     expectOneKeyChunk(fields, 'small');
     expect(valueLeaves(fields)).toEqual([{ path: ['small'], executable: true }]);
   });
 
   it('never splits a key across a chunk boundary, even under padding', () => {
-    // A filler key sized to leave just under 31 chars of room in the first
-    // chunk, then a 30-char secret key — joined with its separator that is
-    // 31 chars, one over. A fixed-offset cut would let the filler's exact
-    // length push the secret to straddle the boundary; bin-packing instead
-    // starts a fresh chunk and keeps the secret whole.
+    // A filler key and a 30-char secret key, siblings of the SAME (root)
+    // object, sized so joining them would exceed the per-chunk cap. A
+    // fixed-offset cut would let the filler's exact length push the secret
+    // to straddle the boundary; bin-packing instead starts a fresh chunk and
+    // keeps the secret whole.
     const filler = 'f'.repeat(1_000_000 - 30);
     const secretKey = 's'.repeat(30);
     const fields = scannableInputFields('mcp__x__y', { [filler]: 1, [secretKey]: 1 });
@@ -306,24 +354,116 @@ describe('scannableInputFields — MCP object keys', () => {
     for (const chunk of chunks) expect(chunk.text?.length).toBeLessThanOrEqual(1_000_000);
   });
 
-  it('charges key characters against the SAME shared total-size budget as values', () => {
-    // Four value leaves at the per-leaf cap (1,000,000 chars each, plus
-    // their short keys) consume all but 999,992 of the 5,000,000 total
-    // budget. A later key of 999,995 chars — itself well under the per-key
-    // cap — cannot fit in what's left and is dropped, along with its value:
-    // proof keys and values draw from the SAME shared pool, not two
-    // independent ones.
+  it('charges keys only from what the value walk leaves over, never evicting a value', () => {
+    // Five value leaves at the per-leaf cap (1,000,000 chars each) consume
+    // the ENTIRE 5,000,000 total budget between them. Before this fix, each
+    // sibling's KEY was charged first, during the same pass, and could push
+    // a LATER sibling's value over budget and drop it. Now every value leaf
+    // is scanned in full regardless of how many keys the payload carries;
+    // keys are charged only from whatever the value walk didn't need.
     const bigLeaves = Object.fromEntries(
-      Array.from({ length: 4 }, (_, i) => [`v${String(i)}`, 'x'.repeat(1_000_000)]),
+      Array.from({ length: 5 }, (_, i) => [`v${String(i)}`, 'x'.repeat(1_000_000)]),
     );
-    const fields = scannableInputFields('mcp__x__y', {
-      ...bigLeaves,
-      [`y`.repeat(999_995)]: 'z',
-    });
-    expect(valueLeaves(fields)).toHaveLength(4);
-    // The four SHORT keys (v0..v3) fit easily and are still collected; only
-    // the budget-exhausting 999,995-char key was dropped.
-    expectOneKeyChunk(fields, 'v0\nv1\nv2\nv3');
+    const fields = scannableInputFields('mcp__x__y', bigLeaves);
+    expect(valueLeaves(fields)).toHaveLength(5);
+    // Nothing left in the shared budget for the keys themselves.
+    expect(keyChunks(fields)).toEqual([]);
+  });
+
+  it('still scans keys from whatever budget the value walk leaves over', () => {
+    const fields = scannableInputFields('mcp__x__y', { small: 'x', another: 'y' });
+    expect(valueLeaves(fields)).toHaveLength(2);
+    expectOneKeyChunk(fields, ['small', 'another'].join(MCP_KEY_JOIN));
+  });
+});
+
+describe('scannableInputFields — MCP keys are grouped by their own object, never pooled', () => {
+  // Reproduces the exact false positive a flat, ungrouped join produced: an
+  // unrelated key ('billing') fell inside a `requiresNearby` rule's
+  // proximity window of a key from a COMPLETELY different branch ('12345',
+  // an order id, read as a ZIP code). Grouping by parent means 'billing' and
+  // '12345' never occupy the same scanned text at all.
+  const PAYLOAD = { billing: { plan: 'pro' }, orders: { '12345': { qty: 1 } } };
+
+  it('never joins two different objects’ keys into one chunk', () => {
+    const fields = scannableInputFields('mcp__x__y', PAYLOAD);
+    // Four objects visited: the root (whose own two keys, 'billing' and
+    // 'orders', DO share one chunk — they are siblings of the SAME object),
+    // billing's value, orders' value, and orders['12345']'s value.
+    expectKeyChunkTexts(fields, [['billing', 'orders'].join(MCP_KEY_JOIN), 'plan', '12345', 'qty']);
+  });
+
+  it('produces no bundled-rule finding on any chunk this payload builds', () => {
+    // The real regression test: run every chunk mcpFields actually produces
+    // through the bundled detection engine (the same one pre-tool-use.ts
+    // calls via runtime.capture), not a hand-picked string. A flat '\n'-joined
+    // design fires core-pii/zip on the '12345' chunk here.
+    const fields = scannableInputFields('mcp__x__y', PAYLOAD);
+    for (const chunk of keyChunks(fields)) {
+      const { findings } = scanText(chunk.text ?? '');
+      expect(findings).toEqual([]);
+    }
+  });
+});
+
+describe('scannableInputFields — MCP key separator defeats real bundled-rule fusion', () => {
+  // Reproduces the exact false positives the OLD '\n'-only separator
+  // produced: several bundled PHI rules match keyword+value with a `\s*`
+  // pattern, and `\s` matches `\n`, so ordinary sibling keys joined by a bare
+  // newline read as one contiguous phrase to those rules. Each triple below
+  // is a single object's OWN sibling keys (a realistic CRM/EHR-shaped
+  // update), run through the real bundled detection engine exactly as
+  // pre-tool-use.ts's runtime.capture would scan them.
+  const CASES: readonly (readonly string[])[] = [
+    ['member', 'id', 'status'],
+    ['mrn', 'patient', 'name'],
+    ['subscriber', 'firstName', 'lastName'],
+  ];
+
+  it('fires on the old bare-newline join (documents the bug this fixes)', () => {
+    for (const keys of CASES) {
+      const { findings } = scanText(keys.join('\n'));
+      expect(findings.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('is silent on the actual joined text mcpFields produces today', () => {
+    for (const keys of CASES) {
+      const payload = Object.fromEntries(keys.map((k) => [k, 1]));
+      const fields = scannableInputFields('mcp__x__y', payload);
+      expectOneKeyChunk(fields, keys.join(MCP_KEY_JOIN));
+      const { findings } = scanText(keys.join(MCP_KEY_JOIN));
+      expect(findings).toEqual([]);
+    }
+  });
+
+  it('still catches a real secret taken from a bundled rule’s own example, used as a key', () => {
+    // Detection coverage itself is unaffected by the separator or grouping
+    // change: a genuine secret-shaped key, alone, still fires. Taken from a
+    // bundled rule's own `examples` — the same source fail-open.e2e.test.ts
+    // draws its fixture from — rather than a hand-written literal, per
+    // CLAUDE.md's Testing section.
+    let found: { ruleId: string; example: string } | undefined;
+    for (const rule of bundledDetections().flatMap((p) => p.rules)) {
+      const example = rule.examples?.find((e) => !e.includes(' '));
+      if (example === undefined) continue;
+      if (scanText(example).findings.some((f) => f.ruleId === rule.id)) {
+        found = { ruleId: rule.id, example };
+        break;
+      }
+    }
+    if (!found) {
+      throw new Error(
+        'no bundled rule has a single-token example that matches its own rule alone, so ' +
+          'this test would drive a false fixture through the walk and assert nothing',
+      );
+    }
+    const { ruleId, example } = found;
+
+    const fields = scannableInputFields('mcp__x__y', { [example]: 'x' });
+    const [chunk] = keyChunks(fields);
+    const { findings } = scanText(chunk?.text ?? '');
+    expect(findings.some((f) => f.ruleId === ruleId)).toBe(true);
   });
 });
 

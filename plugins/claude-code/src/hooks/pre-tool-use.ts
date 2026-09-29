@@ -25,7 +25,7 @@ import { isVaultConsentValid, pointerTokenScanner, SOURCE_TOOL } from '@akasecur
 import { sessionProtocolMarker } from '../protocol/marker.ts';
 import { eventNote, userDisclosure } from '../protocol/notes.ts';
 import { handleSubagentSpawn } from './model-guard.ts';
-import { replaceAtPath, stringAtPath } from './paths.ts';
+import { replaceAtPath } from './paths.ts';
 import type { PointerField } from './pointer-substitution.ts';
 import {
   decideInputPointers,
@@ -34,7 +34,13 @@ import {
 } from './pointer-substitution.ts';
 import type { PreToolUseOutput, ScannedField } from './pre-tool-use-decision.ts';
 import { decidePreToolUse } from './pre-tool-use-decision.ts';
-import { inputEventKind, inputFilePath, scannableInputFields } from './pre-tool-use-fields.ts';
+import {
+  fieldText,
+  inputEventKind,
+  inputFilePath,
+  isSyntheticField,
+  scannableInputFields,
+} from './pre-tool-use-fields.ts';
 import { baseMetadata, countFailOpen, emit, getString, parseJson, readStdin } from './shared.ts';
 import {
   claimStoreUnavailableWarning,
@@ -88,7 +94,10 @@ async function main(): Promise<void> {
 
   // Resolved before the store is opened: the matcher is broad enough to spawn
   // this hook for MCP tools whose payload carries no scannable text, and those
-  // calls should cost nothing.
+  // calls should cost nothing. An object key is scannable content now too
+  // (see scannableInputFields' own comment), so this free path has narrowed
+  // to a tool_input with no string keys at all — most MCP calls, having some
+  // key, now do pay the store-open cost below.
   const fields = scannableInputFields(toolName, toolInput);
   if (fields.length === 0) return;
 
@@ -107,18 +116,22 @@ async function main(): Promise<void> {
   // from an earlier grant must not execute as literal text either. With no
   // glue (no consent) nothing touches the store: every pointer is simply
   // unresolved, which is exactly the deny/keep posture we need.
+  //
+  // A joined-keys chunk (isSyntheticField — see pre-tool-use-fields.ts) is
+  // still probed for the deny decision below: every MCP field is executable,
+  // and a literal, ungranted pointer used AS a key must deny outright exactly
+  // like one in a value would. What it never does is enter SUBSTITUTION
+  // (decideInputPointers, further down) — a resolved deref would try to write
+  // the revealed text back through the chunk's synthetic path, which has no
+  // real position in the payload to write to.
   const pointerFields: PointerField[] = [];
+  const substitutionFields: PointerField[] = [];
   for (const spec of fields) {
-    // A joined-keys chunk (spec.text set — see pre-tool-use-fields.ts) has no
-    // real position in the payload for a resolved pointer to be written back
-    // to, and a model does not echo a vault pointer as an object key it
-    // invents, so it never enters pointer resolution — only the secret scan
-    // below.
-    if (spec.text !== undefined) continue;
-    const text = stringAtPath(toolInput, spec.path);
-    if (text !== undefined && text !== '') {
-      pointerFields.push({ path: spec.path, text, executable: spec.executable });
-    }
+    const text = fieldText(spec, toolInput);
+    if (text === undefined || text === '') continue;
+    const field: PointerField = { path: spec.path, text, executable: spec.executable };
+    pointerFields.push(field);
+    if (!isSyntheticField(spec)) substitutionFields.push(field);
   }
   // Executable fields are probed FIRST — grant resolution only, no
   // de-reference. One ungranted pointer denies the whole call, and a call that
@@ -140,7 +153,7 @@ async function main(): Promise<void> {
 
   const pointerOutcomes = denyForPointer
     ? []
-    : await decideInputPointers(pointerFields, async (text) => {
+    : await decideInputPointers(substitutionFields, async (text) => {
         if (!vaultGlue) {
           return {
             text,
@@ -227,7 +240,7 @@ async function main(): Promise<void> {
       // in the tool input — never a deref target, so effectiveInput (which
       // only ever differs from toolInput at a real pointer's path) is
       // irrelevant to it.
-      const text = spec.text ?? stringAtPath(effectiveInput, spec.path);
+      const text = fieldText(spec, effectiveInput);
       if (text === undefined || text === '') continue;
 
       const result = await runtime.capture(

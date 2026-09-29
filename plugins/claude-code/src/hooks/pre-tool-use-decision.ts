@@ -9,6 +9,7 @@ import { blockMessage, exceptionPointer } from '../exception-guidance.ts';
 import type { RealizedRewrite } from '../protocol/notes.ts';
 import { replaceAtPath } from './paths.ts';
 import type { ScannableField } from './pre-tool-use-fields.ts';
+import { isSyntheticField } from './pre-tool-use-fields.ts';
 
 // One scanned field: its spec, the text the runtime scanned, and the runtime's
 // decision for it.
@@ -125,6 +126,22 @@ export async function decidePreToolUse(
     const action = result.action;
 
     if (action === 'block') {
+      for (const finding of result.findings) blockedRules.add(finding.ruleId);
+      if (result.blockedReferences) blockedReferences.push(...result.blockedReferences);
+    } else if (action === 'redact' && isSyntheticField(spec)) {
+      // A synthetic scan unit (a joined-keys chunk — see
+      // pre-tool-use-fields.ts) has no real position in the payload for
+      // `replaceAtPath` to write a rewrite back to. `executable: true` on
+      // every such field already keeps the runtime from ever resolving its
+      // redact into this branch — a redact on an unrewritable capture
+      // degrades to `redactFallback` before it gets here — but that holds
+      // only through that chain, so this checks the field ITSELF too:
+      // if the chain above ever breaks, the alternative is a bogus
+      // `"<mcp-object-keys>": [...]` property in `updatedInput` under an
+      // "AKA redacted" message, with the secret-bearing key still in the
+      // payload. Treated exactly like the unredactable-value case below —
+      // deny, never rewrite.
+      escalatedUnredactable = true;
       for (const finding of result.findings) blockedRules.add(finding.ruleId);
       if (result.blockedReferences) blockedReferences.push(...result.blockedReferences);
     } else if (action === 'redact') {

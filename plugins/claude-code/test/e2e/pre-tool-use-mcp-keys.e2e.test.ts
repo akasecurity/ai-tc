@@ -138,3 +138,28 @@ describe('PreToolUse — a secret placed as an MCP tool_input object KEY', () =>
     });
   });
 });
+
+describe('PreToolUse — a literal vault pointer used as an MCP tool_input object KEY', () => {
+  // Syntactically valid per POINTER_TOKEN_PATTERN (packages/schema/src/zod/vault.ts):
+  // `[[aka:<category>:<2-7 char b32>.<26 char b32>.<16 char b32>]]`. This home has
+  // no vault consent configured, so it is never a granted pointer — only ever an
+  // ungranted one, which every MCP field (always `executable`) must deny outright,
+  // whatever position in the payload it rides in on.
+  const POINTER = `[[aka:secret:AA.${'A'.repeat(26)}.${'A'.repeat(16)}]]`;
+
+  it('denies when the pointer sits in a value (baseline)', () => {
+    withTempHome((home) => {
+      const run = preToolUse(home, { field: POINTER });
+      expect(run.status).toBe(0);
+      expect(isDenied(run.stdout)).toBe(true);
+    });
+  });
+
+  it('denies when the pointer sits in an object key too', () => {
+    withTempHome((home) => {
+      const run = preToolUse(home, { [POINTER]: 'x' });
+      expect(run.status).toBe(0);
+      expect(isDenied(run.stdout)).toBe(true);
+    });
+  });
+});

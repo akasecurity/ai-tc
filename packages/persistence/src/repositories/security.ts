@@ -34,8 +34,9 @@ const DAY_MS = 86_400_000;
  * The FROM + WHERE of "an open at-rest finding", shared by the two reads that
  * must agree about that set: {@link SqliteSecurityRepository.recommendationInputs},
  * which counts them for the Recommended Actions card, and
- * {@link SqliteSecurityRepository.openFindingKeysForRule}, which enumerates one
- * rule's for a dismissal to write against. A caller appends its own further
+ * {@link selectOpenFindingKeysForRule}, which enumerates one rule's for a
+ * dismissal to write against (and backs
+ * {@link SqliteSecurityRepository.openFindingKeysForRule}). A caller appends its own further
  * `AND` clauses and its own GROUP BY.
  *
  * `open` mirrors `deriveFindingStatus` — at-rest, minus resolved and dismissed.

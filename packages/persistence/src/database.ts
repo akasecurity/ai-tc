@@ -208,7 +208,9 @@ export interface LocalDatabase {
   // the write with SQLITE_BUSY rather than being superseded. The key set is the
   // one `security.openFindingKeysForRule` returns. THROWS rather than failing
   // open: a dismissal is reported to a person as done, so a dropped one must
-  // surface.
+  // surface. The lock is taken even when the select then finds no key, so a
+  // call with nothing to write still waits out busy_timeout behind another
+  // writer and throws SQLITE_BUSY rather than returning 0.
   dismissOpenFindingsForRule(
     ruleId: string,
     disposition: Pick<ResolutionInput, 'method' | 'resolvedAt' | 'evidence'>,

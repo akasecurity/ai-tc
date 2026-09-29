@@ -19,10 +19,13 @@ export const SeveritySummaryItem = z
     count: z.number().int().nonnegative(),
     // Resolution-aware breakdown (optional, additive). Populated once findings
     // carry lifecycle state: `caught` = handled in-flight (enforced); `openAtRest`
-    // = still open with no in-flight enforcement (needs remediation). Absent on the
-    // legacy count-only response until the resolution feature lands.
+    // = still open with no in-flight enforcement (needs remediation); `dismissed`
+    // = closed by a human judgement rather than a fix — visible, but not counted as
+    // needing remediation. The three are disjoint. Absent on the legacy count-only
+    // response until the resolution feature lands.
     caught: z.number().int().nonnegative().optional(),
     openAtRest: z.number().int().nonnegative().optional(),
+    dismissed: z.number().int().nonnegative().optional(),
   })
   .meta({ id: 'SeveritySummaryItem' });
 export type SeveritySummaryItem = z.infer<typeof SeveritySummaryItem>;
@@ -34,6 +37,9 @@ export const SeveritySummaryResponse = z
     // Findings still open at rest (sum of bySeverity[].openAtRest). Optional and
     // additive — absent on the legacy response until the resolution feature lands.
     needsRemediation: z.number().int().nonnegative().optional(),
+    // Findings a user dismissed (sum of bySeverity[].dismissed). Excluded from
+    // needsRemediation, and kept visible here so an accepted risk is not erased.
+    dismissed: z.number().int().nonnegative().optional(),
     // All four severity levels are always present (count may be 0).
     bySeverity: z.array(SeveritySummaryItem),
   })

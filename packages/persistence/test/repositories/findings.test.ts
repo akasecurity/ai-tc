@@ -620,7 +620,7 @@ describe('SqliteFindingsRepository.listFindingTypes — per-finding status', () 
   // Legacy pre-resolution-feature at-rest rows (finding_key IS NULL) can never
   // attach a disposition — the resolution lifecycle is keyed by finding_key
   // (mirrors SqliteSecurityRepository's legacy exclusion comment). Unlike the
-  // security summary (which drops these from caught/openAtRest entirely, since
+  // security summary (which drops these from caught/openAtRest/dismissed entirely, since
   // it only needs a boolean bucket), the findings LIST still needs to show
   // *some* status for the row, and the finding itself still physically exists
   // and is unremediated — so it reads as 'open' (untracked, still needs

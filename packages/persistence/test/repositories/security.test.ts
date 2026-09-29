@@ -94,13 +94,14 @@ describe('severitySummary', () => {
     // All three are in-flight (default kind 'prompt') — born handled, so every
     // row is fully caught and nothing is open-at-rest.
     expect(res.bySeverity).toEqual([
-      { severity: 'critical', count: 2, caught: 2, openAtRest: 0 },
-      { severity: 'high', count: 1, caught: 1, openAtRest: 0 },
-      { severity: 'medium', count: 0, caught: 0, openAtRest: 0 },
-      { severity: 'low', count: 0, caught: 0, openAtRest: 0 },
+      { severity: 'critical', count: 2, caught: 2, openAtRest: 0, dismissed: 0 },
+      { severity: 'high', count: 1, caught: 1, openAtRest: 0, dismissed: 0 },
+      { severity: 'medium', count: 0, caught: 0, openAtRest: 0, dismissed: 0 },
+      { severity: 'low', count: 0, caught: 0, openAtRest: 0, dismissed: 0 },
     ]);
     expect(res.total).toBe(3);
     expect(res.needsRemediation).toBe(0);
+    expect(res.dismissed).toBe(0);
   });
 
   it('splits caught vs open-at-rest: in-flight is born caught, at-rest is caught only once resolved', async () => {
@@ -135,10 +136,10 @@ describe('severitySummary', () => {
 
     const res = await security().severitySummary();
     expect(res.bySeverity).toEqual([
-      { severity: 'critical', count: 2, caught: 1, openAtRest: 1 },
-      { severity: 'high', count: 1, caught: 1, openAtRest: 0 },
-      { severity: 'medium', count: 1, caught: 0, openAtRest: 1 },
-      { severity: 'low', count: 0, caught: 0, openAtRest: 0 },
+      { severity: 'critical', count: 2, caught: 1, openAtRest: 1, dismissed: 0 },
+      { severity: 'high', count: 1, caught: 1, openAtRest: 0, dismissed: 0 },
+      { severity: 'medium', count: 1, caught: 0, openAtRest: 1, dismissed: 0 },
+      { severity: 'low', count: 0, caught: 0, openAtRest: 0, dismissed: 0 },
     ]);
     // count/total stay exactly as before — backward compatible.
     expect(res.total).toBe(4);
@@ -166,11 +167,11 @@ describe('severitySummary', () => {
 
     const res = await security().severitySummary();
     const critical = res.bySeverity.find((s) => s.severity === 'critical');
-    expect(critical).toMatchObject({ caught: 0, openAtRest: 1 });
+    expect(critical).toMatchObject({ caught: 0, openAtRest: 1, dismissed: 0 });
     expect(res.needsRemediation).toBe(1);
   });
 
-  it('excludes legacy at-rest findings with no finding_key from caught/openAtRest, but keeps them in total/count', async () => {
+  it('excludes legacy at-rest findings with no finding_key from every bucket, but keeps them in total/count', async () => {
     // Legacy at-rest finding from a pre-branch scan: kind code_change but no
     // finding_key — the resolution lifecycle can never attach to (or clear) it.
     record({ daysAgo: 1, severity: 'critical', kind: 'code_change' }); // no findingKey
@@ -180,9 +181,85 @@ describe('severitySummary', () => {
 
     const res = await security().severitySummary();
     const critical = res.bySeverity.find((s) => s.severity === 'critical');
-    expect(critical).toEqual({ severity: 'critical', count: 2, caught: 0, openAtRest: 1 });
+    expect(critical).toEqual({
+      severity: 'critical',
+      count: 2,
+      caught: 0,
+      openAtRest: 1,
+      dismissed: 0,
+    });
     expect(res.total).toBe(2);
     expect(res.needsRemediation).toBe(1);
+  });
+
+  it('buckets a dismissed finding as dismissed: neither caught nor needing remediation', async () => {
+    record({ daysAgo: 1, severity: 'critical', kind: 'code_change', findingKey: 'key-open' });
+    record({
+      daysAgo: 1,
+      severity: 'critical',
+      kind: 'code_change',
+      findingKey: 'key-dismissed',
+      ruleId: 'r-dismissed',
+    });
+    db.resolutions.insertResolution({
+      findingKey: 'key-dismissed',
+      status: 'dismissed',
+      method: 'false-positive',
+      resolvedAt: NOW,
+      evidence: '',
+    });
+
+    const res = await security().severitySummary();
+    const critical = res.bySeverity.find((s) => s.severity === 'critical');
+    expect(critical).toEqual({
+      severity: 'critical',
+      count: 2,
+      caught: 0,
+      openAtRest: 1,
+      dismissed: 1,
+    });
+    expect(res.total).toBe(2);
+    expect(res.needsRemediation).toBe(1);
+    expect(res.dismissed).toBe(1);
+  });
+
+  it('keeps an in-flight finding caught even when its key carries a dismissed row', async () => {
+    record({ daysAgo: 1, severity: 'high', kind: 'prompt', findingKey: 'key-inflight' });
+    db.resolutions.insertResolution({
+      findingKey: 'key-inflight',
+      status: 'dismissed',
+      method: 'false-positive',
+      resolvedAt: NOW,
+      evidence: '',
+    });
+
+    const res = await security().severitySummary();
+    const high = res.bySeverity.find((s) => s.severity === 'high');
+    expect(high).toMatchObject({ caught: 1, openAtRest: 0, dismissed: 0 });
+    expect(res.dismissed).toBe(0);
+  });
+
+  it('latest-resolution-wins for dismissal: a dismissed finding that is redetected returns to open-at-rest', async () => {
+    record({ daysAgo: 1, severity: 'high', kind: 'code_change', findingKey: 'key-reopened' });
+    db.resolutions.insertResolution({
+      findingKey: 'key-reopened',
+      status: 'dismissed',
+      method: 'false-positive',
+      resolvedAt: NOW - DAY_MS,
+      evidence: '',
+    });
+    db.resolutions.insertResolution({
+      findingKey: 'key-reopened',
+      status: 'open',
+      method: 'redetected',
+      resolvedAt: NOW,
+      evidence: '',
+    });
+
+    const res = await security().severitySummary();
+    const high = res.bySeverity.find((s) => s.severity === 'high');
+    expect(high).toMatchObject({ openAtRest: 1, dismissed: 0 });
+    expect(res.dismissed).toBe(0);
   });
 });
 
@@ -292,7 +369,7 @@ describe('recommendationInputs', () => {
 
   it('drops a resolved finding, and a dismissed one', async () => {
     // `open` mirrors deriveFindingStatus so the count equals what `?status=open`
-    // returns — which excludes dismissed, unlike severitySummary's openAtRest.
+    // returns — which, like severitySummary's openAtRest, excludes dismissed.
     record({ daysAgo: 1, severity: 'critical', kind: 'code_change', findingKey: 'k-res' });
     record({
       daysAgo: 1,

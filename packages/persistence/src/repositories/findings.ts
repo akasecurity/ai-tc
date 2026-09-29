@@ -120,11 +120,11 @@ interface FindingGroupRowJoined {
 
 // Per-row FindingStatus — a thin snake_case adapter over @akasecurity/schema's
 // deriveFindingStatus, the ONE shared classifier (see its doc for the full
-// semantics, including the
-// reviewed 'dismissed' asymmetry vs severitySummary's caught bucket). The
-// status↔bucket contract is pinned by resolution-consistency.test.ts; when a
-// dismiss-writer ships, revisit the shared classifier and severitySummary's
-// CASE buckets together.
+// semantics). severitySummary buckets a dismissed finding as 'dismissed',
+// separate from both caught and openAtRest, so the label here and the bucket
+// there agree; the status↔bucket contract is pinned by
+// resolution-consistency.test.ts. The one remaining asymmetry is legacy rows
+// with no finding_key, which read 'open' here and land in no bucket there.
 function deriveInstanceStatus(row: {
   kind: string;
   finding_key: string | null;

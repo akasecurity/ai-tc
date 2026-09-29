@@ -118,15 +118,19 @@ describe('readInstalledVersion', () => {
     expect(readInstalledVersion(root)).toBeNull();
   });
 
-  it('reads null for a root outside the host layout, such as a checkout', async () => {
+  it('reads null for a root outside the host layout, even with a matching record beside it', async () => {
+    // The root has the marketplace/plugin/version shape, but the directory
+    // above the marketplace is not named cache. A reader that skipped the
+    // layout check would open <dir>/installed_plugins.json and find this entry
+    // by key.
     const dir = await mkdtemp(join(tmpdir(), 'aka-install-record-checkout-'));
-    const checkout = join(dir, 'plugins', 'claude-code');
-    await mkdir(checkout, { recursive: true });
+    const outside = join(dir, 'notcache', 'akasecurity', 'ai-tc', '0.9.14');
+    await mkdir(outside, { recursive: true });
     await writeFile(
       join(dir, 'installed_plugins.json'),
-      ledger({ 'claude-code@plugins': [record('0.9.14')] }),
+      ledger({ 'ai-tc@akasecurity': [record('0.9.14')] }),
       'utf8',
     );
-    expect(readInstalledVersion(checkout)).toBeNull();
+    expect(readInstalledVersion(outside)).toBeNull();
   });
 });

@@ -12,11 +12,12 @@ import { DARK_CLASS } from '../../src/theme/theme.ts';
 // @akasecurity/ui-kit's theme.css declares a `@custom-variant` for it AND an
 // unlayered rule block that overrides every color token under it. Rename the
 // class on one side and the app renders permanently light — no error, no failing
-// assertion anywhere, because both halves are internally consistent. A host can
-// land in that same state for other reasons too, and the rename is not a
-// hypothetical: a reviewer renamed the constant CONSISTENTLY (constant
-// plus the init-script literal, so the literal↔constant pin still passed) and
-// every suite in the repo stayed green.
+// assertion anywhere, because both halves are internally consistent. (A host
+// that neither injects THEME_INIT_SCRIPT nor renders ThemeToggle — the only two
+// writers of the class — lands in the same state by a different route.) The
+// rename is not a hypothetical: a reviewer renamed the constant CONSISTENTLY
+// (constant plus the init-script literal, so the literal↔constant pin still
+// passed) and every suite in the repo stayed green.
 //
 // The split predates the theme module moving here. What moving it changed is the
 // COST: the constant used to sit in web-ui beside its only consumer, and it is now

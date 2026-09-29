@@ -82,11 +82,16 @@ describe('FindingsFlatTableView', () => {
     expect(count(html, 'td')).toBe(6);
   });
 
-  // A masked value is as long as the secret it stands for, so it must not grow
-  // the row: it is cut to one line with an ellipsis, and the whole value stays
-  // on the title.
-  it('truncates the masked value to one line and keeps it whole on the title', () => {
-    const long = `AKIA${'*'.repeat(120)}`;
+  // Only an email mask can be long: it keeps the first local character, one
+  // asterisk per remaining local character, and the whole domain. Every other
+  // value is masked to a fixed eight characters. Such a value must not grow the
+  // row, so it is cut to one line with an ellipsis and stays whole on the title.
+  //
+  // Static markup has no layout, so this pins the utility classes and the title,
+  // not the clipping itself; the clipping depends on the column's `max-w-0`
+  // (see FINDING_COLUMN_CLASS) and was measured in a browser.
+  it('cuts a long masked email to one line and keeps it whole on the title', () => {
+    const long = `f${'*'.repeat(30)}@eng.internal.corporate.example.com`;
     const items = [instance({ match: { maskedValue: long, contextPrefix: '' } })];
     for (const pinnedType of [false, true]) {
       const html = render({ items, pinnedType });

@@ -44,6 +44,9 @@ type FlatColumnId =
   | 'deployment'
   | 'latest';
 
+// The type column's `min-w` and `max-w-0` are a pair. `min-w` is the floor; `max-w-0`
+// stops a nowrap masked value from claiming the column's width in auto table
+// layout, so the ellipsis engages while the column still takes any spare width.
 const FINDING_COLUMN_CLASS: Record<FlatColumnId, string> = {
   severity: 'min-w-[110px] whitespace-nowrap',
   sources: 'min-w-[140px] whitespace-nowrap',

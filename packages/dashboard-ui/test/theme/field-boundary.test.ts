@@ -246,7 +246,7 @@ describe('the field boundary this package draws by hand', () => {
   // dark figure taken over --color-surface-2 — the field's own fill, which is the
   // one surface a ring painted OUTSIDE the border box never has behind it.) These
   // match the ui-kit primitives, and moving that bar is a change to
-  // --color-primary's alpha across both products.
+  // --color-primary's alpha in every host app.
   //
   // Nor does it assert anything under FORCED COLORS, where the ring's box-shadow
   // and the focused border colour are both discarded — see `focusPattern` and

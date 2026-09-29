@@ -2,7 +2,7 @@
 // The right-hand detail pane: a detection's header (with an optional enable/disable
 // toggle), provenance/library lineage, the enforcement-policy picker, and its rules.
 //
-// Action callbacks are all optional so one body serves both dashboards (mirrors
+// Action callbacks are all optional so one body serves every host app (mirrors
 // FindingDetailView's optional footer):
 //   - onToggleEnabled : present ⇒ live Switch; absent ⇒ static Enabled/Disabled badge
 //   - onChangePolicy  : present ⇒ interactive PolicyPicker (OSS); absent ⇒ read-only

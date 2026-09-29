@@ -175,7 +175,7 @@ describe('the field boundary', () => {
   // the container, giving 2.019:1 light and 2.325:1 dark (2.157:1 is that figure
   // over --color-surface-2, i.e. the field's own fill, which is the one surface the
   // ring never has behind it). Raising it means moving --color-primary's alpha for
-  // every focus ring in both products.
+  // every focus ring in every host app.
   //
   // Nor does it assert anything about FORCED COLORS, where a `ring-*` box-shadow and
   // an author border colour are both discarded. That is why the outline token is

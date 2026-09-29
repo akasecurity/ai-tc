@@ -143,9 +143,9 @@ const HOST_VERBS: Record<CliPluginBin, HostVerbs> = {
     // Stated rather than defaulted, and stated whenever the ledger names one —
     // including `user`. An implicit agreement between the two halves is exactly
     // what broke, so the reading the comparison used is the one spelled here.
-    // Whether a given scope may be updated at all is the host's call: `managed`
-    // is an administrator's install, and a refusal from `claude` naming that is
-    // a true answer, unlike the one this replaces.
+    // A `managed` install never reaches this verb: it is an organization's
+    // install, pinned by its marketplace declaration, and `applyPluginUpdate`
+    // refuses it before anything runs. Every other scope is spelled here.
     update: (ref, scope) => [['plugin', 'update', ref, ...(scope ? ['--scope', scope] : [])]],
     register: (source) => [['plugin', 'marketplace', 'add', source]],
     refresh: (marketplace) => [['plugin', 'marketplace', 'update', marketplace]],

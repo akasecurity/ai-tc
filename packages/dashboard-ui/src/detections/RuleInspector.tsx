@@ -2,7 +2,7 @@
 // Read-only rule inspector. Detection rules are immutable version snapshots from
 // the registry — there is no in-place editing — so this shows what a rule matches
 // on, what gates that match has to clear, what it catches, and what its author
-// asserted about it, with no edit/save path. Shared by both dashboards, as the
+// asserted about it, with no edit/save path. Shared by every host app, as the
 // `MatcherModal` dialog and as the bare `RuleInspectorBody` a host can drop into a
 // side panel or an expanded row.
 import type { DetectionRule, Matcher, RuleFixture } from '@akasecurity/schema';
@@ -20,7 +20,7 @@ import { CATEGORY_LABEL, MATCHER_META, type MatcherMeta } from './meta.ts';
  * `z.array(z.string())`, `RuleFixture.text` caps ONE body at 50,000 characters and
  * says nothing about how many bodies a pack ships, and a validator `config` is an
  * open record. A pack declaring a few thousand entries would otherwise render
- * every one of them into a dialog the tenant did not choose to open.
+ * every one of them into a dialog the user did not choose to open.
  *
  * The escaping half of this surface was already handled — React escapes children,
  * and nothing here reaches for an escape hatch. This is the volume half. The

@@ -337,7 +337,10 @@ Installing one:
 - **Plugins** — a plugin is installed as `name@marketplace` with no version, so its channel is
   whatever the marketplace entry pins. `aka update --channel` therefore applies to the CLI only
   and says so for a plugin target. A marketplace `version` pin is honoured by the update report
-  only when it is an exact version.
+  only when it is an exact version. A plugin that an organization's managed settings installed
+  (Claude Code records it at scope `managed`) is reported but never updated. `aka update` and
+  the dashboard refuse it before anything runs, because the organization's pin decides its
+  version and Claude Code's own plugin autoupdate moves it.
 - **Native binary, Homebrew and Scoop installs** cannot follow a channel; the update plan says
   so, and names the package manager's own upgrade command where one manages the binary.
 

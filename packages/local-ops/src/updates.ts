@@ -15,7 +15,7 @@ import { DIST_TAG, RELEASE_TAG_SOURCE } from '@akasecurity/schema';
 import type { RunResult } from './exec.ts';
 import { runCapture } from './exec.ts';
 import type { MarketplacePinLookup } from './marketplace-manifest.ts';
-import { marketplacePinnedVersion } from './marketplace-manifest.ts';
+import { marketplacePinnedVersion, marketplaceSourceRef } from './marketplace-manifest.ts';
 import { AGENT_PLUGINS, type AgentPlugin, pluginRef } from './registry.ts';
 import { channelOfVersion, resolveChannel } from './release-channel.ts';
 import { compareSemver, isNewer, isSemver } from './semver.ts';
@@ -62,6 +62,15 @@ export interface ReportDeps {
   // decide; a caller with no marketplace to read says so with
   // `() => ({ version: null })`.
   marketplacePin: (agent: AgentPlugin) => MarketplacePinLookup;
+  // The install an organization's managed settings put in place for this
+  // agent, or null when there is none. Such a row is reported and never
+  // offered as an update: the organization's pin decides its version and the
+  // host's own autoupdate moves it.
+  //
+  // REQUIRED for the same reason `marketplacePin` is. The caller that omitted
+  // it would go back to offering `aka update` an install it must not drive, and
+  // nothing would say so. A caller with no ledger to read says `() => null`.
+  managedInstall: (agent: AgentPlugin) => ManagedInstallLookup | null;
   // The channel to resolve the CLI row against, when a caller is asking to move
   // this copy onto another published line rather than to follow the one it is
   // on. Absent means derive it, which is what every read-only surface wants.
@@ -156,17 +165,7 @@ export function installedPlugins(
   claudeHome: string = join(homedir(), '.claude'),
 ): Map<string, InstalledPlugin> {
   const out = new Map<string, InstalledPlugin>();
-  const path = installedPluginsPath(claudeHome);
-  if (!existsSync(path)) return out;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(path, 'utf8'));
-  } catch {
-    return out;
-  }
-  if (!isRecord(raw) || !isRecord(raw.plugins)) return out;
-  for (const [ref, records] of Object.entries(raw.plugins)) {
-    if (!Array.isArray(records) || records.length === 0) continue;
+  for (const [ref, records] of ledgerRecords(claudeHome)) {
     // Prefer a `user`-scope record; fall back to the first with a version string.
     const record =
       records.find((r): r is Record<string, unknown> => isRecord(r) && r.scope === 'user') ??
@@ -181,9 +180,84 @@ export function installedPlugins(
   return out;
 }
 
+// Every non-empty record list the ledger holds, keyed by ref, before any
+// record is chosen. Missing or garbage file → empty map.
+function ledgerRecords(claudeHome: string): Map<string, unknown[]> {
+  const out = new Map<string, unknown[]>();
+  const path = installedPluginsPath(claudeHome);
+  if (!existsSync(path)) return out;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    return out;
+  }
+  if (!isRecord(raw) || !isRecord(raw.plugins)) return out;
+  for (const [ref, records] of Object.entries(raw.plugins)) {
+    if (Array.isArray(records) && records.length > 0) out.set(ref, records);
+  }
+  return out;
+}
+
 /** The scope a ref is installed at, or undefined when the ledger names none. */
 export function installedPluginScope(ref: string, claudeHome?: string): string | undefined {
   return installedPlugins(claudeHome).get(ref)?.scope;
+}
+
+// The scope Claude Code records a plugin at when an organization's managed
+// settings force-enable it.
+const MANAGED_SCOPE = 'managed';
+
+/** What a managed install is running, and where the host resolved it from. */
+export interface ManagedInstallLookup {
+  // The version the managed-scope record carries, or null when it names no
+  // usable one (absent, not a string, or blank). The lookup itself is still
+  // non-null then: the record is what makes the install the organization's,
+  // and the version is only what the report shows.
+  version: string | null;
+  // The ref the organization's marketplace is checked out at, when the host's
+  // record of that marketplace names one.
+  ref?: string;
+}
+
+/**
+ * The install an organization's managed settings put in place for an agent's
+ * plugin, or null when there is none.
+ *
+ * Its own reader rather than a flag on `installedPlugins`, because the two
+ * answer different questions about the same ledger. The comparison reader
+ * prefers a `user` record and every non-managed install depends on that
+ * choice staying as it is. This one asks whether ANY record is `managed`.
+ * The host resolves the managed copy when a user copy sits beside it
+ * (`claude plugin details` reports the managed record's version), so one
+ * managed record makes the plugin the organization's, whatever else the
+ * ledger lists.
+ *
+ * The host check is the same one `marketplacePinnedVersion` makes, for the
+ * same reason: every registered agent with a ref could be looked up in this
+ * ledger, but only a Claude Code agent's answer means anything there.
+ */
+export function managedPluginInstall(
+  agent: AgentPlugin,
+  claudeHome: string = join(homedir(), '.claude'),
+): ManagedInstallLookup | null {
+  if (agent.cliBin !== 'claude') return null;
+  const ref = pluginRef(agent);
+  if (ref === undefined) return null;
+  const record = ledgerRecords(claudeHome)
+    .get(ref)
+    ?.find((r): r is Record<string, unknown> => isRecord(r) && r.scope === MANAGED_SCOPE);
+  // Null means ONLY "no managed record" (or not this host). Both the report
+  // and the apply path read null as "this command may drive the install", so
+  // a managed record whose version is unreadable must not produce it.
+  if (record === undefined) return null;
+  const version =
+    typeof record.version === 'string' && record.version.trim() !== '' ? record.version : null;
+  const sourceRef =
+    agent.marketplace === undefined
+      ? undefined
+      : marketplaceSourceRef(claudeHome, agent.marketplace);
+  return { version, ...(sourceRef !== undefined ? { ref: sourceRef } : {}) };
 }
 
 // The version-only projection every version comparison takes.
@@ -389,10 +463,15 @@ export function gatherReport(deps: ReportDeps): UpdateReport {
   for (const agent of AGENT_PLUGINS) {
     const ref = pluginRef(agent);
     if (!ref || !agent.npmPackage) continue;
+    // A managed install's version is the managed record's, even where a user
+    // copy sits beside it: that is the copy the host resolves. It is null when
+    // that record names no usable version, and the user copy's version is NOT
+    // substituted for it.
+    const managed = deps.managedInstall(agent);
     // A plugin nobody has installed resolves stable: a machine with nothing
     // installed has opted into nothing, and advertising it a prerelease would
     // be this report choosing a channel on the user's behalf.
-    const installed = deps.installed.get(ref) ?? null;
+    const installed = managed !== null ? managed.version : (deps.installed.get(ref) ?? null);
     const channel = channelOfVersion(installed);
     const npm = resolveChannel(deps.viewDistTags(agent.npmPackage), channel);
     const npmLatest = npm.version;
@@ -421,6 +500,31 @@ export function gatherReport(deps: ReportDeps): UpdateReport {
             },
           }
         : {};
+    // Checked BEFORE the not-installed branch below: a managed record with no
+    // readable version has a null `installed`, and filing it under "available"
+    // would advertise `aka plugins install` for the organization's own install.
+    if (managed !== null) {
+      // The organization's EXACT pin is the only target this report can name.
+      // npm's answer (and a range, which is not one version) is not what
+      // decides a managed install, so either leaves the target unknown rather
+      // than offering npm's latest in its place. `latestFrom` is absent because
+      // `latest` never comes from a dist-tag here.
+      statuses.push({
+        id: agent.id,
+        name: agent.name,
+        kind: 'plugin',
+        installed,
+        latest: pin.version,
+        updateAvailable: false,
+        channel,
+        ...pinned,
+        managedInstall: {
+          ...(managed.ref !== undefined ? { ref: managed.ref } : {}),
+          pending: pin.version !== null && installed !== null && isNewer(pin.version, installed),
+        },
+      });
+      continue;
+    }
     if (installed === null) {
       availablePlugins.push({ id: agent.id, name: agent.name, latest });
       continue;
@@ -462,5 +566,6 @@ export function gatherReportLive(cliChannel?: ReleaseChannel): UpdateReport {
     // its registry entry carries a marketplace and a plugin name like any
     // other — into a reader that only understands Claude Code's layout.
     marketplacePin: (agent) => marketplacePinnedVersion(agent),
+    managedInstall: (agent) => managedPluginInstall(agent),
   });
 }

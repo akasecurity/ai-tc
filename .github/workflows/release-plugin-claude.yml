@@ -88,7 +88,11 @@ jobs:
       contents: write # create the GitHub Release
       id-token: write # OIDC trusted publishing to npm (provenance attestation)
     steps:
+      # Full history and every branch, so the on-main check below can ask
+      # whether `main` holds the tagged commit.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
@@ -127,6 +131,37 @@ jobs:
           echo "tag=$tag  package.json=$PKG_VERSION  plugin.json=$manifest"
           if [ "$tag" != "$PKG_VERSION" ] || [ "$tag" != "$manifest" ]; then
             echo "::error::Version mismatch — tag plugin-claude-v$tag must equal package.json ($PKG_VERSION) and plugin.json ($manifest)"
+            exit 1
+          fi
+
+      # A stable version is published only from a commit `main` already holds:
+      # the one the release pull request's merge put there, tagged after it
+      # merged. That keeps the commit a stable version's npm provenance names a
+      # reviewed, merged one, which is what anyone verifying a release against
+      # `main` checks. A pre-release is tagged on its release branch before that
+      # branch merges, so a suffixed version skips the check. This refuses an
+      # honest mistake before anything publishes; it is not a control, since
+      # whoever pushes a tag also chooses what this file says at the commit
+      # they tag.
+      - name: Verify a stable tag is on main
+        if: github.event_name == 'push'
+        env:
+          PKG_VERSION: ${{ steps.manifest.outputs.version }}
+        run: |
+          case "$PKG_VERSION" in
+            *-*)
+              echo "pre-release ${PKG_VERSION}: tagged on its release branch, not required to be on main"
+              exit 0
+              ;;
+          esac
+          if ! git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
+            echo "::error::origin/main is not fetched; the release job's checkout needs fetch-depth: 0"
+            exit 1
+          fi
+          if git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "${GITHUB_SHA} is on main"
+          else
+            echo "::error::plugin-claude-v${PKG_VERSION} tags ${GITHUB_SHA}, which main does not contain. Do not move or delete the tag. If the release pull request merges with a merge commit, re-run this run's failed jobs after it merges; otherwise release the next patch version, tagged on the commit that merge puts on main."
             exit 1
           fi
 

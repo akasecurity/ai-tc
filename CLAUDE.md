@@ -1523,7 +1523,10 @@ branch. `release-plugin-claude.yml` publishes only on the tag push: its manual d
 publish input and is always a dry run, its npm publish sits behind the tag-to-manifest check, and
 its GitHub Packages job waits for that check's job. `release-plugin-claude-gates.test.js` (in
 `packages/eslint-config/test/`) pins those gates, and that the workflow reads no secret but its own
-`GITHUB_TOKEN`.
+`GITHUB_TOKEN`. The release job also refuses a stable tag whose commit `main` does not contain,
+before anything publishes; the same suite executes that check against a scratch repository. It is
+an early catch for a mistake, not a control: whoever pushes a tag also chooses what that file says
+at the tagged commit.
 
 ### Binary (SEA) channel — `bin-v*`
 

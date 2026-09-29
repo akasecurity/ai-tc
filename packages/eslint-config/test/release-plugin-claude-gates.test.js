@@ -17,13 +17,22 @@
 // Every read goes through the shared comment-dropping job reader, because this
 // workflow's own comments name its gates, jobs and checks in prose.
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
-import { dropComments, jobBlock, stepNamed, steps } from './helpers/workflow.js';
+import {
+  blockScalarText,
+  dropComments,
+  jobBlock,
+  rawStepNamed,
+  stepNamed,
+  steps,
+} from './helpers/workflow.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const WORKFLOW = join(REPO_ROOT, '.github', 'workflows', 'release-plugin-claude.yml');
@@ -190,5 +199,197 @@ describe('the release reads no credential but its own token', () => {
         /^ {4}uses: /m,
       );
     }
+  });
+});
+
+// A stable version is published only from a commit `main` holds. The check is
+// SHELL, so it is executed rather than read: a token check passes on a block
+// that asks git the question backwards, and the only question worth asking is
+// which tagged commits it lets through. It runs against a throwaway repository
+// shaped like a release, with `origin/main` standing where the job's full
+// checkout puts it.
+const ON_MAIN_CHECK = 'Verify a stable tag is on main';
+const BASH = '/bin/bash';
+
+// A fixed search path rather than the developer's own: what resolves `git`
+// here must not depend on what someone has earlier on their PATH.
+const TOOL_PATH = [
+  dirname(process.execPath),
+  '/usr/local/bin',
+  '/usr/bin',
+  '/bin',
+  '/usr/sbin',
+  '/sbin',
+].join(':');
+
+/** Where a tool resolves on TOOL_PATH, or null. */
+function resolveTool(name) {
+  for (const dir of TOOL_PATH.split(':')) {
+    const candidate = join(dir, name);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Skip on a host that cannot run the extracted block. A skip and never a bare
+ * return: a returning body is a passing body, and these cases are worth
+ * something only because they ran the block.
+ * @param {{ skip: (note?: string) => void }} ctx
+ */
+function requireGitAndBash(ctx) {
+  if (process.platform === 'win32' || !existsSync(BASH)) {
+    ctx.skip(`needs ${BASH}; the extracted block is POSIX shell, as GitHub runs it`);
+  }
+  if (resolveTool('git') === null) {
+    ctx.skip('needs git on a real PATH; the extracted block runs it');
+  }
+}
+
+const SCRATCH_DIRS = [];
+afterAll(() => {
+  for (const dir of SCRATCH_DIRS) rmSync(dir, { recursive: true, force: true });
+});
+
+/**
+ * A repository shaped like a release: `main` with one commit, a release branch
+ * one commit ahead of it, and `origin/main` at `main`. Its git reads no config
+ * but its own, so a developer's signing or hook settings cannot change it.
+ */
+function releaseRepo() {
+  const root = mkdtempSync(join(tmpdir(), 'aka-tag-on-main-'));
+  SCRATCH_DIRS.push(root);
+  const repo = join(root, 'repo');
+  mkdirSync(repo);
+  const globalConfig = join(root, 'gitconfig');
+  writeFileSync(globalConfig, '');
+  const env = {
+    PATH: TOOL_PATH,
+    HOME: root,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: globalConfig,
+    GIT_AUTHOR_NAME: 'Release Fixture',
+    GIT_AUTHOR_EMAIL: 'release-fixture@example.invalid',
+    GIT_COMMITTER_NAME: 'Release Fixture',
+    GIT_COMMITTER_EMAIL: 'release-fixture@example.invalid',
+  };
+  const git = (...args) =>
+    execFileSync(resolveTool('git'), args, {
+      cwd: repo,
+      env,
+      encoding: 'utf8',
+      timeout: 30_000,
+    }).trim();
+  git('init', '-q', '-b', 'main');
+  git('commit', '-q', '--allow-empty', '-m', 'base');
+  const base = git('rev-parse', 'HEAD');
+  git('checkout', '-q', '-b', 'release/fixture');
+  git('commit', '-q', '--allow-empty', '-m', 'chore(release): fixture');
+  const releaseCommit = git('rev-parse', 'HEAD');
+  git('checkout', '-q', 'main');
+  git('update-ref', 'refs/remotes/origin/main', base);
+  return { repo, env, git, base, releaseCommit };
+}
+
+/** Point `origin/main` at `main`'s current commit, as a fresh checkout would. */
+const publishMain = (fixture) =>
+  fixture.git('update-ref', 'refs/remotes/origin/main', fixture.git('rev-parse', 'HEAD'));
+
+/**
+ * Run the step's own `run:` script, as the workflow spells it, for one version
+ * and one tagged commit.
+ * @param {ReturnType<typeof releaseRepo>} fixture
+ * @param {{ version: string, sha: string }} tag
+ */
+function runOnMainCheck(fixture, { version, sha }) {
+  const script = blockScalarText(rawStepNamed(readWorkflow(), ON_MAIN_CHECK), 'run');
+  try {
+    const output = execFileSync(BASH, ['-c', script], {
+      cwd: fixture.repo,
+      encoding: 'utf8',
+      env: { ...fixture.env, PKG_VERSION: version, GITHUB_SHA: sha },
+      timeout: 30_000,
+    });
+    return { passed: true, output };
+  } catch (err) {
+    return { passed: false, output: `${String(err.stdout ?? '')}${String(err.stderr ?? '')}` };
+  }
+}
+
+describe('a stable version publishes only from a commit main holds', () => {
+  it('runs the on-main check on the tag push exactly, before the npm publish', () => {
+    const release = jobBlock(readWorkflow(), 'release');
+    expect(soleIfCondition(stepNamed(release, ON_MAIN_CHECK), 'the on-main check')).toBe(TAG_PUSH);
+    expect(positionOf(release, ON_MAIN_CHECK)).toBeLessThan(positionOf(release, NPM_PUBLISH));
+  });
+
+  it("checks out main's history in the release job, which the check reads", () => {
+    const checkouts = steps(jobBlock(readWorkflow(), 'release')).filter((step) =>
+      /^uses: actions\/checkout@/m.test(step),
+    );
+    expect(checkouts, 'the release job has no single checkout step').toHaveLength(1);
+    expect(checkouts[0]).toMatch(/^[^\S\n]*fetch-depth: 0[^\S\n]*$/m);
+  });
+
+  it('passes a stable tag on a commit main contains', (ctx) => {
+    requireGitAndBash(ctx);
+    const fixture = releaseRepo();
+    const result = runOnMainCheck(fixture, { version: '0.9.15', sha: fixture.base });
+    expect(result.passed, result.output).toBe(true);
+    expect(result.output).toContain(`${fixture.base} is on main`);
+  });
+
+  it('refuses a stable tag on a release-branch commit main does not contain', (ctx) => {
+    requireGitAndBash(ctx);
+    const fixture = releaseRepo();
+    const result = runOnMainCheck(fixture, { version: '0.9.15', sha: fixture.releaseCommit });
+    expect(result.passed, result.output).toBe(false);
+    expect(result.output).toContain(`::error::plugin-claude-v0.9.15 tags ${fixture.releaseCommit}`);
+  });
+
+  it('passes a pre-release tag on its release branch', (ctx) => {
+    requireGitAndBash(ctx);
+    const fixture = releaseRepo();
+    const result = runOnMainCheck(fixture, {
+      version: '0.10.0-beta.1',
+      sha: fixture.releaseCommit,
+    });
+    expect(result.passed, result.output).toBe(true);
+    expect(result.output).toContain('pre-release 0.10.0-beta.1');
+  });
+
+  it('passes both the merge commit and the release commit once a merge commit lands', (ctx) => {
+    requireGitAndBash(ctx);
+    const fixture = releaseRepo();
+    fixture.git('merge', '-q', '--no-ff', '--no-edit', '-m', 'Merge release', 'release/fixture');
+    publishMain(fixture);
+    const merge = fixture.git('rev-parse', 'HEAD');
+    for (const sha of [merge, fixture.releaseCommit]) {
+      const result = runOnMainCheck(fixture, { version: '0.9.15', sha });
+      expect(result.passed, result.output).toBe(true);
+    }
+  });
+
+  it('refuses the release commit after a squash merge left it off main', (ctx) => {
+    requireGitAndBash(ctx);
+    const fixture = releaseRepo();
+    // What a squash merge leaves: a new commit on main carrying the change,
+    // and the release branch's own commit on no branch main contains.
+    fixture.git('commit', '-q', '--allow-empty', '-m', 'chore(release): fixture (#1)');
+    publishMain(fixture);
+    const squash = fixture.git('rev-parse', 'HEAD');
+    expect(runOnMainCheck(fixture, { version: '0.9.15', sha: fixture.releaseCommit }).passed).toBe(
+      false,
+    );
+    expect(runOnMainCheck(fixture, { version: '0.9.15', sha: squash }).passed).toBe(true);
+  });
+
+  it('refuses, and names the cause, when main was not fetched', (ctx) => {
+    requireGitAndBash(ctx);
+    const fixture = releaseRepo();
+    fixture.git('update-ref', '-d', 'refs/remotes/origin/main');
+    const result = runOnMainCheck(fixture, { version: '0.9.15', sha: fixture.base });
+    expect(result.passed, result.output).toBe(false);
+    expect(result.output).toContain('origin/main is not fetched');
   });
 });

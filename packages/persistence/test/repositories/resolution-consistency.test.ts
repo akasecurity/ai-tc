@@ -10,13 +10,14 @@ import { useTempStore } from '../helpers/temp-store.ts';
 // PINS the status↔bucket contract between the two resolution read surfaces:
 //
 //   - SqliteFindingsRepository.listFindingTypes (per-finding Status column)
-//   - SqliteSecurityRepository.severitySummary (caught / needs-remediation)
+//   - SqliteSecurityRepository.severitySummary (caught / needs-remediation / dismissed)
 //
 // Both derive from the same latest-resolution-wins SQL (resolution-sql.ts), but
 // each classifies the winning row itself — this suite seeds one store with every
 // lifecycle scenario and asserts the two surfaces stay coherent, including the
-// two DELIBERATE asymmetries (legacy untracked rows and 'dismissed' — see
-// deriveInstanceStatus's DECISION note in findings.ts). If a future change makes
+// one DELIBERATE asymmetry (legacy untracked rows: open in the list, in no
+// bucket on the card). 'dismissed' is its own bucket on the card, so it is not
+// an asymmetry. If a future change makes
 // the list call a finding Resolved while the card still counts it as
 // needs-remediation (or vice versa), this fails before a dashboard can disagree
 // with itself.
@@ -100,9 +101,9 @@ describe('list status ↔ severity-card bucket consistency', () => {
     //    (it exists and is unremediated) but the card counts it in NEITHER
     //    bucket — only in total (documented severitySummary exclusion).
     record({ ruleId: 'r-legacy', kind: 'code_change' });
-    // 6. At-rest, dismissed: the list surfaces the dismissed label, the card
-    //    still counts it as needs-remediation (never understate exposure —
-    //    see the DECISION note on deriveInstanceStatus).
+    // 6. At-rest, dismissed: the list surfaces the dismissed label and the
+    //    card counts it in its own dismissed bucket — neither caught nor
+    //    needing remediation.
     record({ ruleId: 'r-dismissed', kind: 'code_change', findingKey: 'k-dismissed' });
     db.resolutions.insertResolution({
       findingKey: 'k-dismissed',
@@ -125,19 +126,26 @@ describe('list status ↔ severity-card bucket consistency', () => {
     const summary = await security().severitySummary();
     const critical = summary.bySeverity.find((s) => s.severity === 'critical');
     // caught = handled (1) + resolved (1); openAtRest = open (1) + redetected
-    // (1) + dismissed (1); legacy contributes to count ONLY (6 > 2 + 3).
-    expect(critical).toEqual({ severity: 'critical', count: 6, caught: 2, openAtRest: 3 });
+    // (1); dismissed = dismissed (1); legacy contributes to count ONLY
+    // (6 > 2 + 2 + 1).
+    expect(critical).toEqual({
+      severity: 'critical',
+      count: 6,
+      caught: 2,
+      openAtRest: 2,
+      dismissed: 1,
+    });
     expect(summary.total).toBe(6);
-    expect(summary.needsRemediation).toBe(3);
+    expect(summary.needsRemediation).toBe(2);
+    expect(summary.dismissed).toBe(1);
 
     // The coherence contract, spelled out: a finding the list calls handled or
-    // resolved is exactly a finding the card counts as caught — with the two
-    // documented exceptions (legacy untracked: open but unbucketed; dismissed:
-    // labeled dismissed but counted as needing remediation).
-    const caughtStatuses = ['handled', 'resolved'];
-    const caughtCount = [...statusByRule.entries()].filter(
-      ([, s]) => s !== undefined && caughtStatuses.includes(s),
-    ).length;
-    expect(critical?.caught).toBe(caughtCount);
+    // resolved is exactly a finding the card counts as caught, and one it calls
+    // dismissed is exactly one the card counts as dismissed — with the one
+    // documented exception (legacy untracked: open but unbucketed).
+    const countOf = (statuses: string[]) =>
+      [...statusByRule.entries()].filter(([, s]) => s !== undefined && statuses.includes(s)).length;
+    expect(critical?.caught).toBe(countOf(['handled', 'resolved']));
+    expect(critical?.dismissed).toBe(countOf(['dismissed']));
   });
 });

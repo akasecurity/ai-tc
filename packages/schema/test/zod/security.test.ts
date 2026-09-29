@@ -51,23 +51,31 @@ describe('SeveritySummaryResponse (resolution-aware extension)', () => {
     const result = SeveritySummaryResponse.safeParse({
       total: 3,
       needsRemediation: 1,
-      bySeverity: [{ severity: 'high', count: 3, caught: 2, openAtRest: 1 }],
+      dismissed: 1,
+      bySeverity: [{ severity: 'high', count: 3, caught: 1, openAtRest: 1, dismissed: 1 }],
     });
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.needsRemediation).toBe(1);
-      expect(result.data.bySeverity[0]?.caught).toBe(2);
+      expect(result.data.dismissed).toBe(1);
+      expect(result.data.bySeverity[0]?.dismissed).toBe(1);
+      expect(result.data.bySeverity[0]?.caught).toBe(1);
       expect(result.data.bySeverity[0]?.openAtRest).toBe(1);
     }
   });
 });
 
 describe('SeveritySummaryItem (resolution-aware extension)', () => {
-  it('keeps count required and caught/openAtRest optional', () => {
+  it('keeps count required and caught/openAtRest/dismissed optional', () => {
     expect(SeveritySummaryItem.safeParse({ severity: 'low', count: 0 }).success).toBe(true);
     expect(
-      SeveritySummaryItem.safeParse({ severity: 'low', count: 0, caught: 0, openAtRest: 0 })
-        .success,
+      SeveritySummaryItem.safeParse({
+        severity: 'low',
+        count: 0,
+        caught: 0,
+        openAtRest: 0,
+        dismissed: 0,
+      }).success,
     ).toBe(true);
     // count is still required.
     expect(SeveritySummaryItem.safeParse({ severity: 'low' }).success).toBe(false);

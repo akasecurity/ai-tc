@@ -4,28 +4,30 @@ import { describe, expect, it } from 'vitest';
 import { renderFindingsSummary, renderTokenUsage } from '../../src/commands/stats.ts';
 
 describe('renderFindingsSummary', () => {
-  it('shows Caught (sum of per-severity caught) and Needs remediation (top-level needsRemediation)', () => {
+  it('shows Caught (sum of per-severity caught), Needs remediation and Dismissed (top-level fields)', () => {
     const summary: SeveritySummaryResponse = {
-      total: 4,
+      total: 5,
       needsRemediation: 2,
+      dismissed: 1,
       bySeverity: [
-        { severity: 'critical', count: 2, caught: 1, openAtRest: 1 },
-        { severity: 'high', count: 1, caught: 1, openAtRest: 0 },
-        { severity: 'medium', count: 1, caught: 0, openAtRest: 1 },
-        { severity: 'low', count: 0, caught: 0, openAtRest: 0 },
+        { severity: 'critical', count: 2, caught: 1, openAtRest: 1, dismissed: 0 },
+        { severity: 'high', count: 1, caught: 1, openAtRest: 0, dismissed: 0 },
+        { severity: 'medium', count: 1, caught: 0, openAtRest: 1, dismissed: 0 },
+        { severity: 'low', count: 1, caught: 0, openAtRest: 0, dismissed: 1 },
       ],
     };
 
     const text = renderFindingsSummary(summary);
     const lines = text.split('\n');
 
-    expect(lines[0]).toBe('Findings: 4 total');
+    expect(lines[0]).toBe('Findings: 5 total');
     expect(text).toContain('critical');
     expect(text).toMatch(/Caught\s+2/);
     expect(text).toMatch(/Needs remediation\s+2/);
+    expect(text).toMatch(/Dismissed\s+1/);
   });
 
-  it('defaults missing caught/openAtRest/needsRemediation to 0 (legacy pre-resolution summary)', () => {
+  it('defaults missing caught/openAtRest/needsRemediation/dismissed to 0 (legacy pre-resolution summary)', () => {
     const summary: SeveritySummaryResponse = {
       total: 1,
       bySeverity: [
@@ -40,6 +42,7 @@ describe('renderFindingsSummary', () => {
 
     expect(text).toMatch(/Caught\s+0/);
     expect(text).toMatch(/Needs remediation\s+0/);
+    expect(text).toMatch(/Dismissed\s+0/);
   });
 });
 

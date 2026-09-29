@@ -40,10 +40,10 @@ const DAY_MS = 86_400_000;
  * `AND` clauses and its own GROUP BY.
  *
  * `open` mirrors `deriveFindingStatus` — at-rest, minus resolved and dismissed.
- * Note that is NOT `severitySummary`'s `openAtRest`, which keeps dismissed
- * findings (a dismissal is a judgement, not a remediation) and drops untracked
- * legacy rows. The two answer different questions, and only this one has to
- * match both a link and a write.
+ * It differs from `severitySummary`'s `openAtRest` in one way only: this set
+ * includes untracked legacy rows (no finding_key), which that bucket leaves out.
+ * Dismissed findings are excluded from both. Only this one has to match both a
+ * link and a write.
  *
  * The redundant-looking `e.event_type` pair is deliberate and load-bearing for
  * the PLAN, not for the result: `idx_audit_capture_rollup` is partial over the
@@ -251,16 +251,16 @@ export class SqliteSecurityRepository implements SecurityViews {
   // findings are caught only once their latest disposition is resolved,
   // otherwise they are open-at-rest.
   //
-  // NOTE for future manual-resolution writers: only latest status
-  // 'resolved' counts as caught above. When acknowledged/dismissed/
-  // false-positive manual dispositions land, this must keep filtering by
-  // status/method — 'acknowledged' is accepted risk, not a fix, and must NOT
-  // be bucketed as caught alongside 'resolved'.
+  // Only latest status 'resolved' counts as caught above. 'dismissed' is its
+  // own bucket: a judgement rather than a fix, so it is neither caught nor
+  // needing remediation, and stays countable. A further manual disposition
+  // (acknowledged, false-positive) must be placed deliberately — 'acknowledged'
+  // is accepted risk, not a fix, and must NOT be bucketed as caught.
   //
   // Legacy at-rest findings from pre-branch scans carry finding_key = NULL —
   // the resolution lifecycle is keyed by finding_key, so it can never attach a
   // disposition to (or clear) one of these on re-scan. They are excluded from
-  // both caught and openAtRest (untracked, not "needs remediation forever"),
+  // all three buckets (untracked, not "needs remediation forever"),
   // but still counted in total/count below — this keeps this predicate
   // consistent with SqliteResolutionsRepository.openAtRestKeysForPath, which
   // already filters `finding_key IS NOT NULL`.
@@ -278,6 +278,7 @@ export class SqliteSecurityRepository implements SecurityViews {
       count: number;
       caught: number;
       open_at_rest: number;
+      dismissed: number;
     }>(
       this.db.prepare(
         `SELECT d.severity AS severity,
@@ -291,9 +292,15 @@ export class SqliteSecurityRepository implements SecurityViews {
                 SUM(CASE
                       WHEN e.event_type = 'code_change'
                        AND f.finding_key IS NOT NULL
-                       AND (latest.status IS NULL OR latest.status != 'resolved') THEN 1
+                       AND (latest.status IS NULL
+                            OR latest.status NOT IN ('resolved', 'dismissed')) THEN 1
                       ELSE 0
-                    END) AS open_at_rest
+                    END) AS open_at_rest,
+                SUM(CASE
+                      WHEN e.event_type = 'code_change'
+                       AND latest.status = 'dismissed' THEN 1
+                      ELSE 0
+                    END) AS dismissed
          FROM inspection_findings f
          JOIN audit_events e INDEXED BY idx_audit_capture_rollup ON e.id = f.audit_event_id
          JOIN inspection_definitions d ON d.id = f.inspection_definition_id
@@ -305,20 +312,23 @@ export class SqliteSecurityRepository implements SecurityViews {
     );
 
     // Bucket semantics (mirrors the CASEs above): in-flight is born caught;
-    // trackable at-rest is caught only when its latest resolution is
-    // 'resolved', otherwise open-at-rest; legacy untracked at-rest
-    // (finding_key IS NULL) lands in NEITHER bucket, only in count.
+    // trackable at-rest is caught when its latest resolution is 'resolved',
+    // dismissed when it is 'dismissed', otherwise open-at-rest; legacy
+    // untracked at-rest (finding_key IS NULL) lands in NONE of the three
+    // buckets, only in count.
     const byRow = new Map(rows.map((r) => [r.severity, r]));
     const bySeverity = SEVERITIES.map((severity) => ({
       severity,
       count: byRow.get(severity)?.count ?? 0,
       caught: byRow.get(severity)?.caught ?? 0,
       openAtRest: byRow.get(severity)?.open_at_rest ?? 0,
+      dismissed: byRow.get(severity)?.dismissed ?? 0,
     }));
     const total = bySeverity.reduce((sum, s) => sum + s.count, 0);
     const needsRemediation = bySeverity.reduce((sum, s) => sum + s.openAtRest, 0);
+    const dismissed = bySeverity.reduce((sum, s) => sum + s.dismissed, 0);
 
-    return Promise.resolve({ total, needsRemediation, bySeverity });
+    return Promise.resolve({ total, needsRemediation, dismissed, bySeverity });
   }
 
   // Range is echoed but does not change the result today — coverage is a constant
@@ -704,10 +714,10 @@ export class SqliteSecurityRepository implements SecurityViews {
    * machine, and the second reported "no recommendations" over live exposure.
    *
    * `open` mirrors `deriveFindingStatus` — at-rest, minus resolved and dismissed —
-   * so a row's count is exactly what `?status=open&type=<rule>` returns. Note that
-   * is NOT `severitySummary`'s `openAtRest`, which keeps dismissed findings (a
-   * dismissal is a judgement, not a remediation) and drops untracked legacy rows.
-   * The two answer different questions and only this one has to match a link.
+   * so a row's count is exactly what `?status=open&type=<rule>` returns. It
+   * differs from `severitySummary`'s `openAtRest` only in including untracked
+   * legacy rows, which that bucket leaves out; dismissed is excluded from both.
+   * Only this one has to match a link.
    *
    * Aggregated in SQL: the result is O(distinct rule × category × severity), so a
    * whole-store scope costs a grouped scan rather than a row per finding.

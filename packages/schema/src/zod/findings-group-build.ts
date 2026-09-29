@@ -233,18 +233,18 @@ export function foldGroupStatus(
  *     already ran at the boundary.
  *   - at-rest, legacy untracked (findingKey null): the resolution lifecycle is
  *     keyed by finding_key, so these can never carry a disposition. The
- *     severity summaries drop them from their caught/open buckets entirely; a
+ *     severity summaries drop them from their caught, open and dismissed buckets entirely; a
  *     list view still needs a status to render, and the finding physically
  *     exists and is unremediated, so it reads 'open' rather than being
  *     fabricated as resolved/handled.
  *   - at-rest, tracked: 'resolved'/'dismissed' per the LATEST
  *     finding_resolution row (latest-resolution-wins — the caller's SQL
  *     supplies it), else 'open'.
- * DECISION: 'dismissed' deliberately reads as its own label
- * here while the severity summaries keep counting it under needs-remediation
- * ('caught' honors only 'resolved') — dismissing is a judgment, not a
- * remediation, and the card must never understate exposure. Values come from
- * a fixed literal set, so the result is in-enum without a cast.
+ * 'dismissed' reads as its own label, and the severity summaries count it in
+ * its own 'dismissed' bucket — neither caught (that honors only 'resolved') nor
+ * needing remediation. Dismissing is a judgement rather than a fix, so it stays
+ * visible without being reported as unfixed work. Values come from a fixed
+ * literal set, so the result is in-enum without a cast.
  */
 export function deriveFindingStatus(row: {
   kind: string;

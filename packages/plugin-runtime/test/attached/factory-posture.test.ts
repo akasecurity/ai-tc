@@ -15,6 +15,7 @@ import type * as RemoteModule from '@akasecurity/remote';
 import type { PolicyBundle, StorePostureSnapshot } from '@akasecurity/schema';
 import {
   SOURCE_TOOL,
+  SQLITE_MIGRATIONS,
   StorePostureSnapshot as StorePostureSnapshotSchema,
 } from '@akasecurity/schema';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -136,6 +137,19 @@ describe('the attached factory wires the posture plugin block', () => {
       policyBundleVersion: 'sha256:abc123',
     });
     expect(snapshot.plugin?.policyFetchedAt).toBeGreaterThan(0);
+  });
+
+  it('a build identity reports the store schema version this build migrates to', async () => {
+    // Composed by the runtime, not the adapter, so this seam is where the two
+    // meet end to end: the real factory, the real block, the body as sent.
+    attach(home);
+    const gateway = resolveGatewayForConfig(configFor(home), { pluginBuild: BUILD });
+    opened.push(gateway);
+    await runInventoryPass(gateway);
+
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.plugin?.buildSchemaVersion).toBe(SQLITE_MIGRATIONS.length);
+    expect(reported[0]?.plugin).not.toHaveProperty('installedVersion');
   });
 
   it('a build identity with a cold policy cache still reports package and version', async () => {

@@ -315,9 +315,10 @@ commit if the pull request was merged that way. Never tag the release branch's o
 it merges. The version npm records would then name, in its provenance, a commit `main` did not
 hold yet, and after a squash or rebase merge never will. Cut the same release's other tags on that
 same commit, so every artifact of one version comes from one tree. A pre-release (a suffixed
-version) is the exception: it is tagged on its release branch, which merges only once the matching
-stable ships. The Claude Code plugin's release workflow refuses a stable tag whose commit `main`
-does not contain, before anything publishes.
+version) is the exception: it is tagged on its release branch, which later merges as, or after, the
+matching stable's release pull request; the stable is then tagged on that merge. The Claude Code
+plugin's release workflow refuses a stable tag whose commit `main` does not contain, before
+anything publishes.
 
 The old `plugin-v*` prefix is retired. Tags with that prefix exist, no workflow matches it, and
 pushing one does nothing. Every release workflow also takes a manual dispatch that defaults to a

@@ -316,80 +316,96 @@ function runOnMainCheck(fixture, { version, sha }) {
   }
 }
 
-describe('a stable version publishes only from a commit main holds', () => {
-  it('runs the on-main check on the tag push exactly, before the npm publish', () => {
-    const release = jobBlock(readWorkflow(), 'release');
-    expect(soleIfCondition(stepNamed(release, ON_MAIN_CHECK), 'the on-main check')).toBe(TAG_PUSH);
-    expect(positionOf(release, ON_MAIN_CHECK)).toBeLessThan(positionOf(release, NPM_PUBLISH));
-  });
+// The executed cases each build a throwaway git repository and spawn the check
+// script, some 8 to 18 git and bash processes run synchronously. That is well
+// inside the default 5 s alone but not on a loaded host, and a timeout on the
+// tag push would turn the very release run this suite protects red. The
+// deadline is named here, generous on purpose: the cases finish in well under
+// a second when the host is idle.
+const GIT_FIXTURE_TIMEOUT_MS = 60_000;
 
-  it("checks out main's history in the release job, which the check reads", () => {
-    const checkouts = steps(jobBlock(readWorkflow(), 'release')).filter((step) =>
-      /^uses: actions\/checkout@/m.test(step),
-    );
-    expect(checkouts, 'the release job has no single checkout step').toHaveLength(1);
-    expect(checkouts[0]).toMatch(/^[^\S\n]*fetch-depth: 0[^\S\n]*$/m);
-  });
-
-  it('passes a stable tag on a commit main contains', (ctx) => {
-    requireGitAndBash(ctx);
-    const fixture = releaseRepo();
-    const result = runOnMainCheck(fixture, { version: '0.9.15', sha: fixture.base });
-    expect(result.passed, result.output).toBe(true);
-    expect(result.output).toContain(`${fixture.base} is on main`);
-  });
-
-  it('refuses a stable tag on a release-branch commit main does not contain', (ctx) => {
-    requireGitAndBash(ctx);
-    const fixture = releaseRepo();
-    const result = runOnMainCheck(fixture, { version: '0.9.15', sha: fixture.releaseCommit });
-    expect(result.passed, result.output).toBe(false);
-    expect(result.output).toContain(`::error::plugin-claude-v0.9.15 tags ${fixture.releaseCommit}`);
-  });
-
-  it('passes a pre-release tag on its release branch', (ctx) => {
-    requireGitAndBash(ctx);
-    const fixture = releaseRepo();
-    const result = runOnMainCheck(fixture, {
-      version: '0.10.0-beta.1',
-      sha: fixture.releaseCommit,
+describe(
+  'a stable version publishes only from a commit main holds',
+  { timeout: GIT_FIXTURE_TIMEOUT_MS },
+  () => {
+    it('runs the on-main check on the tag push exactly, before the npm publish', () => {
+      const release = jobBlock(readWorkflow(), 'release');
+      expect(soleIfCondition(stepNamed(release, ON_MAIN_CHECK), 'the on-main check')).toBe(
+        TAG_PUSH,
+      );
+      expect(positionOf(release, ON_MAIN_CHECK)).toBeLessThan(positionOf(release, NPM_PUBLISH));
     });
-    expect(result.passed, result.output).toBe(true);
-    expect(result.output).toContain('pre-release 0.10.0-beta.1');
-  });
 
-  it('passes both the merge commit and the release commit once a merge commit lands', (ctx) => {
-    requireGitAndBash(ctx);
-    const fixture = releaseRepo();
-    fixture.git('merge', '-q', '--no-ff', '--no-edit', '-m', 'Merge release', 'release/fixture');
-    publishMain(fixture);
-    const merge = fixture.git('rev-parse', 'HEAD');
-    for (const sha of [merge, fixture.releaseCommit]) {
-      const result = runOnMainCheck(fixture, { version: '0.9.15', sha });
+    it("checks out main's history in the release job, which the check reads", () => {
+      const checkouts = steps(jobBlock(readWorkflow(), 'release')).filter((step) =>
+        /^uses: actions\/checkout@/m.test(step),
+      );
+      expect(checkouts, 'the release job has no single checkout step').toHaveLength(1);
+      expect(checkouts[0]).toMatch(/^[^\S\n]*fetch-depth: 0[^\S\n]*$/m);
+    });
+
+    it('passes a stable tag on a commit main contains', (ctx) => {
+      requireGitAndBash(ctx);
+      const fixture = releaseRepo();
+      const result = runOnMainCheck(fixture, { version: '0.9.15', sha: fixture.base });
       expect(result.passed, result.output).toBe(true);
-    }
-  });
+      expect(result.output).toContain(`${fixture.base} is on main`);
+    });
 
-  it('refuses the release commit after a squash merge left it off main', (ctx) => {
-    requireGitAndBash(ctx);
-    const fixture = releaseRepo();
-    // What a squash merge leaves: a new commit on main carrying the change,
-    // and the release branch's own commit on no branch main contains.
-    fixture.git('commit', '-q', '--allow-empty', '-m', 'chore(release): fixture (#1)');
-    publishMain(fixture);
-    const squash = fixture.git('rev-parse', 'HEAD');
-    expect(runOnMainCheck(fixture, { version: '0.9.15', sha: fixture.releaseCommit }).passed).toBe(
-      false,
-    );
-    expect(runOnMainCheck(fixture, { version: '0.9.15', sha: squash }).passed).toBe(true);
-  });
+    it('refuses a stable tag on a release-branch commit main does not contain', (ctx) => {
+      requireGitAndBash(ctx);
+      const fixture = releaseRepo();
+      const result = runOnMainCheck(fixture, { version: '0.9.15', sha: fixture.releaseCommit });
+      expect(result.passed, result.output).toBe(false);
+      expect(result.output).toContain(
+        `::error::plugin-claude-v0.9.15 tags ${fixture.releaseCommit}`,
+      );
+    });
 
-  it('refuses, and names the cause, when main was not fetched', (ctx) => {
-    requireGitAndBash(ctx);
-    const fixture = releaseRepo();
-    fixture.git('update-ref', '-d', 'refs/remotes/origin/main');
-    const result = runOnMainCheck(fixture, { version: '0.9.15', sha: fixture.base });
-    expect(result.passed, result.output).toBe(false);
-    expect(result.output).toContain('origin/main is not fetched');
-  });
-});
+    it('passes a pre-release tag on its release branch', (ctx) => {
+      requireGitAndBash(ctx);
+      const fixture = releaseRepo();
+      const result = runOnMainCheck(fixture, {
+        version: '0.10.0-beta.1',
+        sha: fixture.releaseCommit,
+      });
+      expect(result.passed, result.output).toBe(true);
+      expect(result.output).toContain('pre-release 0.10.0-beta.1');
+    });
+
+    it('passes both the merge commit and the release commit once a merge commit lands', (ctx) => {
+      requireGitAndBash(ctx);
+      const fixture = releaseRepo();
+      fixture.git('merge', '-q', '--no-ff', '--no-edit', '-m', 'Merge release', 'release/fixture');
+      publishMain(fixture);
+      const merge = fixture.git('rev-parse', 'HEAD');
+      for (const sha of [merge, fixture.releaseCommit]) {
+        const result = runOnMainCheck(fixture, { version: '0.9.15', sha });
+        expect(result.passed, result.output).toBe(true);
+      }
+    });
+
+    it('refuses the release commit after a squash merge left it off main', (ctx) => {
+      requireGitAndBash(ctx);
+      const fixture = releaseRepo();
+      // What a squash merge leaves: a new commit on main carrying the change,
+      // and the release branch's own commit on no branch main contains.
+      fixture.git('commit', '-q', '--allow-empty', '-m', 'chore(release): fixture (#1)');
+      publishMain(fixture);
+      const squash = fixture.git('rev-parse', 'HEAD');
+      expect(
+        runOnMainCheck(fixture, { version: '0.9.15', sha: fixture.releaseCommit }).passed,
+      ).toBe(false);
+      expect(runOnMainCheck(fixture, { version: '0.9.15', sha: squash }).passed).toBe(true);
+    });
+
+    it('refuses, and names the cause, when main was not fetched', (ctx) => {
+      requireGitAndBash(ctx);
+      const fixture = releaseRepo();
+      fixture.git('update-ref', '-d', 'refs/remotes/origin/main');
+      const result = runOnMainCheck(fixture, { version: '0.9.15', sha: fixture.base });
+      expect(result.passed, result.output).toBe(false);
+      expect(result.output).toContain('origin/main is not fetched');
+    });
+  },
+);

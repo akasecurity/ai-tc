@@ -25,10 +25,11 @@ import { StorePosturePlugin } from '@akasecurity/schema';
  * exactly what this reports. The record holds one entry per install scope; the
  * newest parseable version across them is returned, and a version past the wire
  * bound is skipped rather than sent, since the receiver would refuse the whole
- * snapshot over it. An entry whose `installPath` is a string naming a directory
- * that no longer exists is skipped too: the record then names a version that is
- * not on disk, and a caller would otherwise report it as installed. The path is
- * only checked for existence, never read or followed.
+ * snapshot over it. An entry whose `installPath` is a string naming a path that
+ * no longer exists is skipped too: the record then names a version that is not
+ * on disk, and a caller would otherwise report it as installed. The path is
+ * only checked for existence with a stat, which follows a symlink, and is never
+ * opened: any existing path counts, whatever it is.
  *
  * Best-effort — one small local file read once per report, plus one stat per
  * entry. Asynchronous, so a caller that bounds it with a timer keeps the read

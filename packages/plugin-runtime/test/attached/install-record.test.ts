@@ -141,6 +141,23 @@ describe('readInstalledVersion', () => {
     expect(await readInstalledVersion(root)).toBe('0.9.14');
   });
 
+  it('skips a dangling newer entry that comes after an intact older one', async () => {
+    // The reverse order of the case above: the older install is read first and
+    // becomes the current newest, so the dangling newer entry must still be
+    // checked and skipped rather than replacing it.
+    const { root, pluginsDir } = await layout();
+    await writeRecord(
+      pluginsDir,
+      ledger({
+        'ai-tc@akasecurity': [
+          record('0.9.14', 'user', root),
+          record('0.9.15', 'managed', join(pluginsDir, 'cache', 'akasecurity', 'ai-tc', '0.9.15')),
+        ],
+      }),
+    );
+    expect(await readInstalledVersion(root)).toBe('0.9.14');
+  });
+
   it('reads null when the only entry is dangling', async () => {
     const { root, pluginsDir } = await layout();
     await writeRecord(

@@ -375,7 +375,7 @@ export const StorePosturePlugin = z
      * what is on disk. After an update it leads `version` (the running copy) by
      * one launch. Null when no usable version can be read: no install record
      * (a plugin run from a checkout), no entry with a valid version, or no entry
-     * whose `installPath` exists; OPTIONAL, not required, so a build that
+     * whose named `installPath` exists; OPTIONAL, not required, so a build that
      * predates the member keeps getting its 200. Bounded like `version`.
      */
     installedVersion: z.string().max(64).nullable().optional(),

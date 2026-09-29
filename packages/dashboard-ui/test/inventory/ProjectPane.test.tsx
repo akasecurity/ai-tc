@@ -142,11 +142,11 @@ describe('ProjectPane per-file access control, refused', () => {
     expect(onSetAccess).not.toHaveBeenCalled();
   });
 
-  it('refuses the blocked-strip control too, independently of the same file in the table', () => {
+  it('gives the table and the blocked strip distinct reason ids for the same file', () => {
     const onSetAccess = vi.fn();
+    // The SAME path the table renders (src/index.ts), so a shared id formula
+    // would collide here.
     const blockedFile = file({
-      path: 'src/secret.env',
-      name: 'secret.env',
       access: 'blocked',
       blockedAt: '2026-01-01T00:00:00.000Z',
       note: 'Detected secret',
@@ -162,16 +162,51 @@ describe('ProjectPane per-file access control, refused', () => {
       />,
     );
 
-    // One in the browse table (src/index.ts) and one in the blocked strip
-    // (src/secret.env) — two distinct controls, not one shared by both.
     const buttons = refusedControls();
     expect(buttons).toHaveLength(2);
+    const ids = buttons.map((b) => b.getAttribute('aria-describedby'));
+    expect(new Set(ids).size).toBe(2);
     for (const button of buttons) {
-      expect(button.getAttribute('aria-disabled')).toBe('true');
+      const id = button.getAttribute('aria-describedby');
+      if (id === null) throw new Error('refused control names no reason');
+      const line = document.getElementById(id);
+      expect(line?.textContent).toBe(REASON);
+      expect(line?.getAttribute('data-slot')).toBe('access-refusal-reason');
       act(() => {
         button.click();
       });
     }
+    // Each id resolves to its own line, not one shared element.
+    expect(document.querySelectorAll('[data-slot="access-refusal-reason"]')).toHaveLength(2);
     expect(onSetAccess).not.toHaveBeenCalled();
+  });
+
+  it('links a path containing a space through a single whitespace-free token', () => {
+    const spaced = file({ path: 'src/my file.ts', name: 'my file.ts' });
+    const p = proj();
+    mount(
+      <ProjectPane
+        {...baseProps({
+          accessRefusal: REASON,
+          tree: {
+            project: { id: p.id, repo: p.repo, visibility: p.visibility },
+            path: '',
+            folders: [],
+            files: [spaced],
+          },
+          blocked: [{ ...spaced, access: 'blocked' }],
+          showBlocked: true,
+        })}
+      />,
+    );
+
+    const buttons = refusedControls();
+    expect(buttons).toHaveLength(2);
+    for (const button of buttons) {
+      const id = button.getAttribute('aria-describedby');
+      if (id === null) throw new Error('refused control names no reason');
+      expect(id).toMatch(/^\S+$/);
+      expect(document.getElementById(id)?.textContent).toBe(REASON);
+    }
   });
 });

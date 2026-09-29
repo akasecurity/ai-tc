@@ -7,7 +7,7 @@
 // "caught" under its stale resolved row forever. See SqliteResolutionsRepository's
 // class doc for the full invariant, and keep every consumer in lockstep:
 //
-//   - SqliteSecurityRepository.severitySummary (caught / open-at-rest buckets)
+//   - SqliteSecurityRepository.severitySummary (caught / open-at-rest / dismissed buckets)
 //   - SqliteSecurityRepository.mttrTrend (latest status/method/resolved_at)
 //   - SqliteSecurityRepository.recentlyResolved (latest status/method/resolved_at)
 //   - SqliteSecurityRepository.recommendationInputs (latest status)

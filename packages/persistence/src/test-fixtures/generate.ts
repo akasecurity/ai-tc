@@ -147,7 +147,7 @@ export interface CaptureCorpusOptions {
    *
    * It exists because `finding_resolution` being EMPTY is not a neutral
    * starting point for a measurement — it is the cheapest path through three
-   * of `/security`'s reads. `severitySummary`'s caught/open-at-rest buckets,
+   * of `/security`'s reads. `severitySummary`'s caught/open-at-rest/dismissed buckets,
    * `mttrTrend` and `recentlyResolved` all read the latest resolution per key,
    * and the derived table they read it through
    * (`LATEST_RESOLUTION_BY_KEY_SQL`) is materialized and sorted per call. On an

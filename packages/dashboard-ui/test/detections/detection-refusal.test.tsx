@@ -370,8 +370,8 @@ describe('the Update button under editRefusal', () => {
     expect(button.className.split(' ')).toEqual(
       expect.arrayContaining(['bg-sev-high-ink', 'text-on-accent']),
     );
-    // Cancels the live button's hover:bg-sev-high-ink override of the default
-    // solid/primary hover (hover:bg-primary-hover).
+    // The live button's hover:bg-sev-high-ink override replaces the default
+    // solid/neutral hover (hover:bg-border-strong).
     expect(button.className.split(' ')).toEqual(expect.arrayContaining(['hover:bg-sev-high-ink']));
     expect(button.disabled).toBe(false);
     expect(button.getAttribute('aria-disabled')).toBe('true');

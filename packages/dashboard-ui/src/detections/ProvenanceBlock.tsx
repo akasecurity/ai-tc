@@ -50,7 +50,8 @@ export function ProvenanceBlock({
   const latestVersion = d.update?.latestVersion ?? d.latestVersion ?? '';
   const updateReasonId = useId();
   // null when live. The hover string is the live button's own override — it
-  // cancels the default solid/primary hover, so the refused one repeats it.
+  // replaces the default solid/neutral hover (hover:bg-border-strong), so the
+  // refused one repeats it.
   const updateRefused =
     updateRefusal === undefined
       ? null

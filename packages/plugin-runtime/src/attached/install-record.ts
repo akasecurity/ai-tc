@@ -6,9 +6,10 @@ import { StorePosturePlugin } from '@akasecurity/schema';
 
 /**
  * The newest version the host's install record holds for the plugin installed
- * at `installRoot` whose install directory is still on disk, or null when no
- * usable version can be read: no record (a plugin run from a checkout), no
- * entry with a valid version, or no entry whose `installPath` exists.
+ * at `installRoot`, skipping any entry whose named `installPath` is gone, or
+ * null when no usable version can be read: no record (a plugin run from a
+ * checkout), no entry with a valid version, or every such entry names an
+ * `installPath` that no longer exists.
  *
  * `installRoot` is the directory the running plugin was loaded from. The host
  * installs a marketplace plugin into
@@ -28,8 +29,9 @@ import { StorePosturePlugin } from '@akasecurity/schema';
  * snapshot over it. An entry whose `installPath` is a string naming a path that
  * no longer exists is skipped too: the record then names a version that is not
  * on disk, and a caller would otherwise report it as installed. The path is
- * only checked for existence with a stat, which follows a symlink, and is never
- * opened: any existing path counts, whatever it is.
+ * only checked with a stat, which follows a symlink, and is never opened: any
+ * path a stat succeeds on counts, whatever it is, and a path a stat fails on
+ * (missing, or not reachable) is treated as gone.
  *
  * Best-effort — one small local file read once per report, plus one stat per
  * entry. Asynchronous, so a caller that bounds it with a timer keeps the read

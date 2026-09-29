@@ -1,27 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { mergeAcrossPasses } from '../src/engine.ts';
+import { mergeOverlappingSameRule } from '../src/engine.ts';
 import { mapSpanToOriginal, normalizeFormatChars } from '../src/format-chars.ts';
 import type { MatchResult } from '../src/types.ts';
-
-// A representative sample of \p{Cf} — not the whole 170-member category (see
-// format-chars.ts for the full picture), but every family a real attack or a
-// real accident is likely to use: ZW*, word joiner, BOM, soft hyphen, bidi
-// embedding/override/isolate controls, and a Unicode "tag" character (the
-// mechanism behind invisible flag-emoji payloads).
-const FORMAT_CHARS: readonly (readonly [string, string])[] = [
-  ['U+200B zero width space', '​'],
-  ['U+200C zero width non-joiner', '‌'],
-  ['U+200D zero width joiner', '‍'],
-  ['U+2060 word joiner', '⁠'],
-  ['U+FEFF byte order mark', '﻿'],
-  ['U+00AD soft hyphen', '­'],
-  ['U+202A left-to-right embedding', '‪'],
-  ['U+202E right-to-left override', '‮'],
-  ['U+2066 left-to-right isolate', '⁦'],
-  ['U+2069 pop directional isolate', '⁩'],
-  ['U+E0020 tag space', '\u{E0020}'],
-];
+import { FORMAT_CHARS, ZWJ, ZWNJ, ZWSP } from './helpers/format-chars.ts';
 
 describe('normalizeFormatChars', () => {
   it('returns undefined on text with no format character — the fast path', () => {
@@ -37,125 +19,191 @@ describe('normalizeFormatChars', () => {
   });
 
   it('strips every format character in a run, not just the first', () => {
-    const result = normalizeFormatChars('A​‌‍B');
+    const result = normalizeFormatChars(`A${ZWSP}${ZWNJ}${ZWJ}B`);
     expect(result?.normalized).toBe('AB');
   });
 
   it('strips a leading and a trailing format character', () => {
-    const result = normalizeFormatChars('​ABC​');
+    const result = normalizeFormatChars(`${ZWSP}ABC${ZWSP}`);
     expect(result?.normalized).toBe('ABC');
   });
 
   it('produces an all-stripped empty normalized string without throwing', () => {
-    const result = normalizeFormatChars('​‌‍');
+    const result = normalizeFormatChars(`${ZWSP}${ZWNJ}${ZWJ}`);
     expect(result?.normalized).toBe('');
-    expect(result?.indexMap).toEqual([]);
+    expect(result?.segments).toEqual([]);
   });
 
   it('does not strip ordinary whitespace or visible characters', () => {
-    expect(normalizeFormatChars('a b\tc\nd​e')?.normalized).toBe('a b\tc\nde');
+    expect(normalizeFormatChars(`a b\tc\nd${ZWSP}e`)?.normalized).toBe('a b\tc\nde');
   });
 
   it('does not strip a variation selector (Mn, not Cf)', () => {
     // U+FE0F VARIATION SELECTOR-16 forces emoji presentation; it is not Cf and
     // must survive normalization even though it renders with no width of its
     // own in plain text.
-    const withVs = 'x​y️';
+    const vs16 = String.fromCodePoint(0xfe0f);
+    const withVs = `x${ZWSP}y${vs16}`;
     const result = normalizeFormatChars(withVs);
-    expect(result?.normalized).toBe('xy️');
+    expect(result?.normalized).toBe(`xy${vs16}`);
   });
 
   it('handles an astral (surrogate-pair) character alongside a format character', () => {
-    const result = normalizeFormatChars('🔑​password');
+    const result = normalizeFormatChars(`🔑${ZWSP}password`);
     expect(result?.normalized).toBe('🔑password');
-    // The astral char is 2 UTF-16 units, so it needs 2 index-map entries to
-    // stay index-for-index aligned with `normalized` — one per unit, each
-    // pointing at THAT unit's own original index (0 and 1), not both at 0.
-    expect(result?.indexMap.slice(0, 2)).toEqual([0, 1]);
+    // The astral char is 2 UTF-16 units, both kept inside the same leading
+    // segment: origStart 0, length 2 — covering normalized positions 0 and 1.
+    expect(result?.segments[0]).toEqual({ normStart: 0, origStart: 0, length: 2 });
   });
 });
 
 describe('mapSpanToOriginal', () => {
   it('maps a span entirely before any format character unchanged', () => {
-    const text = 'AB​CD';
+    const text = `AB${ZWSP}CD`;
     const normalization = normalizeFormatChars(text);
     expect(normalization).toBeDefined();
     if (!normalization) return;
     // normalized = "ABCD"; span [0,2) covers "AB"
-    expect(mapSpanToOriginal({ start: 0, end: 2 }, normalization, text.length)).toEqual({
+    expect(mapSpanToOriginal({ start: 0, end: 2 }, normalization)).toEqual({
       start: 0,
       end: 2,
     });
   });
 
   it('maps a span that straddles a stripped character to include it', () => {
-    const text = 'AB​CD'; // indices: A0 B1 ZWSP2 C3 D4
+    const text = `AB${ZWSP}CD`; // indices: A0 B1 ZWSP2 C3 D4
     const normalization = normalizeFormatChars(text);
     if (!normalization) throw new Error('expected normalization');
     // normalized = "ABCD"; span [1,3) covers "BC" in normalized space, i.e.
     // originally B, the stripped char, then C — the stripped char must be
     // swallowed into the span.
-    const mapped = mapSpanToOriginal({ start: 1, end: 3 }, normalization, text.length);
+    const mapped = mapSpanToOriginal({ start: 1, end: 3 }, normalization);
     expect(mapped).toEqual({ start: 1, end: 4 });
-    expect(text.slice(mapped.start, mapped.end)).toBe('B​C');
+    expect(text.slice(mapped.start, mapped.end)).toBe(`B${ZWSP}C`);
   });
 
-  it('maps a span reaching the end of normalized text to the end of the original', () => {
-    const text = 'AB​CD​';
+  it('maps a span reaching the end of normalized text TIGHTLY, excluding a trailing stripped char', () => {
+    // Regression guard: a version of this mapping used to special-case "the
+    // match reaches the end of the normalized text" by extending `end` all
+    // the way to the original text's own length, pulling the trailing ZWSP
+    // into the span even though it sits AFTER the match's own last character
+    // — the same over-inclusion the "straddles" case above deliberately does
+    // NOT apply to a run before the match's first character. That special
+    // case is gone: this must match what the unmodified (no format-character
+    // handling at all) engine finds for `\bAKIA...{16}\b` against
+    // "AKIA...EXAMPLE<ZWSP> end" — exactly the 20-char secret, nothing more.
+    const text = `AB${ZWSP}CD${ZWSP}`;
     const normalization = normalizeFormatChars(text);
     if (!normalization) throw new Error('expected normalization');
-    // normalized = "ABCD" (length 4); span [2,4) is the whole tail "CD" plus
-    // the trailing stripped char, so it must reach the original's full length.
-    const mapped = mapSpanToOriginal({ start: 2, end: 4 }, normalization, text.length);
-    expect(mapped).toEqual({ start: 3, end: 6 });
-    expect(text.slice(mapped.start, mapped.end)).toBe('CD​');
+    // normalized = "ABCD" (length 4); span [2,4) covers "CD" only.
+    const mapped = mapSpanToOriginal({ start: 2, end: 4 }, normalization);
+    expect(mapped).toEqual({ start: 3, end: 5 });
+    expect(text.slice(mapped.start, mapped.end)).toBe('CD');
   });
 
   it('maps a leading stripped run out of a span starting at 0', () => {
-    const text = '​ABC';
+    const text = `${ZWSP}ABC`;
     const normalization = normalizeFormatChars(text);
     if (!normalization) throw new Error('expected normalization');
-    const mapped = mapSpanToOriginal({ start: 0, end: 3 }, normalization, text.length);
+    const mapped = mapSpanToOriginal({ start: 0, end: 3 }, normalization);
     expect(mapped).toEqual({ start: 1, end: 4 });
     expect(text.slice(mapped.start, mapped.end)).toBe('ABC');
   });
 });
 
-describe('mergeAcrossPasses', () => {
+describe('mergeOverlappingSameRule', () => {
   const text = 'abcdefghijklmnopqrstuvwxyz';
-  const finding = (ruleId: string, start: number, end: number): MatchResult => ({
+  const finding = (ruleId: string, start: number, end: number, confidence = 1): MatchResult => ({
     ruleId,
     category: 'secret',
     severity: 'high',
     span: { start, end },
     rawMatch: text.slice(start, end),
-    confidence: 1,
+    confidence,
+  });
+
+  it('returns an empty list unchanged', () => {
+    expect(mergeOverlappingSameRule([], text)).toEqual([]);
+  });
+
+  it('leaves a single, non-overlapping finding alone', () => {
+    const merged = mergeOverlappingSameRule([finding('r', 2, 8)], text);
+    expect(merged).toEqual([finding('r', 2, 8)]);
   });
 
   it('keeps the union of two partly overlapping same-rule spans of equal width', () => {
     // Keeping only one of [2,8) and [5,11) would leave 3 characters of the
     // other one outside the span that redact() replaces.
-    const merged = mergeAcrossPasses(text, [finding('r', 2, 8)], [finding('r', 5, 11)]);
+    const merged = mergeOverlappingSameRule([finding('r', 2, 8), finding('r', 5, 11)], text);
     expect(merged).toHaveLength(1);
     expect(merged[0]?.span).toEqual({ start: 2, end: 11 });
     expect(merged[0]?.rawMatch).toBe(text.slice(2, 11));
   });
 
   it('keeps a contained span as the wider one', () => {
-    const merged = mergeAcrossPasses(text, [finding('r', 4, 6)], [finding('r', 2, 10)]);
+    const merged = mergeOverlappingSameRule([finding('r', 4, 6), finding('r', 2, 10)], text);
     expect(merged.map((f) => f.span)).toEqual([{ start: 2, end: 10 }]);
   });
 
-  it('keeps overlapping findings of different rules apart, and appends non-overlapping ones', () => {
-    const merged = mergeAcrossPasses(
+  it('keeps overlapping findings of different rules apart, and keeps non-overlapping ones separate', () => {
+    const merged = mergeOverlappingSameRule(
+      [finding('a', 2, 8), finding('b', 5, 11), finding('a', 20, 24)],
       text,
-      [finding('a', 2, 8)],
-      [finding('b', 5, 11), finding('a', 20, 24)],
     );
     expect(merged.map((f) => [f.ruleId, f.span.start, f.span.end])).toEqual([
       ['a', 2, 8],
-      ['b', 5, 11],
       ['a', 20, 24],
+      ['b', 5, 11],
     ]);
+  });
+
+  it('merges a THIRD finding that only overlaps the region the first two already widened into', () => {
+    // The exact non-transitivity gap: [0,5) and [4,9) merge to an open
+    // region [0,9); a third finding [8,12) does not overlap [0,5) or [4,9)
+    // individually, but DOES overlap the region those two produced together.
+    // A pairwise "fold into the first overlap, then stop" merge leaves this
+    // as two overlapping findings — [0,9) and [8,12) — instead of one.
+    const merged = mergeOverlappingSameRule(
+      [finding('r', 0, 5), finding('r', 4, 9), finding('r', 8, 12)],
+      text,
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.span).toEqual({ start: 0, end: 12 });
+    expect(merged[0]?.rawMatch).toBe(text.slice(0, 12));
+  });
+
+  it('is insensitive to the input order of a same-rule overlapping group', () => {
+    const merged = mergeOverlappingSameRule(
+      [finding('r', 8, 12), finding('r', 0, 5), finding('r', 4, 9)],
+      text,
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.span).toEqual({ start: 0, end: 12 });
+  });
+
+  it('keeps the higher confidence of a merged group', () => {
+    const merged = mergeOverlappingSameRule(
+      [finding('r', 2, 8, 0.9), finding('r', 5, 11, 0.99)],
+      text,
+    );
+    expect(merged[0]?.confidence).toBe(0.99);
+  });
+
+  it('does not blow up quadratically on a large same-rule group with no overlaps', () => {
+    // A pairwise "check the candidate against every finding merged so far"
+    // merge costs O(n²): with n findings from a single (say, one-BOM) run,
+    // scan() on a large ruleset/text combination went from milliseconds to
+    // seconds. This asserts the SHAPE (a generous, not tight, wall-clock
+    // bound — the kind CONTRIBUTING.md calls for, not a benchmark) rather
+    // than the bug's exact original repro, which lives in scan.bench.ts.
+    const many: MatchResult[] = [];
+    for (let i = 0; i < 20000; i++) {
+      many.push(finding(`rule/${String(i % 50)}`, i * 30, i * 30 + 5));
+    }
+    const start = performance.now();
+    const merged = mergeOverlappingSameRule(many, text);
+    const ms = performance.now() - start;
+    expect(merged).toHaveLength(many.length);
+    expect(ms).toBeLessThan(2000);
   });
 });

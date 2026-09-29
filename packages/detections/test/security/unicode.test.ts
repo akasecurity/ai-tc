@@ -4,6 +4,7 @@ import { Rule } from '@akasecurity/schema';
 import { describe, expect, it } from 'vitest';
 
 import { redact, scan } from '../../src/index.ts';
+import { FORMAT_CHARS, ZWSP } from '../helpers/format-chars.ts';
 import { loadRule, RULES_DIR } from '../helpers/rules.ts';
 
 // Parsed through the real schema — these assert the shipped path end to end
@@ -140,33 +141,12 @@ describe('non-ascii inputs do not corrupt spans', () => {
   });
 });
 
-// A representative sample of \p{Cf} — see src/format-chars.ts for the full
-// 170-member category. One invisible character from any of these families,
-// inserted mid-secret, used to defeat every regex/keyword rule while leaving
-// the secret usable after trivial cleanup.
-const INVISIBLE_FORMAT_CHARS: readonly (readonly [string, string])[] = [
-  ['U+200B zero width space', '​'],
-  ['U+200C zero width non-joiner', '‌'],
-  ['U+200D zero width joiner', '‍'],
-  ['U+2060 word joiner', '⁠'],
-  ['U+FEFF byte order mark', '﻿'],
-  ['U+00AD soft hyphen', '­'],
-  ['U+202E right-to-left override', '‮'],
-  ['U+2066 left-to-right isolate', '⁦'],
-  ['U+E0020 tag space', '\u{E0020}'],
-];
+// Bundled rules reused across the describe blocks below, loaded once.
+const githubPat = loadRule(resolve(RULES_DIR, 'secrets'), 'github-pat');
+const awsAccessKey = loadRule(resolve(RULES_DIR, 'secrets'), 'aws-access-key');
+const devPlaceholderSecret = loadRule(resolve(RULES_DIR, 'code-flaws'), 'dev-placeholder-secret');
 
 describe('invisible format characters inside a match', () => {
-  const githubPat = loadRule(resolve(RULES_DIR, 'secrets'), 'github-pat');
-  const awsAccessKey = loadRule(resolve(RULES_DIR, 'secrets'), 'aws-access-key');
-  const devPlaceholderSecret = loadRule(resolve(RULES_DIR, 'code-flaws'), 'dev-placeholder-secret');
-  // Kept as its own plain-quoted constant, referenced with `${ZWSP}` below,
-  // rather than written directly inside a template literal — ESLint's
-  // `no-irregular-whitespace` (correctly) flags a raw zero-width space
-  // sitting literally inside a template, and this is precisely the character
-  // family this whole fix is about.
-  const ZWSP = '​';
-
   it('still detects a known secret rule (GitHub PAT) with a ZWSP inserted mid-secret', () => {
     // Fixture secret from rules/secrets/fixtures/github-pat.json, split with a
     // zero-width space planted in the middle of the 36-char body.
@@ -256,42 +236,35 @@ describe('invisible format characters inside a match', () => {
     expect(findings[0]?.ruleId).toBe('secrets/aws-access-key');
   });
 
-  it.each(INVISIBLE_FORMAT_CHARS)(
-    'detects the secret with %s inserted mid-value',
-    (_label, char) => {
-      const secret = 'AKIAIOSFODNN7EXAMPLE';
-      const withChar = `${secret.slice(0, 10)}${char}${secret.slice(10)}`;
-      const text = `const key = "${withChar}";`;
+  it.each(FORMAT_CHARS)('detects the secret with %s inserted mid-value', (_label, char) => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE';
+    const withChar = `${secret.slice(0, 10)}${char}${secret.slice(10)}`;
+    const text = `const key = "${withChar}";`;
 
-      const findings = scan(text, [awsAccessKey]);
-      expect(findings).toHaveLength(1);
-      const finding = findings[0];
-      const sliced = finding && text.slice(finding.span.start, finding.span.end);
-      expect(sliced).toBe(withChar);
+    const findings = scan(text, [awsAccessKey]);
+    expect(findings).toHaveLength(1);
+    const finding = findings[0];
+    const sliced = finding && text.slice(finding.span.start, finding.span.end);
+    expect(sliced).toBe(withChar);
 
-      const output = redact(text, findings);
-      expect(output).not.toContain(secret.slice(0, 10));
-      expect(output).not.toContain(secret.slice(10));
-    },
-  );
+    const output = redact(text, findings);
+    expect(output).not.toContain(secret.slice(0, 10));
+    expect(output).not.toContain(secret.slice(10));
+  });
 });
 
 // Regression guard: normalizing text before matching must never make a
-// bundled \b-anchored rule miss a secret main (with no normalization at all)
-// already detects. JS's `\b` treats a \p{Cf} character as non-word — the SAME
-// property that lets it split a secret in two also lets it SATISFY a `\b`
-// between a word character and the secret when nothing else would. Stripping
-// it can silently remove that boundary: a word char, a ZWSP, then "AKIA..."
-// matches `\b(AKIA|...)…` on the ORIGINAL text (ZWSP is non-word, so there is
-// a word/non-word transition right before "AKIA"), but on the stripped
-// "xAKIA..." there is no such transition at all — a rule that matched before
-// this package normalized ANYTHING must still match after.
-describe('a format character must not remove a boundary main relies on', () => {
-  const githubPat = loadRule(resolve(RULES_DIR, 'secrets'), 'github-pat');
-  const awsAccessKey = loadRule(resolve(RULES_DIR, 'secrets'), 'aws-access-key');
-  const devPlaceholderSecret = loadRule(resolve(RULES_DIR, 'code-flaws'), 'dev-placeholder-secret');
-  const ZWSP = '​';
-
+// \b-anchored rule miss a secret the unmodified (no format-character
+// handling at all) engine already detects. JS's `\b` treats a \p{Cf}
+// character as non-word — the SAME property that lets it split a secret in
+// two also lets it SATISFY a `\b` between a word character and the secret
+// when nothing else would. Stripping it can silently remove that boundary: a
+// word char, a ZWSP, then "AKIA..." matches `\b(AKIA|...)…` on the ORIGINAL
+// text (ZWSP is non-word, so there is a word/non-word transition right
+// before "AKIA"), but on the stripped "xAKIA..." there is no such transition
+// at all — a rule that matched with no normalization at all must still match
+// with it.
+describe('the original-text pass still finds a match whose boundary is a format character', () => {
   it('still detects an AWS key preceded by <word char><format char>', () => {
     const secret = 'AKIAIOSFODNN7EXAMPLE';
     const text = `const key = "x${ZWSP}${secret}";`;
@@ -350,18 +323,19 @@ describe('a format character must not remove a boundary main relies on', () => {
     expect(findings[0]?.rawMatch).toBe(secret);
   });
 
-  it('still detects a secret with a format character at the very end of the text', () => {
+  it('still detects a secret with a format character at the very end of the text, tightly', () => {
     const secret = 'AKIAIOSFODNN7EXAMPLE';
     const text = `${secret}${ZWSP}`;
 
     const findings = scan(text, [awsAccessKey]);
     expect(findings).toHaveLength(1);
-    // Not a strict equality: the original-text pass matches exactly `secret`
-    // (the trailing ZWSP sits outside `\b`), while the normalized-text pass
-    // maps to a span reaching the text's own end (see format-chars.test.ts),
-    // which is WIDER and so wins the same-rule dedup. Either way the secret
-    // itself must be present and covered.
-    expect(findings[0]?.rawMatch).toContain(secret);
+    // Strict equality: with mapSpanToOriginal's end-of-text special case
+    // removed, both the original-text pass (which finds `\bAKIA...{16}\b`
+    // exactly, the ZWSP sitting outside the match) and the normalized-text
+    // pass (now mapped back TIGHTLY, see format-chars.test.ts) agree on the
+    // same clean span — matching what the unmodified engine finds.
+    expect(findings[0]?.rawMatch).toBe(secret);
+    expect(findings[0]?.span).toEqual({ start: 0, end: secret.length });
   });
 
   it('reports exactly one finding, not two, when both passes detect the same occurrence', () => {
@@ -373,5 +347,97 @@ describe('a format character must not remove a boundary main relies on', () => {
 
     const findings = scan(text, [awsAccessKey]);
     expect(findings).toHaveLength(1);
+  });
+});
+
+describe('requiresNearby corroboration can cross between the two passes', () => {
+  // rules/code-flaws/dev-placeholder-secret.json: keyword "changeme", gated
+  // on a "key"/"secret"/"password"/"token" label within 80 chars (schema
+  // default 160, this rule sets 80). Neither pass alone can corroborate
+  // these: the keyword only reads as one word in the normalized text (a
+  // format character sits inside it), while the label's own boundary is
+  // satisfied only by a format character present in the ORIGINAL text (the
+  // same shape the previous describe block covers for a primitive match,
+  // here for the requiresNearby label specifically). Pooling candidates from
+  // both passes before gating — rather than gating each pass on its own — is
+  // what lets the normalized-text keyword candidate see the original-text
+  // label satisfy its corroboration.
+  it('corroborates when the label needs the original text and the keyword needs the normalized text', () => {
+    const text = `abc${ZWSP}key = 'change${ZWSP}me'`;
+    const findings = scan(text, [devPlaceholderSecret]);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.ruleId).toBe('code-flaws/dev-placeholder-secret');
+  });
+
+  it('corroborates the same shape with a different label ("my_api<fmt>key")', () => {
+    const text = `my_api${ZWSP}key = 'change${ZWSP}me'`;
+    const findings = scan(text, [devPlaceholderSecret]);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.ruleId).toBe('code-flaws/dev-placeholder-secret');
+  });
+});
+
+describe('a same-rule overlap that only appears once matching runs against both texts', () => {
+  // A pattern with no upper bound (`{16,}`) can match FURTHER in the
+  // normalized text than either half can in the original text (where the
+  // format character splits the run into two shorter matches). Pooling both
+  // passes' candidates, then folding same-rule overlaps into their union,
+  // must produce ONE clean finding covering the whole thing — not two
+  // overlapping findings, which downstream span-grouping (e.g. a
+  // redact-and-vault policy) cannot treat as a single value.
+  it('folds two original-text halves and one wider normalized-text match into one finding', () => {
+    const generic = Rule.parse({
+      specVersion: 1,
+      id: 'test-pack/generic',
+      name: 'generic',
+      category: 'secret',
+      severity: 'high',
+      matcher: { type: 'regex', pattern: '[A-Za-z0-9]{16,}', flags: 'g' },
+    });
+    const tok = `Q7xK2mP9vL4nR8sT1wY5${ZWSP}zA3cE6gI0jM2oU4qS7uW`;
+    const text = `key=${tok};`;
+
+    const findings = scan(text, [generic]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.span).toEqual({ start: 4, end: 4 + tok.length });
+
+    const output = redact(text, findings);
+    expect(output).toBe('key=[REDACTED:SECRET];');
+  });
+});
+
+describe('the slow path does not blow up on a large text with one format character', () => {
+  // The reproduction from the review this test is pinned against: a scan
+  // that used to take single-digit milliseconds took multiple SECONDS with
+  // one leading BOM, because the (now fixed) merge step was quadratic in the
+  // number of findings. A generous wall-clock bound, not a benchmark — see
+  // CONTRIBUTING.md on the difference — catches a return of that shape
+  // without being a timing gate on ordinary noise.
+  it('scans a large multi-rule text with one leading BOM in well under a second', () => {
+    const mk = (id: string, pattern: string) =>
+      Rule.parse({
+        specVersion: 1,
+        id,
+        name: id,
+        category: 'pii',
+        severity: 'medium',
+        matcher: { type: 'regex', pattern, flags: 'g' },
+      });
+    const rules = [0, 1, 2, 3, 4, 5].map((k) =>
+      mk(`test-pack/w${String(k)}`, `\\bw${String(k)}\\b`),
+    );
+    let body = '';
+    for (let i = 0; i < 10000; i++) body += 'w0 w1 w2 w3 w4 w5\n';
+    const bom = FORMAT_CHARS.find(([label]) => label.includes('byte order mark'))?.[1] ?? '';
+    const text = bom + body;
+
+    const start = performance.now();
+    const findings = scan(text, rules);
+    const ms = performance.now() - start;
+
+    expect(findings).toHaveLength(60000);
+    expect(ms).toBeLessThan(1000);
   });
 });

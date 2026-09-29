@@ -18,6 +18,8 @@ export type { FileEgressHits } from './egress/resolve.ts';
 export { resolveEgress } from './egress/resolve.ts';
 export type { ScanContext } from './engine.ts';
 export { getLoadedRules, redact, registerPack, scan } from './engine.ts';
+export type { FormatCharNormalization } from './format-chars.ts';
+export { normalizeFormatChars } from './format-chars.ts';
 export { maskMatch } from './mask.ts';
 export type { ShieldedSpan, ShieldedText } from './pointer-shield.ts';
 export { dropShieldedFindings, shieldPointers } from './pointer-shield.ts';

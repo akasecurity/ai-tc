@@ -10,7 +10,7 @@ import { useTempStore } from '../helpers/temp-store.ts';
 // PINS the status↔bucket contract between the two resolution read surfaces:
 //
 //   - SqliteFindingsRepository.listFindingTypes (per-finding Status column)
-//   - SqliteSecurityRepository.severitySummary (caught / needs-remediation)
+//   - SqliteSecurityRepository.severitySummary (caught / needs-remediation / dismissed)
 //
 // Both derive from the same latest-resolution-wins SQL (resolution-sql.ts), but
 // each classifies the winning row itself — this suite seeds one store with every

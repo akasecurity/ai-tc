@@ -27,7 +27,7 @@ describe('renderFindingsSummary', () => {
     expect(text).toMatch(/Dismissed\s+1/);
   });
 
-  it('defaults missing caught/openAtRest/needsRemediation to 0 (legacy pre-resolution summary)', () => {
+  it('defaults missing caught/openAtRest/needsRemediation/dismissed to 0 (legacy pre-resolution summary)', () => {
     const summary: SeveritySummaryResponse = {
       total: 1,
       bySeverity: [

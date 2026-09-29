@@ -233,7 +233,7 @@ export function foldGroupStatus(
  *     already ran at the boundary.
  *   - at-rest, legacy untracked (findingKey null): the resolution lifecycle is
  *     keyed by finding_key, so these can never carry a disposition. The
- *     severity summaries drop them from their caught/open buckets entirely; a
+ *     severity summaries drop them from their caught, open and dismissed buckets entirely; a
  *     list view still needs a status to render, and the finding physically
  *     exists and is unremediated, so it reads 'open' rather than being
  *     fabricated as resolved/handled.
